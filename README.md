@@ -80,7 +80,9 @@ Apogee does **not** provide support for this software. Please direct all feedbac
 
 ## Acknowledgments
 
-Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility.
+Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility. 
+
+During development I sent countless commands that could easily have bricked my device, while I did have to reboot my machine a lot I never encountered a single unrecoverable issue. That’s a real testament to the engineering and care that went into the Apogee firmware. The team clearly designed it to guard against invalid states, preventing me from ever putting the hardware into a bad or unrecoverable condition. Respect.
 
 ## Screenshots
 <img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/f344c351-df41-4615-9683-1f2fe9774a5d" />
