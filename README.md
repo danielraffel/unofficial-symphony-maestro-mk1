@@ -67,7 +67,7 @@ The installer includes a <a href="https://github.com/danielraffel/unofficial-sym
 
 If you have a Symphony I/O MK I and an Apple Silicon Mac running macOS 26, I’d appreciate hearing how it goes.
 
-If you encounter problems, please file an issue and include:
+If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">file an issue</a> and include:
 
 * Whether you’re using USB or Thunderbolt
 * Installed I/O modules
