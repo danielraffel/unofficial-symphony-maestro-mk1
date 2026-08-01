@@ -76,7 +76,7 @@ If you encounter problems, please <a href="https://github.com/danielraffel/unoff
 
 I’ll follow up with any additional information that would help diagnose the issue.
 
-If everything works, I’d also appreciate a short issue saying so. Positive reports are valuable because they help others understand which hardware configurations have been tested successfully and build confidence that the software is working across different systems. I’ll keep this updated with a compatibility matrix showing the hardware configurations that have been tested.
+If everything works, I’d also appreciate a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">short issue</a> saying so. Positive reports are valuable because they help others understand which hardware configurations have been tested successfully and build confidence that the software is working across different systems. I’ll keep this updated with a compatibility matrix showing the hardware configurations that have been tested.
 
 ## Support
 
