@@ -6,7 +6,7 @@ Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
 Unofficial Symphony Maestro 0.7.2 Beta 404 (.pkg)
 </a>
 
-**Note:** This installer includes a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/license.md">very conservative license</a> due to its limited testing.
+_**Note:** Due to the limited testing of this software you should closely read the disclaimers in this read me and the license agreement before installing._
 
 ## Overview
 
@@ -59,7 +59,7 @@ The installer is:
 
 Installation should be straightforward without requiring any special security workarounds.
 
-The installer includes a conservative license agreement stating that the software is provided **as-is**, without warranty. While I do not expect problems, I want to be transparent that this software has undergone very limited real-world testing.
+The installer includes a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/license.md">conservative license agreement</a> stating that the software is provided **as-is**, without warranty. While I do not expect problems, I want to be transparent that this software has undergone very limited real-world testing.
 
 ## Feedback
 
