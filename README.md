@@ -6,6 +6,8 @@ Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
 Unofficial Symphony Maestro (.pkg)
 </a>
 
+If you test it, please read the [feedback](#feedback) section and consider sharing how it went so this can be updated to show what has been tested.
+
 _**Note:** Due to the limited testing of this software you should closely read the disclaimers in this read me and the license agreement before installing._
 
 ## Overview
@@ -63,14 +65,18 @@ The installer includes a <a href="https://github.com/danielraffel/unofficial-sym
 
 ## Feedback
 
-If you have a Symphony I/O MK I and an Apple Silicon Mac running macOS 26 and would like to help test, please include:
+If you have a Symphony I/O MK I and an Apple Silicon Mac running macOS 26, I’d appreciate hearing how it goes.
 
-- Whether you're using USB or Thunderbolt
-- Installed I/O modules
-- Mac model
-- Any other relevant hardware details
+If you encounter problems, please file an issue and include:
 
-I'll reach out with additional information.
+* Whether you’re using USB or Thunderbolt
+* Installed I/O modules
+* Mac model
+* Any other relevant hardware details
+
+I’ll follow up with any additional information that would help diagnose the issue.
+
+If everything works, I’d also appreciate a short issue saying so. Positive reports are valuable because they help others understand which hardware configurations have been tested successfully and build confidence that the software is working across different systems. I’ll keep this updated with a compatibility matrix showing the hardware configurations that have been tested.
 
 ## Support
 
