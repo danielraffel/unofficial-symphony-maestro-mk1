@@ -6,6 +6,8 @@ Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
 Unofficial Symphony Maestro 0.7.2 Beta 404 (.pkg)
 </a>
 
+**Note:** This installer includes a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/license.md">very conservative license</a> due to its limited testing.
+
 ## Overview
 
 This project restores support for the **Apogee Symphony I/O MK I** on Apple Silicon Macs running macOS 26.
