@@ -76,7 +76,7 @@ I'll reach out with additional information.
 
 This is an independent community project.
 
-Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page. 
+Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page.
 
 ## Acknowledgments
 
@@ -94,3 +94,6 @@ During development I sent countless commands that could easily have bricked my d
 <img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/2921c7d4-32be-43ca-9fdc-93251fe4c618" />
 
 
+## Appendix
+[https://knowledge.apogeedigital.com/legacy-symphony-i/o-mk-i-guide-for-intel-and-apple-silicon-macs](About Apogee Symphony I/O MK I)
+[https://www.soundonsound.com/reviews/apogee-symphony-io](Sound on Sound Review of Apogee Symphony I/O MK I)
