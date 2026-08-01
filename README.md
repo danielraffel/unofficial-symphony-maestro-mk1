@@ -81,3 +81,14 @@ Apogee does **not** provide support for this software. Please direct all feedbac
 ## Acknowledgments
 
 Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility.
+
+## Screenshots
+<img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/f344c351-df41-4615-9683-1f2fe9774a5d" />
+<img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/3731ecb7-40ea-4cac-8226-fc1f44840f90" />
+<img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/be7a7bf3-ce60-4ce5-8a76-dcb63856e0d5" />
+<img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/2fb878a8-389d-4a51-aee8-4d81eeb5389e" />
+<img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/d0b9099a-7bcb-4d0c-9ced-0489a0706764" />
+<img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/2ea26732-5838-45e6-a8a2-c62f007e5591" />
+<img width="1464" height="812" alt="image" src="https://github.com/user-attachments/assets/2921c7d4-32be-43ca-9fdc-93251fe4c618" />
+
+
