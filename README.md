@@ -74,8 +74,8 @@ I'll reach out with additional information.
 
 This is an independent community project.
 
-Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page.
+Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page. 
 
 ## Acknowledgments
 
-Many thanks to Apogee for their cooperation during development and for making it possible to explore restoring support for this hardware on modern versions of macOS.
+Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility.
