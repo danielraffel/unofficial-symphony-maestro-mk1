@@ -78,6 +78,8 @@ This is an independent community project.
 
 Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page.
 
+Note: Assuming beta testing goes well and this works reliably for others, I’ll explore open sourcing the software. There are a few complexities to work through, so that’s a lower priority for now, and I can’t promise it will happen.
+
 ## Acknowledgments
 
 Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility. 
@@ -95,5 +97,5 @@ During development I sent countless commands that could easily have bricked my d
 
 
 ## Appendix
-[https://knowledge.apogeedigital.com/legacy-symphony-i/o-mk-i-guide-for-intel-and-apple-silicon-macs](About Apogee Symphony I/O MK I)
-[https://www.soundonsound.com/reviews/apogee-symphony-io](Sound on Sound Review of Apogee Symphony I/O MK I)
+<a href="https://knowledge.apogeedigital.com/legacy-symphony-i/o-mk-i-guide-for-intel-and-apple-silicon-macs">About Apogee Symphony I/O MK I</a>
+<a href="https://www.soundonsound.com/reviews/apogee-symphony-io">Sound on Sound Review of Apogee Symphony I/O MK I</a>
