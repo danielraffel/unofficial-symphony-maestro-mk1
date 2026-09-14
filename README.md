@@ -1,5 +1,7 @@
 # Unofficial Symphony Maestro for Apogee Symphony I/O MK I
 
+_Note: I don’t have a tip jar, but if you find this useful and you’re motivated to donate, please feel free to make a donation in my name to the [SF-Marin Food Bank](https://www.sfmfoodbank.org). That would certainly mean a lot to me. They’re a great organization and incredibly efficient with their funds._
+
 Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
 
 **Download:** <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.4/UnofficialSymphonyMaestro-0.8.4-b585.pkg">
