@@ -4,8 +4,8 @@ _Note: I don’t have a tip jar, but if you find this useful and you’re motiva
 
 Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
 
-**Download:** <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.7/UnofficialSymphonyMaestro-0.8.7-b668.pkg">
-Unofficial Symphony Maestro v0.8.7 (.pkg)
+**Download:** <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.9/UnofficialSymphonyMaestro-0.8.9-b668.pkg">
+Unofficial Symphony Maestro v0.8.9 (.pkg)
 </a> &nbsp;·&nbsp; <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases">all releases</a>
 
 If you test it, please read the [feedback](#feedback) section and consider sharing how it went so this can be updated to show what has been tested.
@@ -26,6 +26,16 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 - Native **Thunderbolt DriverKit** driver
 - Modern **USB** implementation using Apple's USB audio stack
 - Hardware volume key support when using USB
+- Appearance controls with **Auto**, **Light**, and **Dark** modes
+- Optional in-app updates through Sparkle, with scheduled checks enabled by default and a manual check available any time
+
+## Appearance and updates
+
+Maestro follows your Mac by default with **Auto** appearance. You can choose **Light** or **Dark** in **Device Settings › Preferences**; the choice applies only to Maestro and is saved for the next launch.
+
+Maestro includes optional in-app updates powered by Sparkle. Scheduled update checks are enabled by default, but you can turn them off in **Device Settings › Preferences**. Manual **Check for Updates…** remains available whenever you want it. Updates are downloaded from the public [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1); no telemetry is collected by the updater.
+
+<a href="docs/screenshots/update-available.png"><img src="docs/screenshots/update-available.png" alt="Maestro update available dialog" width="70%"></a>
 
 ## Screenshots
 
