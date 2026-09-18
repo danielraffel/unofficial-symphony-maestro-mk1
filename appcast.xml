@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Maestro Updates</title>
+    <link>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases</link>
+    <description>Updates for Unofficial Symphony Maestro</description>
+    <language>en</language>
+    <item>
+      <title>Maestro 0.8.8</title>
+      <pubDate>Fri, 18 Sep 2026 19:00:00 +0000</pubDate>
+      <sparkle:version>0.8.8</sparkle:version>
+      <sparkle:shortVersionString>0.8.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Sparkle update checks are enabled by default. You can disable scheduled checks in **Device Settings › Preferences**; manual **Check for Updates…** remains available.
+- The signed Sparkle framework is included in the notarized PKG. Updates install the complete Maestro package, including the USB helper and ThunderBridge components.
+- Help now explains the two USB devices: **USB Audio** (16 inputs / 16 outputs) and **Maestro USB** (0 inputs / 16 outputs for keyboard volume control).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.8)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.8/UnofficialSymphonyMaestro-0.8.8-b664.pkg" sparkle:edSignature="yabTYMCbhcvAlxeaoCQxdu37gzxdk7AhnAkSVta9uPZqyhTSlJyxGs0LppgLpY52JJCb5btlJy4WB2XcTS8kAg==" length="3483025" type="application/octet-stream" sparkle:installationType="package" />
+    </item>
+  </channel>
+</rss>
