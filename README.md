@@ -35,7 +35,12 @@ Maestro follows your Mac by default with **Auto** appearance. You can choose **L
 
 Maestro includes optional in-app updates powered by Sparkle. Scheduled update checks are enabled by default, but you can turn them off in **Device Settings › Preferences**. Manual **Check for Updates…** remains available whenever you want it. Updates are downloaded from the public [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1); no telemetry is collected by the updater.
 
-<a href="docs/screenshots/update-available.png"><img src="docs/screenshots/update-available.png" alt="Maestro update available dialog" width="70%"></a>
+<table>
+<tr>
+<td width="50%"><a href="docs/screenshots/update-available.png"><img src="docs/screenshots/update-available.png" alt="Maestro update available dialog"></a><br><sub>Update notifications show the release notes before you install.</sub></td>
+<td width="50%"><a href="docs/screenshots/update-current.png"><img src="docs/screenshots/update-current.png" alt="Maestro up to date dialog"></a><br><sub>Manual checks also report when you are already up to date.</sub></td>
+</tr>
+</table>
 
 ## Screenshots
 
