@@ -4,7 +4,7 @@ _Note: I don’t have a tip jar, but if you find this useful and you’re motiva
 
 Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
 
-**Download:** <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest">
+**Download:** <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg">
 Download the latest Unofficial Symphony Maestro (.pkg)
 </a> &nbsp;·&nbsp; <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases">all releases</a>
 
