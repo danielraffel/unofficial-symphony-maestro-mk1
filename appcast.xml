@@ -6,28 +6,27 @@
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
-      <title>Maestro 0.8.9</title>
-      <pubDate>Fri, 18 Sep 2026 19:00:00 +0000</pubDate>
-      <sparkle:version>0.8.9</sparkle:version>
-      <sparkle:shortVersionString>0.8.9</sparkle:shortVersionString>
+      <title>Maestro 0.8.10</title>
+      <pubDate>Fri, 18 Sep 2026 20:34:25 +0000</pubDate>
+      <sparkle:version>0.8.10</sparkle:version>
+      <sparkle:shortVersionString>0.8.10</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.9</sparkle:fullReleaseNotesLink>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.10</sparkle:fullReleaseNotesLink>
       <description sparkle:format="markdown"><![CDATA[
 ## What's new
 
-- Sparkle update checks remain enabled by default. You can disable scheduled checks in **Device Settings › Preferences**; manual **Check for Updates…** remains available.
-- This signed, notarized package verifies the complete Sparkle update path, including the USB helper and ThunderBridge components.
-- The signed Sparkle framework is included in the notarized PKG. Updates install the complete Maestro package, including the USB helper and ThunderBridge components.
-- Help now explains the two USB devices: **USB Audio** (16 inputs / 16 outputs) and **Maestro USB** (0 inputs / 16 outputs for keyboard volume control).
+- Fixes the Input/Mic Pre layout in short windows so the left navigation pane and bottom bar remain in place.
+- Adds the refreshed simulated Input and Mic Pre views used for this release.
+- Sparkle scheduled update checks remain optional; you can disable them in **Device Settings › Preferences** while **Check for Updates…** remains available.
 
-[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.9)
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.10)
       ]]></description>
-      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.9/UnofficialSymphonyMaestro-0.8.9-b668.pkg" sparkle:edSignature="38k7t7PK6UNfu9AdknMTa0L1VDaXnlNWXYk1rGwLM4xOZlCimeAmRx7lsXY0nZw44SK59yp+09sKMYpM1LzlAg==" length="3483337" type="application/octet-stream" sparkle:installationType="package" />
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="2QKYsWO12DIRZolkOENQE9erRDIIbLrBExeF7IxZBuV9UWJj5pu0+soN4ejoFHmgwnCqB1g20mcZrvbUWqS5Dg==" length="3483288" type="application/octet-stream" sparkle:installationType="package" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: rvf+/ugVfN5ucE18RZE0h6FxANkJCVkNFRG+i0biiWvD4Lhqu0ns06ZgqOS7iT8jQxJaSe5BEoh+R0/nEeuwCA==
-length: 2150
+edSignature: 9vLMNqox2iDaRuFAVDtBSaP1hGtbaVwqbJq0bL4T/GRDAdRU1QYlpMmSjV9kgxOzSYX73i7Ve9BlOLB2fn4WDQ==
+length: 1868
 -->

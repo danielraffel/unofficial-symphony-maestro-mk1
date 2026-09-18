@@ -8,6 +8,8 @@ Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
 Download the latest Unofficial Symphony Maestro (.pkg)
 </a> &nbsp;·&nbsp; <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases">all releases</a>
 
+**0.8.10:** fixes the short-window Input/Mic Pre layout so the left navigation pane and bottom bar stay in place. Maestro also includes an optional in-app updater: scheduled checks can be disabled in **Device Settings › Preferences**, while **Check for Updates…** remains available.
+
 If you test it, please read the [feedback](#feedback) section and consider sharing how it went so this can be updated to show what has been tested.
 
 _**Note:** Due to the limited testing of this software you should closely read the disclaimers in this read me and the license agreement before installing._
