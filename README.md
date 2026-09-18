@@ -69,7 +69,7 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 
 <a href="docs/screenshots/input-micpre.png"><img src="docs/screenshots/input-micpre.png" alt="Mic Pre input channels" width="70%"></a>
 
-> **Every screenshot on this page is simulated.** They were all captured against Maestro's built-in card simulator standing in for a 16x16 Analog In/Out + 8MicPre — that is what the "no hardware" banner in each one says. I don't own an 8MicPre, so the Mic Pre controls above are built from Apogee's own source and verified in simulation, but **they have never run on a real Mic Pre module.** If you have one, I'd like to hear how close this is.
+> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views; the Sparkle update dialogs above are from a real update. I don't own an 8MicPre, so the Mic Pre controls above are built from Apogee's own source and verified in simulation, but **they have never run on a real Mic Pre module.** If you have one, I'd like to hear how close this is.
 
 ## Requirements
 
