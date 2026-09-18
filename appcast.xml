@@ -12,6 +12,7 @@
       <sparkle:shortVersionString>0.8.8</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.8</sparkle:fullReleaseNotesLink>
       <description sparkle:format="markdown"><![CDATA[
 ## What's new
 
