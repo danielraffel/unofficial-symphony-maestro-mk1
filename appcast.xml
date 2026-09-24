@@ -24,10 +24,10 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
 
 [Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.13)
       ]]></description>
-      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.13/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="N5H5l5I0UUTwJjhvehwiTVCoB6z6mrwcFhNJuGHeJtalyhXh0NcIIyJBf+od51PevbenutPUShZTBw7MIeF6BQ==" length="3497410" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.13/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="ryBxoOuHWe8SxhbwMKCCxjSWs3gJ3turgnsMUAMDTkAca2iN1U+NeK2DNdWhZhd+zCW2vQeyNbvXAO3I+2DcBg==" length="3497410" type="application/octet-stream" sparkle:installationType="package"></enclosure>
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: vFCL4JXj10zdcMEZB4jykytora7IC+HHzZVnhGr3ivdhmnzE/VFBDLNAX/DOUsl8AfsVEyXbKisvG6JvcvGHBg==
+edSignature: CpVcDf6EnJs5I5vl/oh9hg9uuLPbTXvieDye+RGkzIie2REWbUPRjfpSz3g3OwdKdW8SZD6ENalp2qwSAmhBBw==
 length: 2202
 -->
