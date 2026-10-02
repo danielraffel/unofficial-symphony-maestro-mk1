@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.14</title>
+      <pubDate>Fri, 02 Oct 2026 22:36:00 +0000</pubDate>
+      <sparkle:version>0.8.14</sparkle:version>
+      <sparkle:shortVersionString>0.8.14</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.14</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Clearer ThunderBridge setup and driver-status guidance, including power, PC-32, Thunderbolt, Symphony mode, Driver Extensions approval, restart and upgrade-pending states.
+- USB-only users no longer receive persistent ThunderBridge setup warnings.
+- Optional monitor/software-return capabilities no longer appear as misleading startup errors.
+- Sparkle updater signing remains compatible with the existing key; if an update cannot install, install the signed package over the existing app.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.14)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.14/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="2bQXbtWaMaFo0Q6ZBc2mYG40dag7RbvViIHT7TOLub/H2ywAhl9oweU6R/d1jo8J6q5XzBTnnNQNPHYh1y1/Ag==" length="3595506" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.13</title>
       <pubDate>Tue, 22 Sep 2026 06:12:00 +0000</pubDate>
       <sparkle:version>0.8.13</sparkle:version>
@@ -28,6 +48,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: CpVcDf6EnJs5I5vl/oh9hg9uuLPbTXvieDye+RGkzIie2REWbUPRjfpSz3g3OwdKdW8SZD6ENalp2qwSAmhBBw==
-length: 2202
+edSignature: gSDYYM3KcVjlAhadHinpnleA3IIA1mKgrFDkPS5qlPJPIpd2nh8OsEpv5ONREBUZqwVWoxnrzb6VdUFfFNvRBQ==
+length: 3797
 -->
