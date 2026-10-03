@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.16</title>
+      <pubDate>Sat, 03 Oct 2026 17:10:00 +0000</pubDate>
+      <sparkle:version>0.8.16</sparkle:version>
+      <sparkle:shortVersionString>0.8.16</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.16</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Adds experimental support for the original Symphony 64 PCIe card (`pci19c2,2100`).
+- Shows the active PCI personality in Software Info and copied diagnostics.
+- Refreshes the connection state immediately when ThunderBridge is unplugged.
+- Uses the Apogee artwork consistently for the app icon.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.16)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.16/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="6Wea+3wTSesjfnRS03W2G60hCZYoqMvEGtvVrxb6LSUZZFhlvaIYibeeiWVI4G53it1o3ojAeUWMpX9nejNYBw==" length="3687824" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.15</title>
       <pubDate>Fri, 03 Oct 2026 03:10:00 +0000</pubDate>
       <sparkle:version>0.8.15</sparkle:version>
@@ -66,6 +86,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: bqa9I82YBDaGAvMxsPvFxU4azLoVU4ueVME/2OSLrVBG+S72i0dwtLnXj77OUlJyD749NCJHIJop+wt7emdgBA==
-length: 5027
+edSignature: FYZQZcWW7BNCQxkE1AoQyq+EpQUhEQ8Bw0ToGcs71YR1Cx9CfkXWN6fKyhPFKBdn2fuWdgN3c/cZDga7ji9VDQ==
+length: 6426
 -->
