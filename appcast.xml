@@ -7,6 +7,24 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.15</title>
+      <pubDate>Fri, 03 Oct 2026 03:10:00 +0000</pubDate>
+      <sparkle:version>0.8.15</sparkle:version>
+      <sparkle:shortVersionString>0.8.15</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.15</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Maintenance release to verify the signed Sparkle update path from 0.8.14.
+- Continues using the current Sparkle signing key.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.15)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.15/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="hqDT5w7awnw72DkO2v5ECjpSp0X9YYDLz/ylXmnfLG4e+OVF2EJEfoZ858AV6TQFyTeOXwHkhucczSYUveBGAw==" length="3595530" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.14</title>
       <pubDate>Fri, 02 Oct 2026 22:36:00 +0000</pubDate>
       <sparkle:version>0.8.14</sparkle:version>
@@ -48,6 +66,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: gSDYYM3KcVjlAhadHinpnleA3IIA1mKgrFDkPS5qlPJPIpd2nh8OsEpv5ONREBUZqwVWoxnrzb6VdUFfFNvRBQ==
-length: 3797
+edSignature: fqx0WTfMqibadWI1FsNJdbnSr4qK+NgDMMvBrpygyG15z2VXnmiP9XgikwpFI6NZ4/UQA0DbuVe70J5oYqSwAA==
+length: 5027
 -->
