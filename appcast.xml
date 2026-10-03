@@ -7,6 +7,27 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.17</title>
+      <pubDate>Sat, 03 Oct 2026 23:55:00 +0000</pubDate>
+      <sparkle:version>0.8.17</sparkle:version>
+      <sparkle:shortVersionString>0.8.17</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.17</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Improves Sparkle updating and the manual updater fallback.
+- Improves ThunderBridge activation, upgrade, disconnect, and reconnect handling.
+- Adds clearer ThunderBridge diagnostics, including the active PCI personality.
+- Adds a high-performance ThunderBridge timing profile validated on hardware.
+- Updates artwork and setup/help guidance.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.17)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.17/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="icoFPJ93tOCggBByOp/qXBq/Irn5BYf+PkPbvtpxEHEf0E3Dj8+BXw1VUqHrlJaMQ89ngL7mo25VNaVpDzmhAQ==" length="3687673" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.16</title>
       <pubDate>Sat, 03 Oct 2026 17:10:00 +0000</pubDate>
       <sparkle:version>0.8.16</sparkle:version>
@@ -86,6 +107,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: FYZQZcWW7BNCQxkE1AoQyq+EpQUhEQ8Bw0ToGcs71YR1Cx9CfkXWN6fKyhPFKBdn2fuWdgN3c/cZDga7ji9VDQ==
-length: 6426
+edSignature: onAks+Cj1/mxP7jB5tfgDnOGMKxx5/jHsQTso1wSwFIYTz6fDTbkhefC9qB3RXJcoDVZ0t+HQmVvAai0OO6sBg==
+length: 7873
 -->
