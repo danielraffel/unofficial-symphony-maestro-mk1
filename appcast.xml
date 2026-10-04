@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.19</title>
+      <pubDate>Sun, 04 Oct 2026 21:09:51 +0000</pubDate>
+      <sparkle:version>0.8.19</sparkle:version>
+      <sparkle:shortVersionString>0.8.19</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.19</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Fixes Maestro USB visibility in the macOS Sound output menu by publishing its default-output capability during initial registration.
+- Preserves USB bridge recovery, ThunderBridge behavior, and the signed Sparkle update path.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.19)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.19/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="84/S806miJTliUk/IllL7QDFl6sWVrlwoGccHkoEJajFODzgNyfK8ZmPA0JH7bg5iZCeOvXFNwkscTFIe5VtDA==" length="3688746" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.18</title>
       <pubDate>Sun, 04 Oct 2026 16:22:16 +0000</pubDate>
       <sparkle:version>0.8.18</sparkle:version>
@@ -127,6 +147,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: Kc32vtKALibIcXlaGDwFryFODunt6U3zLpKQkkn6DtdCmGlUhJ9sGgmBumh9bBPKOu9652cdjcaSL1pmgcPiAw==
-length: 9300
+edSignature: iCG+jyJnlsV3lYB2HJJfXyB3sUQCi/FhvIh8e945aYrVcRAl6aFhvBgHWpmtx3v32VEUbnKt6UNf6ImAXtR6Dg==
+length: 10756
 -->
