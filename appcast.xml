@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.18</title>
+      <pubDate>Sun, 04 Oct 2026 16:22:16 +0000</pubDate>
+      <sparkle:version>0.8.18</sparkle:version>
+      <sparkle:shortVersionString>0.8.18</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.18</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Recovers the Maestro USB virtual-audio bridge after an active producer stall without resetting legitimate idle sessions.
+- Adds shared-memory producer-liveness diagnostics and regression coverage.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.18)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.18/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="L6VJiTotBU+XZKQ6btOEK8P+Boo+h/Q1XUGT1f9cJGlL9nRufu0ceXFN1IxqKkvipYc8I9W5P/PkNS9wUJZ6Aw==" length="3688640" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.17</title>
       <pubDate>Sat, 03 Oct 2026 23:55:00 +0000</pubDate>
       <sparkle:version>0.8.17</sparkle:version>
@@ -107,6 +127,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: onAks+Cj1/mxP7jB5tfgDnOGMKxx5/jHsQTso1wSwFIYTz6fDTbkhefC9qB3RXJcoDVZ0t+HQmVvAai0OO6sBg==
-length: 7873
+edSignature: 59SG0OiphfyJ4IAOTx/jkI/sMzgc3SKAK/3rowNvZ+Ld+xNciJLUQKc1sIDXHFqRBmDLTrae5Cq7VAQh6FblCg==
+length: 9300
 -->
