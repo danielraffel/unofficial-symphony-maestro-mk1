@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.26</title>
+      <pubDate>Thu, 22 Oct 2026 21:16:15 GMT</pubDate>
+      <sparkle:version>0.8.26</sparkle:version>
+      <sparkle:shortVersionString>0.8.26</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.26</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- macOS 27: Maestro now asks for microphone access on first launch. It reads the Symphony's input channels only to draw its input meters; nothing is recorded. Without this macOS 27 refused the meter tap, and for at least one ThunderBridge user that coincided with audio dropping out when Maestro opened.
+- No driver change (build 111): no cable replug needed.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.26)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.26/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="tLIu2R9QKSWwndeuJrKEuc96hmLmotc0xcoMM+UkqQ4J/W5UKUazwQS5VAejzxt9HJPL2N39qvNM00y9/KhSDQ==" length="3851669" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.25</title>
       <pubDate>Thu, 22 Oct 2026 20:44:17 GMT</pubDate>
       <sparkle:version>0.8.25</sparkle:version>
@@ -279,6 +299,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: dhKsl+nFoKPzg8ENeBCqSnpebVkEvKm1220zHS3NRTzAfKzNv8fK/wxnylAA9DYFgyUcVhvHSS8PKiZ084aZDA==
-length: 20984
+edSignature: AeiZb6ezD06OVV28pvOSFRssB154br3NohFHnnZC4InfeY4bh1ApELLpeacSm7yWJyrozaCaCEgEk88K99eyDg==
+length: 22570
 -->
