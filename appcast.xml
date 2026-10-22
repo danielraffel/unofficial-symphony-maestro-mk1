@@ -7,6 +7,31 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.20</title>
+      <pubDate>Thu, 22 Oct 2026 06:39:50 GMT</pubDate>
+      <sparkle:version>0.8.20</sparkle:version>
+      <sparkle:shortVersionString>0.8.20</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.20</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- ThunderBridge: a Symphony power cycle now recovers on its own — "Symphony disconnected" within a second when it's off, back to Connected with clean audio a few seconds after it's on, no cable replug or sample-rate change.
+- ThunderBridge: a Symphony switched on after the driver started is picked up the same way; meters no longer move after the Symphony is powered off; opening Maestro no longer disturbs a running session.
+- Software Return: pan is back, no 5 dB drop at center, and the meters follow the faders, pan, and mute as on USB.
+- Clearer status (Disconnected / Symphony disconnected / Connected); the driver banner opens the right System Settings page directly.
+- USB: on plug-in, Maestro waits for "Symphony I/O : Maestro USB" before choosing an output.
+- Input, Output, and Mixer remember their scroll position for the session, without the shuffle.
+- After installing, unplug and replug the ThunderBridge cable once so the new driver extension (build 110) takes over.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.20)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.20/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="ROx3omkAir2MbrkPdV+fs6e1Zrj3mi1xei8tBnX9bjqpS3zOfKdNRFaXNV5Xb2bafD3gz4F9y/+FbEdEHaXvAg==" length="3828244" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.19</title>
       <pubDate>Sun, 04 Oct 2026 21:09:51 +0000</pubDate>
       <sparkle:version>0.8.19</sparkle:version>
