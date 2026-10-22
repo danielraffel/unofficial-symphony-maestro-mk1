@@ -2,40 +2,46 @@
 
 _Note: I don’t have a tip jar, but if you find this useful and you’re motivated to donate, please feel free to make a donation in my name to the [SF-Marin Food Bank](https://www.sfmfoodbank.org). That would certainly mean a lot to me. They’re a great organization and incredibly efficient with their funds._
 
-Modern Apple Silicon support for the Apogee Symphony I/O MK I on **macOS 26**.
+Modern Apple Silicon support for the Apogee Symphony I/O MK I over **USB and ThunderBridge**, on **macOS 26 (Tahoe) and macOS 27 (Golden Gate)**.
 
 **Download:** <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg">
 Download the latest Unofficial Symphony Maestro (.pkg)
 </a> &nbsp;·&nbsp; <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases">all releases</a>
 
-For current fixes, improvements, and compatibility notes, see the [latest release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest). Maestro also includes an optional in-app updater: scheduled checks can be disabled in **Device Settings › Preferences**, while **Check for Updates…** remains available.
+For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
 
-If you test it, please read the [feedback](#feedback) section and consider sharing how it went so this can be updated to show what has been tested.
-
-_**Note:** Due to the limited testing of this software you should closely read the disclaimers in this read me and the license agreement before installing._
+_**Note:** This software has had limited real-world testing. Please read the disclaimers in this README and the license agreement before installing._
 
 ## Overview
 
-This project restores support for the **Apogee Symphony I/O MK I** on Apple Silicon Macs running macOS 26.
+This project restores support for the **Apogee Symphony I/O MK I** on Apple Silicon Macs. It was developed with **Apogee's knowledge and blessing**, but it is **not affiliated with, supported by, or endorsed by Apogee** in any way. Apogee does not provide support for this software.
 
-It was developed with **Apogee's knowledge and blessing**, but it is **not affiliated with, supported by, or endorsed by Apogee** in any way. Apogee does not provide support for this software.
-
-Due to the technical approach used, this software **requires an Apple Silicon Mac running macOS 26**. It will **never support Intel Macs or versions of macOS earlier than macOS 26**.
+Due to the technical approach used, this software **requires an Apple Silicon Mac running macOS 26 or later**. It will **never support Intel Macs or versions of macOS earlier than macOS 26**.
 
 ## What's Included
 
-- Modern **Maestro** desktop application for basic device configuration
-- Native **Thunderbolt DriverKit** driver
-- Modern **USB** implementation using Apple's USB audio stack
-- Hardware volume key support when using USB
+- **Maestro**, a native macOS app for device configuration: inputs, outputs, monitor section, two low-latency mixers, input and output routing with presets, device and system settings
+- A native **ThunderBridge DriverKit driver** (32 channels in and out, 44.1–192 kHz, ADAT and optical output)
+- A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
+- Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
 - Appearance controls with **Auto**, **Light**, and **Dark** modes
-- Optional in-app updates through Sparkle, with scheduled checks enabled by default and a manual check available any time
+- Optional in-app updates through Sparkle
+
+### Connecting over USB and ThunderBridge
+
+Both connections can stay plugged in. The Symphony's front-panel mode decides which one Maestro uses: in **Symphony** mode audio and control go through ThunderBridge, and in a **USB** mode they go through USB. Switching modes on the front panel is followed automatically.
+
+Over USB the Mac sees two devices. **Symphony I/O : Maestro USB** is the one to use: it carries the hardware volume-key control that the class-compliant **Symphony I/O : USB Audio** device cannot. USB carries 16 channels each way; ThunderBridge carries 32.
+
+### Microphone permission
+
+On first launch Maestro asks for microphone access. It reads the Symphony's input channels only to draw its input meters; nothing is recorded or stored. On macOS 27 the input meters do not work without it.
 
 ## Appearance and updates
 
 Maestro follows your Mac by default with **Auto** appearance. You can choose **Light** or **Dark** in **Device Settings › Preferences**; the choice applies only to Maestro and is saved for the next launch.
 
-Maestro includes optional in-app updates powered by Sparkle. Scheduled update checks are enabled by default, but you can turn them off in **Device Settings › Preferences**. Manual **Check for Updates…** remains available whenever you want it. Updates are downloaded from the public [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1); no telemetry is collected by the updater.
+Updates are downloaded from this repository; the updater collects no telemetry.
 
 <table>
 <tr>
@@ -71,72 +77,65 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 
 <a href="docs/screenshots/input-micpre.png"><img src="docs/screenshots/input-micpre.png" alt="Mic Pre input channels" width="70%"></a>
 
-> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views; the Sparkle update dialogs above are from a real update. I don't own an 8MicPre, so the Mic Pre controls above are built from Apogee's own source and verified in simulation, but **they have never run on a real Mic Pre module.** If you have one, I'd like to hear how close this is.
+> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views; the Sparkle update dialogs above are from a real update. I don't own an 8MicPre; the Mic Pre controls are built from Apogee's own source and have been exercised by one tester on real hardware (see [Tested Hardware](#tested-hardware)).
 
 ## Requirements
 
 - Apple Silicon Mac (M-series)
-- macOS 26
-- Apogee Symphony I/O MK I
+- macOS 26 (Tahoe) or macOS 27 (Golden Gate)
+- Apogee Symphony I/O MK I, connected over USB or an Apogee ThunderBridge
 
-_Intel Macs and earlier versions of macOS are not supported._
+_Intel Macs and earlier versions of macOS are not supported. The original Symphony 64 PCIe card (in a Thunderbolt chassis) is not supported yet._
 
 ## Beta Status
 
-This is an **early beta release**.
-
-At the time of this release, the software has only been tested on a single system. I'm looking for a small number of technically experienced users who are comfortable testing pre-release software and providing feedback.
-
-If your Mac is mission-critical, I strongly recommend testing on a secondary machine rather than your primary workstation.
+This is **beta software** developed by one person. It has been tested on a small number of systems, listed below. If your Mac is mission-critical, test on a secondary machine first.
 
 ## Tested Hardware
 
-This release has only been tested with:
+Verified by me, on macOS 26 and macOS 27:
 
-- Apple Silicon Mac running macOS 26
-- Apogee Symphony I/O MK I
-- 8×8 Analog-Optical I/O module
-- 16×16 AD Optical I/O module
+- Symphony I/O MK I with an **8×8 Analog + Optical** module and a **16 Analog In / 16 Digital Out** module, over **USB** and **ThunderBridge**
 
-If your hardware configuration differs, it may work, but it has not yet been verified.
+Reported working by testers (thank you):
+
+- **8×8 Analog + Optical**, single module, over ThunderBridge, macOS 26
+- **16×16 Analog** + ADAT over ThunderBridge, macOS 27
+- **16×16 Analog** over USB, macOS 26 and 27
+- **16×16 Analog** + **8MicPre** over USB, macOS 26
+
+If your configuration differs, it may well work, but it has not been verified. The **2×6** module has not been tested on real hardware.
 
 ## Installation
 
-The installer is:
+The installer is Apple signed and notarized, so no security workarounds are needed. Install, launch Maestro, and approve the driver extension when macOS asks (ThunderBridge users). When a release updates the driver extension, one ThunderBridge cable unplug/replug lets the new driver take over; the release notes say when that applies.
 
-- Apple signed
-- Apple notarized
-
-Installation should be straightforward without requiring any special security workarounds.
-
-The installer includes a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/license.md">conservative license agreement</a> stating that the software is provided **as-is**, without warranty. While I do not expect problems, I want to be transparent that this software has undergone very limited real-world testing.
+The installer includes a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/license.md">conservative license agreement</a> stating that the software is provided **as-is**, without warranty.
 
 ## Feedback
 
-If you have a Symphony I/O MK I and an Apple Silicon Mac running macOS 26, I’d appreciate hearing how it goes.
+If you have a Symphony I/O MK I and an Apple Silicon Mac, I’d appreciate hearing how it goes.
 
 If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">file an issue</a> and include:
 
-* Whether you’re using USB or Thunderbolt
+* The Maestro version (**Maestro › About**) and macOS version
+* Whether you’re using USB or ThunderBridge
 * Installed I/O modules
 * Mac model
-* Any other relevant hardware details
 
-I’ll follow up with any additional information that would help diagnose the issue.
-
-If everything works, I’d also appreciate a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">short issue</a> saying so. Positive reports are valuable because they help others understand which hardware configurations have been tested successfully and build confidence that the software is working across different systems. I’ll keep this updated with a compatibility matrix showing the hardware configurations that have been tested.
+If everything works, a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">short issue</a> saying so is just as valuable: it tells others which configurations have been tested, and it gets added to the list above.
 
 ## Support
 
-This is an independent community project.
+This is an independent community project. Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page.
 
-Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page.
-
-Note: Assuming beta testing goes well and this works reliably for others, I’ll explore open sourcing the software. There are a few complexities to work through, so that’s a lower priority for now, and I can’t promise it will happen.
+Assuming testing continues to go well, I’ll explore open-sourcing the software. There are a few complexities to work through, so that’s a lower priority for now, and I can’t promise it will happen.
 
 ## Acknowledgments
 
-Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility. 
+Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility.
+
+Thanks also to the testers who have filed detailed reports on GitHub and in the Gearspace thread; most of the fixes since the first beta came directly from them.
 
 During development I sent countless commands that could easily have bricked my device, while I did have to reboot my machine a lot I never encountered a single unrecoverable issue. That’s a real testament to the engineering and care that went into the Apogee firmware. The team clearly designed it to guard against invalid states, preventing me from ever putting the hardware into a bad or unrecoverable condition. Respect.
 
