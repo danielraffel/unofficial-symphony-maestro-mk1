@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.25</title>
+      <pubDate>Thu, 22 Oct 2026 20:44:17 GMT</pubDate>
+      <sparkle:version>0.8.25</sparkle:version>
+      <sparkle:shortVersionString>0.8.25</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.25</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Input Routing over ThunderBridge now shows all 32 record channels after a reset or when returning to the tab (display only; the hardware was already correct).
+- No driver change (build 111): no cable replug needed.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.25)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.25/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="rk6VNz7sW3viMWwQ/hyb+JIzHvRoIrhdryvQSY1PmQ6Lt3MoAWSDgUDO0yRUI3NDYtsl4yUdrUJVjFVoWOkDDw==" length="3851595" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.24</title>
       <pubDate>Thu, 22 Oct 2026 20:33:02 GMT</pubDate>
       <sparkle:version>0.8.24</sparkle:version>
@@ -259,6 +279,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: MCyead0SzszFcdZjEhUd64aQrWeA6eClFl62rhh6cl9wjMcScqp7zX0R7L8Nxu2fd0LnJ1pk5lWd6aKVFmmoCQ==
-length: 19541
+edSignature: dhKsl+nFoKPzg8ENeBCqSnpebVkEvKm1220zHS3NRTzAfKzNv8fK/wxnylAA9DYFgyUcVhvHSS8PKiZ084aZDA==
+length: 20984
 -->
