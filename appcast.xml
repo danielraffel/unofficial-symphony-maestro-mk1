@@ -7,6 +7,30 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.22</title>
+      <pubDate>Thu, 22 Oct 2026 18:58:39 GMT</pubDate>
+      <sparkle:version>0.8.22</sparkle:version>
+      <sparkle:shortVersionString>0.8.22</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.22</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Output Routing now works on ThunderBridge: playback is routed on the ThunderBridge card, as the original Maestro did, so cross-routes such as DAW 1-2 onto Line 3/4 take effect. USB is unchanged.
+- Saved routes are restored after a Symphony power cycle or cable replug.
+- Reset Routing on ThunderBridge restores the straight-through table.
+- Clearing a route (clicking an active cell) no longer crashes Maestro.
+- Two-card units on ThunderBridge: the second card is fed by playback 17-32, as over USB.
+- New driver extension (build 111): one ThunderBridge cable unplug/replug after installing.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.22)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.22/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="4jXLRWV4O+ko9gNrHdxc7bzTSX2+pvhOnXxx0Bqc8fnFl+xpOBjErZfHUJynzZ/1iJW8natkZdWrnKDkArP1Dg==" length="3843297" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.21</title>
       <pubDate>Thu, 22 Oct 2026 07:54:03 GMT</pubDate>
       <sparkle:version>0.8.21</sparkle:version>
@@ -194,6 +218,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: bvujfQwfpZCFm0QM0mW8vlcnldUg1CcWBaiLJkrF6TA85LzImbYfMIh4ym2MlAPaZ3jT2RBrrcv1TqRizYTiAQ==
-length: 14688
+edSignature: YRqrTf+BUQB2kDrILcwiA30LCtWCUJaT+44fZsX4DrarCOhrIHKKKjLtqNXT8rryB5SExkSHy1STq05aDZaaAg==
+length: 16509
 -->
