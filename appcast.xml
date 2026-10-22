@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.24</title>
+      <pubDate>Thu, 22 Oct 2026 20:33:02 GMT</pubDate>
+      <sparkle:version>0.8.24</sparkle:version>
+      <sparkle:shortVersionString>0.8.24</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.24</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- With both USB and Thunderbolt connected, switching the unit from Symphony mode to a USB mode no longer briefly shows "Symphony disconnected" or needs a manual reconnect.
+- No driver change (build 111): no cable replug needed.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.24)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.24/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="yduYfJ1TZuTIP0D7m+35r9RJ5JpqGtCNOaXOdD/7IZ//0Z72P+3UASZjuOItERfGOPnfrKW+2ClAyQx8kIqeBw==" length="3851668" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.23</title>
       <pubDate>Thu, 22 Oct 2026 20:09:50 GMT</pubDate>
       <sparkle:version>0.8.23</sparkle:version>
@@ -239,6 +259,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: JKpBDERtn950dEpYBbIspiYPXzXQH7naf1kYF67IwYmNz/E4qFfnPllRVcOHmxZrnba6pw5MhZUCfAKyPMSnCg==
-length: 18087
+edSignature: MCyead0SzszFcdZjEhUd64aQrWeA6eClFl62rhh6cl9wjMcScqp7zX0R7L8Nxu2fd0LnJ1pk5lWd6aKVFmmoCQ==
+length: 19541
 -->
