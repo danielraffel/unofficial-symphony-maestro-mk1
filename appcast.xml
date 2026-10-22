@@ -7,6 +7,28 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.21</title>
+      <pubDate>Thu, 22 Oct 2026 07:54:03 GMT</pubDate>
+      <sparkle:version>0.8.21</sparkle:version>
+      <sparkle:shortVersionString>0.8.21</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.21</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Both USB and Thunderbolt can stay connected: the Symphony's front-panel mode decides which connection Maestro uses, and switching modes is followed automatically in both directions.
+- Maestro prefers ThunderBridge only when the Symphony actually answers on it, otherwise USB; the status-bar rescan does the same.
+- While on USB, Maestro keeps watching ThunderBridge and moves back to it as soon as it answers.
+- Driver extension unchanged (build 110): no cable replug needed for this update.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.21)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.21/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="QCPjnXm+4dCw4jfWafLS6zjEoYdQ+Xs4eevwfwKU0RK9iSk0qBK8wznacs/K1/q/Ljdx71vY3wDzlqI22fbHCQ==" length="3834772" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.20</title>
       <pubDate>Thu, 22 Oct 2026 06:39:50 GMT</pubDate>
       <sparkle:version>0.8.20</sparkle:version>
@@ -172,6 +194,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: PL8NsZMoW5U6MVLzFH8TbPx0ErAmNhN9DDtgDdeZq/HEhtfv8cZVS3+7CazlBt6IJh/JLpWACDCNZ7NVFNvLDA==
-length: 12968
+edSignature: bvujfQwfpZCFm0QM0mW8vlcnldUg1CcWBaiLJkrF6TA85LzImbYfMIh4ym2MlAPaZ3jT2RBrrcv1TqRizYTiAQ==
+length: 14688
 -->
