@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.28</title>
+      <pubDate>Fri, 23 Oct 2026 18:53:19 GMT</pubDate>
+      <sparkle:version>0.8.28</sparkle:version>
+      <sparkle:shortVersionString>0.8.28</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.28</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- Driver build 112 fixes a kernel panic reported after the ThunderBridge lost power while the Mac was asleep. The driver no longer reads the card's registers while the system is powering down, and on wake it first checks the card is still present before touching it; a unit that lost power now shows as disconnected and comes back on replug instead of panicking the Mac.
+- Driver change (build 112): macOS asks you to approve the updated driver extension again only if it was not already approved.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.28)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.28/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="rCrqLZjuv7WYy+gUNniv2Ig9MCR/9LkKvCaw+3bMAgsUP1QtGs1dwWBwqZl+9iCZ+1Kn67AdY+JJ7MJEn/dxDQ==" length="3854386" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.27</title>
       <pubDate>Thu, 22 Oct 2026 23:04:11 GMT</pubDate>
       <sparkle:version>0.8.27</sparkle:version>
@@ -319,6 +339,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: ZAWBRRNn2B6NNkvWtQOkVApUfb+W/l4k5Wx9JICUp3h+R9rCzAcPxeWKGpuvv/Zh2DoofvZKgGHTwdAlaZ1gBg==
-length: 24057
+edSignature: PzLXColNJEA4lMyuL8k5VM9pS4fSlPreT07baOUxD1vJih5VDGJrR0+FrPNf/fzsNyPHNTjDUqfK5mTC4JLbBQ==
+length: 25781
 -->
