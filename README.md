@@ -35,7 +35,7 @@ Over USB the Mac sees two devices. **Symphony I/O : Maestro USB** is the one to 
 
 ### Microphone permission
 
-On first launch Maestro asks for microphone access. It reads the Symphony's input channels only to draw its input meters; nothing is recorded or stored. On macOS 27 the input meters do not work without it.
+Maestro does not need microphone access. Versions 0.8.26 through 0.8.28 asked for it on first launch under the mistaken belief that macOS 27 required it for the input meters; the meters actually come from the hardware on both ThunderBridge and USB. 0.8.29 removes the request. If you allowed it earlier you can revoke it in **System Settings › Privacy & Security › Microphone**; nothing in Maestro changes either way.
 
 ## Appearance and updates
 
