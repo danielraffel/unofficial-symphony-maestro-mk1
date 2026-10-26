@@ -7,6 +7,27 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.29</title>
+      <pubDate>Mon, 26 Oct 2026 23:00:17 GMT</pubDate>
+      <sparkle:version>0.8.29</sparkle:version>
+      <sparkle:shortVersionString>0.8.29</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.29</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **No more microphone prompt.** 0.8.26 asked for microphone access and claimed macOS 27 required it; that was wrong. Maestro's input meters come from the hardware on both ThunderBridge and USB, so the audio-input entitlement, the usage string, and the input tap are gone. macOS no longer shows the orange microphone indicator or the Mic Mode menu while Maestro is open. If you already allowed it, you can revoke it in System Settings › Privacy & Security › Microphone.
+- Still open: no audio after wake from sleep on ThunderBridge while everything looks connected. Under investigation; not fixed in this build.
+- No driver change (build 112).
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.29)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.29/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="2mqirsvGsE0szTeW2QP+AJ1jq50GoWziDNUkRQltohda40rTj3lxOWSvOL7ktRAQy9XBUFKbZDkGy96l5iFPDg==" length="3857211" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.28</title>
       <pubDate>Fri, 23 Oct 2026 18:53:19 GMT</pubDate>
       <sparkle:version>0.8.28</sparkle:version>
@@ -339,6 +360,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: PzLXColNJEA4lMyuL8k5VM9pS4fSlPreT07baOUxD1vJih5VDGJrR0+FrPNf/fzsNyPHNTjDUqfK5mTC4JLbBQ==
-length: 25781
+edSignature: PfWAzgDo0Fw3FflEPJr/acjSWe90w20Cj2MTnoHoD5Lsu8YfJPNa8RBhQeEXYzNcNhJgZDIYG3t1K86w1n9oDg==
+length: 27655
 -->
