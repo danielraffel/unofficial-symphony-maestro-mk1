@@ -7,6 +7,26 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.31</title>
+      <pubDate>Tue, 27 Oct 2026 07:14:54 GMT</pubDate>
+      <sparkle:version>0.8.31</sparkle:version>
+      <sparkle:shortVersionString>0.8.31</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.31</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **Driver build 114: a powered-off Symphony is detected again, and a Symphony that comes back is re-configured.** 0.8.30's driver took flowing audio interrupts as proof the Symphony was present, but the ThunderBridge keeps producing them with the Symphony switched off, so Maestro stayed Connected and a Symphony switched back on was never re-configured (silence with everything looking connected). The driver now reads the card's Symphony clock-detect bit on every sample and also acts on the card's latched "link was down" bits, re-locking and re-configuring the unit whenever it returns.
+- Driver change (build 114). The new driver takes over on the next ThunderBridge cable replug or restart.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.31)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.31/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="DQBFmu7oKZ19y5fLQaffyfMZDNdhSaiVTlXhQ+UzjuqB4Cobg8VhZOc4D6KJafaxjn3eYGAor/fv2I+d1JuIAQ==" length="3863267" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.30</title>
       <pubDate>Tue, 27 Oct 2026 06:16:38 GMT</pubDate>
       <sparkle:version>0.8.30</sparkle:version>
@@ -381,6 +401,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: gbASeNZubFJOwDutRn2pWmq4EQgtbpk85RrsNVtu9iyvqML6q+oBFSwA5L6G3MK/NPz+MenJBGdOCuWP4MFrAA==
-length: 29822
+edSignature: w6cOltsLUxUrRwy1k0NLiQ1Mdu5TmgyTetc00ttg1eFTaGxCj5u+Z9Hh8ZelbI0UQTJPEe68wL3jd4bXW9ajDw==
+length: 31746
 -->
