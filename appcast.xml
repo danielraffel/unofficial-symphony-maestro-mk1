@@ -7,6 +7,27 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.30</title>
+      <pubDate>Tue, 27 Oct 2026 06:16:38 GMT</pubDate>
+      <sparkle:version>0.8.30</sparkle:version>
+      <sparkle:shortVersionString>0.8.30</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.30</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **ThunderBridge: the driver now watches the Symphony link itself; Maestro no longer polls the hardware every second.** Driver build 113 follows Apple's model: the OS decides presence, and the driver samples the card's own clock-detect bit (every 2 s while the Symphony is off, every 5 s when idle, never while audio is streaming) and re-locks the link when the clock returns. On the developer's Mac the once-a-second traffic coincided with spontaneous Thunderbolt link drops that clicked the Symphony's relays; the new driver puts no steady-state traffic on the tunnel.
+- **Wake from sleep re-validates the link.** If the Thunderbolt tunnel was lost during sleep or the card shows a fault, the driver re-runs link initialization and restarts audio. Aimed at the no-audio-after-wake report; not yet confirmed on the reporting system.
+- Driver change (build 113). The new driver takes over on the next ThunderBridge cable replug or restart.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.30)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.30/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="Vh4zD0KaleXHWpNEIt7eKPhytOlgtaekVs+Oznwg82AwLlOI9F78ue7O+hmoLoLuKThpQlaUzEYu0/BQNsYzAQ==" length="3862469" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.29</title>
       <pubDate>Mon, 26 Oct 2026 23:00:17 GMT</pubDate>
       <sparkle:version>0.8.29</sparkle:version>
@@ -360,6 +381,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: PfWAzgDo0Fw3FflEPJr/acjSWe90w20Cj2MTnoHoD5Lsu8YfJPNa8RBhQeEXYzNcNhJgZDIYG3t1K86w1n9oDg==
-length: 27655
+edSignature: gbASeNZubFJOwDutRn2pWmq4EQgtbpk85RrsNVtu9iyvqML6q+oBFSwA5L6G3MK/NPz+MenJBGdOCuWP4MFrAA==
+length: 29822
 -->
