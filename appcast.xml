@@ -7,6 +7,28 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.33</title>
+      <pubDate>Tue, 27 Oct 2026 21:26:52 GMT</pubDate>
+      <sparkle:version>0.8.33</sparkle:version>
+      <sparkle:shortVersionString>0.8.33</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.33</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **Playback continues across sleep on ThunderBridge.** 0.8.32 restored audio after wake but then asked Core Audio to restart IO, which some players treat as a stop. On an ordinary wake that restart is not needed, so driver build 120 no longer requests it: anything still playing keeps playing through the wake. (Players that pause themselves when the Mac sleeps, such as Apple Music, Spotify and browsers, still need a press of play afterwards; they do the same on the built-in speakers.)
+- **No bursts or loops around a recovery.** The card stays muted until the Symphony link has re-locked, and its playback buffer is zeroed whenever Core Audio stops writing it.
+- **Better diagnostics** in Maestro's logs.
+- Driver change (build 120). The new driver takes over on the next ThunderBridge cable replug or restart.
+
+If you appreciate this work, please consider donating to the [San Francisco Marin Food Bank](https://www.sfmfoodbank.org/).
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.33)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.33/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="BLcFM4ePjcmzISNhbWgiUUhOgmGnVfKSYxkhDx1DiP9wOtM8bvddE/CjSTBqQjZ+PD1yGMTc17uP1LUU00VcCw==" length="3866820" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.32</title>
       <pubDate>Tue, 27 Oct 2026 19:32:59 GMT</pubDate>
       <sparkle:version>0.8.32</sparkle:version>
@@ -421,6 +443,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: /EZlAkefAG91JxWj9kjoT5oWoEv6o/iB+UlZZpgBQK+LTZUAPBvI2lARPiA6WsABL8zG0IgpWo2MMVO14RQLDw==
-length: 33685
+edSignature: Rdu01shIxKuS2ilYB3cVD6L/8iHpCKgTfAuPfbBPyrk8baTCXdFAE/64x7l7HTuFmwtonsLijgUUaRTjAklYCg==
+length: 35727
 -->
