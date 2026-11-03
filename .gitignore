@@ -1,0 +1,41 @@
+# Local configuration and signing inputs
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.key
+*.pem
+*.provisionprofile
+*.mobileprovision
+apple-profiles/
+
+# Generated build and editor output
+.build/
+build/
+DerivedData/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+*.pkg
+*.dmg
+*.app
+*.dext
+*.driver
+*.o
+*.a
+*.dylib
+
+# Private/reference trees must never be imported
+og_source/
+Apps/MaestroMobile/
+Drivers/USB/DriverKit/
+Drivers/USB/Plugin/
+inspect.*/
+pkg-inspect-*/
+
+# Local validation reports
+.ci-status.json
+
+/website/dist/

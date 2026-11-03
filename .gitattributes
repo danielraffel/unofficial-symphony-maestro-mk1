@@ -1,0 +1,2 @@
+# Preserve upstream license notices byte-for-byte.
+docs/third-party/* -whitespace

@@ -1,0 +1,106 @@
+// SymphonyThunderbridge.iig — DriverKit interface definition
+// Phase T0-T7: PCIe + AudioDriverKit driver for ThunderBridge FPGA.
+// Matches PCIe vendor 0x19C2, device 0x2200 (Apogee ThunderBridge).
+// Subclasses IOUserAudioDriver to publish as a CoreAudio device.
+
+#ifndef SymphonyThunderbridge_h
+#define SymphonyThunderbridge_h
+
+#include <Availability.h>
+#include <AudioDriverKit/IOUserAudioDriver.iig>
+#include <DriverKit/IOInterruptDispatchSource.iig>
+#include <DriverKit/IOTimerDispatchSource.iig>
+
+class SymphonyThunderbridge : public IOUserAudioDriver
+{
+public:
+    virtual bool init() override;
+    virtual void free() override;
+
+    virtual kern_return_t Start(IOService * provider) override;
+    virtual kern_return_t Stop(IOService * provider) override;
+
+    // Provider power transitions (dext 112). Suspends all BAR access before the
+    // Thunderbolt tunnel goes down for sleep and re-validates the endpoint in
+    // PCI config space on power-on — a load from the BAR of a unit that lost
+    // power is a fatal bus error on Apple Silicon, not a 0xFFFFFFFF read.
+    virtual kern_return_t SetPowerState(uint32_t powerFlags) override;
+
+    // MSI interrupt handler — called when FPGA fires A2H DMA wrap interrupt.
+    // The TYPE macro generates CreateActionInterruptOccurred() for OSAction creation.
+    virtual void InterruptOccurred(
+        OSAction * action,
+        uint64_t   count,
+        uint64_t   time) TYPE(IOInterruptDispatchSource::InterruptOccurred);
+
+    // AudioDriverKit IO lifecycle — LOCALONLY overrides from IOUserAudioDriver.
+    // Called by CoreAudio host to start/stop timestamp delivery.
+    virtual kern_return_t StartDevice(
+        IOUserAudioObjectID         in_object_id,
+        IOUserAudioStartStopFlags   in_flags) override LOCALONLY;
+    virtual kern_return_t StopDevice(
+        IOUserAudioObjectID         in_object_id,
+        IOUserAudioStartStopFlags   in_flags) override LOCALONLY;
+
+    // IOUserClient factory — creates SymphonyUserClient for vendor commands.
+    // Type kSymphonyUserClientType ('SYMC') → SymphonyUserClient.
+    virtual kern_return_t NewUserClient(
+        uint32_t          type,
+        IOUserClient    **userClient) override;
+
+    // Send a vendor command to the Symphony IO via XLink.
+    // Called by SymphonyUserClient::ExternalMethod.
+    virtual kern_return_t SendVendorCommand(
+        uint8_t         command,
+        uint32_t        value,
+        const uint8_t  *payload,
+        uint16_t        payloadLen) LOCALONLY;
+
+    // Snapshot the card FPGA meter DMA buffer (256 words) into outWords.
+    // Called by SymphonyUserClient::ExternalMethod (kSelectorReadMeters).
+    virtual kern_return_t ReadMeterBuffer(uint32_t *outWords) LOCALONLY;
+
+    // Report the fitted option board in each slot, as read with OptionBoardType
+    // (0xA1) during Start(). outTypes/outValid are 2-element arrays.
+    // Called by SymphonyUserClient::ExternalMethod (kSelectorReadBoardTypes).
+    virtual kern_return_t ReadBoardTypes(uint8_t *outTypes, uint8_t *outValid) LOCALONLY;
+
+    // Read a timing/register snapshot for controlled latency experiments.
+    virtual kern_return_t ReadTimingHealth(uint32_t *outWords) LOCALONLY;
+    // dext 113: driver-owned link watch + the app's zero-bus-traffic presence read.
+    virtual void LinkWatchTimerOccurred(
+        OSAction * action,
+        uint64_t   time) TYPE(IOTimerDispatchSource::TimerOccurred);
+    virtual kern_return_t ReadLinkState(uint32_t *outWords) LOCALONLY;
+
+    // Read a bounded XLink vendor response for app-side property readback.
+    virtual kern_return_t ReadVendorCommand(
+        uint8_t command,
+        uint32_t value,
+        uint8_t *outPayload,
+        uint16_t responseLen) LOCALONLY;
+
+    // Push a clock-source selection (1..5) to the Symphony IO via ClockMode.
+    // Called by SymphonyClockSelectorControl::HandleChangeSelectedValues on the
+    // control's work queue. Coalesces + async-sends on the serial XLink queue.
+    virtual kern_return_t RequestClockSource(uint32_t source) LOCALONLY;
+
+    // Push a phantom-power toggle for a 0-based mic channel to the Symphony IO
+    // via PhantomPower (0xC6). Called by SymphonyPhantomControl on the control's
+    // work queue. Coalesces + async-sends per-channel on the serial XLink queue.
+    virtual kern_return_t RequestPhantom(uint32_t channel, bool on) LOCALONLY;
+
+    // Push a mic-preamp gain level (dB, clamped 0..85) for a 0-based mic channel
+    // to the Symphony IO via MicGain (0xC3). Called by SymphonyMicGainControl on
+    // the control's work queue. Coalesces + async-sends per-channel on the serial
+    // XLink queue.
+    virtual kern_return_t RequestMicGain(uint32_t channel, float decibels) LOCALONLY;
+
+    // Push an optical output format (0=ADAT/SMUX, 1=S/PDIF) for a 0-based option
+    // board to the Symphony IO via OpticalFormat (0x34). Called by
+    // SymphonyOpticalControl on the control's work queue. Coalesces + async-sends
+    // per-board on the serial XLink queue.
+    virtual kern_return_t RequestOpticalFormat(uint32_t board, uint32_t fmt) LOCALONLY;
+};
+
+#endif /* SymphonyThunderbridge_h */

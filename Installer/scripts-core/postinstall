@@ -1,0 +1,31 @@
+#!/bin/bash
+# Postinstall — core (Maestro.app + embedded ThunderBridge driver extension).
+#
+# Deliberately does NOT bootstrap the volume proxy or restart coreaudiod. Those belong to
+# the optional USB component. The Thunderbolt driver publishes its own audio device via
+# AudioDriverKit and needs neither.
+set -euo pipefail
+LOG="/tmp/maestro-installer.log"
+echo "[postinstall/core] $(date)" >> "$LOG"
+
+chown -R root:wheel /Applications/Maestro.app 2>/dev/null || true
+
+# Fail the core install if the ThunderBridge system extension was not actually
+# included in the app payload.  The extension is intentionally dormant on
+# USB-only Macs, but it must be present and valid so Maestro can activate it
+# later when a ThunderBridge PCI device appears.
+DEXT="/Applications/Maestro.app/Contents/Library/SystemExtensions/com.danielraffel.maestro.thunderbridge.dext"
+if [ ! -x "$DEXT/com.danielraffel.maestro.thunderbridge" ] || [ ! -f "$DEXT/Info.plist" ]; then
+    echo "[postinstall/core] ERROR: ThunderBridge driver extension is missing from Maestro.app" | tee -a "$LOG" >&2
+    exit 1
+fi
+if ! codesign --verify --deep --strict "$DEXT" >>"$LOG" 2>&1; then
+    echo "[postinstall/core] ERROR: ThunderBridge driver extension failed code-signature validation" | tee -a "$LOG" >&2
+    exit 1
+fi
+echo "[postinstall/core] Verified embedded ThunderBridge dext" >> "$LOG"
+
+echo "[postinstall/core] Installed /Applications/Maestro.app" >> "$LOG"
+echo "[postinstall/core] Launch Maestro and approve its driver extension in" >> "$LOG"
+echo "                   System Settings > General > Login Items & Extensions" >> "$LOG"
+exit 0

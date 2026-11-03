@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Acknowledgements — Maestro</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #333; }
+  h1 { font-size: 1.4em; font-weight: 600; }
+  h2 { font-size: 1.1em; font-weight: 600; margin-top: 1.5em; }
+  p { margin: 1em 0; }
+  ul { margin: 0.5em 0; padding-left: 1.5em; }
+</style>
+</head>
+<body>
+<h1>Acknowledgements</h1>
+<p>Maestro is built with the help of the following:</p>
+
+<h2>Apogee Electronics</h2>
+<p>Symphony I/O MK I firmware and USB protocol reference from the original Maestro 2 source code.</p>
+
+<h2>Apple Frameworks</h2>
+<ul>
+  <li>SwiftUI — User interface</li>
+  <li>CoreAudio — Audio device communication</li>
+  <li>IOKit — USB hardware access</li>
+  <li>AppKit — macOS system integration</li>
+  <li>AudioServerPlugin — Virtual audio device</li>
+</ul>
+
+<h2>Third-Party Dependencies</h2>
+<p>The desktop app uses Sparkle for software updates. The USB AudioServerPlugin uses libASPL. Their license notices follow.</p>
+
+<h3 style="font-size: 1em; font-weight: 600; margin-top: 1.2em;">libASPL</h3>
+<p>
+  <a href="https://github.com/gavv/libASPL">github.com/gavv/libASPL</a><br>
+  By Victor Gaydov and contributors.<br>
+  Used in the AudioServerPlugin driver to implement the CoreAudio virtual audio device.
+</p>
+<p>License: MIT</p>
+<pre style="white-space:pre-wrap">The MIT License (MIT)
+
+Copyright (c) Victor Gaydov and contributors.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the &quot;Software&quot;), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</pre>
+<p>libASPL includes code derived from Apple's AudioServerPlugin sample code, which is also provided under an MIT-style license (Apple MIT License).</p>
+<h3>Apple sample code notice (2012)</h3><pre style="white-space:pre-wrap">Disclaimer: IMPORTANT:  This Apple software is supplied to you by Apple
+Inc. (&quot;Apple&quot;) in consideration of your agreement to the following
+terms, and your use, installation, modification or redistribution of
+this Apple software constitutes acceptance of these terms.  If you do
+not agree with these terms, please do not use, install, modify or
+redistribute this Apple software.
+
+In consideration of your agreement to abide by the following terms, and
+subject to these terms, Apple grants you a personal, non-exclusive
+license, under Apple&#x27;s copyrights in this original Apple software (the
+&quot;Apple Software&quot;), to use, reproduce, modify and redistribute the Apple
+Software, with or without modifications, in source and/or binary forms;
+provided that if you redistribute the Apple Software in its entirety and
+without modifications, you must retain this notice and the following
+text and disclaimers in all such redistributions of the Apple Software.
+Neither the name, trademarks, service marks or logos of Apple Inc. may
+be used to endorse or promote products derived from the Apple Software
+without specific prior written permission from Apple.  Except as
+expressly stated in this notice, no other rights or licenses, express or
+implied, are granted by Apple herein, including but not limited to any
+patent rights that may be infringed by your derivative works or by other
+works in which the Apple Software may be incorporated.
+
+The Apple Software is provided by Apple on an &quot;AS IS&quot; basis.  APPLE
+MAKES NO WARRANTIES, EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION
+THE IMPLIED WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY AND FITNESS
+FOR A PARTICULAR PURPOSE, REGARDING THE APPLE SOFTWARE OR ITS USE AND
+OPERATION ALONE OR IN COMBINATION WITH YOUR PRODUCTS.
+
+IN NO EVENT SHALL APPLE BE LIABLE FOR ANY SPECIAL, INDIRECT, INCIDENTAL
+OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) ARISING IN ANY WAY OUT OF THE USE, REPRODUCTION,
+MODIFICATION AND/OR DISTRIBUTION OF THE APPLE SOFTWARE, HOWEVER CAUSED
+AND WHETHER UNDER THEORY OF CONTRACT, TORT (INCLUDING NEGLIGENCE),
+STRICT LIABILITY OR OTHERWISE, EVEN IF APPLE HAS BEEN ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+Copyright (C) 2012 Apple Inc. All Rights Reserved.
+</pre>
+<h3>Apple sample code notice (2020)</h3><pre style="white-space:pre-wrap">Copyright © 2020 Apple Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the &quot;Software&quot;), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+</pre>
+<h3>Sparkle 2.10.0 and bundled third-party notices</h3><pre style="white-space:pre-wrap">Copyright (c) 2006-2013 Andy Matuschak.
+Copyright (c) 2009-2013 Elgato Systems GmbH.
+Copyright (c) 2011-2014 Kornel Lesiński.
+Copyright (c) 2015-2017 Mayur Pawashe.
+Copyright (c) 2014 C.W. Betts.
+Copyright (c) 2014 Petroules Corporation.
+Copyright (c) 2014 Big Nerd Ranch.
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the &quot;Software&quot;), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+=================
+EXTERNAL LICENSES
+=================
+
+bspatch.c and bsdiff.c, from bsdiff 4.3 &lt;http://www.daemonology.net/bsdiff/&gt;:
+
+Copyright 2003-2005 Colin Percival
+All rights reserved
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted providing that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS&#x27;&#x27; AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+--
+
+sais.c and sais.h, from sais-lite (2010/08/07) &lt;https://sites.google.com/site/yuta256/sais&gt;:
+
+The sais-lite copyright is as follows:
+
+Copyright (c) 2008-2010 Yuta Mori All Rights Reserved.
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the &quot;Software&quot;), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+--
+
+Portable C implementation of Ed25519, from https://github.com/orlp/ed25519
+
+Copyright (c) 2015 Orson Peters &lt;orsonpeters@gmail.com&gt;
+
+This software is provided &#x27;as-is&#x27;, without any express or implied warranty. In no event will the
+authors be held liable for any damages arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose, including commercial
+applications, and to alter it and redistribute it freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim that you wrote the
+   original software. If you use this software in a product, an acknowledgment in the product
+   documentation would be appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be misrepresented as
+   being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+
+--
+
+SUSignatureVerifier.m:
+
+Copyright (c) 2011 Mark Hamlin.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted providing that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS&#x27;&#x27; AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+</pre>
+</body>
+</html>

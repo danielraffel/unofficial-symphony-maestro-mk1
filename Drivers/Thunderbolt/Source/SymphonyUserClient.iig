@@ -1,0 +1,29 @@
+// SymphonyUserClient.iig — IOUserClient for app ↔ dext control commands.
+// Allows the Maestro app to send vendor commands (mic gain, phantom, routing,
+// etc.) to the Symphony IO via the ThunderBridge dext's XLink control pipe.
+
+#ifndef SymphonyUserClient_h
+#define SymphonyUserClient_h
+
+#include <DriverKit/IOUserClient.iig>
+
+class SymphonyThunderbridge;
+
+class SymphonyUserClient : public IOUserClient
+{
+public:
+    virtual bool init() override;
+    virtual void free() override;
+
+    virtual kern_return_t ExternalMethod(
+        uint64_t                              selector,
+        IOUserClientMethodArguments          *arguments,
+        const IOUserClientMethodDispatch     *dispatch,
+        OSObject                             *target,
+        void                                 *reference) override LOCALONLY;
+
+    // Called by SymphonyThunderbridge::NewUserClient to set the back-pointer.
+    virtual void SetDriver(SymphonyThunderbridge *driver) LOCALONLY;
+};
+
+#endif /* SymphonyUserClient_h */

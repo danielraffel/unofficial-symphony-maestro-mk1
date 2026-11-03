@@ -1,0 +1,44 @@
+// SymphonyClockSelectorControl.iig — push-model clock-source selector control.
+//
+// The stock IOUserAudioSelectorControl surfaces coreaudiod's selection ONLY
+// through HandleChangeSelectedValues (see IOUserAudioSelectorControl.h:186-207):
+// GetCurrentSelectedValues keeps returning the initial value, so polling it from
+// the DMA IRQ (as volume/mute are polled) never observes a selector change. This
+// subclass overrides HandleChangeSelectedValues so the user's Audio MIDI Setup
+// selection is PUSHED to us and forwarded to the driver, which sends ClockMode.
+
+#ifndef SymphonyClockSelectorControl_h
+#define SymphonyClockSelectorControl_h
+
+#include <AudioDriverKit/IOUserAudioSelectorControl.iig>
+
+class SymphonyThunderbridge;
+
+// Must be LOCALONLY: the base IOUserAudioSelectorControl is LOCALONLY, so the
+// subclass carries a real C++ vtable and there is no cross-process RPC bridging.
+// iig still generates the OSMetaClass + New() for it, so OSTypeAlloc works.
+class LOCALONLY SymphonyClockSelectorControl : public IOUserAudioSelectorControl
+{
+public:
+    // Attach our own _IVars (the driver back-pointer). Signature mirrors the base
+    // 5-arg init (IOUserAudioSelectorControl.h:142).
+    virtual bool init(IOUserAudioDriver* in_driver,
+                      bool in_is_settable,
+                      IOUserAudioObjectPropertyElement in_control_element,
+                      IOUserAudioObjectPropertyScope in_control_scope,
+                      IOUserAudioClassID in_control_class_id) override;
+
+    virtual void free() override;
+
+    // PUSH entry point — coreaudiod's selection lands here on the control's own
+    // work queue (neither the IRQ nor the XLink queue). We persist it and hand
+    // the source off to the driver, which coalesces + async-sends ClockMode.
+    virtual kern_return_t HandleChangeSelectedValues(
+        const IOUserAudioSelectorValue* in_control_values,
+        size_t in_num_values) override;
+
+    // Back-pointer setter, mirrors SymphonyUserClient::SetDriver.
+    virtual void SetDriver(SymphonyThunderbridge* in_driver);
+};
+
+#endif /* SymphonyClockSelectorControl_h */

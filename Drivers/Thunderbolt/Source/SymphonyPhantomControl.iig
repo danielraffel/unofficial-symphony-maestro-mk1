@@ -1,0 +1,48 @@
+// SymphonyPhantomControl.iig — push-model phantom-power boolean control.
+//
+// One instance per mic-preamp channel (of an installed MicPre8 option board).
+// coreaudiod delivers the user's on/off toggle to HandleChangeControlValue on
+// the control's own work queue; we persist it (so the toggle sticks) and PUSH
+// the channel + value to the driver, which coalesces and async-sends
+// PhantomPower (0xC6) on the serial XLink queue. Because we OVERRIDE (not
+// extend) HandleChangeControlValue, the base default (which would call
+// SetControlValue) never runs, so we must persist it ourselves — the same
+// discipline as SymphonyClockSelectorControl.
+
+#ifndef SymphonyPhantomControl_h
+#define SymphonyPhantomControl_h
+
+#include <AudioDriverKit/IOUserAudioBooleanControl.iig>
+
+class SymphonyThunderbridge;
+
+// Must be LOCALONLY: the base IOUserAudioBooleanControl is LOCALONLY, so the
+// subclass carries a real C++ vtable and there is no cross-process RPC bridging.
+// iig still generates the OSMetaClass + New() for it, so OSTypeAlloc works.
+class LOCALONLY SymphonyPhantomControl : public IOUserAudioBooleanControl
+{
+public:
+    // Attach our own _IVars (driver back-pointer + hw channel). Signature mirrors
+    // the base 6-arg init (IOUserAudioBooleanControl.h:126-131).
+    virtual bool init(IOUserAudioDriver* in_driver,
+                      bool in_is_settable,
+                      bool in_control_value,
+                      IOUserAudioObjectPropertyElement in_control_element,
+                      IOUserAudioObjectPropertyScope in_control_scope,
+                      IOUserAudioClassID in_control_class_id) override;
+
+    virtual void free() override;
+
+    // PUSH entry point — coreaudiod's toggle lands here on the control's own work
+    // queue (neither the IRQ nor the XLink queue). We persist it and hand the
+    // (channel, value) to the driver, which coalesces + async-sends PhantomPower.
+    virtual kern_return_t HandleChangeControlValue(bool in_control_value) override;
+
+    // Back-pointer setter, mirrors SymphonyClockSelectorControl::SetDriver.
+    virtual void SetDriver(SymphonyThunderbridge* in_driver);
+
+    // 0-based hardware mic channel this control drives (nValue on the wire).
+    virtual void SetChannel(uint32_t in_channel);
+};
+
+#endif /* SymphonyPhantomControl_h */

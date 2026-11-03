@@ -1,0 +1,50 @@
+// SymphonyMicGainControl.iig — push-model mic-preamp gain level control.
+//
+// One instance per mic-preamp channel (of an installed MicPre8 option board),
+// on the Input scope, with a 0..85 dB range (kSymphonyIOMicPre8_MicGain*).
+// coreaudiod delivers the user's fader move to HandleChangeDecibelValue on the
+// control's own work queue; we persist it (so the fader sticks) and PUSH the
+// channel + dB to the driver, which coalesces and async-sends MicGain (0xC3) on
+// the serial XLink queue. Because we OVERRIDE (not extend)
+// HandleChangeDecibelValue, the base default (which would call SetDecibelValue)
+// never runs, so we must persist it ourselves — same discipline as the clock
+// and phantom controls.
+
+#ifndef SymphonyMicGainControl_h
+#define SymphonyMicGainControl_h
+
+#include <AudioDriverKit/IOUserAudioLevelControl.iig>
+
+class SymphonyThunderbridge;
+
+// Must be LOCALONLY: the base IOUserAudioLevelControl is LOCALONLY, so the
+// subclass carries a real C++ vtable and there is no cross-process RPC bridging.
+// iig still generates the OSMetaClass + New() for it, so OSTypeAlloc works.
+class LOCALONLY SymphonyMicGainControl : public IOUserAudioLevelControl
+{
+public:
+    // Attach our own _IVars (driver back-pointer + hw channel). Signature mirrors
+    // the base 7-arg init (IOUserAudioLevelControl.h:150-156).
+    virtual bool init(IOUserAudioDriver* in_driver,
+                      bool in_is_settable,
+                      float in_decibel_value,
+                      IOUserAudioLevelControlRange in_decibel_range,
+                      IOUserAudioObjectPropertyElement in_control_element,
+                      IOUserAudioObjectPropertyScope in_control_scope,
+                      IOUserAudioClassID in_control_class_id) override;
+
+    virtual void free() override;
+
+    // PUSH entry point — coreaudiod's fader move lands here on the control's own
+    // work queue (neither the IRQ nor the XLink queue). We persist it and hand
+    // the (channel, dB) to the driver, which coalesces + async-sends MicGain.
+    virtual kern_return_t HandleChangeDecibelValue(float in_decibel_value) override;
+
+    // Back-pointer setter, mirrors SymphonyClockSelectorControl::SetDriver.
+    virtual void SetDriver(SymphonyThunderbridge* in_driver);
+
+    // 0-based hardware mic channel this control drives (nValue on the wire).
+    virtual void SetChannel(uint32_t in_channel);
+};
+
+#endif /* SymphonyMicGainControl_h */

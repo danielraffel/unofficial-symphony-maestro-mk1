@@ -1,0 +1,35 @@
+#!/bin/bash
+# Postinstall — optional USB support (AudioServerPlugin + MaestroVolumeProxy).
+#
+# Only needed for a USB-connected Symphony I/O. On macOS 26 Apple replaced
+# AppleUSBAudio.kext with usbaudiod, which takes exclusive ownership of USB audio
+# interfaces; the AudioServerPlugin publishes a virtual device so the volume keys and
+# Sound settings slider have something to drive, and MaestroVolumeProxy (a root
+# LaunchDaemon) sends the USB EP0 vendor commands.
+#
+# A Thunderbolt-only machine needs none of this.
+set -euo pipefail
+LOG="/tmp/maestro-installer.log"
+echo "[postinstall/usb] $(date)" >> "$LOG"
+
+chown -R root:wheel /Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver 2>/dev/null || true
+chown root:wheel /usr/local/bin/MaestroVolumeProxy 2>/dev/null || true
+chmod 755 /usr/local/bin/MaestroVolumeProxy 2>/dev/null || true
+chown root:wheel /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist 2>/dev/null || true
+chmod 644 /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist 2>/dev/null || true
+
+PROXY_LABEL="com.danielraffel.Maestro.volumeproxy"
+PROXY_PLIST="/Library/LaunchDaemons/${PROXY_LABEL}.plist"
+launchctl bootout "system/$PROXY_LABEL" 2>/dev/null || true
+sleep 1
+launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || {
+    sleep 2
+    launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || true
+}
+echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
+
+# Loads the AudioServerPlugin. Audio is briefly interrupted.
+killall coreaudiod 2>/dev/null || true
+sleep 3
+echo "[postinstall/usb] coreaudiod restarted" >> "$LOG"
+exit 0

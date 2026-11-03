@@ -10,7 +10,7 @@ Download the latest Unofficial Symphony Maestro (.pkg)
 
 For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
 
-_**Note:** This software has had limited real-world testing. Please read the disclaimers in this README and the license agreement before installing._
+_**Note:** This software has had limited real-world testing. Please read the setup notes and limitations in this README before installing._
 
 ## Overview
 
@@ -110,7 +110,7 @@ If your configuration differs, it may well work, but it has not been verified. T
 
 The installer is Apple signed and notarized, so no security workarounds are needed. Install, launch Maestro, and approve the driver extension when macOS asks (ThunderBridge users). When a release updates the driver extension, one ThunderBridge cable unplug/replug lets the new driver take over; the release notes say when that applies.
 
-The installer includes a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/license.md">conservative license agreement</a> stating that the software is provided **as-is**, without warranty.
+The project source is available under the [MIT license](license.md), without warranty. Third-party components retain their own licenses. Previously published installers retain their original embedded notices.
 
 ## Feedback
 
@@ -129,7 +129,7 @@ If everything works, a <a href="https://github.com/danielraffel/unofficial-symph
 
 This is an independent community project. Apogee does **not** provide support for this software. Please direct all feedback, bug reports, and questions to this project's GitHub Issues page.
 
-Assuming testing continues to go well, I’ll explore open-sourcing the software. There are a few complexities to work through, so that’s a lower priority for now, and I can’t promise it will happen.
+The source is available for community maintenance, learning and further development. Most users should use the prebuilt installer.
 
 ## Acknowledgments
 
@@ -143,3 +143,10 @@ During development I sent countless commands that could easily have bricked my d
 - <a href="https://knowledge.apogeedigital.com/legacy-symphony-i/o-mk-i-guide-for-intel-and-apple-silicon-macs">About Apogee Symphony I/O MK I</a><br>
 - <a href="https://www.soundonsound.com/reviews/apogee-symphony-io">Sound on Sound Review of Apogee Symphony I/O MK I</a>
 - <a href="https://gearspace.com/threads/apogee-symphony-i-o.516748/page-45">Gearspace Thread Announcing project</a>
+
+
+## Source and development
+
+The repository includes the Maestro desktop app, shipping ThunderBridge and USB support, installer resources, and build/install tools. Source is provided for learning, maintenance and further development. We recommend the prebuilt, signed and notarized installer for everyday use.
+
+Building and distributing the complete driver package requires appropriate Apple Developer certificates, provisioning profiles and approved DriverKit entitlements. Private signing keys and profiles are not included. Keep SIP enabled and obtain the required approvals rather than relying on development security bypasses. See the [advanced build instructions](docs/BUILDING.md) for Apple entitlement requirements and private signing setup, and [contributor guidance](AGENTS.md) for release boundaries.

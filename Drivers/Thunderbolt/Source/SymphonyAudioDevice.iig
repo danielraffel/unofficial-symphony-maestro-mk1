@@ -1,0 +1,19 @@
+// SymphonyAudioDevice.iig — custom AudioDriverKit device rate-change hook.
+//
+// AudioDriverKit documents that IOUserAudioDevice::Create must not be used for
+// subclasses. This local subclass lets us publish the rate tuple in
+// HandleChangeSampleRate before the framework completes its host transition.
+#ifndef SymphonyAudioDevice_h
+#define SymphonyAudioDevice_h
+
+#include <AudioDriverKit/IOUserAudioDevice.iig>
+
+class LOCALONLY SymphonyAudioDevice : public IOUserAudioDevice
+{
+public:
+    virtual kern_return_t PerformDeviceConfigurationChange(uint64_t in_change_action,
+                                                            OSObject* in_change_info) override;
+    virtual kern_return_t HandleChangeSampleRate(double in_sample_rate) override;
+};
+
+#endif /* SymphonyAudioDevice_h */

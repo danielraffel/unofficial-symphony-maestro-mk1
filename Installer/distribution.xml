@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Unofficial Symphony Maestro</title>
+    <organization>com.generouscorp.maestro</organization>
+    <options customize="allow" require-scripts="true" hostArchitectures="arm64"/>
+
+    <!-- The ThunderBridge driver extension targets DriverKit 25.2; it cannot load below macOS 26. -->
+    <allowed-os-versions>
+        <os-version min="26.0"/>
+    </allowed-os-versions>
+
+    <!-- Installer screens -->
+    <welcome    file="welcome.html"/>
+    <readme     file="warning.html"/>
+    <license    file="license.html"/>
+    <conclusion file="readme.html"/>
+
+    <choices-outline>
+        <line choice="com.generouscorp.maestro.core"/>
+        <line choice="com.generouscorp.maestro.usb"/>
+    </choices-outline>
+
+    <!-- Always installed. Maestro.app embeds the ThunderBridge driver extension but only
+         activates it when the ThunderBridge PCIe hardware is actually present (detected via
+         IOKit at launch and on hotplug), so USB-only users are never prompted to approve a
+         driver they don't need. -->
+    <choice id="com.generouscorp.maestro.core"
+            title="Maestro (required — includes Thunderbolt support)"
+            description="The Maestro app plus the Symphony ThunderBridge driver. The Thunderbolt driver activates automatically only when a ThunderBridge is connected, so USB-only users are never asked to approve it."
+            visible="true"
+            enabled="false"
+            selected="true">
+        <pkg-ref id="com.generouscorp.maestro.core"/>
+    </choice>
+
+    <!-- On by default (validated working). Installs a root LaunchDaemon + AudioServerPlugin so a
+         USB-connected Symphony I/O gets volume + full control. A Thunderbolt-only machine can
+         uncheck it (harmless if left on, but it publishes an idle "Symphony I/O : Maestro USB"
+         device). Kept a separate, deselectable choice so TB-only users can opt out. -->
+    <choice id="com.generouscorp.maestro.usb"
+            title="USB support"
+            description="AudioServerPlugin and volume proxy service, for a USB-connected Symphony I/O. Installs a background service that runs as root. Uncheck this only if you connect exclusively over Thunderbolt."
+            visible="true"
+            enabled="true"
+            start_selected="true">
+        <pkg-ref id="com.generouscorp.maestro.usb"/>
+    </choice>
+
+    <pkg-ref id="com.generouscorp.maestro.core"
+             version="0.2.2"
+             installKBytes="7000">
+        SymphonyMaestroCore.pkg
+    </pkg-ref>
+
+    <pkg-ref id="com.generouscorp.maestro.usb"
+             version="0.2.2"
+             installKBytes="1500">
+        SymphonyMaestroUSB.pkg
+    </pkg-ref>
+</installer-gui-script>

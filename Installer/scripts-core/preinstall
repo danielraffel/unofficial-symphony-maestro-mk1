@@ -1,0 +1,120 @@
+#!/bin/bash
+# Preinstall script for Symphony Maestro
+# Runs before files are copied to disk.
+# Checks: architecture, macOS version, existing Apogee drivers.
+set -euo pipefail
+
+LOG="/tmp/maestro-installer.log"
+echo "[preinstall] Starting at $(date)" >> "$LOG"
+
+# ── 1. Architecture check ───────────────────────────────────────────────────
+ARCH=$(uname -m)
+if [ "$ARCH" != "arm64" ]; then
+    echo "[preinstall] ERROR: Intel Macs are not supported." >> "$LOG"
+    osascript -e 'display dialog "Symphony Maestro requires Apple Silicon (M1 or later).\n\nThis Mac has an Intel processor and is not supported." buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"' 2>/dev/null || true
+    exit 1
+fi
+echo "[preinstall] Architecture: $ARCH (OK)" >> "$LOG"
+
+# ── 2. macOS version check ──────────────────────────────────────────────────
+OS_VERSION=$(sw_vers -productVersion)
+OS_MAJOR=$(echo "$OS_VERSION" | cut -d. -f1)
+if [ "$OS_MAJOR" -lt 26 ]; then
+    echo "[preinstall] ERROR: macOS $OS_VERSION not supported (Thunderbolt driver needs macOS 26)." >> "$LOG"
+    osascript -e "display dialog \"Symphony Maestro requires macOS 26 (Tahoe) or later.\n\nThis Mac is running macOS $OS_VERSION.\" buttons {\"OK\"} default button \"OK\" with icon stop with title \"Installation Cannot Continue\"" 2>/dev/null || true
+    exit 1
+fi
+echo "[preinstall] macOS version: $OS_VERSION (OK)" >> "$LOG"
+
+# ── 3. Check for active Apogee HAL drivers ───────────────────────────────────
+# These are the HAL plugin bundles that conflict with our AudioServerPlugin.
+# We only check for an active Info.plist — if it's been renamed to
+# .disabled-maestro or .disabled-asp, the driver is already deactivated.
+APOGEE_ACTIVE=false
+APOGEE_DIR="/Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems"
+
+for BUNDLE in "SymphonyIOUSBPlugIn.bundle" "SymphonyPlugin.bundle" "usbApogeePlugin.bundle"; do
+    if [ -f "$APOGEE_DIR/$BUNDLE/Contents/Info.plist" ]; then
+        APOGEE_ACTIVE=true
+        echo "[preinstall] Found active Apogee driver: $BUNDLE" >> "$LOG"
+    fi
+done
+
+if [ "$APOGEE_ACTIVE" = true ]; then
+    echo "[preinstall] BLOCKED: Active Apogee drivers found" >> "$LOG"
+    osascript -e '
+display dialog "Existing Apogee audio drivers were detected.
+
+Symphony Maestro cannot be installed while the original Apogee drivers are active. They will conflict and neither will work correctly.
+
+To fix this:
+1. Download the official Apogee installer from apogee.com
+2. Open the DMG and choose Uninstall
+3. Run this installer again
+
+(Search \"Symphony IO Release 5.5\" at apogeedigital.com)" buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
+    ' 2>/dev/null || true
+    exit 1
+fi
+echo "[preinstall] No active Apogee drivers found (OK)" >> "$LOG"
+
+# ── 4. Kill running Maestro app ─────────────────────────────────────────────
+if pgrep -x MaestroApp > /dev/null 2>&1; then
+    echo "[preinstall] Killing running Maestro app..." >> "$LOG"
+    pkill -x MaestroApp 2>/dev/null || true
+    sleep 1
+fi
+
+# ── 5. Stop running proxy (will be restarted by postinstall) ────────────────
+# Deliberately NOT `pkill`. The daemon is KeepAlive, so killing the process makes
+# launchd immediately spawn a replacement -- which postinstall's `bootout` then
+# kills a second later. That intermediate instance is what removes the Mach
+# service name out from under the AudioServerPlugin's reconnect attempt,
+# delivering XPC_ERROR_CONNECTION_INVALID. The plugin now survives that (see
+# ApogeeDriver.cpp connectToProxy), but manufacturing the race is pointless:
+# `bootout` stops the process AND unregisters it, which is all we want here.
+PROXY_LABEL="com.danielraffel.Maestro.volumeproxy"
+if launchctl print "system/$PROXY_LABEL" > /dev/null 2>&1; then
+    echo "[preinstall] Booting out MaestroVolumeProxy..." >> "$LOG"
+    launchctl bootout "system/$PROXY_LABEL" 2>/dev/null || true
+    sleep 1
+elif pgrep -x MaestroVolumeProxy > /dev/null 2>&1; then
+    # Not registered but running (a manually launched binary) -- kill it.
+    echo "[preinstall] Stopping unregistered MaestroVolumeProxy..." >> "$LOG"
+    pkill -x MaestroVolumeProxy 2>/dev/null || true
+    sleep 1
+fi
+
+# ── 6. Remove any existing Maestro.app before the new payload lands ──────────
+# macOS Installer MERGES pkg payloads over an existing bundle and never prunes files that are
+# absent from the new payload. If a future release removes or renames a bundled file, the merged
+# bundle's code signature no longer validates → Gatekeeper/AMFI kills the app at launch and dext
+# activation silently fails. Remove our old bundle first so every install is clean. Bundle-id
+# guarded so we never delete some other "Maestro.app".
+OLD_APP="/Applications/Maestro.app"
+if [ -d "$OLD_APP" ]; then
+    OLD_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$OLD_APP/Contents/Info.plist" 2>/dev/null || echo "")"
+    if [ "$OLD_ID" = "com.danielraffel.maestro" ]; then
+        echo "[preinstall] Removing existing Maestro.app for a clean install..." >> "$LOG"
+        rm -rf "$OLD_APP"
+    fi
+fi
+
+# Older beta installers registered the embedded extension from a standalone
+# DextInstaller.app. Remove that stale host so the upgraded Maestro app owns the
+# user-facing installation path. Some builds branded the host as
+# "Symphony Thunderbridge" even though its executable was still DextInstaller,
+# so CFBundleName alone is not a reliable migration test. This does not
+# deactivate the already registered extension or change its owner in sysextd.
+OLD_DEXT_APP="/Applications/DextInstaller.app"
+if [ -d "$OLD_DEXT_APP" ]; then
+    OLD_DEXT_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$OLD_DEXT_APP/Contents/Info.plist" 2>/dev/null || echo "")"
+    OLD_DEXT_EXEC="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$OLD_DEXT_APP/Contents/Info.plist" 2>/dev/null || echo "")"
+    if [ ! -L "$OLD_DEXT_APP" ] && [ "$OLD_DEXT_ID" = "com.danielraffel.maestro" ] && [ "$OLD_DEXT_EXEC" = "DextInstaller" ]; then
+        echo "[preinstall] Removing legacy DextInstaller.app host..." >> "$LOG"
+        rm -rf "$OLD_DEXT_APP"
+    fi
+fi
+
+echo "[preinstall] All checks passed, proceeding with installation" >> "$LOG"
+exit 0

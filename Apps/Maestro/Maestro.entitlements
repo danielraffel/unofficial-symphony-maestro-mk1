@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Must exactly match the userclient-access list in the embedded provisioning
+	     profile. A dext bundle ID present here but absent from the profile makes
+	     AMFI kill the app at launch, even when notarized. Re-add .usb only once
+	     the USB dext exists and the profile grants it. -->
+	<key>com.apple.developer.driverkit.userclient-access</key>
+	<array>
+		<string>com.danielraffel.maestro.thunderbridge</string>
+	</array>
+	<key>com.apple.developer.system-extension.install</key>
+	<true/>
+</dict>
+</plist>

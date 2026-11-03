@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {
+    font-family: -apple-system, Helvetica Neue, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #1d1d1f;
+}
+h1 { font-size: 16px; color: #ff3b30; }
+h2 { font-size: 14px; margin-top: 18px; }
+a { color: #007aff; }
+.red { color: #ff3b30; }
+hr { border: none; border-top: 1px solid #d2d2d7; margin: 10px 0; }
+@media (prefers-color-scheme: dark) {
+    body { color: #f5f5f7; }
+    h1 { color: #ff453a; }
+    a { color: #0a84ff; }
+    .red { color: #ff453a; }
+    hr { border-top-color: #424245; }
+}
+</style>
+</head>
+<body>
+
+<p>Before you install, please understand that <span class="red">this is unofficial software: it was not developed, published, or maintained by Apogee.</span> It is a community project built by an independent third party, and it comes with <strong>heightened risk</strong> to your hardware and software. If you choose to install it, you do so <strong>entirely at your own risk</strong>.</p>
+
+<h1>Remove Existing Apogee Software First</h1>
+
+<p>Symphony Maestro <strong>conflicts with the original Apogee drivers</strong>. If both are installed, neither will work correctly. The installer will check and <strong>block installation</strong> if it detects active Apogee drivers.</p>
+
+<h2>How to Check</h2>
+<p>Open Finder and look for:</p>
+<ul>
+<li>Apogee Maestro 2 or Apogee Control in Applications</li>
+<li>Any files in /Library/Audio/Plug-Ins/HAL/Apogee/</li>
+</ul>
+
+<h2>How to Remove</h2>
+<ol>
+<li>Download the official Apogee installer:<br>
+<a href="https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg">Symphony I/O Release 5.5</a></li>
+<li>Open the DMG and choose <strong>Uninstall</strong></li>
+<li>Keep the DMG in case you want to revert later</li>
+<li>Run this installer again</li>
+</ol>
+
+<p><strong>Why Apogee&rsquo;s own installer?</strong> Maestro is an independent project and we don&rsquo;t bundle or maintain Apogee&rsquo;s software. Using <strong>Apogee&rsquo;s own uninstaller</strong> removes the conflicting drivers with the vendor&rsquo;s own tool, and keeping that DMG means you can <strong>reinstall the original Apogee software anytime</strong> if you ever want to go back. We recommend keeping it.</p>
+
+<p>If you've already removed the Apogee software, you can install this software.</p>
+
+</body>
+</html>

@@ -1,0 +1,55 @@
+// SymphonyOpticalControl.iig — push-model optical-format selector control.
+//
+// One instance per fitted OPTICAL option board. AudioDriverKit's stock
+// IOUserAudioSelectorControl surfaces coreaudiod's selection ONLY through
+// HandleChangeSelectedValues (IOUserAudioSelectorControl.h:186-207) —
+// GetCurrentSelectedValues keeps returning the initial value, so polling it from
+// the DMA IRQ never observes a change. This subclass overrides
+// HandleChangeSelectedValues so the user's Audio MIDI Setup selection is PUSHED to
+// us and forwarded to the driver, which coalesces + async-sends OpticalFormat
+// (0x34) on the serial XLink queue. Legacy exposes this as the per-port custom
+// property 'AEof' keyed by element (Port1=elem1/Port2=elem2 —
+// APAudioManagedObject.m:1596-1604); we mirror that with a DataSourceControl
+// on the Output scope, element = board+1 (DataDestination is PlayThrough-scope-only
+// per Apple's AudioHardware.h, so it wouldn't surface on Output). Same discipline as
+// SymphonyClockSelectorControl, plus the phantom's per-board SetBoard() setter.
+
+#ifndef SymphonyOpticalControl_h
+#define SymphonyOpticalControl_h
+
+#include <AudioDriverKit/IOUserAudioSelectorControl.iig>
+
+class SymphonyThunderbridge;
+
+// Must be LOCALONLY: the base IOUserAudioSelectorControl is LOCALONLY, so the
+// subclass carries a real C++ vtable and there is no cross-process RPC bridging.
+// iig still generates the OSMetaClass + New() for it, so OSTypeAlloc works.
+class LOCALONLY SymphonyOpticalControl : public IOUserAudioSelectorControl
+{
+public:
+    // Attach our own _IVars (driver back-pointer + wire board index). Signature
+    // mirrors the base 5-arg init (IOUserAudioSelectorControl.h:142).
+    virtual bool init(IOUserAudioDriver* in_driver,
+                      bool in_is_settable,
+                      IOUserAudioObjectPropertyElement in_control_element,
+                      IOUserAudioObjectPropertyScope in_control_scope,
+                      IOUserAudioClassID in_control_class_id) override;
+
+    virtual void free() override;
+
+    // PUSH entry point — coreaudiod's selection lands here on the control's own
+    // work queue (neither the IRQ nor the XLink queue). We persist it and hand the
+    // (board, format) to the driver, which coalesces + async-sends OpticalFormat.
+    virtual kern_return_t HandleChangeSelectedValues(
+        const IOUserAudioSelectorValue* in_control_values,
+        size_t in_num_values) override;
+
+    // Back-pointer setter, mirrors SymphonyClockSelectorControl::SetDriver.
+    virtual void SetDriver(SymphonyThunderbridge* in_driver);
+
+    // 0-based hardware board index this control drives (nValue on the wire),
+    // mirrors SymphonyPhantomControl::SetChannel.
+    virtual void SetBoard(uint32_t in_board);
+};
+
+#endif /* SymphonyOpticalControl_h */
