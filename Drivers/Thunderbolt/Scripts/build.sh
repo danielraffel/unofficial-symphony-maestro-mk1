@@ -306,6 +306,7 @@ if [ -f "$PROFILE" ]; then
             || { echo "[TB] ERROR: profile validation failed — refusing to embed"; exit 1; }
     fi
     cp "$PROFILE" "$DEXT_DIR/embedded.provisionprofile"
+    chmod 644 "$DEXT_DIR/embedded.provisionprofile"
     echo "[TB] Embedded provisioning profile: $(basename "$PROFILE")"
 else
     echo "[TB] ERROR: required provisioning profile is missing" >&2

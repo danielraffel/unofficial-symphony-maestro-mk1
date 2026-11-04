@@ -248,6 +248,8 @@ echo "  Embedded $DEXT_BUNDLE (v$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVer
 APP_PROFILE="$MAESTRO_APP_PROFILE"
 "$REPO_ROOT/Tools/verify-profile.sh" "$APP_PROFILE" com.danielraffel.maestro developerid
 cp "$APP_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
+# Embedded profiles are public distribution metadata, unlike their private inputs.
+chmod 644 "$APP_BUNDLE/Contents/embedded.provisionprofile"
 echo "  Embedded app provisioning profile"
 
 # 2b. AudioServerPlugin
