@@ -9,7 +9,7 @@ _Note: If you find this useful and you’re motivated to support, please make a 
 
 For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
 
-_**Note:** This software has had limited real-world testing. Please read the setup notes and limitations in this README before installing._
+_This software has had limited real-world testing. Please closely read the setup notes and limitations in the installer before deciding whether you want to use it._
 
 ## Overview
 
