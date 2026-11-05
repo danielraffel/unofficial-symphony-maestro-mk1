@@ -7,7 +7,8 @@ Sparkle production-feed update, or Pages deployment has been performed.
 ## Candidate identity
 
 - Worktree: `prepare/public-source-20261103`
-- Release-preparation commit: `eb006bb0bad1529b681c530c6b0e654d17fb5d27`
+- Source/package build commit: `8816dca8248112e21d21d935cb5c2db872fdcaed`
+- Evidence-record commit: `4439aa6` (documentation only; package bytes are from the source/package commit above)
 - App version: `0.8.34`
 - Package build: `1030`
 - ThunderBridge dext: `0.10.14/119`
