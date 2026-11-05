@@ -12,8 +12,8 @@ Sparkle production-feed update, or Pages deployment has been performed.
 - Package build: `1030`
 - ThunderBridge dext: `0.10.14/119`
 - Local package: `Installer/build/output/UnofficialSymphonyMaestro-0.8.34-b1030.pkg`
-- SHA-256 (stapled package): `eccfd2d3e9d82144dc80178acc4fa9e5adcd91ed450d9d39b4a352c081ae5409`
-- Sparkle package signature (private rehearsal): `q39SHzoykt2/MY4+E609lOn3QgNO2f5lv8MkrqnuWgoOqzi/cR+SGs6VM6fU+ExsQ9pLcey8e+I0qljU0qILBQ==`
+- SHA-256 (stapled package): `f6e82cbf09a8671db8393ea1dfb533790a686cd8ee88c9ae3069ff3f595c302c`
+- Sparkle package signature (private rehearsal): `NGXTyju504vTLKaFzx2rVevZpTPOMBsShZt2Rwx9VDKTaOxzkZdPsLulj9VAmTaElxy1hn1OHIB5pQCPs08HBw==`
 
 The package was built with private Developer ID signing inputs from an
 external environment file, notarized and stapled, installed locally, and the
