@@ -7,8 +7,7 @@ ThunderBridge driver with SIP enabled requires Apple-approved entitlements,
 matching provisioning profiles, and the correct Developer ID certificates.
 Obtaining and configuring these approvals can be complicated. This source is
 available for learning, future maintenance, and developers willing to undertake
-that setup. Keep SIP enabled; disabling platform protections is not the supported
-build or installation workflow.
+that setup.
 
 ## Source layout
 
