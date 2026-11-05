@@ -7,6 +7,25 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.34</title>
+      <pubDate>Thu, 05 Nov 2026 04:14:23 GMT</pubDate>
+      <sparkle:version>0.8.34</sparkle:version>
+      <sparkle:shortVersionString>0.8.34</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.34</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **USB Device Settings now shows Card 2 optical format correctly.** ADAT/SMUX and S/PDIF changes now wait for confirmed hardware readback instead of reverting to a stale value.
+- **First release built from the source code shared in this public repository.**
+- The packaged installer remains the recommended installation path. Building the complete DriverKit package requires your own Apple signing credentials and approved entitlements; see the advanced build instructions.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.34)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.34/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="NGXTyju504vTLKaFzx2rVevZpTPOMBsShZt2Rwx9VDKTaOxzkZdPsLulj9VAmTaElxy1hn1OHIB5pQCPs08HBw==" length="3858138" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.33</title>
       <pubDate>Tue, 27 Oct 2026 21:26:52 GMT</pubDate>
       <sparkle:version>0.8.33</sparkle:version>
@@ -443,6 +462,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: Rdu01shIxKuS2ilYB3cVD6L/8iHpCKgTfAuPfbBPyrk8baTCXdFAE/64x7l7HTuFmwtonsLijgUUaRTjAklYCg==
-length: 35727
+edSignature: x3KsxV4YB9NligwpTqjjUNHYQZo0OlsVQvAkxsFXGRqZcsZU71skOh1YR7w+J1QCvMGK0gWKo9HeMcMKxMvUAg==
+length: 37303
 -->
