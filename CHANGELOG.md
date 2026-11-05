@@ -9,6 +9,7 @@
 
 ### Release notes
 
+- This is the first release prepared and built from the source code shared in this public repository.
 - This release keeps the existing 0.8.x version continuity and ThunderBridge driver build 119.
 - The packaged installer is the recommended installation path. Building from source requires Apple DriverKit entitlements and private signing credentials; see [`docs/BUILDING.md`](docs/BUILDING.md).
 - Sparkle update signing remains controlled by the project maintainer. The public source does not include the private signing key.
