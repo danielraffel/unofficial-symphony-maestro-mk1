@@ -16,6 +16,11 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory website/dist
 Open http://127.0.0.1:8765/. All page assets use relative URLs, so the assembled
 folder can later be published at the project Pages path
 `/unofficial-symphony-maestro-mk1/`. The generated `website/dist` is ignored.
+`website/index.html`, `website/gallery.js`, and `website/images/` are the
+canonical website sources. The build copies them into `website/dist/`; it also
+copies the canonical `docs/screenshots/` files there so the website and README
+share one screenshot set. `website/dist/` is disposable output and should not
+be edited or committed.
 No workflow here automatically deploys the site or changes the production feed.
 Publishing and the existing generouscorp.com Pages/domain configuration require
 separate review. Do not add a project CNAME just to obtain a project subpath.
