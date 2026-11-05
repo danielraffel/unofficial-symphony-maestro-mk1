@@ -7,8 +7,7 @@ ThunderBridge driver with SIP enabled requires Apple-approved entitlements,
 matching provisioning profiles, and the correct Developer ID certificates.
 Obtaining and configuring these approvals can be complicated. This source is
 available for learning, future maintenance, and developers willing to undertake
-that setup. Keep SIP enabled; disabling platform protections is not the supported
-build or installation workflow.
+that setup.
 
 ## Source layout
 
@@ -16,14 +15,11 @@ build or installation workflow.
 - `Drivers/Thunderbolt`: shipping ThunderBridge DriverKit extension.
 - `Drivers/AudioServerPlugin` and `Drivers/VolumeProxy`: shipping USB HAL support
   and hardware volume-key helper, using Apple's USB audio stack.
-- `Shared`: shared protocols and utilities.
 - `Installer`: package assembly, resources and installation scripts.
 - `Tools`: build, verification and diagnostic helpers.
 - `website`: landing-page source; `docs/screenshots`: gallery assets.
 
-The abandoned USB DriverKit experiment and mobile app are not part of the shipped
-product and are not included. Original manufacturer source and private reference
-documents are excluded. Third-party notices are in `docs/third-party`.
+Third-party notices are in `docs/third-party`.
 
 ## Tools and app-only checks
 
@@ -39,14 +35,6 @@ swift build --package-path Apps/Maestro -c release --jobs 4
 
 These commands do not install a driver. A successful app build or simulator test
 does not establish that hardware audio, DriverKit activation or updates work.
-
-The installed AD16 FPGA revision also matters. During development, revision `0x6`
-produced corrupt secondary-board samples at 192 kHz even though the clock reported
-locked; the archived updater identifies revision `0xF` as its normal target. The
-shipping source keeps 192 kHz available, because the behavior is not universal and
-removing the rate would hide the failure rather than fix it. Do not flash firmware
-as part of a normal build: firmware updates are a separate, hardware-specific
-recovery decision.
 
 ## Apple approvals and identities
 
