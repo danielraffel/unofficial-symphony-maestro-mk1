@@ -38,6 +38,16 @@ struct SymphonyIOPropertyMapperTests {
         #expect(request.direction == .read)
     }
 
+    @Test func opticalOutputFormatUsesTheSameBoardCommandAsOpticalInput() throws {
+        let input = try SymphonyIOPropertyMapper.buildReadRequest(
+            for: PropertyAddress(selector: .opticalInFormat, element: 1))
+        let output = try SymphonyIOPropertyMapper.buildReadRequest(
+            for: PropertyAddress(selector: .opticalOutFormat, element: 1))
+        #expect(output.request == input.request)
+        #expect(output.value == input.value)
+        #expect(output.index == input.index)
+    }
+
     @Test func headphone1LevelReadRequest() throws {
         let address = PropertyAddress(selector: .headphone1Level)
         let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
@@ -164,6 +174,15 @@ struct SymphonyIOPropertyMapperTests {
             for: address, value: .float64(48000.0))
         #expect(request.direction == .write)
         #expect(request.request == SymphonyIOCommand.setSampleRate.rawValue)
+    }
+
+    @Test func opticalOutputFormatWriteUsesTheSameBoardCommandAsOpticalInput() throws {
+        let input = try SymphonyIOPropertyMapper.buildWriteRequest(
+            for: PropertyAddress(selector: .opticalInFormat, element: 1), value: .uint32(0))
+        let output = try SymphonyIOPropertyMapper.buildWriteRequest(
+            for: PropertyAddress(selector: .opticalOutFormat, element: 1), value: .uint32(0))
+        #expect(output.request == input.request)
+        #expect(output.data == input.data)
     }
 
     @Test func micGainWrite() throws {

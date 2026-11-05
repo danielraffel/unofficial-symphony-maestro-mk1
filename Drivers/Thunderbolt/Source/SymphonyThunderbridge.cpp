@@ -316,14 +316,6 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  lastWatchGcsr;
     uint32_t  lastWatchXlinkStatus;
     uint32_t  cardReinitCount;
-    // dext 119: configuration-change decision after a recovery is made on WHERE the
-    // current IO run started relative to the DMA restart, not on what was true when
-    // the recovery began (the wake tick and Core Audio's StartIO race either way).
-    uint64_t  startDeviceSerial;        // ++ on every StartDevice (IO thread)
-    uint64_t  reinitStartSerial;        // startDeviceSerial at the last card re-init
-    bool      anchorPendingAtReinit;    // firstTimestampAfterStart at the last re-init
-    bool      reinitSinceLastDecision;  // a re-init ran during this recovery
-    bool      unmuteOnNextStart;        // card stays muted through an IO gap; StartDevice unmutes
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1948,21 +1940,6 @@ static bool CardLostConfiguration(SymphonyThunderbridge_IVars *ivars, uint32_t *
     return !(swapOK && chOK && dmaOK);
 }
 
-// dext 119: the card DMAs the playback buffer continuously; whenever Core Audio
-// is not writing it (IO stopped, an IO gap around a configuration change, the
-// first moments after a DMA restart) its last contents loop on the outputs.
-// dext 120: the buffer is mapped cache-inhibited for DMA; a CPU memset on it
-// faults (EXC_ARM_DA_ALIGN in __bzero — dext 119 crashed in StopDevice at every
-// sleep entry, which is what tore the device down). Zero it through the DMA
-// command's zero operation, the same call Start() uses.
-static void ZeroPlaybackDMABuffer(SymphonyThunderbridge_IVars *ivars, const char *why)
-{
-    if (!ivars || !ivars->h2aDMA) return;
-    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE)) return;
-    ivars->h2aDMA->PerformOperation(kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
-    STLOG("Playback DMA buffer zeroed (%s)", why);
-}
-
 // Runs ON xlinkQueue (no rate transaction can interleave). Mirrors Start()
 // steps 10–29b in order; the XLink re-lock (ConfigureSymphonyLink) follows.
 static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t gcsrSeen)
@@ -1970,10 +1947,6 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     ivars->cardReinitCount++;
-    ivars->reinitStartSerial       = ivars->startDeviceSerial;
-    ivars->anchorPendingAtReinit   = ivars->firstTimestampAfterStart;
-    ivars->reinitSinceLastDecision = true;
-    ZeroPlaybackDMABuffer(ivars, "card re-init");
     STLOG("Card re-init #%u: GCSR=0x%08x lost its programmed state — re-programming IRQ, DMA, "
           "routing, mixer", ivars->cardReinitCount, gcsrSeen);
     // Quiet first: no interrupts, no DMA, clear latched status.
@@ -2063,17 +2036,12 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
         if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
         WriteRegister(dev, mi, kRegGCSR, gcsr);
         ivars->dmaRunning = true;
-        // dext 118: stay MUTED here. Start() unmutes only after the XLink lock;
-        // until ConfigureSymphonyLink has re-locked the bus the DMA stream is
-        // clocked by a bus mid-reset, and with Core Audio IO continuing through
-        // the recovery (dext 117) those samples would otherwise reach the
-        // Symphony's outputs. RunLinkRecoveryOnQueue unmutes after a successful
-        // re-lock; a failed re-lock leaves the card muted until the next attempt.
-        ModifyRegister(dev, mi, kRegClkCtrl, 0,
-                       kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute);
+        IOSleep(10);
+        ModifyRegister(dev, mi, kRegClkCtrl,
+                       kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
         uint32_t verify = 0;
         ReadRegister(dev, mi, kRegGCSR, &verify);
-        STLOG("Card re-init: DMA restarted, card muted until the XLink re-lock completes (GCSR=0x%08x)", verify);
+        STLOG("Card re-init: DMA restarted, unmuted (GCSR=0x%08x)", verify);
     }
 }
 
@@ -2085,7 +2053,11 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         __atomic_store_n(&ivars->linkRecoveryInFlight, false, __ATOMIC_RELEASE);
         return;
     }
-    ivars->reinitSinceLastDecision = false;
+    // dext 117: remember whether Core Audio had already restarted IO and was still
+    // waiting for its first wrap IRQ (true after an ordinary wake: StartDevice ran,
+    // the reset card delivered nothing). Captured BEFORE the re-init, which is what
+    // makes the IRQs flow and clears the flag.
+    const bool anchorPendingAtEntry = ivars->firstTimestampAfterStart;
     {
         uint32_t gcsr = 0;
         if (CardLostConfiguration(ivars, &gcsr)) ReprogramCardAfterReset(ivars, gcsr);
@@ -2156,34 +2128,11 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         // the anchor, exactly as on a normal start. Keep it when IO is not running
         // (clients refused while the link was down need a retry) or when IRQs had
         // already flowed on this start (the DMA restart made that anchor stale).
-        // dext 119: the IO contract is intact — no configuration change — when a
-        // card re-init ran during this recovery and the current IO run either
-        // started AFTER the DMA restart (its first wrap IRQ was the anchor) or had
-        // started before it but was still waiting for its first IRQ (same thing).
-        // Which of the two happens is a race between the wake tick and Core
-        // Audio's StartIO; both are handled. Otherwise (IO not running, a
-        // Symphony free-run recovery with IRQs on a stale anchor) request the
-        // change — and keep the card muted with a zeroed buffer across the IO gap
-        // so nothing stale loops; the next StartDevice unmutes.
         const bool ioRunningNow = __atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE);
-        const bool reinitRan    = ivars->reinitSinceLastDecision;
-        ivars->reinitSinceLastDecision = false;
-        const bool ioStartedAfterReinit = reinitRan && ivars->startDeviceSerial != ivars->reinitStartSerial;
-        const bool anchorFreshAtReinit  = reinitRan && ivars->anchorPendingAtReinit;
-        if (ioRunningNow && reinitRan && (ioStartedAfterReinit || anchorFreshAtReinit)) {
-            IOSleep(10);
-            ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                           kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
-            STLOG("Link recovery: IO running on an anchor taken after the DMA restart "
-                  "(ioStartedAfter=%u anchorFresh=%u) — card unmuted, no configuration change "
-                  "(playback continues)", ioStartedAfterReinit ? 1u : 0u, anchorFreshAtReinit ? 1u : 0u);
+        if (ioRunningNow && anchorPendingAtEntry) {
+            STLOG("Link recovery: IO already running with its anchor pending — no configuration "
+                  "change requested (playback continues)");
         } else {
-            ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl, 0,
-                           kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute);
-            ZeroPlaybackDMABuffer(ivars, "IO gap around configuration change");
-            ivars->unmuteOnNextStart = true;
-            STLOG("Link recovery: requesting configuration change (ioRunning=%u reinit=%u) — card muted "
-                  "until the next StartDevice", ioRunningNow ? 1u : 0u, reinitRan ? 1u : 0u);
             RequestIORestartFromDefaultQueue(ivars, self, "link recovered");
         }
     } else {
@@ -4663,7 +4612,6 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     // Subsequent IRQs increment by kNumSampleFrames.
     ivars->zeroTimestampSampleTime = 0;
     ivars->firstTimestampAfterStart = true;
-    ivars->startDeviceSerial++;   // dext 119
     ivars->ioOpCount = 0;  // Reset diagnostic counter
     // M2: ioRunning is the publication gate between this thread (the AudioDriverKit
     // control queue) and the IRQ queue. Store it with RELEASE so the anchor payload
@@ -4682,17 +4630,6 @@ kern_return_t SymphonyThunderbridge::StartDevice(
 
     STLOG("StartDevice: IO started at %.0f Hz, timestamps will flow from next A2H wrap IRQ",
           ivars->lastSampleRate);
-    if (ivars->unmuteOnNextStart) {
-        // dext 119: a recovery requested a configuration change and left the card
-        // muted so the IO gap played silence, not the stale DMA buffer. IO is back:
-        // start from a zeroed buffer and unmute.
-        ivars->unmuteOnNextStart = false;
-        ZeroPlaybackDMABuffer(ivars, "IO restarted after recovery");
-        IOSleep(10);
-        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                       kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
-        STLOG("StartDevice: card unmuted after recovery");
-    }
     return kIOReturnSuccess;
 }
 
@@ -4711,11 +4648,6 @@ kern_return_t SymphonyThunderbridge::StopDevice(
     // M2: RELEASE store so the IRQ queue promptly observes ioRunning==false and
     // stops touching audioDevice/anchor state before teardown proceeds.
     __atomic_store_n(&ivars->ioRunning, false, __ATOMIC_RELEASE);
-    // dext 119: DMA keeps running while IO is stopped; without this the last
-    // buffer loops on the outputs (the "looping glitch" heard across a recovery's
-    // IO gap). Silence instead.
-    if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE))
-        ZeroPlaybackDMABuffer(ivars, "IO stopped");
 
     // Call super to update IO state
     return super::StopDevice(in_object_id, in_flags);

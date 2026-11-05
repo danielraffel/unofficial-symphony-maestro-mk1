@@ -17,6 +17,14 @@
 	</array>
 	<key>com.apple.developer.driverkit.family.audio</key>
 	<true/>
+
+	<!--
+	  Grants the Maestro app permission to open this dext's IOUserClient. Appears in the
+	  Developer ID profile only once "DriverKit UserClient Access" is enabled on the
+	  com.danielraffel.maestro.thunderbridge App ID — that capability was missing, which is
+	  why the profile carried no userclient-access at all. The portal populates the array
+	  with the container app's bundle ID.
+	-->
 	<key>com.apple.developer.driverkit.userclient-access</key>
 	<array>
 		<string>com.danielraffel.maestro</string>
@@ -24,5 +32,27 @@
 
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
+
+	<!--
+	  com.apple.developer.driverkit.allow-any-userclient-access is REQUIRED for the
+	  Maestro app to open this dext's IOUserClient (mic gain, phantom, routing, clock,
+	  mixer, metering). Without it, the app's IOServiceOpen returns kIOReturnNotPermitted
+	  (0xe00002e2). It is deliberately absent because it cannot be used yet.
+
+	  Tested 2026-07-09 (dext v25): signing the dext with this entitlement while the
+	  embedded Developer ID profile does NOT grant it makes the dext SILENTLY FAIL TO
+	  LAUNCH. Not an AMFI log line, not a kernelmanagerd error, nothing — the dext just
+	  never starts. `systemextensionsctl list` still reports [activated enabled]. The
+	  only symptoms are: no dext process, PCIe node retain count drops 17 -> 12, and a
+	  blinking red LED on the hardware. Reverted in v26.
+
+	  The capability IS enabled on the App ID (DRIVERKIT_ANYUSERCLIENTACCESS_PUB) and the
+	  *Development* profile for the same identifier grants it. The portal omits it when
+	  generating a *Developer ID* profile. Until that is fixed, the dext ships without it
+	  and the app's vendor-command surface is unavailable in production builds.
+
+	  Also note: allow-third-party-userclients is iPadOS-only per Apple's docs. It was in
+	  this file for months doing nothing. Do not add it back.
+	-->
 </dict>
 </plist>

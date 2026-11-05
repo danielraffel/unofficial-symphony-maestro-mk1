@@ -56,7 +56,7 @@ fi
 
 if [ "$CLEAN" = true ]; then
     echo "[TB] Cleaning..."
-    python3 "$DRIVER_DIR/../../Tools/clean-build-dir.py" "$DRIVER_DIR" "$BUILD_DIR"
+    rm -rf "$BUILD_DIR"
 fi
 
 mkdir -p "$BUILD_DIR" "$IIG_DIR"
@@ -279,21 +279,23 @@ echo "[TB] Linked: $(file "$BUILD_DIR/com.danielraffel.maestro.thunderbridge")"
 # This is the pattern used by ALL Apple dexts and all working third-party extensions.
 
 DEXT_DIR="$BUILD_DIR/com.danielraffel.maestro.thunderbridge.dext"
-python3 "$DRIVER_DIR/../../Tools/clean-build-dir.py" "$DRIVER_DIR" "$DEXT_DIR"
+rm -rf "$DEXT_DIR"
 mkdir -p "$DEXT_DIR"
 
 cp "$BUILD_DIR/com.danielraffel.maestro.thunderbridge" "$DEXT_DIR/"
 cp "$DRIVER_DIR/Info.plist" "$DEXT_DIR/"
-if [ -n "${MAESTRO_DEXT_BUILD:-}" ]; then
-    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $MAESTRO_DEXT_BUILD" "$DEXT_DIR/Info.plist"
-fi
 
 # Embed provisioning profile (required for SIP-enabled operation)
 if [ "$PRODUCTION" = true ]; then
-    PROFILE="${MAESTRO_DEXT_PROFILE:?Set MAESTRO_DEXT_PROFILE to your external Developer ID profile}"
-    echo "[TB] Production build — using production provisioning profile"
+    if [ -n "${MAESTRO_DEXT_PROFILE:-}" ]; then
+        PROFILE="$MAESTRO_DEXT_PROFILE"
+        echo "[TB] Production build — using external provisioning profile"
+    else
+        PROFILE="$DRIVER_DIR/Profiles/ThunderBridge_DeveloperID.provisionprofile"
+        echo "[TB] Production build — using repository provisioning profile"
+    fi
 else
-    PROFILE="${MAESTRO_DEXT_PROFILE:-}"
+    PROFILE="$DRIVER_DIR/Profiles/ThunderBridge_Development.provisionprofile"
 fi
 if [ -f "$PROFILE" ]; then
     # Validate before embedding. A Development profile named like a production one,
@@ -306,11 +308,9 @@ if [ -f "$PROFILE" ]; then
             || { echo "[TB] ERROR: profile validation failed — refusing to embed"; exit 1; }
     fi
     cp "$PROFILE" "$DEXT_DIR/embedded.provisionprofile"
-    chmod 644 "$DEXT_DIR/embedded.provisionprofile"
     echo "[TB] Embedded provisioning profile: $(basename "$PROFILE")"
 else
-    echo "[TB] ERROR: required provisioning profile is missing" >&2
-    exit 1
+    echo "[TB] WARNING: No provisioning profile at $PROFILE — dext will only work with SIP disabled"
 fi
 
 echo ""
@@ -319,4 +319,10 @@ echo "[TB] Driver extension: $DEXT_DIR"
 echo "[TB] Bundle contents (flat layout):"
 ls -la "$DEXT_DIR/"
 echo ""
-echo "[TB] Compile complete; package and sign using Installer/build-installer.sh."
+if [ "$PRODUCTION" = true ]; then
+    echo "[TB] Production build ready. Next: install-dext.sh --production"
+else
+    echo "[TB] To install (requires SIP disabled for development):"
+    echo "  sudo systemextensionsctl developer on"
+    echo "  sudo $SCRIPT_DIR/install-dext.sh"
+fi

@@ -9,6 +9,9 @@ const screenshots = [
   ['output-routing', 'Output routing — simulator'],
   ['device-settings', 'Device settings — simulator'],
   ['system-setup', 'System setup — simulator'],
+  ['appearance-light', 'Light appearance — simulator'],
+  ['usb-connection', 'USB connection — up to 96 kHz'],
+  ['maestro-help', 'Built-in Maestro Help'],
   ['input-micpre', '8MicPre controls — simulator'],
   ['micpre-help', 'Microphone preamp help'],
   ['update-available', 'Sparkle update available'],
@@ -54,7 +57,7 @@ function closeGallery() {
 function move(step) { index = (index + step + screenshots.length) % screenshots.length; show(); }
 hero.setAttribute('role', 'button');
 hero.setAttribute('tabindex', '0');
-hero.setAttribute('aria-label', 'View all 12 Maestro screenshots');
+hero.setAttribute('aria-label', 'View all 15 Maestro screenshots');
 hero.setAttribute('aria-haspopup', 'dialog');
 hero.onclick = openGallery;
 hero.onkeydown = event => {
@@ -81,5 +84,5 @@ preview.alt = screenshots[0].caption;
 preview.onerror = () => { hero.textContent = 'View Maestro screenshots'; };
 const hint = document.createElement('span');
 hint.className = 'hint';
-hint.textContent = 'View all 12 screenshots ↗';
+hint.textContent = 'View all 15 screenshots ↗';
 hero.replaceChildren(preview, hint);

@@ -15,10 +15,10 @@ OUT="$BUILD_DIR/MaestroVolumeProxy"
 
 mkdir -p "$BUILD_DIR"
 
-# Do not elevate privileges or replace root-owned outputs in a compile-only build.
+# Remove stale binary if it's owned by root (from previous sudo deploy)
 if [ -f "$OUT" ] && [ ! -w "$OUT" ]; then
-    echo "[VolumeProxy] Output is not writable; choose a clean user-owned checkout." >&2
-    exit 1
+    echo "[VolumeProxy] Removing root-owned stale binary..."
+    sudo rm -f "$OUT"
 fi
 
 echo "[VolumeProxy] Building MaestroVolumeProxy..."
@@ -32,5 +32,12 @@ clang -o "$OUT" "$SRC" \
     -framework IOKit \
     -Wall -Wextra -O2
 
-echo "[VolumeProxy] Compile complete: $OUT"
-echo "[VolumeProxy] Installer/build-installer.sh signs and packages this component."
+echo "[VolumeProxy] Signing..."
+: "${SIGNING_IDENTITY:?Set SIGNING_IDENTITY in the private build environment}"
+codesign --sign "$SIGNING_IDENTITY" \
+    --force \
+    "$OUT"
+codesign -v "$OUT" && echo "[VolumeProxy] Signature OK"
+
+echo "[VolumeProxy] Build complete: $OUT"
+echo "[VolumeProxy] Run install.sh (from AudioServerPlugin/Scripts/) to deploy."

@@ -9,7 +9,7 @@ BUILD_DIR="$PLUGIN_DIR/build"
 
 if [ "${1:-}" = "clean" ]; then
     echo "[ASP] Cleaning build directory..."
-    python3 "$PLUGIN_DIR/../../Tools/clean-build-dir.py" "$PLUGIN_DIR" "$BUILD_DIR"
+    rm -rf "$BUILD_DIR"
 fi
 
 echo "[ASP] Configuring CMake..."
@@ -24,7 +24,7 @@ cmake -G "Unix Makefiles" -B "$BUILD_DIR" -S "$PLUGIN_DIR" \
     -DCMAKE_OSX_ARCHITECTURES=arm64
 
 echo "[ASP] Building..."
-cmake --build "$BUILD_DIR" --config Release --parallel "${MAESTRO_BUILD_JOBS:-4}"
+cmake --build "$BUILD_DIR" --config Release -- -j$(sysctl -n hw.ncpu)
 
 echo "[ASP] Build complete."
 echo "[ASP] Driver bundle: $BUILD_DIR/ApogeeSymIO.driver/"
@@ -36,8 +36,14 @@ if [ -d "$BUILD_DIR/ApogeeSymIO.driver" ]; then
     echo "[ASP] Binary:"
     file "$BUILD_DIR/ApogeeSymIO.driver/Contents/MacOS/ApogeeSymIO" 2>/dev/null || true
 
-    # Packaging signs the freshly built driver with explicit release credentials.
-    # A compile-only build does not install it or access private signing keys.
+    # Sign with Developer ID — required for coreaudiod to load the plugin.
+    # HAL plugins loaded without a valid signature may be silently rejected on macOS 26.
+    echo "[ASP] Signing driver bundle..."
+    : "${SIGNING_IDENTITY:?Set SIGNING_IDENTITY in the private build environment}"
+    codesign --sign "$SIGNING_IDENTITY" \
+        --force --deep \
+        "$BUILD_DIR/ApogeeSymIO.driver"
+    codesign -v "$BUILD_DIR/ApogeeSymIO.driver" && echo "[ASP] Signature OK"
 else
     echo "[ASP] WARNING: Driver bundle not found at expected path"
     find "$BUILD_DIR" -name "ApogeeSymIO*" -type f 2>/dev/null

@@ -1,8 +1,8 @@
 # Unofficial Symphony Maestro for Apogee Symphony I/O MK I
 
-_Note: I don’t have a tip jar, but if you find this useful and you’re motivated to donate, please feel free to make a donation in my name to the [SF-Marin Food Bank](https://www.sfmfoodbank.org). That would certainly mean a lot to me. They’re a great organization and incredibly efficient with their funds._
+_Note: I don’t have a tip jar, but if you find this useful and you’re motivated to donate, please feel free to make a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org). That would certainly mean a lot to me. They’re a great organization and incredibly efficient with their funds._
 
-Modern Apple Silicon support for the Apogee Symphony I/O MK I over **USB and ThunderBridge**, on **macOS 26 (Tahoe) and macOS 27 (Golden Gate)**.
+Modern Apple Silicon support for the Apogee Symphony I/O MK I over **USB and ThunderBridge**, on **macOS 26 (Tahoe) or later**.
 
 **Download:** <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg">
 Download the latest Unofficial Symphony Maestro (.pkg)
@@ -17,38 +17,6 @@ _**Note:** This software has had limited real-world testing. Please read the set
 This project restores support for the **Apogee Symphony I/O MK I** on Apple Silicon Macs. It was developed with **Apogee's knowledge and blessing**, but it is **not affiliated with, supported by, or endorsed by Apogee** in any way. Apogee does not provide support for this software.
 
 Due to the technical approach used, this software **requires an Apple Silicon Mac running macOS 26 or later**. It will **never support Intel Macs or versions of macOS earlier than macOS 26**.
-
-## What's Included
-
-- **Maestro**, a native macOS app for device configuration: inputs, outputs, monitor section, two low-latency mixers, input and output routing with presets, device and system settings
-- A native **ThunderBridge DriverKit driver** (32 channels in and out, 44.1–192 kHz, ADAT and optical output)
-- A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
-- Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
-- Appearance controls with **Auto**, **Light**, and **Dark** modes
-- Optional in-app updates through Sparkle
-
-### Connecting over USB and ThunderBridge
-
-Both connections can stay plugged in. The Symphony's front-panel mode decides which one Maestro uses: in **Symphony** mode audio and control go through ThunderBridge, and in a **USB** mode they go through USB. Switching modes on the front panel is followed automatically.
-
-Over USB the Mac sees two devices. **Symphony I/O : Maestro USB** is the one to use: it carries the hardware volume-key control that the class-compliant **Symphony I/O : USB Audio** device cannot. USB carries 16 channels each way; ThunderBridge carries 32.
-
-### Microphone permission
-
-Maestro does not need microphone access. Versions 0.8.26 through 0.8.28 asked for it on first launch under the mistaken belief that macOS 27 required it for the input meters; the meters actually come from the hardware on both ThunderBridge and USB. 0.8.29 removes the request. If you allowed it earlier you can revoke it in **System Settings › Privacy & Security › Microphone**; nothing in Maestro changes either way.
-
-## Appearance and updates
-
-Maestro follows your Mac by default with **Auto** appearance. You can choose **Light** or **Dark** in **Device Settings › Preferences**; the choice applies only to Maestro and is saved for the next launch.
-
-Updates are downloaded from this repository; the updater collects no telemetry.
-
-<table>
-<tr>
-<td width="50%"><a href="docs/screenshots/update-available.png"><img src="docs/screenshots/update-available.png" alt="Maestro update available dialog"></a><br><sub>Update notifications show the release notes before you install.</sub></td>
-<td width="50%"><a href="docs/screenshots/update-current.png"><img src="docs/screenshots/update-current.png" alt="Maestro up to date dialog"></a><br><sub>Manual checks also report when you are already up to date.</sub></td>
-</tr>
-</table>
 
 ## Screenshots
 
@@ -69,7 +37,29 @@ Updates are downloaded from this repository; the updater collects no telemetry.
 <td width="50%"><a href="docs/screenshots/device-settings.png"><img src="docs/screenshots/device-settings.png" alt="Device Settings"></a><br><sub><b>Device Settings</b> — front-panel meter banks, peripheral prefix, and editable insert labels.</sub></td>
 <td width="50%"><a href="docs/screenshots/system-setup.png"><img src="docs/screenshots/system-setup.png" alt="System Setup"></a><br><sub><b>System Setup</b> — clock and sample rate, word clock divide, meter hold behaviour, and what is installed.</sub></td>
 </tr>
+<tr>
+<td width="50%"><a href="docs/screenshots/usb-connection.png"><img src="docs/screenshots/usb-connection.png" alt="USB connection"></a><br><sub><b>USB connection</b> — USB supports up to 96 kHz; ThunderBridge supports up to 192 kHz where the hardware supports it.</sub></td>
+<td width="50%"><a href="docs/screenshots/maestro-help.png"><img src="docs/screenshots/maestro-help.png" alt="Maestro Help"></a><br><sub><b>Built-in Help</b> — contextual explanations are available throughout Maestro.</sub></td>
+</tr>
 </table>
+
+
+## What's Included
+
+- **Maestro**, a native macOS app for device configuration: inputs, outputs, monitor section, two low-latency mixers, input and output routing with presets, device and system settings
+- A native **ThunderBridge DriverKit driver** (32 channels in and out, 44.1–192 kHz where the installed converter FPGA supports it, ADAT and optical output)
+- A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
+- Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
+- Appearance controls with **Auto**, **Light**, and **Dark** modes
+- Optional in-app updates through Sparkle
+
+### Connecting over USB and ThunderBridge
+
+Both connections can stay plugged in. The Symphony's front-panel mode decides which one Maestro uses: in **Symphony** mode audio and control go through ThunderBridge, and in a **USB** mode they go through USB. Switching modes on the front panel is followed automatically.
+
+Over USB the Mac sees two devices. **Symphony I/O : Maestro USB** is the one to use: it carries the hardware volume-key control that the class-compliant **Symphony I/O : USB Audio** device cannot. USB carries 16 channels each way; ThunderBridge carries 32.
+
+Some older AD16 option-board FPGA revisions report a valid 192 kHz clock but may deliver corrupt samples on the secondary 16-channel path. 192 kHz remains available so the behavior can be diagnosed and so systems that do not exhibit the issue are not unnecessarily restricted. If your unit shows full-scale or otherwise corrupt secondary inputs at 192 kHz, use a lower rate while reporting the exact module and FPGA revision in an issue.
 
 ### Mic Pre
 
@@ -77,19 +67,19 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 
 <a href="docs/screenshots/input-micpre.png"><img src="docs/screenshots/input-micpre.png" alt="Mic Pre input channels" width="70%"></a>
 
-> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views; the Sparkle update dialogs above are from a real update. I don't own an 8MicPre; the Mic Pre controls are built from Apogee's own source and have been exercised by one tester on real hardware (see [Tested Hardware](#tested-hardware)).
+> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views. I don't own an 8MicPre and the Mic Pre controls are based on the documented hardware behavior and have been exercised by one tester on real hardware (see [Tested Hardware](#tested-hardware)).
 
 ## Requirements
 
 - Apple Silicon Mac (M-series)
-- macOS 26 (Tahoe) or macOS 27 (Golden Gate)
+- macOS 26 (Tahoe) or later
 - Apogee Symphony I/O MK I, connected over USB or an Apogee ThunderBridge
 
-_Intel Macs and earlier versions of macOS are not supported. The original Symphony 64 PCIe card (in a Thunderbolt chassis) is not supported yet._
+_Intel Macs and earlier versions of macOS are not supported. The original Symphony 64 PCIe card (in a Thunderbolt chassis) is theoretically supported but untested._
 
 ## Beta Status
 
-This is **beta software** developed by one person. It has been tested on a small number of systems, listed below. If your Mac is mission-critical, test on a secondary machine first.
+This is **beta software** developed by one person. It has been tested on a small number of systems, listed below. If your Mac is mission-critical, you may prefer to test on a secondary machine first.
 
 ## Tested Hardware
 
@@ -104,7 +94,7 @@ Reported working by testers (thank you):
 - **16×16 Analog** over USB, macOS 26 and 27
 - **16×16 Analog** + **8MicPre** over USB, macOS 26
 
-If your configuration differs, it may well work, but it has not been verified. The **2×6** module has not been tested on real hardware.
+If your configuration differs, it may work, but it has not been verified.
 
 ## Installation
 
@@ -145,8 +135,26 @@ During development I sent countless commands that could easily have bricked my d
 - <a href="https://gearspace.com/threads/apogee-symphony-i-o.516748/page-45">Gearspace Thread Announcing project</a>
 
 
+## Appearance and updates
+
+Maestro follows your Mac by default with **Auto** appearance. You can choose **Light** or **Dark** in **Device Settings › Preferences**; the choice applies only to Maestro and is saved for the next launch.
+
+Updates are downloaded from this repository; the updater collects no telemetry.
+
+<table>
+<tr>
+<td width="50%"><a href="docs/screenshots/appearance-light.png"><img src="docs/screenshots/appearance-light.png" alt="Maestro in Light appearance"></a><br><sub>Maestro also supports a clean Light appearance, selected in Device Settings.</sub></td>
+<td width="50%"></td>
+</tr>
+<tr>
+<td width="50%"><a href="docs/screenshots/update-available.png"><img src="docs/screenshots/update-available.png" alt="Maestro update available dialog"></a><br><sub>Update notifications show the release notes before you install.</sub></td>
+<td width="50%"><a href="docs/screenshots/update-current.png"><img src="docs/screenshots/update-current.png" alt="Maestro up to date dialog"></a><br><sub>Manual checks also report when you are already up to date.</sub></td>
+</tr>
+</table>
+
+
 ## Source and development
 
-The repository includes the Maestro desktop app, shipping ThunderBridge and USB support, installer resources, and build/install tools. Source is provided for learning, maintenance and further development. We recommend the prebuilt, signed and notarized installer for everyday use.
+The repository includes the Maestro desktop app, shipping ThunderBridge and USB support, installer resources, and build/install tools. Source is provided for learning, maintenance and further development. **We strongly recommend the prebuilt, signed and notarized installer for everyday use.**
 
-Building and distributing the complete driver package requires appropriate Apple Developer certificates, provisioning profiles and approved DriverKit entitlements. Private signing keys and profiles are not included. Keep SIP enabled and obtain the required approvals rather than relying on development security bypasses. See the [advanced build instructions](docs/BUILDING.md) for Apple entitlement requirements and private signing setup, and [contributor guidance](AGENTS.md) for release boundaries.
+**Building and distributing the complete driver package requires appropriate Apple Developer certificates, provisioning profiles and approved DriverKit entitlements.** Private signing keys and profiles are not included. Keep SIP enabled and obtain the required approvals rather than relying on development security bypasses. Testing and development with SIP disabled is not recommended. See the [advanced build instructions](docs/BUILDING.md) for Apple entitlement requirements and private signing setup, and [contributor guidance](AGENTS.md) for release boundaries.

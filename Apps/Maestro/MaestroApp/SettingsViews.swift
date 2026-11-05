@@ -431,7 +431,26 @@ struct DeviceSettingsView: View {
         let address = PropertyAddress(selector: opticalFormatSelector(card: card), element: card)
         do {
             try await device.setProperty(address, value: .uint32(format))
-            let actual = try await device.getProperty(address).asUInt32
+            // USB acknowledges the vendor write before the card's optical
+            // register is always visible to the next read.  A single
+            // immediate read can therefore put the picker back on the old
+            // value while the menu still shows the user's new checkmark.
+            // Poll briefly for the confirmed value instead of presenting a
+            // transiently stale readback as truth.
+            var actual: UInt32?
+            for attempt in 0..<4 {
+                if attempt > 0 {
+                    try await Task.sleep(for: .milliseconds(75))
+                }
+                if let value = try await device.getProperty(address).asUInt32,
+                   value <= 1 {
+                    actual = value
+                    if value == format { break }
+                }
+            }
+            guard let actual else {
+                throw DeviceConnectionError.transportError("Optical format readback was unavailable")
+            }
             guard settingsLoadID == loadID else { return }
             setOpticalReadback(actual, card: card)
             errorMessage = actual == format ? nil : "Card \(card + 1) did not confirm the requested optical format."

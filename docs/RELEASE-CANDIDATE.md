@@ -1,0 +1,82 @@
+# Local release candidate
+
+This file records the state of the local public-source candidate. It is a
+review aid, not a release announcement. No GitHub push, release upload,
+Sparkle production-feed update, or Pages deployment has been performed.
+
+## Candidate identity
+
+- Worktree: `prepare/public-source-20261103`
+- App version: `0.8.34`
+- Package build: `1030`
+- ThunderBridge dext: `0.10.14/119`
+- Local package: `Installer/build/output/UnofficialSymphonyMaestro-0.8.34-b1030.pkg`
+- SHA-256 (stapled package): to be recorded after final review; this is a local candidate only.
+
+The package was built with private Developer ID signing inputs from an
+external environment file, notarized and stapled, installed locally, and the
+ThunderBridge extension was observed as activated and enabled. The local
+install restored the ability to select 192 kHz. The known 192 kHz secondary
+input corruption remains an open hardware/driver issue and is not changed by
+this release-preparation work.
+
+## Checks completed
+
+- `python3 Tools/check-public-source.py`
+- `python3 Tools/check-versions.py`
+- `git diff --check`
+- Swift package tests: 559 tests across 32 suites
+- Production DriverKit compile and link
+- Signed package assembly
+- Local website assembly with `python3 Tools/build-website.py`
+- Private Sparkle package-signature rehearsal remains a separate final gate;
+  no production appcast or release feed was changed.
+
+## Package comparison
+
+The source baseline is the private release-correlated `0.8.33` source commit
+(`b1873c2882a18496dd93aa3453acec38545cb013`); this candidate only bumps the
+app/package/dext versions and selects the external private production profile
+needed for SIP-enabled DriverKit activation. It is not expected to be
+byte-identical to an older signed package because signing timestamps, build
+metadata and version changes differ.
+
+Private keys, provisioning profiles, signing configuration, original
+manufacturer source, private documentation, temporary inspection directories,
+and the abandoned mobile/USB-DriverKit experiments are outside the tracked
+public source boundary.
+
+The current index and all reachable Git history were also checked for the
+excluded private directory names and credential filenames; no matches were
+found.
+
+## Open engineering gates
+
+### ThunderBridge 192 kHz / AD16
+
+An older AD16 FPGA revision (`0x6`) can report a locked 192 kHz clock while
+the secondary input bank delivers corrupt/full-scale samples. The source keeps
+192 kHz available; it is not removed as a workaround. The explicit vendor
+sample-rate command experiment was removed because it was unproven and did not
+establish a fix. Root cause and a source-level fix remain open.
+
+### 8MicPre
+
+The reported issues (reference-level mapping, variable-gain/phase controls,
+and software-return/master mixer behavior) remain open. They require targeted
+hardware or signal-path verification before changing the implementation.
+
+### Visual review
+
+The website/gallery builds locally. Screenshots are simulator captures where
+noted in the README. The gallery uses CSS `drop-shadow`, so transparent-window
+captures render with natural corners; `output.png` is still an opaque capture
+and should be replaced with a fresh simulator capture if Daniel wants every
+gallery item to have the same silhouette.
+
+## Publication gate
+
+Do not publish this candidate until Daniel reviews the source audit, package,
+screenshots, and the two hardware issue decisions. A Sparkle rehearsal must use
+a private test feed and a separately generated signature; the production
+appcast must remain unchanged.

@@ -336,7 +336,7 @@ public enum SymphonyIOPropertyMapper {
                 channel: channel, isOutput: isOutput)
 
         // Digital I/O — element selects board (0=primary, 1=secondary)
-        case .opticalInFormat:
+        case .opticalInFormat, .opticalOutFormat:
             return SymphonyIORequestBuilder.getOpticalFormat(board: UInt16(address.element))
         case .spdifReplaceID:
             return SymphonyIORequestBuilder.getSPDIFCoaxReplaceInput(board: UInt16(address.element))
@@ -766,7 +766,7 @@ public enum SymphonyIOPropertyMapper {
             )
 
         // Digital I/O — element selects board (0=primary, 1=secondary)
-        case .opticalInFormat:
+        case .opticalInFormat, .opticalOutFormat:
             guard let raw = value.asUInt32 else {
                 throw DeviceConnectionError.typeMismatch(expected: "UInt32", got: "\(value)")
             }
@@ -920,7 +920,7 @@ public enum SymphonyIOPropertyMapper {
 
         // Single-byte UInt32 values
         case .micGain, .softLimit, .analogIOType, .digitalRefLevel,
-             .opticalInFormat, .spdifReplaceID, .spdifMirrorID,
+             .opticalInFormat, .opticalOutFormat, .spdifReplaceID, .spdifMirrorID,
              .deviceMode, .speakerOutputMode, .groupID,
              .primaryBoardType, .secondaryBoardType:
             guard let byte = data.first else {

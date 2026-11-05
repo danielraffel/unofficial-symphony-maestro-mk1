@@ -75,7 +75,7 @@ if [ -z "${INSTALLER_IDENTITY:-}" ]; then
 fi
 echo "Signing identity (pkg): $INSTALLER_IDENTITY"
 
-TEAM_ID="${TEAM_ID:-95CX6P84C4}"
+: "${TEAM_ID:?Set TEAM_ID in the private build environment}"
 
 # Version numbering is explicit and independent of repository history length.
 BUILD_NUM="${BUILD_NUM:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buildNumber"])' "$REPO_ROOT/Tools/versions.json")}"
@@ -312,6 +312,7 @@ cat > "$MAESTRO_ENTITLEMENTS" << 'PLIST'
     <key>com.apple.developer.driverkit.userclient-access</key>
     <array>
         <string>com.danielraffel.maestro.thunderbridge</string>
+        <string>com.danielraffel.maestro.usb</string>
     </array>
     <key>com.apple.developer.system-extension.install</key>
     <true/>

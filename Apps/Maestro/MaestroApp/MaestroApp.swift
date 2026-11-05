@@ -258,24 +258,38 @@ struct MaestroApp: App {
                 Divider()
 
                 Button("Terms of Service") {
-                    openBundledFile("Terms", extension: "html")
+                    openBundledOrRepoFile("Terms", extension: "html", repoSubpath: "Apps/Maestro/MaestroApp/Resources")
                 }
                 Button("Privacy Policy") {
-                    openBundledFile("Privacy", extension: "html")
+                    openBundledOrRepoFile("Privacy", extension: "html", repoSubpath: "Apps/Maestro/MaestroApp/Resources")
                 }
                 Button("Acknowledgements") {
-                    openBundledFile("Acknowledgements", extension: "html")
+                    openBundledOrRepoFile("Acknowledgements", extension: "html", repoSubpath: "Apps/Maestro/MaestroApp/Resources")
                 }
             }
         }
 
     }
 
-    /// Open a resource from the installed app or the Swift package resource bundle.
-    private func openBundledFile(_ name: String, extension ext: String) {
-        if let url = Bundle.main.url(forResource: name, withExtension: ext)
-            ?? Bundle.module.url(forResource: name, withExtension: ext) {
+    /// Open a file from the app bundle (deployed builds) or repo (dev builds).
+    private func openBundledOrRepoFile(_ name: String, extension ext: String, repoSubpath: String) {
+        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
             NSWorkspace.shared.open(url)
+            return
+        }
+
+        // In an unbundled development run, look for the checkout from the
+        // current working directory without assuming a particular username
+        // or private checkout location.
+        var directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        for _ in 0..<5 {
+            let repoURL = directory.appendingPathComponent(repoSubpath)
+                .appendingPathComponent("\(name).\(ext)")
+            if FileManager.default.fileExists(atPath: repoURL.path) {
+                NSWorkspace.shared.open(repoURL)
+                return
+            }
+            directory.deleteLastPathComponent()
         }
     }
 }

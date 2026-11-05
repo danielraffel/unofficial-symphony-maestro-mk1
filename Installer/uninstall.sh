@@ -104,7 +104,8 @@ if systemextensionsctl list 2>/dev/null | grep -q "$DEXT_ID"; then
     # `systemextensionsctl uninstall` only works with developer mode on (SIP disabled). On a normal
     # SIP-enabled Mac it fails harmlessly — macOS requires the user to remove driver extensions from
     # System Settings — so we detect that and print instructions.
-    systemextensionsctl uninstall 95CX6P84C4 "$DEXT_ID" 2>/dev/null || true
+    TEAM_ID=$(codesign -dvv "$APP/Contents/Library/SystemExtensions/$DEXT_ID.dext" 2>&1 | awk -F= '/TeamIdentifier=/{print $2; exit}')
+    [ -n "$TEAM_ID" ] && systemextensionsctl uninstall "$TEAM_ID" "$DEXT_ID" 2>/dev/null || true
     sleep 1
     if systemextensionsctl list 2>/dev/null | grep -q "$DEXT_ID"; then
         DEXT_NEEDS_MANUAL=1

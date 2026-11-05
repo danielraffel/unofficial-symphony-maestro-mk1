@@ -23,7 +23,7 @@ exec > >(tee "$OUT") 2>&1
 
 echo "==============================================================="
 echo " DriverKit extension evidence capture — build: $LABEL"
-echo " Team 95CX6P84C4"
+echo " Team ID is read from the installed extension; no signing identity is assumed."
 echo "==============================================================="
 echo
 echo "--- Environment"

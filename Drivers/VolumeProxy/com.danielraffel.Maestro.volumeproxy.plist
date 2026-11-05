@@ -39,7 +39,7 @@
         between the plugin's write head and the last frame this callback needed.
         It must stay >= 0 while audio is playing; negative means we read a slot
         before it was written, which is audible as a lap-old splice rather than
-        silence. depth should sit flat near D; under the old open-loop FIFO it
+        silence. depth should sit flat near D -- under the old open-loop FIFO it
         wandered the full 32768-frame ring and pegged for over an hour at a time.
 
         Remove this key to silence it in normal use.

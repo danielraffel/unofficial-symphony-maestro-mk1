@@ -40,6 +40,14 @@ swift build --package-path Apps/Maestro -c release --jobs 4
 These commands do not install a driver. A successful app build or simulator test
 does not establish that hardware audio, DriverKit activation or updates work.
 
+The installed AD16 FPGA revision also matters. During development, revision `0x6`
+produced corrupt secondary-board samples at 192 kHz even though the clock reported
+locked; the archived updater identifies revision `0xF` as its normal target. The
+shipping source keeps 192 kHz available, because the behavior is not universal and
+removing the rate would hide the failure rather than fix it. Do not flash firmware
+as part of a normal build: firmware updates are a separate, hardware-specific
+recovery decision.
+
 ## Apple approvals and identities
 
 Read Apple's [entitlement documentation](https://developer.apple.com/documentation/bundleresources/entitlements/)

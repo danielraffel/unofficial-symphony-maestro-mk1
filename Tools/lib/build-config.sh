@@ -9,4 +9,8 @@ if [ -n "${MAESTRO_ENV_FILE:-}" ]; then
 fi
 export MAESTRO_BUILD_JOBS="${MAESTRO_BUILD_JOBS:-4}"
 case "$MAESTRO_BUILD_JOBS" in ''|*[!0-9]*|0) echo "MAESTRO_BUILD_JOBS must be positive" >&2; exit 1;; esac
-export TEAM_ID="${TEAM_ID:-95CX6P84C4}"
+if [ -z "${TEAM_ID:-}" ]; then
+    echo "TEAM_ID must be set in the private build environment" >&2
+    exit 1
+fi
+export TEAM_ID

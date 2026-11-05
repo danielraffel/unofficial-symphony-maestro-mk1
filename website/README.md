@@ -1,7 +1,7 @@
 # Landing page
 
 This preserves the supplied landing-page design and uses an explicit gallery of
-all twelve repository screenshots. Device-control images are simulator views;
+all fifteen repository screenshots. Device-control images are simulator views;
 update dialogs document Sparkle. Screenshot approval is separate from gallery
 implementation.
 
