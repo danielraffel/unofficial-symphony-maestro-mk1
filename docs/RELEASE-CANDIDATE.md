@@ -7,11 +7,13 @@ Sparkle production-feed update, or Pages deployment has been performed.
 ## Candidate identity
 
 - Worktree: `prepare/public-source-20261103`
+- Release-preparation commit: `eb006bb0bad1529b681c530c6b0e654d17fb5d27`
 - App version: `0.8.34`
 - Package build: `1030`
 - ThunderBridge dext: `0.10.14/119`
 - Local package: `Installer/build/output/UnofficialSymphonyMaestro-0.8.34-b1030.pkg`
-- SHA-256 (stapled package): to be recorded after final review; this is a local candidate only.
+- SHA-256 (stapled package): `eccfd2d3e9d82144dc80178acc4fa9e5adcd91ed450d9d39b4a352c081ae5409`
+- Sparkle package signature (private rehearsal): `q39SHzoykt2/MY4+E609lOn3QgNO2f5lv8MkrqnuWgoOqzi/cR+SGs6VM6fU+ExsQ9pLcey8e+I0qljU0qILBQ==`
 
 The package was built with private Developer ID signing inputs from an
 external environment file, notarized and stapled, installed locally, and the
@@ -28,9 +30,13 @@ this release-preparation work.
 - Swift package tests: 559 tests across 32 suites
 - Production DriverKit compile and link
 - Signed package assembly
+- Package notarization, stapling, and validation accepted
+- Local install through the privileged package wrapper succeeded
+- USB hardware validation: Card 2 optical format appears and remains selectable after ADAT/SMUX ↔ S/PDIF changes
 - Local website assembly with `python3 Tools/build-website.py`
-- Private Sparkle package-signature rehearsal remains a separate final gate;
-  no production appcast or release feed was changed.
+- Private Sparkle package-signature rehearsal and verification
+- Production `appcast.xml` unchanged; checksum:
+  `3d1962a748e43b8133a758ee7747928bed72e7ab34b38e6a04ad5c4ec94919fb`
 
 ## Package comparison
 
@@ -39,7 +45,9 @@ The source baseline is the private release-correlated `0.8.33` source commit
 app/package/dext versions and selects the external private production profile
 needed for SIP-enabled DriverKit activation. It is not expected to be
 byte-identical to an older signed package because signing timestamps, build
-metadata and version changes differ.
+metadata and version changes differ. The USB optical-format mapper/readback
+fix is an intentional source difference; fresh signing and notarization also
+necessarily change package bytes.
 
 Private keys, provisioning profiles, signing configuration, original
 manufacturer source, private documentation, temporary inspection directories,
