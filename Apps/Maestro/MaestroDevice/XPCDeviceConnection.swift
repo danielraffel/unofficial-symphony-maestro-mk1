@@ -532,8 +532,23 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         // Write-only properties: return cached values.
         // These have no USB read opcode — the XMOS firmware only accepts writes.
         if SymphonyIOPropertyMapper.writeOnlySelectors.contains(address.selector) {
+            // Peak hold and over hold can be read from the unit, which is the
+            // truth after a power cycle or a change made elsewhere. The saved
+            // value is only the answer when the unit does not give one.
+            if Self.readFromUnitWhenPossible.contains(address.selector),
+               let live = try? await readFromUnit(address) {
+                updateCacheForWriteOnly(address, value: live)
+                return live
+            }
             return getCachedWriteOnly(address)
         }
+
+        return try await readFromUnit(address)
+    }
+
+    static let readFromUnitWhenPossible: Set<AudioPropertySelector> = [.peakHoldMode, .oversHoldMode]
+
+    private func readFromUnit(_ address: PropertyAddress) async throws -> PropertyValue {
 
         let usbRequest = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
 

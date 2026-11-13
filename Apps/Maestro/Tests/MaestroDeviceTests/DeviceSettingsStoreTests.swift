@@ -281,6 +281,40 @@ struct DeviceSettingsStoreTests {
         #expect(transport.setPropertyCalls.count == 2)
     }
 
+    /// The unit is the truth for Peak Hold and Over Hold when it answers.
+    /// 0xDE reply: [meter bank 1, meter bank 2, over hold, peak hold].
+    @Test("USB: Peak Hold and Over Hold are read from the unit")
+    func usbReadsHoldModesFromUnit() async throws {
+        let store = DeviceSettingsStore()
+        store.record(.uint32(0), for: Self.peak)
+        let transport = MockXPCTransport()
+        transport.nextReply = XPCPropertyReply(status: 0, data: Data([1, 0, 3, 2]))
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        #expect(try await conn.getProperty(Self.peak) == .uint32(2))
+        #expect(try await conn.getProperty(PropertyAddress(selector: .oversHoldMode)) == .uint32(3))
+        #expect(transport.getPropertyCalls.allSatisfy {
+            $0.bRequest == SymphonyIOCommand.getCurrentPreferenceSettings.rawValue })
+    }
+
+    /// A failed, short or nonsense reply must not be shown as a setting.
+    @Test("USB: an unusable hold-mode reply falls back to the saved value")
+    func usbHoldModeFallsBackToSaved() async throws {
+        let store = DeviceSettingsStore()
+        store.record(.uint32(1), for: Self.peak)
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        transport.nextReply = XPCPropertyReply(status: 0, data: Data([0]))            // short
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+        transport.nextReply = XPCPropertyReply(status: 0, data: Data([0xFF, 0xFF, 0xFF, 0xFF]))  // dead EP0
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+        transport.nextReply = XPCPropertyReply(status: -1, data: Data())              // failed
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+        transport.nextError = DeviceConnectionError.transportError("gone")
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+    }
+
     @Test("USB: nothing saved means nothing written on connect")
     func usbReplayWithNothingSaved() async {
         let transport = MockXPCTransport()
