@@ -40,6 +40,19 @@ struct FrontPanelSyncTests {
         #expect(reading("00 00 bb 80 01 01") == nil)
     }
 
+    /// The on-screen knobs run 0 to -64 dB for the speaker and 0 to -127 dB for
+    /// the headphones; the readings must cover the same ranges.
+    @Test("headphone levels run to -127 dB, the speaker to -64 dB")
+    func ranges() throws {
+        var sync = FrontPanelSync()
+        let hp = try #require(reading("00 00 bb 80 01 01 00 00 00 7f 01 00"))
+        #expect(sync.changes(for: hp) == [.level(.headphone1, -127, settled: false)])
+        let hp2 = try #require(reading("00 00 bb 80 01 01 00 00 01 41 01 00"))
+        #expect(sync.changes(for: hp2) == [.level(.headphone2, -65, settled: false)])
+        #expect(reading("00 00 bb 80 01 01 00 00 02 40 01 00")?.selectionAttenuation == 64)
+        #expect(reading("00 00 bb 80 01 01 00 00 00 80 01 00") == nil)   // headphone 128
+    }
+
     @Test("request is vendor read 0x28, wValue 0, wIndex 1, 12 bytes")
     func request() {
         let r = SymphonyIOParameterUpdates.readRequest

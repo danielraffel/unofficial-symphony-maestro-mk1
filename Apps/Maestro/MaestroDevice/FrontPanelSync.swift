@@ -32,7 +32,8 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
     /// What the encoder is controlling. Nil for a mic pre (3-10) or an unknown
     /// index: there is nothing on screen for this sync to move.
     public let selection: Selection?
-    /// Attenuation of the selected output in dB, 0 (loudest) to 64.
+    /// Attenuation of the selected output in dB, from 0 (loudest) to 64 for the
+    /// speaker or 127 for a headphone.
     public let selectionAttenuation: UInt8
     public let popupNeedsUpdate: Bool
     public let metersCleared: Bool
@@ -47,8 +48,14 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
         let b = [UInt8](data.prefix(Self.byteCount))
         measuredSampleRate = (UInt32(b[0]) << 24) | (UInt32(b[1]) << 16) | (UInt32(b[2]) << 8) | UInt32(b[3])
         guard (32_000...200_000).contains(measuredSampleRate),
-              b[4] <= 1, b[10] <= 1, b[11] <= 1, b[9] <= 64,
+              b[4] <= 1, b[10] <= 1, b[11] <= 1,
               let mute = MuteAll(rawValue: b[7]) else { return nil }
+        // The speaker output attenuates 0-64 dB, the headphones 0-127
+        // (`SymphonyIOVendorSpecific.h:112-129`), the same ranges as the
+        // on-screen knobs. A value outside the selected output's range is not a
+        // reading.
+        let selected = Selection(rawValue: b[8])
+        guard b[9] <= (selected == .speaker ? 64 : 127) else { return nil }
         externalClockLocked = b[4] == 1
         clockSource = b[5]
         boardClockSource = b[6]
@@ -79,7 +86,7 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
 /// - Mute-all and unmute-all are one-shot pulses, applied on their rising edge.
 public struct FrontPanelSync: Sendable {
     public enum Change: Sendable, Equatable {
-        /// Level in dB (0 down to -64) for one output. `settled` is true for
+        /// Level in dB for one output: 0 down to -64 (speaker) or -127 (headphone). `settled` is true for
         /// the value the encoder stopped on, false while it is still turning.
         case level(SymphonyIOParameterUpdates.Selection, Double, settled: Bool)
         case muteAll(Bool)
