@@ -84,27 +84,29 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         .speakerOutputMode,
     ]
 
-    /// Selectors this transport can write but has no way to read back, whose
-    /// last successfully written value is remembered for the life of the
-    /// connection and returned by `getProperty`.
+    /// Settings this transport can write but has no way to read back. They are
+    /// kept in `settingsStore`: recorded when a write succeeds, returned by
+    /// `getProperty`, and written back to the hardware by
+    /// `reapplyStoredSettings()` on connect. See ``DeviceSettingsStore`` for why
+    /// the Mac, not the unit, owns them.
     ///
     /// Without this every such read threw `unsupportedProperty`, so a view that
     /// re-reads the device each time it appears (System Setup, Device Settings,
     /// the Output tab's monitor section) fell back to its hard-coded defaults:
     /// the user set Peak Hold or Line output mode, switched tabs, and came back
     /// to the default on screen while the hardware kept what they had chosen.
-    /// `XPCDeviceConnection` has always answered these from the same kind of
-    /// cache on USB.
     ///
-    /// A value is only ever returned after this connection wrote it, so nothing
-    /// is invented: before the first write the read still throws and the caller
-    /// keeps showing its default, exactly as before. It is not a hardware
-    /// reading, and a change made on the unit's front panel is not reflected.
+    /// A value is only ever returned after it was written through the app, so
+    /// nothing is invented: until then the read still throws and the caller
+    /// keeps showing its default, exactly as before.
     ///
     /// Deliberately a short list, not all of `dextSelectors`: per-channel input,
     /// mixer and routing state has its own stores and restore paths, and
     /// answering those reads here would put a second source of truth under them.
-    static let rememberedSelectors: Set<AudioPropertySelector> = [
+    /// Clock source is not here either. It is read from the driver, which is the
+    /// truth, and replaying a saved external clock at connect could unlock a
+    /// unit whose word clock is no longer there.
+    static let storedSelectors: Set<AudioPropertySelector> = [
         .peakHoldMode, .oversHoldMode,
         .frontPanelMeterBank, .metersShowInput,
         .prefix,
@@ -115,20 +117,35 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         .headphone1RoutingID, .headphone2RoutingID,
     ]
 
-    private let rememberedLock = NSLock()
-    private var rememberedValues: [PropertyAddress: PropertyValue] = [:]
+    /// In-memory unless the app hands in a persistent one.
+    public let settingsStore: DeviceSettingsStore
 
     private nonisolated func remember(_ value: PropertyValue, for address: PropertyAddress) {
-        guard Self.rememberedSelectors.contains(address.selector) else { return }
-        rememberedLock.lock()
-        defer { rememberedLock.unlock() }
-        rememberedValues[address] = value
+        guard Self.storedSelectors.contains(address.selector) else { return }
+        settingsStore.record(value, for: address)
     }
 
     private nonisolated func rememberedValue(for address: PropertyAddress) -> PropertyValue? {
-        rememberedLock.lock()
-        defer { rememberedLock.unlock() }
-        return rememberedValues[address]
+        guard Self.storedSelectors.contains(address.selector) else { return nil }
+        return settingsStore.value(for: address)
+    }
+
+    /// Write every stored setting to the hardware. Called once per connect, as
+    /// the original daemon did, so a unit that was power-cycled or whose driver
+    /// restarted is put back to what the app is showing.
+    ///
+    /// A setting the hardware refuses stays stored and is reported in `failed`.
+    public func reapplyStoredSettings() async -> DeviceSettingsReplay {
+        var replay = DeviceSettingsReplay()
+        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector) {
+            do {
+                try await setProperty(entry.address, value: entry.value)
+                replay.applied += 1
+            } catch {
+                replay.failed.append(entry.address.selector)
+            }
+        }
+        return replay
     }
 
     /// All supported selectors (union of CoreAudio + dext paths).
@@ -154,9 +171,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return s
     }()
 
-    public init(identifier: USBDeviceIdentifier, audioDeviceID: AudioDeviceID) {
+    public init(identifier: USBDeviceIdentifier, audioDeviceID: AudioDeviceID,
+                settingsStore: DeviceSettingsStore = DeviceSettingsStore()) {
         self.identifier = identifier
         self.audioDeviceID = audioDeviceID
+        self.settingsStore = settingsStore
 
         // Connect vendor command transport to the dext's custom property
         dextClient.connect(audioDeviceID: audioDeviceID)
@@ -218,8 +237,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         }
 
         // No hardware read for the remaining vendor commands on this transport.
-        // Settings this connection has itself written are answered from that
-        // write (see `rememberedSelectors`); everything else still throws.
+        // Settings the Mac owns are answered from the settings store (see
+        // `storedSelectors`); everything else still throws.
         if let value = rememberedValue(for: address) { return value }
         throw DeviceConnectionError.unsupportedProperty(address.selector)
     }
@@ -338,7 +357,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             // skip the send. Never emit the 0xFF sentinel to the dext (S3).
         }
         // Reached only when the send did not throw, so a failed write is never
-        // remembered as though it had landed.
+        // stored as though it had landed.
         remember(value, for: address)
         notifyListeners(for: address.selector, value: value)
     }

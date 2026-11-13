@@ -885,7 +885,8 @@ final class AppState {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, !Task.isCancelled, self.transportType == .usb else { break }
                 let live = await Task.detached(priority: .utility) {
-                    let probe = ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
+                    let probe = ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
+                        settingsStore: .persistent(for: identifier))
                     let verdict = probe.probeEndpoint()
                     probe.closeDextClient()
                     return verdict.isLive
@@ -985,7 +986,8 @@ final class AppState {
 
             if best.transportType == .thunderbolt {
                 // ── Thunderbolt path: standard CoreAudio properties → AudioDriverKit dext
-                let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
+                let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
+                        settingsStore: .persistent(for: identifier))
                 self.device = tbDevice
                 self.connectionMode = .hardware
                 self.transportType = .thunderbolt
@@ -1016,7 +1018,8 @@ final class AppState {
                 }
             } else {
                 // ── USB path: XPC proxy → USB vendor EP0 commands
-                let xpcDevice = XPCDeviceConnection(identifier: identifier)
+                let xpcDevice = XPCDeviceConnection(identifier: identifier,
+                        settingsStore: .persistent(for: identifier))
                 self.device = xpcDevice
                 self.connectionMode = .hardware
                 self.transportType = .usb
@@ -1221,6 +1224,38 @@ final class AppState {
                                    device: device)
     }
 
+    /// Write the settings saved on this Mac back to the unit on connect/reconnect.
+    ///
+    /// The original daemon did this on every connect (`ApplySettingsToHardware`),
+    /// because in the USB and Symphony interface modes the Mac, not the box, owns
+    /// these settings. Without it a power-cycled unit, or a ThunderBridge driver
+    /// that restarted, comes back at its own defaults while Maestro shows what
+    /// the user last chose. Only settings that were changed through Maestro are
+    /// stored, so a unit nobody has configured here is left alone.
+    @MainActor
+    func syncDeviceSettingsToHardware() async {
+        guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
+        let replay: DeviceSettingsReplay
+        if let tb = device as? ThunderboltDeviceConnection {
+            replay = await tb.reapplyStoredSettings()
+            // The monitor mode is shown outside the Output tab too; start from
+            // the saved one rather than the built-in default.
+            if let mode = tb.settingsStore.value(
+                for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32 {
+                speakerOutputMode = mode
+            }
+        } else if let xpc = device as? XPCDeviceConnection {
+            replay = await xpc.reapplyStoredSettings()
+        } else {
+            return
+        }
+        guard replay.applied > 0 || !replay.failed.isEmpty else { return }
+        print("[Maestro] syncDeviceSettings: re-applied \(replay.applied) saved setting(s)"
+            + (replay.failed.isEmpty ? "" : ", \(replay.failed.count) refused: \(replay.failed)"))
+        // Views that loaded before the replay finished re-read the settled state.
+        viewReloadToken = UUID()
+    }
+
     /// Mark hardware as ready for property access.
     /// XPC connection is ready immediately — proxy handles USB init on boot.
     @MainActor
@@ -1265,7 +1300,8 @@ final class AppState {
         guard let tb = discovered.first(where: { $0.transportType == .thunderbolt }) else {
             return discovered.first.map { PreferredDevice(device: $0, tbConnection: nil, tbVerdict: nil) }
         }
-        let probe = ThunderboltDeviceConnection(identifier: tb.identifier, audioDeviceID: tb.audioDeviceID)
+        let probe = ThunderboltDeviceConnection(identifier: tb.identifier, audioDeviceID: tb.audioDeviceID,
+                        settingsStore: .persistent(for: tb.identifier))
         let verdict = probe.probeEndpoint()
         if !verdict.isLive, let usb = discovered.first(where: { $0.transportType == .usb }) {
             probe.closeDextClient()
@@ -1343,7 +1379,8 @@ final class AppState {
                 print("[Maestro] reconnect: Found \(best.name) via \(best.transportType.displayName)")
 
                 if best.transportType == .thunderbolt {
-                    let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
+                    let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
+                        settingsStore: .persistent(for: identifier))
                     self.device = tbDevice
                     // Probe before declaring the endpoint ready. A powered-off
                     // Symphony can still be discoverable as a ThunderBridge
@@ -1377,7 +1414,8 @@ final class AppState {
                     print("[Maestro] reconnect TB timing health: rate=\(health.sampleRate) frame=\(health.frameReadback)/\(health.expectedFrame) latency=\(health.inputLatency)/\(health.outputLatency) safety=\(health.inputSafety)/\(health.outputSafety) int=0x\(String(health.intStatus, radix: 16)) xlink=0x\(String(health.xlinkStatus, radix: 16))")
                     self.applyPendingAutoSwitch()
                 } else {
-                    let xpcDevice = XPCDeviceConnection(identifier: identifier)
+                    let xpcDevice = XPCDeviceConnection(identifier: identifier,
+                        settingsStore: .persistent(for: identifier))
                     self.device = xpcDevice
                     self.connectionMode = .hardware
                     self.transportType = .usb
@@ -1416,6 +1454,7 @@ final class AppState {
                 // Read card types and sync routing (USB-specific but harmless for TB)
                 await self.readCardTypes()
                 await self.syncOutputRoutingToHardware()
+                await self.syncDeviceSettingsToHardware()
 
                 let meterCA = CoreAudioDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
                 if Self.softwareMeteringOptedIn { meterCA.startSoftwareMetering() }

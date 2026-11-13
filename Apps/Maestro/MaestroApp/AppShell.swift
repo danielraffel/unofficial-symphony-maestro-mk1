@@ -158,6 +158,8 @@ struct ContentView: View {
                 // Sync persisted output routing to hardware after card types are known.
                 // This overwrites proxy boot defaults with any user-customized routes.
                 await appState.syncOutputRoutingToHardware()
+                // Then the settings this Mac owns (peak hold, monitor mode, ...).
+                await appState.syncDeviceSettingsToHardware()
             }
             // Start meter polling immediately so Input/Output tab meter bars
             // show live levels without requiring the user to visit the Meters tab.

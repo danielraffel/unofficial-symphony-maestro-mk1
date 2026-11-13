@@ -163,7 +163,7 @@ struct ThunderboltDeviceConnectionTests {
     func unwrittenSettingStillThrows() async {
         let conn = ThunderboltDeviceConnection(
             identifier: Self.testIdentifier, audioDeviceID: 0)
-        for selector in ThunderboltDeviceConnection.rememberedSelectors {
+        for selector in ThunderboltDeviceConnection.storedSelectors {
             await #expect(throws: DeviceConnectionError.unsupportedProperty(selector)) {
                 _ = try await conn.getProperty(PropertyAddress(selector: selector))
             }
@@ -196,7 +196,7 @@ struct ThunderboltDeviceConnectionTests {
             .outputLevel, .outputMute, .opticalInFormat, .opticalOutFormat,
         ]
         for selector in excluded {
-            #expect(!ThunderboltDeviceConnection.rememberedSelectors.contains(selector))
+            #expect(!ThunderboltDeviceConnection.storedSelectors.contains(selector))
         }
     }
 
