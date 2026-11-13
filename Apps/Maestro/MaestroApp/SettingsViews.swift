@@ -770,6 +770,9 @@ struct SystemSetupView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var sampleRate: Double = 0
     @State private var clockSource: UInt32 = 1  // 1 = Internal (legacy eSymphonyIOClockSource enum; 0 = Unknown)
+    /// A source this view put into `clockSource` from a readback, so the picker's
+    /// onChange can tell it from a user selection. Same idea as `programmaticRate`.
+    @State private var programmaticClockSource: UInt32?
     @State private var clockLocked: Bool = false
     @State private var firmwareVersion: String = "—"
     @State private var parsedFirmware: FirmwareInfo?
@@ -910,6 +913,13 @@ struct SystemSetupView: View {
                 .disabled(isProToolsMode)
                 .onChange(of: clockSource) { _, newSource in
                     guard !isLoading else { return }
+                    // A readback, not a selection: do not send the device the
+                    // value it just reported.
+                    if programmaticClockSource == newSource {
+                        programmaticClockSource = nil
+                        return
+                    }
+                    programmaticClockSource = nil
                     Task { await writeClockSource(newSource) }
                 }
 
@@ -1425,10 +1435,22 @@ struct SystemSetupView: View {
             try? await Task.sleep(for: .milliseconds(100))
         }
 
+        // Clock source. This used to be left at its initial "Internal" on every
+        // appearance, so the picker forgot the selection as soon as the user left
+        // the tab while the hardware stayed on the source they had chosen -- and
+        // "Internal" could not then be picked to go back, because the picker saw
+        // no change. Thunderbolt answers from the dext's clock control; USB has
+        // no read opcode and answers with what this session last wrote (0 until
+        // then, which matches no row and is ignored). The USB CoreAudio device is
+        // still not consulted: its clock-source IDs are not this enum.
+        if let source = (try? await device.getProperty(
+                PropertyAddress(selector: .clockSource)))?.asUInt32,
+           clockSourceNames[source] != nil, source != clockSource {
+            programmaticClockSource = source
+            clockSource = source
+        }
+
         // Use CoreAudio standard APIs for sample rate / lock — daemon returns 'who?' on MKI.
-        // clockSource is NOT read from CoreAudio because CoreAudio returns arbitrary IDs
-        // (not the 0-5 Apogee enum), so the picker selection would break.
-        // Leave clockSource at 0 (Internal) until we have proper ID↔enum mapping.
         // When XPC path is active, meterDevice is a CoreAudioDeviceConnection to the real
         // USB device — use it to read sample rate and clock lock status.
         let caDev = (device as? CoreAudioDeviceConnection) ?? appState.meterDevice

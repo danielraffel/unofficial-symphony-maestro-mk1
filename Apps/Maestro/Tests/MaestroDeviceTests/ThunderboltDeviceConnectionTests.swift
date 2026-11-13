@@ -118,6 +118,88 @@ struct ThunderboltDeviceConnectionTests {
         #expect(await conn.isPropertySettable(PropertyAddress(selector: .secondaryBoardType)) == false)
     }
 
+    /// Clock source is asked of CoreAudio, not refused outright. There is no
+    /// device 0, so the read fails -- as a transport error, which is what tells
+    /// the caller a real read was attempted.
+    @Test("ThunderboltDeviceConnection: clock source is read from the device")
+    func clockSourceIsReadFromDevice() async {
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        do {
+            _ = try await conn.getProperty(PropertyAddress(selector: .clockSource))
+            #expect(Bool(false), "No such device; should have thrown")
+        } catch let error as DeviceConnectionError {
+            guard case .transportError = error else {
+                #expect(Bool(false), "Wrong error type: \(error)")
+                return
+            }
+        } catch {
+            #expect(Bool(false), "Unexpected error: \(error)")
+        }
+    }
+
+    // MARK: - Remembered write-only settings
+
+    /// The reported bug: change a setting, leave the tab, come back, and the
+    /// control shows its default. The view re-reads the device on appearance, so
+    /// the read has to return what was written. `.prefix` has no hardware opcode
+    /// on any transport, so this exercises the real write path with no dext.
+    @Test("ThunderboltDeviceConnection: a written setting reads back")
+    func rememberedSettingReadsBack() async throws {
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        let prefix = PropertyAddress(selector: .prefix)
+
+        try await conn.setProperty(prefix, value: .string("C"))
+        #expect(try await conn.getProperty(prefix) == .string("C"))
+
+        try await conn.setProperty(prefix, value: .string("F"))
+        #expect(try await conn.getProperty(prefix) == .string("F"))
+    }
+
+    /// Nothing is invented: until this connection has written a value the read
+    /// throws as it always did, and the caller keeps its own default.
+    @Test("ThunderboltDeviceConnection: an unwritten setting still throws")
+    func unwrittenSettingStillThrows() async {
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        for selector in ThunderboltDeviceConnection.rememberedSelectors {
+            await #expect(throws: DeviceConnectionError.unsupportedProperty(selector)) {
+                _ = try await conn.getProperty(PropertyAddress(selector: selector))
+            }
+        }
+    }
+
+    /// A write that never reached the driver must not be reported back as the
+    /// device's state. With no dext attached the send throws.
+    @Test("ThunderboltDeviceConnection: a failed write is not remembered")
+    func failedWriteIsNotRemembered() async {
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        let peakHold = PropertyAddress(selector: .peakHoldMode)
+
+        await #expect(throws: (any Error).self) {
+            try await conn.setProperty(peakHold, value: .uint32(2))
+        }
+        await #expect(throws: DeviceConnectionError.unsupportedProperty(.peakHoldMode)) {
+            _ = try await conn.getProperty(peakHold)
+        }
+    }
+
+    /// Per-channel input, mixer and routing state keep their own stores; this
+    /// cache must not become a second answer for them.
+    @Test("ThunderboltDeviceConnection: remembered set excludes channel, mixer and routing state")
+    func rememberedSetIsNarrow() {
+        let excluded: [AudioPropertySelector] = [
+            .micGain, .phantom, .analogIOType, .routing, .mixerChannelLevel,
+            .mixerChannelMute, .mixerSoftwareReturnID, .clockSource, .sampleRate,
+            .outputLevel, .outputMute, .opticalInFormat, .opticalOutFormat,
+        ]
+        for selector in excluded {
+            #expect(!ThunderboltDeviceConnection.rememberedSelectors.contains(selector))
+        }
+    }
+
     @Test("ThunderboltDeviceConnection: isPropertySettable")
     func connectionSettable() async {
         let conn = ThunderboltDeviceConnection(
@@ -139,12 +221,14 @@ struct ThunderboltDeviceConnectionTests {
     func connectionUnsupportedProperty() async {
         let conn = ThunderboltDeviceConnection(
             identifier: Self.testIdentifier, audioDeviceID: 0)
+        // .micGain has no read on this transport. (.clockSource used to stand in
+        // here; it is now read from the dext's clock control -- see below.)
         do {
-            _ = try await conn.getProperty(PropertyAddress(selector: .clockSource))
+            _ = try await conn.getProperty(PropertyAddress(selector: .micGain))
             #expect(Bool(false), "Should have thrown")
         } catch let error as DeviceConnectionError {
             if case .unsupportedProperty(let sel) = error {
-                #expect(sel == .clockSource)
+                #expect(sel == .micGain)
             } else {
                 #expect(Bool(false), "Wrong error type: \(error)")
             }

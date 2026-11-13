@@ -84,6 +84,53 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         .speakerOutputMode,
     ]
 
+    /// Selectors this transport can write but has no way to read back, whose
+    /// last successfully written value is remembered for the life of the
+    /// connection and returned by `getProperty`.
+    ///
+    /// Without this every such read threw `unsupportedProperty`, so a view that
+    /// re-reads the device each time it appears (System Setup, Device Settings,
+    /// the Output tab's monitor section) fell back to its hard-coded defaults:
+    /// the user set Peak Hold or Line output mode, switched tabs, and came back
+    /// to the default on screen while the hardware kept what they had chosen.
+    /// `XPCDeviceConnection` has always answered these from the same kind of
+    /// cache on USB.
+    ///
+    /// A value is only ever returned after this connection wrote it, so nothing
+    /// is invented: before the first write the read still throws and the caller
+    /// keeps showing its default, exactly as before. It is not a hardware
+    /// reading, and a change made on the unit's front panel is not reflected.
+    ///
+    /// Deliberately a short list, not all of `dextSelectors`: per-channel input,
+    /// mixer and routing state has its own stores and restore paths, and
+    /// answering those reads here would put a second source of truth under them.
+    static let rememberedSelectors: Set<AudioPropertySelector> = [
+        .peakHoldMode, .oversHoldMode,
+        .frontPanelMeterBank, .metersShowInput,
+        .prefix,
+        .speakerOutputMode, .activeSpeakerSet,
+        .outputDim, .outputSumToMono,
+        .headphone1Dim, .headphone2Dim,
+        .headphone1SumToMono, .headphone2SumToMono,
+        .headphone1RoutingID, .headphone2RoutingID,
+    ]
+
+    private let rememberedLock = NSLock()
+    private var rememberedValues: [PropertyAddress: PropertyValue] = [:]
+
+    private nonisolated func remember(_ value: PropertyValue, for address: PropertyAddress) {
+        guard Self.rememberedSelectors.contains(address.selector) else { return }
+        rememberedLock.lock()
+        defer { rememberedLock.unlock() }
+        rememberedValues[address] = value
+    }
+
+    private nonisolated func rememberedValue(for address: PropertyAddress) -> PropertyValue? {
+        rememberedLock.lock()
+        defer { rememberedLock.unlock() }
+        return rememberedValues[address]
+    }
+
     /// All supported selectors (union of CoreAudio + dext paths).
     private static let supportedSelectors: Set<AudioPropertySelector> = {
         var s = coreAudioSelectors
@@ -145,6 +192,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 throw DeviceConnectionError.unsupportedProperty(address.selector)
             }
             return .uint32(UInt32(raw))
+        case .clockSource:
+            // The dext's 'clck' control is the hardware-facing state and its
+            // selector IDs are the legacy enum (1...5), the same numbers the
+            // write path sends, so this is a real readback rather than a cache.
+            return try .uint32(readClockSource())
         case .opticalInFormat:
             // Read the current selected value of the dext's DataSource control for this board
             // (element = board+1). Entitlement-free; mirrors the write path. Returns 0=ADAT/SMUX,
@@ -165,10 +217,10 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             break
         }
 
-        // IOUserClient path (all other vendor commands)
-        // Note: reads via IOUserClient are not implemented yet (write-only path).
-        // For read-only properties, the dext would need a read command dispatch.
-        // For now, unsupported reads throw.
+        // No hardware read for the remaining vendor commands on this transport.
+        // Settings this connection has itself written are answered from that
+        // write (see `rememberedSelectors`); everything else still throws.
+        if let value = rememberedValue(for: address) { return value }
         throw DeviceConnectionError.unsupportedProperty(address.selector)
     }
 
@@ -285,6 +337,9 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             // No XMOS opcode (or an unsafe one, e.g. front-panel meter config) —
             // skip the send. Never emit the 0xFF sentinel to the dext (S3).
         }
+        // Reached only when the send did not throw, so a failed write is never
+        // remembered as though it had landed.
+        remember(value, for: address)
         notifyListeners(for: address.selector, value: value)
     }
 
@@ -457,6 +512,27 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         guard status == noErr else {
             throw DeviceConnectionError.transportError("ClockSource write failed: OSStatus \(status)")
         }
+    }
+
+    /// Read the clock source back from the same 'clck' control `writeClockSource` drives.
+    /// Throws for anything outside the legacy enum range rather than hand the
+    /// caller an ID its picker has no row for.
+    private func readClockSource() throws -> UInt32 {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyClockSource,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(audioDeviceID, &address, 0, nil, &size, &value)
+        guard status == noErr else {
+            throw DeviceConnectionError.transportError("ClockSource read failed: OSStatus \(status)")
+        }
+        guard (1...5).contains(value) else {
+            throw DeviceConnectionError.transportError("ClockSource read returned unknown ID \(value)")
+        }
+        return value
     }
 
     /// Write the optical output format via the dext's per-board DataSource control object
