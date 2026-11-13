@@ -533,14 +533,15 @@ final class AppState {
     /// from here, so a card change moves them together. See ``CardLayout`` for
     /// why the `*PairsPerBoard` bus-slice counts must never be used for this.
     ///
-    /// `isKnown` is false only while slot 1 has told us nothing at all —
-    /// a *detected* empty slot 2 is knowledge, and contributes nothing.
+    /// `isKnown` is false while neither slot has reported a card — see
+    /// `CardLayout.readingsDescribeAUnit`. With a card in one slot, an empty
+    /// other slot is knowledge and contributes nothing.
     var cardLayout: CardLayout {
         CardLayout(
             slot1: primaryBoardType,
             slot2: secondaryBoardType,
-            isKnown: primaryBoardSource != .unknown || primaryBoardType != .none
-                || secondaryBoardSource != .unknown || secondaryBoardType != .none,
+            isKnown: CardLayout.readingsDescribeAUnit(
+                slot1: primaryBoardType, slot2: secondaryBoardType),
             fallbackChannelCount: device?.identifier.mode.channelCount ?? 16)
     }
 
@@ -559,6 +560,12 @@ final class AppState {
     /// a live read actually succeeds.
     func loadCachedBoardTypes() {
         let defaults = UserDefaults.standard
+        // Earlier versions cached "both slots empty" whenever the card-type read
+        // went unanswered. That pair is not a reading of anything; restoring it
+        // would label two failed reads as cached knowledge.
+        let cachedPair = (defaults.object(forKey: "cachedPrimaryBoardType") as? Int,
+                          defaults.object(forKey: "cachedSecondaryBoardType") as? Int)
+        if (cachedPair.0 ?? 0) == 0, (cachedPair.1 ?? 0) == 0 { return }
         if let raw = defaults.object(forKey: "cachedPrimaryBoardType") as? Int,
            raw >= 0, raw <= Int(UInt8.max),
            let card = IOCardType(rawValue: UInt8(raw)) {
@@ -575,6 +582,10 @@ final class AppState {
 
     /// Persist detected board types to UserDefaults.
     private func saveBoardTypeCache() {
+        // Nothing to remember when no card was reported: writing 0/0 here is how
+        // a unit that never answered ended up "known" to have no cards.
+        guard CardLayout.readingsDescribeAUnit(
+            slot1: primaryBoardType, slot2: secondaryBoardType) else { return }
         let defaults = UserDefaults.standard
         defaults.set(Int(primaryBoardType.rawValue), forKey: "cachedPrimaryBoardType")
         defaults.set(Int(secondaryBoardType.rawValue), forKey: "cachedSecondaryBoardType")

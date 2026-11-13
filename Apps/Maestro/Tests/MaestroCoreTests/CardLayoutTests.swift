@@ -482,4 +482,29 @@ struct TwoBySixLayoutTests {
             }
         }
     }
+
+    // MARK: - A unit that never reports its cards
+
+    /// Reported with a DA-16X on a ThunderBridge: every fader on first launch,
+    /// then no outputs at all on every later one. Two empty slots must fall back
+    /// to the generic layout, not be drawn as a unit with nothing in it.
+    @Test("two empty slots are not a known layout")
+    func twoEmptySlotsAreUnknown() {
+        #expect(!CardLayout.readingsDescribeAUnit(slot1: .none, slot2: .none))
+        let layout = CardLayout(
+            slot1: .none, slot2: .none,
+            isKnown: CardLayout.readingsDescribeAUnit(slot1: .none, slot2: .none),
+            fallbackChannelCount: 32)
+        #expect(layout.analogOutputStripCount == 32)
+        #expect(layout.analogInputStripCount == 32)
+        #expect(layout.hasAnyCard)
+    }
+
+    @Test("one reported card makes the layout known, with the other slot empty")
+    func oneCardIsKnown() {
+        for card in IOCardType.allCases where card != .none {
+            #expect(CardLayout.readingsDescribeAUnit(slot1: card, slot2: .none))
+            #expect(CardLayout.readingsDescribeAUnit(slot1: .none, slot2: card))
+        }
+    }
 }
