@@ -2252,6 +2252,7 @@ final class AppState {
                 }
                 // The connection may have been replaced while the read was out.
                 if usb === self.device as? XPCDeviceConnection {
+                    usb.seedClockSource(reported: update.clockSource)
                     for change in sync.changes(for: update) { self.applyFrontPanelChange(change) }
                 }
                 try? await Task.sleep(for: Self.frontPanelSyncInterval)
@@ -2301,6 +2302,12 @@ final class AppState {
             speakerMuted = muted
             hp1Muted = muted
             hp2Muted = muted
+        case .metersCleared:
+            // The unit's held peaks are gone; drop Maestro's copies too.
+            inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
+            outputPeakHold = Array(repeating: -60.0, count: outputPeakHold.count)
+            digitalInputPeakHold = Array(repeating: -60.0, count: digitalInputPeakHold.count)
+            digitalOutputPeakHold = Array(repeating: -60.0, count: digitalOutputPeakHold.count)
         }
     }
 

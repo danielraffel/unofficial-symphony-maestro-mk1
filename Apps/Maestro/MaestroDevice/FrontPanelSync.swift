@@ -83,17 +83,21 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
 ///   carries the value the encoder stopped on. A level the app itself just
 ///   wrote never raises that flag, so the app's own changes are not echoed
 ///   back and a stale reading cannot fight a slider being dragged.
-/// - Mute-all and unmute-all are one-shot pulses, applied on their rising edge.
+/// - Mute-all, unmute-all and a meter clear are one-shot pulses, applied on
+///   their rising edge.
 public struct FrontPanelSync: Sendable {
     public enum Change: Sendable, Equatable {
         /// Level in dB for one output, 0 down to -64. `settled` is true for
         /// the value the encoder stopped on, false while it is still turning.
         case level(SymphonyIOParameterUpdates.Selection, Double, settled: Bool)
         case muteAll(Bool)
+        /// The meters were cleared from the front panel.
+        case metersCleared
     }
 
     private var changeInProgress = false
     private var lastMuteAll: SymphonyIOParameterUpdates.MuteAll = .none
+    private var lastMetersCleared = false
 
     public init() {}
 
@@ -112,6 +116,8 @@ public struct FrontPanelSync: Sendable {
             result.append(.muteAll(update.muteAll == .mute))
         }
         lastMuteAll = update.muteAll
+        if update.metersCleared, !lastMetersCleared { result.append(.metersCleared) }
+        lastMetersCleared = update.metersCleared
         return result
     }
 

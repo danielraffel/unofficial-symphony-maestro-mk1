@@ -315,6 +315,20 @@ struct DeviceSettingsStoreTests {
         #expect(try await conn.getProperty(Self.peak) == .uint32(1))
     }
 
+    @Test("USB: the unit's reported clock source is used until one is set here")
+    func usbSeedsClockSource() async throws {
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: MockXPCTransport())
+        let clock = PropertyAddress(selector: .clockSource)
+        conn.seedClockSource(reported: 0)      // unknown: ignored
+        conn.seedClockSource(reported: 9)      // not a source: ignored
+        #expect(try await conn.getProperty(clock) == .uint32(0))
+        conn.seedClockSource(reported: 2)
+        #expect(try await conn.getProperty(clock) == .uint32(2))
+        try await conn.setProperty(clock, value: .uint32(1))
+        conn.seedClockSource(reported: 2)      // a choice made here wins
+        #expect(try await conn.getProperty(clock) == .uint32(1))
+    }
+
     @Test("USB: nothing saved means nothing written on connect")
     func usbReplayWithNothingSaved() async {
         let transport = MockXPCTransport()

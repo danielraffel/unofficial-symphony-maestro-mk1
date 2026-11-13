@@ -558,6 +558,19 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         return SymphonyIOParameterUpdates(data: reply.data)
     }
 
+    /// Take the clock source the unit reports when this session has not set one.
+    ///
+    /// USB has no dedicated read for the clock source, so it was remembered only
+    /// until Maestro quit and showed "Internal" after every relaunch. The front
+    /// panel report carries it. A source chosen in this session is not
+    /// overridden: Apogee's daemon noted that the firmware does not report it
+    /// reliably in the USB interface mode (`SymphonyIO.cpp:6462-6466`).
+    public func seedClockSource(reported: UInt8) {
+        guard (1...5).contains(reported) else { return }
+        lock.lock(); defer { lock.unlock() }
+        if cachedClockSource == 0 { cachedClockSource = UInt32(reported) }
+    }
+
     static let readFromUnitWhenPossible: Set<AudioPropertySelector> = [.peakHoldMode, .oversHoldMode]
 
     private func readFromUnit(_ address: PropertyAddress) async throws -> PropertyValue {

@@ -109,6 +109,18 @@ struct FrontPanelSyncTests {
         #expect(all == [.muteAll(true), .muteAll(false)])
     }
 
+    @Test("a front panel meter clear is reported once")
+    func metersCleared() throws {
+        var sync = FrontPanelSync()
+        let cleared = "00 00 bb 80 01 01 00 00 01 34 01 01"
+        let idle = "00 00 bb 80 01 01 00 00 01 34 00 00"
+        var count = 0
+        for hex in [idle, cleared, cleared, idle, cleared] {
+            count += sync.changes(for: try #require(reading(hex))).filter { $0 == .metersCleared }.count
+        }
+        #expect(count == 2)
+    }
+
     @Test("reset forgets a change in progress")
     func reset() throws {
         var sync = FrontPanelSync()
