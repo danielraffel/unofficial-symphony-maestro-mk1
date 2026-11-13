@@ -86,7 +86,7 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
 /// - Mute-all and unmute-all are one-shot pulses, applied on their rising edge.
 public struct FrontPanelSync: Sendable {
     public enum Change: Sendable, Equatable {
-        /// Level in dB for one output: 0 down to -64 (speaker) or -127 (headphone). `settled` is true for
+        /// Level in dB for one output, 0 down to -64. `settled` is true for
         /// the value the encoder stopped on, false while it is still turning.
         case level(SymphonyIOParameterUpdates.Selection, Double, settled: Bool)
         case muteAll(Bool)
@@ -100,7 +100,11 @@ public struct FrontPanelSync: Sendable {
     public mutating func changes(for update: SymphonyIOParameterUpdates) -> [Change] {
         var result: [Change] = []
         if let selection = update.selection, update.popupNeedsUpdate || changeInProgress {
-            result.append(.level(selection, -Double(update.selectionAttenuation),
+            // Every monitor output bottoms out at 64 dB of attenuation on the
+            // unit's front panel and in the original software, which clamped a
+            // headphone there (`SymphonyIO.cpp:5574-5586`) although the wire
+            // format allows 127. The on-screen knobs use the same 0 to -64 range.
+            result.append(.level(selection, -Double(min(update.selectionAttenuation, 64)),
                                  settled: !update.popupNeedsUpdate))
         }
         changeInProgress = update.popupNeedsUpdate
