@@ -451,12 +451,40 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     public func readParameterUpdates() async -> SymphonyIOParameterUpdates? {
         guard isConnected, dextClient.isConnected else { return nil }
         let client = dextClient
+        let shouldLog = Self.parameterUpdateLogBudget.take()
         return await Task.detached(priority: .utility) {
-            guard let data = try? client.readVendorCommand(
-                command: SymphonyIOParameterUpdates.readRequest.request, value: 1,
-                responseLength: SymphonyIOParameterUpdates.byteCount) else { return nil }
-            return SymphonyIOParameterUpdates(data: data)
+            do {
+                let data = try client.readVendorCommand(
+                    command: SymphonyIOParameterUpdates.readRequest.request, value: 1,
+                    responseLength: SymphonyIOParameterUpdates.byteCount)
+                let update = SymphonyIOParameterUpdates(data: data)
+                if shouldLog {
+                    let hex = data.map { String(format: "%02x", $0) }.joined(separator: " ")
+                    print("[Maestro] TB front panel read: [\(hex)] \(update == nil ? "REJECTED as not a reading" : "ok")")
+                }
+                return update
+            } catch {
+                if shouldLog { print("[Maestro] TB front panel read failed: \(error)") }
+                return nil
+            }
         }.value
+    }
+
+    /// The first few front panel reads of a session are logged in full: whether
+    /// the unit answers this read over the ThunderBridge link, and with what,
+    /// had never been observed when this was written.
+    private static let parameterUpdateLogBudget = LogBudget(12)
+
+    final class LogBudget: @unchecked Sendable {
+        private let lock = NSLock()
+        private var remaining: Int
+        init(_ count: Int) { remaining = count }
+        func take() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
+        }
     }
 
     /// The link-watch state behind the most recent `probeEndpoint()` (nil when the
