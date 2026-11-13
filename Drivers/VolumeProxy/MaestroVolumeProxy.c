@@ -1358,6 +1358,34 @@ static int ep0_is_live(void)
    writes the GUI domain). Add the variable to
    /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist and
    `sudo launchctl kickstart -k system/com.danielraffel.Maestro.volumeproxy`. */
+/* Recovery must not configure a unit that is still starting up.
+
+   When the Symphony is power-cycled with Maestro open, the app's meter polling
+   hits the dead handle and lands here. The old code then retried the open until
+   the unit was back on the bus and immediately sent the whole configuration --
+   preference lock, clock source, routing, mixer, unlock -- half a second to
+   three quarters of a second BEFORE macOS had finished bringing up the unit's
+   audio interface (2026-11-13: configured 11:58:42.48, device published
+   11:58:43.23; configured 12:18:21.28, published 12:18:21.94). Those reconnects
+   were followed by digital clicking that lasted until a USB replug. With Maestro
+   closed nothing polls, recovery never runs, and the unit is configured once by
+   the "USB device appeared" path after macOS has published it; every one of
+   those reconnects was clean.
+
+   So: if CoreAudio does not currently list the audio device, the unit is off the
+   bus or still coming up. Close the control handle, send nothing, and let the
+   device-list listener do the single configuration at the right time. This is
+   not a failed recovery and does not count toward disarming. It also means
+   recovery no longer blocks gQueue for seconds waiting for a unit to boot. */
+static int defer_to_device_listener(const char *why)
+{
+    LOG("USB recovery: %s — closing the control handle and waiting for the "
+        "audio device to appear (nothing is sent to a unit that is starting up)", why);
+    close_usb_device();
+    gRecoveryInProgress = 0;
+    return -1;
+}
+
 static int try_recover_usb(void)
 {
     /* Prevent re-entrant recovery from writes inside configure_fpga_routing() */
@@ -1383,10 +1411,17 @@ static int try_recover_usb(void)
 
     LOG("USB handle stale — attempting recovery...");
 
+    if (find_usb_device() == kAudioObjectUnknown)
+        return defer_to_device_listener("the audio device is not present");
+
     /* Step 1: Try ResetDevice on the current handle (lightweight port reset) */
     if (gUSBDev) {
         IOReturn kr = (*gUSBDev)->ResetDevice(gUSBDev);
         LOG("ResetDevice: 0x%08X (%s)", kr, kr == kIOReturnSuccess ? "OK" : "failed");
+        /* CoreAudio can lag the bus by a moment; the port saying "no device" is
+           the same fact from the other side. */
+        if (kr == kIOReturnNoDevice)
+            return defer_to_device_listener("the unit is off the bus");
         if (kr == kIOReturnSuccess) {
             usleep(500000);  /* 500ms for device to stabilize after reset */
             if (ep0_is_live()) {
@@ -1429,6 +1464,15 @@ static int try_recover_usb(void)
             /* Reopening proves nothing on its own — see ep0_is_live(). Only
                reconfigure a device that is actually answering. */
             if (ep0_is_live()) {
+                /* Back on the bus and answering, but if macOS has not published
+                   the audio device yet the unit is mid start-up (a reset
+                   re-enumerates it too). Leave the configuration to the
+                   listener. */
+                if (find_usb_device() == kAudioObjectUnknown) {
+                    gRecoveryFailures = 0;
+                    return defer_to_device_listener(
+                        "the unit answers but its audio device is not published yet");
+                }
                 configure_fpga_routing();
                 restore_cached_volume();
                 gRecoveryFailures  = 0;

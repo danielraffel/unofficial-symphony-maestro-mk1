@@ -699,6 +699,49 @@ final class AppState {
         )
     }
 
+    /// When a Symphony audio device last appeared in the system device list.
+    /// See `waitForUSBUnitToSettle()`.
+    private var symphonyAppearedAt: Date?
+    /// The active unit went away and has not been seen since. The reconnect loop
+    /// can find the returning unit by polling before the device-list callback
+    /// has stamped `symphonyAppearedAt`, so it stamps it itself.
+    private var awaitingSymphonyReturn = false
+
+    /// How long after its audio device appears a USB unit is left alone.
+    static let usbSettleInterval: TimeInterval = 3.0
+
+    /// Seconds still to wait before a unit that appeared at `appearedAt` may be
+    /// written to. Zero for a unit that has been up for a while (launch, Rescan).
+    nonisolated static func usbSettleRemaining(appearedAt: Date?, now: Date) -> TimeInterval {
+        guard let appearedAt else { return 0 }
+        let elapsed = now.timeIntervalSince(appearedAt)
+        guard elapsed >= 0 else { return 0 }
+        return max(0, usbSettleInterval - elapsed)
+    }
+
+    /// Hold the app's own reconnect traffic until a freshly powered-up USB unit
+    /// has finished starting.
+    ///
+    /// A power-cycled Symphony reappears, the helper configures it and starts
+    /// the audio stream about half a second later, and this app used to follow
+    /// within a second of that with 64 mixer writes, its routing table and a
+    /// burst of reads from every open view, then meter polling. On 2026-11-13
+    /// some of those reconnects were followed by digital clicking that only a
+    /// USB replug cleared; reconnects with Maestro closed, where none of this is
+    /// sent, were all clean. The cause is not proven, but nothing the app sends
+    /// here is urgent: the helper has already muted the hardware inputs and set
+    /// the routing it needs for playback.
+    @MainActor
+    private func waitForUSBUnitToSettle() async {
+        if awaitingSymphonyReturn, symphonyAppearedAt == nil { symphonyAppearedAt = Date() }
+        let remaining = Self.usbSettleRemaining(appearedAt: symphonyAppearedAt, now: Date())
+        awaitingSymphonyReturn = false
+        guard remaining > 0 else { return }
+        print("[Maestro] reconnect: unit appeared \(String(format: "%.1f", Self.usbSettleInterval - remaining)) s ago — waiting \(String(format: "%.1f", remaining)) s before sending anything")
+        statusMessage = "Waiting for the Symphony to finish starting…"
+        try? await Task.sleep(for: .milliseconds(Int(remaining * 1000)))
+    }
+
     /// Called on any audio-device-list change. If a Symphony device NEWLY appeared, reconnect the
     /// app to it and (if the preference is on) make it the macOS default output.
     @MainActor
@@ -710,6 +753,7 @@ final class AppState {
             : knownDefaultOutputDeviceID
         let removedSymphonyIDs = knownSymphonyDeviceIDs.subtracting(currentIDs)
         let newlyAppeared = !currentIDs.subtracting(knownSymphonyDeviceIDs).isEmpty
+        if newlyAppeared { symphonyAppearedAt = Date() }
         // coreaudiod restart signature: EVERY previously-known Symphony ID vanished (all IDs were
         // reassigned), vs a real plug-in where existing devices keep their IDs. On a restart we must
         // still reconnect (grab the new IDs) but must NOT hijack the default output — that would
@@ -731,6 +775,9 @@ final class AppState {
            removedSymphonyIDs.contains(activeAudioDeviceID),
            connectionMode == .hardware || (connectionMode == .disconnected && transportPresent) {
             print("[Maestro] Active Symphony audio device (activeAudioDeviceID) disappeared")
+            // Whatever comes back next is a unit that has just started.
+            symphonyAppearedAt = nil
+            awaitingSymphonyReturn = true
             Self.tbLog.notice("audio device removed while \(String(describing: self.connectionMode), privacy: .public) — transport gone, reconnect retry starts")
             stopThunderboltHealthCheck()
             statusMessage = "Disconnected"
@@ -1419,6 +1466,8 @@ final class AppState {
                     print("[Maestro] reconnect TB timing health: rate=\(health.sampleRate) frame=\(health.frameReadback)/\(health.expectedFrame) latency=\(health.inputLatency)/\(health.outputLatency) safety=\(health.inputSafety)/\(health.outputSafety) int=0x\(String(health.intStatus, radix: 16)) xlink=0x\(String(health.xlinkStatus, radix: 16))")
                     self.applyPendingAutoSwitch()
                 } else {
+                    // Nothing is sent to a unit that is still starting up.
+                    await waitForUSBUnitToSettle()
                     let xpcDevice = XPCDeviceConnection(identifier: identifier,
                         settingsStore: .persistent(for: identifier))
                     self.device = xpcDevice
