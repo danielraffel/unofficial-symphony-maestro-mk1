@@ -2209,6 +2209,80 @@ final class AppState {
         meterPollingTask = nil
     }
 
+    // MARK: - Front Panel Sync
+
+    private var frontPanelSyncTask: Task<Void, Never>?
+    private var lastFrontPanelSpeakerPush: Double?
+
+    /// Off only with `MAESTRO_FRONT_PANEL_SYNC=0`.
+    static let frontPanelSyncEnabled: Bool =
+        ProcessInfo.processInfo.environment["MAESTRO_FRONT_PANEL_SYNC"] != "0"
+
+    /// How often the unit is asked what its front panel is doing. The original
+    /// daemon polled continuously; this is deliberately gentle, and still fast
+    /// enough that a turning encoder looks live.
+    static let frontPanelSyncInterval: Duration = .milliseconds(300)
+
+    /// Keep the on-screen speaker and headphone levels and mutes in step with
+    /// the unit's front panel encoder (USB).
+    ///
+    /// Nothing on the unit notifies the host, so this asks it (`0x28`), as the
+    /// original software did; see `FrontPanelSync` for the rules. One task for
+    /// the life of the app: it idles while there is no USB unit, never reads a
+    /// unit that is still starting up, and backs off when a read fails.
+    @MainActor
+    func startFrontPanelSync() {
+        guard Self.frontPanelSyncEnabled, frontPanelSyncTask == nil else { return }
+        frontPanelSyncTask = Task { @MainActor [weak self] in
+            var sync = FrontPanelSync()
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard self.connectionMode == .hardware, self.isHardwareInitialized,
+                      let usb = self.device as? XPCDeviceConnection,
+                      Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date()) == 0
+                else {
+                    sync.reset()
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                guard let update = await usb.readParameterUpdates() else {
+                    sync.reset()
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                // The connection may have been replaced while the read was out.
+                if usb === self.device as? XPCDeviceConnection {
+                    for change in sync.changes(for: update) { self.applyFrontPanelChange(change) }
+                }
+                try? await Task.sleep(for: Self.frontPanelSyncInterval)
+            }
+        }
+    }
+
+    @MainActor
+    private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
+        switch change {
+        case .level(.speaker, let dB, let settled):
+            if speakerLevel != dB { speakerLevel = dB }
+            // Once the encoder stops, tell the Mac's volume control, which also
+            // updates the level the audio helper restores after a reconnect.
+            // Otherwise a power cycle would bring back the older, possibly
+            // louder, level. Only when it stops: writing while it turns would
+            // send stale steps back to the unit and fight the encoder. Once per
+            // value, so the write this causes cannot start a loop.
+            if settled, lastFrontPanelSpeakerPush != dB {
+                lastFrontPanelSpeakerPush = dB
+                writeASPVolume(dB)
+            }
+        case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
+        case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
+        case .muteAll(let muted):
+            speakerMuted = muted
+            hp1Muted = muted
+            hp2Muted = muted
+        }
+    }
+
     // MARK: - ASP Volume Sync
 
     /// Find the "Symphony I/O : Maestro" ASP device and install CoreAudio property

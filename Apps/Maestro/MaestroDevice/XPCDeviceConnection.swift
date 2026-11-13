@@ -546,6 +546,18 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         return try await readFromUnit(address)
     }
 
+    /// One read of the unit's front panel state (vendor read `0x28`). Nil when
+    /// the unit does not answer or the reply is not a real reading.
+    public func readParameterUpdates() async -> SymphonyIOParameterUpdates? {
+        guard transport.isConnected else { return nil }
+        let request = SymphonyIOParameterUpdates.readRequest
+        guard let reply = try? await transport.sendGetProperty(
+                bRequest: request.request, wValue: request.value, wIndex: request.index,
+                dataLength: UInt16(request.data.count)),
+              reply.status == 0 else { return nil }
+        return SymphonyIOParameterUpdates(data: reply.data)
+    }
+
     static let readFromUnitWhenPossible: Set<AudioPropertySelector> = [.peakHoldMode, .oversHoldMode]
 
     private func readFromUnit(_ address: PropertyAddress) async throws -> PropertyValue {
