@@ -59,6 +59,19 @@ public struct CardLayout: Sendable, Equatable {
         self.fallbackChannelCount = fallbackChannelCount
     }
 
+    /// Whether a pair of slot readings describes an actual unit.
+    ///
+    /// Two empty slots are never knowledge, wherever the reading came from. A
+    /// working Symphony I/O has at least one card, so "both empty" means the
+    /// card-type read was not answered: a failed read, or a unit that is not a
+    /// Symphony I/O at all (an AD-16X or DA-16X on a ThunderBridge does not
+    /// speak the option-board command). Treating that pair as known drew zero
+    /// output strips and an empty mixer, with no way back, because the pair was
+    /// also cached. Unknown falls back to the generic layout instead.
+    public static func readingsDescribeAUnit(slot1: IOCardType, slot2: IOCardType) -> Bool {
+        slot1 != .none || slot2 != .none
+    }
+
     /// Build a layout from a validated `CardConfiguration`.
     public init(configuration: CardConfiguration, fallbackChannelCount: Int = 16) {
         self.init(slot1: configuration.slot1, slot2: configuration.slot2,
