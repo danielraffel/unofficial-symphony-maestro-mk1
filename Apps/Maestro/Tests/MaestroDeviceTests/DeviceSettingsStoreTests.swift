@@ -82,15 +82,36 @@ struct DeviceSettingsStoreTests {
         #expect(store.value(for: Self.peak) == nil)
     }
 
-    @Test("entries come back in a stable order")
-    func entriesAreOrdered() {
+    /// The original wrote the monitor mode before the dim, mono and speaker set
+    /// that only mean something within it. FourCC order would put them first.
+    @Test("replay order follows the original: monitor mode before its dependents")
+    func entriesFollowOwnedOrder() {
         let store = DeviceSettingsStore()
+        store.record(.uint32(1), for: Self.peak)
+        store.record(.uint32(2), for: PropertyAddress(selector: .activeSpeakerSet))
+        store.record(.bool(true), for: PropertyAddress(selector: .outputDim))
         store.record(.uint32(1), for: Self.bank2)
         store.record(.uint32(1), for: PropertyAddress(selector: .metersShowInput, element: 1))
-        store.record(.uint32(1), for: Self.peak)
-        let keys = store.entries().map { [$0.address.selector.rawValue, $0.address.element] }
-        #expect(keys == keys.sorted { ($0[0], $0[1]) < ($1[0], $1[1]) })
-        #expect(keys.count == 3)
+        store.record(.uint32(3), for: PropertyAddress(selector: .speakerOutputMode))
+        let order = store.entries().map(\.address)
+        #expect(order == [
+            PropertyAddress(selector: .speakerOutputMode),
+            PropertyAddress(selector: .outputDim),
+            PropertyAddress(selector: .activeSpeakerSet),
+            PropertyAddress(selector: .metersShowInput, element: 1),
+            Self.bank2,
+            Self.peak,
+        ])
+    }
+
+    @Test("settings the store does not own are never replayed")
+    func foreignEntriesAreNotReplayed() {
+        let store = DeviceSettingsStore()
+        for selector: AudioPropertySelector in [.micGain, .clockSource, .outputLevel,
+                                                .headphone1RoutingID, .headphone2RoutingID] {
+            store.record(.uint32(1), for: PropertyAddress(selector: selector))
+        }
+        #expect(store.entries().isEmpty)
     }
 
     // MARK: - Thunderbolt
@@ -196,6 +217,35 @@ struct DeviceSettingsStoreTests {
         let requests = Set(transport.setPropertyCalls.map(\.bRequest))
         #expect(requests == [SymphonyIOCommand.peakHold.rawValue, SymphonyIOCommand.overHold.rawValue])
         #expect(transport.setPropertyCalls.first { $0.bRequest == SymphonyIOCommand.peakHold.rawValue }?.data == Data([2]))
+    }
+
+    /// The original pushed the monitor settings on connect in USB mode too.
+    /// Both transports must own the same list, so a unit behaves the same
+    /// whichever cable it is on.
+    @Test("USB and Thunderbolt save and replay the same settings")
+    func bothTransportsOwnTheSameSettings() {
+        #expect(XPCDeviceConnection.storedSelectors == ThunderboltDeviceConnection.storedSelectors)
+        // Never replayed: the front panel can change these behind the app.
+        for selector: AudioPropertySelector in [.outputLevel, .outputMute, .headphone1Level,
+                                                .headphone2Level, .headphone1Mute,
+                                                .headphone2Mute, .clockSource] {
+            #expect(!XPCDeviceConnection.storedSelectors.contains(selector))
+            #expect(!ThunderboltDeviceConnection.storedSelectors.contains(selector))
+        }
+    }
+
+    @Test("USB: a monitor setting is saved on write and replayed on connect")
+    func usbReplaysMonitorSettings() async throws {
+        let store = DeviceSettingsStore()
+        let first = XPCDeviceConnection(identifier: Self.usb, transport: MockXPCTransport(), settingsStore: store)
+        try await first.setProperty(PropertyAddress(selector: .outputDim), value: .bool(true))
+        #expect(store.value(for: PropertyAddress(selector: .outputDim)) == .bool(true))
+
+        let transport = MockXPCTransport()
+        let second = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+        let replay = await second.reapplyStoredSettings()
+        #expect(replay == DeviceSettingsReplay(applied: 1))
+        #expect(transport.setPropertyCalls.count == 1)
     }
 
     @Test("USB: nothing saved means nothing written on connect")

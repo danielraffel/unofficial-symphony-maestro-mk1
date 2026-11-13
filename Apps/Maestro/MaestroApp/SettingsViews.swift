@@ -773,6 +773,7 @@ struct SystemSetupView: View {
     /// A source this view put into `clockSource` from a readback, so the picker's
     /// onChange can tell it from a user selection. Same idea as `programmaticRate`.
     @State private var programmaticClockSource: UInt32?
+    @State private var propertiesLoadGeneration = UUID()
     @State private var clockLocked: Bool = false
     @State private var firmwareVersion: String = "—"
     @State private var parsedFirmware: FirmwareInfo?
@@ -1420,8 +1421,13 @@ struct SystemSetupView: View {
     private func loadProperties() async {
         // See loadSettings: .task(id:) re-runs per preset load and isLoading is false
         // by then, so it has to be re-asserted here rather than left to @State.
+        // Only the newest load may lower the flag. A reload that supersedes this
+        // one would otherwise have its `isLoading` cleared underneath it, and the
+        // values it then assigns would reach the pickers' onChange as user input.
+        let generation = UUID()
+        propertiesLoadGeneration = generation
         isLoading = true
-        defer { isLoading = false }
+        defer { if propertiesLoadGeneration == generation { isLoading = false } }
         guard let device = appState.device else {
             errorMessage = "No device connected"
             return

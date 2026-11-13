@@ -389,16 +389,12 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     private var cachedKBVolPeripheralID: UInt32 = 0
     private var cachedKBVolOutputID: UInt32 = 0
 
-    /// Write-only settings that are saved on the Mac and written back to the
-    /// unit on connect. See ``DeviceSettingsStore``.
-    ///
-    /// USB can read most settings from the hardware, so only the ones with no
-    /// read are here. Clock source is left as a per-session cache: it cannot be
-    /// read on USB, and replaying a saved external clock at connect could unlock
-    /// a unit whose word clock is no longer there.
-    static let storedSelectors: Set<AudioPropertySelector> = [
-        .peakHoldMode, .oversHoldMode, .prefix,
-    ]
+    /// Settings that are saved on the Mac and written back to the unit on
+    /// connect: the same list as ThunderBridge, see
+    /// ``DeviceSettingsStore/ownedSettings`` for what is in it and why. Most of
+    /// them can also be read on USB, and reads still come from the hardware;
+    /// storing them is what lets a power-cycled unit be put back.
+    static let storedSelectors = Set(DeviceSettingsStore.ownedSettings)
 
     /// In-memory unless the app hands in a persistent one.
     public let settingsStore: DeviceSettingsStore

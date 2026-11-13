@@ -885,8 +885,8 @@ final class AppState {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, !Task.isCancelled, self.transportType == .usb else { break }
                 let live = await Task.detached(priority: .utility) {
-                    let probe = ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
-                        settingsStore: .persistent(for: identifier))
+                    // A throwaway probe: no settings store to load every tick.
+                    let probe = ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
                     let verdict = probe.probeEndpoint()
                     probe.closeDextClient()
                     return verdict.isLive
@@ -1252,8 +1252,13 @@ final class AppState {
         guard replay.applied > 0 || !replay.failed.isEmpty else { return }
         print("[Maestro] syncDeviceSettings: re-applied \(replay.applied) saved setting(s)"
             + (replay.failed.isEmpty ? "" : ", \(replay.failed.count) refused: \(replay.failed)"))
-        // Views that loaded before the replay finished re-read the settled state.
-        viewReloadToken = UUID()
+        // On USB the views read these settings from the hardware, and one that
+        // loaded before the replay finished may be showing the unit's
+        // pre-replay state. ThunderBridge reads come from the store, which the
+        // replay does not change, so there is nothing to re-read there.
+        if device is XPCDeviceConnection {
+            viewReloadToken = UUID()
+        }
     }
 
     /// Mark hardware as ready for property access.

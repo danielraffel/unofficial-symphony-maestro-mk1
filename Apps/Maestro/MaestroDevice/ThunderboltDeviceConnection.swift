@@ -103,19 +103,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// Deliberately a short list, not all of `dextSelectors`: per-channel input,
     /// mixer and routing state has its own stores and restore paths, and
     /// answering those reads here would put a second source of truth under them.
-    /// Clock source is not here either. It is read from the driver, which is the
-    /// truth, and replaying a saved external clock at connect could unlock a
-    /// unit whose word clock is no longer there.
-    static let storedSelectors: Set<AudioPropertySelector> = [
-        .peakHoldMode, .oversHoldMode,
-        .frontPanelMeterBank, .metersShowInput,
-        .prefix,
-        .speakerOutputMode, .activeSpeakerSet,
-        .outputDim, .outputSumToMono,
-        .headphone1Dim, .headphone2Dim,
-        .headphone1SumToMono, .headphone2SumToMono,
-        .headphone1RoutingID, .headphone2RoutingID,
-    ]
+    /// The list itself is ``DeviceSettingsStore/ownedSettings``, shared with USB.
+    static let storedSelectors = Set(DeviceSettingsStore.ownedSettings)
 
     /// In-memory unless the app hands in a persistent one.
     public let settingsStore: DeviceSettingsStore
