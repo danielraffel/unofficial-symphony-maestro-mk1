@@ -7,6 +7,8 @@
 - Device settings no longer forget what you chose. Maestro now keeps these settings on your Mac and writes them back to the Symphony each time it connects, which is how the original Apogee software worked. They survive switching tabs, quitting Maestro, and power-cycling the unit. This applies over both USB and ThunderBridge to: the Output tab's speaker mode, speaker set, dim and mono; dim and mono for each headphone; the front panel meter sources; Peak Hold and Over Hold; and the peripheral prefix.
 - System Setup now shows the Clock Source in use when you return to the tab. Previously the picker went back to Internal while the hardware stayed on the source you had chosen. Over ThunderBridge it is read from the driver. Over USB it is remembered until Maestro quits.
 
+- Over USB, power-cycling the Symphony while Maestro is open no longer configures the unit twice within a second of it coming back. The repeated configuration re-locked the unit just as audio was starting.
+
 ### Known limits
 
 - Only settings changed through Maestro are saved. A setting you have not touched in Maestro still shows its default until you set it once.

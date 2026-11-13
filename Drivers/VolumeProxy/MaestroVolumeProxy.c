@@ -1251,6 +1251,35 @@ static void note_getproperty_succeeded(void)
 
 /* Rate-limit recovery: don't attempt more than once per 10 seconds */
 static time_t gLastRecoveryAttempt = 0;
+/* When the open handle was last fully configured, so the same enumeration is not
+   configured twice.
+
+   A power cycle with Maestro open is seen by two observers. The app's meter
+   polling hits the dead handle first and try_recover_usb() reopens and
+   configures the unit the moment it is back on the bus. Up to a second later
+   CoreAudio publishes the audio device and devices_changed_callback() calls
+   init_usb_hardware(), which used to run the whole sequence again: preference
+   lock back ON, clock source, some seventy routing and mixer writes, unlock --
+   on a unit that had just been unlocked and was about to start streaming.
+
+   Seen 2026-11-13, twice out of two: 11:58:42 then 11:58:43 (3,392 late frames
+   and audible clicking afterwards), and 12:02:26.27 then 12:02:26.47 (control
+   endpoint wedged six seconds later). Two reconnects that same session with
+   Maestro closed -- one observer, one init -- were clean. That is a small
+   sample and other things differed, so it is a correlation, not a proven
+   cause; but the second pass does nothing the first did not.
+
+   Cleared whenever the handle closes, so a new enumeration is always
+   configured. */
+static uint64_t gConfiguredAtNs = 0;   /* CLOCK_MONOTONIC; 0 = this handle is unconfigured */
+#define MAESTRO_RECONFIGURE_HOLDOFF_NS (5ull * 1000000000ull)
+
+static int configured_recently(uint64_t nowNs, uint64_t configuredAtNs)
+{
+    return configuredAtNs != 0 && nowNs >= configuredAtNs
+        && nowNs - configuredAtNs < MAESTRO_RECONFIGURE_HOLDOFF_NS;
+}
+
 /* Re-entrancy guard: configure_fpga_routing() calls usb_vendor_write() which
    can fail and call try_recover_usb() again — must prevent that loop. */
 static int gRecoveryInProgress = 0;
@@ -1535,6 +1564,7 @@ static int open_usb_device(void)
 
 static void close_usb_device(void)
 {
+    gConfiguredAtNs = 0;   /* whatever is opened next is a new enumeration */
     if (!gUSBDev) return;
     (*gUSBDev)->USBDeviceClose(gUSBDev);
     (*gUSBDev)->Release(gUSBDev);
@@ -1704,6 +1734,8 @@ static int configure_fpga_routing(void)
 
     LOG("Hardware init complete — stereo, %s, vol=%ddB, clock=Internal/Master",
         muteVal ? "muted" : "unmuted", vol);
+    /* Only a unit that took the final unlock counts as configured. */
+    gConfiguredAtNs = err ? 0 : clock_gettime_nsec_np(CLOCK_MONOTONIC);
     return err;
 }
 
@@ -1802,6 +1834,12 @@ static void init_usb_hardware(void)
        after the power cycle that fixed the hardware. */
     gRecoveryFailures = 0;
     gRecoveryDisarmed = 0;
+    const uint64_t nowNs = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    if (configured_recently(nowNs, gConfiguredAtNs)) {
+        LOG("Hardware already configured %llu ms ago on this handle (USB recovery) — not repeating",
+            (unsigned long long)((nowNs - gConfiguredAtNs) / 1000000ull));
+        return;
+    }
     configure_fpga_routing();
     restore_cached_volume();
 }

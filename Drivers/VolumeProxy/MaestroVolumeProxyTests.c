@@ -88,8 +88,26 @@ static void check_transport_filter(void)
     g_transport_query = query_device_transport;
 }
 
+
+/* A second configure of the same enumeration is skipped only inside the
+   hold-off, and never for a handle that was not configured at all. */
+static void check_reconfigure_holdoff(void)
+{
+    const uint64_t t = 1000ull * 1000000000ull;
+    CHECK(!configured_recently(t, 0), "an unconfigured handle must be configured");
+    CHECK(configured_recently(t + 200000000ull, t), "0.2 s after a configure is a repeat");
+    CHECK(configured_recently(t + 1000000000ull, t), "1 s after a configure is a repeat");
+    CHECK(!configured_recently(t + MAESTRO_RECONFIGURE_HOLDOFF_NS, t),
+          "at the hold-off the unit is configured again");
+    CHECK(!configured_recently(t - 1, t), "a clock that went backwards must not suppress a configure");
+    gConfiguredAtNs = t;
+    close_usb_device();
+    CHECK(gConfiguredAtNs == 0, "closing the handle must forget the configure");
+}
+
 int main(void)
 {
+    check_reconfigure_holdoff();
     check_transport_filter();
     printf("Production startup gains: L=%.8f R=%.8f (%.5f dB)\n",
            (double)gSwReturnPanL, (double)gSwReturnPanR, 20.0 * log10(gSwReturnPanL));
