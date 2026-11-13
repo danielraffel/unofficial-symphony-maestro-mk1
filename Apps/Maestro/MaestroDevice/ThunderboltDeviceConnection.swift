@@ -444,6 +444,21 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// Raw link-watch state for diagnostics panels.
     public func linkState() -> LinkState? { dextClient.readLinkState() }
 
+    /// One read of the unit's front panel state (vendor read `0x28`), through
+    /// the driver's general vendor read. Nil when the unit does not answer or
+    /// the reply is not a real reading. Runs off the caller's thread: the driver
+    /// waits up to 200 ms for a reply.
+    public func readParameterUpdates() async -> SymphonyIOParameterUpdates? {
+        guard isConnected, dextClient.isConnected else { return nil }
+        let client = dextClient
+        return await Task.detached(priority: .utility) {
+            guard let data = try? client.readVendorCommand(
+                command: SymphonyIOParameterUpdates.readRequest.request, value: 1,
+                responseLength: SymphonyIOParameterUpdates.byteCount) else { return nil }
+            return SymphonyIOParameterUpdates(data: data)
+        }.value
+    }
+
     /// The link-watch state behind the most recent `probeEndpoint()` (nil when the
     /// running dext predates selector 5). Read by the lifecycle log.
     public private(set) var lastLinkState: LinkState?

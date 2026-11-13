@@ -2265,25 +2265,64 @@ final class AppState {
             while !Task.isCancelled {
                 guard let self else { return }
                 guard self.connectionMode == .hardware, self.isHardwareInitialized,
-                      let usb = self.device as? XPCDeviceConnection,
-                      Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date()) == 0
-                else {
+                      let device = self.device else {
                     sync.reset()
                     try? await Task.sleep(for: .seconds(1))
                     continue
                 }
-                guard let update = await usb.readParameterUpdates() else {
+                let update: SymphonyIOParameterUpdates?
+                let interval: Duration
+                if let usb = device as? XPCDeviceConnection,
+                   Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date()) == 0 {
+                    update = await usb.readParameterUpdates()
+                    interval = Self.frontPanelSyncInterval
+                } else if let thunderbolt = device as? ThunderboltDeviceConnection,
+                          self.thunderboltHardwareResponsive, self.connectedUnit == nil {
+                    // Same question, asked through the driver. A converter has
+                    // no Symphony front panel to ask. Slower than USB: each read
+                    // is a round trip on the link the driver also uses.
+                    update = await thunderbolt.readParameterUpdates()
+                    interval = Self.thunderboltFrontPanelSyncInterval
+                } else {
                     sync.reset()
-                    try? await Task.sleep(for: .seconds(2))
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                guard let update else {
+                    sync.reset()
+                    try? await Task.sleep(for: .seconds(5))
                     continue
                 }
                 // The connection may have been replaced while the read was out.
-                if usb === self.device as? XPCDeviceConnection {
-                    usb.seedClockSource(reported: update.clockSource)
+                if device === self.device {
+                    (device as? XPCDeviceConnection)?.seedClockSource(reported: update.clockSource)
                     for change in sync.changes(for: update) { self.applyFrontPanelChange(change) }
                 }
-                try? await Task.sleep(for: Self.frontPanelSyncInterval)
+                try? await Task.sleep(for: interval)
             }
+        }
+    }
+
+    static let thunderboltFrontPanelSyncInterval: Duration = .milliseconds(500)
+
+    @MainActor
+    private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
+        switch change {
+        case .level(.speaker, let dB, _):
+            if speakerLevel != dB { speakerLevel = dB }
+            scheduleSpeakerLevelPush(dB)
+        case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
+        case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
+        case .muteAll(let muted):
+            speakerMuted = muted
+            hp1Muted = muted
+            hp2Muted = muted
+        case .metersCleared:
+            // The unit's held peaks are gone; drop Maestro's copies too.
+            inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
+            outputPeakHold = Array(repeating: -60.0, count: outputPeakHold.count)
+            digitalInputPeakHold = Array(repeating: -60.0, count: digitalInputPeakHold.count)
+            digitalOutputPeakHold = Array(repeating: -60.0, count: digitalOutputPeakHold.count)
         }
     }
 
@@ -2313,28 +2352,15 @@ final class AppState {
             guard let self, generation == self.speakerPushGeneration,
                   self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
             self.lastFrontPanelSpeakerPush = dB
-            self.writeASPVolume(dB)
-        }
-    }
-
-    @MainActor
-    private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
-        switch change {
-        case .level(.speaker, let dB, _):
-            if speakerLevel != dB { speakerLevel = dB }
-            scheduleSpeakerLevelPush(dB)
-        case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
-        case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
-        case .muteAll(let muted):
-            speakerMuted = muted
-            hp1Muted = muted
-            hp2Muted = muted
-        case .metersCleared:
-            // The unit's held peaks are gone; drop Maestro's copies too.
-            inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
-            outputPeakHold = Array(repeating: -60.0, count: outputPeakHold.count)
-            digitalInputPeakHold = Array(repeating: -60.0, count: digitalInputPeakHold.count)
-            digitalOutputPeakHold = Array(repeating: -60.0, count: digitalOutputPeakHold.count)
+            if self.transportType == .thunderbolt {
+                // The Mac's volume control for ThunderBridge is the driver's own;
+                // setting the level through the connection updates it.
+                let attenuation = UInt32(max(0, min(64, -dB)))
+                try? await self.device?.setProperty(
+                    PropertyAddress(selector: .outputLevel), value: .uint32(attenuation))
+            } else {
+                self.writeASPVolume(dB)
+            }
         }
     }
 

@@ -9,6 +9,10 @@ Both of these are written from Apogee's original source for hardware we do not o
 - **Symphony 64 PCIe card.** If you use the original Symphony 64 PCIe card in a Thunderbolt chassis, Maestro's driver now recognises it. Earlier versions contained support for the card but never actually connected to it, so it was not detected.
 - **AD-16X, DA-16X, DD-16X and Rosetta 800 converters.** When the unit on the cable is not a Symphony I/O, the driver now asks it what it is, the way Apogee's software did. If it answers, Maestro shows the right number of inputs and outputs for it and names it under System Setup > Device Info > Connected Unit. If it does not answer, Maestro shows the generic 32-channel layout as before.
 
+### What's better
+
+- **The front panel knob is followed over ThunderBridge too.** Turning the volume knob on the Symphony, or muting from the front panel, now updates Maestro over ThunderBridge as it does over USB.
+
 ### How to send feedback
 
 Choose Maestro > About Maestro and click the copy button next to the version number. Paste that into your message, and tell us which unit you have, how many are chained together, and what you see and hear. See "Does Maestro work with AD-16X, DA-16X or Rosetta converters?" in Help.
@@ -38,7 +42,6 @@ Choose Maestro > About Maestro and click the copy button next to the version num
 
 - Maestro only remembers a setting once you have changed it in Maestro. Until then it shows the default.
 - Volume, mute, headphone levels and Clock Source are never changed by Maestro when it connects, because you may have set them on the Symphony itself.
-- Following the front panel knob works over USB. It does not yet work over ThunderBridge.
 
 ### Release notes
 
