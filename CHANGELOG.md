@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.36 (build 1032)
+
+### Added
+
+- Experimental: the ThunderBridge driver now also attaches to the original Symphony 64 PCIe card (`pci19c2,2100`) in a Thunderbolt chassis. Earlier builds contained support for the card but never matched it, so it was not detected. This has not been verified on that hardware; reports are welcome.
+
+### Release notes
+
+- This release updates the ThunderBridge driver to build 120 (0.10.15). macOS replaces the installed driver; close audio applications first, and disconnect and reconnect the ThunderBridge if Maestro asks you to.
+- Nothing changes for ThunderBridge itself: the driver code is identical to build 119.
+
 ## 0.8.35 (build 1031)
 
 ### Fixed

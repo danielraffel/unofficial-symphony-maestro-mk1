@@ -195,6 +195,12 @@ final class AutoLaunchManager {
                     "com.apogee.symphonyio.thunderbridge": [
                         "IOProviderClass": "IOPCIDevice",
                         "IOPCIMatch": "0x220019c2"
+                    ] as [String: Any],
+                    // The older Symphony 64 PCIe card (pci19c2,2100), which the
+                    // driver matches as of dext build 120.
+                    "com.apogee.symphonyio.pcie2100": [
+                        "IOProviderClass": "IOPCIDevice",
+                        "IOPCIMatch": "0x210019c2"
                     ] as [String: Any]
                 ] as [String: Any]
             ]

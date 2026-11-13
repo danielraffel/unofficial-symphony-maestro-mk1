@@ -17,13 +17,13 @@
 	<key>CFBundlePackageType</key>
 	<string>DEXT</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.10.14</string>
+	<string>0.10.15</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>DriverKit</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>119</string>
+	<string>120</string>
 	<key>DTPlatformName</key>
 	<string>driverkit</string>
 	<key>DTPlatformVersion</key>
@@ -39,7 +39,7 @@
 			<key>IOClass</key>
 			<string>IOUserService</string>
 			<key>IOPCIMatch</key>
-			<string>0x220019C2</string>
+			<string>0x220019C2 0x210019C2</string>
 			<key>IOPCIPauseCompatible</key>
 			<true/>
 			<key>IOPCITunnelCompatible</key>
