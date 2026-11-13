@@ -133,6 +133,17 @@ struct HelpView: View {
                 Text("That warning is not about this app. It comes from Apogee's own older software, which installed a system extension that macOS still loads at startup — and running Apogee's uninstaller does not always remove the entry.")
                 Text("To stop it: **System Settings › General › Login Items & Extensions**, find **Apogee Electronics** under **App Background Activity**, and switch it off. Nothing here depends on it.")
             }
+            HelpQuestion("Can I connect more than one Symphony I/O?") {
+                Text("Not yet. Maestro works with **one Symphony I/O** at a time. Over ThunderBridge that is the unit on **Port 1 (Main)**, with up to 32 channels. A second unit on the other port — Apogee's 64-channel setup — is not supported: it is not detected and its channels do not appear.")
+            }
+
+            HelpQuestion("Does Maestro work with AD-16X, DA-16X or Rosetta converters?") {
+                Text("Partly, and it is **experimental**. These older Apogee converters can connect to a ThunderBridge or Symphony 64 card with the same PC-32 cable, and Apogee's original software supported them. Maestro is built for the Symphony I/O and does not yet recognise them as their own kind of unit.")
+                Text("What to expect today: audio may pass, and Maestro shows a **generic 32-channel layout** rather than the converter's real inputs and outputs. Controls that belong to a Symphony I/O — mic preamps, the monitor section, front panel settings, I/O card formats — do nothing on a converter. Level, routing between its own connectors and clocking are set on the converter's front panel, as they always were.")
+                Text("If only some outputs play, check the converter's own **routing mode** on its front panel first: in its advanced routing mode the converter decides which incoming channels reach which outputs. Then check Maestro's **Output Routing**.")
+                Text("Proper support — identifying the converter and showing the right channels for it — is planned. If you use one, a report with **About Maestro › Copy** and the converter model helps a great deal.")
+            }
+
             HelpQuestion("Where do I find Apogee's own documentation and software?") {
                 Text(apogeeDocsLink)
             }

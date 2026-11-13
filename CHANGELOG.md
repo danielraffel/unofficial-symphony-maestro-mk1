@@ -13,6 +13,8 @@
 - **Peak Hold and Over Hold show the Symphony's real setting (USB)** instead of the last thing Maestro sent.
 - **Outputs no longer vanish with AD-16X and DA-16X converters.** With one of these connected through a ThunderBridge, Maestro could show every fader the first time and then none at all from then on. It now keeps showing the full set of channels.
 
+- **Help has two new answers** near the end of Common questions: Maestro works with one Symphony I/O at a time, and what to expect with AD-16X, DA-16X and Rosetta converters.
+
 ### Good to know
 
 - Maestro only remembers a setting once you have changed it in Maestro. Until then it shows the default.
