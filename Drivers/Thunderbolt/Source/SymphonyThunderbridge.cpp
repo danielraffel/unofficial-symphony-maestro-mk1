@@ -300,6 +300,7 @@ struct SymphonyThunderbridge_IVars {
     uint64_t  lastWrapCountSeen;       // watch-local
     bool      linkClockPresent;        // watch-local: last decided XLink RX1 clock state
     uint32_t  linkState;               // atomic; kLinkState* for ReadLinkState
+    uint32_t  unitProbeWord;           // dext 120: identification of a non-Symphony unit, 0 if not probed
     uint32_t  lastWatchClockReg;       // watch-local: last kRegXLinkClocking sample
     uint64_t  linkWatchTicks;          // watch-local
     bool      linkNeedsRevalidation;   // atomic; set by SetPowerState(On), consumed by the watch
@@ -476,6 +477,17 @@ static constexpr uint8_t  kXLinkCmdPassCommands    = 0x02;
 static constexpr uint8_t  kXLinkCmdSetSampleRate   = 0x03;
 static constexpr uint8_t  kXLinkCmdSetExtLock      = 0x04;
 static constexpr uint8_t  kXLinkCmdUnmute          = 0x0A;
+// Unit identification, sent by the original driver to every unit on the bus
+// during enumeration (XLinkRegisters.h XLINK_CMD_INQUIRE / XLINK_CMD_XTD_INQUIRE;
+// Driver/XLink.cpp DeviceRoutingInquire :1449-1500). The INQUIRE reply's high
+// nibble says which channel banks the unit has, which is how the original told
+// the older converters apart: 0x3 AD-16X, 0xC DA-16X, 0xF DD-16X, 0x5 Rosetta 800.
+static constexpr uint8_t  kXLinkCmdInquire         = 0x05;
+static constexpr uint8_t  kXLinkCmdXtdInquire      = 0x0B;
+// ReadLinkState word 15 layout (dext 120+).
+static constexpr uint32_t kUnitProbeRan            = 0x80000000;
+static constexpr uint32_t kUnitProbeInquireOK      = 0x40000000;
+static constexpr uint32_t kUnitProbeXtdOK          = 0x20000000;
 static constexpr uint8_t  kXLinkCmdMsgByte         = 0x10;  // Multi-byte message transport
 
 // Sample rate codes (XLinkRegisters.h:220-225)
@@ -781,6 +793,35 @@ static bool ReadXLinkRXWord(IOPCIDevice *dev, uint8_t memIndex, uint32_t *outWor
     data &= ~kXLinkCmdRxEmpty;
     *outWord = data;
     return true;
+}
+
+// Send one identification command to a unit and wait briefly for its one-byte
+// reply. A reply is accepted on the same terms as the original's
+// XLink::WaitForRXData (Driver/XLink.cpp): command slot 9, the unit's address
+// and the command all match (XLINK_DATA_SLOT/ADDR/CMD/DATA, SymphonyCommon.h
+// :258-264). Any other word is skipped, not taken as an answer.
+// Returns false on a TX timeout or when nothing answered within 20 ms. The
+// original waited 5 ms for INQUIRE and 2 ms for XTD_INQUIRE; this is a little
+// more patient and still bounded.
+static bool XLinkInquire(IOPCIDevice *dev, uint8_t memIndex, uint8_t addr,
+                         uint8_t cmd, uint8_t *outReply)
+{
+    if (!SendXLinkCommand(dev, memIndex, addr, cmd, 0))
+        return false;
+    for (int ms = 0; ms < 20; ms++) {
+        uint32_t word = 0;
+        while (ReadXLinkRXWord(dev, memIndex, &word)) {
+            const uint8_t slot    = (uint8_t)((word & 0x0F000000u) >> 24);
+            const uint8_t rxAddr  = (uint8_t)((word & 0x007E0000u) >> 17);
+            const uint8_t rxCmd   = (uint8_t)((word & 0x0001FE00u) >> 9);
+            if (slot != 9 || rxAddr != addr || rxCmd != cmd)
+                continue;
+            *outReply = (uint8_t)((word & 0x000001FEu) >> 1);
+            return true;
+        }
+        IOSleep(1);
+    }
+    return false;
 }
 
 // Byte-at-a-time reassembler for a SimpleMessageProtocol Response frame.
@@ -1491,6 +1532,37 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                               symphonyAddr, kSIOCmd_SpeakerMode, 0,
                               &readback, 1, txSeq)) {
             startupMode = readback;
+            // A Symphony I/O. Cleared here and not before the read, so the app
+            // never sees the answer vanish for the length of a re-init.
+            ivars->unitProbeWord = 0;
+        } else {
+            // The unit did not answer a Symphony I/O vendor read. It may be one
+            // of the older converters Apogee's driver also supported on this
+            // cable (AD-16X, DA-16X, DD-16X, Rosetta 800), which do not speak
+            // that protocol. Ask it what it is, the way the original did, and
+            // publish the answer for the app. This only reports: nothing else
+            // about the bring-up below changes yet. A Symphony I/O that answers
+            // never reaches this branch.
+            uint8_t inquire = 0, xtd = 0;
+            uint32_t probe = kUnitProbeRan;
+            if (XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
+                             symphonyAddr, kXLinkCmdInquire, &inquire))
+                probe |= kUnitProbeInquireOK | inquire;
+            if (XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
+                             symphonyAddr, kXLinkCmdXtdInquire, &xtd))
+                probe |= kUnitProbeXtdOK | ((uint32_t)xtd << 8);
+            ivars->unitProbeWord = probe;
+            STLOG("Unit probe: no Symphony I/O answer; INQUIRE %s 0x%02x, XTD_INQUIRE %s 0x%02x",
+                  (probe & kUnitProbeInquireOK) ? "replied" : "no reply", inquire,
+                  (probe & kUnitProbeXtdOK) ? "replied" : "no reply", xtd);
+            for (uint32_t n = 0; n < kMaxChannelsPerPort; n += 8) {
+                uint32_t r[8] = {};
+                for (uint32_t k = 0; k < 8; k++)
+                    ivars->pciDevice->MemoryRead32(ivars->barMemoryIndex,
+                                                   kRegOutputRouting + (n + k) * 4, &r[k]);
+                STLOG("Unit probe: output routes %u-%u: %03x %03x %03x %03x %03x %03x %03x %03x",
+                      n, n + 7, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            }
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerVolume, 0,
@@ -2371,7 +2443,7 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     outWords[12] = ivars->lastWatchGcsr;          // dext 117
     outWords[13] = ivars->lastWatchXlinkStatus;
     outWords[14] = ivars->cardReinitCount;
-    outWords[15] = 0;
+    outWords[15] = ivars->unitProbeWord;          // dext 120: see kUnitProbe*
     return kIOReturnSuccess;
 }
 

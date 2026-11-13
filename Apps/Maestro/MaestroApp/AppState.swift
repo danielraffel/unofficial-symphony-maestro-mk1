@@ -542,8 +542,13 @@ final class AppState {
             slot2: secondaryBoardType,
             isKnown: CardLayout.readingsDescribeAUnit(
                 slot1: primaryBoardType, slot2: secondaryBoardType),
-            fallbackChannelCount: device?.identifier.mode.channelCount ?? 16)
+            fallbackChannelCount: device?.identifier.mode.channelCount ?? 16,
+            converter: connectedUnit)
     }
+
+    /// Set when the ThunderBridge driver found something other than a Symphony
+    /// I/O on the cable (an older Apogee converter). Nil for a Symphony I/O.
+    var connectedUnit: ConnectedUnit?
 
     /// Changes whenever the installed cards change, so a view can rebuild its
     /// strip arrays. `initializeChannels()` runs from `.task` before the async
@@ -551,6 +556,7 @@ final class AppState {
     /// then pins the pre-detection count permanently.
     var cardLayoutToken: Int {
         Int(primaryBoardType.rawValue) << 8 | Int(secondaryBoardType.rawValue)
+            | (connectedUnit?.channels.map { ($0.inputs + 1) << 24 | ($0.outputs + 1) << 16 } ?? 0)
     }
 
     /// Load cached board types from UserDefaults (called at init, before USB reads).
@@ -1162,6 +1168,12 @@ final class AppState {
     @MainActor
     func readCardTypes() async {
         guard let device = self.device else { return }
+        // What the driver found on the cable, if it is not a Symphony I/O.
+        connectedUnit = (device as? ThunderboltDeviceConnection)?.linkState()
+            .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
+        if let connectedUnit {
+            print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
+        }
         // ThunderBridge's dext returns a validity bit alongside each raw
         // OptionBoardType value, so a valid raw zero means the slot was
         // measured empty. USB's proxy cannot make that distinction and keeps

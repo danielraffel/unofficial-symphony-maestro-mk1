@@ -354,11 +354,16 @@ public struct LinkState: Sendable, Equatable {
     public let lastGcsr: UInt32
     public let lastXlinkStatus: UInt32
     public let cardReinitCount: UInt32
+    /// dext 120+: identification of a unit that did not answer as a Symphony
+    /// I/O; decode with `ConnectedUnit(probeWord:)`. Zero when not probed.
+    public let unitProbe: UInt32
 
     public init(state: State, clockPresent: Bool, ioRunning: Bool, irqCount: UInt64,
                 recoveryCount: UInt32, hwSuspended: Bool, linkConfigured: Bool,
                 lastClockReg: UInt32, watchTicks: UInt32, audioWraps: UInt32,
-                lastGcsr: UInt32 = 0, lastXlinkStatus: UInt32 = 0, cardReinitCount: UInt32 = 0) {
+                lastGcsr: UInt32 = 0, lastXlinkStatus: UInt32 = 0, cardReinitCount: UInt32 = 0,
+                unitProbe: UInt32 = 0) {
+        self.unitProbe = unitProbe
         self.state = state; self.clockPresent = clockPresent; self.ioRunning = ioRunning
         self.irqCount = irqCount; self.recoveryCount = recoveryCount; self.hwSuspended = hwSuspended
         self.linkConfigured = linkConfigured; self.lastClockReg = lastClockReg
@@ -379,7 +384,8 @@ public struct LinkState: Sendable, Equatable {
                          linkConfigured: words[8] != 0, lastClockReg: words[9],
                          watchTicks: words[10], audioWraps: words[11],
                          lastGcsr: ext ? words[12] : 0, lastXlinkStatus: ext ? words[13] : 0,
-                         cardReinitCount: ext ? words[14] : 0)
+                         cardReinitCount: ext ? words[14] : 0,
+                         unitProbe: ext ? words[15] : 0)
     }
 }
 

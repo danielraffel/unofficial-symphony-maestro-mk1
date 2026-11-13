@@ -2,14 +2,22 @@
 
 ## 0.8.36 (build 1032)
 
-### Added
+### What's new (experimental)
 
-- Experimental: the ThunderBridge driver now also attaches to the original Symphony 64 PCIe card (`pci19c2,2100`) in a Thunderbolt chassis. Earlier builds contained support for the card but never matched it, so it was not detected. This has not been verified on that hardware; reports are welcome.
+Both of these are written from Apogee's original source for hardware we do not own. We could not try them on the real thing, so testing and feedback are very welcome.
+
+- **Symphony 64 PCIe card.** If you use the original Symphony 64 PCIe card in a Thunderbolt chassis, Maestro's driver now recognises it. Earlier versions contained support for the card but never actually connected to it, so it was not detected.
+- **AD-16X, DA-16X, DD-16X and Rosetta 800 converters.** When the unit on the cable is not a Symphony I/O, the driver now asks it what it is, the way Apogee's software did. If it answers, Maestro shows the right number of inputs and outputs for it and names it under System Setup > Device Info > Connected Unit. If it does not answer, Maestro shows the generic 32-channel layout as before.
+
+### How to send feedback
+
+Choose Maestro > About Maestro and click the copy button next to the version number. Paste that into your message, and tell us which unit you have, how many are chained together, and what you see and hear. See "Does Maestro work with AD-16X, DA-16X or Rosetta converters?" in Help.
 
 ### Release notes
 
-- This release updates the ThunderBridge driver to build 120 (0.10.15). macOS replaces the installed driver; close audio applications first, and disconnect and reconnect the ThunderBridge if Maestro asks you to.
-- Nothing changes for ThunderBridge itself: the driver code is identical to build 119.
+- **This update replaces the ThunderBridge driver** (now build 120). macOS swaps the driver when you install. Close your audio apps first, and if Maestro asks, disconnect and reconnect the ThunderBridge.
+- If you use a Symphony I/O over ThunderBridge, nothing should change for you. The new question is only asked when the connected unit does not answer as a Symphony I/O.
+- USB is not affected by the driver change.
 
 ## 0.8.35 (build 1031)
 

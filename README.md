@@ -74,7 +74,7 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 - macOS 26 (Tahoe) or later
 - Apogee Symphony I/O MK I, connected over USB or an Apogee ThunderBridge
 
-_Intel Macs and earlier versions of macOS are not supported. The original Symphony 64 PCIe card (in a Thunderbolt chassis) is experimental: the driver attaches to it as of 0.8.36, but it has not been verified on that hardware._
+_Intel Macs and earlier versions of macOS are not supported. The original Symphony 64 PCIe card (in a Thunderbolt chassis) is experimental: the driver attaches to it as of 0.8.36, but it has not been verified on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified. Maestro works with one Symphony I/O at a time._
 
 ## Beta Status
 

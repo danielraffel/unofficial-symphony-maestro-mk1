@@ -740,7 +740,8 @@ private struct FirmwareInfo {
         board2: BoardTypeReading,
         deviceModel: String? = nil,
         mode: String? = nil,
-        channelCount: Int? = nil
+        channelCount: Int? = nil,
+        connectedUnit: String? = nil
     ) -> DeviceInfoReport {
         DeviceInfoReport(
             deviceName: deviceName ?? "Symphony I/O",
@@ -755,7 +756,8 @@ private struct FirmwareInfo {
             board2Version: ioBoard2Version,
             deviceModel: deviceModel,
             mode: mode,
-            channelCount: channelCount
+            channelCount: channelCount,
+            connectedUnit: connectedUnit
         )
     }
 }
@@ -1026,6 +1028,9 @@ struct SystemSetupView: View {
                     if let info = parsedFirmware {
                         LabeledContent("Device Name", value: info.deviceName ?? "Symphony I/O")
                         LabeledContent("Connection", value: appState.transportType == .thunderbolt ? "Thunderbolt (ThunderBridge)" : "USB Hardware")
+                        if let unit = appState.connectedUnit {
+                            LabeledContent("Connected Unit", value: unit.displayName)
+                        }
                         if let fw = info.firmwareVersion { LabeledContent("Firmware", value: fw) }
                         if let fpga = info.fpgaVersion { LabeledContent("FPGA Version", value: fpga) }
                         if let hw = info.hardwareID { LabeledContent("Hardware ID", value: hw) }
@@ -1354,7 +1359,8 @@ struct SystemSetupView: View {
             board2: board2Reading,
             deviceModel: device?.identifier.displayName,
             mode: device?.identifier.mode.displayName,
-            channelCount: device?.identifier.mode.channelCount
+            channelCount: device?.identifier.mode.channelCount,
+            connectedUnit: appState.connectedUnit?.displayName
         )
     }
 

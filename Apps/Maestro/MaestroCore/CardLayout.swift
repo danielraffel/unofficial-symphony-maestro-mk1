@@ -47,16 +47,23 @@ public struct CardLayout: Sendable, Equatable {
     /// channel count.
     public let fallbackChannelCount: Int
 
+    /// A recognised older converter in place of a Symphony I/O, when the driver
+    /// identified one. It has no option cards, so only the number of strips is
+    /// taken from it; everything else stays on the unknown-layout behaviour.
+    public let converter: ConnectedUnit?
+
     public init(
         slot1: IOCardType = .none,
         slot2: IOCardType = .none,
         isKnown: Bool = true,
-        fallbackChannelCount: Int = 16
+        fallbackChannelCount: Int = 16,
+        converter: ConnectedUnit? = nil
     ) {
         self.slot1 = slot1
         self.slot2 = slot2
         self.isKnown = isKnown
         self.fallbackChannelCount = fallbackChannelCount
+        self.converter = converter
     }
 
     /// Whether a pair of slot readings describes an actual unit.
@@ -107,12 +114,14 @@ public struct CardLayout: Sendable, Equatable {
     /// Analog INPUT strips to draw. An 8MicPre adds none — its preamps sit in
     /// front of the *host* board's analog inputs and are already counted there.
     public var analogInputStripCount: Int {
+        if !isKnown, let channels = converter?.channels { return channels.inputs }
         guard isKnown else { return fallbackChannelCount }
         return slot1.analogInputChannels + slot2.analogInputChannels
     }
 
     /// Analog OUTPUT strips to draw.
     public var analogOutputStripCount: Int {
+        if !isKnown, let channels = converter?.channels { return channels.outputs }
         guard isKnown else { return fallbackChannelCount }
         return slot1.analogOutputChannels + slot2.analogOutputChannels
     }

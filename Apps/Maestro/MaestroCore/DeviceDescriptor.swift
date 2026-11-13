@@ -908,6 +908,9 @@ public struct DeviceInfoReport: Sendable, Equatable {
     public var deviceModel: String?
     public var mode: String?
     public var channelCount: Int?
+    /// Set when the driver found something other than a Symphony I/O on the
+    /// cable; see `ConnectedUnit`.
+    public var connectedUnit: String?
 
     public init(
         deviceName: String = "Symphony I/O",
@@ -922,8 +925,10 @@ public struct DeviceInfoReport: Sendable, Equatable {
         board2Version: String? = nil,
         deviceModel: String? = nil,
         mode: String? = nil,
-        channelCount: Int? = nil
+        channelCount: Int? = nil,
+        connectedUnit: String? = nil
     ) {
+        self.connectedUnit = connectedUnit
         self.deviceName = deviceName
         self.connection = connection
         self.firmwareVersion = firmwareVersion
@@ -961,6 +966,7 @@ public struct DeviceInfoReport: Sendable, Equatable {
         if let deviceModel { lines.append("Device Model: \(deviceModel)") }
         if let mode { lines.append("Mode: \(mode)") }
         if let channelCount { lines.append("Channel Count: \(channelCount)") }
+        if let connectedUnit { lines.append("Connected Unit: \(connectedUnit)") }
         return lines.joined(separator: "\n")
     }
 

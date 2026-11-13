@@ -138,10 +138,11 @@ struct HelpView: View {
             }
 
             HelpQuestion("Does Maestro work with AD-16X, DA-16X or Rosetta converters?") {
-                Text("Partly, and it is **experimental**. These older Apogee converters can connect to a ThunderBridge or Symphony 64 card with the same PC-32 cable, and Apogee's original software supported them. Maestro is built for the Symphony I/O and does not yet recognise them as their own kind of unit.")
-                Text("What to expect today: audio may pass, and Maestro shows a **generic 32-channel layout** rather than the converter's real inputs and outputs. Controls that belong to a Symphony I/O — mic preamps, the monitor section, front panel settings, I/O card formats — do nothing on a converter. Level, routing between its own connectors and clocking are set on the converter's front panel, as they always were.")
+                Text("We are **experimenting** to see whether we can. These older Apogee converters connect to a ThunderBridge or Symphony 64 card with the same PC-32 cable, and Apogee's original software supported them. We do not own one, so this support is written from Apogee's original source and **has not been tried on the real hardware**. Testing and feedback are very welcome.")
+                Text("What Maestro does: when the connected unit does not answer as a Symphony I/O, the driver asks it what it is. If it says it is an AD-16X, DA-16X, DD-16X or Rosetta 800, Maestro shows that many inputs and outputs and names the unit under **System Setup › Device Info › Connected Unit**. If it does not say, Maestro shows a generic 32-channel layout.")
+                Text("What to expect: controls that belong to a Symphony I/O — mic preamps, the monitor section, front panel settings, I/O card formats — do nothing on a converter. Levels, clocking and the converter's own routing are set on its front panel, as they always were.")
                 Text("If only some outputs play, check the converter's own **routing mode** on its front panel first: in its advanced routing mode the converter decides which incoming channels reach which outputs. Then check Maestro's **Output Routing**.")
-                Text("Proper support — identifying the converter and showing the right channels for it — is planned. If you use one, a report with **About Maestro › Copy** and the converter model helps a great deal.")
+                Text("**To send feedback:** choose **Maestro › About Maestro** and click the **copy button** next to the version number. That copies your device and software details. Paste them into your message along with the converter model, how many units are chained, and what you see and hear.")
             }
 
             HelpQuestion("Where do I find Apogee's own documentation and software?") {
