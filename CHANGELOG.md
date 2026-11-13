@@ -2,26 +2,28 @@
 
 ## 0.8.35 (build 1031)
 
-### Fixed
+### What's better
 
-- Device settings no longer forget what you chose. Maestro now keeps these settings on your Mac and writes them back to the Symphony each time it connects, which is how the original Apogee software worked. They survive switching tabs, quitting Maestro, and power-cycling the unit. This applies over both USB and ThunderBridge to: the Output tab's speaker mode, speaker set, dim and mono; dim and mono for each headphone; the front panel meter sources; Peak Hold and Over Hold; and the peripheral prefix.
-- System Setup now shows the Clock Source in use when you return to the tab. Previously the picker went back to Internal while the hardware stayed on the source you had chosen. Over ThunderBridge it is read from the driver. Over USB it is remembered until Maestro quits.
-- Over USB, the speaker and headphone levels and mutes in Maestro now follow the Symphony's front panel encoder, and the Mac's volume control follows the speaker level once the encoder has been still for a moment.
-- The headphone level knobs now cover the same range as the unit, 0 to -64 dB. They used to run to -127 dB, so the unit's lowest setting sat at the middle of the knob.
-- Over USB, Peak Hold and Over Hold now show what the unit reports instead of what Maestro last sent.
-- Maestro no longer loses every output and mixer strip when the connected unit does not report its I/O cards (for example an AD-16X or DA-16X on a ThunderBridge). It keeps the generic 32-channel layout instead of remembering "no cards".
-- Over USB, nothing is sent to a Symphony that is still starting up. After a power cycle with Maestro open, the audio helper used to reconfigure the unit the instant it was back on the bus, before macOS had finished bringing up its audio, and Maestro followed within a second with its own mixer and routing writes. This could leave the unit clicking until its USB cable was replugged. The helper now waits for macOS to announce the device and configures it once, and Maestro waits three seconds after the unit appears before sending anything.
+- **Your settings stay put.** Maestro used to forget some settings when you switched tabs or reopened the app, even though the Symphony itself still had them. It now remembers them on your Mac and sets them on the Symphony again each time it connects, which is how Apogee's original software worked. They survive switching tabs, quitting Maestro, and turning the Symphony off and on. This covers the speaker mode, speaker set, dim and mono on the Output tab; dim and mono for each headphone; the front panel meter sources; Peak Hold and Over Hold; and the peripheral prefix.
+- **The knobs on the Symphony and the knobs in Maestro now agree (USB).** Turn the volume knob on the front of the Symphony and the speaker or headphone level in Maestro moves with it. Mute and unmute from the front panel show up in Maestro too. After you stop turning the speaker knob, your Mac's volume slider catches up.
+- **Headphone knobs match the Symphony.** The headphone knobs in Maestro went much lower than the Symphony can, so the Symphony's quietest setting sat in the middle of the knob. They now cover the same range, 0 to -64 dB.
+- **No more clicking after turning the Symphony off and on (USB).** If you power-cycled the Symphony while Maestro was open, playback could come back with a digital clicking sound that only went away when you unplugged and replugged the USB cable. Maestro was talking to the Symphony while it was still starting up. It now waits until the Symphony is ready.
+- **Clock Source shows what is in use.** In System Setup, the Clock Source menu used to snap back to Internal when you returned to the tab, even though the Symphony was still using the source you chose.
+- **Peak Hold and Over Hold show the Symphony's real setting (USB)** instead of the last thing Maestro sent.
+- **Outputs no longer vanish with AD-16X and DA-16X converters.** With one of these connected through a ThunderBridge, Maestro could show every fader the first time and then none at all from then on. It now keeps showing the full set of channels.
 
-### Known limits
+### Good to know
 
-- Only settings changed through Maestro are saved. A setting you have not touched in Maestro still shows its default until you set it once.
-- Volume, mute, headphone levels and Clock Source are never written on connect, because they can be changed on the unit itself. They are read from the hardware instead.
-- Headphone source is not saved yet.
-- The on-screen volume does not yet follow the front panel encoder over ThunderBridge.
+- Maestro only remembers a setting once you have changed it in Maestro. Until then it shows the default.
+- Volume, mute, headphone levels and Clock Source are never changed by Maestro when it connects, because you may have set them on the Symphony itself.
+- The headphone source is not remembered yet.
+- Following the front panel knob works over USB. It does not yet work over ThunderBridge.
+- Over USB, Clock Source is remembered only until you quit Maestro.
 
 ### Release notes
 
-- App-only update. The ThunderBridge driver stays at build 119, so no driver re-approval is needed.
+- The ThunderBridge driver is unchanged (build 119), so macOS will not ask you to approve it again.
+- Installing briefly interrupts audio while the USB audio helper is replaced.
 
 ## 0.8.34 (build 1030)
 
