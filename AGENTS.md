@@ -10,6 +10,17 @@ installer resources and install/uninstall scripts buildable together. Preserve
 third-party license notices. Do not add original manufacturer source, private
 reference documents, signing credentials or provisioning profiles to Git.
 
+## Private reference material
+
+The maintainer keeps the original manufacturer source and internal working
+documents in a separate private checkout, expected as a sibling directory named
+`symphony-maestro`. The `Evidence: og_source/...` comments in this source refer to
+`og_source/` there, and plans and investigation notes are in its `Docs/` folder
+(the current work plan is `Docs/2026-11-feedback-work-plan.md`, which also records
+where the private build configuration lives). Read that material in place. Never
+copy, symlink or vendor any of it into this checkout: its `Docs/` would also
+collide with the tracked `docs/` on a case-insensitive volume.
+
 ## Build and test boundaries
 
 The Swift package is in `Apps/Maestro`. Its unit tests and simulator do not establish
