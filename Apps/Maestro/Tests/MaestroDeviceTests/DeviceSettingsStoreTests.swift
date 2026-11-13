@@ -104,11 +104,24 @@ struct DeviceSettingsStoreTests {
         ])
     }
 
+    /// Headphone sources come after each headphone's dim and mono and before
+    /// the meter settings.
+    @Test("headphone sources are stored and replayed")
+    func headphoneSourcesAreOwned() {
+        let store = DeviceSettingsStore()
+        store.record(.uint32(1), for: Self.peak)
+        store.record(.uint32(3), for: PropertyAddress(selector: .headphone2RoutingID))
+        store.record(.uint32(2), for: PropertyAddress(selector: .headphone1RoutingID))
+        store.record(.bool(true), for: PropertyAddress(selector: .headphone1Dim))
+        #expect(store.entries().map(\.address.selector) ==
+                [.headphone1Dim, .headphone1RoutingID, .headphone2RoutingID, .peakHoldMode])
+    }
+
     @Test("settings the store does not own are never replayed")
     func foreignEntriesAreNotReplayed() {
         let store = DeviceSettingsStore()
         for selector: AudioPropertySelector in [.micGain, .clockSource, .outputLevel,
-                                                .headphone1RoutingID, .headphone2RoutingID] {
+                                                .headphone1Level, .outputMute] {
             store.record(.uint32(1), for: PropertyAddress(selector: selector))
         }
         #expect(store.entries().isEmpty)

@@ -411,7 +411,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// The replay now runs only after that wait, before meter polling starts,
     /// and with a pause between writes. `MAESTRO_USB_REPLAY_SETTINGS=0` turns it
     /// off; any other value leaves it on, so a typo cannot disable it silently.
-    static let replaysOnConnect: Bool =
+    public static let replaysOnConnect: Bool =
         ProcessInfo.processInfo.environment["MAESTRO_USB_REPLAY_SETTINGS"] != "0"
 
     /// Pause between replayed writes. The unit's controller serves this control

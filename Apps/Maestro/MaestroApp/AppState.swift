@@ -1307,6 +1307,21 @@ final class AppState {
         } else {
             return
         }
+        // The audible half of a saved headphone source: the crosspoint, taken
+        // from the output routing as it stands after the routing replay.
+        let store = (device as? ThunderboltDeviceConnection)?.settingsStore
+            ?? (device as? XPCDeviceConnection)?.settingsStore
+        let replaysHeadphones = !(device is XPCDeviceConnection) || XPCDeviceConnection.replaysOnConnect
+        if let store, replaysHeadphones {
+            let saved: [(SymphonyIOHeadphoneRouting.Headphone, AudioPropertySelector)] =
+                [(.headphone1, .headphone1RoutingID), (.headphone2, .headphone2RoutingID)]
+            for (headphone, selector) in saved {
+                guard let id = store.value(for: PropertyAddress(selector: selector))?.asUInt32 else { continue }
+                await HeadphoneCrosspoint.apply(headphone, sourceID: id, device: device,
+                                                cachedRoutes: cachedOutputRouteMap(),
+                                                transport: transportType ?? .usb)
+            }
+        }
         guard replay.applied > 0 || !replay.failed.isEmpty else { return }
         print("[Maestro] syncDeviceSettings: re-applied \(replay.applied) saved setting(s)"
             + (replay.failed.isEmpty ? "" : ", \(replay.failed.count) refused: \(replay.failed)"))

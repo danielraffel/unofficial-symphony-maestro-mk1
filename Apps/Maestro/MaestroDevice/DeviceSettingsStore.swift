@@ -84,6 +84,11 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     /// sources, and peak and over hold. The prefix has no hardware behind it on
     /// any transport; it is kept here because this store is its only home.
     ///
+    /// The headphone sources are stored here as well. Writing the stored value
+    /// only restores the unit's record of the choice; the audible half is a
+    /// crosspoint derived from the output routing, which the app re-applies
+    /// right after the replay (`AppState.syncDeviceSettingsToHardware`).
+    ///
     /// Left out on purpose, although the original pushed them:
     /// - Volume, mute and headphone levels. The original kept its copy in step
     ///   with the front panel encoder by polling. This app does not poll yet, so
@@ -91,9 +96,6 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     ///   They are read from the hardware instead.
     /// - Clock source, which can also change on the unit, and where a saved
     ///   external clock could unlock a unit whose word clock is gone.
-    /// - Headphone source. Storing its register is not the audible half of the
-    ///   operation: the crosspoint has to be derived from the output routing
-    ///   (`HeadphoneCrosspoint.apply`), which is the routing replay's job.
     /// - Built-in defaults for settings nobody has set. Pushing those would
     ///   change the monitoring of every existing user on first launch.
     public static let ownedSettings: [AudioPropertySelector] = [
@@ -102,6 +104,7 @@ public final class DeviceSettingsStore: @unchecked Sendable {
         .activeSpeakerSet,
         .headphone1Dim, .headphone1SumToMono,
         .headphone2Dim, .headphone2SumToMono,
+        .headphone1RoutingID, .headphone2RoutingID,
         .frontPanelMeterBank, .metersShowInput,
         .peakHoldMode, .oversHoldMode,
         .prefix,
