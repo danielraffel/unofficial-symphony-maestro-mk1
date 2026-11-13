@@ -328,7 +328,7 @@ struct MonitorToolbarView: View {
 
                 RotaryKnobView(
                     value: $state.hp1Level,
-                    range: -127...0,
+                    range: -64...0,
                     step: 1,
                     label: "",
                     unit: "dB",
@@ -379,7 +379,7 @@ struct MonitorToolbarView: View {
 
                 RotaryKnobView(
                     value: $state.hp2Level,
-                    range: -127...0,
+                    range: -64...0,
                     step: 1,
                     label: "",
                     unit: "dB",

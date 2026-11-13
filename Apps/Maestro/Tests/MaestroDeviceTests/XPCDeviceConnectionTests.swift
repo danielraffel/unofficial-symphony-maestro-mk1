@@ -364,7 +364,9 @@ struct XPCDeviceConnectionTests {
 
         let value = try await conn.getProperty(PropertyAddress(selector: .peakHoldMode))
         #expect(value == .uint32(0))
-        #expect(transport.getPropertyCalls.isEmpty)  // No USB read — cached
+        // The unit is asked (0xDE); the mock's one-byte reply is unusable, so
+        // the cached default is what comes back.
+        #expect(transport.getPropertyCalls.map(\.bRequest) == [SymphonyIOCommand.getCurrentPreferenceSettings.rawValue])
     }
 
     @Test func peakHoldModeCacheUpdatesOnSet() async throws {
@@ -385,7 +387,7 @@ struct XPCDeviceConnectionTests {
 
         let value = try await conn.getProperty(PropertyAddress(selector: .oversHoldMode))
         #expect(value == .uint32(0))
-        #expect(transport.getPropertyCalls.isEmpty)
+        #expect(transport.getPropertyCalls.map(\.bRequest) == [SymphonyIOCommand.getCurrentPreferenceSettings.rawValue])
     }
 
     @Test func frontPanelMeterBankReadsHardwareNotCache() async throws {

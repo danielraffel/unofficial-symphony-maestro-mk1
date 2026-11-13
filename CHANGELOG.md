@@ -13,22 +13,29 @@
 
 ## 0.8.35 (build 1031)
 
-### Fixed
+### What's better
 
-- Device settings no longer forget what you chose. Maestro now keeps these settings on your Mac and writes them back to the Symphony each time it connects, which is how the original Apogee software worked. They survive switching tabs, quitting Maestro, and power-cycling the unit.
-  - Over ThunderBridge: Peak Hold, Over Hold, the front panel meter sources, the peripheral prefix, and the Output tab's speaker mode, speaker set, dim, mono and headphone source.
-  - Over USB: Peak Hold, Over Hold and the peripheral prefix. The other USB settings were already read from the hardware.
-- System Setup now shows the Clock Source in use when you return to the tab. Previously the picker went back to Internal while the hardware stayed on the source you had chosen. Over ThunderBridge it is read from the driver. Over USB it is remembered until Maestro quits.
+- **Your settings stay put.** Maestro used to forget some settings when you switched tabs or reopened the app, even though the Symphony itself still had them. It now remembers them on your Mac and sets them on the Symphony again each time it connects, which is how Apogee's original software worked. They survive switching tabs, quitting Maestro, and turning the Symphony off and on. This covers the speaker mode, speaker set, dim and mono on the Output tab; dim, mono and source for each headphone; the front panel meter sources; Peak Hold and Over Hold; and the peripheral prefix.
+- **The knobs on the Symphony and the knobs in Maestro now agree (USB).** Turn the volume knob on the front of the Symphony and the speaker or headphone level in Maestro moves with it. Mute and unmute from the front panel show up in Maestro too. After you stop turning the speaker knob, your Mac's volume slider catches up. Clearing the meters on the front panel clears them in Maestro as well.
+- **Headphone knobs match the Symphony.** The headphone knobs in Maestro went much lower than the Symphony can, so the Symphony's quietest setting sat in the middle of the knob. They now cover the same range, 0 to -64 dB.
+- **No more clicking after turning the Symphony off and on (USB).** If you power-cycled the Symphony while Maestro was open, playback could come back with a digital clicking sound that only went away when you unplugged and replugged the USB cable. Maestro was talking to the Symphony while it was still starting up. It now waits until the Symphony is ready.
+- **Clock Source shows what is in use.** In System Setup, the Clock Source menu used to snap back to Internal when you returned to the tab, even though the Symphony was still using the source you chose.
+- **You can close the window.** File > Close Window (Command-W) now works. Closing the window does not quit Maestro: it keeps looking after the Symphony in the background, and clicking its Dock icon brings the window back. Use Quit to stop it.
+- **Peak Hold and Over Hold show the Symphony's real setting (USB)** instead of the last thing Maestro sent.
+- **Outputs no longer vanish with AD-16X and DA-16X converters.** With one of these connected through a ThunderBridge, Maestro could show every fader the first time and then none at all from then on. It now keeps showing the full set of channels.
 
-### Known limits
+- **Help has two new answers** near the end of Common questions: Maestro works with one Symphony I/O at a time, and what to expect with AD-16X, DA-16X and Rosetta converters.
 
-- Only settings changed through Maestro are saved. A setting you have not touched in Maestro still shows its default until you set it once.
-- Because Maestro writes its saved settings on connect, a change made on the unit's front panel while Maestro was closed is replaced by the saved value. Clock Source is the exception: it is never written on connect.
-- The on-screen volume does not yet follow the front panel encoder over ThunderBridge.
+### Good to know
+
+- Maestro only remembers a setting once you have changed it in Maestro. Until then it shows the default.
+- Volume, mute, headphone levels and Clock Source are never changed by Maestro when it connects, because you may have set them on the Symphony itself.
+- Following the front panel knob works over USB. It does not yet work over ThunderBridge.
 
 ### Release notes
 
-- App-only update. The ThunderBridge driver stays at build 119, so no driver re-approval is needed.
+- The ThunderBridge driver is unchanged (build 119), so macOS will not ask you to approve it again.
+- Installing briefly interrupts audio while the USB audio helper is replaced.
 
 ## 0.8.34 (build 1030)
 

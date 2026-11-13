@@ -96,10 +96,10 @@ public enum SymphonyIOPropertyMapper {
     /// The XMOS firmware accepts writes for these but doesn't support reads.
     /// keyboardVolumePeripheralID/OutputID are daemon-only prefs with no USB opcode.
     ///
-    /// `peakHoldMode` and `oversHoldMode` are readable in principle — they are
-    /// bytes 2 and 3 of the same `0xDE` block that answers the meter sources — but
-    /// neither has a read route or a decode case yet, so they would throw
-    /// `unsupportedProperty` if moved out. They stay here until that is built.
+    /// `peakHoldMode` and `oversHoldMode` ARE readable — bytes 3 and 2 of the
+    /// same `0xDE` block that answers the meter sources — and
+    /// `XPCDeviceConnection` reads them from the unit. They stay in this set so
+    /// their saved value is still kept as the fallback for a failed read.
     ///
     /// `frontPanelMeterBank`/`metersShowInput` were here too, which meant the
     /// Device Settings > Front Panel pickers never read the device: they showed the
@@ -268,6 +268,13 @@ public enum SymphonyIOPropertyMapper {
             guard SymphonyIOFrontPanelMeterBank(propertyElement: address.element) != nil else {
                 throw DeviceConnectionError.unsupportedProperty(selector)
             }
+            return SymphonyIORequestBuilder.getCurrentPreferenceSettings()
+
+        // Peak hold and over hold are bytes 3 and 2 of the same 0xDE block. The
+        // daemon read them this way too (og_source/maestrolink/Software/
+        // SymphonyIO.cpp:1345-1372). They remain in `writeOnlySelectors` so a
+        // connection can fall back to its saved value when this read fails.
+        case .peakHoldMode, .oversHoldMode:
             return SymphonyIORequestBuilder.getCurrentPreferenceSettings()
 
         // Mixer — element encodes (mixerID << 16) | channelIndex.
@@ -969,6 +976,22 @@ public enum SymphonyIOPropertyMapper {
                 throw DeviceConnectionError.transportError("Invalid software return route")
             }
             return .uint32(UInt32((source &- SymphonyIORoutingAddress.p2pBase) / 2))
+
+        case .peakHoldMode, .oversHoldMode:
+            guard let settings = SymphonyIOPreferenceSettings(data: data) else {
+                throw DeviceConnectionError.transportError(
+                    "Short preference-settings response (\(data.count) of 4 bytes)")
+            }
+            // Peak hold has three modes, over hold four (AutoClear); anything
+            // else is not a reading (a failed EP0 read comes back as 0xFF).
+            let isPeak = address.selector == .peakHoldMode
+            let raw = isPeak ? settings.peakHoldMode : settings.oversHoldMode
+            let limit: UInt8 = isPeak ? 2 : 3
+            guard raw <= limit else {
+                throw DeviceConnectionError.transportError(
+                    "Device reported an unknown hold mode (\(raw))")
+            }
+            return .uint32(UInt32(raw))
 
         // Front-panel meter bank source, extracted from the 0xDE settings block.
         // Byte 0 is bank 1 (meters 1-8), byte 1 is bank 2 (meters 9-16).

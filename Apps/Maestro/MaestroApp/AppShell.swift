@@ -161,6 +161,8 @@ struct ContentView: View {
                 // Then the settings this Mac owns (peak hold, monitor mode, ...).
                 await appState.syncDeviceSettingsToHardware()
             }
+            // Follow the unit's front panel encoder (USB). Idles without a unit.
+            appState.startFrontPanelSync()
             // Start meter polling immediately so Input/Output tab meter bars
             // show live levels without requiring the user to visit the Meters tab.
             if appState.connectionMode == .hardware {

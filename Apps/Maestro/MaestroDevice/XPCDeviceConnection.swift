@@ -389,16 +389,34 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     private var cachedKBVolPeripheralID: UInt32 = 0
     private var cachedKBVolOutputID: UInt32 = 0
 
-    /// Write-only settings that are saved on the Mac and written back to the
-    /// unit on connect. See ``DeviceSettingsStore``.
+    /// Settings that are saved on the Mac and written back to the unit on
+    /// connect: the same list as ThunderBridge, see
+    /// ``DeviceSettingsStore/ownedSettings`` for what is in it and why. Most of
+    /// them can also be read on USB, and reads still come from the hardware;
+    /// storing them is what lets a power-cycled unit be put back.
+    static let storedSelectors = Set(DeviceSettingsStore.ownedSettings)
+
+    /// Whether stored settings are written to the unit on connect over USB.
     ///
-    /// USB can read most settings from the hardware, so only the ones with no
-    /// read are here. Clock source is left as a per-session cache: it cannot be
-    /// read on USB, and replaying a saved external clock at connect could unlock
-    /// a unit whose word clock is no longer there.
-    static let storedSelectors: Set<AudioPropertySelector> = [
-        .peakHoldMode, .oversHoldMode, .prefix,
-    ]
+    /// On. It was switched off for a day during hardware testing (2026-11-13)
+    /// while intermittent clicking after power cycles was chased: the replayed
+    /// writes were the only new traffic and were suspected. The clicking turned
+    /// out to track what reached the unit WHILE IT WAS STARTING UP -- the
+    /// helper reconfiguring it before macOS had published its audio device, and
+    /// this app's reconnect burst a second later. With the helper standing down
+    /// during start-up and the app waiting `AppState.usbSettleInterval` after
+    /// the unit appears, three of three power cycles were clean and the
+    /// 8.6-second clock disturbance that had accompanied every one was gone.
+    ///
+    /// The replay now runs only after that wait, before meter polling starts,
+    /// and with a pause between writes. `MAESTRO_USB_REPLAY_SETTINGS=0` turns it
+    /// off; any other value leaves it on, so a typo cannot disable it silently.
+    public static let replaysOnConnect: Bool =
+        ProcessInfo.processInfo.environment["MAESTRO_USB_REPLAY_SETTINGS"] != "0"
+
+    /// Pause between replayed writes. The unit's controller serves this control
+    /// endpoint and the audio stream; there is no reason to send it a burst.
+    static let replaySpacing: Duration = .milliseconds(25)
 
     /// In-memory unless the app hands in a persistent one.
     public let settingsStore: DeviceSettingsStore
@@ -514,8 +532,48 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         // Write-only properties: return cached values.
         // These have no USB read opcode — the XMOS firmware only accepts writes.
         if SymphonyIOPropertyMapper.writeOnlySelectors.contains(address.selector) {
+            // Peak hold and over hold can be read from the unit, which is the
+            // truth after a power cycle or a change made elsewhere. The saved
+            // value is only the answer when the unit does not give one.
+            if Self.readFromUnitWhenPossible.contains(address.selector),
+               let live = try? await readFromUnit(address) {
+                updateCacheForWriteOnly(address, value: live)
+                return live
+            }
             return getCachedWriteOnly(address)
         }
+
+        return try await readFromUnit(address)
+    }
+
+    /// One read of the unit's front panel state (vendor read `0x28`). Nil when
+    /// the unit does not answer or the reply is not a real reading.
+    public func readParameterUpdates() async -> SymphonyIOParameterUpdates? {
+        guard transport.isConnected else { return nil }
+        let request = SymphonyIOParameterUpdates.readRequest
+        guard let reply = try? await transport.sendGetProperty(
+                bRequest: request.request, wValue: request.value, wIndex: request.index,
+                dataLength: UInt16(request.data.count)),
+              reply.status == 0 else { return nil }
+        return SymphonyIOParameterUpdates(data: reply.data)
+    }
+
+    /// Take the clock source the unit reports when this session has not set one.
+    ///
+    /// USB has no dedicated read for the clock source, so it was remembered only
+    /// until Maestro quit and showed "Internal" after every relaunch. The front
+    /// panel report carries it. A source chosen in this session is not
+    /// overridden: Apogee's daemon noted that the firmware does not report it
+    /// reliably in the USB interface mode (`SymphonyIO.cpp:6462-6466`).
+    public func seedClockSource(reported: UInt8) {
+        guard (1...5).contains(reported) else { return }
+        lock.lock(); defer { lock.unlock() }
+        if cachedClockSource == 0 { cachedClockSource = UInt32(reported) }
+    }
+
+    static let readFromUnitWhenPossible: Set<AudioPropertySelector> = [.peakHoldMode, .oversHoldMode]
+
+    private func readFromUnit(_ address: PropertyAddress) async throws -> PropertyValue {
 
         let usbRequest = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
 
@@ -594,9 +652,13 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// the original daemon did, so a unit that was power-cycled is put back to
     /// what the app is showing. A setting the hardware refuses stays stored and
     /// is reported in `failed`.
-    public func reapplyStoredSettings() async -> DeviceSettingsReplay {
+    public func reapplyStoredSettings(force: Bool = false) async -> DeviceSettingsReplay {
         var replay = DeviceSettingsReplay()
+        guard Self.replaysOnConnect || force else { return replay }
         for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector) {
+            if replay.applied > 0 || !replay.failed.isEmpty {
+                try? await Task.sleep(for: Self.replaySpacing)
+            }
             do {
                 try await setProperty(entry.address, value: entry.value)
                 replay.applied += 1

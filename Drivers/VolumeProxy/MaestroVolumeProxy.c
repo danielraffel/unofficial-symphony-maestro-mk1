@@ -1251,6 +1251,35 @@ static void note_getproperty_succeeded(void)
 
 /* Rate-limit recovery: don't attempt more than once per 10 seconds */
 static time_t gLastRecoveryAttempt = 0;
+/* When the open handle was last fully configured, so the same enumeration is not
+   configured twice.
+
+   A power cycle with Maestro open is seen by two observers. The app's meter
+   polling hits the dead handle first and try_recover_usb() reopens and
+   configures the unit the moment it is back on the bus. Up to a second later
+   CoreAudio publishes the audio device and devices_changed_callback() calls
+   init_usb_hardware(), which used to run the whole sequence again: preference
+   lock back ON, clock source, some seventy routing and mixer writes, unlock --
+   on a unit that had just been unlocked and was about to start streaming.
+
+   Seen 2026-11-13, twice out of two: 11:58:42 then 11:58:43 (3,392 late frames
+   and audible clicking afterwards), and 12:02:26.27 then 12:02:26.47 (control
+   endpoint wedged six seconds later). Two reconnects that same session with
+   Maestro closed -- one observer, one init -- were clean. That is a small
+   sample and other things differed, so it is a correlation, not a proven
+   cause; but the second pass does nothing the first did not.
+
+   Cleared whenever the handle closes, so a new enumeration is always
+   configured. */
+static uint64_t gConfiguredAtNs = 0;   /* CLOCK_MONOTONIC; 0 = this handle is unconfigured */
+#define MAESTRO_RECONFIGURE_HOLDOFF_NS (5ull * 1000000000ull)
+
+static int configured_recently(uint64_t nowNs, uint64_t configuredAtNs)
+{
+    return configuredAtNs != 0 && nowNs >= configuredAtNs
+        && nowNs - configuredAtNs < MAESTRO_RECONFIGURE_HOLDOFF_NS;
+}
+
 /* Re-entrancy guard: configure_fpga_routing() calls usb_vendor_write() which
    can fail and call try_recover_usb() again — must prevent that loop. */
 static int gRecoveryInProgress = 0;
@@ -1329,6 +1358,34 @@ static int ep0_is_live(void)
    writes the GUI domain). Add the variable to
    /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist and
    `sudo launchctl kickstart -k system/com.danielraffel.Maestro.volumeproxy`. */
+/* Recovery must not configure a unit that is still starting up.
+
+   When the Symphony is power-cycled with Maestro open, the app's meter polling
+   hits the dead handle and lands here. The old code then retried the open until
+   the unit was back on the bus and immediately sent the whole configuration --
+   preference lock, clock source, routing, mixer, unlock -- half a second to
+   three quarters of a second BEFORE macOS had finished bringing up the unit's
+   audio interface (2026-11-13: configured 11:58:42.48, device published
+   11:58:43.23; configured 12:18:21.28, published 12:18:21.94). Those reconnects
+   were followed by digital clicking that lasted until a USB replug. With Maestro
+   closed nothing polls, recovery never runs, and the unit is configured once by
+   the "USB device appeared" path after macOS has published it; every one of
+   those reconnects was clean.
+
+   So: if CoreAudio does not currently list the audio device, the unit is off the
+   bus or still coming up. Close the control handle, send nothing, and let the
+   device-list listener do the single configuration at the right time. This is
+   not a failed recovery and does not count toward disarming. It also means
+   recovery no longer blocks gQueue for seconds waiting for a unit to boot. */
+static int defer_to_device_listener(const char *why)
+{
+    LOG("USB recovery: %s — closing the control handle and waiting for the "
+        "audio device to appear (nothing is sent to a unit that is starting up)", why);
+    close_usb_device();
+    gRecoveryInProgress = 0;
+    return -1;
+}
+
 static int try_recover_usb(void)
 {
     /* Prevent re-entrant recovery from writes inside configure_fpga_routing() */
@@ -1354,10 +1411,17 @@ static int try_recover_usb(void)
 
     LOG("USB handle stale — attempting recovery...");
 
+    if (find_usb_device() == kAudioObjectUnknown)
+        return defer_to_device_listener("the audio device is not present");
+
     /* Step 1: Try ResetDevice on the current handle (lightweight port reset) */
     if (gUSBDev) {
         IOReturn kr = (*gUSBDev)->ResetDevice(gUSBDev);
         LOG("ResetDevice: 0x%08X (%s)", kr, kr == kIOReturnSuccess ? "OK" : "failed");
+        /* CoreAudio can lag the bus by a moment; the port saying "no device" is
+           the same fact from the other side. */
+        if (kr == kIOReturnNoDevice)
+            return defer_to_device_listener("the unit is off the bus");
         if (kr == kIOReturnSuccess) {
             usleep(500000);  /* 500ms for device to stabilize after reset */
             if (ep0_is_live()) {
@@ -1400,6 +1464,15 @@ static int try_recover_usb(void)
             /* Reopening proves nothing on its own — see ep0_is_live(). Only
                reconfigure a device that is actually answering. */
             if (ep0_is_live()) {
+                /* Back on the bus and answering, but if macOS has not published
+                   the audio device yet the unit is mid start-up (a reset
+                   re-enumerates it too). Leave the configuration to the
+                   listener. */
+                if (find_usb_device() == kAudioObjectUnknown) {
+                    gRecoveryFailures = 0;
+                    return defer_to_device_listener(
+                        "the unit answers but its audio device is not published yet");
+                }
                 configure_fpga_routing();
                 restore_cached_volume();
                 gRecoveryFailures  = 0;
@@ -1535,6 +1608,7 @@ static int open_usb_device(void)
 
 static void close_usb_device(void)
 {
+    gConfiguredAtNs = 0;   /* whatever is opened next is a new enumeration */
     if (!gUSBDev) return;
     (*gUSBDev)->USBDeviceClose(gUSBDev);
     (*gUSBDev)->Release(gUSBDev);
@@ -1704,6 +1778,8 @@ static int configure_fpga_routing(void)
 
     LOG("Hardware init complete — stereo, %s, vol=%ddB, clock=Internal/Master",
         muteVal ? "muted" : "unmuted", vol);
+    /* Only a unit that took the final unlock counts as configured. */
+    gConfiguredAtNs = err ? 0 : clock_gettime_nsec_np(CLOCK_MONOTONIC);
     return err;
 }
 
@@ -1802,6 +1878,12 @@ static void init_usb_hardware(void)
        after the power cycle that fixed the hardware. */
     gRecoveryFailures = 0;
     gRecoveryDisarmed = 0;
+    const uint64_t nowNs = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    if (configured_recently(nowNs, gConfiguredAtNs)) {
+        LOG("Hardware already configured %llu ms ago on this handle (USB recovery) — not repeating",
+            (unsigned long long)((nowNs - gConfiguredAtNs) / 1000000ull));
+        return;
+    }
     configure_fpga_routing();
     restore_cached_volume();
 }

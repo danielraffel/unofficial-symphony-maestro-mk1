@@ -595,7 +595,7 @@ struct OutputControlsView: View {
                 HStack(spacing: 6) {
                     RotaryKnobView(
                         value: $state.hp1Level,
-                        range: -127...0,
+                        range: -64...0,
                         step: 1,
                         label: "Headphone 1",
                         unit: "dB",
@@ -648,7 +648,7 @@ struct OutputControlsView: View {
                 HStack(spacing: 6) {
                     RotaryKnobView(
                         value: $state.hp2Level,
-                        range: -127...0,
+                        range: -64...0,
                         step: 1,
                         label: "Headphone 2",
                         unit: "dB",
@@ -965,7 +965,7 @@ struct OutputControlsView: View {
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* not on every unit */ }
         do {
             if let att = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 {
-                appState.hp1Level = -Double(att)
+                appState.hp1Level = -Double(min(att, 64))
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP1 level: \(error)") }
         do {
@@ -985,7 +985,7 @@ struct OutputControlsView: View {
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP mono may not be supported */ }
         do {
             if let att = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone2Level)))?.asUInt32 {
-                appState.hp2Level = -Double(att)
+                appState.hp2Level = -Double(min(att, 64))
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP2 level: \(error)") }
         do {

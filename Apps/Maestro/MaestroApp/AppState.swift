@@ -533,14 +533,15 @@ final class AppState {
     /// from here, so a card change moves them together. See ``CardLayout`` for
     /// why the `*PairsPerBoard` bus-slice counts must never be used for this.
     ///
-    /// `isKnown` is false only while slot 1 has told us nothing at all —
-    /// a *detected* empty slot 2 is knowledge, and contributes nothing.
+    /// `isKnown` is false while neither slot has reported a card — see
+    /// `CardLayout.readingsDescribeAUnit`. With a card in one slot, an empty
+    /// other slot is knowledge and contributes nothing.
     var cardLayout: CardLayout {
         CardLayout(
             slot1: primaryBoardType,
             slot2: secondaryBoardType,
-            isKnown: primaryBoardSource != .unknown || primaryBoardType != .none
-                || secondaryBoardSource != .unknown || secondaryBoardType != .none,
+            isKnown: CardLayout.readingsDescribeAUnit(
+                slot1: primaryBoardType, slot2: secondaryBoardType),
             fallbackChannelCount: device?.identifier.mode.channelCount ?? 16)
     }
 
@@ -559,6 +560,12 @@ final class AppState {
     /// a live read actually succeeds.
     func loadCachedBoardTypes() {
         let defaults = UserDefaults.standard
+        // Earlier versions cached "both slots empty" whenever the card-type read
+        // went unanswered. That pair is not a reading of anything; restoring it
+        // would label two failed reads as cached knowledge.
+        let cachedPair = (defaults.object(forKey: "cachedPrimaryBoardType") as? Int,
+                          defaults.object(forKey: "cachedSecondaryBoardType") as? Int)
+        if (cachedPair.0 ?? 0) == 0, (cachedPair.1 ?? 0) == 0 { return }
         if let raw = defaults.object(forKey: "cachedPrimaryBoardType") as? Int,
            raw >= 0, raw <= Int(UInt8.max),
            let card = IOCardType(rawValue: UInt8(raw)) {
@@ -575,6 +582,10 @@ final class AppState {
 
     /// Persist detected board types to UserDefaults.
     private func saveBoardTypeCache() {
+        // Nothing to remember when no card was reported: writing 0/0 here is how
+        // a unit that never answered ended up "known" to have no cards.
+        guard CardLayout.readingsDescribeAUnit(
+            slot1: primaryBoardType, slot2: secondaryBoardType) else { return }
         let defaults = UserDefaults.standard
         defaults.set(Int(primaryBoardType.rawValue), forKey: "cachedPrimaryBoardType")
         defaults.set(Int(secondaryBoardType.rawValue), forKey: "cachedSecondaryBoardType")
@@ -699,6 +710,49 @@ final class AppState {
         )
     }
 
+    /// When a Symphony audio device last appeared in the system device list.
+    /// See `waitForUSBUnitToSettle()`.
+    private var symphonyAppearedAt: Date?
+    /// The active unit went away and has not been seen since. The reconnect loop
+    /// can find the returning unit by polling before the device-list callback
+    /// has stamped `symphonyAppearedAt`, so it stamps it itself.
+    private var awaitingSymphonyReturn = false
+
+    /// How long after its audio device appears a USB unit is left alone.
+    static let usbSettleInterval: TimeInterval = 3.0
+
+    /// Seconds still to wait before a unit that appeared at `appearedAt` may be
+    /// written to. Zero for a unit that has been up for a while (launch, Rescan).
+    nonisolated static func usbSettleRemaining(appearedAt: Date?, now: Date) -> TimeInterval {
+        guard let appearedAt else { return 0 }
+        let elapsed = now.timeIntervalSince(appearedAt)
+        guard elapsed >= 0 else { return 0 }
+        return max(0, usbSettleInterval - elapsed)
+    }
+
+    /// Hold the app's own reconnect traffic until a freshly powered-up USB unit
+    /// has finished starting.
+    ///
+    /// A power-cycled Symphony reappears, the helper configures it and starts
+    /// the audio stream about half a second later, and this app used to follow
+    /// within a second of that with 64 mixer writes, its routing table and a
+    /// burst of reads from every open view, then meter polling. On 2026-11-13
+    /// some of those reconnects were followed by digital clicking that only a
+    /// USB replug cleared; reconnects with Maestro closed, where none of this is
+    /// sent, were all clean. The cause is not proven, but nothing the app sends
+    /// here is urgent: the helper has already muted the hardware inputs and set
+    /// the routing it needs for playback.
+    @MainActor
+    private func waitForUSBUnitToSettle() async {
+        if awaitingSymphonyReturn, symphonyAppearedAt == nil { symphonyAppearedAt = Date() }
+        let remaining = Self.usbSettleRemaining(appearedAt: symphonyAppearedAt, now: Date())
+        awaitingSymphonyReturn = false
+        guard remaining > 0 else { return }
+        print("[Maestro] reconnect: unit appeared \(String(format: "%.1f", Self.usbSettleInterval - remaining)) s ago — waiting \(String(format: "%.1f", remaining)) s before sending anything")
+        statusMessage = "Waiting for the Symphony to finish starting…"
+        try? await Task.sleep(for: .milliseconds(Int(remaining * 1000)))
+    }
+
     /// Called on any audio-device-list change. If a Symphony device NEWLY appeared, reconnect the
     /// app to it and (if the preference is on) make it the macOS default output.
     @MainActor
@@ -710,6 +764,7 @@ final class AppState {
             : knownDefaultOutputDeviceID
         let removedSymphonyIDs = knownSymphonyDeviceIDs.subtracting(currentIDs)
         let newlyAppeared = !currentIDs.subtracting(knownSymphonyDeviceIDs).isEmpty
+        if newlyAppeared { symphonyAppearedAt = Date() }
         // coreaudiod restart signature: EVERY previously-known Symphony ID vanished (all IDs were
         // reassigned), vs a real plug-in where existing devices keep their IDs. On a restart we must
         // still reconnect (grab the new IDs) but must NOT hijack the default output — that would
@@ -731,6 +786,9 @@ final class AppState {
            removedSymphonyIDs.contains(activeAudioDeviceID),
            connectionMode == .hardware || (connectionMode == .disconnected && transportPresent) {
             print("[Maestro] Active Symphony audio device (activeAudioDeviceID) disappeared")
+            // Whatever comes back next is a unit that has just started.
+            symphonyAppearedAt = nil
+            awaitingSymphonyReturn = true
             Self.tbLog.notice("audio device removed while \(String(describing: self.connectionMode), privacy: .public) — transport gone, reconnect retry starts")
             stopThunderboltHealthCheck()
             statusMessage = "Disconnected"
@@ -885,8 +943,8 @@ final class AppState {
                 try? await Task.sleep(for: .seconds(5))
                 guard let self, !Task.isCancelled, self.transportType == .usb else { break }
                 let live = await Task.detached(priority: .utility) {
-                    let probe = ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
-                        settingsStore: .persistent(for: identifier))
+                    // A throwaway probe: no settings store to load every tick.
+                    let probe = ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
                     let verdict = probe.probeEndpoint()
                     probe.closeDextClient()
                     return verdict.isLive
@@ -1249,11 +1307,31 @@ final class AppState {
         } else {
             return
         }
+        // The audible half of a saved headphone source: the crosspoint, taken
+        // from the output routing as it stands after the routing replay.
+        let store = (device as? ThunderboltDeviceConnection)?.settingsStore
+            ?? (device as? XPCDeviceConnection)?.settingsStore
+        let replaysHeadphones = !(device is XPCDeviceConnection) || XPCDeviceConnection.replaysOnConnect
+        if let store, replaysHeadphones {
+            let saved: [(SymphonyIOHeadphoneRouting.Headphone, AudioPropertySelector)] =
+                [(.headphone1, .headphone1RoutingID), (.headphone2, .headphone2RoutingID)]
+            for (headphone, selector) in saved {
+                guard let id = store.value(for: PropertyAddress(selector: selector))?.asUInt32 else { continue }
+                await HeadphoneCrosspoint.apply(headphone, sourceID: id, device: device,
+                                                cachedRoutes: cachedOutputRouteMap(),
+                                                transport: transportType ?? .usb)
+            }
+        }
         guard replay.applied > 0 || !replay.failed.isEmpty else { return }
         print("[Maestro] syncDeviceSettings: re-applied \(replay.applied) saved setting(s)"
             + (replay.failed.isEmpty ? "" : ", \(replay.failed.count) refused: \(replay.failed)"))
-        // Views that loaded before the replay finished re-read the settled state.
-        viewReloadToken = UUID()
+        // On USB the views read these settings from the hardware, and one that
+        // loaded before the replay finished may be showing the unit's
+        // pre-replay state. ThunderBridge reads come from the store, which the
+        // replay does not change, so there is nothing to re-read there.
+        if device is XPCDeviceConnection {
+            viewReloadToken = UUID()
+        }
     }
 
     /// Mark hardware as ready for property access.
@@ -1414,6 +1492,8 @@ final class AppState {
                     print("[Maestro] reconnect TB timing health: rate=\(health.sampleRate) frame=\(health.frameReadback)/\(health.expectedFrame) latency=\(health.inputLatency)/\(health.outputLatency) safety=\(health.inputSafety)/\(health.outputSafety) int=0x\(String(health.intStatus, radix: 16)) xlink=0x\(String(health.xlinkStatus, radix: 16))")
                     self.applyPendingAutoSwitch()
                 } else {
+                    // Nothing is sent to a unit that is still starting up.
+                    await waitForUSBUnitToSettle()
                     let xpcDevice = XPCDeviceConnection(identifier: identifier,
                         settingsStore: .persistent(for: identifier))
                     self.device = xpcDevice
@@ -2142,6 +2222,108 @@ final class AppState {
     func stopMeterPolling() {
         meterPollingTask?.cancel()
         meterPollingTask = nil
+    }
+
+    // MARK: - Front Panel Sync
+
+    private var frontPanelSyncTask: Task<Void, Never>?
+    private var lastFrontPanelSpeakerPush: Double?
+
+    /// Off only with `MAESTRO_FRONT_PANEL_SYNC=0`.
+    static let frontPanelSyncEnabled: Bool =
+        ProcessInfo.processInfo.environment["MAESTRO_FRONT_PANEL_SYNC"] != "0"
+
+    /// How often the unit is asked what its front panel is doing. The original
+    /// daemon polled continuously; this is deliberately gentle, and still fast
+    /// enough that a turning encoder looks live.
+    static let frontPanelSyncInterval: Duration = .milliseconds(300)
+
+    /// Keep the on-screen speaker and headphone levels and mutes in step with
+    /// the unit's front panel encoder (USB).
+    ///
+    /// Nothing on the unit notifies the host, so this asks it (`0x28`), as the
+    /// original software did; see `FrontPanelSync` for the rules. One task for
+    /// the life of the app: it idles while there is no USB unit, never reads a
+    /// unit that is still starting up, and backs off when a read fails.
+    @MainActor
+    func startFrontPanelSync() {
+        guard Self.frontPanelSyncEnabled, frontPanelSyncTask == nil else { return }
+        frontPanelSyncTask = Task { @MainActor [weak self] in
+            var sync = FrontPanelSync()
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard self.connectionMode == .hardware, self.isHardwareInitialized,
+                      let usb = self.device as? XPCDeviceConnection,
+                      Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date()) == 0
+                else {
+                    sync.reset()
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                guard let update = await usb.readParameterUpdates() else {
+                    sync.reset()
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                // The connection may have been replaced while the read was out.
+                if usb === self.device as? XPCDeviceConnection {
+                    usb.seedClockSource(reported: update.clockSource)
+                    for change in sync.changes(for: update) { self.applyFrontPanelChange(change) }
+                }
+                try? await Task.sleep(for: Self.frontPanelSyncInterval)
+            }
+        }
+    }
+
+    /// How long the speaker encoder must be still before its level is passed on
+    /// to the Mac's volume control.
+    static let frontPanelPushQuietInterval: Duration = .milliseconds(1500)
+
+    private var speakerPushGeneration = 0
+
+    /// Tell the Mac's volume control about a level set on the front panel, once
+    /// the encoder has been still for a while.
+    ///
+    /// The Mac's control has to learn the level: it is what the volume keys step
+    /// from, and what the audio helper restores after a reconnect, which would
+    /// otherwise bring back an older and possibly louder level. But setting it
+    /// sends that level to the unit, so it must never happen while the encoder
+    /// may still be turning. The first version pushed as soon as the unit's
+    /// "change in progress" flag dropped, which it does between clicks; stale
+    /// levels were written back mid-turn and the volume jumped around
+    /// (2026-11-13). Each new front panel reading restarts the wait.
+    @MainActor
+    private func scheduleSpeakerLevelPush(_ dB: Double) {
+        speakerPushGeneration += 1
+        let generation = speakerPushGeneration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.frontPanelPushQuietInterval)
+            guard let self, generation == self.speakerPushGeneration,
+                  self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
+            self.lastFrontPanelSpeakerPush = dB
+            self.writeASPVolume(dB)
+        }
+    }
+
+    @MainActor
+    private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
+        switch change {
+        case .level(.speaker, let dB, _):
+            if speakerLevel != dB { speakerLevel = dB }
+            scheduleSpeakerLevelPush(dB)
+        case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
+        case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
+        case .muteAll(let muted):
+            speakerMuted = muted
+            hp1Muted = muted
+            hp2Muted = muted
+        case .metersCleared:
+            // The unit's held peaks are gone; drop Maestro's copies too.
+            inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
+            outputPeakHold = Array(repeating: -60.0, count: outputPeakHold.count)
+            digitalInputPeakHold = Array(repeating: -60.0, count: digitalInputPeakHold.count)
+            digitalOutputPeakHold = Array(repeating: -60.0, count: digitalOutputPeakHold.count)
+        }
     }
 
     // MARK: - ASP Volume Sync

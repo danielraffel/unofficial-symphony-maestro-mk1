@@ -137,6 +137,17 @@ struct MaestroApp: App {
             // File menu — preset save / load (P3F-31, P3F-53)
             // Evidence: og_source/maestro2/App/APDocument.m — storeMaestroPreferenceFile:/recallMaestroPreferenceFile:
             CommandGroup(replacing: .saveItem) {
+                // Replacing this group removes the system's Close item, so it is
+                // put back. Closing the window does not quit Maestro: it keeps
+                // following the Symphony, restores settings when the unit
+                // reconnects, and reopens from the Dock.
+                Button("Close Window") {
+                    NSApp.keyWindow?.performClose(nil)
+                }
+                .keyboardShortcut("w")
+
+                Divider()
+
                 Button("Save Preset...") {
                     Task { @MainActor in
                         let panel = NSSavePanel()

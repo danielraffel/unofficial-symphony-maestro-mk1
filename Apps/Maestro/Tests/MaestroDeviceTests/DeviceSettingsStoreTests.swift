@@ -82,15 +82,49 @@ struct DeviceSettingsStoreTests {
         #expect(store.value(for: Self.peak) == nil)
     }
 
-    @Test("entries come back in a stable order")
-    func entriesAreOrdered() {
+    /// The original wrote the monitor mode before the dim, mono and speaker set
+    /// that only mean something within it. FourCC order would put them first.
+    @Test("replay order follows the original: monitor mode before its dependents")
+    func entriesFollowOwnedOrder() {
         let store = DeviceSettingsStore()
+        store.record(.uint32(1), for: Self.peak)
+        store.record(.uint32(2), for: PropertyAddress(selector: .activeSpeakerSet))
+        store.record(.bool(true), for: PropertyAddress(selector: .outputDim))
         store.record(.uint32(1), for: Self.bank2)
         store.record(.uint32(1), for: PropertyAddress(selector: .metersShowInput, element: 1))
+        store.record(.uint32(3), for: PropertyAddress(selector: .speakerOutputMode))
+        let order = store.entries().map(\.address)
+        #expect(order == [
+            PropertyAddress(selector: .speakerOutputMode),
+            PropertyAddress(selector: .outputDim),
+            PropertyAddress(selector: .activeSpeakerSet),
+            PropertyAddress(selector: .metersShowInput, element: 1),
+            Self.bank2,
+            Self.peak,
+        ])
+    }
+
+    /// Headphone sources come after each headphone's dim and mono and before
+    /// the meter settings.
+    @Test("headphone sources are stored and replayed")
+    func headphoneSourcesAreOwned() {
+        let store = DeviceSettingsStore()
         store.record(.uint32(1), for: Self.peak)
-        let keys = store.entries().map { [$0.address.selector.rawValue, $0.address.element] }
-        #expect(keys == keys.sorted { ($0[0], $0[1]) < ($1[0], $1[1]) })
-        #expect(keys.count == 3)
+        store.record(.uint32(3), for: PropertyAddress(selector: .headphone2RoutingID))
+        store.record(.uint32(2), for: PropertyAddress(selector: .headphone1RoutingID))
+        store.record(.bool(true), for: PropertyAddress(selector: .headphone1Dim))
+        #expect(store.entries().map(\.address.selector) ==
+                [.headphone1Dim, .headphone1RoutingID, .headphone2RoutingID, .peakHoldMode])
+    }
+
+    @Test("settings the store does not own are never replayed")
+    func foreignEntriesAreNotReplayed() {
+        let store = DeviceSettingsStore()
+        for selector: AudioPropertySelector in [.micGain, .clockSource, .outputLevel,
+                                                .headphone1Level, .outputMute] {
+            store.record(.uint32(1), for: PropertyAddress(selector: selector))
+        }
+        #expect(store.entries().isEmpty)
     }
 
     // MARK: - Thunderbolt
@@ -191,18 +225,128 @@ struct DeviceSettingsStoreTests {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
 
-        let replay = await conn.reapplyStoredSettings()
+        let replay = await conn.reapplyStoredSettings(force: true)
         #expect(replay == DeviceSettingsReplay(applied: 2))
         let requests = Set(transport.setPropertyCalls.map(\.bRequest))
         #expect(requests == [SymphonyIOCommand.peakHold.rawValue, SymphonyIOCommand.overHold.rawValue])
         #expect(transport.setPropertyCalls.first { $0.bRequest == SymphonyIOCommand.peakHold.rawValue }?.data == Data([2]))
     }
 
+    /// The original pushed the monitor settings on connect in USB mode too.
+    /// Both transports must own the same list, so a unit behaves the same
+    /// whichever cable it is on.
+    @Test("USB and Thunderbolt save and replay the same settings")
+    func bothTransportsOwnTheSameSettings() {
+        #expect(XPCDeviceConnection.storedSelectors == ThunderboltDeviceConnection.storedSelectors)
+        // Never replayed: the front panel can change these behind the app.
+        for selector: AudioPropertySelector in [.outputLevel, .outputMute, .headphone1Level,
+                                                .headphone2Level, .headphone1Mute,
+                                                .headphone2Mute, .clockSource] {
+            #expect(!XPCDeviceConnection.storedSelectors.contains(selector))
+            #expect(!ThunderboltDeviceConnection.storedSelectors.contains(selector))
+        }
+    }
+
+    @Test("USB: a monitor setting is saved on write and replayed on connect")
+    func usbReplaysMonitorSettings() async throws {
+        let store = DeviceSettingsStore()
+        let first = XPCDeviceConnection(identifier: Self.usb, transport: MockXPCTransport(), settingsStore: store)
+        try await first.setProperty(PropertyAddress(selector: .outputDim), value: .bool(true))
+        #expect(store.value(for: PropertyAddress(selector: .outputDim)) == .bool(true))
+
+        let transport = MockXPCTransport()
+        let second = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+        let replay = await second.reapplyStoredSettings(force: true)
+        #expect(replay == DeviceSettingsReplay(applied: 1))
+        #expect(transport.setPropertyCalls.count == 1)
+    }
+
+    /// Meter sources are part of what the original pushed on connect, and are
+    /// replayed with everything else, in the store's order.
+    @Test("USB: front panel meter sources are replayed with the other settings")
+    func usbReplaysMeterSources() async throws {
+        let store = DeviceSettingsStore()
+        store.record(.uint32(4), for: PropertyAddress(selector: .metersShowInput, element: 1))
+        store.record(.uint32(5), for: Self.bank2)
+        store.record(.uint32(2), for: Self.peak)
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        #expect(await conn.reapplyStoredSettings() == DeviceSettingsReplay(applied: 3))
+        #expect(transport.setPropertyCalls.map(\.bRequest) == [
+            SymphonyIOCommand.frontPanelMeterShow.rawValue,
+            SymphonyIOCommand.frontPanelMeterShow.rawValue,
+            SymphonyIOCommand.peakHold.rawValue,
+        ])
+    }
+
+    /// The shipping behaviour.
+    @Test("USB: saved settings are written on connect by default")
+    func usbReplaysByDefault() async {
+        #expect(XPCDeviceConnection.replaysOnConnect)
+        let store = DeviceSettingsStore()
+        store.record(.uint32(2), for: Self.peak)
+        store.record(.bool(true), for: PropertyAddress(selector: .outputDim))
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        #expect(await conn.reapplyStoredSettings() == DeviceSettingsReplay(applied: 2))
+        #expect(transport.setPropertyCalls.count == 2)
+    }
+
+    /// The unit is the truth for Peak Hold and Over Hold when it answers.
+    /// 0xDE reply: [meter bank 1, meter bank 2, over hold, peak hold].
+    @Test("USB: Peak Hold and Over Hold are read from the unit")
+    func usbReadsHoldModesFromUnit() async throws {
+        let store = DeviceSettingsStore()
+        store.record(.uint32(0), for: Self.peak)
+        let transport = MockXPCTransport()
+        transport.nextReply = XPCPropertyReply(status: 0, data: Data([1, 0, 3, 2]))
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        #expect(try await conn.getProperty(Self.peak) == .uint32(2))
+        #expect(try await conn.getProperty(PropertyAddress(selector: .oversHoldMode)) == .uint32(3))
+        #expect(transport.getPropertyCalls.allSatisfy {
+            $0.bRequest == SymphonyIOCommand.getCurrentPreferenceSettings.rawValue })
+    }
+
+    /// A failed, short or nonsense reply must not be shown as a setting.
+    @Test("USB: an unusable hold-mode reply falls back to the saved value")
+    func usbHoldModeFallsBackToSaved() async throws {
+        let store = DeviceSettingsStore()
+        store.record(.uint32(1), for: Self.peak)
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        transport.nextReply = XPCPropertyReply(status: 0, data: Data([0]))            // short
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+        transport.nextReply = XPCPropertyReply(status: 0, data: Data([0xFF, 0xFF, 0xFF, 0xFF]))  // dead EP0
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+        transport.nextReply = XPCPropertyReply(status: -1, data: Data())              // failed
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+        transport.nextError = DeviceConnectionError.transportError("gone")
+        #expect(try await conn.getProperty(Self.peak) == .uint32(1))
+    }
+
+    @Test("USB: the unit's reported clock source is used until one is set here")
+    func usbSeedsClockSource() async throws {
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: MockXPCTransport())
+        let clock = PropertyAddress(selector: .clockSource)
+        conn.seedClockSource(reported: 0)      // unknown: ignored
+        conn.seedClockSource(reported: 9)      // not a source: ignored
+        #expect(try await conn.getProperty(clock) == .uint32(0))
+        conn.seedClockSource(reported: 2)
+        #expect(try await conn.getProperty(clock) == .uint32(2))
+        try await conn.setProperty(clock, value: .uint32(1))
+        conn.seedClockSource(reported: 2)      // a choice made here wins
+        #expect(try await conn.getProperty(clock) == .uint32(1))
+    }
+
     @Test("USB: nothing saved means nothing written on connect")
     func usbReplayWithNothingSaved() async {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport)
-        #expect(await conn.reapplyStoredSettings() == DeviceSettingsReplay())
+        #expect(await conn.reapplyStoredSettings(force: true) == DeviceSettingsReplay())
         #expect(transport.setPropertyCalls.isEmpty)
     }
 }
