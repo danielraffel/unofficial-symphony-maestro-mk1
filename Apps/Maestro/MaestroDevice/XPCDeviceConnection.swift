@@ -389,9 +389,36 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     private var cachedKBVolPeripheralID: UInt32 = 0
     private var cachedKBVolOutputID: UInt32 = 0
 
-    public init(identifier: USBDeviceIdentifier, transport: XPCTransport? = nil) {
+    /// Write-only settings that are saved on the Mac and written back to the
+    /// unit on connect. See ``DeviceSettingsStore``.
+    ///
+    /// USB can read most settings from the hardware, so only the ones with no
+    /// read are here. Clock source is left as a per-session cache: it cannot be
+    /// read on USB, and replaying a saved external clock at connect could unlock
+    /// a unit whose word clock is no longer there.
+    static let storedSelectors: Set<AudioPropertySelector> = [
+        .peakHoldMode, .oversHoldMode, .prefix,
+    ]
+
+    /// In-memory unless the app hands in a persistent one.
+    public let settingsStore: DeviceSettingsStore
+
+    public init(identifier: USBDeviceIdentifier, transport: XPCTransport? = nil,
+                settingsStore: DeviceSettingsStore = DeviceSettingsStore()) {
         self.identifier = identifier
         self.transport = transport ?? MachXPCTransport()
+        self.settingsStore = settingsStore
+        // Start from what was saved, so a relaunch shows the user's settings
+        // instead of the cache's built-in defaults.
+        if let v = settingsStore.value(for: PropertyAddress(selector: .peakHoldMode))?.asUInt32 {
+            cachedPeakHoldMode = v
+        }
+        if let v = settingsStore.value(for: PropertyAddress(selector: .oversHoldMode))?.asUInt32 {
+            cachedOversHoldMode = v
+        }
+        if let v = settingsStore.value(for: PropertyAddress(selector: .prefix))?.asString, !v.isEmpty {
+            cachedPrefix = v
+        }
     }
 
     // MARK: - Cache Accessors
@@ -552,11 +579,32 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             if SymphonyIOPropertyMapper.writeOnlySelectors.contains(address.selector) {
                 updateCacheForWriteOnly(address, value: value)
             }
+            // Reached only when the send did not throw.
+            if Self.storedSelectors.contains(address.selector) {
+                settingsStore.record(value, for: address)
+            }
         }
 
         // Notify listeners
         let change = PropertyChange(address: address, value: value)
         await listenerStorage.notifyListeners(for: address, change: change)
+    }
+
+    /// Write every stored setting to the hardware. Called once per connect, as
+    /// the original daemon did, so a unit that was power-cycled is put back to
+    /// what the app is showing. A setting the hardware refuses stays stored and
+    /// is reported in `failed`.
+    public func reapplyStoredSettings() async -> DeviceSettingsReplay {
+        var replay = DeviceSettingsReplay()
+        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector) {
+            do {
+                try await setProperty(entry.address, value: entry.value)
+                replay.applied += 1
+            } catch {
+                replay.failed.append(entry.address.selector)
+            }
+        }
+        return replay
     }
 
     public func hasProperty(_ address: PropertyAddress) async -> Bool {
