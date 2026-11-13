@@ -4,14 +4,12 @@
 
 ### Fixed
 
-- Device settings no longer forget what you chose. Maestro now keeps these settings on your Mac, so they survive switching tabs and quitting Maestro: the Output tab's speaker mode, speaker set, dim and mono; dim and mono for each headphone; the front panel meter sources; Peak Hold and Over Hold; and the peripheral prefix.
-- Over ThunderBridge, Maestro also writes the saved settings back to the Symphony each time it connects, as the original Apogee software did, so they survive power-cycling the unit.
+- Device settings no longer forget what you chose. Maestro now keeps these settings on your Mac and writes them back to the Symphony each time it connects, which is how the original Apogee software worked. They survive switching tabs, quitting Maestro, and power-cycling the unit. This applies over both USB and ThunderBridge to: the Output tab's speaker mode, speaker set, dim and mono; dim and mono for each headphone; the front panel meter sources; Peak Hold and Over Hold; and the peripheral prefix.
 - System Setup now shows the Clock Source in use when you return to the tab. Previously the picker went back to Internal while the hardware stayed on the source you had chosen. Over ThunderBridge it is read from the driver. Over USB it is remembered until Maestro quits.
-- Over USB, nothing is sent to a Symphony that is still starting up. After a power cycle with Maestro open, the audio helper used to reconfigure the unit the instant it was back on the bus, before macOS had finished bringing up its audio, and Maestro followed within a second with its own mixer and routing writes. The helper now waits for macOS to announce the device and configures it once, and Maestro waits three seconds after the unit appears before sending anything.
+- Over USB, nothing is sent to a Symphony that is still starting up. After a power cycle with Maestro open, the audio helper used to reconfigure the unit the instant it was back on the bus, before macOS had finished bringing up its audio, and Maestro followed within a second with its own mixer and routing writes. This could leave the unit clicking until its USB cable was replugged. The helper now waits for macOS to announce the device and configures it once, and Maestro waits three seconds after the unit appears before sending anything.
 
 ### Known limits
 
-- Over USB, saved settings are not written back to the unit on connect. Most USB settings are read from the unit, so the display stays true; Peak Hold and Over Hold show the saved value, which can differ from the unit after it has been power-cycled until you set them again.
 - Only settings changed through Maestro are saved. A setting you have not touched in Maestro still shows its default until you set it once.
 - Volume, mute, headphone levels and Clock Source are never written on connect, because they can be changed on the unit itself. They are read from the hardware instead.
 - Headphone source is not saved yet.

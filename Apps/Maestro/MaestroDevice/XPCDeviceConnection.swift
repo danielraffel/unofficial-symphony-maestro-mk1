@@ -398,27 +398,25 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     /// Whether stored settings are written to the unit on connect over USB.
     ///
-    /// Off. Hardware testing on 2026-11-13 (see the work plan in the private
-    /// checkout) found digital clicking after some power cycles with Maestro
-    /// open, and once a wedged control endpoint. Daniel had not heard it before
-    /// this feature. The bad reconnects had only one thing from this feature in
-    /// them: writes sent unprompted a few seconds after the unit came back,
-    /// while Maestro was polling meters. First that was the meter source (`0x10`,
-    /// which is known to wedge this endpoint among `0x30` meter reads); with
-    /// that removed, Peak Hold and Over Hold (`0x11`, `0x12`, the same front
-    /// panel family) were still followed by clicking on one cycle of two. The
-    /// unit's controller serves both this endpoint and the audio stream.
+    /// On. It was switched off for a day during hardware testing (2026-11-13)
+    /// while intermittent clicking after power cycles was chased: the replayed
+    /// writes were the only new traffic and were suspected. The clicking turned
+    /// out to track what reached the unit WHILE IT WAS STARTING UP -- the
+    /// helper reconfiguring it before macOS had published its audio device, and
+    /// this app's reconnect burst a second later. With the helper standing down
+    /// during start-up and the app waiting `AppState.usbSettleInterval` after
+    /// the unit appears, three of three power cycles were clean and the
+    /// 8.6-second clock disturbance that had accompanied every one was gone.
     ///
-    /// That is correlation, not proof. Until it is understood, USB only writes
-    /// a setting when the user changes it, exactly as before this feature. The
-    /// values are still saved, so they survive a tab switch and a relaunch.
-    /// `MAESTRO_USB_REPLAY_SETTINGS=1` turns the replay on for experiments.
+    /// The replay now runs only after that wait, before meter polling starts,
+    /// and with a pause between writes. `MAESTRO_USB_REPLAY_SETTINGS=0` turns it
+    /// off; any other value leaves it on, so a typo cannot disable it silently.
     static let replaysOnConnect: Bool =
-        ProcessInfo.processInfo.environment["MAESTRO_USB_REPLAY_SETTINGS"] == "1"
+        ProcessInfo.processInfo.environment["MAESTRO_USB_REPLAY_SETTINGS"] != "0"
 
-    /// Stored settings never written on connect over USB even when the replay
-    /// is enabled: the meter source write has its own wedge history.
-    static let notReplayed: Set<AudioPropertySelector> = [.frontPanelMeterBank, .metersShowInput]
+    /// Pause between replayed writes. The unit's controller serves this control
+    /// endpoint and the audio stream; there is no reason to send it a burst.
+    static let replaySpacing: Duration = .milliseconds(25)
 
     /// In-memory unless the app hands in a persistent one.
     public let settingsStore: DeviceSettingsStore
@@ -617,9 +615,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     public func reapplyStoredSettings(force: Bool = false) async -> DeviceSettingsReplay {
         var replay = DeviceSettingsReplay()
         guard Self.replaysOnConnect || force else { return replay }
-        for entry in settingsStore.entries()
-        where Self.storedSelectors.contains(entry.address.selector)
-            && !Self.notReplayed.contains(entry.address.selector) {
+        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector) {
+            if replay.applied > 0 || !replay.failed.isEmpty {
+                try? await Task.sleep(for: Self.replaySpacing)
+            }
             do {
                 try await setProperty(entry.address, value: entry.value)
                 replay.applied += 1
