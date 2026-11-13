@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.35 (build 1031)
+
+### Fixed
+
+- System Setup now shows the Clock Source you selected when you return to the tab. Previously the picker went back to Internal while the hardware stayed on the source you had chosen. Over ThunderBridge the value is read from the driver; over USB it is remembered until Maestro quits.
+- Over ThunderBridge, Peak Hold, Over Hold, the front panel meter sources, the peripheral prefix, and the Output tab's speaker mode, dim, mono and headphone source no longer return to their defaults on screen after you switch tabs. These are remembered until Maestro quits; they are not yet read from the hardware, so they show their defaults again after a relaunch.
+
+### Release notes
+
+- App-only update. The ThunderBridge driver stays at build 119, so no driver re-approval is needed.
+
 ## 0.8.34 (build 1030)
 
 ### Fixed
