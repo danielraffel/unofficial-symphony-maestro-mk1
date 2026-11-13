@@ -2259,21 +2259,42 @@ final class AppState {
         }
     }
 
+    /// How long the speaker encoder must be still before its level is passed on
+    /// to the Mac's volume control.
+    static let frontPanelPushQuietInterval: Duration = .milliseconds(1500)
+
+    private var speakerPushGeneration = 0
+
+    /// Tell the Mac's volume control about a level set on the front panel, once
+    /// the encoder has been still for a while.
+    ///
+    /// The Mac's control has to learn the level: it is what the volume keys step
+    /// from, and what the audio helper restores after a reconnect, which would
+    /// otherwise bring back an older and possibly louder level. But setting it
+    /// sends that level to the unit, so it must never happen while the encoder
+    /// may still be turning. The first version pushed as soon as the unit's
+    /// "change in progress" flag dropped, which it does between clicks; stale
+    /// levels were written back mid-turn and the volume jumped around
+    /// (2026-11-13). Each new front panel reading restarts the wait.
+    @MainActor
+    private func scheduleSpeakerLevelPush(_ dB: Double) {
+        speakerPushGeneration += 1
+        let generation = speakerPushGeneration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.frontPanelPushQuietInterval)
+            guard let self, generation == self.speakerPushGeneration,
+                  self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
+            self.lastFrontPanelSpeakerPush = dB
+            self.writeASPVolume(dB)
+        }
+    }
+
     @MainActor
     private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
         switch change {
-        case .level(.speaker, let dB, let settled):
+        case .level(.speaker, let dB, _):
             if speakerLevel != dB { speakerLevel = dB }
-            // Once the encoder stops, tell the Mac's volume control, which also
-            // updates the level the audio helper restores after a reconnect.
-            // Otherwise a power cycle would bring back the older, possibly
-            // louder, level. Only when it stops: writing while it turns would
-            // send stale steps back to the unit and fight the encoder. Once per
-            // value, so the write this causes cannot start a loop.
-            if settled, lastFrontPanelSpeakerPush != dB {
-                lastFrontPanelSpeakerPush = dB
-                writeASPVolume(dB)
-            }
+            scheduleSpeakerLevelPush(dB)
         case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
         case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
         case .muteAll(let muted):
