@@ -212,7 +212,7 @@ struct DeviceSettingsStoreTests {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
 
-        let replay = await conn.reapplyStoredSettings()
+        let replay = await conn.reapplyStoredSettings(force: true)
         #expect(replay == DeviceSettingsReplay(applied: 2))
         let requests = Set(transport.setPropertyCalls.map(\.bRequest))
         #expect(requests == [SymphonyIOCommand.peakHold.rawValue, SymphonyIOCommand.overHold.rawValue])
@@ -243,7 +243,7 @@ struct DeviceSettingsStoreTests {
 
         let transport = MockXPCTransport()
         let second = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
-        let replay = await second.reapplyStoredSettings()
+        let replay = await second.reapplyStoredSettings(force: true)
         #expect(replay == DeviceSettingsReplay(applied: 1))
         #expect(transport.setPropertyCalls.count == 1)
     }
@@ -259,15 +259,31 @@ struct DeviceSettingsStoreTests {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
 
-        #expect(await conn.reapplyStoredSettings() == DeviceSettingsReplay(applied: 1))
+        #expect(await conn.reapplyStoredSettings(force: true) == DeviceSettingsReplay(applied: 1))
         #expect(transport.setPropertyCalls.map(\.bRequest) == [SymphonyIOCommand.peakHold.rawValue])
+    }
+
+    /// The shipping behaviour: nothing is sent to a USB unit unprompted.
+    @Test("USB: saved settings are not written on connect by default")
+    func usbDoesNotReplayByDefault() async {
+        #expect(!XPCDeviceConnection.replaysOnConnect)
+        let store = DeviceSettingsStore()
+        store.record(.uint32(2), for: Self.peak)
+        store.record(.bool(true), for: PropertyAddress(selector: .outputDim))
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        #expect(await conn.reapplyStoredSettings() == DeviceSettingsReplay())
+        #expect(transport.setPropertyCalls.isEmpty)
+        // Still shown after a relaunch.
+        #expect((try? await conn.getProperty(Self.peak)) == .uint32(2))
     }
 
     @Test("USB: nothing saved means nothing written on connect")
     func usbReplayWithNothingSaved() async {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport)
-        #expect(await conn.reapplyStoredSettings() == DeviceSettingsReplay())
+        #expect(await conn.reapplyStoredSettings(force: true) == DeviceSettingsReplay())
         #expect(transport.setPropertyCalls.isEmpty)
     }
 }

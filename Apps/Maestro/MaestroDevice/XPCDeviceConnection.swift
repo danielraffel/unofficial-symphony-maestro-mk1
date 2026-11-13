@@ -396,17 +396,28 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// storing them is what lets a power-cycled unit be put back.
     static let storedSelectors = Set(DeviceSettingsStore.ownedSettings)
 
-    /// Stored settings that are NOT written on connect over USB.
+    /// Whether stored settings are written to the unit on connect over USB.
     ///
-    /// The front panel meter source write (`0x10`) has a history of wedging the
-    /// unit's USB control endpoint when it lands among meter reads
-    /// (`allowFrontPanelMeterWrites`). On 2026-11-13, in the first hardware test
-    /// of connect-time replay, the unit clicked and its control endpoint stopped
-    /// answering a few minutes after a power cycle whose replay had sent two of
-    /// these writes back to back, six seconds after the hardware re-initialised.
-    /// That is not proof the writes caused it, but a display setting is not
-    /// worth sending unprompted into the busiest moment of a reconnect. The user
-    /// changing the picker still writes it, and USB reads it back from the unit.
+    /// Off. Hardware testing on 2026-11-13 (see the work plan in the private
+    /// checkout) found digital clicking after some power cycles with Maestro
+    /// open, and once a wedged control endpoint. Daniel had not heard it before
+    /// this feature. The bad reconnects had only one thing from this feature in
+    /// them: writes sent unprompted a few seconds after the unit came back,
+    /// while Maestro was polling meters. First that was the meter source (`0x10`,
+    /// which is known to wedge this endpoint among `0x30` meter reads); with
+    /// that removed, Peak Hold and Over Hold (`0x11`, `0x12`, the same front
+    /// panel family) were still followed by clicking on one cycle of two. The
+    /// unit's controller serves both this endpoint and the audio stream.
+    ///
+    /// That is correlation, not proof. Until it is understood, USB only writes
+    /// a setting when the user changes it, exactly as before this feature. The
+    /// values are still saved, so they survive a tab switch and a relaunch.
+    /// `MAESTRO_USB_REPLAY_SETTINGS=1` turns the replay on for experiments.
+    static let replaysOnConnect: Bool =
+        ProcessInfo.processInfo.environment["MAESTRO_USB_REPLAY_SETTINGS"] == "1"
+
+    /// Stored settings never written on connect over USB even when the replay
+    /// is enabled: the meter source write has its own wedge history.
     static let notReplayed: Set<AudioPropertySelector> = [.frontPanelMeterBank, .metersShowInput]
 
     /// In-memory unless the app hands in a persistent one.
@@ -603,8 +614,9 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// the original daemon did, so a unit that was power-cycled is put back to
     /// what the app is showing. A setting the hardware refuses stays stored and
     /// is reported in `failed`.
-    public func reapplyStoredSettings() async -> DeviceSettingsReplay {
+    public func reapplyStoredSettings(force: Bool = false) async -> DeviceSettingsReplay {
         var replay = DeviceSettingsReplay()
+        guard Self.replaysOnConnect || force else { return replay }
         for entry in settingsStore.entries()
         where Self.storedSelectors.contains(entry.address.selector)
             && !Self.notReplayed.contains(entry.address.selector) {
