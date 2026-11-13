@@ -396,6 +396,19 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// storing them is what lets a power-cycled unit be put back.
     static let storedSelectors = Set(DeviceSettingsStore.ownedSettings)
 
+    /// Stored settings that are NOT written on connect over USB.
+    ///
+    /// The front panel meter source write (`0x10`) has a history of wedging the
+    /// unit's USB control endpoint when it lands among meter reads
+    /// (`allowFrontPanelMeterWrites`). On 2026-11-13, in the first hardware test
+    /// of connect-time replay, the unit clicked and its control endpoint stopped
+    /// answering a few minutes after a power cycle whose replay had sent two of
+    /// these writes back to back, six seconds after the hardware re-initialised.
+    /// That is not proof the writes caused it, but a display setting is not
+    /// worth sending unprompted into the busiest moment of a reconnect. The user
+    /// changing the picker still writes it, and USB reads it back from the unit.
+    static let notReplayed: Set<AudioPropertySelector> = [.frontPanelMeterBank, .metersShowInput]
+
     /// In-memory unless the app hands in a persistent one.
     public let settingsStore: DeviceSettingsStore
 
@@ -592,7 +605,9 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// is reported in `failed`.
     public func reapplyStoredSettings() async -> DeviceSettingsReplay {
         var replay = DeviceSettingsReplay()
-        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector) {
+        for entry in settingsStore.entries()
+        where Self.storedSelectors.contains(entry.address.selector)
+            && !Self.notReplayed.contains(entry.address.selector) {
             do {
                 try await setProperty(entry.address, value: entry.value)
                 replay.applied += 1

@@ -12,6 +12,7 @@
 - Only settings changed through Maestro are saved. A setting you have not touched in Maestro still shows its default until you set it once.
 - Volume, mute, headphone levels and Clock Source are never written on connect, because they can be changed on the unit itself. They are read from the hardware instead.
 - Headphone source is not saved yet.
+- Over USB the front panel meter sources are saved but not written on connect; they are read back from the unit instead.
 - The on-screen volume does not yet follow the front panel encoder over ThunderBridge.
 
 ### Release notes

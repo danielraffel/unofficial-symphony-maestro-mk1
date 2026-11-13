@@ -248,6 +248,21 @@ struct DeviceSettingsStoreTests {
         #expect(transport.setPropertyCalls.count == 1)
     }
 
+    /// See `XPCDeviceConnection.notReplayed`: the meter source write is not sent
+    /// unprompted on USB.
+    @Test("USB: front panel meter sources are saved but not written on connect")
+    func usbDoesNotReplayMeterSources() async throws {
+        let store = DeviceSettingsStore()
+        store.record(.uint32(4), for: PropertyAddress(selector: .metersShowInput, element: 1))
+        store.record(.uint32(5), for: Self.bank2)
+        store.record(.uint32(2), for: Self.peak)
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: Self.usb, transport: transport, settingsStore: store)
+
+        #expect(await conn.reapplyStoredSettings() == DeviceSettingsReplay(applied: 1))
+        #expect(transport.setPropertyCalls.map(\.bRequest) == [SymphonyIOCommand.peakHold.rawValue])
+    }
+
     @Test("USB: nothing saved means nothing written on connect")
     func usbReplayWithNothingSaved() async {
         let transport = MockXPCTransport()
