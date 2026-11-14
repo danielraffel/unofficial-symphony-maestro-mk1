@@ -306,7 +306,7 @@ struct InputControlsView: View {
                             // and lists only the pairs that module supplies.
                             if layout.hasSPDIF(slot: 0) {
                                 spdifReplaceDropdown(
-                                    label: "SPDIF Coax\n1-2 Replace",
+                                    label: "SPDIF Coax\n1-2 Replaces",
                                     value: $spdifReplace1,
                                     selector: .spdifReplaceID
                                 )
@@ -314,7 +314,7 @@ struct InputControlsView: View {
 
                             if layout.hasSPDIF(slot: 1) {
                                 spdifReplaceDropdown(
-                                    label: "SPDIF Coax\n3-4 Replace",
+                                    label: "SPDIF Coax\n3-4 Replaces",
                                     value: $spdifReplace2,
                                     selector: .spdifReplaceID,
                                     element: 1

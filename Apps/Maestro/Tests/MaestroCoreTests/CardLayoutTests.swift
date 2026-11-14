@@ -160,7 +160,7 @@ struct CardLayoutTests {
         #expect(layout.inputRoutingColumns.count == 8)
         #expect(layout.outputRoutingColumns.count == 8)   // 8 ADAT output pairs
         #expect(layout.headphoneSources.count == 8)
-        #expect(layout.headphoneSources.first?.name == "ADAT 1-2")
+        #expect(layout.headphoneSources.first?.name == "Optical 1-2")
     }
 
     /// The developer's own unit. Nothing about it may change.
@@ -367,7 +367,7 @@ struct CardLayoutTests {
         let slot1In = dev.spdifOptions(slot: 0, isInput: true)
         #expect(slot1In.map(\.id) == [0, 1, 2, 3, 4, 5, 6, 7, 8])
         #expect(slot1In[1].name == "Analog 1-2")
-        #expect(slot1In[5].name == "ADAT 1-2")
+        #expect(slot1In[5].name == "Optical 1-2")
 
         // AD16: sixteen analog inputs, so all eight values are analog — and the
         // numbering continues past slot 1's eight analog inputs.
@@ -378,7 +378,7 @@ struct CardLayoutTests {
 
         // AD16 output side: all digital, numbered after slot 1's ADAT 1-8.
         let slot2Out = dev.spdifOptions(slot: 1, isInput: false)
-        #expect(slot2Out[1].name == "ADAT 9-10")
+        #expect(slot2Out[1].name == "Optical 9-10")
         #expect(slot2Out.map(\.id) == [0, 1, 2, 3, 4, 5, 6, 7, 8])
 
         // A module with no coax offers nothing but Off.
@@ -452,11 +452,11 @@ struct TwoBySixLayoutTests {
         #expect(layout.digitalInputPairs.map(\.label) == ["AES 1/2", "ADAT 1/2", "ADAT 3/4", "ADAT 5/6", "ADAT 7/8"])
         #expect(layout.digitalOutputPairs.map(\.label) == ["AES 1/2", "ADAT 1/2", "ADAT 3/4", "ADAT 5/6", "ADAT 7/8"])
         #expect(layout.headphoneSources.map(\.name)
-                == ["Line 1-2", "Line 3-4", "Line 5-6", "AES 1-2", "ADAT 1-2", "ADAT 3-4", "ADAT 5-6", "ADAT 7-8"])
+                == ["Line 1-2", "Line 3-4", "Line 5-6", "AES 1-2", "Optical 1-2", "Optical 3-4", "Optical 5-6", "Optical 7-8"])
         // S/PDIF replace IDs are pair indices within the board's input channels,
         // which is what the daemon sent for the 2x6 too (SymphonyIOBoard_2x6.cpp:391-401).
         #expect(layout.spdifOptions(slot: 0, isInput: true).map(\.name)
-                == ["Off", "Analog 1-2", "AES 1-2", "ADAT 1-2", "ADAT 3-4", "ADAT 5-6", "ADAT 7-8"])
+                == ["Off", "Analog 1-2", "AES 1-2", "Optical 1-2", "Optical 3-4", "Optical 5-6", "Optical 7-8"])
         #expect(layout.spdifOptions(slot: 0, isInput: true).map(\.id) == [0, 1, 2, 3, 4, 5, 6])
         #expect(layout.mixerChannels.map(\.label)
                 == ["Line 1", "Line 2", "AES 1", "AES 2"] + (1...8).map { "ADAT \($0)" })
@@ -468,7 +468,7 @@ struct TwoBySixLayoutTests {
         let names = layout.outputRoutingColumns.map { "\($0.type) \($0.channels)" }
         #expect(names.contains("ADAT 9/10"))      // slot 2 optical continues after the 2x6's ADAT 1-8
         #expect(!names.contains("AES 3/4"))
-        #expect(layout.spdifOptions(slot: 1, isInput: false).map(\.name).contains("ADAT 9-10"))
+        #expect(layout.spdifOptions(slot: 1, isInput: false).map(\.name).contains("Optical 9-10"))
     }
 
     @Test("Every other module is unchanged: the per-pair label equals its single label")
@@ -506,5 +506,80 @@ struct TwoBySixLayoutTests {
             #expect(CardLayout.readingsDescribeAUnit(slot1: card, slot2: .none))
             #expect(CardLayout.readingsDescribeAUnit(slot1: .none, slot2: card))
         }
+    }
+}
+
+/// The S/PDIF Coax Replaces / Mirrors menus, card by card, against the names
+/// and IDs Apogee's daemon built. The daemon's menu ID is the wire value plus
+/// one (`SymphonyIO_IOBoard.cpp:536-562`); ours is the wire value. Replaces
+/// starts with Off; Mirrors has no Off (`SymphonyIO_IOBoard.cpp:1195-1220`).
+@Suite("S/PDIF menus per card")
+struct SPDIFMenuParityTests {
+
+    private func menu(_ card: IOCardType, input: Bool, slot2 other: IOCardType? = nil) -> [String] {
+        let layout = other.map { CardLayout(slot1: $0, slot2: card) }
+            ?? CardLayout(slot1: card, slot2: .none)
+        return layout.spdifOptions(slot: other == nil ? 0 : 1, isInput: input).map(\.name)
+    }
+
+    private func pairs(_ prefix: String, from first: Int, count: Int) -> [String] {
+        (0..<count).map { "\(prefix) \(first + 2 * $0)-\(first + 2 * $0 + 1)" }
+    }
+
+    /// `SymphonyIOBoard_AnalogOptical.cpp:143-155`, `SymphonyIOBoard_AnalogAES.cpp:118-133`.
+    @Test func eightByEight() {
+        for input in [true, false] {
+            #expect(menu(.optical, input: input)
+                    == ["Off"] + pairs("Analog", from: 1, count: 4) + pairs("Optical", from: 1, count: 4))
+            #expect(menu(.analogAES, input: input)
+                    == ["Off"] + pairs("Analog", from: 1, count: 4) + pairs("AES", from: 1, count: 4))
+        }
+    }
+
+    /// AD16 (A16 IP): Replaces names analog inputs, Mirrors names optical
+    /// outputs (`SymphonyIOBoard_AD16ch.cpp:110-145, 151-187`). DA16 (A16 OP) is
+    /// the reverse (`SymphonyIOBoard_DA16ch.cpp:113-150, 152-187`). ADDA16 is
+    /// analog both ways (`SymphonyIOBoard_ADDA16ch.cpp:80-117`).
+    @Test func sixteenChannelCards() {
+        #expect(menu(.analogAD16, input: true) == ["Off"] + pairs("Analog", from: 1, count: 8))
+        #expect(menu(.analogAD16, input: false) == ["Off"] + pairs("Optical", from: 1, count: 8))
+        #expect(menu(.analogDA16, input: true) == ["Off"] + pairs("Optical", from: 1, count: 8))
+        #expect(menu(.analogDA16, input: false) == ["Off"] + pairs("Analog", from: 1, count: 8))
+        for input in [true, false] {
+            #expect(menu(.analogADDA16, input: input) == ["Off"] + pairs("Analog", from: 1, count: 8))
+        }
+    }
+
+    /// 2x6: Replaces IDs 1-7 = Off, Analog 1-2, AES 1-2, Optical 1-2..7-8;
+    /// Mirrors IDs 2-9 = Analog 1-2..5-6, AES 1-2, Optical 1-2..7-8
+    /// (`SymphonyIOBoard_2x6.cpp:18-24, 568-684`).
+    @Test func twoBySix() {
+        #expect(menu(.twoBySix, input: true)
+                == ["Off", "Analog 1-2", "AES 1-2"] + pairs("Optical", from: 1, count: 4))
+        #expect(menu(.twoBySix, input: false)
+                == ["Off"] + pairs("Analog", from: 1, count: 3) + ["AES 1-2"] + pairs("Optical", from: 1, count: 4))
+    }
+
+    /// Slot 2 numbers on from slot 1's channels of the same plug type
+    /// (`SymphonyIO_IOBoard.cpp:1533-1541`). The owner's unit: an 8x8 AES/OPT
+    /// in slot 1 (either switch position) and an A16 IP in slot 2.
+    @Test func secondSlotContinuesSlotOnesNumbering() {
+        #expect(menu(.analogAD16, input: true, slot2: .analogAES)
+                == ["Off"] + pairs("Analog", from: 9, count: 8))
+        // An AES board has no optical channels, so the A16 IP's optical starts at 1.
+        #expect(menu(.analogAD16, input: false, slot2: .analogAES)
+                == ["Off"] + pairs("Optical", from: 1, count: 8))
+        #expect(menu(.analogAD16, input: false, slot2: .optical)
+                == ["Off"] + pairs("Optical", from: 9, count: 8))
+    }
+
+    /// Optical outputs are "Optical n-m" in the headphone source list
+    /// (`OpticalOut_SymphonyIO_Stream.cpp:121-150`), AES "AES n-m"
+    /// (`AESOut_SymphonyIO_Stream.cpp:45-75`), analog "Line n-m"
+    /// (`SymphonyIO_Stream.cpp:485-495`).
+    @Test func headphoneSourceNames() {
+        let names = CardLayout(slot1: .analogAES, slot2: .analogAD16).headphoneSources.map(\.name)
+        #expect(names == pairs("Line", from: 1, count: 4) + pairs("AES", from: 1, count: 4)
+                + pairs("Optical", from: 1, count: 8))
     }
 }

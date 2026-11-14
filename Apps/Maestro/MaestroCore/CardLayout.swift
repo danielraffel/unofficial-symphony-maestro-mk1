@@ -264,7 +264,7 @@ public struct CardLayout: Sendable, Equatable {
             }
             for pair in 0..<4 {
                 options.append(SPDIFOption(id: UInt32(pair + 5),
-                                           name: "ADAT \(pair * 2 + 1)-\(pair * 2 + 2)"))
+                                           name: "Optical \(pair * 2 + 1)-\(pair * 2 + 2)"))
             }
             return options
         }
@@ -297,11 +297,27 @@ public struct CardLayout: Sendable, Equatable {
         for pair in 0..<digitalPairs where id <= 8 {
             let label = card.digitalLabel(forPair: pair)
             let number = digitalChannel[label, default: 1]
-            options.append(SPDIFOption(id: id, name: "\(label) \(number)-\(number + 1)"))
+            options.append(SPDIFOption(
+                id: id, name: "\(Self.pairMenuLabel(label)) \(number)-\(number + 1)"))
             digitalChannel[label] = number + 2
             id += 1
         }
         return options
+    }
+
+    /// The word Apogee's menus use for a digital pair: "Optical" for the
+    /// optical ports, whatever format they carry, and "AES" for AES.
+    ///
+    /// The channel and routing labels say "ADAT" (the daemon's channel names
+    /// at 44.1/48 kHz, `OpticalIn_SymphonyIO_Stream.cpp:222-226`), but the pair
+    /// menus never did: the S/PDIF Replaces and Mirrors names are "Optical
+    /// n-m" on every optical board (`SymphonyIOBoard_AnalogOptical.cpp:151-155`,
+    /// `SymphonyIOBoard_AD16ch.cpp:177-181`, `SymphonyIOBoard_DA16ch.cpp:178-181`,
+    /// `SymphonyIOBoard_2x6.cpp:585-684`) and the
+    /// headphone source names are "Optical n-m"
+    /// (`OpticalOut_SymphonyIO_Stream.cpp:121-150`).
+    static func pairMenuLabel(_ label: String) -> String {
+        label == "ADAT" ? "Optical" : label
     }
 
     // MARK: - Low-latency mixer
@@ -537,7 +553,7 @@ public struct CardLayout: Sendable, Equatable {
                     let number = digitalChannel[label, default: 1]
                     sources.append(HeadphoneSource(
                         id: base + pair,
-                        name: "\(label) \(number)-\(number + 1)"))
+                        name: "\(Self.pairMenuLabel(label)) \(number)-\(number + 1)"))
                     digitalChannel[label] = number + 2
                     pair += 1
                 }
