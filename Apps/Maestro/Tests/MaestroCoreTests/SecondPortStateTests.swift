@@ -12,7 +12,7 @@ struct SecondPortStateTests {
     private static let addressed: UInt32 = 0x0004_0000
 
     /// status, portCount, flags, xlink2Status, xlinkClocking, gcsr2, unitCount,
-    /// unit[4], probeCount, reserved[4].
+    /// unit[4], probeCount, rateHz, rateChanges, reserved[2].
     private func words(portCount: UInt32 = 2, flags: UInt32 = 0, status2: UInt32 = 0,
                        clocking: UInt32 = 0, gcsr2: UInt32 = 0, units: [UInt32] = [],
                        probes: UInt32 = 0, status: UInt32 = 0) -> [UInt32] {
@@ -199,5 +199,35 @@ struct SecondPortStateTests {
         let converterBefore = converter.clipboardText
         converter.port2Lines = off?.reportLines ?? []
         #expect(converter.clipboardText == converterBefore)
+    }
+
+    @Test("rate-change words 12 and 13: shown only once a change has gone to port 2")
+    func rateChange() throws {
+        // None yet: no row, raw text as before.
+        let none = try #require(SecondPortState.decode(words(flags: 0x0F, units: [0x0005_0030], probes: 1)))
+        #expect(none.rateChanges == 0 && none.rateChangeText == nil)
+        #expect(!none.deviceInfoRows.contains { $0.label == "Port 2 Rate Change" })
+        #expect(!none.rawText.contains("rateChanges"))
+
+        // Followed: word 12 is the rate, word 13 the count, flag 0x20 clear.
+        var w = words(flags: 0x0F, units: [0x0005_0030], probes: 1)
+        w[12] = 96_000; w[13] = 2
+        let ok = try #require(SecondPortState.decode(w))
+        #expect(ok.rateHz == 96_000 && ok.rateChanges == 2 && !ok.rateChangeFailed)
+        #expect(ok.deviceInfoRows.contains { $0 == ("Port 2 Rate Change", "Followed the last change (96000 Hz)") })
+        #expect(ok.rawText.hasSuffix(" rate=96000 rateChanges=2"))
+
+        // Failed: flag 0x20 set, rate 0.
+        w[2] = 0x2F; w[12] = 0; w[13] = 3
+        let failed = try #require(SecondPortState.decode(w))
+        #expect(failed.rateChangeFailed)
+        #expect(failed.rateChangeText == "Did not follow the last change")
+
+        // Port 2 looked at again since (re-probe): flag clear, rate 0, count kept.
+        // No verdict either way.
+        w[2] = 0x0F; w[12] = 0; w[13] = 3
+        let reprobed = try #require(SecondPortState.decode(w))
+        #expect(reprobed.rateChangeText == nil)
+        #expect(!reprobed.deviceInfoRows.contains { $0.label == "Port 2 Rate Change" })
     }
 }

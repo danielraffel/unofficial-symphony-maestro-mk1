@@ -110,6 +110,8 @@ typedef struct {
 #define kSymphonyPort2FlagDataLinkUp    0x00000004u  // XLink2Status data-down bit clear
 #define kSymphonyPort2FlagLocked        0x00000008u  // no data slip after the bus reset
 #define kSymphonyPort2FlagTxTimeout     0x00000010u  // XLink 2 TX stayed busy; enumeration cut short
+#define kSymphonyPort2FlagRateFailed    0x00000020u  // the last device rate change did not reach port 2,
+                                                     // or port 2 did not lock and report the new rate
 
 // SymphonyPort2StateOutput.unit[n]: bits 7:0 INQUIRE reply, bits 15:8
 // XTD_INQUIRE reply, then:
@@ -130,7 +132,11 @@ typedef struct {
     uint32_t unitCount;       // entries of unit[] that are filled
     uint32_t unit[4];         // nearest unit first; see kSymphonyPort2Unit*
     uint32_t probeCount;      // probes since Start()
-    uint32_t reserved[4];
+    uint32_t rateHz;          // rate port 2 locked to and reported after the last device
+                              // rate change; 0 if it did not, or none since the last probe
+    uint32_t rateChanges;     // device rate changes made while a port-2 unit was known
+                              // (including ones where nothing could be sent), since Start()
+    uint32_t reserved[2];
 } SymphonyPort2StateOutput; // 64 bytes
 
 // Input/output for kSelectorReadVendor. This is deliberately a bounded,

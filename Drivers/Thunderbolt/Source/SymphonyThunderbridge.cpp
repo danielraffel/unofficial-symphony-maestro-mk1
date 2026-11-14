@@ -336,6 +336,11 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  port2UnitCount;
     uint32_t  port2Unit[4];          // kSymphonyPort2Unit* per unit, nearest first
     uint32_t  port2ProbeCount;
+    // Rate changes sent to port 2 (StartDevice, on xlinkQueue). port2RateHz is
+    // the rate port 2's units last locked to and reported after a rate change,
+    // 0 if the last one did not get that far (or none has run since the probe).
+    uint32_t  port2RateHz;
+    uint32_t  port2RateChanges;
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1067,30 +1072,40 @@ static void SetDDSSampleRate(IOPCIDevice *dev, uint8_t memIndex, double rate)
 // WaitForLock: checks DataSlipSticky for stability.
 // Legacy: XLink.cpp:2529 — 5 checks × 50ms = 250ms per pass, max passes = timeout/250.
 // Returns true if 250ms of clean (no-slip) samples observed.
-static bool WaitForLock(IOPCIDevice *dev, uint8_t memIndex, int timeoutMs)
+// statusRegister is kRegXLink1Status, or kRegXLink2Status in the two-port
+// experiment only (port-2 rate change).
+static bool WaitForLockOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t statusRegister,
+                          int timeoutMs)
 {
     int maxPasses = timeoutMs / 250;
     if (maxPasses < 1) maxPasses = 1;
 
-    WriteRegister(dev, memIndex, kRegXLink1Status, kXLinkDataSlipSticky);
+    WriteRegister(dev, memIndex, statusRegister, kXLinkDataSlipSticky);
     for (int pass = 0; pass < maxPasses; pass++) {
         bool slipFree = true;
         for (int i = 0; i < 5; i++) {
             IOSleep(50);
             uint32_t status = 0;
-            ReadRegister(dev, memIndex, kRegXLink1Status, &status);
+            ReadRegister(dev, memIndex, statusRegister, &status);
             if (status & kXLinkDataSlipSticky) {
                 slipFree = false;
-                WriteRegister(dev, memIndex, kRegXLink1Status, kXLinkDataSlipSticky);
+                WriteRegister(dev, memIndex, statusRegister, kXLinkDataSlipSticky);
                 break;
             }
         }
         if (slipFree) {
-            STLOG("WaitForLock: locked after %d passes (%d ms)", pass + 1, (pass + 1) * 250);
+            STLOG("WaitForLock(port %d): locked after %d passes (%d ms)",
+                  statusRegister == kRegXLink1Status ? 1 : 2, pass + 1, (pass + 1) * 250);
             return true;
         }
     }
     return false;
+}
+
+// Port 1. Everything the driver did before the two-port experiment.
+static bool WaitForLock(IOPCIDevice *dev, uint8_t memIndex, int timeoutMs)
+{
+    return WaitForLockOn(dev, memIndex, kRegXLink1Status, timeoutMs);
 }
 
 // Read the actual detected clock rate from the XLink Clocking register.
@@ -1116,6 +1131,137 @@ static uint32_t GetActualClockRate(IOPCIDevice *dev, uint8_t memIndex)
     }
 }
 
+// ── EXPERIMENT (64ch): sample-rate change on port 2 ─────────────────────────
+// Used only when ivars->portCount == 2 and the port-2 probe found a unit; the
+// caller passes a null Port2RateChange otherwise and none of this runs.
+//
+// The original's XLink::SetSampleRate (og_source/symphonymk1/ext/Symphony64/
+// Driver/XLink.cpp:963-1160), for every bus that is enabled and has a clock
+// (XLinkClockDetected, :2631, up to five reads of XLINK_CLOCKING):
+//   a. port 2 FIRST: WaitForLock(bus 2, data link only, 5000 ms), then
+//      SET_SAMPLE_RATE to the broadcast address on bus 2 (:991-1012);
+//   b. then each bus in turn, port 1 first: SET_SAMPLE_RATE (broadcast),
+//      WaitForLock, settle, wait for the detected rate to match, WaitForLock
+//      (:1014-1063).
+// DDS was set before all of it (XLinkThread :323-328). Port 2 gets no UNMUTE in
+// Stage 1. The original returned FALSE for the whole change if port 2 failed;
+// here port 2 carries no audio yet, so a port-2 failure is recorded for
+// ReadPort2State and logged but does not fail the device's rate change.
+//
+// Deliberate differences from the original, all because this runs inside
+// StartDevice (coreaudiod waits on it) and port 2 carries no audio:
+//   - each port-2 lock wait is capped at kPort2LockBudgetMs, not 5000 ms, and
+//     port 2's after-step is skipped if a stop has begun;
+//   - no 250 ms settle, 1 s (not 3 s) for the rate to show, as on port 1;
+//   - no phase alignment on port 2 (og :1079-1150: GetWCLKPhase per unit and
+//     the shared ShiftPhase). Must be added before port 2 carries audio.
+//   - if port 2 slipped before the change and was not told first, it is still
+//     told after port 1 (the original would have failed the change and
+//     retried it on its next pass, og :353-358).
+static constexpr int kPort2LockBudgetMs = 2000;
+
+struct Port2RateChange {
+    SymphonyThunderbridge_IVars *ivars = nullptr;   // for the stop check
+    bool attempted = false;   // ChangeSampleRate reached the port-2 step
+    bool clock     = false;   // port 2 had a unit clock at the start
+    bool sentNew   = false;   // SET_SAMPLE_RATE(new) went out on port 2
+    bool ok        = false;   // port 2 locked and reported the new rate
+    uint32_t detectedHz = 0;  // what port 2's receiver reported at the end
+};
+
+// Port 2's detected rate (SR2 bits: the port-1 detect bits, sixteen up),
+// or 0 if its receive clock or rate is not there. Legacy GetActualClockRate
+// for the secondary port (XLink.cpp:2763-2825).
+static uint32_t GetActualClockRatePort2(IOPCIDevice *dev, uint8_t memIndex)
+{
+    uint32_t clockReg = 0;
+    ReadRegister(dev, memIndex, kRegXLinkClocking, &clockReg);
+    if (!(clockReg & kXLinkRX2ClockDetect))
+        return 0;
+    switch ((clockReg & kXLinkSR2Mask) >> 16) {
+        case kXLinkSRDetect1_44100:  return 44100;
+        case kXLinkSRDetect1_48000:  return 48000;
+        case kXLinkSRDetect1_88200:  return 88200;
+        case kXLinkSRDetect1_96000:  return 96000;
+        case kXLinkSRDetect1_176400: return 176400;
+        case kXLinkSRDetect1_192000: return 192000;
+        default: return 0;
+    }
+}
+
+// Step a: before port 1 is told. Legacy XLinkClockDetected(bus 2) + the
+// pre-send WaitForLock + SET_SAMPLE_RATE.
+static void Port2RateBefore(IOPCIDevice *dev, uint8_t mi, double newRate, uint8_t rateCode,
+                            Port2RateChange *p2)
+{
+    p2->attempted = true;
+    bool clock = false;
+    uint32_t clk = 0;
+    for (int n = 0; n < 5 && !clock; n++) {
+        ReadRegister(dev, mi, kRegXLinkClocking, &clk);
+        clock = (clk & kXLinkRX2ClockDetect) != 0 && (clk & kXLinkSR2Mask) != 0;
+    }
+    if (!clock) {
+        STLOG("ChangeSampleRate: port 2 has no unit clock now (XLinkClocking=0x%08x) — "
+              "nothing sent on port 2", clk);
+        return;
+    }
+    p2->clock = true;
+    if (!WaitForLockOn(dev, mi, kRegXLink2Status, kPort2LockBudgetMs)) {
+        STERR("ChangeSampleRate: port 2 data link slipping before the change — "
+              "port 2 will be told after port 1 instead");
+        return;
+    }
+    if (!SendXLinkCommandOn(dev, mi, kRegXLink2TX, kXLinkCmdAddrAll,
+                            kXLinkCmdSetSampleRate, rateCode)) {
+        STERR("ChangeSampleRate: port 2 SET_SAMPLE_RATE timeout (not sent)");
+        return;
+    }
+    p2->sentNew = true;
+    STLOG("ChangeSampleRate: port 2 told %.0f Hz (before port 1)", newRate);
+}
+
+// Step b for port 2, after port 1 has locked and verified. Same shape as the
+// port-1 sequence in ChangeSampleRate (lock, rate check, lock).
+static void Port2RateAfter(IOPCIDevice *dev, uint8_t mi, double newRate, uint8_t rateCode,
+                           Port2RateChange *p2)
+{
+    if (p2->ivars && !XLinkTxAdmissible(p2->ivars)) {
+        STERR("ChangeSampleRate: stop began or endpoint gone — port 2 step skipped");
+        return;
+    }
+    if (!SendXLinkCommandOn(dev, mi, kRegXLink2TX, kXLinkCmdAddrAll,
+                            kXLinkCmdSetSampleRate, rateCode)) {
+        STERR("ChangeSampleRate: port 2 SET_SAMPLE_RATE (second) timeout");
+        return;
+    }
+    p2->sentNew = true;
+    if (!WaitForLockOn(dev, mi, kRegXLink2Status, kPort2LockBudgetMs)) {
+        STERR("ChangeSampleRate: port 2 did not lock after the rate command");
+        return;
+    }
+    const uint32_t expected = (uint32_t)newRate;
+    uint32_t actual = 0;
+    bool matched = false;
+    for (int i = 0; i < 100; i++) {   // 100 × 10 ms, as port 1
+        actual = GetActualClockRatePort2(dev, mi);
+        if (actual == expected) { matched = true; break; }
+        IOSleep(10);
+    }
+    p2->detectedHz = actual;
+    if (!matched) {
+        STERR("ChangeSampleRate: port 2 rate mismatch — expected %u, port 2 reports %u Hz",
+              expected, actual);
+        return;
+    }
+    if (!WaitForLockOn(dev, mi, kRegXLink2Status, kPort2LockBudgetMs)) {
+        STERR("ChangeSampleRate: port 2 final stability lock failed");
+        return;
+    }
+    p2->ok = true;
+    STLOG("ChangeSampleRate: port 2 at %u Hz (locked + rate-verified + stable)", actual);
+}
+
 // Change the hardware sample rate. Called from StartDevice when CoreAudio
 // requests a new rate. IO is already stopped by the host when this runs.
 //
@@ -1130,8 +1276,9 @@ static uint32_t GetActualClockRate(IOPCIDevice *dev, uint8_t memIndex)
 // timeout — DDS changed but XLink NOT told), true once it has been broadcast (so a
 // later lock/verify failure leaves DDS and XLink both at newRate = consistent). The
 // caller uses this to decide whether to roll DDS back to the old rate on failure.
+// port2 (EXPERIMENT): null with one port, and then nothing below touches port 2.
 static bool ChangeSampleRate(IOPCIDevice *dev, uint8_t memIndex, double newRate,
-                             bool *outCommandIssued)
+                             bool *outCommandIssued, Port2RateChange *port2 = nullptr)
 {
     if (outCommandIssued) *outCommandIssued = false;
 
@@ -1147,6 +1294,9 @@ static bool ChangeSampleRate(IOPCIDevice *dev, uint8_t memIndex, double newRate,
     // The DDS provides the FPGA's internal clock reference and must match the
     // sample rate for the FPGA's TDM timing to align with the XLink data.
     SetDDSSampleRate(dev, memIndex, newRate);
+
+    // EXPERIMENT: the original told port 2 first (XLink.cpp:991-1012).
+    if (port2) Port2RateBefore(dev, memIndex, newRate, rateCode, port2);
 
     // 1. Send SetSampleRate to all devices on the bus
     if (!SendXLinkCommand(dev, memIndex, kXLinkCmdAddrAll,
@@ -1221,6 +1371,10 @@ static bool ChangeSampleRate(IOPCIDevice *dev, uint8_t memIndex, double newRate,
         STERR("ChangeSampleRate: final stability lock FAILED (FATAL)");
         return false;
     }
+
+    // EXPERIMENT: then port 2, as the original's per-bus loop did (bus 2
+    // after bus 1). Not fatal in Stage 1; see Port2RateChange.
+    if (port2 && port2->clock) Port2RateAfter(dev, memIndex, newRate, rateCode, port2);
 
     STLOG("ChangeSampleRate: complete — %.0f Hz (locked + rate-verified + stable)", newRate);
     return true;
@@ -2184,6 +2338,7 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
     ivars->port2Gcsr2       = gcsr2;
     for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = units[i];
     ivars->port2UnitCount   = unitCount;
+    ivars->port2RateHz      = 0;   // the probe sends the rate but does not verify it
     ivars->port2ProbeCount++;
     __atomic_store_n(&ivars->port2Flags, flags, __ATOMIC_RELEASE);
     STLOG("Port 2 probe: done — %u unit(s) answered, flags=0x%x (probe #%u). Port 2 carries no audio in this build.",
@@ -2206,6 +2361,7 @@ static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
                        0, kGCSR2_DisablePort2);
         STLOG("Port 2: XLINK_CLOCKING_ENABLE_2 was clear (XLinkClocking=0x%08x) — port 2 re-enabled", clk);
         ivars->port2UnitCount = 0;
+        ivars->port2RateHz    = 0;
         for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = 0;
         __atomic_store_n(&ivars->port2Flags, kSymphonyPort2FlagProbed, __ATOMIC_RELEASE);
         return;
@@ -2223,9 +2379,61 @@ static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
         STLOG("Port 2: unit clock gone (XLinkClocking=0x%08x) — port 2 reported empty", clk);
         ivars->port2Clocking  = clk;
         ivars->port2UnitCount = 0;
+        ivars->port2RateHz    = 0;
         for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = 0;
         __atomic_store_n(&ivars->port2Flags, kSymphonyPort2FlagProbed, __ATOMIC_RELEASE);
     }
+}
+
+// Whether a device rate change should go to port 2 too: two-port mode and the
+// last probe found a unit there with its data link up. ChangeSampleRate still
+// checks port 2's clock itself before sending (the unit may have gone since).
+// Runs on xlinkQueue, where the probe writes these fields.
+static bool Port2TakesRateChanges(const SymphonyThunderbridge_IVars *ivars)
+{
+    if (ivars->portCount != 2) return false;
+    const uint32_t flags = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE);
+    return (flags & kSymphonyPort2FlagDataLinkUp) != 0 && ivars->port2UnitCount > 0;
+}
+
+// After ChangeSampleRate (xlinkQueue). If port 2 was told the new rate but
+// port 1 was not (port-1 TX busy), port 1's units stay at the old rate and the
+// caller puts DDS back there, so port 2 is put back too. Then publish the
+// result for ReadPort2State.
+static void FinishPort2RateChange(SymphonyThunderbridge_IVars *ivars, double newRate,
+                                  double oldXlinkRate, bool port1CommandIssued,
+                                  const Port2RateChange &p2)
+{
+    if (!p2.attempted) return;   // unsupported rate: nothing was sent anywhere
+    uint32_t rateHz = p2.ok ? (uint32_t)(newRate + 0.5) : 0;
+    // sentNew with port 1 not told can only be the before-step's send: the
+    // after-step runs only once port 1 has succeeded.
+    if (p2.sentNew && !port1CommandIssued) {
+        const uint8_t oldCode = SampleRateToXLinkCode(oldXlinkRate);
+        if (oldCode != 0xFF &&
+            SendXLinkCommandOn(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink2TX,
+                               kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, oldCode)) {
+            STLOG("ChangeSampleRate: port 1 was not told; port 2 put back to %.0f Hz", oldXlinkRate);
+        } else {
+            STERR("ChangeSampleRate: port 1 was not told and port 2 could not be put back "
+                  "to %.0f Hz", oldXlinkRate);
+        }
+        rateHz = 0;
+    }
+    ivars->port2RateHz = rateHz;
+    ivars->port2RateChanges++;
+    uint32_t flags = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE);
+    // Only the rate-failed flag is ours; TxTimeout stays the probe's.
+    flags &= ~(kSymphonyPort2FlagRateFailed);
+    if (!p2.ok) flags |= kSymphonyPort2FlagRateFailed;
+    __atomic_store_n(&ivars->port2Flags, flags, __ATOMIC_RELEASE);
+    STLOG("Port 2 rate change to %.0f Hz: %s (port 2 reports %u Hz, change #%u)", newRate,
+          p2.ok ? "locked and verified"
+                : !p2.clock ? "not sent (no unit clock on port 2)"
+                : !port1CommandIssued ? "abandoned (port 1 was not told)"
+                : !p2.sentNew ? "not sent (port 1 failed, or port 2 TX busy / stopping)"
+                : "sent but port 2 did not lock or report the rate",
+          p2.detectedHz, ivars->port2RateChanges);
 }
 
 // The personality's SymphonyPortCount. Anything but the number 2 (key absent,
@@ -2798,6 +3006,8 @@ kern_return_t SymphonyThunderbridge::ReadPort2State(uint32_t *outWords)
     outWords[6]  = ivars->port2UnitCount;
     for (uint32_t i = 0; i < kXLinkMaxDevices; i++) outWords[7 + i] = ivars->port2Unit[i];
     outWords[11] = ivars->port2ProbeCount;
+    outWords[12] = ivars->port2RateHz;
+    outWords[13] = ivars->port2RateChanges;
     return kIOReturnSuccess;
 }
 
@@ -4892,8 +5102,16 @@ kern_return_t SymphonyThunderbridge::StartDevice(
 
                 // 3. Change sample rate via XLink (full lock/verify/lock sequence).
                 bool cmdIssued = false;
+                // EXPERIMENT: with two ports and a unit found on port 2, the
+                // rate goes there too (null otherwise: one-port path unchanged).
+                Port2RateChange port2Rate;
+                port2Rate.ivars = ivars;
+                Port2RateChange *port2 = Port2TakesRateChanges(ivars) ? &port2Rate : nullptr;
                 rateOk = ChangeSampleRate(ivars->pciDevice,
-                                          ivars->barMemoryIndex, requestedRate, &cmdIssued);
+                                          ivars->barMemoryIndex, requestedRate, &cmdIssued,
+                                          port2);
+                if (port2)
+                    FinishPort2RateChange(ivars, requestedRate, oldXlinkRate, cmdIssued, port2Rate);
 
                 // If the SetSampleRate command was actually broadcast, the XLink units are
                 // now at requestedRate — record that as the true hardware XLink rate BEFORE

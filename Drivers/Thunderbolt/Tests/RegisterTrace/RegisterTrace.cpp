@@ -107,6 +107,8 @@ struct Port {
     std::vector<Unit> units;          // Converters: the chain, nearest first
     bool     answersVendor = true;    // Symphony: replies to vendor reads
     bool     ignoreRate = false;      // units do not follow SET_SAMPLE_RATE
+    bool     txBusy = false;          // TX register reports busy (commands time out)
+    uint32_t slipReads = 0;           // the next N status reads report a data slip
     uint8_t  rateCode = 0x04;         // 44.1 kHz
     uint32_t sticky = 0;              // status sticky bits (write 1 to clear)
     std::deque<uint32_t> rx;
@@ -133,7 +135,11 @@ struct Port {
         return 0;
     }
 
-    uint32_t status() const { return sticky | (present() ? 0u : kXLinkDataDownCurrent); }
+    uint32_t status() {
+        uint32_t slip = 0;
+        if (slipReads) { slipReads--; slip = kXLinkDataSlipSticky; }
+        return sticky | slip | (present() ? 0u : kXLinkDataDownCurrent);
+    }
 
     uint32_t readRX() {
         if (hasLatch) { hasLatch = false; return latch; }
@@ -311,8 +317,8 @@ struct FakeCard : HostBackend {
         switch (off) {
         case kRegIDReg:         *v = idReg; break;
         case kRegIntStatus:     *v = intPending; break;
-        case kRegXLink1TX:
-        case kRegXLink2TX:      *v = 0; break;               // never busy
+        case kRegXLink1TX:      *v = port[0].txBusy ? 0x80000000u : 0; break;   // busy only when a test says so
+        case kRegXLink2TX:      *v = port[1].txBusy ? 0x80000000u : 0; break;
         case kRegXLink1RX:      *v = port[0].readRX(); break;
         case kRegXLink2RX:      *v = port[1].readRX(); break;
         case kRegXLink1Status:  *v = port[0].status(); break;
@@ -765,6 +771,214 @@ static void CheckStage1(const Options &o, Run &r, bool expectUnits)
     CHECK(link[0] == 0, "%s: ReadLinkState word 0 changed", o.name);
 }
 
+// SET_SAMPLE_RATE (cmd 0x03, broadcast) writes on a TX register from line
+// `from` on: their data bytes, in order.
+static std::vector<uint8_t> RateCommands(const FakeCard &c, size_t from, uint64_t tx)
+{
+    std::vector<uint8_t> out;
+    for (size_t i = from; i < c.lines.size(); i++) {
+        unsigned long long off = 0;
+        unsigned val = 0;
+        if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) != 2 || off != tx) continue;
+        if (((val >> 9) & 0xFF) == 0x03 && ((val >> 17) & 0x3F) == 0) out.push_back((uint8_t)((val >> 1) & 0xFF));
+    }
+    return out;
+}
+
+static size_t FirstRateCommand(const FakeCard &c, size_t from, uint64_t tx)
+{
+    for (size_t i = from; i < c.lines.size(); i++) {
+        unsigned long long off = 0;
+        unsigned val = 0;
+        if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) == 2 && off == tx &&
+            ((val >> 9) & 0xFF) == 0x03)
+            return i;
+    }
+    return SIZE_MAX;
+}
+
+static uint8_t RateCode(double rate)
+{
+    switch ((uint32_t)rate) {
+    case 44100: return 0x04;  case 48000: return 0x00;  case 88200: return 0x05;
+    case 96000: return 0x01;  case 176400: return 0x06; case 192000: return 0x02;
+    }
+    return 0xFF;
+}
+
+// The device's rate changes reach port 2 when a unit was found there, in the
+// original's order (port 2 told first, then port 1 changed and verified, then
+// port 2 again and verified), and a port-2 failure does not fail port 1.
+static void RunPort2RateChange(const Options &o, Run &r)
+{
+    FakeCard &c = r.card;
+    SymphonyThunderbridge *drv = r.drv;
+    const uint64_t tx1 = kRegXLink1TX, tx2 = kRegXLink2TX;
+
+    auto change = [&](const char *phase, double rate) {
+        c.phase(phase);
+        const size_t mark = c.lines.size();
+        gHostAudio.device->SetSampleRate(rate);
+        kern_return_t rc = drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        Irq(r, 1);
+        drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        return std::make_pair(rc, mark);
+    };
+
+    static const double rates[] = { 96000.0, 192000.0, 44100.0 };
+    uint32_t changes = 0;
+    for (double rate : rates) {
+        char name[64];
+        snprintf(name, sizeof(name), "two-port rate change to %.0f", rate);
+        auto [rc, mark] = change(name, rate);
+        changes++;
+        const uint8_t code = RateCode(rate);
+        CHECK(rc == kIOReturnSuccess, "%s: %s returned 0x%x", o.name, name, rc);
+        CHECK(c.port[0].rateCode == code && c.port[1].rateCode == code,
+              "%s: %s left port 1 at 0x%02x, port 2 at 0x%02x (want 0x%02x)", o.name, name,
+              c.port[0].rateCode, c.port[1].rateCode, code);
+        // Port 2 first, then port 1, then port 2 again (XLink.cpp:991-1063).
+        auto r2 = RateCommands(c, mark, tx2), r1 = RateCommands(c, mark, tx1);
+        CHECK(r2.size() == 4 && r1.size() == 2, "%s: %s: %zu port-2 and %zu port-1 rate writes (want 4, 2)",
+              o.name, name, r2.size(), r1.size());
+        for (uint8_t d : r2) CHECK(d == code, "%s: %s: port 2 sent rate 0x%02x", o.name, name, d);
+        CHECK(FirstRateCommand(c, mark, tx2) < FirstRateCommand(c, mark, tx1),
+              "%s: %s: port 1 was told before port 2", o.name, name);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) == 0, "%s: %s: rate-failed flag set (0x%x)", o.name, name, s.w[2]);
+        CHECK(s.w[12] == (uint32_t)rate && s.w[13] == changes, "%s: %s: ReadPort2State rate %u, changes %u",
+              o.name, name, s.w[12], s.w[13]);
+        CHECK(s.w[6] == 2, "%s: %s: port 2 units %u after the change", o.name, name, s.w[6]);
+    }
+
+    // Port 2's units do not follow: port 1's change still succeeds, port 2's
+    // failure is reported.
+    c.port[1].ignoreRate = true;
+    {
+        auto [rc, mark] = change("two-port rate change to 48000, port 2 does not follow", 48000.0);
+        changes++;
+        (void)mark;
+        CHECK(rc == kIOReturnSuccess, "%s: port-2 failure failed the device rate change (0x%x)", o.name, rc);
+        CHECK(c.port[0].rateCode == 0x00 && c.port[1].rateCode == 0x04,
+              "%s: ports at 0x%02x / 0x%02x after port 2 ignored the rate", o.name, c.port[0].rateCode, c.port[1].rateCode);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) != 0 && s.w[12] == 0 && s.w[13] == changes,
+              "%s: port-2 rate failure not reported (flags 0x%x rate %u changes %u)", o.name, s.w[2], s.w[12], s.w[13]);
+    }
+    c.port[1].ignoreRate = false;
+
+    // Port 1's TX is busy after port 2 was told: port 1 stays at 48k, the
+    // change fails, DDS goes back, and port 2 is put back to 48k as well.
+    c.port[0].txBusy = true;
+    {
+        auto [rc, mark] = change("two-port rate change to 88200, port 1 TX busy", 88200.0);
+        changes++;
+        CHECK(rc == kIOReturnIOError, "%s: rate change with port 1 busy returned 0x%x", o.name, rc);
+        auto r2 = RateCommands(c, mark, tx2);
+        CHECK(r2.size() == 4 && r2[0] == 0x05 && r2[2] == 0x00,
+              "%s: port 2 not told 88.2k then put back to 48k (%zu writes)", o.name, r2.size());
+        CHECK(c.port[0].rateCode == 0x00 && c.port[1].rateCode == 0x00,
+              "%s: ports at 0x%02x / 0x%02x after the failed change (want both 48k)", o.name,
+              c.port[0].rateCode, c.port[1].rateCode);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) != 0 && s.w[12] == 0 && s.w[13] == changes,
+              "%s: failed change not reported (flags 0x%x rate %u)", o.name, s.w[2], s.w[12]);
+    }
+    c.port[0].txBusy = false;
+    {
+        c.phase("two-port rate change retried");
+        drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        changes++;
+        CHECK(c.port[0].rateCode == 0x05 && c.port[1].rateCode == 0x05,
+              "%s: retry left ports at 0x%02x / 0x%02x", o.name, c.port[0].rateCode, c.port[1].rateCode);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) == 0 && s.w[12] == 88200 && s.w[13] == changes,
+              "%s: retry not reported (flags 0x%x rate %u)", o.name, s.w[2], s.w[12]);
+        Irq(r, 1);
+        drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    }
+
+    // Sum of the sleeps from line `from` on: time spent inside StartDevice.
+    auto sleptMs = [&](size_t from) {
+        uint64_t ms = 0;
+        for (size_t i = from; i < c.lines.size(); i++) {
+            unsigned long long v = 0;
+            if (sscanf(c.lines[i].c_str(), "S %llu", &v) == 1) ms += v;
+        }
+        return ms;
+    };
+
+    // Port 2 slips through the whole before-step wait (2000 ms budget = 8
+    // passes, each broken by its first slipping read): it is not told first,
+    // but is still told after port 1 and follows.
+    c.port[1].slipReads = 8;
+    {
+        auto [rc, mark] = change("two-port rate change to 192000, port 2 slipping beforehand", 192000.0);
+        changes++;
+        CHECK(rc == kIOReturnSuccess, "%s: slipping port 2 failed the change (0x%x)", o.name, rc);
+        CHECK(c.port[0].rateCode == 0x02 && c.port[1].rateCode == 0x02,
+              "%s: after early slip ports at 0x%02x / 0x%02x (want both 192k)", o.name,
+              c.port[0].rateCode, c.port[1].rateCode);
+        CHECK(FirstRateCommand(c, mark, tx1) < FirstRateCommand(c, mark, tx2),
+              "%s: slipping port 2 was told before port 1", o.name);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) == 0 && s.w[12] == 192000 && s.w[13] == changes,
+              "%s: recovered port-2 change not reported (flags 0x%x rate %u)", o.name, s.w[2], s.w[12]);
+    }
+    // Port 2 never stops slipping: the change still succeeds, the port-2
+    // failure is reported, and the port-2 waits stay within their budget.
+    c.port[1].slipReads = 1000000;
+    {
+        auto [rc, mark] = change("two-port rate change to 44100, port 2 always slipping", 44100.0);
+        changes++;
+        const uint64_t ms = sleptMs(mark);
+        c.port[1].slipReads = 0;
+        CHECK(rc == kIOReturnSuccess, "%s: always-slipping port 2 failed the change (0x%x)", o.name, rc);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) != 0 && s.w[12] == 0 && s.w[13] == changes,
+              "%s: slipping port 2 not reported (flags 0x%x rate %u)", o.name, s.w[2], s.w[12]);
+        CHECK(ms < 3000, "%s: rate change with port 2 slipping slept %llu ms", o.name, (unsigned long long)ms);
+    }
+    // Healthy again: next change succeeds on both ports and clears the flag.
+    {
+        auto [rc, mark] = change("two-port rate change to 48000 after the slip", 48000.0);
+        changes++;
+        const uint64_t ms = sleptMs(mark);
+        CHECK(rc == kIOReturnSuccess && c.port[1].rateCode == 0x00, "%s: change after slip failed", o.name);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) == 0 && s.w[12] == 48000,
+              "%s: flag not cleared after a good change (0x%x)", o.name, s.w[2]);
+        CHECK(ms < 2500, "%s: healthy two-port rate change slept %llu ms", o.name, (unsigned long long)ms);
+    }
+
+    CheckStage1(o, r, true);
+
+    // Port 2's chain switched off before the link watch noticed: the driver
+    // checks port 2's clock itself and sends nothing there.
+    c.port[1] = Port();
+    {
+        auto [rc, mark] = change("two-port rate change to 96000, port 2 switched off", 96000.0);
+        changes++;
+        CHECK(rc == kIOReturnSuccess, "%s: rate change with port 2 off returned 0x%x", o.name, rc);
+        CHECK(RateCommands(c, mark, tx2).empty(), "%s: commands sent on port 2 with no clock there", o.name);
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) != 0 && s.w[13] == changes,
+              "%s: unsent port-2 change not reported (flags 0x%x)", o.name, s.w[2]);
+    }
+    // Once the watch has seen it go, rate changes leave port 2 alone entirely.
+    c.phase("link watch tick: port 2 gone");
+    drv->LinkWatchTimerOccurred(nullptr, 0);
+    HostPump();
+    {
+        auto [rc, mark] = change("rate change to 48000 with port 2 empty", 48000.0);
+        CHECK(rc == kIOReturnSuccess, "%s: rate change after port 2 went returned 0x%x", o.name, rc);
+        CHECK(FirstRateCommand(c, mark, tx2) == SIZE_MAX,
+              "%s: port 2 told a rate after it was reported gone", o.name);
+        Port2State s = ReadPort2(r);
+        CHECK(s.w[13] == changes && s.w[6] == 0, "%s: rate change counted with port 2 gone (%u)", o.name, s.w[13]);
+    }
+}
+
 static std::vector<Options> TwoPortScenarios()
 {
     std::vector<Options> v;
@@ -837,6 +1051,33 @@ int main(int argc, char **argv)
         Finish(o, r);
         accesses += r.card.lines.size();
         if (!WriteFile(outDir, o.name, r.card.lines)) return 2;
+    }
+    {
+        Options o; o.name = "p2-rate-change"; o.port2 = Port::Converters; o.portCountProperty = 2;
+        o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        RunPort2RateChange(o, r);
+        Finish(o, r);
+        accesses += r.card.lines.size();
+        if (!WriteFile(outDir, o.name, r.card.lines)) return 2;
+    }
+    // One port, with a unit cabled to port 2: rate changes never go there.
+    {
+        Options o; o.name = "p1-rate-change-port2-cabled"; o.port2 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        for (double rate : { 96000.0, 44100.0 }) {
+            gHostAudio.device->SetSampleRate(rate);
+            CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess,
+                  "%s: rate change failed", o.name);
+            r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        }
+        CHECK(r.card.port[1].commandsSeen == 0 && r.card.touched(kRegXLink2TX) == 0,
+              "%s: one-port rate change touched port 2", o.name);
+        Port2State s = ReadPort2(r);
+        CHECK(s.w[12] == 0 && s.w[13] == 0, "%s: one-port build reported a port-2 rate change", o.name);
+        Finish(o, r);
     }
 #endif
     printf("[trace] %zu recorded accesses and events, %d check failure(s)\n", accesses, gFailures);

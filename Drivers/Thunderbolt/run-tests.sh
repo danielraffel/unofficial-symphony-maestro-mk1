@@ -22,6 +22,10 @@
 #   3. The two-port traces (p2-*) are compared with golden/ so a change to the
 #      port-2 sequence is always a visible diff, and the harness asserts the
 #      Stage 1 limits (no port-2 DMA, no channel-count or routing change).
+#      p2-rate-change also asserts that a device rate change reaches port 2 in
+#      the original's order (port 2 told first, port 1 changed and verified,
+#      then port 2 again and verified), that a port-2 failure does not fail the
+#      change, and that port 2 is put back when port 1 could not be told.
 #
 # Usage:
 #   Drivers/Thunderbolt/run-tests.sh                 # all checks, base ref "main"

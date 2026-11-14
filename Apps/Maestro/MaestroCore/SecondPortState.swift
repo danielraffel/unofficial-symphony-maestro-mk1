@@ -22,6 +22,7 @@ public struct SecondPortState: Sendable, Equatable {
     public static let flagDataLinkUp: UInt32 = 0x04
     public static let flagLocked: UInt32 = 0x08
     public static let flagTxTimeout: UInt32 = 0x10
+    public static let flagRateFailed: UInt32 = 0x20
 
     // SymphonyPort2StateOutput.unit[n] (kSymphonyPort2Unit*): bits 7:0 the
     // INQUIRE reply, bits 15:8 the XTD_INQUIRE reply, then these.
@@ -38,10 +39,15 @@ public struct SecondPortState: Sendable, Equatable {
     /// One word per unit that answered, nearest the computer first.
     public let units: [UInt32]
     public let probeCount: UInt32
+    /// The rate port 2's units locked to and reported after the last sample
+    /// rate change, 0 if they did not (or none since the last probe).
+    public let rateHz: UInt32
+    /// Sample rate changes the driver has sent to port 2 since it started.
+    public let rateChanges: UInt32
 
     public init(portCount: UInt32, flags: UInt32 = 0, xlink2Status: UInt32 = 0,
                 xlinkClocking: UInt32 = 0, gcsr2: UInt32 = 0, units: [UInt32] = [],
-                probeCount: UInt32 = 0) {
+                probeCount: UInt32 = 0, rateHz: UInt32 = 0, rateChanges: UInt32 = 0) {
         self.portCount = portCount
         self.flags = flags
         self.xlink2Status = xlink2Status
@@ -49,6 +55,8 @@ public struct SecondPortState: Sendable, Equatable {
         self.gcsr2 = gcsr2
         self.units = units
         self.probeCount = probeCount
+        self.rateHz = rateHz
+        self.rateChanges = rateChanges
     }
 
     /// Decode the driver's sixteen words. Nil when the size is wrong or the
@@ -58,7 +66,8 @@ public struct SecondPortState: Sendable, Equatable {
         let count = Int(min(words[6], 4))
         return SecondPortState(portCount: words[1], flags: words[2], xlink2Status: words[3],
                                xlinkClocking: words[4], gcsr2: words[5],
-                               units: Array(words[7..<(7 + count)]), probeCount: words[11])
+                               units: Array(words[7..<(7 + count)]), probeCount: words[11],
+                               rateHz: words[12], rateChanges: words[13])
     }
 
     /// True only for a driver packaged with the two-port experiment switched on.
@@ -69,6 +78,17 @@ public struct SecondPortState: Sendable, Equatable {
     public var dataLinkUp: Bool { flags & Self.flagDataLinkUp != 0 }
     public var locked: Bool { flags & Self.flagLocked != 0 }
     public var txTimedOut: Bool { flags & Self.flagTxTimeout != 0 }
+    public var rateChangeFailed: Bool { flags & Self.flagRateFailed != 0 }
+
+    /// Nil until the driver has sent port 2 a sample rate change, and again
+    /// after port 2 has been looked at afresh (the driver then clears the
+    /// rate and the failure flag, so there is no result to show).
+    public var rateChangeText: String? {
+        guard rateChanges > 0 else { return nil }
+        if rateChangeFailed { return "Did not follow the last change" }
+        if rateHz != 0 { return "Followed the last change (\(rateHz) Hz)" }
+        return nil
+    }
 
     /// The rate port 2's receiver detected, from bits 16-21 of the clocking
     /// register (the port-1 detect bits, sixteen places up). Nil when none or
@@ -141,6 +161,7 @@ public struct SecondPortState: Sendable, Equatable {
             ("Port 2 Link", linkText),
             ("Port 2 Clock", clockText),
         ]
+        if let rateChangeText { rows.append(("Port 2 Rate Change", rateChangeText)) }
         if units.isEmpty {
             rows.append(("Port 2 Units", probed ? "None found" : "Unknown"))
         } else {
@@ -156,6 +177,7 @@ public struct SecondPortState: Sendable, Equatable {
         "ports=\(portCount) flags=\(Self.hex(flags)) xlink2Status=\(Self.hex(xlink2Status)) "
             + "xlinkClocking=\(Self.hex(xlinkClocking)) gcsr2=\(Self.hex(gcsr2)) "
             + "units=[" + units.map { Self.hex($0) }.joined(separator: ", ") + "] probes=\(probeCount)"
+            + (rateChanges > 0 ? " rate=\(rateHz) rateChanges=\(rateChanges)" : "")
     }
 
     /// The lines added to the copied device details. Empty unless the
