@@ -71,17 +71,35 @@ extension AppState {
     /// readings — rather than reporting nothing.
     var deviceInfoReportForDiagnostics: DeviceInfoReport? {
         guard connectionMode == .hardware else { return nil }
-        if let deviceInfoSnapshot { return deviceInfoSnapshot }
-        guard let device else { return nil }
-        return DeviceInfoReport(
-            deviceName: device.identifier.displayName,
-            connection: connectionLabel,
-            board1: primaryBoardReading,
-            board2: secondaryBoardReading,
-            deviceModel: device.identifier.displayName,
-            mode: device.identifier.mode.displayName,
-            channelCount: device.identifier.mode.channelCount
-        )
+        var report: DeviceInfoReport
+        if let deviceInfoSnapshot {
+            report = deviceInfoSnapshot
+        } else {
+            guard let device else { return nil }
+            report = DeviceInfoReport(
+                deviceName: device.identifier.displayName,
+                connection: connectionLabel,
+                board1: primaryBoardReading,
+                board2: secondaryBoardReading,
+                deviceModel: device.identifier.displayName,
+                mode: device.identifier.mode.displayName,
+                channelCount: device.identifier.mode.channelCount
+            )
+        }
+        // Whichever source the report came from, say what is on the cable when
+        // it is not a Symphony I/O. This is the block testers paste to us, and
+        // it must carry the unit list even if System Setup was never opened.
+        if let unit = connectedUnit {
+            report.deviceName = unit.modelName ?? report.deviceName
+            report.connection = connectionLabel
+            report.connectedUnit = unit.displayName
+            report.connectedUnitLines = unit.unitRows.map { "\($0.label): \($0.value)" }
+            if let channels = unit.channels {
+                report.connectedUnitLines.append("Inputs: \(channels.inputs)")
+                report.connectedUnitLines.append("Outputs: \(channels.outputs)")
+            }
+        }
+        return report
     }
 
     /// Hardware then software, in the shape someone can paste into a bug report.

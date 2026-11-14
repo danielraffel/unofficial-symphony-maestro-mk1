@@ -26,6 +26,7 @@ Choose Maestro > About Maestro and click the copy button next to the version num
 
 ### Release notes
 
+- Version 0.8.35 was not released by itself. Everything listed under 0.8.35 below is part of this update.
 - **This update replaces the ThunderBridge driver** (now build 121). macOS swaps the driver when you install. Close your audio apps first, and if Maestro asks, disconnect and reconnect the ThunderBridge.
 - If you use a Symphony I/O over ThunderBridge, nothing should change for you. The new question is only asked when the connected unit does not answer as a Symphony I/O.
 - USB is not affected by the driver change.
