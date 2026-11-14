@@ -62,6 +62,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyLinkStateOutput),
     },
+    [kSelectorReadPort2State] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = 0,
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = sizeof(SymphonyPort2StateOutput),
+    },
     [kSelectorReadVendor] = {
         .function                 = nullptr,
         .checkCompletionExists    = false,
@@ -246,6 +254,19 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         }
         SymphonyLinkStateOutput output = {};
         kern_return_t r = ivars->driver->ReadLinkState(reinterpret_cast<uint32_t *>(&output));
+        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadPort2State) {
+        if (!ivars->driver) {
+            UCLOG("ExternalMethod: no driver (port 2 state)");
+            return kIOReturnNotReady;
+        }
+        SymphonyPort2StateOutput output = {};
+        kern_return_t r = ivars->driver->ReadPort2State(reinterpret_cast<uint32_t *>(&output));
         output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;

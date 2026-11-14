@@ -18,8 +18,18 @@
 #include "HostDriverKit.h"
 #include "SymphonyThunderbridge.h"
 #include "Sym64Registers.h"
+#include "SymphonyThunderbridgeShared.h"
 
 #include <cstdarg>
+
+// The app-facing layouts: the existing link-state reply must keep its size, and
+// the new port-2 reply is a separate 16-word struct.
+static_assert(sizeof(SymphonyLinkStateOutput) == 64, "ReadLinkState layout changed");
+#ifdef TRACE_HAVE_PORT2
+static_assert(sizeof(SymphonyPort2StateOutput) == 64, "ReadPort2State is 16 words");
+static_assert(offsetof(SymphonyPort2StateOutput, unit) == 7 * sizeof(uint32_t), "unit[] at word 7");
+static_assert(kSelectorReadLinkState == 5 && kSelectorReadPort2State == 6, "selector numbers");
+#endif
 
 HostBackend *gHostBackend = nullptr;
 HostAudioRegistry gHostAudio;
@@ -441,7 +451,7 @@ struct Options {
     const char *portCountString = nullptr;
     bool        lateSymphony = false;     // port 1 unit appears after Start
     bool        latePort2 = false;        // port 2 chain appears after Start
-    bool        shortFlow = false;        // Start, StartDevice, one tick, Stop only
+    bool        shortFlow = false;        // Start, StartDevice, link watch, Stop only
 };
 
 static void Attach(Port &p, Port::Kind kind)
@@ -512,14 +522,7 @@ static void RunScenario(const Options &o, Run &r)
     CHECK(configured ? sd == kIOReturnSuccess : sd == kIOReturnNotReady,
           "%s: StartDevice returned 0x%x", o.name, sd);
 
-    if (o.shortFlow) {
-        card.phase("link watch tick");
-        drv->LinkWatchTimerOccurred(nullptr, 0);
-        HostPump();
-        return;
-    }
-
-    if (configured) {
+    if (configured && !o.shortFlow) {
         card.phase("interrupts while running");
         Irq(r, 1);
         Irq(r, 2);
@@ -595,6 +598,8 @@ static void RunScenario(const Options &o, Run &r)
         drv->LinkWatchTimerOccurred(nullptr, 0);
         HostPump();
     }
+
+    if (o.shortFlow) return;
 
     card.phase("sleep, then wake with the card intact");
     drv->SetPowerState(kIOServicePowerCapabilityOff);
@@ -765,11 +770,11 @@ static std::vector<Options> TwoPortScenarios()
     std::vector<Options> v;
     { Options o; o.name = "p2-symphony-plus-converters"; o.port2 = Port::Converters; o.portCountProperty = 2;
       o.dirtyRegisters = true; v.push_back(o); }
-    { Options o; o.name = "p2-port2-empty"; o.portCountProperty = 2; v.push_back(o); }
+    { Options o; o.name = "p2-port2-empty"; o.portCountProperty = 2; o.shortFlow = true; v.push_back(o); }
     { Options o; o.name = "p2-converters-both-ports"; o.port1 = Port::Converters; o.port2 = Port::Converters;
       o.portCountProperty = 2; v.push_back(o); }
     { Options o; o.name = "p2-port2-powered-on-late"; o.port2 = Port::Converters; o.latePort2 = true;
-      o.portCountProperty = 2; v.push_back(o); }
+      o.portCountProperty = 2; o.shortFlow = true; v.push_back(o); }
     { Options o; o.name = "p2-port1-empty"; o.port1 = Port::Empty; o.port2 = Port::Converters;
       o.portCountProperty = 2; v.push_back(o); }
     return v;

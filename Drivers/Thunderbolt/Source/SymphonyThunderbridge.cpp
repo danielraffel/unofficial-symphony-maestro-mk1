@@ -317,6 +317,25 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  lastWatchGcsr;
     uint32_t  lastWatchXlinkStatus;
     uint32_t  cardReinitCount;
+
+    // ── EXPERIMENT (64ch, stage 1): second XLink port, discovery only ───────
+    // portCount is 1 unless the matched personality carries SymphonyPortCount=2
+    // (read once in Start()). Every released build leaves the key out, so every
+    // released build runs with 1 and none of the port-2 code below executes;
+    // Drivers/Thunderbolt/run-tests.sh proves the register sequence is then
+    // unchanged. With 2, Start() switches port 2 on and identifies what is
+    // cabled to it. No port-2 DMA, stream or routing exists yet.
+    // The port2* fields are written on the Start()/xlinkQueue path and read by
+    // ReadPort2State (flags last, atomically, so a reader never sees a unit
+    // list newer than the flags that describe it).
+    uint32_t  portCount;
+    uint32_t  port2Flags;            // atomic; kSymphonyPort2Flag*
+    uint32_t  port2XlinkStatus;      // kRegXLink2Status at the last probe
+    uint32_t  port2Clocking;         // kRegXLinkClocking at the last probe
+    uint32_t  port2Gcsr2;            // kRegGCSR2 at the last probe
+    uint32_t  port2UnitCount;
+    uint32_t  port2Unit[4];          // kSymphonyPort2Unit* per unit, nearest first
+    uint32_t  port2ProbeCount;
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -663,15 +682,16 @@ static uint8_t ComputeCRC8(const uint8_t *data, uint32_t len)
     return crc;
 }
 
-// Send an XLink command via the TX register.
+// Send an XLink command via a port's TX register (txRegister is kRegXLink1TX
+// or, in the two-port experiment only, kRegXLink2TX).
 // Returns true if the command was sent (busy bit cleared within timeout).
-static bool SendXLinkCommand(IOPCIDevice *dev, uint8_t memIndex,
-                              uint8_t addr, uint8_t cmd, uint8_t data)
+static bool SendXLinkCommandOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t txRegister,
+                               uint8_t addr, uint8_t cmd, uint8_t data)
 {
     // Wait for TX busy bit to clear (max 100ms)
     for (int i = 0; i < 100; i++) {
         uint32_t txReg = 0;
-        dev->MemoryRead32(memIndex, kRegXLink1TX, &txReg);
+        dev->MemoryRead32(memIndex, txRegister, &txReg);
         if (!(txReg & kXLinkCmdBusyBit))
             goto send;
         IOSleep(1);
@@ -693,10 +713,18 @@ send:
     // Regular commands (UNMUTE, SetAddr, etc.) are written twice (legacy XLink.cpp:2281-2283).
     // MSG_BYTE commands are written ONCE (legacy SendMessageBytes XLink.cpp:1610).
     // Double-writing MSG_BYTE corrupts SimpleMessageProtocol framing on the receiver.
-    dev->MemoryWrite32(memIndex, kRegXLink1TX, val);
+    dev->MemoryWrite32(memIndex, txRegister, val);
     if (cmd != kXLinkCmdMsgByte)
-        dev->MemoryWrite32(memIndex, kRegXLink1TX, val);
+        dev->MemoryWrite32(memIndex, txRegister, val);
     return true;
+}
+
+// Port 1. Everything the driver did before the two-port experiment goes
+// through here.
+static bool SendXLinkCommand(IOPCIDevice *dev, uint8_t memIndex,
+                              uint8_t addr, uint8_t cmd, uint8_t data)
+{
+    return SendXLinkCommandOn(dev, memIndex, kRegXLink1TX, addr, cmd, data);
 }
 
 // ── Symphony IO Control Protocol ──────────────────────────────────────────
@@ -781,21 +809,29 @@ static bool SendVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
 // reqMsgID byte between the sequence byte and the data.) CRC8 covers
 // type+size+txSeq+reqMsgID+data and is compared against the trailing byte.
 
-// Pop one 24-bit word from the XLink1 RX FIFO.
+// Pop one 24-bit word from a port's RX FIFO (rxRegister is kRegXLink1RX or, in
+// the two-port experiment only, kRegXLink2RX).
 // ThunderBridge 3-access sequence (legacy XLink::RX_FIFO_ReadHW, XLink.cpp:2143-2191):
 //   read #1 (probe) → if RX_EMPTY, done → write 0 (pop/advance) → read #2 (the word).
 // Returns true and *outWord when a word was popped; false when the FIFO is empty.
-static bool ReadXLinkRXWord(IOPCIDevice *dev, uint8_t memIndex, uint32_t *outWord)
+static bool ReadXLinkRXWordOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t rxRegister,
+                              uint32_t *outWord)
 {
     uint32_t data = 0;
-    dev->MemoryRead32(memIndex, kRegXLink1RX, &data);    // read #1: probe
+    dev->MemoryRead32(memIndex, rxRegister, &data);       // read #1: probe
     if (data & kXLinkCmdRxEmpty)
         return false;                                     // FIFO empty
-    dev->MemoryWrite32(memIndex, kRegXLink1RX, 0);        // pop / advance FIFO
-    dev->MemoryRead32(memIndex, kRegXLink1RX, &data);     // read #2: the actual word
+    dev->MemoryWrite32(memIndex, rxRegister, 0);          // pop / advance FIFO
+    dev->MemoryRead32(memIndex, rxRegister, &data);       // read #2: the actual word
     data &= ~kXLinkCmdRxEmpty;
     *outWord = data;
     return true;
+}
+
+// Port 1.
+static bool ReadXLinkRXWord(IOPCIDevice *dev, uint8_t memIndex, uint32_t *outWord)
+{
+    return ReadXLinkRXWordOn(dev, memIndex, kRegXLink1RX, outWord);
 }
 
 // Send one identification command to a unit and wait briefly for its one-byte
@@ -806,14 +842,15 @@ static bool ReadXLinkRXWord(IOPCIDevice *dev, uint8_t memIndex, uint32_t *outWor
 // Returns false on a TX timeout or when nothing answered within 20 ms. The
 // original waited 5 ms for INQUIRE and 2 ms for XTD_INQUIRE; this is a little
 // more patient and still bounded.
-static bool XLinkInquire(IOPCIDevice *dev, uint8_t memIndex, uint8_t addr,
-                         uint8_t cmd, uint8_t *outReply)
+static bool XLinkInquireOn(IOPCIDevice *dev, uint8_t memIndex,
+                           uint64_t txRegister, uint64_t rxRegister,
+                           uint8_t addr, uint8_t cmd, uint8_t *outReply)
 {
-    if (!SendXLinkCommand(dev, memIndex, addr, cmd, 0))
+    if (!SendXLinkCommandOn(dev, memIndex, txRegister, addr, cmd, 0))
         return false;
     for (int ms = 0; ms < 20; ms++) {
         uint32_t word = 0;
-        while (ReadXLinkRXWord(dev, memIndex, &word)) {
+        while (ReadXLinkRXWordOn(dev, memIndex, rxRegister, &word)) {
             const uint8_t slot    = (uint8_t)((word & 0x0F000000u) >> 24);
             const uint8_t rxAddr  = (uint8_t)((word & 0x007E0000u) >> 17);
             const uint8_t rxCmd   = (uint8_t)((word & 0x0001FE00u) >> 9);
@@ -825,6 +862,13 @@ static bool XLinkInquire(IOPCIDevice *dev, uint8_t memIndex, uint8_t addr,
         IOSleep(1);
     }
     return false;
+}
+
+// Port 1.
+static bool XLinkInquire(IOPCIDevice *dev, uint8_t memIndex, uint8_t addr,
+                         uint8_t cmd, uint8_t *outReply)
+{
+    return XLinkInquireOn(dev, memIndex, kRegXLink1TX, kRegXLink1RX, addr, cmd, outReply);
 }
 
 // Byte-at-a-time reassembler for a SimpleMessageProtocol Response frame.
@@ -1966,6 +2010,238 @@ static void IndicateLinkOK(SymphonyThunderbridge_IVars *ivars)
 
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ── EXPERIMENT (64ch, stage 1): second XLink port, discovery only ──────────
+// Everything in this section runs only when ivars->portCount == 2, which needs
+// SymphonyPortCount=2 in the matched personality. No released build has it.
+//
+// What the original did for two ports (og_source/symphonymk1/ext/Symphony64):
+//   Symphony64Card::setCardEnabled (Driver/Symphony64Card.cpp:2249-2262) sets
+//     XLINK_CLOCKING_ENABLE_1|XLINK_CLOCKING_ENABLE_2, then
+//   XLink::SetNumPorts(2) (Driver/XLink.cpp:888-913) clears
+//     SM_MISC2_DISABLE_PORT1|SM_MISC2_DISABLE_PORT2 in GCSR2, then
+//   XLink::BusInit (Driver/XLink.cpp:483-689) treats each bus alike: clock
+//     detected and data link up, reset the bus, word clock (every bus after the
+//     first is told to take external clock: SetWCMaster(bus, TRUE) :542-549),
+//     then walk the chain: INQUIRE + XTD_INQUIRE to the broadcast address,
+//     stop at the first unit that reports no channels, otherwise SET_ADDR and
+//     PASS_COMMANDS and ask again (:596-660), up to XLINK_MAX_DEVICES.
+// Stage 1 does that much and stops. It allocates no port-2 DMA memory, leaves
+// A2H2/H2A2 at zero, leaves GCSR2's DMA enables off, adds no stream and no
+// routing entry, and never unmutes port 2: nothing can play or record there.
+// ══════════════════════════════════════════════════════════════════════════
+
+// XLINK_CLOCKING enable bits written at Start() and after a card reset.
+// One port: exactly what the driver has always written.
+static uint32_t XLinkClockEnableBits(const SymphonyThunderbridge_IVars *ivars)
+{
+    return ivars->portCount == 2 ? (kXLinkClockEnable1 | kXLinkClockEnable2)
+                                 : kXLinkClockEnable1;
+}
+
+// GCSR2 port-disable bits cleared at Start(). One port: exactly what the driver
+// has always cleared (port 1 only; port 2's bit is left as found).
+static uint32_t GCSR2PortDisableBitsToClear(const SymphonyThunderbridge_IVars *ivars)
+{
+    return ivars->portCount == 2 ? (kGCSR2_DisablePort1 | kGCSR2_DisablePort2)
+                                 : kGCSR2_DisablePort1;
+}
+
+// Wait for port 2's data link to stop slipping: the same three passes of
+// 5 × 50 ms the port-1 bring-up uses. Returns true once a pass is clean.
+static bool WaitForPort2Lock(IOPCIDevice *dev, uint8_t mi)
+{
+    IOSleep(50);
+    WriteRegister(dev, mi, kRegXLink2Status, kXLinkDataSlipSticky);
+    for (int pass = 0; pass < 3; pass++) {
+        bool slipFree = true;
+        for (int i = 0; i < 5; i++) {
+            IOSleep(50);
+            uint32_t status = 0;
+            ReadRegister(dev, mi, kRegXLink2Status, &status);
+            if (status & kXLinkDataSlipSticky) {
+                slipFree = false;
+                WriteRegister(dev, mi, kRegXLink2Status, kXLinkDataSlipSticky);
+                break;
+            }
+        }
+        if (slipFree) return true;
+    }
+    return false;
+}
+
+// Identify what is cabled to port 2 and record it for ReadPort2State.
+// Caller: Start() before DMA starts, or a block on xlinkQueue that has already
+// passed XLinkTxAdmissible. Uses bounded IOSleep polling; never the IRQ queue.
+static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, const char *why)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    uint32_t flags = kSymphonyPort2FlagProbed;
+    uint32_t units[kXLinkMaxDevices] = {};
+    uint32_t unitCount = 0;
+
+    uint8_t rateCode = SampleRateToXLinkCode(rate);
+    if (rateCode == 0xFF) rateCode = kXLinkSRate44100;
+
+    uint32_t gcsr2 = 0, clk = 0, status = 0;
+    ReadRegister(dev, mi, kRegGCSR2, &gcsr2);
+    // Port 2's receive clock and a detected rate, with the patience the port-1
+    // bring-up has (the original read it five times, XLink.cpp:2631-2690).
+    bool clock = false;
+    for (int poll = 0; poll < 10; poll++) {
+        ReadRegister(dev, mi, kRegXLinkClocking, &clk);
+        clock = (clk & kXLinkRX2ClockDetect) != 0 && (clk & kXLinkSR2Mask) != 0;
+        if (clock) break;
+        IOSleep(50);
+    }
+    ReadRegister(dev, mi, kRegXLink2Status, &status);
+    const bool dataUp = (status & kXLinkDataDownCurrent) == 0;
+    STLOG("Port 2 probe (%s): XLinkClocking=0x%08x RX2_clock=%u SR2_bits=0x%02x, "
+          "XLink2Status=0x%08x data_link=%s slip=%u slave_mode=%u, GCSR2=0x%08x port2_disabled=%u",
+          why, clk, (clk & kXLinkRX2ClockDetect) ? 1 : 0, (clk & kXLinkSR2Mask) >> 16,
+          status, dataUp ? "up" : "DOWN", (status & kXLinkDataSlipSticky) ? 1 : 0,
+          (status & kXLinkSlaveMode) ? 1 : 0, gcsr2, (gcsr2 & kGCSR2_DisablePort2) ? 1 : 0);
+
+    if (clock) flags |= kSymphonyPort2FlagClockDetected;
+    if (clock && dataUp) flags |= kSymphonyPort2FlagDataLinkUp;
+
+    if (!clock) {
+        STLOG("Port 2 probe: no unit clock on port 2 — nothing sent on that bus");
+    } else if (!dataUp) {
+        // The original gave up on a bus whose clock is there but whose data
+        // link is down (BusInit :515-522). Report it; send nothing.
+        STLOG("Port 2 probe: clock present but the data link is down — nothing sent on that bus");
+    } else {
+        // Clear the latched status and reset the bus (ResetBus, XLink.cpp:2089),
+        // then the rate, as ResetBus did.
+        WriteRegister(dev, mi, kRegXLink2Status, 0xFFFFFFFF);
+        WriteRegister(dev, mi, kRegXLink2TX, kXLinkResetCmd);
+        IOSleep(200);
+        bool sent = SendXLinkCommandOn(dev, mi, kRegXLink2TX,
+                                       kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, rateCode);
+        IOSleep(10);
+        // Every bus after the first takes external word clock: SET_EXT_LOCK to
+        // the broadcast address with data 1 (SetWCMaster(bus, TRUE) → SetExtLock).
+        sent = sent && SendXLinkCommandOn(dev, mi, kRegXLink2TX,
+                                          kXLinkCmdAddrAll, kXLinkCmdSetExtLock, 1);
+        if (!sent) {
+            flags |= kSymphonyPort2FlagTxTimeout;
+            STERR("Port 2 probe: XLink 2 TX stayed busy — bus not enumerated");
+        } else {
+            const bool locked = WaitForPort2Lock(dev, mi);
+            if (locked) flags |= kSymphonyPort2FlagLocked;
+            STLOG("Port 2 probe: bus reset, rate %u Hz, external word clock; data link %s",
+                  (uint32_t)(rate + 0.5), locked ? "LOCKED" : "still slipping (continuing)");
+
+            for (uint8_t addr = 1; addr <= kXLinkMaxDevices; addr++) {
+                uint8_t inquire = 0, xtd = 0;
+                uint32_t word = 0;
+                if (XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX,
+                                   kXLinkCmdAddrAll, kXLinkCmdInquire, &inquire))
+                    word |= kSymphonyPort2UnitInquireOK | inquire;
+                if (XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX,
+                                   kXLinkCmdAddrAll, kXLinkCmdXtdInquire, &xtd))
+                    word |= kSymphonyPort2UnitXtdOK | ((uint32_t)xtd << 8);
+                // The original's test for "a unit is here": any channel-group bit
+                // in either reply (CONVERT_ROUTING_COMMANDS_TO_NEW_FORMAT,
+                // XLinkRegisters.h:444; the low nibbles are not channel bits).
+                const uint8_t channels = (uint8_t)((xtd & 0xF0) | ((inquire & 0xF0) >> 4));
+                if (channels == 0) {
+                    STLOG("Port 2 probe: no %sunit at position %u (INQUIRE %s 0x%02x, XTD_INQUIRE %s 0x%02x)",
+                          addr > 1 ? "further " : "", addr,
+                          (word & kSymphonyPort2UnitInquireOK) ? "replied" : "no reply", inquire,
+                          (word & kSymphonyPort2UnitXtdOK) ? "replied" : "no reply", xtd);
+                    // Keep what the first position said even when it is not a
+                    // unit we recognise: that reply is the evidence.
+                    if (addr == 1 && word != 0) units[unitCount++] = word;
+                    break;
+                }
+                if (!SendXLinkCommandOn(dev, mi, kRegXLink2TX, kXLinkCmdAddrAll, kXLinkCmdSetAddr, addr) ||
+                    !SendXLinkCommandOn(dev, mi, kRegXLink2TX, addr, kXLinkCmdPassCommands, 1)) {
+                    flags |= kSymphonyPort2FlagTxTimeout;
+                    units[unitCount++] = word;
+                    STERR("Port 2 probe: could not address unit %u", addr);
+                    break;
+                }
+                IOSleep(5);
+                units[unitCount++] = word | kSymphonyPort2UnitAddressed;
+                STLOG("Port 2 probe: unit %u INQUIRE 0x%02x XTD_INQUIRE %s 0x%02x → channel groups 0x%02x, addressed",
+                      addr, inquire, (word & kSymphonyPort2UnitXtdOK) ? "replied" : "no reply", xtd, channels);
+            }
+            // The rate went out before these units had an address; send it again
+            // so each has it (the original re-applied the rate after BusInit).
+            // No UNMUTE: port 2 stays silent in stage 1.
+            if (unitCount)
+                SendXLinkCommandOn(dev, mi, kRegXLink2TX,
+                                   kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, rateCode);
+        }
+    }
+
+    // Publish: counts and words first, flags last.
+    ivars->port2XlinkStatus = status;
+    ivars->port2Clocking    = clk;
+    ivars->port2Gcsr2       = gcsr2;
+    for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = units[i];
+    ivars->port2UnitCount   = unitCount;
+    ivars->port2ProbeCount++;
+    __atomic_store_n(&ivars->port2Flags, flags, __ATOMIC_RELEASE);
+    STLOG("Port 2 probe: done — %u unit(s) answered, flags=0x%x (probe #%u). Port 2 carries no audio in this build.",
+          unitCount, flags, ivars->port2ProbeCount);
+}
+
+// Link-watch hook (two-port mode only): `clk` is the kRegXLinkClocking value the
+// tick has just read, so this costs no extra bus access unless port 2's clock
+// has appeared or gone since the last probe. A chain powered on after the Mac
+// is found here; one that goes away is reported as gone.
+static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
+{
+    if ((clk & kXLinkClockEnable2) == 0) {
+        // The card lost its registers (a D3 power cycle across sleep) and the
+        // port-1 re-initialization has not run, which it only does while port 1
+        // has a unit. Switch port 2 back on; the next tick looks at its clock.
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLinkClocking,
+                       kXLinkClockEnable2, 0);
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2,
+                       0, kGCSR2_DisablePort2);
+        STLOG("Port 2: XLINK_CLOCKING_ENABLE_2 was clear (XLinkClocking=0x%08x) — port 2 re-enabled", clk);
+        ivars->port2UnitCount = 0;
+        for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = 0;
+        __atomic_store_n(&ivars->port2Flags, kSymphonyPort2FlagProbed, __ATOMIC_RELEASE);
+        return;
+    }
+    const bool present = (clk & kXLinkRX2ClockDetect) != 0 && (clk & kXLinkSR2Mask) != 0;
+    const uint32_t flags = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE);
+    const bool known = (flags & kSymphonyPort2FlagClockDetected) != 0;
+    if (present == known) return;
+    if (present) {
+        const double rate = ivars->xlinkRate > 0.0
+            ? ivars->xlinkRate
+            : (ivars->audioDevice ? ivars->audioDevice->GetSampleRate() : 44100.0);
+        ProbeSecondPort(ivars, rate, "port 2 clock appeared");
+    } else {
+        STLOG("Port 2: unit clock gone (XLinkClocking=0x%08x) — port 2 reported empty", clk);
+        ivars->port2Clocking  = clk;
+        ivars->port2UnitCount = 0;
+        for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = 0;
+        __atomic_store_n(&ivars->port2Flags, kSymphonyPort2FlagProbed, __ATOMIC_RELEASE);
+    }
+}
+
+// The personality's SymphonyPortCount. Anything but the number 2 (key absent,
+// another number, a string) means one port.
+static uint32_t ReadPortCountProperty(IOService *service)
+{
+    uint32_t count = 1;
+    OSDictionary *properties = nullptr;
+    if (service->CopyProperties(&properties) == kIOReturnSuccess && properties) {
+        OSNumber *number = OSDynamicCast(OSNumber, properties->getObject(kSymphonyPortCountKey));
+        if (number && number->unsigned32BitValue() == 2) count = 2;
+    }
+    OSSafeReleaseNULL(properties);
+    return count;
+}
+
 // ── In-place Symphony link recovery ─────────────────────────────────────────
 // Called from ReadTimingHealth() each time the live ClockRateAndLock read
 // fails (the app probes once per second). A Symphony that was power-cycled
@@ -2073,7 +2349,10 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
     WriteRegister(dev, mi, kRegIntStatus, 0xFFFFFFFF);
     WriteRegister(dev, mi, kRegRxStatusErr, 0xFFFFFFFF);
     WriteRegister(dev, mi, kRegGCSR, kGCSR_SwapToLE);
-    ModifyRegister(dev, mi, kRegXLinkClocking, kXLinkClockEnable1, 0);
+    ModifyRegister(dev, mi, kRegXLinkClocking, XLinkClockEnableBits(ivars), 0);
+    // Two-port experiment only: Start() cleared both port-disable bits.
+    if (ivars->portCount == 2)
+        ModifyRegister(dev, mi, kRegGCSR2, 0, GCSR2PortDisableBitsToClear(ivars));
     // Routing tables: the app's card output routes where known, Start()'s
     // defaults elsewhere; input routing is always the default.
     for (uint32_t n = 0; n < kMaxChannelsPerPort; n++) {
@@ -2177,9 +2456,13 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
     // the reset card delivered nothing). Captured BEFORE the re-init, which is what
     // makes the IRQs flow and clears the flag.
     const bool anchorPendingAtEntry = ivars->firstTimestampAfterStart;
+    bool cardReprogrammed = false;
     {
         uint32_t gcsr = 0;
-        if (CardLostConfiguration(ivars, &gcsr)) ReprogramCardAfterReset(ivars, gcsr);
+        if (CardLostConfiguration(ivars, &gcsr)) {
+            ReprogramCardAfterReset(ivars, gcsr);
+            cardReprogrammed = true;
+        }
     }
     // Re-enumerate at the rate the units last ran at so Core Audio's
     // stream format and the hardware agree without a rate change.
@@ -2188,6 +2471,10 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         : (ivars->audioDevice ? ivars->audioDevice->GetSampleRate() : 44100.0);
     SymphonyLinkInitResult restored = {};
     bool ok = ConfigureSymphonyLink(ivars, rate, &restored);
+    // Two-port experiment only: a card that lost its registers lost port 2's
+    // enables too (restored above), so identify port 2 again.
+    if (ivars->portCount == 2 && cardReprogrammed && !LinkRecoveryAborted(ivars))
+        ProbeSecondPort(ivars, rate, "card re-initialized");
     // Abort checks between phases (review item 3): a power-down or a vanished
     // endpoint mid-recovery must not replay state or restart IO.
     if (ok && LinkRecoveryAborted(ivars)) {
@@ -2371,6 +2658,7 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
             break;
         }
         ivars->lastWatchClockReg = clk;
+        if (ivars->portCount == 2) WatchSecondPort(ivars, clk);   // two-port experiment only
         bool present = (clk & kXLinkRX1ClockDetect) != 0;   // SR bits are advisory (settle ~700 ms after a rate change)
         if (present && !ivars->linkClockPresent) {
             // Debounce the up edge the way the recovery's own check does.
@@ -2494,6 +2782,25 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     return kIOReturnSuccess;
 }
 
+// ── ReadPort2State (EXPERIMENT, 64ch stage 1) ────────────────────────────────
+// What the last port-2 probe found (SymphonyPort2StateOutput). Reads ivars
+// only, like ReadLinkState, whose 16 words are left exactly as they were. In a
+// one-port build this reports portCount 1 and nothing else.
+kern_return_t SymphonyThunderbridge::ReadPort2State(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    for (uint32_t i = 0; i < 16; i++) outWords[i] = 0;
+    outWords[1]  = ivars->portCount == 2 ? 2u : 1u;
+    outWords[2]  = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE);
+    outWords[3]  = ivars->port2XlinkStatus;
+    outWords[4]  = ivars->port2Clocking;
+    outWords[5]  = ivars->port2Gcsr2;
+    outWords[6]  = ivars->port2UnitCount;
+    for (uint32_t i = 0; i < kXLinkMaxDevices; i++) outWords[7 + i] = ivars->port2Unit[i];
+    outWords[11] = ivars->port2ProbeCount;
+    return kIOReturnSuccess;
+}
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 bool SymphonyThunderbridge::init()
@@ -2553,6 +2860,13 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         STERR("super::Start failed: 0x%x", ret);
         return ret;
     }
+
+    // EXPERIMENT (64ch, stage 1). Read once; 1 unless the personality says 2.
+    // Touches no hardware. See the "second XLink port" section above.
+    ivars->portCount = ReadPortCountProperty(this);
+    if (ivars->portCount == 2)
+        STLOG("EXPERIMENT: SymphonyPortCount=2 — XLink port 2 will be enabled and identified. "
+              "Port 2 carries NO audio in this build (32 channels, port 1 only).");
 
     // ── 1. Get the PCIe device provider ─────────────────────────────────────
 
@@ -2806,8 +3120,10 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // This allows the ThunderBridge to detect Symphony IO on PC-32.
 
     ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLinkClocking,
-                   kXLinkClockEnable1, 0);
+                   XLinkClockEnableBits(ivars), 0);
     STLOG("XLink port 1 enabled (XLINK_CLOCKING_ENABLE_1)");
+    if (ivars->portCount == 2)
+        STLOG("EXPERIMENT: XLink port 2 enabled as well (XLINK_CLOCKING_ENABLE_2)");
 
     SymphonyLinkInitResult linkInit = {};
     ivars->symphonyLinkConfigured = ConfigureSymphonyLink(ivars, 44100.0, &linkInit);
@@ -2953,8 +3269,10 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // Legacy: setCardEnabled() clears DisablePort1. Bit may be stale.
 
     ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2,
-                   0, kGCSR2_DisablePort1);
+                   0, GCSR2PortDisableBitsToClear(ivars));
     STLOG("GCSR2: Port 1 enabled (DisablePort1 cleared)");
+    if (ivars->portCount == 2)
+        STLOG("EXPERIMENT: GCSR2: Port 2 enabled as well (DisablePort2 cleared)");
 
     // NOTE: ClkCtrl unmute moved to AFTER DMA start (step 29b).
     // Legacy: performAudioEngineStart() unmutes AFTER StartDMA() + 10ms delay.
@@ -2995,6 +3313,12 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
               gcsr2,
               (gcsr2 & kGCSR2_DisablePort1) ? 1 : 0);
     }
+
+    // ── 21g. EXPERIMENT (64ch, stage 1): identify what is on port 2 ─────────
+    // Two-port mode only. Runs here, before any DMA exists and with the card
+    // still muted, as the original enumerated its buses. Discovery only.
+    if (ivars->portCount == 2)
+        ProbeSecondPort(ivars, 44100.0, "Start");
 
     // ══════════════════════════════════════════════════════════════════════════
     // ── PT-06: DMA Buffer Allocation + FPGA Programming ─────────────────────

@@ -75,7 +75,9 @@ build_and_run() {
         -I "$TEST_DIR/shim" -I "$src" \
         "$TEST_DIR/RegisterTrace.cpp" "$src/SymphonyThunderbridge.cpp" \
         -o "$out/register-trace"
-    "$out/register-trace" --out "$out" ${VERBOSE[@]+"${VERBOSE[@]}"}
+    # A failed check inside the harness is reported with the trace comparisons
+    # below rather than instead of them.
+    "$out/register-trace" --out "$out" ${VERBOSE[@]+"${VERBOSE[@]}"} || status=1
 }
 
 compare_dir() {
@@ -101,6 +103,15 @@ compare_dir() {
     return $failed
 }
 
+# The two-port experiment is switched on by a personality key that must never
+# be in the checked-in Info.plist: released builds are made from it.
+if grep -q 'SymphonyPortCount' "$TB_DIR/Info.plist"; then
+    echo "[FAIL] Drivers/Thunderbolt/Info.plist contains SymphonyPortCount; the key belongs" >&2
+    echo "       only in an experimental package's personality, never in the repository." >&2
+    exit 1
+fi
+
+status=0
 build_and_run "$TB_DIR/Source" "$TMP/work" "working tree"
 
 if $RECORD_P1; then
@@ -112,7 +123,6 @@ if $RECORD_P2; then
     echo "[trace] recorded two-port golden traces from the working tree"
 fi
 
-status=0
 compare_dir 'p1-*.trace' "$GOLDEN" "$TMP/work" "golden (driver as on main)" || status=1
 
 # A single-port trace the harness produced but nobody recorded is a hole.

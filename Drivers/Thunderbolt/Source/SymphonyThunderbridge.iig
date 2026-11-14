@@ -72,6 +72,9 @@ public:
         OSAction * action,
         uint64_t   time) TYPE(IOTimerDispatchSource::TimerOccurred);
     virtual kern_return_t ReadLinkState(uint32_t *outWords) LOCALONLY;
+    // EXPERIMENT (64ch, stage 1): what the last XLink port-2 probe found, as
+    // the 16 words of SymphonyPort2StateOutput. No bus access.
+    virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
 
     // Read a bounded XLink vendor response for app-side property readback.
     virtual kern_return_t ReadVendorCommand(

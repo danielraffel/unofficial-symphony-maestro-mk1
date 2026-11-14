@@ -11,7 +11,8 @@
 #define kSelectorReadTimingHealth 3         // ExternalMethod selector: timing/register snapshot
 #define kSelectorReadVendor     4            // ExternalMethod selector: read XLink vendor command
 #define kSelectorReadLinkState  5            // ExternalMethod selector: link watch state (no bus access)
-#define kSelectorCount          6
+#define kSelectorReadPort2State 6            // EXPERIMENT (64ch): what is on XLink port 2 (no bus access)
+#define kSelectorCount          7
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type
 #define kSymphonyMeterWordCount 256          // words in the card meter DMA buffer
 
@@ -95,6 +96,42 @@ typedef struct {
     uint32_t cardReinitCount; // dext 117: ReprogramCardAfterReset runs since Start()
     uint32_t reserved;
 } SymphonyLinkStateOutput; // 64 bytes
+
+// ── EXPERIMENT (64ch, stage 1): second XLink port ───────────────────────────
+// The driver uses one XLink port unless the matched IOKit personality carries
+// this key with the integer 2. No released Info.plist has it. With 2 the driver
+// switches port 2 on and identifies the units cabled to it; port 2 carries no
+// audio yet.
+#define kSymphonyPortCountKey "SymphonyPortCount"
+
+// SymphonyPort2StateOutput.flags
+#define kSymphonyPort2FlagProbed        0x00000001u  // a probe has run (two-port mode only)
+#define kSymphonyPort2FlagClockDetected 0x00000002u  // RX2 clock and a detected rate
+#define kSymphonyPort2FlagDataLinkUp    0x00000004u  // XLink2Status data-down bit clear
+#define kSymphonyPort2FlagLocked        0x00000008u  // no data slip after the bus reset
+#define kSymphonyPort2FlagTxTimeout     0x00000010u  // XLink 2 TX stayed busy; enumeration cut short
+
+// SymphonyPort2StateOutput.unit[n]: bits 7:0 INQUIRE reply, bits 15:8
+// XTD_INQUIRE reply, then:
+#define kSymphonyPort2UnitInquireOK     0x00010000u  // INQUIRE was answered
+#define kSymphonyPort2UnitXtdOK         0x00020000u  // XTD_INQUIRE was answered
+#define kSymphonyPort2UnitAddressed     0x00040000u  // given address n+1 and told to pass commands on
+
+// Output of kSelectorReadPort2State. Reads driver state only, like
+// kSelectorReadLinkState (whose layout is unchanged). In a one-port build:
+// portCount 1, everything else 0.
+typedef struct {
+    uint32_t status;
+    uint32_t portCount;       // 1 or 2
+    uint32_t flags;           // kSymphonyPort2Flag*
+    uint32_t xlink2Status;    // XLink 2 status register at the last probe
+    uint32_t xlinkClocking;   // XLink clocking register at the last probe
+    uint32_t gcsr2;           // GCSR2 at the last probe
+    uint32_t unitCount;       // entries of unit[] that are filled
+    uint32_t unit[4];         // nearest unit first; see kSymphonyPort2Unit*
+    uint32_t probeCount;      // probes since Start()
+    uint32_t reserved[4];
+} SymphonyPort2StateOutput; // 64 bytes
 
 // Input/output for kSelectorReadVendor. This is deliberately a bounded,
 // read-only counterpart to SymphonyVendorCommandInput. It lets the app read
