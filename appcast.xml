@@ -7,6 +7,25 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.37</title>
+      <pubDate>Sat, 14 Nov 2026 03:01:52 GMT</pubDate>
+      <sparkle:version>0.8.37</sparkle:version>
+      <sparkle:shortVersionString>0.8.37</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.37</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **Fixes no sound through "Symphony I/O : Maestro USB" after updating to 0.8.36.** If you are on 0.8.36 and have no sound there, this update fixes it.
+- Includes everything from 0.8.36: settings that stay put, the Symphony's knobs and Maestro's knobs in step, no clicking after a power cycle over USB, direct output routing over ThunderBridge, and experimental support for the Symphony 64 PCIe card and older Apogee converters.
+- **Quit your audio apps before installing.** Audio is interrupted for a few seconds. Coming from 0.8.34 or earlier, the ThunderBridge driver is replaced, so you may need to disconnect and reconnect the ThunderBridge afterwards.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.37)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.37/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="w/3AniDrewIYv+6nJwBx+morJMeTQ3KhEWz2Kh3d67rXGCsrQqYzplblEERpj41Ybn0fOPu4csDFl3LBd7OBAA==" length="3939136" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.36</title>
       <pubDate>Sat, 14 Nov 2026 01:46:17 GMT</pubDate>
       <sparkle:version>0.8.36</sparkle:version>
@@ -485,6 +504,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 4Hw5eOXN1L+Uruoxs9EnQviauNCr+Gr2WhqqiKVgAT3Szmz/L4xiK1n6YmGRQFLdjtI+blVkfoOsceUssLjODA==
-length: 39345
+edSignature: 0fMoc/x8yw2n+QWMH9dz99UgPb4SsDQAUlH9arMRpWYOQaMuIj+da64jfaiwVY49j3qOJBkBvh4035PJ9cHZDw==
+length: 41104
 -->
