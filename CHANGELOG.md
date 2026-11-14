@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.37 (build 1033)
+
+### Fixed
+
+- **No sound through "Symphony I/O : Maestro USB" after updating to 0.8.36.** The 0.8.36 installer skipped a restart of macOS's audio system that the USB audio path depends on. If you updated to 0.8.36 and have no sound through Maestro USB, installing 0.8.37 fixes it; restarting your Mac also does.
+
+### Release notes
+
+- If you are on 0.8.36, quit your audio apps before installing. The installer restarts macOS's audio system again, which interrupts audio for a few seconds. With a ThunderBridge connected it can occasionally take a minute or two to come back.
+- The ThunderBridge driver is unchanged from 0.8.36 (build 121).
+
 ## 0.8.36 (build 1032)
 
 ### What's new (experimental)
@@ -30,7 +41,7 @@ Choose Maestro > About Maestro and click the copy button next to the version num
 - **This update replaces the ThunderBridge driver** (now build 121). macOS swaps the driver when you install. Close your audio apps first, and if Maestro asks, disconnect and reconnect the ThunderBridge.
 - If you use a Symphony I/O over ThunderBridge, nothing should change for you. The new question is only asked when the connected unit does not answer as a Symphony I/O.
 - USB is not affected by the driver change.
-- Quit your audio apps before installing. When the USB audio component changes, the installer restarts macOS's audio system, and with a ThunderBridge connected that can take a minute or two, during which audio apps may freeze and Maestro may not open. It recovers by itself. The installer now skips that restart when the component has not changed.
+- Quit your audio apps before installing. The installer restarts macOS's audio system, and with a ThunderBridge connected that can take a minute or two, during which audio apps may freeze and Maestro may not open. It recovers by itself.
 
 ## 0.8.35 (build 1031)
 
