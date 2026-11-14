@@ -15,9 +15,14 @@ Both of these are written from Apogee's original source for hardware we do not o
 - **Direct output routing is really direct (ThunderBridge).** With Software 1-2 routed to your main outputs, the Mixer's Master and Software Return faders still changed the level, because that route was quietly passing through Mixer 1. A software output now goes straight to the outputs, as it did with Apogee's software. Your main outputs default to Mixer 1, so Software Return, Master and input monitoring keep working out of the box, and Output Routing now shows that. If you had saved Software 1-2 on your main outputs, Maestro relabels it as Mixer 1 once, so nothing changes in what you hear. Choose Software 1-2 for those outputs when you want the mixer out of the path.
 - **The front panel knob is followed over ThunderBridge too.** Turning the volume knob on the Symphony, or muting from the front panel, now updates Maestro over ThunderBridge as it does over USB. This also fixes a fault that had stopped Maestro reading anything back from the Symphony over ThunderBridge.
 
+### Known limits with converters
+
+- Maestro's pages are still laid out for a Symphony I/O. With a converter you will see controls that do nothing (per-channel input settings, the speaker and headphone knobs, most of Device Settings and System Setup), and the routing pages use generic channel names. We will tidy these once we hear from people using them.
+- A Symphony I/O and converters on the same cable are not supported together.
+
 ### How to send feedback
 
-Choose Maestro > About Maestro and click the copy button next to the version number. Paste that into your message, and tell us which unit you have, how many are chained together, and what you see and hear. See "Does Maestro work with AD-16X, DA-16X or Rosetta converters?" in Help.
+Choose Maestro > About Maestro and click the copy button next to the version number. Paste that into your message. If you can, add screenshots of the Input, Output Routing and System Setup pages, and tell us which units you have, in what order they are cabled, and which inputs and outputs actually pass audio. See "Does Maestro work with AD-16X, DA-16X or Rosetta converters?" in Help.
 
 ### Release notes
 

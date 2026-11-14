@@ -1373,6 +1373,13 @@ final class AppState {
     @MainActor
     func syncDeviceSettingsToHardware() async {
         guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
+        // These are Symphony I/O settings. A converter does not have them, and
+        // what its firmware does with Symphony commands is unknown, so nothing
+        // is sent to one unprompted.
+        guard connectedUnit == nil else {
+            print("[Maestro] syncDeviceSettings: skipped — connected unit is not a Symphony I/O")
+            return
+        }
         let replay: DeviceSettingsReplay
         if let tb = device as? ThunderboltDeviceConnection {
             replay = await tb.reapplyStoredSettings()
