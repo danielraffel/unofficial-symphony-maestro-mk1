@@ -240,14 +240,18 @@ public enum IOCardType: UInt8, Sendable, Equatable, CaseIterable {
     /// Whether this module has optical (TOSLINK) ports whose format — ADAT/SMUX
     /// or S/PDIF — is selectable in Device Settings.
     ///
-    /// `.analogAES` is included because an 8x8 **AES/OPT** combo module reports
-    /// `.analogAES` when its `DIG I/O` switch is on AES (see
-    /// ``mayBeAESOpticalCombo``) and still has the optical ports. The 16x16 and
-    /// the 8MicPre have no optical hardware at all (user guide pp. 11, 13).
+    /// `.analogAES` is excluded. An 8x8 AES/OPT combo with its `DIG I/O` switch on
+    /// AES carries its digital channels on the AES DB25, not the optical ports
+    /// (user guide p. 10), and Apogee's software offered no optical format for an
+    /// AES board: it sent the format only from optical streams
+    /// (`og_source/maestrolink/Software/SymphonyIO_IOBoard.cpp:940-981`), and the
+    /// firmware ignores the command for an AES board
+    /// (`.../MainController/AudioManager/SymphonyIOAudioManager.cpp:257-290`). The
+    /// 16x16 and the 8MicPre have no optical hardware at all (pp. 11, 13).
     public var hasOpticalPorts: Bool {
         switch self {
-        case .none, .micPre8, .analogADDA16: return false
-        case .analogAES, .optical, .analogAD16, .analogDA16, .twoBySix: return true
+        case .none, .micPre8, .analogADDA16, .analogAES: return false
+        case .optical, .analogAD16, .analogDA16, .twoBySix: return true
         }
     }
 
@@ -702,10 +706,20 @@ public enum BoardDetectionSource: String, Sendable, Equatable, Hashable, CaseIte
 public struct BoardTypeReading: Sendable, Equatable, Hashable {
     public let card: IOCardType
     public let source: BoardDetectionSource
+    /// The board's hardware major version (`0xA0`, types 5 and 6), when read.
+    /// Distinguishes the 8x8 AES/OPT combo; see
+    /// ``IOCardType/productName(boardHardwareMajorVersion:)``.
+    public var hardwareMajor: UInt8?
 
-    public init(card: IOCardType, source: BoardDetectionSource) {
+    public init(card: IOCardType, source: BoardDetectionSource, hardwareMajor: UInt8? = nil) {
         self.card = card
         self.source = source
+        self.hardwareMajor = hardwareMajor
+    }
+
+    /// The same reading with the board's hardware major version attached.
+    public func withHardwareMajor(_ major: UInt8?) -> BoardTypeReading {
+        BoardTypeReading(card: card, source: source, hardwareMajor: major)
     }
 
     /// Nothing is known about this slot.
@@ -751,7 +765,7 @@ public struct BoardTypeReading: Sendable, Equatable, Hashable {
         case .unknown:
             return "Unknown (\(source.qualifier))"
         case .detected, .cached, .simulated:
-            return "\(card.productName) (\(source.qualifier))"
+            return "\(card.productName(boardHardwareMajorVersion: hardwareMajor)) (\(source.qualifier))"
         }
     }
 

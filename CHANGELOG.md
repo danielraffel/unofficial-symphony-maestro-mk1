@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.39 (build 1035)
+
+Fixes for people using the AES port on an 8x8 card, following a user report.
+
+### What's better
+
+- **AES outputs are called AES.** On the Output Routing page, the software outputs that go to an 8x8 card's AES port were labelled "ADAT". They now follow the card.
+- **The 8x8 AES/OPT card is named correctly.** System Setup > Device Info now shows "8x8 AES/OPT" for the combined AES and optical card, whichever way its DIG I/O button is set.
+- **No optical format setting for an AES card.** With the card's DIG I/O button on AES, its digital channels use the AES connector, so Device Settings no longer offers an optical format for it. This matches Apogee's original Maestro.
+- **Clock Source over USB offers Internal only,** as Apogee's software did. Over USB the Symphony runs on its own clock; the other choices did nothing. Over ThunderBridge all clock sources are still offered.
+
+### Using the AES port on an 8x8 card
+
+The 8x8 AES/OPT card sends its 8 digital channels to either the AES connector or the optical ports, chosen with the **DIG I/O** button on the card. After pressing it, turn the Symphony off and on again. Over USB the Symphony is the clock master, so set your AES device to follow the clock on its AES input.
+
+### Release notes
+
+- App-only update. The ThunderBridge driver is unchanged (build 121).
+- Quit your audio apps before installing. The installer restarts macOS's audio system, which interrupts audio for a few seconds.
+
 ## 0.8.38 (build 1034)
 
 Three small changes from user feedback, each matching Apogee's original Maestro.

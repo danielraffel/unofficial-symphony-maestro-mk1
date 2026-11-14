@@ -103,7 +103,7 @@ struct IOCardTypeTests {
         #expect(IOCardType.micPre8.hasOpticalPorts == false)
         #expect(IOCardType.analogADDA16.hasOpticalPorts == false)  // 16x16: analog only
         #expect(IOCardType.optical.hasOpticalPorts)
-        #expect(IOCardType.analogAES.hasOpticalPorts)
+        #expect(IOCardType.analogAES.hasOpticalPorts == false)  // AES mode: digital is on the DB25
         #expect(IOCardType.analogAD16.hasOpticalPorts)
         #expect(IOCardType.analogDA16.hasOpticalPorts)
         #expect(IOCardType.twoBySix.hasOpticalPorts)
@@ -714,5 +714,17 @@ struct IOCardTypeTests {
         #expect(IOCardType.optical.displayName == "8x8 OPT")
         #expect(IOCardType.analogAD16.displayName == "16 Analog In / 16 Digital Out")
         #expect(IOCardType.micPre8.displayName == "8MicPre")
+    }
+
+    /// Device Info names the 8x8 AES/OPT combo from its hardware version, in
+    /// either switch position, and leaves other boards alone.
+    @Test func comboNameInDeviceInfo() {
+        #expect(BoardTypeReading.detected(.optical).withHardwareMajor(6).displayText == "8x8 AES/OPT (detected)")
+        #expect(BoardTypeReading.detected(.analogAES).withHardwareMajor(6).displayText == "8x8 AES/OPT (detected)")
+        #expect(BoardTypeReading.detected(.optical).withHardwareMajor(5).displayText
+                == "\(IOCardType.optical.productName) (detected)")
+        #expect(BoardTypeReading.detected(.optical).displayText == "\(IOCardType.optical.productName) (detected)")
+        #expect(BoardTypeReading.detected(.analogAD16).withHardwareMajor(6).displayText
+                == "\(IOCardType.analogAD16.productName) (detected)")
     }
 }

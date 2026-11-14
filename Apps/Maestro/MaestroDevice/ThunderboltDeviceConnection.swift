@@ -470,6 +470,19 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         }.value
     }
 
+    /// A slot's board hardware major version (0xA0, type 5 or 6), through the
+    /// driver's general vendor read. Nil when unanswered.
+    public func readBoardHardwareMajor(slot: Int) async -> UInt8? {
+        guard isConnected, dextClient.isConnected, slot == 0 || slot == 1 else { return nil }
+        let client = dextClient
+        return await Task.detached(priority: .utility) {
+            guard let data = try? client.readVendorCommand(
+                command: 0xA0, value: UInt32(5 + slot), responseLength: 3),
+                  data.count >= 3 else { return nil }
+            return data[0]
+        }.value
+    }
+
     /// The first few front panel reads of a session are logged in full: whether
     /// the unit answers this read over the ThunderBridge link, and with what,
     /// had never been observed when this was written.

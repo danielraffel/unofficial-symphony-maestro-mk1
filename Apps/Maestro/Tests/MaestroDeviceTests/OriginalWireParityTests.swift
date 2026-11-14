@@ -60,4 +60,21 @@ struct OriginalWireParityTests {
             #expect(Array(request.data) == [36])   // -12 dB + 48
         }
     }
+
+    /// `SymphonyIOVersion = 0xA0`, nValue a `SymphonyIOVersionType`: 5 slot 1
+    /// board hardware, 6 slot 2; 3 bytes back (`SymphonyIOControl.cpp:1120-1142`).
+    /// Over USB nValue travels in wIndex.
+    @Test("board hardware version reads 0xA0 with type 5 or 6, 3 bytes")
+    func boardHardwareVersion() async {
+        let transport = MockXPCTransport()
+        transport.nextReply = XPCPropertyReply(status: 0, data: Data([6, 0, 0]))
+        let id = USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID, productID: 0x0010, deviceUID: "parity")!
+        let conn = XPCDeviceConnection(identifier: id, transport: transport)
+        #expect(await conn.readBoardHardwareMajor(slot: 0) == 6)
+        #expect(await conn.readBoardHardwareMajor(slot: 1) == 6)
+        #expect(transport.getPropertyCalls.map { [$0.bRequest, UInt8($0.wValue), UInt8($0.wIndex), UInt8($0.dataLength)] }
+                == [[0xA0, 0, 5, 3], [0xA0, 0, 6, 3]])
+        transport.nextReply = XPCPropertyReply(status: -1, data: Data())
+        #expect(await conn.readBoardHardwareMajor(slot: 0) == nil)
+    }
 }

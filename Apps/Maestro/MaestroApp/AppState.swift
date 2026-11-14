@@ -524,13 +524,20 @@ final class AppState {
     /// which is a different claim and is reported as such.
     var installedDexts: [InstalledDextInfo]?
 
+    /// Board hardware major versions, when read (0xA0). See
+    /// `BoardTypeReading.hardwareMajor`.
+    var primaryBoardHardwareMajor: UInt8?
+    var secondaryBoardHardwareMajor: UInt8?
+
     /// Slot 0 board type WITH provenance.
     var primaryBoardReading: BoardTypeReading {
-        BoardTypeReading(card: primaryBoardType, source: primaryBoardSource)
+        BoardTypeReading(card: primaryBoardType, source: primaryBoardSource,
+                         hardwareMajor: primaryBoardHardwareMajor)
     }
     /// Slot 1 board type WITH provenance.
     var secondaryBoardReading: BoardTypeReading {
-        BoardTypeReading(card: secondaryBoardType, source: secondaryBoardSource)
+        BoardTypeReading(card: secondaryBoardType, source: secondaryBoardSource,
+                         hardwareMajor: secondaryBoardHardwareMajor)
     }
 
     /// Every user-facing channel count in the app, derived from the two slots.
@@ -1212,6 +1219,19 @@ final class AppState {
             .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
+        }
+        // Each slot's hardware version, which tells an 8x8 AES/OPT combo from
+        // an AES-only or optical-only 8x8. One read per slot, as the original.
+        for slot in 0..<2 {
+            let major: UInt8?
+            if let usb = device as? XPCDeviceConnection {
+                major = await usb.readBoardHardwareMajor(slot: slot)
+            } else if let thunderbolt = device as? ThunderboltDeviceConnection, connectedUnit == nil {
+                major = await thunderbolt.readBoardHardwareMajor(slot: slot)
+            } else {
+                major = nil
+            }
+            if slot == 0 { primaryBoardHardwareMajor = major } else { secondaryBoardHardwareMajor = major }
         }
         // ThunderBridge's dext returns a validity bit alongside each raw
         // OptionBoardType value, so a valid raw zero means the slot was

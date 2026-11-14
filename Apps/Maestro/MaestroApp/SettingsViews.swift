@@ -834,13 +834,22 @@ struct SystemSetupView: View {
     // Note: Loop Sync (3) and IO Board 1/2 (4/5) currently send default flags/boardIndex — the
     // isMaster/loopSync and board-index wiring is a known follow-up (CS2 gap); Internal and Word
     // Clock are fully correct.
-    private let clockSourceNames: [UInt32: String] = [
+    private let allClockSourceNames: [UInt32: String] = [
         1: "Internal",
         2: "Word Clock",
         3: "Loop Sync",
         4: "IO Board 1",
         5: "IO Board 2"
     ]
+
+    /// Over USB the Symphony runs on its internal clock only: Apogee's software
+    /// offered no other source in the USB interface mode
+    /// (`og_source/maestrolink/Software/SymphonyIO.cpp:1735-1738, 1754-1755`), and
+    /// its daemon treated any other reading as Internal (`:6465-6466`). Offering
+    /// Word Clock or IO Board here sent the unit choices it does not act on.
+    private var clockSourceNames: [UInt32: String] {
+        appState.transportType == .usb ? [1: "Internal"] : allClockSourceNames
+    }
 
     /// Fallback rates shown when device doesn't report available rates.
     private static let defaultRates: [Double] = [
@@ -1454,8 +1463,10 @@ struct SystemSetupView: View {
         let cached2 = defaults.object(forKey: "cachedSecondaryBoardType") != nil
             ? appState.secondaryBoardType : nil
 
-        board1Reading = .resolve(live: live1, cached: cached1, isSimulated: simulating)
-        board2Reading = .resolve(live: live2, cached: cached2, isSimulated: simulating)
+        board1Reading = BoardTypeReading.resolve(live: live1, cached: cached1, isSimulated: simulating)
+            .withHardwareMajor(appState.primaryBoardHardwareMajor)
+        board2Reading = BoardTypeReading.resolve(live: live2, cached: cached2, isSimulated: simulating)
+            .withHardwareMajor(appState.secondaryBoardHardwareMajor)
     }
 
     private func loadProperties() async {

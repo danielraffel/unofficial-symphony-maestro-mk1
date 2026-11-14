@@ -446,7 +446,7 @@ public struct CardLayout: Sendable, Equatable {
             // own 16-channel region.
             let digitalStart = board[boardIndex].analog * 2
             for pair in 0..<board[boardIndex].digital {
-                let label = card != .none ? card.digitalLabel(forPair: pair) : "ADAT"
+                let label = card != .none ? card.digitalLabel(forPair: pair) : "Digital"
                 let number = digitalChannel[label, default: 1]
                 digitalColumns.append(RoutingColumn(
                     type: label,

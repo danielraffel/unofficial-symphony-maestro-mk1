@@ -518,7 +518,7 @@ struct OutputRoutingView: View {
                 labels.append((number: "\(sw1)-\(sw2)", name: "A Line \(sw1)/\(sw2)"))
             } else {
                 let index = i - analogPairs
-                let label = index < digitalLabels.count ? digitalLabels[index] : "ADAT"
+                let label = index < digitalLabels.count ? digitalLabels[index] : "Digital"
                 let first = digitalNumber[label, default: 1]
                 digitalNumber[label] = first + 2
                 labels.append((number: "\(sw1)-\(sw2)", name: "A \(label) \(first)/\(first + 1)"))
