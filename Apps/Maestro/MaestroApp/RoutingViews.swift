@@ -498,6 +498,18 @@ struct OutputRoutingView: View {
         // Count analog output pairs across both boards
         let analogPairs = board1.analogOutputPairsForUI + board2.analogOutputPairsForUI
 
+        // Digital pairs are named by the card that has them: an 8x8 in AES mode
+        // (or the AES pair of a 2x6) is "AES", not "ADAT". These rows used to
+        // say "ADAT" whatever card was fitted, which an AES user reported as
+        // Maestro not knowing about their AES port.
+        var digitalLabels: [String] = []
+        for card in [board1, board2] {
+            for pair in 0..<card.digitalOutputPairsForUI {
+                digitalLabels.append(card.digitalLabel(forPair: pair))
+            }
+        }
+        var digitalNumber: [String: Int] = [:]
+
         var labels: [(number: String, name: String)] = []
         for i in 0..<total {
             let sw1 = i * 2 + 1
@@ -505,8 +517,11 @@ struct OutputRoutingView: View {
             if i < analogPairs {
                 labels.append((number: "\(sw1)-\(sw2)", name: "A Line \(sw1)/\(sw2)"))
             } else {
-                let adatIdx = (i - analogPairs) * 2 + 1
-                labels.append((number: "\(sw1)-\(sw2)", name: "A ADAT \(adatIdx)/\(adatIdx + 1)"))
+                let index = i - analogPairs
+                let label = index < digitalLabels.count ? digitalLabels[index] : "ADAT"
+                let first = digitalNumber[label, default: 1]
+                digitalNumber[label] = first + 2
+                labels.append((number: "\(sw1)-\(sw2)", name: "A \(label) \(first)/\(first + 1)"))
             }
         }
 
