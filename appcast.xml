@@ -7,6 +7,27 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.38</title>
+      <pubDate>Sat, 14 Nov 2026 04:14:54 GMT</pubDate>
+      <sparkle:version>0.8.38</sparkle:version>
+      <sparkle:shortVersionString>0.8.38</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.38</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **The Mixer remembers which mix you were on,** and the button for that mix is filled in so you can see which one is showing.
+- **The polarity button shows the Ø symbol** on Mic Pre channels.
+- **The Analog Level menu is in the original order:** +4 dBu, -10 dBV, then Variable.
+- Includes everything from 0.8.36 and 0.8.37: settings that stay put, the Symphony's knobs and Maestro's knobs in step, no clicking after a power cycle over USB, and experimental support for the Symphony 64 PCIe card and older Apogee converters.
+- **Quit your audio apps before installing.** Audio is interrupted for a few seconds. Coming from 0.8.34 or earlier, the ThunderBridge driver is replaced, so you may need to disconnect and reconnect the ThunderBridge afterwards.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.38)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.38/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="UeHB1xbzw3l3esKQDXiMc4m9p02phkYxFsHb+qFnxPKnax1ts5CSfbk/dwI0w94akg/50xv0BZtHqKLipy60Bw==" length="3939598" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.37</title>
       <pubDate>Sat, 14 Nov 2026 03:01:52 GMT</pubDate>
       <sparkle:version>0.8.37</sparkle:version>
@@ -504,6 +525,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 0fMoc/x8yw2n+QWMH9dz99UgPb4SsDQAUlH9arMRpWYOQaMuIj+da64jfaiwVY49j3qOJBkBvh4035PJ9cHZDw==
-length: 41104
+edSignature: Kbap1tJaGFOP4TM5SOfs7p8FHj4g3IlLLG/UzLDGSocA1GXNPxn2UiQdzEoosgd6PIlt2RXcaWh0NdVX8QYmCQ==
+length: 42960
 -->
