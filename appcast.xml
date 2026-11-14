@@ -7,6 +7,28 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.36</title>
+      <pubDate>Sat, 14 Nov 2026 01:46:17 GMT</pubDate>
+      <sparkle:version>0.8.36</sparkle:version>
+      <sparkle:shortVersionString>0.8.36</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.36</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **Your settings stay put.** Maestro remembers settings such as speaker mode, dim, mono, headphone source, meter sources and Peak/Over Hold, and sets them on the Symphony again each time it connects.
+- **The knobs on the Symphony and the knobs in Maestro now agree,** over USB and ThunderBridge, including mute.
+- **No more clicking after turning the Symphony off and on (USB).** Maestro now waits until the Symphony has finished starting.
+- **Direct output routing is really direct (ThunderBridge).** Your main outputs default to Mixer 1; choose Software 1-2 to take the mixer out of the path.
+- **Experimental:** the Symphony 64 PCIe card is now recognised, and AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified. Both are untested on real hardware; feedback is welcome.
+- **This update replaces the ThunderBridge driver.** Quit your audio apps first. You may need to disconnect and reconnect the ThunderBridge afterwards.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.36)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.36/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="dfjeHTLRHuoKzK0Hzn4y2RLZXpuFBsGbDNaFNfCDNODwrDECr2IBbJ/bV8PH/Q1/3rHCdXItY/1JOtlbM5ZbBA==" length="3939680" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.34</title>
       <pubDate>Thu, 05 Nov 2026 04:14:23 GMT</pubDate>
       <sparkle:version>0.8.34</sparkle:version>
@@ -461,7 +483,8 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
       <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.13/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="ryBxoOuHWe8SxhbwMKCCxjSWs3gJ3turgnsMUAMDTkAca2iN1U+NeK2DNdWhZhd+zCW2vQeyNbvXAO3I+2DcBg==" length="3497410" type="application/octet-stream" sparkle:installationType="package"></enclosure>
     </item>
   </channel>
-</rss><!-- sparkle-signatures:
-edSignature: x3KsxV4YB9NligwpTqjjUNHYQZo0OlsVQvAkxsFXGRqZcsZU71skOh1YR7w+J1QCvMGK0gWKo9HeMcMKxMvUAg==
-length: 37303
+</rss>
+<!-- sparkle-signatures:
+edSignature: 4Hw5eOXN1L+Uruoxs9EnQviauNCr+Gr2WhqqiKVgAT3Szmz/L4xiK1n6YmGRQFLdjtI+blVkfoOsceUssLjODA==
+length: 39345
 -->
