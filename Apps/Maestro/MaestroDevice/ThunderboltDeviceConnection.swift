@@ -444,6 +444,10 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// Raw link-watch state for diagnostics panels.
     public func linkState() -> LinkState? { dextClient.readLinkState() }
 
+    /// EXPERIMENT (64 channels): what the driver found on its second XLink
+    /// port. Nil from a driver without that selector (every released one).
+    public func secondPortState() -> SecondPortState? { dextClient.readPort2State() }
+
     /// One read of the unit's front panel state (vendor read `0x28`), through
     /// the driver's general vendor read. Nil when the unit does not answer or
     /// the reply is not a real reading. Runs off the caller's thread: the driver

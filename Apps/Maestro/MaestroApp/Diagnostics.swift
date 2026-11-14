@@ -99,6 +99,10 @@ extension AppState {
                 report.connectedUnitLines.append("Outputs: \(channels.outputs)")
             }
         }
+        // EXPERIMENT (64 channels): read now, not from the snapshot, so the copy
+        // carries what the driver knows at this moment. Empty unless the driver
+        // reports the two-port experiment on.
+        report.port2Lines = currentSecondPortState()?.reportLines ?? []
         return report
     }
 

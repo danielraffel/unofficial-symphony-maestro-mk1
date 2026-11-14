@@ -913,6 +913,9 @@ public struct DeviceInfoReport: Sendable, Equatable {
     public var connectedUnit: String?
     /// One entry per unit in cable order, e.g. `"Unit 1: AD-16X (16 inputs)"`.
     public var connectedUnitLines: [String] = []
+    /// EXPERIMENT (64 channels): `SecondPortState.reportLines`. Empty for every
+    /// driver that is not running the two-port experiment.
+    public var port2Lines: [String] = []
 
     public init(
         deviceName: String = "Symphony I/O",
@@ -977,6 +980,7 @@ public struct DeviceInfoReport: Sendable, Equatable {
         } else if let connectedUnit {
             lines.append("Connected Unit: \(connectedUnit)")
         }
+        lines.append(contentsOf: port2Lines)
         return lines.joined(separator: "\n")
     }
 

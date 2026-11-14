@@ -11,6 +11,7 @@
 import Foundation
 import IOKit
 import CoreAudio  // for AudioDeviceID type in connect() signature
+import MaestroCore
 
 // MARK: - DextUserClient
 
@@ -240,6 +241,31 @@ public final class DextUserClient: @unchecked Sendable {
             if kr == KERN_SUCCESS { return LinkState.decode(out) }
         }
         return nil
+    }
+
+    // kSelectorReadPort2State — EXPERIMENT (64 channels): what is on XLink port 2.
+    private static let selectorReadPort2State: UInt32 = 6
+
+    /// What the driver found on its second XLink port (selector 6). No PCI
+    /// transaction. `nil` when the driver has no such selector, which is every
+    /// released driver: that is the normal case, so it is not logged.
+    public func readPort2State() -> SecondPortState? {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        // SymphonyPort2StateOutput is exactly 16 words (64 bytes); the driver
+        // rejects any other output size.
+        var out = [UInt32](repeating: 0, count: SecondPortState.wordCount)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorReadPort2State, nil, 0,
+                                      p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == SecondPortState.wordCount * MemoryLayout<UInt32>.size else {
+            return nil
+        }
+        return SecondPortState.decode(out)
     }
 
     /// Read the dext's timing and FPGA health snapshot for latency studies.

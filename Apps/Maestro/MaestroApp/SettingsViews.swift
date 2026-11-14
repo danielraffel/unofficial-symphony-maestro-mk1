@@ -1076,6 +1076,14 @@ struct SystemSetupView: View {
                         LabeledContent("Channel Count", value: "\(device.identifier.mode.channelCount)")
                     }
 
+                    // EXPERIMENT (64 channels): only with a driver that reports
+                    // the two-port experiment on.
+                    if let port2 = appState.secondPortState {
+                        ForEach(Array(port2.deviceInfoRows.enumerated()), id: \.offset) { _, row in
+                            LabeledContent(row.label, value: row.value)
+                        }
+                    }
+
                     // Same action as the View > Rescan menu item; one concept,
                     // one name. This copy is gated on connectionMode == .hardware
                     // so it is only ever visible once a device is ALREADY found,
@@ -1130,6 +1138,7 @@ struct SystemSetupView: View {
                     Spacer()
                     if appState.connectionMode == .hardware {
                         Button {
+                            appState.refreshSecondPortState()
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(currentDeviceReport().clipboardText, forType: .string)
                             showCopied = true
@@ -1395,6 +1404,7 @@ struct SystemSetupView: View {
             connectedUnitModel: appState.connectedUnit?.modelName
         )
         report.connectedUnitLines = appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
+        report.port2Lines = appState.secondPortState?.reportLines ?? []
         return report
     }
 
@@ -1558,6 +1568,7 @@ struct SystemSetupView: View {
         await loadBoardReadings(device: device)
         // Hand the assembled report to AppState so the About box can copy hardware and
         // software in one button without duplicating the provenance logic above.
+        appState.refreshSecondPortState()
         appState.deviceInfoSnapshot = currentDeviceReport()
         do {
             if let mode = (try await device.getProperty(PropertyAddress(selector: .deviceMode))).asUInt32 {

@@ -565,6 +565,26 @@ final class AppState {
     /// I/O on the cable (an older Apogee converter). Nil for a Symphony I/O.
     var connectedUnit: ConnectedUnit?
 
+    /// EXPERIMENT (64 channels): the driver's port-2 findings, and only when the
+    /// driver reports the two-port experiment on. Nil with every released
+    /// driver, with the experiment off, over USB and in simulation, so nothing
+    /// is shown or copied in those cases.
+    var secondPortState: SecondPortState?
+
+    /// Ask the driver again. It costs no bus access, and a chain switched on
+    /// after the Mac is only found by the driver's later probe.
+    func refreshSecondPortState() {
+        let shown = currentSecondPortState()
+        if shown != secondPortState { secondPortState = shown }
+    }
+
+    /// The driver's answer right now, without storing it. Nil unless the
+    /// driver reports the experiment on.
+    func currentSecondPortState() -> SecondPortState? {
+        let state = (device as? ThunderboltDeviceConnection)?.secondPortState()
+        return state?.experimentOn == true ? state : nil
+    }
+
     /// Changes whenever the installed cards change, so a view can rebuild its
     /// strip arrays. `initializeChannels()` runs from `.task` before the async
     /// `readCardTypes()` has answered, and `ForEach(0..<min(channels.count, n))`
@@ -1212,6 +1232,10 @@ final class AppState {
             .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
+        }
+        refreshSecondPortState()
+        if let secondPortState {
+            print("[Maestro] EXPERIMENT two-port driver: \(secondPortState.rawText)")
         }
         // ThunderBridge's dext returns a validity bit alongside each raw
         // OptionBoardType value, so a valid raw zero means the slot was
