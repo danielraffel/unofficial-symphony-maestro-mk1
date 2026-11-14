@@ -1040,6 +1040,27 @@ final class AppState {
             loadCachedBoardTypes()
         }
 
+        // Debug only: show the app as it would look with older converters
+        // attached. No hardware is discovered or touched.
+        if let name = UserDefaults.standard.string(forKey: ConnectedUnit.simulationKey) {
+            guard let unit = ConnectedUnit(simulationName: name) else {
+                print("[Maestro] CONVERTER SIMULATION: invalid request '\(name)'; exiting.")
+                exit(1)
+            }
+            print("[Maestro] CONVERTER SIMULATION: \(unit.displayName) — no hardware")
+            primaryBoardType = .none
+            secondaryBoardType = .none
+            primaryBoardSource = .unknown
+            secondaryBoardSource = .unknown
+            self.connectedUnit = unit
+            self.device = SimulatedDevice.symphonyIO32ch()
+            self.connectionMode = .simulated
+            self.transportType = .thunderbolt
+            self.statusMessage = "Simulating \(unit.modelName ?? "converters") — no hardware"
+            self.isHardwareInitialized = true
+            return
+        }
+
         // Discover hardware via CoreAudio. Prefers Thunderbolt (lower latency PCIe DMA)
         // over USB (via XPC proxy). Both paths connect to the same Symphony IO hardware.
         //

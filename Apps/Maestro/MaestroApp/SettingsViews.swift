@@ -1031,7 +1031,10 @@ struct SystemSetupView: View {
                                        value: appState.connectedUnit?.modelName ?? info.deviceName ?? "Symphony I/O")
                         LabeledContent("Connection", value: appState.connectionLabel)
                         if let unit = appState.connectedUnit {
-                            LabeledContent("Connected Unit", value: unit.displayName)
+                            // One row per unit, in the order they are cabled.
+                            ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
+                                LabeledContent(row.label, value: row.value)
+                            }
                         }
                         if let fw = info.firmwareVersion { LabeledContent("Firmware", value: fw) }
                         if let fpga = info.fpgaVersion { LabeledContent("FPGA Version", value: fpga) }
@@ -1084,6 +1087,22 @@ struct SystemSetupView: View {
                     }
                     .help("Re-establish the link to Symphony and rebuild the audio "
                           + "path. Same as View > Rescan (⌘R).")
+                } else if appState.connectionMode == .simulated, let unit = appState.connectedUnit {
+                    // Converter simulation: the same rows a real converter gets.
+                    LabeledContent("Device Name", value: unit.modelName ?? "Unknown unit")
+                    LabeledContent("Connection", value: "Converter simulation — no hardware")
+                    ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
+                        LabeledContent(row.label, value: row.value)
+                    }
+                    LabeledContent("IOBoard 1", value: ConnectedUnit.noOptionCards)
+                    LabeledContent("IOBoard 2", value: ConnectedUnit.noOptionCards)
+                    Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let channels = unit.channels {
+                        LabeledContent("Inputs", value: "\(channels.inputs)")
+                        LabeledContent("Outputs", value: "\(channels.outputs)")
+                    }
                 } else if appState.connectionMode == .simulated, let sim = appState.cardSimulation {
                     // Card-simulation harness: say so, and name the forced boards
                     // with their `simulated` provenance so a screenshot of this
@@ -1369,7 +1388,7 @@ struct SystemSetupView: View {
     /// report via `appState.deviceInfoSnapshot`, which `loadProperties` publishes.
     private func currentDeviceReport() -> DeviceInfoReport {
         let device = appState.device
-        return (parsedFirmware ?? FirmwareInfo()).report(
+        var report = (parsedFirmware ?? FirmwareInfo()).report(
             connectionMode: appState.connectionLabel,
             board1: board1Reading,
             board2: board2Reading,
@@ -1379,6 +1398,8 @@ struct SystemSetupView: View {
             connectedUnit: appState.connectedUnit?.displayName,
             connectedUnitModel: appState.connectedUnit?.modelName
         )
+        report.connectedUnitLines = appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
+        return report
     }
 
     // MARK: - Board Detection Provenance

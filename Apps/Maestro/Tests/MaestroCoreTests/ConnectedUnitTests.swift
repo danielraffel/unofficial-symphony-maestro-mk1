@@ -99,4 +99,19 @@ struct ConnectedUnitTests {
         let layout = CardLayout(isKnown: false, fallbackChannelCount: 32, converter: withUnknown)
         #expect(layout.analogOutputStripCount == 32)
     }
+
+    @Test("each unit gets its own row, in cable order")
+    func unitRows() {
+        let chain = ConnectedUnit.chain([.ad16x, .da16x, .da16x])
+        #expect(chain.unitRows.map(\.label) == ["Unit 1", "Unit 2", "Unit 3"])
+        #expect(chain.unitRows.map(\.value) == ["AD-16X (16 inputs)", "DA-16X (16 outputs)", "DA-16X (16 outputs)"])
+        #expect(ConnectedUnit.da16x.unitRows.count == 1)
+
+        var report = DeviceInfoReport(connection: "Thunderbolt (ThunderBridge)",
+                                      connectedUnit: chain.displayName)
+        report.connectedUnitLines = chain.unitRows.map { "\($0.label): \($0.value)" }
+        let text = report.clipboardText
+        #expect(text.contains("Unit 1: AD-16X (16 inputs)\nUnit 2: DA-16X (16 outputs)\nUnit 3: DA-16X (16 outputs)"))
+        #expect(!text.contains("Connected Unit:"))
+    }
 }

@@ -56,6 +56,26 @@ public enum ConnectedUnit: Sendable, Equatable {
         }
     }
 
+    /// Debug only: `-MaestroSimulateConnectedUnit ad16x+da16x` shows the app as
+    /// it would look with those converters attached, with no hardware. Names:
+    /// `ad16x`, `da16x`, `dd16x`, `rosetta800`, joined with `+`, at most four.
+    public static let simulationKey = "MaestroSimulateConnectedUnit"
+
+    public init?(simulationName: String) {
+        let units = simulationName.lowercased().split(separator: "+").map { name -> ConnectedUnit? in
+            switch name.trimmingCharacters(in: .whitespaces) {
+            case "ad16x": return .ad16x
+            case "da16x": return .da16x
+            case "dd16x": return .dd16x
+            case "rosetta800": return .rosetta800
+            default: return nil
+            }
+        }
+        guard !units.isEmpty, units.count <= 4, !units.contains(where: { $0 == nil }) else { return nil }
+        let known = units.compactMap { $0 }
+        self = known.count == 1 ? known[0] : .chain(known)
+    }
+
     /// Channels the unit has, when it is a converter we recognise.
     public var channels: (inputs: Int, outputs: Int)? {
         switch self {
@@ -76,6 +96,19 @@ public enum ConnectedUnit: Sendable, Equatable {
             }
             return (min(inputs, 32), min(outputs, 32))
         }
+    }
+
+    /// The units in cable order, nearest the computer first. One element unless
+    /// this is a chain.
+    public var units: [ConnectedUnit] {
+        if case .chain(let units) = self { return units }
+        return [self]
+    }
+
+    /// One line per unit for Device Info, in cable order:
+    /// `("Unit 1", "AD-16X (16 inputs)")`.
+    public var unitRows: [(label: String, value: String)] {
+        units.enumerated().map { (label: "Unit \($0.offset + 1)", value: $0.element.displayName) }
     }
 
     /// The unit's model name, for a recognised converter.

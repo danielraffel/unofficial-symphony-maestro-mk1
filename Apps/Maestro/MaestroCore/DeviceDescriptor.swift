@@ -911,6 +911,8 @@ public struct DeviceInfoReport: Sendable, Equatable {
     /// Set when the driver found something other than a Symphony I/O on the
     /// cable; see `ConnectedUnit`.
     public var connectedUnit: String?
+    /// One entry per unit in cable order, e.g. `"Unit 1: AD-16X (16 inputs)"`.
+    public var connectedUnitLines: [String] = []
 
     public init(
         deviceName: String = "Symphony I/O",
@@ -972,7 +974,11 @@ public struct DeviceInfoReport: Sendable, Equatable {
         if let deviceModel { lines.append("Device Model: \(deviceModel)") }
         if let mode { lines.append("Mode: \(mode)") }
         if let channelCount { lines.append("Channel Count: \(channelCount)") }
-        if let connectedUnit { lines.append("Connected Unit: \(connectedUnit)") }
+        if !connectedUnitLines.isEmpty {
+            lines.append(contentsOf: connectedUnitLines)
+        } else if let connectedUnit {
+            lines.append("Connected Unit: \(connectedUnit)")
+        }
         return lines.joined(separator: "\n")
     }
 
