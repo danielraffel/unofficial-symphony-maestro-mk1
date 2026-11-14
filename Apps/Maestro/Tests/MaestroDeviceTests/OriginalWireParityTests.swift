@@ -77,4 +77,97 @@ struct OriginalWireParityTests {
         transport.nextReply = XPCPropertyReply(status: -1, data: Data())
         #expect(await conn.readBoardHardwareMajor(slot: 0) == nil)
     }
+
+    // MARK: Clock source over ThunderBridge with an AES board
+
+    /// Symphony mode lists Internal, Word Clock, then each board's sources; an
+    /// Analog-AES board's are S/PDIF Coax then AES 1-2..7-8
+    /// (`SymphonyIO.cpp:1750-1766`, `SymphonyIO_IOBoard.cpp:79-90`,
+    /// `AESIn_SymphonyIO_Stream.cpp:40-44`). Choosing one sends ClockMode 0x50
+    /// with `[IOBoard1 = 4, master 1, loop sync 0, input]`, the input an
+    /// `SymphonyIOAnalogAESOptBoardClockSourceIdx`: AES pairs 0-3, coax 6
+    /// (`AESIn_SymphonyIO_Stream.cpp:57-93`, `SymphonyIO_IOBoard.cpp:57-77`,
+    /// `SymphonyIOControl.cpp:958-1011`, `SymphonyIOVendorSpecific.h:879-888`).
+    @Test("an AES card in slot 1 is offered as its coax and AES pairs, sent as the original sent them")
+    func aesSlotClockSources() throws {
+        let menu = ClockSourceMenu.thunderbolt(slot1: .analogAES, slot2: .none)
+        #expect(menu.map(\.name) == ["Internal", "Word Clock", "Loop Sync",
+                                      "S/PDIF Coax 1-2", "AES 1-2", "AES 3-4", "AES 5-6", "AES 7-8",
+                                      "IO Board 2"])
+        let expectedBytes: [String: [UInt8]] = [
+            "Internal": [1, 1, 0, 0],
+            "Word Clock": [2, 1, 0, 0],
+            "Loop Sync": [3, 0, 1, 0],
+            "S/PDIF Coax 1-2": [4, 1, 0, 6],
+            "AES 1-2": [4, 1, 0, 0],
+            "AES 3-4": [4, 1, 0, 1],
+            "AES 5-6": [4, 1, 0, 2],
+            "AES 7-8": [4, 1, 0, 3],
+            "IO Board 2": [5, 1, 0, 0],
+        ]
+        for choice in menu {
+            let decoded = try #require(ClockSourceMenu.decode(choice.id))
+            #expect(decoded.source == choice.source)
+            #expect(decoded.boardInput == choice.boardInput)
+            let request = ThunderboltDeviceConnection.clockModeRequest(
+                source: decoded.source, boardInput: decoded.boardInput ?? 0)
+            #expect(request.request == 0x50)
+            #expect(request.direction == .write)
+            #expect(Array(request.data) == expectedBytes[choice.name], "\(choice.name)")
+        }
+        // The plain sources keep the numbers the driver's clock control uses.
+        #expect(menu.filter { $0.boardInput == nil }.map(\.id) == [1, 2, 3, 5])
+    }
+
+    /// Slot 2 numbers on from slot 1 (`SymphonyIO_IOBoard.cpp:1533-1541`): after
+    /// an AES board, AES 9-10..15-16 and coax 3-4, with IOBoard2 = 5 as source.
+    @Test("an AES card in slot 2 numbers on from slot 1 and clocks from board 2")
+    func secondAESSlot() {
+        let menu = ClockSourceMenu.thunderbolt(slot1: .analogAES, slot2: .analogAES)
+        let slot2 = menu.filter { $0.source == 5 }
+        #expect(slot2.map(\.name) == ["S/PDIF Coax 3-4", "AES 9-10", "AES 11-12", "AES 13-14", "AES 15-16"])
+        #expect(slot2.map { $0.boardInput } == [6, 0, 1, 2, 3])
+        let afterOptical = ClockSourceMenu.thunderbolt(slot1: .optical, slot2: .analogAES)
+        #expect(afterOptical.filter { $0.source == 5 }.map(\.name)
+                == ["S/PDIF Coax 3-4", "AES 1-2", "AES 3-4", "AES 5-6", "AES 7-8"])
+        #expect(afterOptical.contains { $0.id == 4 && $0.name == "IO Board 1" })
+    }
+
+    @Test("without an AES card the ThunderBridge menu is unchanged; USB stays Internal only")
+    func nonAESMenusUnchanged() {
+        for card in IOCardType.allCases where card != .analogAES {
+            let menu = ClockSourceMenu.thunderbolt(slot1: card, slot2: card)
+            #expect(menu.map(\.id) == [1, 2, 3, 4, 5])
+            #expect(menu.map(\.name) == ["Internal", "Word Clock", "Loop Sync", "IO Board 1", "IO Board 2"])
+        }
+        #expect(ClockSourceMenu.usb.map(\.id) == [1])
+    }
+
+    /// The board input byte is the enum value, not the ClockMode comment's
+    /// numbering (`SymphonyIOVendorSpecific.h:879-888` vs `:234-247`).
+    @Test("board clock inputs carry the SymphonyIOAnalogAESOptBoardClockSourceIdx values")
+    func boardInputWireIndex() {
+        #expect(BoardClockSource.allCases.map(\.wireIndex) == [0, 1, 2, 3, 4, 5, 6])
+        #expect(BoardClockSource.spdifCoax.wireIndex == 6)
+    }
+
+    /// The unit reports the source and input in the front panel read (0x28,
+    /// bytes 5 and 6, as the daemon read them at `SymphonyIO.cpp:6811`).
+    @Test("a reported board input selects its row, or the board's single row")
+    func reportedClockSourceRow() {
+        let aes = ClockSourceMenu.thunderbolt(slot1: .analogAES, slot2: .optical)
+        let reportedAES56 = ThunderboltDeviceConnection.clockSourceKey(reportedSource: 4, boardInput: 2)
+        #expect(reportedAES56.flatMap { ClockSourceMenu.row(for: $0, in: aes) }
+                == ClockSourceMenu.key(source: 4, boardInput: 2))
+        // Board 2 is an optical card shown as one row.
+        let reportedOptical = ThunderboltDeviceConnection.clockSourceKey(reportedSource: 5, boardInput: 4)
+        #expect(reportedOptical.flatMap { ClockSourceMenu.row(for: $0, in: aes) } == 5)
+        // The driver's control reports a plain 4: on an AES board that is AES 1-2.
+        #expect(ClockSourceMenu.row(for: 4, in: aes) == ClockSourceMenu.key(source: 4, boardInput: 0))
+        #expect(ThunderboltDeviceConnection.clockSourceKey(reportedSource: 2, boardInput: 3) == 2)
+        #expect(ThunderboltDeviceConnection.clockSourceKey(reportedSource: 0, boardInput: 0) == nil)
+        #expect(ThunderboltDeviceConnection.clockSourceKey(reportedSource: 6, boardInput: 0) == nil)
+        #expect(ClockSourceMenu.decode(ClockSourceMenu.key(source: 1, boardInput: 0)) == nil)
+        #expect(ClockSourceMenu.row(for: 0, in: aes) == nil)
+    }
 }

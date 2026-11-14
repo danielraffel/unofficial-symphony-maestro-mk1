@@ -201,9 +201,18 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             }
             return .uint32(UInt32(raw))
         case .clockSource:
-            // The dext's 'clck' control is the hardware-facing state and its
-            // selector IDs are the legacy enum (1...5), the same numbers the
-            // write path sends, so this is a real readback rather than a cache.
+            // What the unit itself reports first: the front panel read (0x28)
+            // carries the clock source and the board input, as the original's
+            // daemon read it (`og_source/maestrolink/Software/SymphonyIO.cpp:6811`).
+            // The driver's 'clck' control cannot hold a board input, and it is
+            // not updated when a board input is chosen here (see
+            // `writeBoardInputClockSource`), so it is only the fallback when the
+            // unit does not answer.
+            if let update = await readParameterUpdates(),
+               let reported = Self.clockSourceKey(reportedSource: update.clockSource,
+                                                  boardInput: update.boardClockSource) {
+                return .uint32(reported)
+            }
             return try .uint32(readClockSource())
         case .opticalInFormat:
             // Read the current selected value of the dext's DataSource control for this board
@@ -278,10 +287,22 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             // object ('clck', Global scope), so we drive it via the standard CoreAudio clock-source
             // property rather than the (Apple-blocked) IOUserClient. The control's selector IDs are
             // the legacy eSymphonyIOClockSource enum values (1..5), so the value maps 1:1.
-            guard let src = value.asUInt32 else {
-                throw DeviceConnectionError.typeMismatch(expected: "UInt32", got: "\(value)")
+            guard let key = value.asUInt32, let decoded = ClockSourceMenu.decode(key) else {
+                throw DeviceConnectionError.typeMismatch(expected: "clock source key", got: "\(value)")
             }
-            try writeClockSource(src)
+            if let input = decoded.boardInput {
+                try writeBoardInputClockSource(source: decoded.source, boardInput: input)
+            } else {
+                // The control may still hold this value from before a board
+                // input was chosen through the vendor path, and a write that
+                // does not change it may never reach the driver. Send the same
+                // ClockMode the driver would, directly, in that case only.
+                let current = try? readClockSource()
+                try writeClockSource(key)
+                if current == key {
+                    try sendViaDext(Self.clockModeRequest(source: decoded.source, boardInput: 0))
+                }
+            }
             notifyListeners(for: address.selector, value: value)
             return
 
@@ -576,6 +597,42 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         guard status == noErr else {
             throw DeviceConnectionError.transportError("ClockSource write failed: OSStatus \(status)")
         }
+    }
+
+    /// ClockMode (0x50) for a source, as the driver's clock control sends it
+    /// (`RequestClockSource`): Loop Sync as slave with loop sync on, anything
+    /// else as master with loop sync off. The original forced master for every
+    /// source but Loop Sync (`og_source/maestrolink/Software/SymphonyIO/
+    /// SymphonyIOControl.cpp:966-967`).
+    static func clockModeRequest(source: UInt8, boardInput: UInt8) -> USBControlRequest {
+        let loop = source == 3
+        return SymphonyIORequestBuilder.setClockMode(
+            source: SymphonyIOClockSource(rawValue: source) ?? .internal,
+            isMaster: !loop, loopSync: loop, boardIndex: boardInput)
+    }
+
+    /// Clock to one input of an I/O board: ClockMode with the board as the
+    /// source (4 or 5) and the input in `pData[3]`, which the driver's clock
+    /// control cannot express (it always sends 0). Goes through the driver's
+    /// vendor path, which runs on the same serial XLink queue as the control.
+    /// The control is left as it was: writing it too would queue a second
+    /// ClockMode with input 0 that could land after this one.
+    private func writeBoardInputClockSource(source: UInt8, boardInput: UInt8) throws {
+        guard source == 4 || source == 5 else {
+            throw DeviceConnectionError.typeMismatch(expected: "IO board source", got: "\(source)")
+        }
+        try sendViaDext(Self.clockModeRequest(source: source, boardInput: boardInput))
+    }
+
+    /// The picker key for a clock source the unit reported, nil when it is not
+    /// a source. A board source carries its input; the menu maps it back to a
+    /// plain "IO Board" row when that board is not shown by input.
+    static func clockSourceKey(reportedSource: UInt8, boardInput: UInt8) -> UInt32? {
+        guard (1...5).contains(reportedSource) else { return nil }
+        if reportedSource == 4 || reportedSource == 5 {
+            return ClockSourceMenu.key(source: reportedSource, boardInput: boardInput)
+        }
+        return UInt32(reportedSource)
     }
 
     /// Read the clock source back from the same 'clck' control `writeClockSource` drives.

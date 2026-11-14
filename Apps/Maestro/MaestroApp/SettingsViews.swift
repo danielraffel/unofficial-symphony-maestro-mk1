@@ -828,27 +828,26 @@ struct SystemSetupView: View {
     /// on every refresh, and it clears whatever the last error said.
     @State private var programmaticRate: Double?
 
-    // Keys are the legacy eSymphonyIOClockSource enum values (SymphonyIOVendorSpecific.h:857-865),
+    // Keys 1-5 are the legacy eSymphonyIOClockSource enum values (SymphonyIOVendorSpecific.h:857-865),
     // sent verbatim as ClockMode pData[0]. The old dict was off-by-one with invented digital
     // "sources" (AES/EBU, S/PDIF, ADAT, Optical S/PDIF are board sub-sources, not clock sources).
+    // An AES board's inputs are listed one by one with their own keys; see `ClockSourceMenu`.
     // Note: Loop Sync (3) and IO Board 1/2 (4/5) currently send default flags/boardIndex — the
     // isMaster/loopSync and board-index wiring is a known follow-up (CS2 gap); Internal and Word
     // Clock are fully correct.
-    private let allClockSourceNames: [UInt32: String] = [
-        1: "Internal",
-        2: "Word Clock",
-        3: "Loop Sync",
-        4: "IO Board 1",
-        5: "IO Board 2"
-    ]
-
-    /// Over USB the Symphony runs on its internal clock only: Apogee's software
-    /// offered no other source in the USB interface mode
-    /// (`og_source/maestrolink/Software/SymphonyIO.cpp:1735-1738, 1754-1755`), and
-    /// its daemon treated any other reading as Internal (`:6465-6466`). Offering
-    /// Word Clock or IO Board here sent the unit choices it does not act on.
-    private var clockSourceNames: [UInt32: String] {
-        appState.transportType == .usb ? [1: "Internal"] : allClockSourceNames
+    //
+    // Over USB the Symphony runs on its internal clock only: Apogee's software
+    // offered no other source in the USB interface mode
+    // (`og_source/maestrolink/Software/SymphonyIO.cpp:1735-1738, 1754-1755`), and
+    // its daemon treated any other reading as Internal (`:6465-6466`). Offering
+    // Word Clock or IO Board here sent the unit choices it does not act on.
+    // Over ThunderBridge an AES board in a slot is offered as its S/PDIF coax and
+    // AES pairs, as Apogee's software did in the Symphony mode.
+    private var clockSourceChoices: [ClockSourceChoice] {
+        appState.transportType == .usb
+            ? ClockSourceMenu.usb
+            : ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
+                                          slot2: appState.secondaryBoardType)
     }
 
     /// Fallback rates shown when device doesn't report available rates.
@@ -919,8 +918,8 @@ struct SystemSetupView: View {
 
                 // Clock Source
                 Picker("Clock Source", selection: $clockSource) {
-                    ForEach(Array(clockSourceNames.keys.sorted()), id: \.self) { key in
-                        Text(clockSourceNames[key] ?? "Unknown").tag(key)
+                    ForEach(clockSourceChoices) { choice in
+                        Text(choice.name).tag(choice.id)
                     }
                 }
                 .disabled(isProToolsMode)
@@ -1500,9 +1499,12 @@ struct SystemSetupView: View {
         // no read opcode and answers with what this session last wrote (0 until
         // then, which matches no row and is ignored). The USB CoreAudio device is
         // still not consulted: its clock-source IDs are not this enum.
-        if let source = (try? await device.getProperty(
+        // A board source comes back with its input; `row(for:in:)` picks the
+        // menu row for it.
+        if let reported = (try? await device.getProperty(
                 PropertyAddress(selector: .clockSource)))?.asUInt32,
-           clockSourceNames[source] != nil, source != clockSource {
+           let source = ClockSourceMenu.row(for: reported, in: clockSourceChoices),
+           source != clockSource {
             programmaticClockSource = source
             clockSource = source
         }

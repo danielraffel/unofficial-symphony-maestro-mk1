@@ -44,6 +44,153 @@ public enum BoardClockSource: String, Sendable, CaseIterable {
     case optical0 = "Optical 1"
     case optical1 = "Optical 2"
     case spdifCoax = "S/PDIF Coax"
+
+    /// The byte ClockMode (0x50) carries in `pData[3]` for this input: the
+    /// `SymphonyIOAnalogAESOptBoardClockSourceIdx` value
+    /// (`og_source/maestrolink/Software/SymphonyIO/SymphonyIOVendorSpecific.h:879-888`).
+    ///
+    /// The comment on `SymphonyIOCommands_ClockMode` in the same header
+    /// (`:234-247`) numbers these differently (S/PDIF Coax 0, AES 1-2 = 1). The
+    /// software and firmware Apogee shipped both use the enum: the daemon sends
+    /// `eSymphonyIOAnalogAESOptBoardClockSourceIdx_AES12 + i` for AES pair `i`
+    /// (`og_source/maestrolink/Software/AESIn_SymphonyIO_Stream.cpp:57-93`) and
+    /// `..._SPDIFCoax` for the coax input (`SymphonyIO_IOBoard.cpp:57-77`), and
+    /// the firmware's own front-panel clock list uses the same values
+    /// (`og_source/symphonymk1/ext/SymphonyIO/Software/XMOS/SymphonyIO/src/XMOS/
+    /// XCore/Core3/SymphonyIOStateThread/SymphonyIOStateData/SymphonyIOStateData.cpp:1988-2008`).
+    public var wireIndex: UInt8 {
+        switch self {
+        case .aes12: return 0
+        case .aes34: return 1
+        case .aes56: return 2
+        case .aes78: return 3
+        case .optical0: return 4
+        case .optical1: return 5
+        case .spdifCoax: return 6
+        }
+    }
+}
+
+// MARK: - Clock Source menu
+
+/// One row of the Clock Source menu and what choosing it sends.
+public struct ClockSourceChoice: Sendable, Equatable, Identifiable {
+    /// The picker key. 1-5 are the plain `eSymphonyIOClockSource` values (the
+    /// ThunderBridge driver's own clock control uses the same numbers); an input
+    /// on an I/O board is `source | (boardInput + 1) << 8`, see
+    /// ``ClockSourceMenu/key(source:boardInput:)``.
+    public let id: UInt32
+    public let name: String
+    /// ClockMode `pData[0]`, an `eSymphonyIOClockSource` value.
+    public let source: UInt8
+    /// ClockMode `pData[3]` when the row names a particular board input; nil
+    /// for the plain sources.
+    public let boardInput: UInt8?
+}
+
+/// The Clock Source menu for each connection, as Apogee's software built it.
+public enum ClockSourceMenu {
+    public static let internalClock: UInt32 = 1
+    public static let wordClock: UInt32 = 2
+    public static let loopSync: UInt32 = 3
+    public static let ioBoard1: UInt32 = 4
+    public static let ioBoard2: UInt32 = 5
+
+    /// The picker key for a board input. Kept above 0xFF so it can never be
+    /// mistaken for a plain source, and so `key & 0xFF` is the source.
+    public static func key(source: UInt8, boardInput: UInt8) -> UInt32 {
+        UInt32(source) | ((UInt32(boardInput) + 1) << 8)
+    }
+
+    /// The ClockMode bytes a key stands for: the source and, for a board input,
+    /// `pData[3]`. Nil for anything that is not a source.
+    public static func decode(_ key: UInt32) -> (source: UInt8, boardInput: UInt8?)? {
+        let source = UInt8(key & 0xFF)
+        guard (1...5).contains(source), key <= 0xFFFF else { return nil }
+        let high = key >> 8
+        if high == 0 { return (source, nil) }
+        guard source == 4 || source == 5 else { return nil }
+        return (source, UInt8(high - 1))
+    }
+
+    /// Over USB: Internal only (see `SystemSetupView.clockSourceChoices`).
+    public static let usb: [ClockSourceChoice] = [
+        ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
+    ]
+
+    /// Over ThunderBridge.
+    ///
+    /// In the Symphony (PCIe) mode Apogee's daemon listed Internal and Word
+    /// Clock, then each fitted board's own clock sources
+    /// (`og_source/maestrolink/Software/SymphonyIO.cpp:1727-1766`). For an
+    /// Analog-AES board those are the S/PDIF coax input followed by AES 1-2,
+    /// 3-4, 5-6 and 7-8 (`SymphonyIO_IOBoard.cpp:79-90`, the board's streams from
+    /// `SymphonyIOBoard_AnalogAES.cpp:36-57`, `AESIn_SymphonyIO_Stream.cpp:40-44`),
+    /// and choosing one sent ClockMode with the board as the source and the
+    /// input in `pData[3]` (`AESIn_SymphonyIO_Stream.cpp:57-93`,
+    /// `SymphonyIO_IOBoard.cpp:57-77`). Names follow the daemon's
+    /// (`AESIn_SymphonyIO_Stream.cpp:198-226`, `SymphonyIO_IOBoard.cpp:1286-1308`):
+    /// slot 2 numbers on from slot 1's AES and coax channels
+    /// (`SymphonyIO_IOBoard.cpp:1533-1541`).
+    ///
+    /// Other boards keep the single "IO Board" row, and Loop Sync stays, as
+    /// before; only an AES board's row is expanded.
+    public static func thunderbolt(slot1: IOCardType, slot2: IOCardType) -> [ClockSourceChoice] {
+        var choices = [
+            ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
+            ClockSourceChoice(id: wordClock, name: "Word Clock", source: 2, boardInput: nil),
+            ClockSourceChoice(id: loopSync, name: "Loop Sync", source: 3, boardInput: nil),
+        ]
+        choices += boardChoices(slot: 0, card: slot1, preceding: .none)
+        choices += boardChoices(slot: 1, card: slot2, preceding: slot1)
+        return choices
+    }
+
+    private static func boardChoices(slot: Int, card: IOCardType,
+                                     preceding: IOCardType) -> [ClockSourceChoice] {
+        let source: UInt8 = slot == 0 ? 4 : 5
+        guard card == .analogAES else {
+            return [ClockSourceChoice(id: UInt32(source), name: "IO Board \(slot + 1)",
+                                      source: source, boardInput: nil)]
+        }
+        // Channels on slot 1 that slot 2's numbering continues from.
+        let coaxBefore = preceding.hasSPDIFCoax ? 2 : 0
+        let aesBefore: Int
+        switch preceding {
+        case .analogAES: aesBefore = 8
+        case .twoBySix: aesBefore = 2
+        default: aesBefore = 0
+        }
+        let coax = BoardClockSource.spdifCoax.wireIndex
+        var rows = [ClockSourceChoice(
+            id: key(source: source, boardInput: coax),
+            name: "S/PDIF Coax \(coaxBefore + 1)-\(coaxBefore + 2)",
+            source: source, boardInput: coax)]
+        for pair in [BoardClockSource.aes12, .aes34, .aes56, .aes78] {
+            let first = aesBefore + Int(pair.wireIndex) * 2 + 1
+            rows.append(ClockSourceChoice(
+                id: key(source: source, boardInput: pair.wireIndex),
+                name: "AES \(first)-\(first + 1)",
+                source: source, boardInput: pair.wireIndex))
+        }
+        return rows
+    }
+
+    /// The row to show for a source the hardware or driver reported. A board
+    /// input reported for a board shown as one "IO Board" row selects that row;
+    /// a plain IO Board source on an AES board (input byte 0, which the
+    /// firmware takes as AES 1-2) selects AES 1-2. Nil when nothing matches.
+    public static func row(for reported: UInt32, in choices: [ClockSourceChoice]) -> UInt32? {
+        if choices.contains(where: { $0.id == reported }) { return reported }
+        guard let decoded = decode(reported) else { return nil }
+        let plain = UInt32(decoded.source)
+        if choices.contains(where: { $0.id == plain }) { return plain }
+        if decoded.boardInput == nil, decoded.source == 4 || decoded.source == 5 {
+            let aes12 = key(source: decoded.source, boardInput: BoardClockSource.aes12.wireIndex)
+            if choices.contains(where: { $0.id == aes12 }) { return aes12 }
+        }
+        return nil
+    }
 }
 
 // MARK: - Sample Rate

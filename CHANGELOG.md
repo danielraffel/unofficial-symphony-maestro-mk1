@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+More fixes for the AES port on an 8x8 card.
+
+### What's better
+
+- **Clock from an AES input over ThunderBridge.** With an AES card in a slot, Clock Source now lists that card's S/PDIF Coax input and its AES pairs (AES 1-2, 3-4, 5-6 and 7-8) instead of a single "IO Board" entry, so you can pick the AES input your device is connected to. A second AES card continues the numbering (AES 9-10 to 15-16). This is the list Apogee's original Maestro offered. Other cards are unchanged. Audio MIDI Setup keeps showing "I/O Board" choices; make AES choices in Maestro.
+- **The ThunderBridge driver no longer sends an optical format to an AES card.** An AES card has no optical format to set, and Apogee's software never sent one. This change is in the driver and arrives with the next driver release.
+
 ## 0.8.39 (build 1035)
 
 Fixes for people using the AES port on an 8x8 card, following a user report.

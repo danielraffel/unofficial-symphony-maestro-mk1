@@ -139,6 +139,27 @@ struct ThunderboltDeviceConnectionTests {
         }
     }
 
+    /// A key that is not a clock source, or a board input on a source that is
+    /// not a board, is refused before anything is sent.
+    @Test("ThunderboltDeviceConnection: a clock key that is not a source is refused")
+    func clockSourceKeyValidated() async {
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        for bad: UInt32 in [0, 6, 0x0101, 0x0203, 0x10004] {
+            do {
+                try await conn.setProperty(PropertyAddress(selector: .clockSource), value: .uint32(bad))
+                #expect(Bool(false), "\(bad) should have been refused")
+            } catch let error as DeviceConnectionError {
+                guard case .typeMismatch = error else {
+                    #expect(Bool(false), "\(bad): wrong error \(error)")
+                    continue
+                }
+            } catch {
+                #expect(Bool(false), "\(bad): unexpected error \(error)")
+            }
+        }
+    }
+
     // MARK: - Remembered write-only settings
 
     /// The reported bug: change a setting, leave the tab, come back, and the
