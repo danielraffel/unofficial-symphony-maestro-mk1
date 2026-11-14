@@ -37,6 +37,7 @@
 #include "SymphonyTimingProfile.h"
 #include "SymphonyMixerPan.h"
 #include "SymphonyCardMixerRouting.h"
+#include "SymphonyOptionBoard.h"
 
 // ── Logging ─────────────────────────────────────────────────────────────────
 // DriverKit only provides os_log with OS_LOG_TYPE_DEFAULT — no os_log_error.
@@ -594,27 +595,8 @@ static constexpr uint8_t kSIOCmd_PreferenceLoadLock    = 0xDD;  // 1 byte: 1=loc
 static constexpr uint8_t kSIOCmd_OptionBoardType       = 0xA1;  // read 1 byte. nValue: 0=primary, 1=secondary. Returns SymphonyIOOptionBoardType.
 static constexpr uint8_t kSIOCmd_ClockRateAndLock      = 0x51;  // read 5 bytes: [0]=lock(0/1), [1..4]=uint32 BE measured rate Hz (clk[1]=MSB).
 
-// SymphonyIOOptionBoardType (SymphonyIOVendorSpecific.h:805-812). MicPre8 == the
-// 8-channel mic-preamp option board; every other value has ZERO mic-pre channels.
-static constexpr uint8_t kSIOOptionBoard_None     = 0;
-static constexpr uint8_t kSIOOptionBoard_MicPre8  = 1;
-// Option-board types with a selectable optical format. AD16/DA16 and 2x6 also
-// expose optical I/O even though they are not reported as the legacy type-3
-// Optical board. The format command is direction-agnostic on the wire.
-static constexpr uint8_t kSIOOptionBoard_Optical  = 3;
-static constexpr uint8_t kSIOOptionBoard_AnalogAES = 2;
-static constexpr uint8_t kSIOOptionBoard_AnalogAD16 = 4;
-static constexpr uint8_t kSIOOptionBoard_AnalogDA16 = 5;
-static constexpr uint8_t kSIOOptionBoard_TwoBySix = 7;
-
-static constexpr bool BoardHasOpticalFormat(uint8_t boardType)
-{
-    return boardType == kSIOOptionBoard_AnalogAES ||
-           boardType == kSIOOptionBoard_Optical ||
-           boardType == kSIOOptionBoard_AnalogAD16 ||
-           boardType == kSIOOptionBoard_AnalogDA16 ||
-           boardType == kSIOOptionBoard_TwoBySix;
-}
+// Option-board types and BoardHasOpticalFormat / BootSendsOpticalFormat live in
+// SymphonyOptionBoard.h so the host-side test can compile them.
 
 // MicPre8 option board (SymphonyIOVendorSpecific.h:1060-1064). 8 mic channels,
 // gain 0..85 dB. Present ONLY when the MicPre8 option board is fitted — the base
@@ -1781,18 +1763,35 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // cmd 0x34: nValue = board index (0 or 1), data = 0 for ADAT/SMUX.
         // Harmless if a board slot is empty.
         // Evidence: MaestroVolumeProxy.c:821-835 configure_fpga_routing() step 3a.
+        //
+        // Not sent to an AES board. The original never sent an optical format
+        // to one and the firmware does nothing with it
+        // (og_source/symphonymk1/ext/SymphonyIO/Software/XMOS/SymphonyIO/src/
+        // Bulldog/MAL/MainController/AudioManager/SymphonyIOAudioManager.cpp:257-290;
+        // see SymphonyOptionBoard.h). The slot's type is read first (0xA1, the
+        // same bounded read Start() and link recovery use); if that read fails
+        // the send goes out as before.
         {
             uint8_t adatMode = 0;  // SymphonyIOOpticalFormat_ADAT_SMUX
-            bool ok0 = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                          symphonyAddr, kSIOCmd_OpticalFormat,
-                                          0, &adatMode, 1, txSeq);
-            IOSleep(10);
-            bool ok1 = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                          symphonyAddr, kSIOCmd_OpticalFormat,
-                                          1, &adatMode, 1, txSeq);
+            const char* result[2] = { "skipped", "skipped" };
+            for (uint32_t b = 0; b < 2; b++) {
+                uint8_t bt = kSIOOptionBoard_None;
+                bool typeOK = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                symphonyAddr, kSIOCmd_OptionBoardType,
+                                                b, &bt, 1, txSeq);
+                if (!BootSendsOpticalFormat(typeOK, bt)) {
+                    STLOG("SymphonyIO: OpticalFormat board%u skipped (AES board, type %u)",
+                          b, bt);
+                    continue;
+                }
+                bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                            symphonyAddr, kSIOCmd_OpticalFormat,
+                                            b, &adatMode, 1, txSeq);
+                result[b] = ok ? "OK" : "FAILED";
+                IOSleep(10);
+            }
             STLOG("SymphonyIO: OpticalFormat(ADAT/SMUX): board0=%s, board1=%s",
-                  ok0 ? "OK" : "FAILED", ok1 ? "OK" : "FAILED");
-            IOSleep(10);
+                  result[0], result[1]);
         }
 
         // ── 19b-1. Playback routing: XLink → IOBoard0 (direct) ─────
@@ -3787,9 +3786,11 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // Board-gated (never-guess): read OptionBoardType (0xA1) for board 0 AND
         // board 1 and publish a control ONLY for a board that POSITIVELY reads
         // an optical-capable board type. On None/other/read-failure → publish nothing for that
-        // board (fail-safe, same discipline as numMicChannels). The boot path
-        // (:1471-1488) blindly 0x34's both slots because that's harmless on an
-        // empty slot, but a CONTROL must reflect real hardware. Runs on the XLink
+        // board (fail-safe, same discipline as numMicChannels). An AES board gets
+        // no control: it has no optical format (SymphonyOptionBoard.h). The boot
+        // path (step 19b-0c) sends 0x34 to every slot except a positively-read AES
+        // board, because that's harmless on an empty slot, but a CONTROL must
+        // reflect real hardware. Runs on the XLink
         // init path, so ReadVendorRequest's bounded IOSleep polling is safe here.
         ivars->numOpticalBoards = 0;
         for (uint32_t b = 0; b < 2; b++) {
