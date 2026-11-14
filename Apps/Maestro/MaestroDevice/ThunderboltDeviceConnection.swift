@@ -37,6 +37,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
     /// Listener storage (NSLock-protected, same pattern as XPCDeviceConnection).
     private let listenerLock = NSLock()
+    /// Where the clock source answer comes from; see `ThunderboltClockState`.
+    let clockState = ThunderboltClockState()
     private var listeners: [AudioPropertySelector: [WeakListener]] = [:]
 
     /// Property selectors handled via CoreAudio HAL (more efficient path).
@@ -201,19 +203,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             }
             return .uint32(UInt32(raw))
         case .clockSource:
-            // What the unit itself reports first: the front panel read (0x28)
-            // carries the clock source and the board input, as the original's
-            // daemon read it (`og_source/maestrolink/Software/SymphonyIO.cpp:6811`).
-            // The driver's 'clck' control cannot hold a board input, and it is
-            // not updated when a board input is chosen here (see
-            // `writeBoardInputClockSource`), so it is only the fallback when the
-            // unit does not answer.
-            if let update = await readParameterUpdates(),
-               let reported = Self.clockSourceKey(reportedSource: update.clockSource,
-                                                  boardInput: update.boardClockSource) {
-                return .uint32(reported)
+            // No vendor read of its own: 0x28 clears the unit's front panel
+            // flags on every read, and the front panel poller depends on them.
+            // `clockState` holds what the poller last saw and what this
+            // connection last wrote; the driver's 'clck' control cannot hold a
+            // board input and is the fallback.
+            let control = try? readClockSource()
+            if let key = clockState.current(control: control, now: Date()) {
+                return .uint32(key)
             }
-            return try .uint32(readClockSource())
+            guard let control else { return try .uint32(readClockSource()) }
+            return .uint32(control)
         case .opticalInFormat:
             // Read the current selected value of the dext's DataSource control for this board
             // (element = board+1). Entitlement-free; mirrors the write path. Returns 0=ADAT/SMUX,
@@ -291,7 +291,9 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 throw DeviceConnectionError.typeMismatch(expected: "clock source key", got: "\(value)")
             }
             if let input = decoded.boardInput {
+                let control = try? readClockSource()
                 try writeBoardInputClockSource(source: decoded.source, boardInput: input)
+                clockState.wroteBoardInput(key, control: control, now: Date())
             } else {
                 // The control may still hold this value from before a board
                 // input was chosen through the vendor path, and a write that
@@ -302,6 +304,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 if current == key {
                     try sendViaDext(Self.clockModeRequest(source: decoded.source, boardInput: 0))
                 }
+                clockState.wrotePlain()
             }
             notifyListeners(for: address.selector, value: value)
             return
@@ -472,6 +475,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     public func readParameterUpdates() async -> SymphonyIOParameterUpdates? {
         guard isConnected, dextClient.isConnected else { return nil }
         let client = dextClient
+        let clockState = self.clockState
         let shouldLog = Self.parameterUpdateLogBudget.take()
         return await Task.detached(priority: .utility) {
             do {
@@ -479,6 +483,14 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                     command: SymphonyIOParameterUpdates.readRequest.request, value: 1,
                     responseLength: SymphonyIOParameterUpdates.byteCount)
                 let update = SymphonyIOParameterUpdates(data: data)
+                // Bytes 5 and 6 are the clock source and board input whatever
+                // the rate guard decides: an external source with no signal
+                // can report a rate of 0.
+                if data.count >= SymphonyIOParameterUpdates.byteCount,
+                   let key = Self.clockSourceKey(reportedSource: data[data.startIndex + 5],
+                                                 boardInput: data[data.startIndex + 6]) {
+                    clockState.reported(key, now: Date())
+                }
                 if shouldLog {
                     let hex = data.map { String(format: "%02x", $0) }.joined(separator: " ")
                     print("[Maestro] TB front panel read: [\(hex)] \(update == nil ? "REJECTED as not a reading" : "ok")")
@@ -630,6 +642,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     static func clockSourceKey(reportedSource: UInt8, boardInput: UInt8) -> UInt32? {
         guard (1...5).contains(reportedSource) else { return nil }
         if reportedSource == 4 || reportedSource == 5 {
+            guard boardInput <= ClockSourceMenu.maxBoardInput else { return nil }
             return ClockSourceMenu.key(source: reportedSource, boardInput: boardInput)
         }
         return UInt32(reportedSource)
@@ -790,4 +803,60 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 private struct WeakListener {
     weak var ref: (any PropertyListener)?
     init(_ listener: any PropertyListener) { self.ref = listener }
+}
+
+/// The clock source to report on ThunderBridge, in order of trust:
+///
+/// 1. What the unit reported in the front panel poller's last 0x28 read, if
+///    that was recent. It names the board input.
+/// 2. A board input this connection wrote, while the driver's 'clck' control
+///    still holds the value it had at that write. The write goes through the
+///    vendor path and leaves the control alone, so without this the control's
+///    older value would show and selecting that row would send nothing.
+///    Once the control changes (Audio MIDI Setup, or a plain row here) the
+///    control wins.
+/// 3. Nothing; the caller reads the control.
+final class ThunderboltClockState: @unchecked Sendable {
+    static let reportLifetime: TimeInterval = 3
+
+    private let lock = NSLock()
+    private var reportedKey: UInt32?
+    private var reportedAt: Date?
+    private var boardInputKey: UInt32?
+    private var controlAtBoardInputWrite: UInt32?
+
+    func reported(_ key: UInt32, now: Date) {
+        lock.lock(); defer { lock.unlock() }
+        reportedKey = key
+        reportedAt = now
+    }
+
+    func wroteBoardInput(_ key: UInt32, control: UInt32?, now: Date) {
+        lock.lock(); defer { lock.unlock() }
+        boardInputKey = key
+        controlAtBoardInputWrite = control
+        // A report from before this write is out of date.
+        reportedKey = nil
+        reportedAt = nil
+    }
+
+    func wrotePlain() {
+        lock.lock(); defer { lock.unlock() }
+        boardInputKey = nil
+        controlAtBoardInputWrite = nil
+        reportedKey = nil
+        reportedAt = nil
+    }
+
+    func current(control: UInt32?, now: Date) -> UInt32? {
+        lock.lock(); defer { lock.unlock() }
+        if let key = reportedKey, let at = reportedAt,
+           now.timeIntervalSince(at) < Self.reportLifetime {
+            return key
+        }
+        if let key = boardInputKey, control == controlAtBoardInputWrite {
+            return key
+        }
+        return nil
+    }
 }

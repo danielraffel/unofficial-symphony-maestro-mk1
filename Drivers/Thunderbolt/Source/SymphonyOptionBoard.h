@@ -46,8 +46,9 @@ static constexpr bool BoardHasOpticalFormat(uint8_t boardType)
 // (ADAT/SMUX) to a slot. It used to go to both slots blindly. A slot that
 // positively reads as an AES board is now skipped, for the reasons above.
 // Every other case keeps the earlier behaviour, including a failed board-type
-// read: the firmware ignores 0x34 on an empty, MicPre8 or AD/DA16 slot, so the
-// send stays harmless there and the traces for those cards do not change.
+// read. The firmware acts on 0x34 for 2x6, Optical, AD16 and DA16 and ignores
+// it on an empty, MicPre8, ADDA16 or AES slot, so the send stays harmless where
+// it is ignored, and the traces for every card but AES do not change.
 static constexpr bool BootSendsOpticalFormat(bool boardTypeReadOK, uint8_t boardType)
 {
     return !(boardTypeReadOK && boardType == kSIOOptionBoard_AnalogAES);

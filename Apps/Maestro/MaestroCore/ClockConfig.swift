@@ -95,6 +95,11 @@ public enum ClockSourceMenu {
     public static let loopSync: UInt32 = 3
     public static let ioBoard1: UInt32 = 4
     public static let ioBoard2: UInt32 = 5
+    /// The highest board input the original ever sent: S/PDIF coax, 6
+    /// (`SymphonyIOVendorSpecific.h:879-888`). The firmware writes the byte
+    /// straight into the board FPGA's clock select
+    /// (`SymphonyIOClockManager.cpp:169, 216-224`), so nothing above it is sent.
+    public static let maxBoardInput: UInt8 = BoardClockSource.spdifCoax.wireIndex
 
     /// The picker key for a board input. Kept above 0xFF so it can never be
     /// mistaken for a plain source, and so `key & 0xFF` is the source.
@@ -109,7 +114,7 @@ public enum ClockSourceMenu {
         guard (1...5).contains(source), key <= 0xFFFF else { return nil }
         let high = key >> 8
         if high == 0 { return (source, nil) }
-        guard source == 4 || source == 5 else { return nil }
+        guard source == 4 || source == 5, high - 1 <= UInt32(maxBoardInput) else { return nil }
         return (source, UInt8(high - 1))
     }
 
@@ -133,8 +138,13 @@ public enum ClockSourceMenu {
     /// slot 2 numbers on from slot 1's AES and coax channels
     /// (`SymphonyIO_IOBoard.cpp:1533-1541`).
     ///
-    /// Other boards keep the single "IO Board" row, and Loop Sync stays, as
-    /// before; only an AES board's row is expanded.
+    /// Only an AES board's row is expanded. The rest of the list is as it was
+    /// and is NOT the original's: in the Symphony mode the original listed
+    /// Loop Sync only for Pro Tools HD (`SymphonyIO.cpp:1750-1766`), listed each
+    /// other board's own inputs rather than an "IO Board" row, and listed
+    /// nothing for an empty or Mic Pre slot (`SymphonyIOBoard_MicPre8ch.h:36`).
+    /// A plain IO Board row sends input 0, which the firmware takes as that
+    /// board's first input.
     public static func thunderbolt(slot1: IOCardType, slot2: IOCardType) -> [ClockSourceChoice] {
         var choices = [
             ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),

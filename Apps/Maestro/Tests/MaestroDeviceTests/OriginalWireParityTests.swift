@@ -94,6 +94,11 @@ struct OriginalWireParityTests {
         #expect(menu.map(\.name) == ["Internal", "Word Clock", "Loop Sync",
                                       "S/PDIF Coax 1-2", "AES 1-2", "AES 3-4", "AES 5-6", "AES 7-8",
                                       "IO Board 2"])
+        // Internal, Word Clock and the AES card's rows are the original's. Loop
+        // Sync and the plain "IO Board 2" row predate this menu and are not
+        // (the original listed Loop Sync only in Pro Tools HD mode and each
+        // board's own inputs instead of an IO Board row); they are pinned here
+        // to what the driver's own clock control sends, so they do not drift.
         let expectedBytes: [String: [UInt8]] = [
             "Internal": [1, 1, 0, 0],
             "Word Clock": [2, 1, 0, 0],
@@ -168,6 +173,35 @@ struct OriginalWireParityTests {
         #expect(ThunderboltDeviceConnection.clockSourceKey(reportedSource: 0, boardInput: 0) == nil)
         #expect(ThunderboltDeviceConnection.clockSourceKey(reportedSource: 6, boardInput: 0) == nil)
         #expect(ClockSourceMenu.decode(ClockSourceMenu.key(source: 1, boardInput: 0)) == nil)
+        // Nothing above the coax input (6) is ever sent or shown.
+        #expect(ClockSourceMenu.decode(0x0804) == nil)
+        #expect(ClockSourceMenu.decode(0xFF04) == nil)
+        #expect(ClockSourceMenu.decode(0x0704)?.boardInput == 6)
+        #expect(ThunderboltDeviceConnection.clockSourceKey(reportedSource: 4, boardInput: 7) == nil)
         #expect(ClockSourceMenu.row(for: 0, in: aes) == nil)
+    }
+
+    // MARK: ThunderBridge clock readback
+
+    @Test("clock readback: a fresh unit report wins, then a board input written while the control is unchanged")
+    func clockStateOrder() {
+        let state = ThunderboltClockState()
+        let t0 = Date(timeIntervalSince1970: 1000)
+        let aes34 = ClockSourceMenu.key(source: 4, boardInput: 1)
+        #expect(state.current(control: 1, now: t0) == nil)
+        // Written through the vendor path; the control still says Internal.
+        state.wroteBoardInput(aes34, control: 1, now: t0)
+        #expect(state.current(control: 1, now: t0) == aes34)
+        // Audio MIDI Setup moved the control: the control wins.
+        #expect(state.current(control: 2, now: t0) == nil)
+        // The unit's own report wins while it is recent.
+        let coax = ClockSourceMenu.key(source: 4, boardInput: 6)
+        state.reported(coax, now: t0)
+        #expect(state.current(control: 2, now: t0.addingTimeInterval(1)) == coax)
+        #expect(state.current(control: 2, now: t0.addingTimeInterval(10)) == nil)
+        // A plain write clears both.
+        state.reported(coax, now: t0)
+        state.wrotePlain()
+        #expect(state.current(control: 1, now: t0) == nil)
     }
 }

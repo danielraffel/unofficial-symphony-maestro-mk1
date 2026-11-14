@@ -145,7 +145,7 @@ struct ThunderboltDeviceConnectionTests {
     func clockSourceKeyValidated() async {
         let conn = ThunderboltDeviceConnection(
             identifier: Self.testIdentifier, audioDeviceID: 0)
-        for bad: UInt32 in [0, 6, 0x0101, 0x0203, 0x10004] {
+        for bad: UInt32 in [0, 6, 0x0101, 0x0203, 0x10004, 0x0804, 0xFF04] {
             do {
                 try await conn.setProperty(PropertyAddress(selector: .clockSource), value: .uint32(bad))
                 #expect(Bool(false), "\(bad) should have been refused")

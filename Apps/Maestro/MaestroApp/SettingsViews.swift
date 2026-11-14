@@ -934,6 +934,17 @@ struct SystemSetupView: View {
                     programmaticClockSource = nil
                     Task { await writeClockSource(newSource) }
                 }
+                // The rows change when the board types arrive or a card
+                // changes. Keep the selection on the row for the same source
+                // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and
+                // do not send it: nothing was chosen.
+                .onChange(of: clockSourceChoices.map(\.id)) { _, ids in
+                    guard !ids.contains(clockSource),
+                          let row = ClockSourceMenu.row(for: clockSource, in: clockSourceChoices),
+                          row != clockSource else { return }
+                    programmaticClockSource = row
+                    clockSource = row
+                }
 
                 if isProToolsMode {
                     Text("Clock settings are controlled by Pro Tools")

@@ -1,13 +1,15 @@
 #!/bin/bash
-# OpticalFormat (0x34) trace test for every option-board combination.
+# OpticalFormat (0x34) decision table for every option-board combination.
 #
-# Compiles SymphonyOptionBoard.h on the host and prints, for each pair of slot
-# types (plus a failed board-type read), the 0x34 writes the link-configuration
-# step sends and the slots that get an optical-format control. The output must
-# match golden/optical-format-trace.txt. The test also replays the rules from
-# before this change (blind 0x34 to both slots, AES counted as optical) and
-# fails if any combination without an AES board traces differently, so only the
-# AES rows can change.
+# Compiles the two predicates the driver uses (SymphonyOptionBoard.h) on the
+# host and prints, for each pair of slot types (plus a failed board-type read),
+# the 0x34 writes and optical controls a model of the driver's boot loop would
+# produce. The loop itself is modelled here, not compiled from the driver; the
+# driver is tied to the predicates only by the source checks at the end. The
+# output must match golden/optical-format-trace.txt. The model also replays the
+# rules from before this change (blind 0x34 to both slots, AES counted as
+# optical) and fails if any combination without an AES board comes out
+# differently, so only the AES rows can change.
 #
 # Regenerate the golden file (review the diff before committing):
 #   UPDATE_GOLDEN=1 Drivers/Thunderbolt/Scripts/test-optical-format.sh
