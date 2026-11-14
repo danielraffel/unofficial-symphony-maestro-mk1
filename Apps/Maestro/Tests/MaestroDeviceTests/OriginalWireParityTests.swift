@@ -204,4 +204,37 @@ struct OriginalWireParityTests {
         state.wrotePlain()
         #expect(state.current(control: 1, now: t0) == nil)
     }
+
+    // MARK: S/PDIF coax Replaces / Mirrors
+
+    /// `SymphonyIOCommands_SPDIFCoaxReplaceInput = 0x35` and
+    /// `..._SPDIFCoaxMirrorOutput = 0x36`: nValue the board index, pData[0] a
+    /// `SymphonyIOBoardSPDIFCoaxReplace` (Off 0, then pairs 1-8;
+    /// `SymphonyIOVendorSpecific.h:190-216, 940-951`). The daemon's menu IDs are
+    /// the wire value plus one (`SymphonyIO_IOBoard.cpp:536-562`); the app's
+    /// option IDs are the wire values themselves.
+    @Test("S/PDIF Replaces and Mirrors send 0x35 / 0x36 with the board as nValue on both slots",
+          arguments: [UInt32(0), 1])
+    func spdifCoaxBothSlots(board: UInt32) throws {
+        for (selector, command) in [(AudioPropertySelector.spdifReplaceID, UInt8(0x35)),
+                                    (.spdifMirrorID, UInt8(0x36))] {
+            for wire: UInt32 in 0...8 {
+                let request = try SymphonyIOPropertyMapper.buildWriteRequest(
+                    for: PropertyAddress(selector: selector, element: board), value: .uint32(wire))
+                #expect(request.request == command)
+                #expect((UInt32(request.value) << 16) | UInt32(request.index) == board)
+                #expect(Array(request.data) == [UInt8(wire)])
+            }
+        }
+    }
+
+    /// The Output tab once wrote slot 2's Mirrors as 'AEsJ', which maps to no
+    /// command on either transport; slot 2 is 0x36 with nValue 1.
+    @Test("'AEsJ' is not a Symphony command; slot 2 Mirrors is AEs7 element 1")
+    func spdifMirror2IsNotACommand() {
+        #expect(throws: (any Error).self) {
+            try SymphonyIOPropertyMapper.buildWriteRequest(
+                for: PropertyAddress(selector: .spdifMirror2ID), value: .uint32(1))
+        }
+    }
 }

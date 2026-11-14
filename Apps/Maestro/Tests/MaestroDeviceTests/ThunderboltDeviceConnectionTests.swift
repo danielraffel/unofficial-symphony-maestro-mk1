@@ -139,6 +139,33 @@ struct ThunderboltDeviceConnectionTests {
         }
     }
 
+    /// S/PDIF Coax Replaces and Mirrors are read from the unit over ThunderBridge
+    /// (0x35 / 0x36, nValue the board index), not refused. The reported log
+    /// line was `loadDigitalSettings spdifReplace1: unsupportedProperty('AEs0')`.
+    @Test("ThunderboltDeviceConnection: S/PDIF Replaces and Mirrors are read from the unit",
+          arguments: [UInt32(0), 1])
+    func spdifCoaxIsReadFromUnit(board: UInt32) async throws {
+        let replace = PropertyAddress(selector: .spdifReplaceID, scope: .input, element: board)
+        let mirror = PropertyAddress(selector: .spdifMirrorID, scope: .output, element: board)
+        #expect(try ThunderboltDeviceConnection.vendorRead(for: replace) == (0x35, board))
+        #expect(try ThunderboltDeviceConnection.vendorRead(for: mirror) == (0x36, board))
+
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        for address in [replace, mirror] {
+            do {
+                _ = try await conn.getProperty(address)
+                #expect(Bool(false), "No driver; should have thrown")
+            } catch let error as DeviceConnectionError {
+                if case .unsupportedProperty = error {
+                    #expect(Bool(false), "\(address.selector) must be read, not refused")
+                }
+            } catch {
+                // DextUserClient's own error: a read was attempted.
+            }
+        }
+    }
+
     /// A key that is not a clock source, or a board input on a source that is
     /// not a board, is refused before anything is sent.
     @Test("ThunderboltDeviceConnection: a clock key that is not a source is refused")

@@ -221,6 +221,18 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             return try .uint32(readOpticalFormat(board: address.element))
         case .opticalOutFormat:
             return try .uint32(readOpticalFormat(board: address.element))
+        case .spdifReplaceID, .spdifMirrorID:
+            // S/PDIF Coax Replaces (0x35) and Mirrors (0x36) are read back from
+            // the unit, as the daemon did (`SymphonyIO_IOBoard.cpp:440-484`).
+            // Without this the Input and Output tabs fell back to Off / the
+            // first pair every time they appeared.
+            let read = try Self.vendorRead(for: address)
+            let data = try dextClient.readVendorCommand(
+                command: read.command, value: read.value, responseLength: 1)
+            guard let byte = data.first else {
+                throw DeviceConnectionError.transportError("ThunderBridge S/PDIF coax read returned no data")
+            }
+            return .uint32(UInt32(byte))
         case .routing:
             let data = try dextClient.readVendorCommand(
                 command: SymphonyIOCommand.audioRouting.rawValue,
@@ -634,6 +646,14 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             throw DeviceConnectionError.typeMismatch(expected: "IO board source", got: "\(source)")
         }
         try sendViaDext(Self.clockModeRequest(source: source, boardInput: boardInput))
+    }
+
+    /// The vendor read (command, logical nValue) the driver's read path takes
+    /// for a setting the unit can report, built from the same request the USB
+    /// transport sends so the two cannot disagree on where the board index goes.
+    static func vendorRead(for address: PropertyAddress) throws -> (command: UInt8, value: UInt32) {
+        let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+        return (request.request, (UInt32(request.value) << 16) | UInt32(request.index))
     }
 
     /// The picker key for a clock source the unit reported, nil when it is not

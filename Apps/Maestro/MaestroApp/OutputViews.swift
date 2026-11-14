@@ -784,7 +784,7 @@ struct OutputControlsView: View {
                             guard let device = appState.device else { return }
                             do {
                                 try await device.setProperty(
-                                    PropertyAddress(selector: .spdifMirror2ID, scope: .output),
+                                    PropertyAddress(selector: .spdifMirrorID, scope: .output, element: 1),
                                     value: .uint32(optVal)
                                 )
                             } catch {
@@ -903,13 +903,16 @@ struct OutputControlsView: View {
     private func loadSPDIFMirrors() async {
         guard let device = appState.device else { return }
         do {
-            let val = try await device.getProperty(PropertyAddress(selector: .spdifMirrorID))
+            let val = try await device.getProperty(PropertyAddress(selector: .spdifMirrorID, scope: .output))
             if let u = val.asUInt32 { spdifMirror1 = u }
         } catch {
             print("[Maestro] loadSPDIFMirrors mirror1: \(error)")
         }
         do {
-            let val = try await device.getProperty(PropertyAddress(selector: .spdifMirror2ID))
+            // Slot 2 is the same 0x36 command with nValue 1, as the daemon sent
+            // it (`SymphonyIO_IOBoard.cpp:467, 906`). 'AEsJ' has no command
+            // behind it on either transport, so slot 2 was never read or set.
+            let val = try await device.getProperty(PropertyAddress(selector: .spdifMirrorID, scope: .output, element: 1))
             if let u = val.asUInt32 { spdifMirror2 = u }
         } catch {
             print("[Maestro] loadSPDIFMirrors mirror2: \(error)")

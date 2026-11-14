@@ -1345,11 +1345,20 @@ public enum SymphonyIORequestBuilder {
     }
 
     /// Read S/PDIF coax input replace setting for a board.
+    ///
+    /// The board index is the whole logical nValue, as for OpticalFormat, so on
+    /// the wire it is wIndex: the daemon sends `(BoardIdx & 0xFF)` as nValue
+    /// (`og_source/maestrolink/Software/SymphonyIO/SymphonyIOControl.cpp:1384-1458`),
+    /// USB splits nValue into wValue = nValue >> 16 and wIndex = nValue & 0xFFFF
+    /// (`SimpleControlProtocolUSB.cpp:56-57`), and the firmware acts only when
+    /// nValue < 2 (`SymphonyIOCore3MainController.cpp:1849-1880, 2126-2156`).
+    /// Putting the board in wValue made slot 2's nValue 0x10000, which the
+    /// firmware dropped, so slot 2's Replaces and Mirrors never took effect.
     public static func getSPDIFCoaxReplaceInput(board: UInt16 = 0) -> USBControlRequest {
         USBControlRequest(
             direction: .read,
             request: SymphonyIOCommand.spdifCoaxReplaceInput.rawValue,
-            value: board,
+            index: board,
             data: Data(count: 1)
         )
     }
@@ -1359,7 +1368,7 @@ public enum SymphonyIORequestBuilder {
         USBControlRequest(
             direction: .write,
             request: SymphonyIOCommand.spdifCoaxReplaceInput.rawValue,
-            value: board,
+            index: board,
             data: Data([replacement])
         )
     }
@@ -1369,7 +1378,7 @@ public enum SymphonyIORequestBuilder {
         USBControlRequest(
             direction: .read,
             request: SymphonyIOCommand.spdifCoaxMirrorOutput.rawValue,
-            value: board,
+            index: board,
             data: Data(count: 1)
         )
     }
@@ -1379,7 +1388,7 @@ public enum SymphonyIORequestBuilder {
         USBControlRequest(
             direction: .write,
             request: SymphonyIOCommand.spdifCoaxMirrorOutput.rawValue,
-            value: board,
+            index: board,
             data: Data([mirror])
         )
     }
