@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.38 (build 1034)
+
+Three small changes from user feedback, each matching Apogee's original Maestro.
+
+### What's better
+
+- **The Mixer remembers which mix you were on.** It used to go back to Mix 1 every time you left the Mixer tab, which made it easy to adjust the wrong mix. It now returns to the mix you were using, and the button for that mix is filled in so you can see at a glance which one is showing. A fresh launch still starts on Mix 1.
+- **The polarity button shows the Ø symbol** on Mic Pre channels, as it did in the original.
+- **The Analog Level menu is in the original order:** +4 dBu, -10 dBV, then Variable. Only the order changed; each choice does exactly what it did before.
+
+### Release notes
+
+- Nothing changes in what Maestro sends to your Symphony. The ThunderBridge driver is unchanged (build 121), so there is no driver swap if you already have 0.8.36 or 0.8.37.
+- Quit your audio apps before installing. The installer restarts macOS's audio system, which interrupts audio for a few seconds.
+
 ## 0.8.37 (build 1033)
 
 ### Fixed
