@@ -363,7 +363,7 @@ echo "=== Building Package ==="
 #          its own audio device via AudioDriverKit. The proxy runs as root, so it should
 #          not land on machines that will never use it.
 chmod +x "$SCRIPT_DIR/scripts-core/preinstall" "$SCRIPT_DIR/scripts-core/postinstall"
-chmod +x "$SCRIPT_DIR/scripts-usb/postinstall"
+chmod +x "$SCRIPT_DIR/scripts-usb/preinstall" "$SCRIPT_DIR/scripts-usb/postinstall"
 
 CORE_ROOT="$BUILD_DIR/payload-core"
 USB_ROOT="$BUILD_DIR/payload-usb"

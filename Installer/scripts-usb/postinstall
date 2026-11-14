@@ -28,8 +28,24 @@ launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || {
 }
 echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
 
-# Loads the AudioServerPlugin. Audio is briefly interrupted.
-killall coreaudiod 2>/dev/null || true
-sleep 3
-echo "[postinstall/usb] coreaudiod restarted" >> "$LOG"
+# coreaudiod has to be restarted to load a new or changed AudioServerPlugin, and
+# only for that. See preinstall for why it is skipped when the plug-in is the one
+# already installed. Any doubt (no record, unreadable hash) means restart, as
+# before.
+PLUGIN="/Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
+MARKER="/private/tmp/maestro-installer-plugin-cdhash"
+OLD_HASH=""
+[ -f "$MARKER" ] && OLD_HASH=$(/bin/cat "$MARKER" 2>/dev/null || true)
+/bin/rm -f "$MARKER"
+NEW_HASH=$(/usr/bin/codesign -dvvv "$PLUGIN" 2>&1 | /usr/bin/sed -n 's/^CDHash=//p' | /usr/bin/head -1)
+# The plug-in's virtual device cannot be used as a "loaded" test: it is hidden
+# while no USB Symphony is present, which is exactly the ThunderBridge case.
+if [ -n "$OLD_HASH" ] && [ "$OLD_HASH" = "$NEW_HASH" ]; then
+    echo "[postinstall/usb] AudioServerPlugin unchanged ($NEW_HASH) — coreaudiod not restarted" >> "$LOG"
+else
+    # Loads the AudioServerPlugin. Audio is interrupted.
+    killall coreaudiod 2>/dev/null || true
+    sleep 3
+    echo "[postinstall/usb] coreaudiod restarted (plug-in was '${OLD_HASH:-none}', is '${NEW_HASH:-unknown}')" >> "$LOG"
+fi
 exit 0

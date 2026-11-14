@@ -1,0 +1,25 @@
+#!/bin/bash
+# Preinstall — optional USB support.
+#
+# Records the identity of the AudioServerPlugin that is installed now, so
+# postinstall can tell whether this install actually changes it. Restarting
+# coreaudiod is only needed to load a different plug-in, and it is not free:
+# with a ThunderBridge attached and audio playing, coreaudiod took 1 min 45 s to
+# come back after an install (2026-11-13), freezing every audio app and keeping
+# Maestro from opening until it did.
+#
+# The code directory hash identifies the plug-in's code and stays the same
+# across builds of unchanged source; signing time does not affect it.
+set -uo pipefail
+LOG="/tmp/maestro-installer.log"
+PLUGIN="/Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
+MARKER="/private/tmp/maestro-installer-plugin-cdhash"
+rm -f "$MARKER"
+if [ -d "$PLUGIN" ]; then
+    HASH=$(/usr/bin/codesign -dvvv "$PLUGIN" 2>&1 | /usr/bin/sed -n 's/^CDHash=//p' | /usr/bin/head -1)
+    if [ -n "$HASH" ]; then
+        echo "$HASH" > "$MARKER"
+        echo "[preinstall/usb] installed AudioServerPlugin code hash $HASH" >> "$LOG"
+    fi
+fi
+exit 0
