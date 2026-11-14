@@ -5,6 +5,7 @@
 /// Hardware tests require a ThunderBridge adapter connected.
 
 import Testing
+import Foundation
 import MaestroCore
 @testable import MaestroDevice
 
@@ -393,5 +394,24 @@ struct ThunderboltDeviceConnectionTests {
         #expect(discovered.identifier.vendorID == ApogeeUSB.vendorID)
         #expect(discovered.transportType == .thunderbolt)
         #expect(discovered.name == "Symphony I/O: ThunderBridge")
+    }
+}
+
+/// The driver validates the size of a read request before handling it, so the
+/// app's request must be exactly the driver's packed struct.
+@Suite("DextUserClient request sizes")
+struct DextUserClientRequestSizeTests {
+    @Test("vendor read request matches the driver's packed SymphonyVendorReadInput")
+    func vendorReadInputSize() throws {
+        #expect(DextUserClient.vendorReadInputSize == 14)
+        // Read the size from the driver's own header so the two cannot drift.
+        let header = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h")
+        let text = try String(contentsOf: header, encoding: .utf8)
+        #expect(text.contains("#pragma pack(push, 1)"))
+        let start = try #require(text.range(of: "typedef struct {\n    uint32_t magic;\n    uint8_t  command;\n    uint8_t  reserved[3];\n    uint32_t value;\n    uint16_t responseLen;\n} SymphonyVendorReadInput;"))
+        #expect(!start.isEmpty)   // 4 + 1 + 3 + 4 + 2 = 14 bytes when packed
     }
 }

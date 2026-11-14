@@ -293,6 +293,8 @@ public final class DextUserClient: @unchecked Sendable {
 
     /// Read a bounded XLink vendor response through the dext. Used by routing
     /// views to distinguish live hardware state from cached/default state.
+    static let vendorReadInputSize = 14
+
     public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int) throws -> Data {
         guard (1...64).contains(responseLength) else { throw DextUserClientError.payloadTooLarge(responseLength) }
         lock.lock()
@@ -300,7 +302,12 @@ public final class DextUserClient: @unchecked Sendable {
         lock.unlock()
         guard conn != IO_OBJECT_NULL else { throw DextUserClientError.notConnected }
 
-        var input = Data(count: 16)
+        // 14 bytes, not 16: the driver's SymphonyVendorReadInput is packed
+        // ({magic:4, command:1, reserved:3, value:4, responseLen:2}), and the
+        // driver rejects any other size before the request reaches it. This
+        // sent 16 until 2026-11-13, so every read through here failed with
+        // kIOReturnBadArgument, routing readback included.
+        var input = Data(count: Self.vendorReadInputSize)
         input.withUnsafeMutableBytes { p in
             let ptr = p.baseAddress!
             ptr.storeBytes(of: Self.magic, as: UInt32.self)
