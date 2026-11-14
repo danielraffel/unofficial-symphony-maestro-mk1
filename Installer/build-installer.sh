@@ -234,6 +234,18 @@ fi
     "$MAESTRO_DEXT_PROFILE" \
     com.danielraffel.maestro.thunderbridge developerid
 
+# Opt-in experiment: inject the two-port personality property into the BUILT dext
+# plist. Must happen before signing so the signature covers it. Unset = no change.
+if [ -n "${MAESTRO_EXPERIMENT_PORT_COUNT:-}" ]; then
+    case "$MAESTRO_EXPERIMENT_PORT_COUNT" in
+        ''|*[!0-9]*) echo "ERROR: MAESTRO_EXPERIMENT_PORT_COUNT must be an integer"; exit 1 ;;
+    esac
+    echo "EXPERIMENT: injecting SymphonyPortCount=$MAESTRO_EXPERIMENT_PORT_COUNT into dext personality"
+    DEXT_PLIST="$DEXT_SRC/Info.plist"
+    /usr/libexec/PlistBuddy -c "Delete :IOKitPersonalities:SymphonyThunderbridge:SymphonyPortCount" "$DEXT_PLIST" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Add :IOKitPersonalities:SymphonyThunderbridge:SymphonyPortCount integer $MAESTRO_EXPERIMENT_PORT_COUNT" "$DEXT_PLIST"
+fi
+
 echo "Signing dext (Developer ID, DriverKit entitlements)..."
 codesign --sign "$SIGNING_IDENTITY" --force --options runtime --timestamp \
     --entitlements "$REPO_ROOT/Drivers/Thunderbolt/Entitlements/SymphonyThunderbridge-production.entitlements" \
