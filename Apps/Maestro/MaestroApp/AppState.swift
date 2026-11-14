@@ -418,6 +418,8 @@ final class AppState {
                         self.stopMeterPolling()
                         self.statusMessage = "Symphony disconnected"
                         self.connectionMode = .disconnected
+                        // Whatever answers next is a Symphony that has just started.
+                        self.awaitingSymphonyReturn = true
                         // Keep the transport visible in the sidebar. The
                         // ThunderBridge PCI service is still present; only
                         // the downstream Symphony endpoint failed its probe.
@@ -726,6 +728,9 @@ final class AppState {
 
     /// How long after its audio device appears a USB unit is left alone.
     static let usbSettleInterval: TimeInterval = 3.0
+    /// How long a Symphony that has just come back over ThunderBridge is left
+    /// alone before Maestro writes to it.
+    static let thunderboltSettleInterval: Duration = .seconds(2)
 
     /// Seconds still to wait before a unit that appeared at `appearedAt` may be
     /// written to. Zero for a unit that has been up for a while (launch, Rescan).
@@ -1526,6 +1531,18 @@ final class AppState {
                         self.startThunderboltHealthCheck()
                         self.viewReloadToken = UUID()
                         return
+                    }
+                    // A Symphony that has just powered up over ThunderBridge is
+                    // given a moment before Maestro writes saved settings and
+                    // routes to it, for the same reason as over USB: nothing
+                    // Maestro sends is urgent, and a unit that is still starting
+                    // is the wrong moment for a burst of commands. The driver
+                    // has already configured the link by the time it reports
+                    // the endpoint live.
+                    if self.awaitingSymphonyReturn {
+                        self.awaitingSymphonyReturn = false
+                        self.statusMessage = "Waiting for the Symphony to finish starting…"
+                        try? await Task.sleep(for: Self.thunderboltSettleInterval)
                     }
                     self.thunderboltHardwareResponsive = true
                     self.connectionMode = .hardware
