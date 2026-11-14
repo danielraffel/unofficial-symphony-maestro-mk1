@@ -1237,6 +1237,10 @@ final class AppState {
         }
         let id = device.identifier
         let cache = RoutingStateCache(direction: "output", productID: id.productID)
+        if transportType == .thunderbolt {
+            Self.migrateMainPairToMixer(cache: cache, mixerRow: id.mode.channelCount / 2,
+                                        board1: primaryBoardType, board2: secondaryBoardType)
+        }
         guard let routes = cache.loadMulti(), !routes.isEmpty else {
             print("[Maestro] syncOutputRouting: no cached routes, proxy defaults apply")
             return
@@ -1265,6 +1269,36 @@ final class AppState {
             }
         }
         print("[Maestro] syncOutputRouting: wrote \(written) cached routes to hardware")
+    }
+
+    static let mainPairMixerMigrationKey = "thunderboltMainPairMixerMigration_v1"
+
+    /// One-time, ThunderBridge only: a saved "Software 1-2 → main pair" becomes
+    /// "Mixer 1 → main pair".
+    ///
+    /// Until 0.8.36 that saved route was quietly sent through card mixer 1, so
+    /// it is what the user has been hearing: Software Return, Master and input
+    /// monitoring all in the path. From 0.8.36 the same route is truly direct.
+    /// Replaying it unchanged would silently remove the mixer from their main
+    /// outputs on update. Relabelling it keeps the sound and makes the grid say
+    /// what is happening; choosing Software 1-2 afterwards gives the direct
+    /// route.
+    static func migrateMainPairToMixer(cache: RoutingStateCache, mixerRow: Int,
+                                       board1: IOCardType, board2: IOCardType,
+                                       defaults: UserDefaults = .standard) {
+        guard !defaults.bool(forKey: mainPairMixerMigrationKey) else { return }
+        defaults.set(true, forKey: mainPairMixerMigrationKey)
+        guard var routes = cache.loadMulti(), let softwarePair = routes[0] else { return }
+        let mainColumn = (0..<64).first {
+            IOCardType.columnToRoutingByte(col: $0, isInput: false, board1: board1, board2: board2)
+                == SymphonyIORoutingAddress.ioBoard0Base
+        }
+        guard let mainColumn, softwarePair.contains(mainColumn) else { return }
+        let remaining = softwarePair.subtracting([mainColumn])
+        if remaining.isEmpty { routes.removeValue(forKey: 0) } else { routes[0] = remaining }
+        routes[mixerRow, default: []].insert(mainColumn)
+        cache.save(routes)
+        print("[Maestro] Output routing: saved Software 1-2 → main pair relabelled as Mixer 1 (it always went through the mixer)")
     }
 
     /// Write one mono output route to whichever routing stage the transport

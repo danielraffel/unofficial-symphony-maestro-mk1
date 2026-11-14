@@ -52,11 +52,24 @@ struct ThunderboltCardRoutingTests {
                 == .init(channel: 16, slot: 80, enabled: true))
     }
 
-    @Test("DAW 1-2 onto the main pair goes through card mixer 0, the driver default")
-    func mainPairViaMixer() {
+    /// The reported bug: with Software 1-2 routed to Line 1-2, Master still
+    /// changed the level, because this route was sent through the card mixer.
+    @Test("DAW 1-2 onto the main pair is direct, bypassing the card mixer")
+    func mainPairIsDirect() {
         #expect(ThunderboltCardRouting.route(destination: 32, source: 0)
-                == .init(channel: 0, slot: 128, enabled: true))
+                == .init(channel: 0, slot: 64, enabled: true))
         #expect(ThunderboltCardRouting.route(destination: 33, source: 1)
+                == .init(channel: 1, slot: 65, enabled: true))
+    }
+
+    @Test("Mixer 1 onto the main pair uses the card mixer, and is that pair's default")
+    func mainPairDefaultsToMixer() {
+        #expect(ThunderboltCardRouting.mainPairDefaultSource(forDestination: 32) == SymphonyIORoutingAddress.mixer0Base)
+        #expect(ThunderboltCardRouting.mainPairDefaultSource(forDestination: 33) == SymphonyIORoutingAddress.mixer0Base + 1)
+        #expect(ThunderboltCardRouting.mainPairDefaultSource(forDestination: 34) == nil)
+        #expect(ThunderboltCardRouting.route(destination: 32, source: SymphonyIORoutingAddress.mixer0Base)
+                == .init(channel: 0, slot: 128, enabled: true))
+        #expect(ThunderboltCardRouting.route(destination: 33, source: SymphonyIORoutingAddress.mixer0Base + 1)
                 == .init(channel: 1, slot: 129, enabled: true))
     }
 
@@ -89,12 +102,18 @@ struct ThunderboltCardRoutingTests {
             let card = ThunderboltCardRouting.route(destination: route.destination, source: route.source)
             #expect(card != nil, "no card route for \(route)")
             guard let card else { continue }
+            // The raw table is all software outputs, so every entry is direct.
+            // The grid substitutes Mixer 1 for the main pair on ThunderBridge
+            // (`mainPairDefaultSource`), and that source maps to the mixer slot.
             if route.source == SymphonyIORoutingAddress.none {
                 #expect(!card.enabled)
-            } else if card.channel < 2 {
-                #expect(card.slot == 128 + card.channel)
             } else {
                 #expect(card.slot == 64 + route.source)
+            }
+            if let mixer = ThunderboltCardRouting.mainPairDefaultSource(forDestination: route.destination) {
+                let viaMixer = ThunderboltCardRouting.route(destination: route.destination, source: mixer)
+                #expect(viaMixer?.slot == 128 + card.channel)
+                #expect(viaMixer?.enabled == true)
             }
         }
     }

@@ -11,7 +11,8 @@ Both of these are written from Apogee's original source for hardware we do not o
 
 ### What's better
 
-- **The front panel knob is followed over ThunderBridge too.** Turning the volume knob on the Symphony, or muting from the front panel, now updates Maestro over ThunderBridge as it does over USB.
+- **Direct output routing is really direct (ThunderBridge).** With Software 1-2 routed to your main outputs, the Mixer's Master and Software Return faders still changed the level, because that route was quietly passing through Mixer 1. A software output now goes straight to the outputs, as it did with Apogee's software. Your main outputs default to Mixer 1, so Software Return, Master and input monitoring keep working out of the box, and Output Routing now shows that. If you had saved Software 1-2 on your main outputs, Maestro relabels it as Mixer 1 once, so nothing changes in what you hear. Choose Software 1-2 for those outputs when you want the mixer out of the path.
+- **The front panel knob is followed over ThunderBridge too.** Turning the volume knob on the Symphony, or muting from the front panel, now updates Maestro over ThunderBridge as it does over USB. This also fixes a fault that had stopped Maestro reading anything back from the Symphony over ThunderBridge.
 
 ### How to send feedback
 

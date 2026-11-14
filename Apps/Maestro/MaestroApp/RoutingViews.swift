@@ -285,6 +285,11 @@ struct InputRoutingView: View {
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:714-792`
     private func loadRoutes() async -> [Int: Int] {
         guard let device = appState.device else { return [:] }
+        // ThunderBridge reads through this path always failed until the
+        // request-size fix in 0.8.36, so this grid has only ever been built from
+        // the default table plus saved choices there. Unchanged until the
+        // readback has been checked against real hardware.
+        if appState.transportType == .thunderbolt { return [:] }
         var routes: [Int: Int] = [:]
 
         for pair in 0..<pairCount {
@@ -723,13 +728,22 @@ struct OutputRoutingView: View {
     /// board 1 ← playback 17-32, as XLink sources.
     private func defaultOutputRouteList(board1: IOCardType, board2: IOCardType) -> [SymphonyIODefaultRouting.Route] {
         let transport = appState.transportType ?? .usb
-        return SymphonyIODefaultRouting.outputRoutes(
+        let routes = SymphonyIODefaultRouting.outputRoutes(
             board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
             board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),
             usbChannelCount: transport == .thunderbolt
                 ? Int(ThunderboltCardRouting.channelCount)
                 : SymphonyIODefaultRouting.usbChannelCount,
             playbackBase: SymphonyIORoutingAddress.hostPlaybackBase(for: transport))
+        guard transport == .thunderbolt else { return routes }
+        // On ThunderBridge the main pair's default is Mixer 1, which is what the
+        // driver programs and what is actually heard. The grid shows it and
+        // Reset Routing writes it, so the picture matches the sound.
+        return routes.map { route in
+            guard let mixer = ThunderboltCardRouting.mainPairDefaultSource(
+                forDestination: route.destination) else { return route }
+            return SymphonyIODefaultRouting.Route(destination: route.destination, source: mixer)
+        }
     }
 
     private func defaultRouteGrid() -> [Int: Set<Int>] {
@@ -757,6 +771,12 @@ struct OutputRoutingView: View {
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
     private func loadRoutes() async -> [Int: Set<Int>] {
         guard let device = appState.device else { return [:] }
+        // On ThunderBridge, host playback routing lives in the card, which has
+        // no readback; the Symphony's own table that this read reaches says
+        // nothing about it. These reads always failed until the request-size fix
+        // in 0.8.36, so the grid was already built from the default table plus
+        // the user's saved choices. Keep it that way now that they would succeed.
+        if appState.transportType == .thunderbolt { return [:] }
         var routes: [Int: Set<Int>] = [:]
 
         for (col, column) in columns.enumerated() {
