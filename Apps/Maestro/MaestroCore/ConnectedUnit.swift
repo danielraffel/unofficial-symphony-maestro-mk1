@@ -22,6 +22,11 @@ public enum ConnectedUnit: Sendable, Equatable {
     /// The unit did not answer as a Symphony I/O and did not answer the
     /// identification either.
     case silent
+    /// Several converters chained on the cable, nearest first. These were
+    /// normally used in chains (for example an AD-16X and a DA-16X), and the
+    /// driver (dext 121+) addresses each one in turn as the original did
+    /// (`Driver/XLink.cpp` BusInit `:596-660`), up to four.
+    case chain([ConnectedUnit])
 
     /// Decode the driver's probe word. Nil when the driver did not probe, which
     /// is the case for a Symphony I/O and for drivers older than build 120.
@@ -29,12 +34,25 @@ public enum ConnectedUnit: Sendable, Equatable {
         guard probeWord & 0x8000_0000 != 0 else { return nil }
         guard probeWord & 0x4000_0000 != 0 else { self = .silent; return }
         let reply = UInt8(probeWord & 0xFF)
-        switch reply >> 4 {
+        let first = ConnectedUnit(bankNibble: reply >> 4) ?? .unrecognised(reply: reply)
+        // Units 2-4: one bank nibble each in bits 16-27, zero meaning none.
+        var units = [first]
+        for index in 0..<3 {
+            let nibble = UInt8((probeWord >> (16 + 4 * UInt32(index))) & 0xF)
+            guard nibble != 0 else { break }
+            units.append(ConnectedUnit(bankNibble: nibble) ?? .unrecognised(reply: nibble << 4))
+        }
+        self = units.count == 1 ? first : .chain(units)
+    }
+
+    /// The channel-bank nibble of an identification reply.
+    private init?(bankNibble: UInt8) {
+        switch bankNibble {
         case 0x3: self = .ad16x
         case 0xC: self = .da16x
         case 0xF: self = .dd16x
         case 0x5: self = .rosetta800
-        default:  self = .unrecognised(reply: reply)
+        default:  return nil
         }
     }
 
@@ -46,8 +64,41 @@ public enum ConnectedUnit: Sendable, Equatable {
         case .dd16x:      return (16, 16)
         case .rosetta800: return (8, 8)
         case .unrecognised, .silent: return nil
+        case .chain(let units):
+            // Each unit's channels follow the previous unit's, per direction.
+            // The link carries 32 each way. If any unit is unknown the total is
+            // unknown, and the generic layout is the honest answer.
+            var inputs = 0, outputs = 0
+            for unit in units {
+                guard let channels = unit.channels else { return nil }
+                inputs += channels.inputs
+                outputs += channels.outputs
+            }
+            return (min(inputs, 32), min(outputs, 32))
         }
     }
+
+    /// The unit's model name, for a recognised converter.
+    public var modelName: String? {
+        switch self {
+        case .ad16x:      return "Apogee AD-16X"
+        case .da16x:      return "Apogee DA-16X"
+        case .dd16x:      return "Apogee DD-16X"
+        case .rosetta800: return "Apogee Rosetta 800"
+        case .unrecognised, .silent: return nil
+        case .chain(let units):
+            let names = units.map { $0.modelName ?? "unrecognised unit" }
+            return names.joined(separator: " + ")
+        }
+    }
+
+    /// Shown where a Symphony I/O would list its two option cards.
+    public static let noOptionCards = "Not applicable (not a Symphony I/O)"
+
+    /// One-line explanation for Device Info.
+    public static let deviceInfoNotice =
+        "This is not a Symphony I/O. Support for older Apogee converters is experimental and "
+        + "written without the hardware. Up to four chained units are identified, nearest first."
 
     public var displayName: String {
         switch self {
@@ -59,6 +110,23 @@ public enum ConnectedUnit: Sendable, Equatable {
             return "Not recognised (identification reply 0x" + String(reply, radix: 16) + ")"
         case .silent:
             return "No answer (not a Symphony I/O, and it did not identify itself)"
+        case .chain(let units):
+            return "\(units.count) units: " + units.map(\.displayName).joined(separator: ", then ")
         }
+    }
+}
+
+/// The text for Device Info's "Connection" row.
+public enum ConnectionLabel {
+    /// `pciIdentifier` is the IOKit name of the attached Apogee PCI function,
+    /// `pci19c2,2200` for a ThunderBridge or `pci19c2,2100` for the older
+    /// Symphony 64 PCIe card in a Thunderbolt chassis. The same driver serves
+    /// both, so the label has to say which one this is.
+    public static func text(isThunderbolt: Bool, pciIdentifier: String?) -> String {
+        guard isThunderbolt else { return "USB Hardware" }
+        if let pciIdentifier, pciIdentifier.lowercased().hasSuffix(",2100") {
+            return "Thunderbolt (Symphony 64 PCIe card, experimental)"
+        }
+        return "Thunderbolt (ThunderBridge)"
     }
 }

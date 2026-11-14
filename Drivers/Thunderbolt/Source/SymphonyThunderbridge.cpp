@@ -300,7 +300,7 @@ struct SymphonyThunderbridge_IVars {
     uint64_t  lastWrapCountSeen;       // watch-local
     bool      linkClockPresent;        // watch-local: last decided XLink RX1 clock state
     uint32_t  linkState;               // atomic; kLinkState* for ReadLinkState
-    uint32_t  unitProbeWord;           // dext 120: identification of a non-Symphony unit, 0 if not probed
+    uint32_t  unitProbeWord;           // dext 121: identification of a non-Symphony unit, 0 if not probed
     uint32_t  lastWatchClockReg;       // watch-local: last kRegXLinkClocking sample
     uint64_t  linkWatchTicks;          // watch-local
     bool      linkNeedsRevalidation;   // atomic; set by SetPowerState(On), consumed by the watch
@@ -484,7 +484,10 @@ static constexpr uint8_t  kXLinkCmdUnmute          = 0x0A;
 // the older converters apart: 0x3 AD-16X, 0xC DA-16X, 0xF DD-16X, 0x5 Rosetta 800.
 static constexpr uint8_t  kXLinkCmdInquire         = 0x05;
 static constexpr uint8_t  kXLinkCmdXtdInquire      = 0x0B;
-// ReadLinkState word 15 layout (dext 120+).
+static constexpr uint8_t  kXLinkMaxDevices         = 4;     // XLINK_MAX_DEVICES
+// ReadLinkState word 15 layout (dext 121+): bits 0-7 unit 1 INQUIRE reply,
+// bits 8-15 unit 1 XTD_INQUIRE reply, bits 16-27 the bank nibbles of units 2,
+// 3 and 4 (zero = none), bits 29-31 the flags below.
 static constexpr uint32_t kUnitProbeRan            = 0x80000000;
 static constexpr uint32_t kUnitProbeInquireOK      = 0x40000000;
 static constexpr uint32_t kUnitProbeXtdOK          = 0x20000000;
@@ -1551,10 +1554,54 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             if (XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
                              symphonyAddr, kXLinkCmdXtdInquire, &xtd))
                 probe |= kUnitProbeXtdOK | ((uint32_t)xtd << 8);
-            ivars->unitProbeWord = probe;
             STLOG("Unit probe: no Symphony I/O answer; INQUIRE %s 0x%02x, XTD_INQUIRE %s 0x%02x",
                   (probe & kUnitProbeInquireOK) ? "replied" : "no reply", inquire,
                   (probe & kUnitProbeXtdOK) ? "replied" : "no reply", xtd);
+
+            // Converters were normally chained (an AD-16X feeding a DA-16X, and
+            // so on). The original found each further unit the same way it found
+            // the first (Driver/XLink.cpp BusInit :596-660): once a unit is
+            // passing commands on, ask the broadcast address what is next; if
+            // something answers, give it the next address and tell it to pass
+            // commands on too; stop at the first silence. Up to four units
+            // (XLINK_MAX_DEVICES). Unit 1 was already addressed above, so this
+            // continues from address 2, and only when unit 1 identified itself
+            // as one of the older converters.
+            uint32_t extraUnits = 0;
+            if ((probe & kUnitProbeInquireOK) && (inquire >> 4) != 0) {
+                for (uint8_t addr = 2; addr <= kXLinkMaxDevices; addr++) {
+                    uint8_t next = 0;
+                    if (!XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
+                                      kXLinkCmdAddrAll, kXLinkCmdInquire, &next)
+                        || (next >> 4) == 0) {
+                        STLOG("Unit probe: no further unit after address %u", addr - 1);
+                        break;
+                    }
+                    if (!SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
+                                          kXLinkCmdAddrAll, kXLinkCmdSetAddr, addr)
+                        || !SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
+                                             addr, kXLinkCmdPassCommands, 1)) {
+                        STERR("Unit probe: could not address unit %u", addr);
+                        break;
+                    }
+                    IOSleep(5);
+                    probe |= (uint32_t)(next >> 4) << (16 + 4 * (addr - 2));
+                    extraUnits++;
+                    STLOG("Unit probe: unit %u INQUIRE 0x%02x, addressed", addr, next);
+                }
+            }
+            if (extraUnits) {
+                // The rate and unmute sent earlier went out before these units
+                // had an address. Send them again so every unit has them, as the
+                // original did after enumerating the whole chain.
+                SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
+                                 kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, rateCode);
+                IOSleep(10);
+                SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
+                                 kXLinkCmdAddrAll, kXLinkCmdUnmute, 0x80);
+                STLOG("Unit probe: %u further unit(s); rate and unmute re-sent", extraUnits);
+            }
+            ivars->unitProbeWord = probe;
             for (uint32_t n = 0; n < kMaxChannelsPerPort; n += 8) {
                 uint32_t r[8] = {};
                 for (uint32_t k = 0; k < 8; k++)
@@ -2443,7 +2490,7 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     outWords[12] = ivars->lastWatchGcsr;          // dext 117
     outWords[13] = ivars->lastWatchXlinkStatus;
     outWords[14] = ivars->cardReinitCount;
-    outWords[15] = ivars->unitProbeWord;          // dext 120: see kUnitProbe*
+    outWords[15] = ivars->unitProbeWord;          // dext 121: see kUnitProbe*
     return kIOReturnSuccess;
 }
 

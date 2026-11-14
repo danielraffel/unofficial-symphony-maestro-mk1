@@ -75,7 +75,7 @@ extension AppState {
         guard let device else { return nil }
         return DeviceInfoReport(
             deviceName: device.identifier.displayName,
-            connection: transportType == .thunderbolt ? "Thunderbolt (ThunderBridge)" : "USB Hardware",
+            connection: connectionLabel,
             board1: primaryBoardReading,
             board2: secondaryBoardReading,
             deviceModel: device.identifier.displayName,

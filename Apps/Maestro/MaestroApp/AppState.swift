@@ -548,6 +548,14 @@ final class AppState {
             converter: connectedUnit)
     }
 
+    /// "Connection" as shown in Device Info and the copied details: names the
+    /// Symphony 64 PCIe card when that is what the driver is attached to.
+    var connectionLabel: String {
+        ConnectionLabel.text(
+            isThunderbolt: transportType == .thunderbolt,
+            pciIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier())
+    }
+
     /// Set when the ThunderBridge driver found something other than a Symphony
     /// I/O on the cable (an older Apogee converter). Nil for a Symphony I/O.
     var connectedUnit: ConnectedUnit?

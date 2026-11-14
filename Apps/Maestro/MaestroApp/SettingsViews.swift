@@ -741,10 +741,11 @@ private struct FirmwareInfo {
         deviceModel: String? = nil,
         mode: String? = nil,
         channelCount: Int? = nil,
-        connectedUnit: String? = nil
+        connectedUnit: String? = nil,
+        connectedUnitModel: String? = nil
     ) -> DeviceInfoReport {
         DeviceInfoReport(
-            deviceName: deviceName ?? "Symphony I/O",
+            deviceName: connectedUnitModel ?? deviceName ?? "Symphony I/O",
             connection: connectionMode,
             firmwareVersion: firmwareVersion,
             fpgaVersion: fpgaVersion,
@@ -1026,8 +1027,9 @@ struct SystemSetupView: View {
             Section {
                 if appState.connectionMode == .hardware {
                     if let info = parsedFirmware {
-                        LabeledContent("Device Name", value: info.deviceName ?? "Symphony I/O")
-                        LabeledContent("Connection", value: appState.transportType == .thunderbolt ? "Thunderbolt (ThunderBridge)" : "USB Hardware")
+                        LabeledContent("Device Name",
+                                       value: appState.connectedUnit?.modelName ?? info.deviceName ?? "Symphony I/O")
+                        LabeledContent("Connection", value: appState.connectionLabel)
                         if let unit = appState.connectedUnit {
                             LabeledContent("Connected Unit", value: unit.displayName)
                         }
@@ -1036,13 +1038,23 @@ struct SystemSetupView: View {
                         if let hw = info.hardwareID { LabeledContent("Hardware ID", value: hw) }
                         // Board types, with provenance. Never present a cached
                         // value as a measurement — card detection fails on USB.
+                        if appState.connectedUnit != nil {
+                            // A converter has no option cards. Saying "not
+                            // detected" for them would read as a fault.
+                            LabeledContent("IOBoard 1", value: ConnectedUnit.noOptionCards)
+                            LabeledContent("IOBoard 2", value: ConnectedUnit.noOptionCards)
+                            Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
                         LabeledContent("IOBoard 1",
                                        value: DeviceInfoReport.boardLine(board1Reading, version: info.ioBoard1Version))
                             .help(board1Reading.detailedText)
                         LabeledContent("IOBoard 2",
                                        value: DeviceInfoReport.boardLine(board2Reading, version: info.ioBoard2Version))
                             .help(board2Reading.detailedText)
-                        if let notice = boardDetectionNotice {
+                        }
+                        if appState.connectedUnit == nil, let notice = boardDetectionNotice {
                             Label(notice, systemImage: "exclamationmark.triangle")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -1052,7 +1064,12 @@ struct SystemSetupView: View {
                         LabeledContent("Firmware Version", value: firmwareVersion)
                     }
 
-                    if let device = appState.device {
+                    if let channels = appState.connectedUnit?.channels {
+                        // The link always carries 32 channels; these are the
+                        // ones the converter itself has.
+                        LabeledContent("Inputs", value: "\(channels.inputs)")
+                        LabeledContent("Outputs", value: "\(channels.outputs)")
+                    } else if let device = appState.device {
                         LabeledContent("Device Model", value: device.identifier.displayName)
                         LabeledContent("Mode", value: device.identifier.mode.displayName)
                         LabeledContent("Channel Count", value: "\(device.identifier.mode.channelCount)")
@@ -1353,14 +1370,14 @@ struct SystemSetupView: View {
     private func currentDeviceReport() -> DeviceInfoReport {
         let device = appState.device
         return (parsedFirmware ?? FirmwareInfo()).report(
-            connectionMode: appState.transportType == .thunderbolt
-                ? "Thunderbolt (ThunderBridge)" : "USB Hardware",
+            connectionMode: appState.connectionLabel,
             board1: board1Reading,
             board2: board2Reading,
             deviceModel: device?.identifier.displayName,
             mode: device?.identifier.mode.displayName,
             channelCount: device?.identifier.mode.channelCount,
-            connectedUnit: appState.connectedUnit?.displayName
+            connectedUnit: appState.connectedUnit?.displayName,
+            connectedUnitModel: appState.connectedUnit?.modelName
         )
     }
 

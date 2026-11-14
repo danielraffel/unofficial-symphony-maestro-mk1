@@ -45,4 +45,58 @@ struct ConnectedUnitTests {
         let symphony = CardLayout(slot1: .analogADDA16, isKnown: true, converter: .da16x)
         #expect(symphony.analogOutputStripCount == symphony.slot1.analogOutputChannels)
     }
+
+    /// A converter has no option cards, so the copied details must not say its
+    /// cards were "not detected".
+    @Test("copied device details describe a converter without card errors")
+    func report() {
+        let report = DeviceInfoReport(deviceName: ConnectedUnit.da16x.modelName ?? "",
+                                      connection: "Thunderbolt (ThunderBridge)",
+                                      connectedUnit: ConnectedUnit.da16x.displayName)
+        let text = report.clipboardText
+        #expect(text.contains("Device Name: Apogee DA-16X"))
+        #expect(text.contains("Connected Unit: DA-16X (16 outputs)"))
+        #expect(text.contains("IOBoard1: Not applicable (not a Symphony I/O)"))
+        #expect(!text.lowercased().contains("not detected"))
+        // A Symphony I/O report is unchanged.
+        let symphony = DeviceInfoReport(connection: "USB Hardware").clipboardText
+        #expect(!symphony.contains("Connected Unit"))
+        #expect(!symphony.contains("Not applicable"))
+    }
+
+    @Test("the connection row names the PCIe card when that is what is attached")
+    func connectionLabel() {
+        #expect(ConnectionLabel.text(isThunderbolt: false, pciIdentifier: nil) == "USB Hardware")
+        #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: "pci19c2,2200") == "Thunderbolt (ThunderBridge)")
+        #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: nil) == "Thunderbolt (ThunderBridge)")
+        #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: "pci19c2,2100")
+                == "Thunderbolt (Symphony 64 PCIe card, experimental)")
+    }
+
+    /// The usual rig: an AD-16X and a DA-16X on one cable. Unit 1 in the low
+    /// byte, units 2-4 as bank nibbles in bits 16-27.
+    @Test("chained converters are listed nearest first and their channels add up")
+    func chain() {
+        let adThenDa = ConnectedUnit(probeWord: ran | answered | 0x30 | (0xC << 16))
+        #expect(adThenDa == .chain([.ad16x, .da16x]))
+        #expect(adThenDa?.channels?.inputs == 16)
+        #expect(adThenDa?.channels?.outputs == 16)
+        #expect(adThenDa?.modelName == "Apogee AD-16X + Apogee DA-16X")
+
+        // Three DA-16X: 48 outputs, but the link carries 32.
+        let threeDa = ConnectedUnit(probeWord: ran | answered | 0xC0 | (0xC << 16) | (0xC << 20))
+        #expect(threeDa == .chain([.da16x, .da16x, .da16x]))
+        #expect(threeDa?.channels?.outputs == 32)
+        #expect(threeDa?.channels?.inputs == 0)
+
+        // A gap ends the chain: unit 4 without unit 3 is ignored.
+        #expect(ConnectedUnit(probeWord: ran | answered | 0x30 | (0xC << 24)) == .ad16x)
+
+        // One unknown unit makes the total unknown: generic layout.
+        let withUnknown = ConnectedUnit(probeWord: ran | answered | 0x30 | (0x2 << 16))
+        #expect(withUnknown == .chain([.ad16x, .unrecognised(reply: 0x20)]))
+        #expect(withUnknown?.channels == nil)
+        let layout = CardLayout(isKnown: false, fallbackChannelCount: 32, converter: withUnknown)
+        #expect(layout.analogOutputStripCount == 32)
+    }
 }

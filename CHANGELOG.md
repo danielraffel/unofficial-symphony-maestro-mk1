@@ -7,7 +7,8 @@
 Both of these are written from Apogee's original source for hardware we do not own. We could not try them on the real thing, so testing and feedback are very welcome.
 
 - **Symphony 64 PCIe card.** If you use the original Symphony 64 PCIe card in a Thunderbolt chassis, Maestro's driver now recognises it. Earlier versions contained support for the card but never actually connected to it, so it was not detected.
-- **AD-16X, DA-16X, DD-16X and Rosetta 800 converters.** When the unit on the cable is not a Symphony I/O, the driver now asks it what it is, the way Apogee's software did. If it answers, Maestro shows the right number of inputs and outputs for it and names it under System Setup > Device Info > Connected Unit. If it does not answer, Maestro shows the generic 32-channel layout as before.
+- **AD-16X, DA-16X, DD-16X and Rosetta 800 converters.** When the unit on the cable is not a Symphony I/O, the driver now asks it what it is, the way Apogee's software did, and does the same for up to four units chained together (an AD-16X and a DA-16X, for example). If they answer, Maestro adds up their inputs and outputs, shows that many channels, and names the units under System Setup > Device Info. If they do not answer, Maestro shows the generic 32-channel layout as before.
+- **Device Info says what is connected.** The Connection row names the Symphony 64 PCIe card when that is what you are using, and a converter is described as a converter instead of as a Symphony with missing cards.
 
 ### What's better
 
@@ -20,7 +21,7 @@ Choose Maestro > About Maestro and click the copy button next to the version num
 
 ### Release notes
 
-- **This update replaces the ThunderBridge driver** (now build 120). macOS swaps the driver when you install. Close your audio apps first, and if Maestro asks, disconnect and reconnect the ThunderBridge.
+- **This update replaces the ThunderBridge driver** (now build 121). macOS swaps the driver when you install. Close your audio apps first, and if Maestro asks, disconnect and reconnect the ThunderBridge.
 - If you use a Symphony I/O over ThunderBridge, nothing should change for you. The new question is only asked when the connected unit does not answer as a Symphony I/O.
 - USB is not affected by the driver change.
 - Quit your audio apps before installing. When the USB audio component changes, the installer restarts macOS's audio system, and with a ThunderBridge connected that can take a minute or two, during which audio apps may freeze and Maestro may not open. It recovers by itself. The installer now skips that restart when the component has not changed.

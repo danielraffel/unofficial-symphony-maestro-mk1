@@ -960,8 +960,14 @@ public struct DeviceInfoReport: Sendable, Equatable {
         if let firmwareVersion { lines.append("Firmware: \(firmwareVersion)") }
         if let fpgaVersion { lines.append("FPGA version: \(fpgaVersion)") }
         if let hardwareID { lines.append("Hardware ID: \(hardwareID)") }
-        lines.append("IOBoard1: \(DeviceInfoReport.boardLine(board1, version: board1Version))")
-        lines.append("IOBoard2: \(DeviceInfoReport.boardLine(board2, version: board2Version))")
+        if connectedUnit == nil {
+            lines.append("IOBoard1: \(DeviceInfoReport.boardLine(board1, version: board1Version))")
+            lines.append("IOBoard2: \(DeviceInfoReport.boardLine(board2, version: board2Version))")
+        } else {
+            // A converter has no option cards; "not detected" would read as a fault.
+            lines.append("IOBoard1: \(ConnectedUnit.noOptionCards)")
+            lines.append("IOBoard2: \(ConnectedUnit.noOptionCards)")
+        }
         if let xmosVersion { lines.append("XMOS Version: \(xmosVersion)") }
         if let deviceModel { lines.append("Device Model: \(deviceModel)") }
         if let mode { lines.append("Mode: \(mode)") }
