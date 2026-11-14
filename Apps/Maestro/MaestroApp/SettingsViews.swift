@@ -1044,8 +1044,6 @@ struct SystemSetupView: View {
                         if appState.connectedUnit != nil {
                             // A converter has no option cards. Saying "not
                             // detected" for them would read as a fault.
-                            LabeledContent("IOBoard 1", value: ConnectedUnit.noOptionCards)
-                            LabeledContent("IOBoard 2", value: ConnectedUnit.noOptionCards)
                             Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -1094,8 +1092,6 @@ struct SystemSetupView: View {
                     ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
                         LabeledContent(row.label, value: row.value)
                     }
-                    LabeledContent("IOBoard 1", value: ConnectedUnit.noOptionCards)
-                    LabeledContent("IOBoard 2", value: ConnectedUnit.noOptionCards)
                     Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)

@@ -119,9 +119,9 @@ public enum ConnectedUnit: Sendable, Equatable {
         case .dd16x:      return "Apogee DD-16X"
         case .rosetta800: return "Apogee Rosetta 800"
         case .unrecognised, .silent: return nil
-        case .chain(let units):
-            let names = units.map { $0.modelName ?? "unrecognised unit" }
-            return names.joined(separator: " + ")
+        case .chain:
+            // The units are listed one per row; the name stays short.
+            return "Apogee converters"
         }
     }
 

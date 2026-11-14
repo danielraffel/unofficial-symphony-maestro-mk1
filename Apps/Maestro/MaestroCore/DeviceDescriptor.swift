@@ -965,11 +965,9 @@ public struct DeviceInfoReport: Sendable, Equatable {
         if connectedUnit == nil {
             lines.append("IOBoard1: \(DeviceInfoReport.boardLine(board1, version: board1Version))")
             lines.append("IOBoard2: \(DeviceInfoReport.boardLine(board2, version: board2Version))")
-        } else {
-            // A converter has no option cards; "not detected" would read as a fault.
-            lines.append("IOBoard1: \(ConnectedUnit.noOptionCards)")
-            lines.append("IOBoard2: \(ConnectedUnit.noOptionCards)")
         }
+        // A converter has no option cards, so those lines are left out; "not
+        // detected" would read as a fault.
         if let xmosVersion { lines.append("XMOS Version: \(xmosVersion)") }
         if let deviceModel { lines.append("Device Model: \(deviceModel)") }
         if let mode { lines.append("Mode: \(mode)") }

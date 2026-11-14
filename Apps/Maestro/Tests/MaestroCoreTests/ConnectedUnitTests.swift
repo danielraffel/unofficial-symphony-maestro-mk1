@@ -56,7 +56,7 @@ struct ConnectedUnitTests {
         let text = report.clipboardText
         #expect(text.contains("Device Name: Apogee DA-16X"))
         #expect(text.contains("Connected Unit: DA-16X (16 outputs)"))
-        #expect(text.contains("IOBoard1: Not applicable (not a Symphony I/O)"))
+        #expect(!text.contains("IOBoard"))
         #expect(!text.lowercased().contains("not detected"))
         // A Symphony I/O report is unchanged.
         let symphony = DeviceInfoReport(connection: "USB Hardware").clipboardText
@@ -81,7 +81,7 @@ struct ConnectedUnitTests {
         #expect(adThenDa == .chain([.ad16x, .da16x]))
         #expect(adThenDa?.channels?.inputs == 16)
         #expect(adThenDa?.channels?.outputs == 16)
-        #expect(adThenDa?.modelName == "Apogee AD-16X + Apogee DA-16X")
+        #expect(adThenDa?.modelName == "Apogee converters")
 
         // Three DA-16X: 48 outputs, but the link carries 32.
         let threeDa = ConnectedUnit(probeWord: ran | answered | 0xC0 | (0xC << 16) | (0xC << 20))
