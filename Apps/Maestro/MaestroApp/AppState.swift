@@ -2317,6 +2317,17 @@ final class AppState {
             speakerMuted = muted
             hp1Muted = muted
             hp2Muted = muted
+            // Over ThunderBridge the Mac's mute control is the driver's own, and
+            // it knows nothing of a mute made on the front panel. Maestro reads
+            // that control whenever the Mac's volume changes, so without this
+            // the speaker flipped back to "unmuted" on screen while the unit
+            // stayed muted, and it took a mute and an unmute in Maestro to
+            // recover (2026-11-13). Setting it sends the unit the state it is
+            // already in.
+            if transportType == .thunderbolt, let device {
+                Task { try? await device.setProperty(
+                    PropertyAddress(selector: .outputMute), value: .bool(muted)) }
+            }
         case .metersCleared:
             // The unit's held peaks are gone; drop Maestro's copies too.
             inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
