@@ -161,6 +161,22 @@ $IIG --def "$SOURCE_DIR/SymphonyOpticalControl.iig" \
 
 echo "[TB] iig generated SymphonyOpticalControl.h and SymphonyOpticalControl.iig.cpp"
 
+# EXPERIMENT (64ch): the port selector. Compiled into every build; only a
+# two-port build ever creates one.
+echo "[TB] Running iig on SymphonyPortSourceControl.iig..."
+$IIG --def "$SOURCE_DIR/SymphonyPortSourceControl.iig" \
+     --header "$IIG_DIR/SymphonyPortSourceControl.h" \
+     --impl "$IIG_DIR/SymphonyPortSourceControl.iig.cpp" \
+     --deployment-target 25.2 \
+     -- \
+     -isysroot "$SDK" \
+     -x c++ \
+     -std=c++17 \
+     -D__IIG=1 \
+     -iframework "$FRAMEWORK_DIR"
+
+echo "[TB] iig generated SymphonyPortSourceControl.h and SymphonyPortSourceControl.iig.cpp"
+
 # ── Step 2: Compile ──────────────────────────────────────────────────────────
 
 COMMON_FLAGS=(
@@ -243,6 +259,16 @@ $CLANG -c "${COMMON_FLAGS[@]}" \
     -o "$BUILD_DIR/SymphonyOpticalControl.o" \
     "$SOURCE_DIR/SymphonyOpticalControl.cpp"
 
+echo "[TB] Compiling SymphonyPortSourceControl.iig.cpp..."
+$CLANG -c "${COMMON_FLAGS[@]}" \
+    -o "$BUILD_DIR/SymphonyPortSourceControl.iig.o" \
+    "$IIG_DIR/SymphonyPortSourceControl.iig.cpp"
+
+echo "[TB] Compiling SymphonyPortSourceControl.cpp..."
+$CLANG -c "${COMMON_FLAGS[@]}" \
+    -o "$BUILD_DIR/SymphonyPortSourceControl.o" \
+    "$SOURCE_DIR/SymphonyPortSourceControl.cpp"
+
 # ── Step 3: Link ─────────────────────────────────────────────────────────────
 
 echo "[TB] Linking..."
@@ -268,7 +294,9 @@ $CLANG \
     "$BUILD_DIR/SymphonyMicGainControl.o" \
     "$BUILD_DIR/SymphonyMicGainControl.iig.o" \
     "$BUILD_DIR/SymphonyOpticalControl.o" \
-    "$BUILD_DIR/SymphonyOpticalControl.iig.o"
+    "$BUILD_DIR/SymphonyOpticalControl.iig.o" \
+    "$BUILD_DIR/SymphonyPortSourceControl.o" \
+    "$BUILD_DIR/SymphonyPortSourceControl.iig.o"
 
 echo "[TB] Linked: $(file "$BUILD_DIR/com.danielraffel.maestro.thunderbridge")"
 

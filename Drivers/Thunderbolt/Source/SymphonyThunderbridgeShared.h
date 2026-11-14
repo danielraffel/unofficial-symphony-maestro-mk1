@@ -101,7 +101,7 @@ typedef struct {
 // The driver uses one XLink port unless the matched IOKit personality carries
 // this key with the integer 2. No released Info.plist has it. With 2 the driver
 // switches port 2 on and identifies the units cabled to it; port 2 carries no
-// audio yet.
+// audio until "Port 1-2: 64ch" is selected (stage 2, below).
 #define kSymphonyPortCountKey "SymphonyPortCount"
 
 // SymphonyPort2StateOutput.flags
@@ -136,8 +136,48 @@ typedef struct {
                               // rate change; 0 if it did not, or none since the last probe
     uint32_t rateChanges;     // device rate changes made while a port-2 unit was known
                               // (including ones where nothing could be sent), since Start()
-    uint32_t reserved[2];
+    uint32_t audio;           // stage 2: kSymphonyPort2Audio* (0 in a one-port build)
+    uint32_t phase;           // stage 2: kSymphonyPort2Phase* (0 until an alignment has run)
 } SymphonyPort2StateOutput; // 64 bytes
+
+// ── EXPERIMENT (64ch, stage 2): audio on port 2 and the port selector ────────
+// Two-port builds publish an input and an output data-source selector with the
+// original's two entries (Symphony64AudioEngine.cpp:38-93, SymphonyCommon.h:182):
+// the selector value is the entry's index.
+#define kSymphonyPortSourcePort1     0u   // "Port 1: 32ch"
+#define kSymphonyPortSourcePorts1And2 1u  // "Port 1-2: 64ch"
+#define kSymphonyPortSourceName32 "Port 1: 32ch"
+#define kSymphonyPortSourceName64 "Port 1-2: 64ch"
+
+// SymphonyPort2StateOutput.audio
+#define kSymphonyPort2AudioCapable      0x00000001u  // port-2 DMA buffers exist: 64 can be selected
+#define kSymphonyPort2AudioActive       0x00000002u  // the card is running both ports (64 channels)
+#define kSymphonyPort2AudioPhaseAligned 0x00000004u  // the last phase alignment wrote the jam register
+#define kSymphonyPort2AudioPhaseFailed  0x00000008u  // a unit did not answer the phase query, or a jam
+                                                     // was still in progress: nothing was written
+#define kSymphonyPort2AudioRefused      0x00000010u  // the last request for 64 was refused (see reason)
+#define kSymphonyPort2AudioFellBack     0x00000020u  // the driver went from 64 back to 32 by itself
+#define kSymphonyPort2AudioPublished64  0x00000040u  // Core Audio's streams are 64 channels now
+#define kSymphonyPort2AudioReasonShift  8            // bits 15:8: kSymphonyPort2Reason*
+#define kSymphonyPort2AudioReasonMask   0x0000FF00u
+#define kSymphonyPort2AudioChangesShift 16           // bits 31:16: 32<->64 changes since Start()
+
+// Why 64 was refused or dropped (SymphonyPort2StateOutput.audio bits 15:8).
+#define kSymphonyPort2ReasonNone          0u
+#define kSymphonyPort2ReasonNoUnit        1u  // no unit with its data link up on port 2
+#define kSymphonyPort2ReasonNoBuffers     2u  // the port-2 DMA buffers could not be allocated
+#define kSymphonyPort2ReasonRateNotLocked 3u  // port 2 did not lock to the current rate
+#define kSymphonyPort2ReasonRegisters     4u  // the card did not keep the port-2 buffer addresses
+#define kSymphonyPort2ReasonClockGone     5u  // port 2's unit clock went away while 64 was running
+#define kSymphonyPort2ReasonCardReset     6u  // the card lost its registers (sleep); back at 32
+#define kSymphonyPort2ReasonRateChange    7u  // port 2 did not follow a sample-rate change
+#define kSymphonyPort2ReasonUnreachable   8u  // the card could not be reached (stopping, asleep)
+
+// SymphonyPort2StateOutput.phase: the last phase alignment (og XLink.cpp:1079-1150).
+#define kSymphonyPort2PhaseValid        0x80000000u  // an alignment has run
+#define kSymphonyPort2PhaseJamMask      0x000000FFu  // value written to the jam register
+#define kSymphonyPort2PhaseUnitsShift   8            // bits 15:8: units whose phase was read
+#define kSymphonyPort2PhaseBaseShift    16           // bits 23:16: the phase the jam was derived from
 
 // Input/output for kSelectorReadVendor. This is deliberately a bounded,
 // read-only counterpart to SymphonyVendorCommandInput. It lets the app read

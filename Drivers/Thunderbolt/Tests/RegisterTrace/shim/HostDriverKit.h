@@ -223,6 +223,9 @@ public:
     uint64_t size_ = 0;
 };
 
+class IOBufferMemoryDescriptor;
+void HostNoteBuffer(IOBufferMemoryDescriptor *b);
+
 class IOBufferMemoryDescriptor : public IOMemoryDescriptor {
 public:
     static kern_return_t Create(uint64_t, uint64_t capacity, uint64_t, IOBufferMemoryDescriptor **out) {
@@ -233,6 +236,7 @@ public:
         snprintf(buf, sizeof(buf), "buffer-create size=%llu", (unsigned long long)capacity);
         gHostBackend->HostEvent(buf);
         *out = b;
+        HostNoteBuffer(b);
         return kIOReturnSuccess;
     }
     kern_return_t SetLength(uint64_t) { return kIOReturnSuccess; }
@@ -363,10 +367,20 @@ class IOUserAudioBooleanControl;
 
 // What the driver published, so the test can play the part of Core Audio
 // (change the sample rate, move the volume control).
+class IOUserAudioStream;
+class IOUserAudioSelectorControl;
+class IOBufferMemoryDescriptor;
 struct HostAudioRegistry {
     IOUserAudioDevice *device = nullptr;
     IOUserAudioLevelControl *volume = nullptr;
     IOUserAudioBooleanControl *mute = nullptr;
+    // Two-port experiment (none of these produce trace lines):
+    IOUserAudioStream *inStream = nullptr, *outStream = nullptr;
+    std::vector<IOUserAudioSelectorControl *> portSources;   // input, output
+    std::vector<IOBufferMemoryDescriptor *> buffers;         // every buffer, in creation order
+    void *ioHandler = nullptr;                               // the IOOperationHandler block
+    uint64_t lastConfigChangeAction = 0;
+    uint32_t configChangeRequests = 0;
 };
 extern HostAudioRegistry gHostAudio;
 
@@ -420,8 +434,20 @@ public:
     using OSObject::init;
     virtual bool init(IOUserAudioDriver *, bool, IOUserAudioObjectPropertyElement,
                       IOUserAudioObjectPropertyScope, IOUserAudioClassID) { return true; }
-    kern_return_t AddControlValueDescriptions(const IOUserAudioSelectorValueDescription *, size_t) { return kIOReturnSuccess; }
-    kern_return_t SetCurrentSelectedValues(const IOUserAudioSelectorValue *, size_t) { return kIOReturnSuccess; }
+    kern_return_t AddControlValueDescriptions(const IOUserAudioSelectorValueDescription *d, size_t n) {
+        names.clear();
+        for (size_t i = 0; i < n; i++) names.push_back(d[i].mName.get()->getCStringNoCopy());
+        return kIOReturnSuccess;
+    }
+    kern_return_t SetCurrentSelectedValues(const IOUserAudioSelectorValue *v, size_t n) {
+        if (n) selected = v[0];
+        sets++;
+        return kIOReturnSuccess;
+    }
+    // Host-test state (no trace lines).
+    IOUserAudioSelectorValue selected = 0;
+    uint32_t sets = 0;
+    std::vector<std::string> names;
 };
 
 class IOUserAudioCustomProperty : public IOUserAudioObject {
@@ -441,6 +467,8 @@ public:
         snprintf(buf, sizeof(buf), "stream-create dir=%s buffer=%llu", s->input_ ? "in" : "out",
                  (unsigned long long)mem->size_);
         gHostBackend->HostEvent(buf);
+        (s->input_ ? gHostAudio.inStream : gHostAudio.outStream) = s;
+        s->memory = mem;
         return OSSharedPtr<IOUserAudioStream>(s, OSNoRetain);
     }
     kern_return_t SetAvailableStreamFormats(const IOUserAudioStreamBasicDescription *f, size_t n) {
@@ -453,7 +481,13 @@ public:
         }
         return kIOReturnSuccess;
     }
-    kern_return_t SetCurrentStreamFormat(const IOUserAudioStreamBasicDescription *) { return kIOReturnSuccess; }
+    kern_return_t SetCurrentStreamFormat(const IOUserAudioStreamBasicDescription *f) {
+        current = *f;
+        return kIOReturnSuccess;
+    }
+    // Host-test state (no trace lines).
+    IOUserAudioStreamBasicDescription current = {};
+    IOMemoryDescriptor *memory = nullptr;
     kern_return_t SetTerminalType(IOUserAudioStreamTerminalType) { return kIOReturnSuccess; }
     kern_return_t SetStartingChannel(uint32_t ch) {
         char buf[64];
@@ -496,10 +530,15 @@ public:
     kern_return_t RemoveControl(IOUserAudioControl *) { return kIOReturnSuccess; }
     kern_return_t AddCustomProperty(IOUserAudioCustomProperty *) { return kIOReturnSuccess; }
     kern_return_t RemoveCustomProperty(IOUserAudioCustomProperty *) { return kIOReturnSuccess; }
-    kern_return_t SetIOOperationHandler(IOOperationHandler) { return kIOReturnSuccess; }
+    kern_return_t SetIOOperationHandler(IOOperationHandler h) {
+        gHostAudio.ioHandler = (void *)Block_copy(h);
+        return kIOReturnSuccess;
+    }
     kern_return_t SetName(OSString *) { return kIOReturnSuccess; }
     kern_return_t UpdateCurrentZeroTimestamp(uint64_t, uint64_t) { return kIOReturnSuccess; }
-    kern_return_t RequestDeviceConfigurationChange(uint64_t, OSObject *) {
+    kern_return_t RequestDeviceConfigurationChange(uint64_t action, OSObject *) {
+        gHostAudio.lastConfigChangeAction = action;
+        gHostAudio.configChangeRequests++;
         gHostBackend->HostEvent("device-config-change-request");
         return kIOReturnSuccess;
     }
@@ -520,7 +559,11 @@ public:
 // ── The driver's own generated classes (normally produced by iig) ───────────
 class SymphonyThunderbridge;
 
-class SymphonyAudioDevice : public IOUserAudioDevice {};
+class SymphonyAudioDevice : public IOUserAudioDevice {
+public:
+    void SetPortModeDriver(SymphonyThunderbridge *d) { portModeDriver = d; }
+    SymphonyThunderbridge *portModeDriver = nullptr;
+};
 class SymphonyUserClient : public IOUserClient {
 public:
     void SetDriver(SymphonyThunderbridge *) {}
@@ -533,6 +576,11 @@ class SymphonyOpticalControl : public IOUserAudioSelectorControl {
 public:
     void SetDriver(SymphonyThunderbridge *) {}
     void SetBoard(uint32_t) {}
+};
+class SymphonyPortSourceControl : public IOUserAudioSelectorControl {
+public:
+    SymphonyPortSourceControl() { gHostAudio.portSources.push_back(this); }
+    void SetDriver(SymphonyThunderbridge *) {}
 };
 class SymphonyPhantomControl : public IOUserAudioBooleanControl {
 public:

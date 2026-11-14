@@ -26,6 +26,15 @@
 #      the original's order (port 2 told first, port 1 changed and verified,
 #      then port 2 again and verified), that a port-2 failure does not fail the
 #      change, and that port 2 is put back when port 1 could not be told.
+#   4. Stage 2 (p2-audio-*): the port selector and audio on port 2. The traces
+#      pin, and the harness asserts: switching 32 <-> 64 (buffer registers,
+#      routing entries 32..63, unmute, the engines started port 2 first, the
+#      64-channel stream formats, the IO handler splitting each frame between
+#      the two ports); the phase alignment; a request refused with nothing on
+#      port 2 leaving every register as it was; rate changes at 64; and the
+#      port-2 chain disappearing in mid-stream, after which port 1 must be
+#      running alone again and Core Audio asked to go back to 32 channels.
+#      Until 64 is selected a two-port build writes exactly what stage 1 wrote.
 #
 # Usage:
 #   Drivers/Thunderbolt/run-tests.sh                 # all checks, base ref "main"
@@ -70,6 +79,9 @@ build_and_run() {
     local defs=()
     if grep -q 'ReadPort2State' "$src/SymphonyThunderbridge.cpp"; then
         defs=(-DTRACE_HAVE_PORT2)
+    fi
+    if grep -q 'PerformPortModeChange' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_PORT2_AUDIO)
     fi
     mkdir -p "$out"
     echo "[trace] compiling the driver source ($label) for the host..."
@@ -137,7 +149,7 @@ for f in "$TMP/work"/p1-*.trace; do
 done
 
 if ls "$TMP/work"/p2-*.trace > /dev/null 2>&1; then
-    compare_dir 'p2-*.trace' "$GOLDEN" "$TMP/work" "golden (two-port, Stage 1)" || status=1
+    compare_dir 'p2-*.trace' "$GOLDEN" "$TMP/work" "golden (two-port)" || status=1
 fi
 
 if $USE_REF; then

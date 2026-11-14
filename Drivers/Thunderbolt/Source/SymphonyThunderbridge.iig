@@ -75,6 +75,17 @@ public:
     // EXPERIMENT (64ch, stage 1): what the last XLink port-2 probe found, as
     // the 16 words of SymphonyPort2StateOutput. No bus access.
     virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
+    // EXPERIMENT (64ch, stage 2), two-port builds only.
+    // RequestPortMode: the port selector's new value (kSymphonyPortSource*).
+    // Records it and asks Core Audio for a device configuration change; touches
+    // no hardware. Called by SymphonyPortSourceControl.
+    virtual kern_return_t RequestPortMode(uint32_t selectorValue) LOCALONLY;
+    // PerformPortModeChange: called by SymphonyAudioDevice from every
+    // PerformDeviceConfigurationChange (IO is stopped). Switches the card
+    // between one and two ports if a change was requested, then makes the
+    // streams and the selectors match what the card is doing. Does nothing in a
+    // one-port build.
+    virtual kern_return_t PerformPortModeChange() LOCALONLY;
 
     // Read a bounded XLink vendor response for app-side property readback.
     virtual kern_return_t ReadVendorCommand(

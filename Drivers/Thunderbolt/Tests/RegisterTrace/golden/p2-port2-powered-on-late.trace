@@ -511,11 +511,15 @@ H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10000000
 H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10100000
-H buffer-create size=1048576 x2
+H buffer-create size=2097152 x2
 H buffer-create size=1024
 H dma-prepare size=1024 addr=0x10200000
 W 0x00001c 0x00003200
 W 0x000020 0x10200000
+H buffer-create size=1048576
+H dma-prepare size=1048576 addr=0x10300000
+H buffer-create size=1048576
+H dma-prepare size=1048576 addr=0x10400000
 W 0x000024 0x00040000
 W 0x00004c 0x00040000
 W 0x000028 0x10000000
@@ -552,7 +556,7 @@ S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
 R 0x000014 0x7000010c
-H stream-create dir=in buffer=1048576
+H stream-create dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -560,7 +564,7 @@ H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
 H stream-starting-channel dir=in ch=1
-H stream-create dir=out buffer=1048576
+H stream-create dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -842,6 +846,8 @@ R 0x000090 0x0000001b
 W 0x000090 0x0000001b
 H dma-complete addr=0x10000000
 H dma-complete addr=0x10100000
+H dma-complete addr=0x10300000
+H dma-complete addr=0x10400000
 H dma-complete addr=0x10200000
 H pci-close
 -- after Stop

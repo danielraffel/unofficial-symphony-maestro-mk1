@@ -30,6 +30,7 @@
 #include "SymphonyPhantomControl.h"
 #include "SymphonyMicGainControl.h"
 #include "SymphonyOpticalControl.h"
+#include "SymphonyPortSourceControl.h"
 #include "SymphonyThunderbridgeShared.h"
 
 // FPGA register map
@@ -341,6 +342,33 @@ struct SymphonyThunderbridge_IVars {
     // 0 if the last one did not get that far (or none has run since the probe).
     uint32_t  port2RateHz;
     uint32_t  port2RateChanges;
+
+    // ── EXPERIMENT (64ch, stage 2): audio on port 2 ─────────────────────────
+    // All of it is used only when portCount == 2 (every pointer stays null and
+    // every number 0 otherwise). See "audio on port 2" further down.
+    // The second DMA buffer pair (og SetupMemoryForSecondPort), allocated at
+    // Start() and programmed into the card only while 64 channels are selected.
+    IOBufferMemoryDescriptor *a2h2Buffer;
+    IOBufferMemoryDescriptor *h2a2Buffer;
+    IODMACommand             *a2h2DMA;
+    IODMACommand             *h2a2DMA;
+    uint64_t                  a2h2PhysAddr;
+    uint64_t                  h2a2PhysAddr;
+    IOMemoryMap              *a2h2DMAMap;
+    IOMemoryMap              *h2a2DMAMap;
+    bool      port2AudioReady;       // the pair above exists and is mapped
+    // 32 or 64. portMode: what the CARD is running; written on xlinkQueue only.
+    // ioChannels: channels per frame of the streams' current format; written in
+    // PerformPortModeChange (IO stopped), read by the IO handler.
+    // requestedPortMode: what the selector last asked for. All three atomic.
+    uint32_t  portMode;
+    uint32_t  ioChannels;
+    uint32_t  requestedPortMode;
+    uint32_t  port2AudioFlags;       // atomic; outcome + reason bits of kSymphonyPort2Audio*
+    uint32_t  port2ModeChanges;      // 32<->64 changes of the card since Start()
+    uint32_t  port2PhaseWord;        // kSymphonyPort2Phase*, the last alignment
+    SymphonyPortSourceControl *portSourceControl[2];   // [0] input, [1] output
+    uint32_t  portSelectorShown;     // kSymphonyPortSource* both selectors show now
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -2341,7 +2369,8 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
     ivars->port2RateHz      = 0;   // the probe sends the rate but does not verify it
     ivars->port2ProbeCount++;
     __atomic_store_n(&ivars->port2Flags, flags, __ATOMIC_RELEASE);
-    STLOG("Port 2 probe: done — %u unit(s) answered, flags=0x%x (probe #%u). Port 2 carries no audio in this build.",
+    STLOG("Port 2 probe: done — %u unit(s) answered, flags=0x%x (probe #%u). Port 2 carries audio "
+          "only while \"" kSymphonyPortSourceName64 "\" is selected.",
           unitCount, flags, ivars->port2ProbeCount);
 }
 
@@ -2349,9 +2378,16 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
 // tick has just read, so this costs no extra bus access unless port 2's clock
 // has appeared or gone since the last probe. A chain powered on after the Mac
 // is found here; one that goes away is reported as gone.
-static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
+static void Port2AudioFallBack(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
+                               uint32_t reason, bool touchHardware);
+
+static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
+                            uint32_t clk)
 {
     if ((clk & kXLinkClockEnable2) == 0) {
+        // Stage 2: the card's registers are gone, and its DMA with them. Record
+        // that 64 is no longer running; no register is written for it here.
+        Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonCardReset, false);
         // The card lost its registers (a D3 power cycle across sleep) and the
         // port-1 re-initialization has not run, which it only does while port 1
         // has a unit. Switch port 2 back on; the next tick looks at its clock.
@@ -2377,6 +2413,8 @@ static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
         ProbeSecondPort(ivars, rate, "port 2 clock appeared");
     } else {
         STLOG("Port 2: unit clock gone (XLinkClocking=0x%08x) — port 2 reported empty", clk);
+        // Stage 2: if both ports were running, go back to port 1 alone now.
+        Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonClockGone, true);
         ivars->port2Clocking  = clk;
         ivars->port2UnitCount = 0;
         ivars->port2RateHz    = 0;
@@ -2515,6 +2553,395 @@ static void RequestIORestartFromDefaultQueue(SymphonyThunderbridge_IVars *ivars,
         }
         self->release();
     });
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── EXPERIMENT (64ch, stage 2): audio on port 2 ────────────────────────────
+// Runs only when ivars->portCount == 2. The card is in one of two modes:
+//   32: port 1 alone, exactly what the driver has always programmed;
+//   64: both ports, selected with the "Port 1-2: 64ch" data source.
+// What the original did for the second port (og_source/symphonymk1/ext/
+// Symphony64/Driver):
+//   Symphony64Card::SetupMemoryForSecondPort (:1638) a second DMA buffer pair;
+//   cmdSetBuffers (:1358) A2H2/H2A2 BUF_SIZE in words and HBA, or zero when the
+//     second port is off;
+//   setNumDMAChannels (:1818-1920) mute, StopDMA, 100 ms, the 32-channel size
+//     bits in GCSR and GCSR2, the bus's routing entries, StartDMA, unmute;
+//   StartDMA (:1517-1590) trigger-selects and then enables to GCSR2 BEFORE GCSR
+//     ("hardware requires second port to be enabled before the first");
+//   Sym64Routing::init (Sym64Routing.cpp:300) input n <- XLINK_RX n, output n <-
+//     PCI_OUT n (slot 64+n), n = 0..63: port 2 is entries 32..63;
+//   XLink::EnableDeviceRouting (XLink.cpp:1863) UNMUTE to each unit of the bus;
+//   XLink::SetSampleRate (XLink.cpp:1079-1150) the phase alignment;
+//   EnableInterruptsInHardware (:410) only the port-1 A2H wrap interrupt,
+//     with one port or two.
+// Everything here runs on xlinkQueue unless it says otherwise, and none of it
+// calls into AudioDriverKit (the configuration-change path waits on this queue).
+// ══════════════════════════════════════════════════════════════════════════
+
+static constexpr uint64_t kSymphonyConfigChangePortMode = 0x504F5254ULL;   // 'PORT'
+static constexpr uint8_t  kXLinkCmdWclkPhase   = 0x09;   // XLINK_CMD_WCLK_PHASE
+static constexpr uint32_t kJamActive           = 0x00000100;   // SAMPLE_PHASE_JAM_ACTIVE
+static constexpr uint8_t  kJamNoAdjustment     = 0xFF;   // JAM_NO_PHASE_ADJUSTMENT
+static constexpr uint8_t  kDefaultPhaseOffset  = 5;      // DEFAULT_PHASE_OFFSET (SymphonyDrivers.h:61)
+static constexpr uint8_t  kPhaseWindow         = 0x30;   // og: "working region of 0x0 < phase < 0x30"
+static constexpr uint32_t kPort2FirstChannel   = kMaxChannelsPerPort;   // routing entries 32..63
+
+// Record how the last request for 64 ended (or that the driver dropped it).
+// outcome is 0, kSymphonyPort2AudioRefused or kSymphonyPort2AudioFellBack.
+static void Port2AudioNote(SymphonyThunderbridge_IVars *ivars, uint32_t outcome, uint32_t reason)
+{
+    uint32_t f = __atomic_load_n(&ivars->port2AudioFlags, __ATOMIC_ACQUIRE);
+    f &= ~(kSymphonyPort2AudioRefused | kSymphonyPort2AudioFellBack | kSymphonyPort2AudioReasonMask);
+    f |= outcome | ((reason << kSymphonyPort2AudioReasonShift) & kSymphonyPort2AudioReasonMask);
+    __atomic_store_n(&ivars->port2AudioFlags, f, __ATOMIC_RELEASE);
+}
+
+static void Port2SetCardMode(SymphonyThunderbridge_IVars *ivars, uint32_t mode)
+{
+    if (__atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != mode) ivars->port2ModeChanges++;
+    __atomic_store_n(&ivars->portMode, mode, __ATOMIC_RELEASE);
+}
+
+// Mute, then stop the DMA engines of both ports (og MuteOutputs + StopDMA, then
+// the 100 ms setNumDMAChannels waits). GCSR is written as the rate change
+// writes it; GCSR2 loses its four DMA bits and keeps the 32-channel size.
+// Returns whether port 1's engine was running when this was called. It is not
+// after a failed rate change (StartDevice leaves the card stopped and muted
+// until the next start sorts the clock out), and then nothing here may start it.
+static bool Port2StopBothEngines(IOPCIDevice *dev, uint8_t mi)
+{
+    ModifyRegister(dev, mi, kRegClkCtrl,
+                   0, kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute);
+    uint32_t gcsr = 0;
+    ReadRegister(dev, mi, kRegGCSR, &gcsr);
+    const bool wasRunning = (gcsr & (kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable)) != 0;
+    gcsr = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
+    gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
+              kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
+              kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+    ModifyRegister(dev, mi, kRegGCSR2, kGCSR2_DMAOutSize32 | kGCSR2_DMAInSize32,
+                   kGCSR2_DMAEnableMask | kGCSR2_DMAMask);
+    IOSleep(100);
+    return wasRunning;
+}
+
+// Start port 1's engine alone and unmute: the same writes, in the same order,
+// as the rate change's restart (StartDevice steps 5-7).
+static void Port2StartPort1Engine(SymphonyThunderbridge_IVars *ivars)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    WriteRegister(dev, mi, kRegIntStatus, 0xFFFFFFFF);
+    uint32_t gcsr = 0;
+    ReadRegister(dev, mi, kRegGCSR, &gcsr);
+    gcsr = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
+    gcsr |= kGCSR_OnlyMasterDMA;
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+    gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
+              kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
+              kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+    gcsr |= kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect;
+    if (ivars->meterDMAActive) gcsr |= kGCSR_MeterTrigSelect;
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+    gcsr |= kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
+    if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+    IOSleep(10);
+    ModifyRegister(dev, mi, kRegClkCtrl,
+                   kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+}
+
+// Start both engines in the original's order and unmute. Each step goes to
+// GCSR2 (port 2) before GCSR (port 1), as og StartDMA :1564-1590 requires. The
+// caller has cleared the interrupt status.
+static void Port2StartBothEngines(SymphonyThunderbridge_IVars *ivars)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    uint32_t gcsr = 0, gcsr2 = 0;
+    ReadRegister(dev, mi, kRegGCSR, &gcsr);
+    ReadRegister(dev, mi, kRegGCSR2, &gcsr2);
+    gcsr  = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
+    gcsr2 = (gcsr2 & ~kGCSR2_DMAMask) | (kGCSR2_DMAOutSize32 | kGCSR2_DMAInSize32);
+    gcsr |= kGCSR_OnlyMasterDMA;   // one card (og m_fOnlyCardEnabled), however many ports
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+
+    // Everything off first: the engines start on a rising edge (og :1537-1539).
+    gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
+              kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
+              kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
+    gcsr2 &= ~kGCSR2_DMAEnableMask;
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+    WriteRegister(dev, mi, kRegGCSR2, gcsr2);
+
+    // Trigger-selects, port 2 first.
+    gcsr2 |= kGCSR2_A2HTrigSelect | kGCSR2_H2ATrigSelect;
+    gcsr  |= kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect;
+    if (ivars->meterDMAActive) gcsr |= kGCSR_MeterTrigSelect;
+    WriteRegister(dev, mi, kRegGCSR2, gcsr2);
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+
+    // Enables, port 2 first.
+    gcsr2 |= kGCSR2_A2HDMAEnable | kGCSR2_H2ADMAEnable;
+    gcsr  |= kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
+    if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
+    WriteRegister(dev, mi, kRegGCSR2, gcsr2);
+    WriteRegister(dev, mi, kRegGCSR, gcsr);
+    STLOG("Port 2 audio: both DMA engines started (GCSR2=0x%08x, then GCSR=0x%08x)", gcsr2, gcsr);
+
+    IOSleep(10);
+    ModifyRegister(dev, mi, kRegClkCtrl,
+                   kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+}
+
+// Port 2's routing entries (32..63): input n <- XLink RX slot n, output n <-
+// PCI OUT slot 64+n, with or without the enable bit (og Sym64Routing::init and
+// DisableXLinkPortChannels). Whole values are written, not read-modify-write.
+static void Port2ProgramRouting(IOPCIDevice *dev, uint8_t mi, bool enable)
+{
+    const uint32_t en = enable ? kRoutingEnable : 0;
+    for (uint32_t n = kPort2FirstChannel; n < kPort2FirstChannel + kMaxChannelsPerPort; n++) {
+        WriteRegister(dev, mi, kRegInputRouting + n * 4, (kTDM_XLinkRX0 + n) | en);
+        WriteRegister(dev, mi, kRegOutputRouting + n * 4, (kTDM_PCIOut0 + n) | en);
+    }
+}
+
+// The four port-2 DMA buffer registers (og cmdSetBuffers). on: sizes in words
+// and the device-visible addresses, then both addresses are read back; returns
+// false if the card did not keep them. off: zero, as the driver has always
+// written them.
+static bool Port2ProgramBuffers(SymphonyThunderbridge_IVars *ivars, bool on)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    const uint32_t words = on ? (uint32_t)(kDMABufferSize / (kAudioBitDepth / 8)) : 0;
+    const uint32_t a2h = on ? (uint32_t)ivars->a2h2PhysAddr : 0;
+    const uint32_t h2a = on ? (uint32_t)ivars->h2a2PhysAddr : 0;
+    WriteRegister(dev, mi, kRegA2H2BUFSIZE, words);
+    WriteRegister(dev, mi, kRegH2A2BUFSIZE, words);
+    WriteRegister(dev, mi, kRegA2H2HBA, a2h);
+    WriteRegister(dev, mi, kRegH2A2HBA, h2a);
+    if (!on) return true;
+    uint32_t ra = 0, rh = 0;
+    ReadRegister(dev, mi, kRegA2H2HBA, &ra);
+    ReadRegister(dev, mi, kRegH2A2HBA, &rh);
+    if (ra != a2h || rh != h2a) {
+        STERR("Port 2 audio: buffer address readback mismatch (A2H2 0x%08x want 0x%08x, "
+              "H2A2 0x%08x want 0x%08x)", ra, a2h, rh, h2a);
+        return false;
+    }
+    return true;
+}
+
+// Phase alignment (og XLink::SetSampleRate :1079-1150). For every unit that is
+// not a Symphony I/O, on port 1 and then port 2, read its word-clock phase
+// (XLINK_CMD_WCLK_PHASE, one byte). Keep the first, and replace it whenever a
+// later unit is more than 0x30 away. Then jam the card's sample count with
+// (that phase - 5), using 0 instead of 0xFF when a unit reported phase 0
+// (SampleClock::ShiftPhase). One jam for both ports; with only Symphony units
+// nothing is read and the jam is 0 - 5 = 0xFB, as the original wrote.
+// A unit that does not answer, or a jam still in progress, means nothing is
+// written; that is recorded and (unlike the original) does not fail the caller.
+// Called with the card muted and both engines stopped.
+static void AlignXLinkPhase(SymphonyThunderbridge_IVars *ivars)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    uint8_t  base = 0;
+    bool     first = true, zeroPhase = false, failed = false;
+    uint32_t measured = 0;
+
+    // Port 1: only a chain of the older converters is measured. unitProbeWord is
+    // 0 for a Symphony I/O (Sym2Sym), which the original skipped.
+    uint8_t port1Units = 0;
+    const uint32_t probe = ivars->unitProbeWord;
+    if ((probe & kUnitProbeInquireOK) && ((probe & 0xFF) >> 4) != 0) {
+        port1Units = 1;
+        for (uint8_t addr = 2; addr <= kXLinkMaxDevices; addr++)
+            if ((probe >> (16 + 4 * (addr - 2))) & 0xF) port1Units = addr; else break;
+    }
+    for (int port = 1; port <= 2 && !failed; port++) {
+        const uint64_t tx = port == 1 ? kRegXLink1TX : kRegXLink2TX;
+        const uint64_t rx = port == 1 ? kRegXLink1RX : kRegXLink2RX;
+        const uint32_t count = port == 1 ? port1Units : ivars->port2UnitCount;
+        for (uint8_t addr = 1; addr <= count && addr <= kXLinkMaxDevices; addr++) {
+            if (port == 2) {
+                const uint32_t word = ivars->port2Unit[addr - 1];
+                if (!(word & kSymphonyPort2UnitAddressed)) continue;
+                const uint8_t groups = (uint8_t)(((word >> 8) & 0xF0) | ((word & 0xF0) >> 4));
+                if (groups == 0xFF) continue;   // DEVICE_ROUTING_SYM2SYM: a Symphony I/O
+            }
+            uint8_t phase = 0;
+            if (!XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhase, &phase)) {
+                STERR("Phase alignment: port %d unit %u did not answer the phase query", port, addr);
+                failed = true;
+                break;
+            }
+            measured++;
+            if (phase == 0) zeroPhase = true;
+            if (first || (uint8_t)(phase - base) > kPhaseWindow) {
+                first = false;
+                base = phase;
+            }
+            STLOG("Phase alignment: port %d unit %u phase 0x%02x (base 0x%02x)", port, addr, phase, base);
+        }
+    }
+
+    uint32_t flags = __atomic_load_n(&ivars->port2AudioFlags, __ATOMIC_ACQUIRE);
+    flags &= ~(kSymphonyPort2AudioPhaseAligned | kSymphonyPort2AudioPhaseFailed);
+    uint8_t jam = 0;
+    if (!failed) {
+        jam = (uint8_t)(base - kDefaultPhaseOffset);
+        if (zeroPhase && jam == kJamNoAdjustment) jam = 0;
+        uint32_t busy = 0;
+        ReadRegister(dev, mi, kRegJam, &busy);
+        if (busy & kJamActive) {
+            STERR("Phase alignment: a jam is still in progress (0x%08x) — not written", busy);
+            failed = true;
+        } else {
+            WriteRegister(dev, mi, kRegJam, jam);
+            STLOG("Phase alignment: %u unit(s) measured, base 0x%02x, jam 0x%02x written", measured, base, jam);
+        }
+    }
+    flags |= failed ? kSymphonyPort2AudioPhaseFailed : kSymphonyPort2AudioPhaseAligned;
+    __atomic_store_n(&ivars->port2AudioFlags, flags, __ATOMIC_RELEASE);
+    ivars->port2PhaseWord = kSymphonyPort2PhaseValid | (failed ? 0u : jam)
+        | ((measured & 0xFF) << kSymphonyPort2PhaseUnitsShift)
+        | ((uint32_t)base << kSymphonyPort2PhaseBaseShift);
+}
+
+// 32 -> 64. The caller has passed XLinkTxAdmissible; Core Audio has stopped IO.
+// Returns true with both ports running, false with port 1 running alone as
+// before and the reason recorded.
+static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    if (!ivars->port2AudioReady) {
+        Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonNoBuffers);
+        STERR("Port 2 audio: refused — the port-2 DMA buffers do not exist");
+        return false;
+    }
+    if (!Port2TakesRateChanges(ivars)) {
+        Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonNoUnit);
+        STLOG("Port 2 audio: refused — no unit with its data link up on port 2");
+        return false;
+    }
+    const double rate = ivars->xlinkRate > 0.0 ? ivars->xlinkRate : 44100.0;
+    const uint8_t rateCode = SampleRateToXLinkCode(rate);
+    STLOG("Port 2 audio: enabling at %.0f Hz (%u unit(s) on port 2)", rate, ivars->port2UnitCount);
+
+    if (!Port2StopBothEngines(dev, mi)) {
+        // The card was stopped and muted (a failed rate change). It stays so.
+        Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
+        STERR("Port 2 audio: refused — the card's DMA was stopped (failed rate change); left stopped");
+        return false;
+    }
+
+    // Port 2 must be at the rate port 1 runs at, and locked, before it carries
+    // audio: the per-bus part of the original's SetSampleRate.
+    Port2RateChange p2;
+    p2.ivars = ivars;
+    {
+        uint32_t clk = 0;
+        ReadRegister(dev, mi, kRegXLinkClocking, &clk);
+        p2.clock = (clk & kXLinkRX2ClockDetect) != 0 && (clk & kXLinkSR2Mask) != 0;
+    }
+    if (p2.clock && rateCode != 0xFF) Port2RateAfter(dev, mi, rate, rateCode, &p2);
+    ivars->port2RateHz = p2.ok ? (uint32_t)(rate + 0.5) : 0;
+    if (!p2.ok) {
+        Port2StartPort1Engine(ivars);
+        Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonRateNotLocked);
+        STERR("Port 2 audio: refused — port 2 did not lock at %.0f Hz; port 1 restarted alone", rate);
+        return false;
+    }
+
+    AlignXLinkPhase(ivars);
+
+    ivars->a2h2DMA->PerformOperation(
+        kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+    ivars->h2a2DMA->PerformOperation(
+        kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+    if (!Port2ProgramBuffers(ivars, true)) {
+        Port2ProgramBuffers(ivars, false);
+        Port2StartPort1Engine(ivars);
+        Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonRegisters);
+        return false;
+    }
+    Port2ProgramRouting(dev, mi, true);
+    // The units on port 2 were never unmuted in stage 1 (og EnableDeviceRouting).
+    for (uint8_t addr = 1; addr <= ivars->port2UnitCount && addr <= kXLinkMaxDevices; addr++) {
+        if (!(ivars->port2Unit[addr - 1] & kSymphonyPort2UnitAddressed)) continue;
+        if (!SendXLinkCommandOn(dev, mi, kRegXLink2TX, addr, kXLinkCmdUnmute, 0x80))
+            STERR("Port 2 audio: UNMUTE to port 2 unit %u timed out", addr);
+    }
+
+    WriteRegister(dev, mi, kRegIntStatus, 0xFFFFFFFF);
+    Port2StartBothEngines(ivars);
+    Port2SetCardMode(ivars, 64);
+    Port2AudioNote(ivars, 0, kSymphonyPort2ReasonNone);
+    STLOG("Port 2 audio: ON — channels 33-64 are port 2");
+    return true;
+}
+
+// 64 -> 32: port 2's engine off, its routing entries disabled, its buffer
+// registers back to zero, port 1 restarted alone (if it was running). Sends nothing on port 2 (its
+// units may be gone). outcome/reason as Port2AudioNote.
+static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outcome, uint32_t reason)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    const bool wasRunning = Port2StopBothEngines(dev, mi);
+    Port2ProgramRouting(dev, mi, false);
+    Port2ProgramBuffers(ivars, false);
+    if (wasRunning) Port2StartPort1Engine(ivars);   // else: stopped and muted stays stopped and muted
+    Port2SetCardMode(ivars, 32);
+    Port2AudioNote(ivars, outcome, reason);
+    STLOG("Port 2 audio: OFF (reason %u) — port 1 %s", reason,
+          wasRunning ? "running alone" : "left stopped (it was stopped)");
+}
+
+// Ask Core Audio for the configuration change in which the streams and the
+// selectors are brought in line with the card. From any queue: the request is
+// made on the default queue, never on xlinkQueue.
+static void RequestPortModeConfigChange(SymphonyThunderbridge_IVars *ivars,
+                                        SymphonyThunderbridge *self, const char *why)
+{
+    if (!ivars || !ivars->defaultQueue || !self) return;
+    self->retain();
+    ivars->defaultQueue->DispatchAsync(^{
+        if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) && ivars->audioDevice) {
+            kern_return_t rc = ivars->audioDevice->RequestDeviceConfigurationChange(
+                kSymphonyConfigChangePortMode, nullptr);
+            STLOG("Port selection: requested Core Audio configuration change (%s, 0x%x)", why, rc);
+        }
+        self->release();
+    });
+}
+
+// The driver itself leaves 64 (port 2's clock went, the card was reset, port 2
+// did not follow a rate change). On xlinkQueue. With touchHardware the card is
+// put back to port 1 alone here and now; without, only the bookkeeping changes
+// (the caller has already left the card with port 2 off). Either way Core Audio
+// is asked for a configuration change so the streams return to 32 channels.
+// Does nothing unless 64 is running.
+static void Port2AudioFallBack(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
+                               uint32_t reason, bool touchHardware)
+{
+    if (ivars->portCount != 2 ||
+        __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != 64) return;
+    if (touchHardware) {
+        DisablePort2Audio(ivars, kSymphonyPort2AudioFellBack, reason);
+    } else {
+        Port2SetCardMode(ivars, 32);
+        Port2AudioNote(ivars, kSymphonyPort2AudioFellBack, reason);
+    }
+    __atomic_store_n(&ivars->requestedPortMode, 32u, __ATOMIC_RELEASE);
+    STERR("Port 2 audio: fell back to port 1 alone (reason %u)", reason);
+    RequestPortModeConfigChange(ivars, self, "fell back to 32 channels");
 }
 
 static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev, uint8_t mi,
@@ -2670,6 +3097,10 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         if (CardLostConfiguration(ivars, &gcsr)) {
             ReprogramCardAfterReset(ivars, gcsr);
             cardReprogrammed = true;
+            // Two-port experiment, stage 2: the re-programming above is port 1
+            // alone (port-2 buffer registers zero, port-2 DMA off). If 64 was
+            // running, record that it no longer is and have the streams follow.
+            Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonCardReset, false);
         }
     }
     // Re-enumerate at the rate the units last ran at so Core Audio's
@@ -2866,7 +3297,7 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
             break;
         }
         ivars->lastWatchClockReg = clk;
-        if (ivars->portCount == 2) WatchSecondPort(ivars, clk);   // two-port experiment only
+        if (ivars->portCount == 2) WatchSecondPort(ivars, this, clk);   // two-port experiment only
         bool present = (clk & kXLinkRX1ClockDetect) != 0;   // SR bits are advisory (settle ~700 ms after a rate change)
         if (present && !ivars->linkClockPresent) {
             // Debounce the up edge the way the recovery's own check does.
@@ -2959,6 +3390,11 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
         }
         __atomic_store_n(&ivars->linkState, kLinkStateUp, __ATOMIC_RELEASE);
         next = wrapsFlowing ? kLinkWatchStreamNs : kLinkWatchIdleNs;
+        // Two-port experiment, 64 channels running: keep the fast interval so a
+        // port-2 chain that goes away is noticed within about two seconds.
+        if (ivars->portCount == 2 &&
+            __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64)
+            next = kLinkWatchFastNs;
     } while (false);
     ArmLinkWatch(ivars, next);
 }
@@ -3008,7 +3444,181 @@ kern_return_t SymphonyThunderbridge::ReadPort2State(uint32_t *outWords)
     outWords[11] = ivars->port2ProbeCount;
     outWords[12] = ivars->port2RateHz;
     outWords[13] = ivars->port2RateChanges;
+    if (ivars->portCount == 2) {   // stage 2; both words stay 0 in a one-port build
+        uint32_t audio = __atomic_load_n(&ivars->port2AudioFlags, __ATOMIC_ACQUIRE);
+        if (ivars->port2AudioReady) audio |= kSymphonyPort2AudioCapable;
+        if (__atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64) audio |= kSymphonyPort2AudioActive;
+        if (__atomic_load_n(&ivars->ioChannels, __ATOMIC_ACQUIRE) == 64) audio |= kSymphonyPort2AudioPublished64;
+        audio |= (ivars->port2ModeChanges & 0xFFFFu) << kSymphonyPort2AudioChangesShift;
+        outWords[14] = audio;
+        outWords[15] = ivars->port2PhaseWord;
+    }
     return kIOReturnSuccess;
+}
+
+// ── Port selection (EXPERIMENT, 64ch stage 2; two-port builds only) ──────────
+
+// The 32- or 64-channel stream formats, one per supported rate, and the index
+// of `rate` among them.
+static uint32_t BuildStreamFormats(uint32_t channels, double rate,
+                                   IOUserAudioStreamBasicDescription formats[6])
+{
+    static const double rates[6] = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+    uint32_t current = 0;
+    for (uint32_t i = 0; i < 6; i++) {
+        IOUserAudioStreamBasicDescription f = {};
+        f.mSampleRate       = rates[i];
+        f.mFormatID         = IOUserAudioFormatID::LinearPCM;
+        f.mFormatFlags      = (IOUserAudioFormatFlags)(0x4 | 0x8);   // SInt32 packed LE, as Start()
+        f.mBytesPerPacket   = channels * (kAudioBitDepth / 8);
+        f.mFramesPerPacket  = 1;
+        f.mBytesPerFrame    = channels * (kAudioBitDepth / 8);
+        f.mChannelsPerFrame = channels;
+        f.mBitsPerChannel   = kAudioBitDepth;
+        f.mReserved         = 0;
+        formats[i] = f;
+        if (rates[i] == rate) current = i;
+    }
+    return current;
+}
+
+// The selector's new value. Called by SymphonyPortSourceControl on the
+// control's work queue. Touches no hardware: it records the request, shows it
+// on both selectors (the original set the opposite one too,
+// Symphony64AudioEngine.cpp:256-300) and asks for a configuration change.
+kern_return_t SymphonyThunderbridge::RequestPortMode(uint32_t selectorValue)
+{
+    if (!ivars || ivars->portCount != 2) return kIOReturnUnsupported;
+    if (selectorValue != kSymphonyPortSourcePort1 && selectorValue != kSymphonyPortSourcePorts1And2)
+        return kIOReturnBadArgument;
+    const uint32_t want = selectorValue == kSymphonyPortSourcePorts1And2 ? 64u : 32u;
+    __atomic_store_n(&ivars->requestedPortMode, want, __ATOMIC_RELEASE);
+    IOUserAudioSelectorValue value = selectorValue;
+    for (uint32_t i = 0; i < 2; i++)
+        if (ivars->portSourceControl[i]) ivars->portSourceControl[i]->SetCurrentSelectedValues(&value, 1);
+    ivars->portSelectorShown = selectorValue;
+    // Already there (the same entry picked again, or Core Audio restoring the
+    // saved selection at start-up): no configuration change, so no IO restart.
+    if (__atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == want &&
+        __atomic_load_n(&ivars->ioChannels, __ATOMIC_ACQUIRE) == want)
+        return kIOReturnSuccess;
+    STLOG("Port selection: \"%s\" requested", want == 64 ? kSymphonyPortSourceName64 : kSymphonyPortSourceName32);
+    RequestPortModeConfigChange(ivars, this, "selector");
+    return kIOReturnSuccess;
+}
+
+// Called by SymphonyAudioDevice::PerformDeviceConfigurationChange, with IO
+// stopped by Core Audio, for every configuration change of a two-port build.
+// 1. If the selector asked for a mode the card is not in, switch the card. That
+//    runs on xlinkQueue (DispatchSync, the hop StartDevice's rate change makes
+//    from this same path); nothing on that queue waits for this thread.
+// 2. On this thread, give the streams the formats of the mode the card ended up
+//    in and set both selectors to it. A refused request therefore shows as
+//    "Port 1: 32ch" again, and a fallback the driver made on its own is
+//    published here too.
+kern_return_t SymphonyThunderbridge::PerformPortModeChange()
+{
+    if (!ivars || ivars->portCount != 2) return kIOReturnSuccess;
+    const uint32_t want = __atomic_load_n(&ivars->requestedPortMode, __ATOMIC_ACQUIRE);
+    __block uint32_t card = __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE);
+    IODispatchQueue *queue = ivars->xlinkQueue;
+    if (queue && want != card) {
+        queue->DispatchSync(^{
+            card = __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE);
+            if (want == card) return;
+            if (!XLinkTxAdmissible(ivars)) {
+                if (want == 64)
+                    Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
+                STERR("Port selection: card not reachable (stopping or powered down) — staying at %u", card);
+                return;
+            }
+            if (want == 64) {
+                if (EnablePort2Audio(ivars)) card = 64;
+            } else {
+                DisablePort2Audio(ivars, 0, kSymphonyPort2ReasonNone);
+                card = 32;
+            }
+        });
+    }
+    // Whatever was asked for, the card's mode is now the selection.
+    __atomic_store_n(&ivars->requestedPortMode, card, __ATOMIC_RELEASE);
+
+    if (__atomic_load_n(&ivars->ioChannels, __ATOMIC_ACQUIRE) != card &&
+        ivars->audioDevice && ivars->inputStream && ivars->outputStream) {
+        IOUserAudioStreamBasicDescription formats[6];
+        const uint32_t current = BuildStreamFormats(card, ivars->audioDevice->GetSampleRate(), formats);
+        ivars->inputStream->SetAvailableStreamFormats(formats, 6);
+        ivars->inputStream->SetCurrentStreamFormat(&formats[current]);
+        ivars->outputStream->SetAvailableStreamFormats(formats, 6);
+        ivars->outputStream->SetCurrentStreamFormat(&formats[current]);
+        __atomic_store_n(&ivars->ioChannels, card, __ATOMIC_RELEASE);
+        STLOG("Port selection: streams are now %u channels in and out", card);
+    }
+    IOUserAudioSelectorValue value = card == 64 ? kSymphonyPortSourcePorts1And2 : kSymphonyPortSourcePort1;
+    if (ivars->portSelectorShown != value) {
+        for (uint32_t i = 0; i < 2; i++)
+            if (ivars->portSourceControl[i]) ivars->portSourceControl[i]->SetCurrentSelectedValues(&value, 1);
+        ivars->portSelectorShown = value;
+    }
+    return kIOReturnSuccess;
+}
+
+// The IO handler of a two-port build (the one-port handler in Start() is left
+// as it is). With 32 channels it does the one-port copy. With 64 the stream
+// buffers hold 64-channel frames: channels 1-32 of each frame belong to port
+// 1's DMA buffer and channels 33-64 to port 2's, at the same frame position.
+// Real-time: no logging, no allocation, one atomic load.
+static kern_return_t InstallTwoPortIOHandler(SymphonyThunderbridge_IVars *ivars)
+{
+    uint8_t *a2h1 = (uint8_t *)ivars->a2hDMAMap->GetAddress();
+    uint8_t *h2a1 = (uint8_t *)ivars->h2aDMAMap->GetAddress();
+    uint8_t *a2h2 = ivars->port2AudioReady ? (uint8_t *)ivars->a2h2DMAMap->GetAddress() : nullptr;
+    uint8_t *h2a2 = ivars->port2AudioReady ? (uint8_t *)ivars->h2a2DMAMap->GetAddress() : nullptr;
+    uint8_t *inStream  = (uint8_t *)ivars->a2hStreamMap->GetAddress();
+    uint8_t *outStream = (uint8_t *)ivars->h2aStreamMap->GetAddress();
+    constexpr uint32_t kPortBytes = kMaxChannelsPerPort * (kAudioBitDepth / 8);   // 128 per frame per port
+
+    return ivars->audioDevice->SetIOOperationHandler(
+        ^kern_return_t(IOUserAudioObjectID in_device,
+                       IOUserAudioIOOperation in_io_operation,
+                       uint32_t in_io_buffer_frame_size,
+                       uint64_t in_sample_time,
+                       uint64_t in_host_time) {
+            const bool write = in_io_operation == IOUserAudioIOOperationWriteEnd;
+            if (!write && in_io_operation != IOUserAudioIOOperationBeginRead)
+                return kIOReturnSuccess;
+            const bool both = a2h2 && h2a2 &&
+                              __atomic_load_n(&ivars->ioChannels, __ATOMIC_RELAXED) == 64;
+            const uint32_t streamFrameBytes = both ? 2 * kPortBytes : kPortBytes;
+            uint32_t frame = (uint32_t)(in_sample_time % kNumSampleFrames);
+            uint32_t frames = in_io_buffer_frame_size;
+            if (frames > kNumSampleFrames) frames = kNumSampleFrames;
+            while (frames) {
+                // One run up to the end of the ring, then the rest from frame 0.
+                const uint32_t run = (frame + frames <= kNumSampleFrames) ? frames
+                                                                         : kNumSampleFrames - frame;
+                if (!both) {
+                    const size_t off = (size_t)frame * kPortBytes;
+                    if (write) memcpy(h2a1 + off, outStream + off, (size_t)run * kPortBytes);
+                    else       memcpy(inStream + off, a2h1 + off, (size_t)run * kPortBytes);
+                } else {
+                    for (uint32_t n = 0; n < run; n++) {
+                        const size_t dma = (size_t)(frame + n) * kPortBytes;
+                        uint8_t *s = (write ? outStream : inStream) + (size_t)(frame + n) * streamFrameBytes;
+                        if (write) {
+                            memcpy(h2a1 + dma, s, kPortBytes);
+                            memcpy(h2a2 + dma, s + kPortBytes, kPortBytes);
+                        } else {
+                            memcpy(s, a2h1 + dma, kPortBytes);
+                            memcpy(s + kPortBytes, a2h2 + dma, kPortBytes);
+                        }
+                    }
+                }
+                frames -= run;
+                frame = 0;
+            }
+            return kIOReturnSuccess;
+        });
 }
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -3052,6 +3662,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     kern_return_t ret;
     // Must be declared before the lifecycle error-path gotos below.
     const uint32_t initialFrameSize = FPGAFrameSizeForRate(44100.0);
+    // Size of each Core Audio stream buffer. Doubled further down for a two-port
+    // build (EXPERIMENT, 64ch stage 2); otherwise exactly kDMABufferSize.
+    uint64_t streamBufferBytes = kDMABufferSize;
     // Restored monitor state is read during XLink setup and reused when the
     // AudioDriverKit controls are created later in Start(). Keep these outside
     // the setup scope so the HAL controls start on the same target and value.
@@ -3074,9 +3687,11 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // EXPERIMENT (64ch, stage 1). Read once; 1 unless the personality says 2.
     // Touches no hardware. See the "second XLink port" section above.
     ivars->portCount = ReadPortCountProperty(this);
+    if (ivars->portCount == 2) streamBufferBytes = 2 * kDMABufferSize;
     if (ivars->portCount == 2)
         STLOG("EXPERIMENT: SymphonyPortCount=2 — XLink port 2 will be enabled and identified. "
-              "Port 2 carries NO audio in this build (32 channels, port 1 only).");
+              "The device starts with 32 channels (port 1); port 2 carries audio once "
+              "\"" kSymphonyPortSourceName64 "\" is selected.");
 
     // ── 1. Get the PCIe device provider ─────────────────────────────────────
 
@@ -3581,21 +4196,24 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // process and may not be able to map DMA-wired buffers. Using separate
     // non-DMA buffers for CoreAudio and copying in the IOOpHandler solves this.
 
+    // EXPERIMENT (64ch, stage 2): a two-port build's streams can be switched to
+    // 64-channel frames, so their buffers hold 8192 of those. One port: the
+    // size is kDMABufferSize, exactly as before.
     ret = IOBufferMemoryDescriptor::Create(
-        kIOMemoryDirectionInOut, kDMABufferSize, 0, &ivars->a2hStreamBuffer);
+        kIOMemoryDirectionInOut, streamBufferBytes, 0, &ivars->a2hStreamBuffer);
     if (ret != kIOReturnSuccess || !ivars->a2hStreamBuffer) {
         STERR("DMA: A2H stream buffer alloc failed: 0x%x", ret);
         goto start_failure;
     }
-    ivars->a2hStreamBuffer->SetLength(kDMABufferSize);
+    ivars->a2hStreamBuffer->SetLength(streamBufferBytes);
 
     ret = IOBufferMemoryDescriptor::Create(
-        kIOMemoryDirectionInOut, kDMABufferSize, 0, &ivars->h2aStreamBuffer);
+        kIOMemoryDirectionInOut, streamBufferBytes, 0, &ivars->h2aStreamBuffer);
     if (ret != kIOReturnSuccess || !ivars->h2aStreamBuffer) {
         STERR("DMA: H2A stream buffer alloc failed: 0x%x", ret);
         goto start_failure;
     }
-    ivars->h2aStreamBuffer->SetLength(kDMABufferSize);
+    ivars->h2aStreamBuffer->SetLength(streamBufferBytes);
 
     // Map DMA buffers for CPU access with CACHE-INHIBIT mode.
     // ARM64 Apple Silicon: CPU cache is NOT coherent with PCIe device reads/writes.
@@ -3682,6 +4300,42 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         } else {
             STERR("Meter DMA: buffer alloc failed 0x%x — metering off", mret);
         }
+    }
+
+    // ── 24p. EXPERIMENT (64ch, stage 2): the second DMA buffer pair ────────
+    // Two-port builds only (og Symphony64Card::SetupMemoryForSecondPort). The
+    // pair is allocated and mapped here, like port 1's, but the card is not told
+    // about it: step 24 still writes zero to the port-2 buffer registers, and
+    // they are programmed only while "Port 1-2: 64ch" is selected. A failure is
+    // not fatal: the device then offers 64 and refuses it.
+    if (ivars->portCount == 2) {
+        kern_return_t p2 = AllocateDMABuffer(this, ivars->pciDevice, kDMABufferSize,
+                                             kIOMemoryDirectionInOut,
+                                             &ivars->a2h2Buffer, &ivars->a2h2DMA, &ivars->a2h2PhysAddr);
+        if (p2 == kIOReturnSuccess)
+            p2 = AllocateDMABuffer(this, ivars->pciDevice, kDMABufferSize,
+                                   kIOMemoryDirectionInOut,
+                                   &ivars->h2a2Buffer, &ivars->h2a2DMA, &ivars->h2a2PhysAddr);
+        if (p2 == kIOReturnSuccess) {
+            ivars->a2h2DMA->PerformOperation(
+                kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+            ivars->h2a2DMA->PerformOperation(
+                kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+            p2 = ivars->a2h2Buffer->CreateMapping(
+                kIOMemoryMapCacheModeInhibit, 0, 0, 0, 0, &ivars->a2h2DMAMap);
+        }
+        if (p2 == kIOReturnSuccess)
+            p2 = ivars->h2a2Buffer->CreateMapping(
+                kIOMemoryMapCacheModeInhibit, 0, 0, 0, 0, &ivars->h2a2DMAMap);
+        ivars->port2AudioReady = (p2 == kIOReturnSuccess) && ivars->a2h2DMAMap && ivars->h2a2DMAMap;
+        if (ivars->port2AudioReady)
+            STLOG("EXPERIMENT: port-2 DMA buffers ready (A2H2 io=0x%llx, H2A2 io=0x%llx), not yet programmed",
+                  ivars->a2h2PhysAddr, ivars->h2a2PhysAddr);
+        else
+            STERR("EXPERIMENT: port-2 DMA buffers unavailable (0x%x) — 64 channels will be refused", p2);
+        __atomic_store_n(&ivars->portMode, 32u, __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->ioChannels, 32u, __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->requestedPortMode, 32u, __ATOMIC_RELEASE);
     }
 
     // ── 24. Program FPGA DMA registers ──────────────────────────────────
@@ -4485,6 +5139,52 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             STLOG("Audio: MicPre8 phantom+gain controls added (%u channels)",
                   ivars->numMicChannels);
 
+        // ── 36e. EXPERIMENT (64ch, stage 2): the port selector ─────────────
+        // Two-port builds only. The original's input and output data-source
+        // selectors, same two entries in the same order, the first selected
+        // (Symphony64AudioEngine.cpp:38-93; names from SymphonyCommon.h:182).
+        // Audio MIDI Setup shows them as "Source". They sit on the main
+        // element; the optical format selectors above use elements 1 and 2.
+        // macOS also offers a data source in Sound settings and shows its name
+        // there in place of the device's, as it did with the original.
+        if (ivars->portCount == 2) {
+            for (uint32_t i = 0; i < 2; i++) {
+                SymphonyPortSourceControl *pc = OSTypeAlloc(SymphonyPortSourceControl);   // +1
+                if (pc && pc->init(this, /*settable*/true,
+                        IOUserAudioObjectPropertyElementMain,
+                        i == 0 ? IOUserAudioObjectPropertyScope::Input
+                               : IOUserAudioObjectPropertyScope::Output,
+                        IOUserAudioClassID::DataSourceControl)) {
+                    IOUserAudioSelectorValueDescription portValues[2] = {
+                        { kSymphonyPortSourcePort1,
+                          OSSharedPtr<OSString>(OSString::withCString(kSymphonyPortSourceName32), OSNoRetain) },
+                        { kSymphonyPortSourcePorts1And2,
+                          OSSharedPtr<OSString>(OSString::withCString(kSymphonyPortSourceName64), OSNoRetain) },
+                    };
+                    pc->AddControlValueDescriptions(portValues, 2);
+                    IOUserAudioSelectorValue initSel = kSymphonyPortSourcePort1;
+                    pc->SetCurrentSelectedValues(&initSel, 1);
+                    pc->SetDriver(this);
+                    ret = ivars->audioDevice->AddControl(pc);   // framework retains
+                    if (ret == kIOReturnSuccess) {
+                        ivars->portSourceControl[i] = pc;
+                        ivars->portSourceControl[i]->retain();   // tracked ref (balanced in teardown)
+                    } else {
+                        STERR("Audio: AddControl(port selector %u) failed: 0x%x", i, ret);
+                    }
+                } else {
+                    STERR("Audio: SymphonyPortSourceControl alloc/init failed (%u)", i);
+                }
+                OSSafeReleaseNULL(pc);   // drop the OSTypeAlloc +1; ivar ref keeps it alive
+            }
+            // Every configuration change of this device now passes through
+            // PerformPortModeChange (see SymphonyAudioDevice.cpp).
+            if (auto *device = OSDynamicCast(SymphonyAudioDevice, ivars->audioDevice))
+                device->SetPortModeDriver(this);
+            STLOG("EXPERIMENT: port selector published (\"" kSymphonyPortSourceName32 "\" selected, \""
+                  kSymphonyPortSourceName64 "\" available)");
+        }
+
         // ── 37. Set IO operation handler ─────────────────────────────────
         // Copy between CoreAudio stream buffers and FPGA DMA buffers.
         // WriteEnd (playback): CoreAudio wrote to stream buf → copy to DMA buf.
@@ -4493,6 +5193,13 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // Ring buffer layout: kNumSampleFrames frames × kMaxChannelsPerPort channels × 4 bytes
         // The sample_time wraps around the ring buffer via modulo.
 
+        // EXPERIMENT (64ch, stage 2): a two-port build installs its own handler,
+        // which can also split 64-channel frames between the two ports' DMA
+        // buffers. The one-port handler below is unchanged and is the only one a
+        // one-port build ever installs.
+        if (ivars->portCount == 2) {
+            ret = InstallTwoPortIOHandler(ivars);
+        } else
         {
             // Pre-compute mapped addresses for use in the real-time block
             uint8_t *a2hDMABase    = (uint8_t *)ivars->a2hDMAMap->GetAddress();
@@ -5098,6 +5805,15 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
                     STLOG("StartDevice: DMA stopped for rate change (GCSR=0x%08x)", gcsr);
                 }
+                // EXPERIMENT (64ch, stage 2): with both ports running, port 2's
+                // engine stops too (og StopDMA clears GCSR and GCSR2). Never true
+                // in a one-port build.
+                const bool bothPorts = ivars->portCount == 2 &&
+                    __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64;
+                if (bothPorts)
+                    ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2,
+                                   kGCSR2_DMAOutSize32 | kGCSR2_DMAInSize32,
+                                   kGCSR2_DMAEnableMask | kGCSR2_DMAMask);
                 IOSleep(10);  // Let last DMA transfer complete
 
                 // 3. Change sample rate via XLink (full lock/verify/lock sequence).
@@ -5112,6 +5828,18 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                                           port2);
                 if (port2)
                     FinishPort2RateChange(ivars, requestedRate, oldXlinkRate, cmdIssued, port2Rate);
+                // Stage 2: port 1 changed rate but port 2 did not follow while it
+                // was carrying audio. The original failed the whole change; here
+                // port 1 carries on alone. Port 2's engine is already stopped, so
+                // only its routing and buffer registers are put back, and Core
+                // Audio is asked to return the streams to 32 channels.
+                bool restartBothPorts = bothPorts;
+                if (bothPorts && rateOk && !(port2 && port2Rate.ok)) {
+                    Port2ProgramRouting(ivars->pciDevice, ivars->barMemoryIndex, false);
+                    Port2ProgramBuffers(ivars, false);
+                    Port2AudioFallBack(ivars, this, kSymphonyPort2ReasonRateChange, false);
+                    restartBothPorts = false;
+                }
 
                 // If the SetSampleRate command was actually broadcast, the XLink units are
                 // now at requestedRate — record that as the true hardware XLink rate BEFORE
@@ -5205,6 +5933,18 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                     aborted = true;
                     STERR("StartDevice: stop began during rate change — leaving DMA "
                           "stopped + muted for teardown");
+                    return;
+                }
+
+                // EXPERIMENT (64ch, stage 2): both ports were running and both
+                // followed the rate. Align the phase as the original did after
+                // every rate change, then start both engines, port 2 first, and
+                // unmute. Never taken in a one-port build.
+                if (restartBothPorts) {
+                    AlignXLinkPhase(ivars);
+                    Port2StartBothEngines(ivars);
+                    STLOG("StartDevice: both ports restarted and unmuted after rate change to %.0f Hz",
+                          requestedRate);
                     return;
                 }
 
@@ -5377,6 +6117,15 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
             ivars->h2aDMA->PerformOperation(
                 kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
         }
+        // Two-port experiment only (null otherwise): port 2's buffers too.
+        if (ivars->a2h2DMA) {
+            ivars->a2h2DMA->PerformOperation(
+                kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+        }
+        if (ivars->h2a2DMA) {
+            ivars->h2a2DMA->PerformOperation(
+                kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+        }
 
         // ── 4. Wait for FPGA to DMA the zeroed/muted data (legacy: IOSleep(100))
         IOSleep(100);
@@ -5443,8 +6192,17 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                         if (iv->micGainControl[ch]) iv->audioDevice->RemoveControl(iv->micGainControl[ch]);
                     }
                     if (iv->vendorProperty)      iv->audioDevice->RemoveCustomProperty(iv->vendorProperty);
+                    // Two-port experiment only (both null otherwise): the port
+                    // selectors, and the device's pointer back to this driver.
+                    for (uint32_t i = 0; i < 2; i++)
+                        if (iv->portSourceControl[i]) iv->audioDevice->RemoveControl(iv->portSourceControl[i]);
+                    if (iv->portCount == 2)
+                        if (auto *device = OSDynamicCast(SymphonyAudioDevice, iv->audioDevice))
+                            device->SetPortModeDriver(nullptr);
                     self->RemoveObject(iv->audioDevice);
                 }
+                for (uint32_t i = 0; i < 2; i++)
+                    OSSafeReleaseNULL(iv->portSourceControl[i]);
                 OSSafeReleaseNULL(iv->vendorProperty);
                 OSSafeReleaseNULL(iv->outputVolumeControl);
                 OSSafeReleaseNULL(iv->outputMuteControl);
@@ -5496,6 +6254,17 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                     iv->h2aDMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
                     OSSafeReleaseNULL(iv->h2aDMA);
                 }
+                // Two-port experiment only (null otherwise). Port 2's engine was
+                // stopped with port 1's: steps 6 and 10b clear GCSR2's DMA bits.
+                iv->port2AudioReady = false;
+                if (iv->a2h2DMA) {
+                    iv->a2h2DMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
+                    OSSafeReleaseNULL(iv->a2h2DMA);
+                }
+                if (iv->h2a2DMA) {
+                    iv->h2a2DMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
+                    OSSafeReleaseNULL(iv->h2a2DMA);
+                }
                 // Meter DMA: the FPGA writes this buffer every ~100 ms. Stop reads and
                 // free it here (GCSR meter bits already cleared above) so the device can
                 // never write freed memory / DART-fault.
@@ -5515,6 +6284,10 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 OSSafeReleaseNULL(iv->h2aStreamBuffer);
                 OSSafeReleaseNULL(iv->a2hBuffer);
                 OSSafeReleaseNULL(iv->h2aBuffer);
+                OSSafeReleaseNULL(iv->a2h2DMAMap);
+                OSSafeReleaseNULL(iv->h2a2DMAMap);
+                OSSafeReleaseNULL(iv->a2h2Buffer);
+                OSSafeReleaseNULL(iv->h2a2Buffer);
                 OSSafeReleaseNULL(iv->meterMap);
                 OSSafeReleaseNULL(iv->meterBuffer);
 
@@ -5557,8 +6330,16 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 if (ivars->micGainControl[ch]) ivars->audioDevice->RemoveControl(ivars->micGainControl[ch]);
             }
             if (ivars->vendorProperty)      ivars->audioDevice->RemoveCustomProperty(ivars->vendorProperty);
+            // Two-port experiment only (both null otherwise).
+            for (uint32_t i = 0; i < 2; i++)
+                if (ivars->portSourceControl[i]) ivars->audioDevice->RemoveControl(ivars->portSourceControl[i]);
+            if (ivars->portCount == 2)
+                if (auto *device = OSDynamicCast(SymphonyAudioDevice, ivars->audioDevice))
+                    device->SetPortModeDriver(nullptr);
             RemoveObject(ivars->audioDevice);
         }
+        for (uint32_t i = 0; i < 2; i++)
+            OSSafeReleaseNULL(ivars->portSourceControl[i]);
         OSSafeReleaseNULL(ivars->vendorProperty);
         OSSafeReleaseNULL(ivars->outputVolumeControl);
         OSSafeReleaseNULL(ivars->outputMuteControl);
@@ -5596,6 +6377,15 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
             ivars->h2aDMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
             OSSafeReleaseNULL(ivars->h2aDMA);
         }
+        ivars->port2AudioReady = false;   // two-port experiment only (null otherwise)
+        if (ivars->a2h2DMA) {
+            ivars->a2h2DMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
+            OSSafeReleaseNULL(ivars->a2h2DMA);
+        }
+        if (ivars->h2a2DMA) {
+            ivars->h2a2DMA->CompleteDMA(kIODMACommandCompleteDMANoOptions);
+            OSSafeReleaseNULL(ivars->h2a2DMA);
+        }
         ivars->meterDMAActive = false;
         ivars->meterWords = nullptr;
         if (ivars->meterDMA) {
@@ -5610,6 +6400,10 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
         OSSafeReleaseNULL(ivars->h2aStreamBuffer);
         OSSafeReleaseNULL(ivars->a2hBuffer);
         OSSafeReleaseNULL(ivars->h2aBuffer);
+        OSSafeReleaseNULL(ivars->a2h2DMAMap);
+        OSSafeReleaseNULL(ivars->h2a2DMAMap);
+        OSSafeReleaseNULL(ivars->a2h2Buffer);
+        OSSafeReleaseNULL(ivars->h2a2Buffer);
         OSSafeReleaseNULL(ivars->meterMap);
         OSSafeReleaseNULL(ivars->meterBuffer);
         if (ivars->pciDevice) {

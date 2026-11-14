@@ -2,10 +2,39 @@
 
 #include <os/log.h>
 
+#include <DriverKit/IOLib.h>
+
 #include "SymphonyAudioDevice.h"
+#include "SymphonyThunderbridge.h"
 #include "SymphonyTimingProfile.h"
 
 #define ADLOG(fmt, ...) os_log(OS_LOG_DEFAULT, "SymphonyTB-AUDIO: " fmt, ##__VA_ARGS__)
+
+// EXPERIMENT (64ch, stage 2). Allocated only when a two-port driver calls
+// SetPortModeDriver; in a one-port build `ivars` stays null and nothing below
+// that mentions it runs.
+struct SymphonyAudioDevice_IVars {
+    SymphonyThunderbridge *portModeDriver;   // not retained
+};
+
+void SymphonyAudioDevice::SetPortModeDriver(SymphonyThunderbridge* in_driver)
+{
+    if (!ivars) {
+        if (!in_driver) return;
+        ivars = IONewZero(SymphonyAudioDevice_IVars, 1);
+        if (!ivars) return;
+    }
+    ivars->portModeDriver = in_driver;
+}
+
+void SymphonyAudioDevice::free()
+{
+    if (ivars) {
+        IODelete(ivars, SymphonyAudioDevice_IVars, 1);
+        ivars = nullptr;
+    }
+    super::free();
+}
 
 struct TimingTupleState {
     uint32_t inputSafety;
@@ -107,6 +136,16 @@ kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
     ADLOG("PerformDeviceConfigurationChange begin action=%llu rate=%.0f tuple=(%u,%u,%u,%u)",
           in_change_action, GetSampleRate(), GetInputLatency(), GetOutputLatency(),
           GetInputSafetyOffset(), GetOutputSafetyOffset());
+
+    // EXPERIMENT (64ch, stage 2), two-port builds only: IO is stopped here, so
+    // this is where a requested port selection is applied and the streams are
+    // given their 32- or 64-channel formats (Apple's sample driver changes its
+    // stream formats in this same callback). Its result does not fail the
+    // configuration change: a refused request leaves the device at 32 channels.
+    if (ivars && ivars->portModeDriver) {
+        const kern_return_t portResult = ivars->portModeDriver->PerformPortModeChange();
+        ADLOG("PerformDeviceConfigurationChange port selection applied: 0x%x", portResult);
+    }
 
     const kern_return_t result = super::PerformDeviceConfigurationChange(
         in_change_action, in_change_info);
