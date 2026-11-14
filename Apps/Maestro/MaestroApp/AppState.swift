@@ -94,6 +94,11 @@ final class AppState {
     var device: (any DeviceConnection)?
     /// Currently selected navigation area.
     var selectedArea: NavigationArea = .launchDefault
+    /// Which mix the Mixer tab was last showing (0 = Mix 1, 1 = Mix 2), so
+    /// leaving the tab and coming back does not silently return to Mix 1 and
+    /// put someone's hands on the wrong mixer. Kept until Maestro quits; a
+    /// fresh launch starts on Mix 1.
+    var lastSelectedMixer: Int = 0
     /// Whether to show the About panel.
     var showAbout: Bool = false
     /// Whether to show the Help panel.

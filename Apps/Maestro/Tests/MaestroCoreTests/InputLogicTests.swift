@@ -88,7 +88,7 @@ struct InputLogicTests {
     @Test func optionsWithoutMicPre() {
         for ch in 1...16 {
             let options = InputChannelLogic.analogLevelOptions(number: ch, micPreBacked: false)
-            #expect(options == [.variable, .plus4dBu, .minus10dBV])
+            #expect(options == [.plus4dBu, .minus10dBV, .variable])
         }
     }
 
@@ -96,7 +96,7 @@ struct InputLogicTests {
     @Test func optionsMicPreChannels1to4() {
         for ch in 1...4 {
             let options = InputChannelLogic.analogLevelOptions(number: ch, micPreBacked: true)
-            #expect(options == [.variable, .plus4dBu, .minus10dBV, .mic, .instrument])
+            #expect(options == [.plus4dBu, .minus10dBV, .variable, .mic, .instrument])
         }
     }
 
@@ -104,7 +104,7 @@ struct InputLogicTests {
     @Test func optionsMicPreChannels5to8() {
         for ch in 5...8 {
             let options = InputChannelLogic.analogLevelOptions(number: ch, micPreBacked: true)
-            #expect(options == [.variable, .plus4dBu, .minus10dBV, .mic])
+            #expect(options == [.plus4dBu, .minus10dBV, .variable, .mic])
             #expect(!options.contains(.instrument))
         }
     }
@@ -355,7 +355,7 @@ struct InputLogicTests {
             let micPreBacked = InputChannelLogic.isMicPreBacked(number: ch, micPreInstalled: false)
             #expect(!micPreBacked)
             #expect(InputChannelLogic.analogLevelOptions(number: ch, micPreBacked: micPreBacked)
-                    == [.variable, .plus4dBu, .minus10dBV])
+                    == [.plus4dBu, .minus10dBV, .variable])
             #expect(!InputChannelLogic.showsPreampControls(micPreBacked: micPreBacked, level: .plus4dBu))
             #expect(InputChannelLogic.channelLabel(number: ch, level: .plus4dBu) == "Line \(ch)")
         }
@@ -372,7 +372,7 @@ struct InputLogicTests {
     /// three line-level options, no preamp row, "Line N" labels, full soft limits.
     @Test func undetectedCardDegradesSanely() {
         let options = InputChannelLogic.analogLevelOptions(number: 1, micPreBacked: false)
-        #expect(options == [.variable, .plus4dBu, .minus10dBV])
+        #expect(options == [.plus4dBu, .minus10dBV, .variable])
         #expect(!InputChannelLogic.showsPreampControls(micPreBacked: false, level: .mic))
         #expect(InputChannelLogic.channelLabel(number: 1, level: .plus4dBu) == "Line 1")
         #expect(InputChannelLogic.softLimitOptions(card: .none).count == 5)
@@ -570,7 +570,7 @@ struct MicPreStripLogicTests {
     /// within the preamp levels keeps it.
     /// Evidence: SymphonyIOBoard_MicPre8ch.cpp:455-465.
     @Test func levelChangeClearsInsertOnlyWhenLeavingPreampLevels() {
-        for destination: AnalogInputLevel in [.variable, .plus4dBu, .minus10dBV] {
+        for destination: AnalogInputLevel in [.plus4dBu, .minus10dBV, .variable] {
             var state = InputChannelState(inputType: AnalogInputLevel.mic.rawValue,
                                           insert: 3, insertReturn: true)
             InputChannelLogic.applyLevelChange(&state, to: destination)

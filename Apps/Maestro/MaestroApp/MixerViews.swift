@@ -53,20 +53,22 @@ struct MixerView: View {
 
     init(appState: AppState) {
         self.appState = appState
+        let mixer = appState.lastSelectedMixer == 1 ? 1 : 0
+        _selectedMixer = State(initialValue: mixer)
         let snapshot = MixerStateSnapshot(
             channelCount: appState.cardLayout.mixerChannels.count,
-            mixer: 0,
+            mixer: mixer,
             store: appState.channelStateStore)
         _channels = State(initialValue: snapshot.channels)
         _swReturnChannel = State(initialValue: snapshot.swReturnChannel)
         let swLevel = snapshot.swReturnChannel.level
-        _swReturnLeftLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_0") as? Double ?? swLevel)
-        _swReturnRightLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerSWReturnRightLevel_0") as? Double ?? swLevel)
+        _swReturnLeftLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? swLevel)
+        _swReturnRightLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerSWReturnRightLevel_\(mixer)") as? Double ?? swLevel)
         _swReturnFadersLinked = State(initialValue: UserDefaults.standard.object(forKey: "mixerSWReturnFadersLinked") as? Bool ?? true)
         _softwareReturnSource = State(initialValue: snapshot.softwareReturnSource)
         _masterLevel = State(initialValue: snapshot.masterLevel)
-        _masterLeftLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerMasterLeftLevel_0") as? Double ?? snapshot.masterLevel)
-        _masterRightLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerMasterRightLevel_0") as? Double ?? snapshot.masterLevel)
+        _masterLeftLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerMasterLeftLevel_\(mixer)") as? Double ?? snapshot.masterLevel)
+        _masterRightLevel = State(initialValue: UserDefaults.standard.object(forKey: "mixerMasterRightLevel_\(mixer)") as? Double ?? snapshot.masterLevel)
         _masterFadersLinked = State(initialValue: UserDefaults.standard.object(forKey: "mixerMasterFadersLinked") as? Bool ?? true)
         let offset = ControlTabScrollPreferences.remembers
             ? appState.controlTabScrollOffset(for: .mixer) : 0
@@ -131,15 +133,25 @@ struct MixerView: View {
         VStack(spacing: 0) {
             // Toolbar row — Mixer selector + channel visibility (matches Input/Output toolbar style)
             HStack {
-                Button("Mix 1") { selectedMixer = 0; initializeChannels(); Task { await syncMixerToHardware() } }
-                    .buttonStyle(.bordered)
+                // The mix being shown is filled in; the other is outlined. A
+                // tinted outline alone was easy to miss.
+                ForEach(0..<2, id: \.self) { index in
+                    let button = Button("Mix \(index + 1)") {
+                        selectedMixer = index
+                        appState.lastSelectedMixer = index
+                        initializeChannels()
+                        Task { await syncMixerToHardware() }
+                    }
                     .controlSize(.small)
-                    .tint(selectedMixer == 0 ? .accentColor : nil)
-
-                Button("Mix 2") { selectedMixer = 1; initializeChannels(); Task { await syncMixerToHardware() } }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(selectedMixer == 1 ? .accentColor : nil)
+                    .help(selectedMixer == index
+                          ? "Showing Mix \(index + 1)" : "Show Mix \(index + 1)")
+                    .accessibilityAddTraits(selectedMixer == index ? .isSelected : [])
+                    if selectedMixer == index {
+                        button.buttonStyle(.borderedProminent)
+                    } else {
+                        button.buttonStyle(.bordered)
+                    }
+                }
 
                 Menu {
                     ForEach(0..<channelCount, id: \.self) { i in

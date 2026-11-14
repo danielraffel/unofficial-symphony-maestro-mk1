@@ -1579,15 +1579,18 @@ struct InputChannelStripView: View {
                     channel.phase.toggle()
                     onPhaseChange(channel.phase)
                 } label: {
-                    Image(systemName: "arrow.up.arrow.down")
-                        .font(.system(size: 8))
+                    // The phase symbol, as on the original's button and in the
+                    // user guide's "Ø | 48 | high pass" row.
+                    Text("Ø")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(channel.phase ? .orange : .secondary)
                         .frame(width: 18, height: Self.buttonRowHeight)
                         .background(channel.phase ? Color.orange.opacity(0.2) : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 .buttonStyle(.plain)
-                .help("Polarity — inverts the polarity of the input signal.")
+                .help("Polarity (Ø) — inverts the polarity of the input signal.")
+                .accessibilityLabel("Polarity invert")
 
                 Button {
                     guard phantomEnabled else { return }

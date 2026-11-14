@@ -236,7 +236,12 @@ public enum InputChannelLogic {
     ///   - number: 1-based device-wide channel number.
     ///   - micPreBacked: whether a MicPre8 module feeds this channel.
     public static func analogLevelOptions(number: Int, micPreBacked: Bool) -> [AnalogInputLevel] {
-        var options: [AnalogInputLevel] = [.variable, .plus4dBu, .minus10dBV]
+        // Menu order follows the original: "+4 dBu", "-10 dBV", "Variable"
+        // (`s_szSymphonyIOInputRefLevelNames`,
+        // og_source/maestrolink/Software/AnalogIn_SymphonyIO_Stream.cpp:18), then
+        // Mic and Instrument where a Mic Pre provides them. Order only: the
+        // value each choice sends is unchanged.
+        var options: [AnalogInputLevel] = [.plus4dBu, .minus10dBV, .variable]
         guard micPreBacked else { return options }
         options.append(.mic)
         if number >= 1 && number <= micPreInstrumentChannelCount {
