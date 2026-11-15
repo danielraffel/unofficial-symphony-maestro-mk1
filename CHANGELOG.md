@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.40 (candidate, not released)
 
 Every option card now behaves the way it did in Apogee's original Maestro: the optical format, the S/PDIF coax settings, the clock choices and the channel names.
 
