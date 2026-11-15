@@ -154,16 +154,15 @@ public enum ClockSourceMenu {
     /// so pass them when known; without them it is named as ADAT, the format
     /// both drivers set at start.
     ///
-    /// Loop Sync is NOT the original's: in the Symphony mode it was listed only
-    /// for Pro Tools HD (`SymphonyIO.cpp:1750-1766`). It is kept because the
-    /// driver's own clock control offers it.
+    /// No Loop Sync: in the Symphony mode the original listed it only in the
+    /// Pro Tools HD boot mode (`SymphonyIO.cpp:1726-1767`), which ThunderBridge
+    /// never runs in.
     public static func thunderbolt(slot1: IOCardType, slot2: IOCardType,
                                    sampleRate: Double? = nil,
                                    opticalIsSPDIF: [Bool?] = [nil, nil]) -> [ClockSourceChoice] {
         var choices = [
             ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
             ClockSourceChoice(id: wordClock, name: "Word Clock", source: 2, boardInput: nil),
-            ClockSourceChoice(id: loopSync, name: "Loop Sync", source: 3, boardInput: nil),
         ]
         let spdif = { (slot: Int) -> Bool? in slot < opticalIsSPDIF.count ? opticalIsSPDIF[slot] : nil }
         choices += boardChoices(slot: 0, card: slot1, preceding: .none,

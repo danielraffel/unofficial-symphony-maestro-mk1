@@ -835,10 +835,7 @@ struct SystemSetupView: View {
     // Keys 1-5 are the legacy eSymphonyIOClockSource enum values (SymphonyIOVendorSpecific.h:857-865),
     // sent verbatim as ClockMode pData[0]. The old dict was off-by-one with invented digital
     // "sources" (AES/EBU, S/PDIF, ADAT, Optical S/PDIF are board sub-sources, not clock sources).
-    // An AES board's inputs are listed one by one with their own keys; see `ClockSourceMenu`.
-    // Note: Loop Sync (3) and IO Board 1/2 (4/5) currently send default flags/boardIndex — the
-    // isMaster/loopSync and board-index wiring is a known follow-up (CS2 gap); Internal and Word
-    // Clock are fully correct.
+    // Each board's inputs are listed one by one with their own keys; see `ClockSourceMenu`.
     //
     // Over USB the Symphony runs on its internal clock only: Apogee's software
     // offered no other source in the USB interface mode

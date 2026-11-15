@@ -92,14 +92,13 @@ struct OriginalWireParityTests {
     @Test("an AES card in slot 1 is offered as its coax and AES pairs, sent as the original sent them")
     func aesSlotClockSources() throws {
         let menu = ClockSourceMenu.thunderbolt(slot1: .analogAES, slot2: .none)
-        #expect(menu.map(\.name) == ["Internal", "Word Clock", "Loop Sync",
+        #expect(menu.map(\.name) == ["Internal", "Word Clock",
                                       "SPDIF Coax 1-2", "AES 1-2", "AES 3-4", "AES 5-6", "AES 7-8"])
-        // Loop Sync is not the original's in the Symphony mode (Pro Tools HD
-        // only); it is pinned to what the driver's own clock control sends.
+        // No Loop Sync: the original listed it only in Pro Tools HD mode
+        // (`SymphonyIO.cpp:1726-1767`).
         let expectedBytes: [String: [UInt8]] = [
             "Internal": [1, 1, 0, 0],
             "Word Clock": [2, 1, 0, 0],
-            "Loop Sync": [3, 0, 1, 0],
             "SPDIF Coax 1-2": [4, 1, 0, 6],
             "AES 1-2": [4, 1, 0, 0],
             "AES 3-4": [4, 1, 0, 1],
@@ -117,7 +116,8 @@ struct OriginalWireParityTests {
             #expect(Array(request.data) == expectedBytes[choice.name], "\(choice.name)")
         }
         // The plain sources keep the numbers the driver's clock control uses.
-        #expect(menu.filter { $0.boardInput == nil }.map(\.id) == [1, 2, 3])
+        #expect(menu.filter { $0.boardInput == nil }.map(\.id) == [1, 2])
+        #expect(!menu.contains { $0.source == 3 })
     }
 
     /// Slot 2 numbers on from slot 1 (`SymphonyIO_IOBoard.cpp:1533-1541`): after
@@ -192,10 +192,10 @@ struct OriginalWireParityTests {
     @Test("AES/OPT combo + A16 IP: the menu in each DIG I/O position")
     func ownersUnit() {
         #expect(ClockSourceMenu.thunderbolt(slot1: .analogAES, slot2: .analogAD16).map(\.name)
-                == ["Internal", "Word Clock", "Loop Sync", "SPDIF Coax 1-2",
+                == ["Internal", "Word Clock", "SPDIF Coax 1-2",
                     "AES 1-2", "AES 3-4", "AES 5-6", "AES 7-8", "SPDIF Coax 3-4"])
         #expect(ClockSourceMenu.thunderbolt(slot1: .optical, slot2: .analogAD16).map(\.name)
-                == ["Internal", "Word Clock", "Loop Sync", "SPDIF Coax 1-2", "ADAT 1-8", "SPDIF Coax 3-4"])
+                == ["Internal", "Word Clock", "SPDIF Coax 1-2", "ADAT 1-8", "SPDIF Coax 3-4"])
         #expect(ClockSourceMenu.usb.map(\.id) == [1])
     }
 
