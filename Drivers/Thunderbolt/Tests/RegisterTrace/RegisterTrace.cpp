@@ -23,6 +23,7 @@
 #include "SymphonyThunderbridgeShared.h"
 
 #include <cstdarg>
+#include <functional>
 
 // The app-facing layouts: the existing link-state reply must keep its size, and
 // the new port-2 reply is a separate 16-word struct.
@@ -390,7 +391,14 @@ struct FakeCard : HostBackend {
         }
     }
 
-    void Sleep(uint64_t ms) override { line("S %llu", (unsigned long long)ms); }
+    // A scenario can have something happen while the driver sleeps (a
+    // power-down arriving in the middle of a wait). Called after the sleep is
+    // recorded; cleared by the callee when it has fired.
+    std::function<void()> onSleep;
+    void Sleep(uint64_t ms) override {
+        line("S %llu", (unsigned long long)ms);
+        if (onSleep) { auto f = onSleep; f(); }
+    }
     void HostEvent(const std::string &what) override { line("H %s", what.c_str()); }
     uint64_t NextDMAAddress(uint64_t size) override {
         uint64_t a = nextDMA;
@@ -1518,6 +1526,61 @@ static void RunAudioLateChain(const Options &o, Run &r)
     CHECK(s.w[6] == 2 && s.w[11] == 1, "%s: late chain units %u probes %u", o.name, s.w[6], s.w[11]);
 }
 
+// p2-audio-sleep-mid-select: the Mac goes to sleep while port 2 is being looked
+// at for a switch to 64, and wakes with the card's registers intact. The
+// switch gives up without another write, leaving port 2 enabled; the first
+// link-watch tick after the wake must disable it again, as every other way
+// back to 32 does (the wake re-initialization does not run: nothing was lost).
+static void RunAudioSleepMidSelect(const Options &o, Run &r)
+{
+    FakeCard &c = r.card;
+    SymphonyThunderbridge *drv = r.drv;
+    c.phase("IO running at 32 channels");
+    drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+    Irq(r, 1);
+    CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort2) != 0, "%s: port 2 not disabled at 32 to begin with", o.name);
+    const uint32_t reinitsBefore = (uint32_t)c.count("W 0x000000 0x00000001");
+    int sleeps = 0;
+    c.onSleep = [&] {
+        if (++sleeps != 2) return;            // during the probe's clock wait
+        c.onSleep = nullptr;
+        c.phase("power-down arrives while port 2 is looked at");
+        drv->SetPowerState(kIOServicePowerCapabilityOff);
+    };
+    const size_t mark = Select(r, 1, "select Port 1-2: 64ch, sleep begins during the probe", /*ioRunning*/true);
+    CHECK(c.onSleep == nullptr, "%s: the power-down never arrived (the probe did not wait)", o.name);
+    CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort2) == 0,
+          "%s: the abandoned switch disabled port 2 itself (it must write nothing after a power-down began)", o.name);
+    CHECK(CountAccess(c, mark, 'W', kRegA2H2HBA) == 0 && (c.reg[kRegGCSR2] & kGCSR2_DMAEnableMask) == 0,
+          "%s: port 2 was programmed although the switch was abandoned", o.name);
+    {
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[14] & kSymphonyPort2AudioRefused) && AudioReason(s) == kSymphonyPort2ReasonUnreachable,
+              "%s: abandoned switch not reported (0x%08x)", o.name, s.w[14]);
+    }
+    CheckPublished("after the abandoned switch", 32);
+
+    c.phase("wake with the card intact");
+    const size_t wake = c.lines.size();
+    drv->SetPowerState(kIOServicePowerCapabilityOn);
+    drv->LinkWatchTimerOccurred(nullptr, 0);
+    HostPump();
+    CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort2) != 0,
+          "%s: port 2 still enabled at 32 channels after the wake (GCSR2=0x%08x)", o.name, c.reg[kRegGCSR2]);
+    CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort1) == 0, "%s: port 1 disabled by the clean-up", o.name);
+    CHECK(c.count("W 0x000000 0x00000001") == reinitsBefore, "%s: the card was re-initialized on a wake that kept its registers", o.name);
+    CHECK(c.port[1].commandsSeen == 0, "%s: commands were sent on port 2", o.name);
+    // Once: later ticks at 32 write nothing to GCSR2.
+    const size_t after = c.lines.size();
+    for (int i = 0; i < 2; i++) { drv->LinkWatchTimerOccurred(nullptr, 0); HostPump(); }
+    CHECK(CountAccess(c, after, 'W', kRegGCSR2) == 0, "%s: the link watch keeps writing GCSR2 at 32 channels", o.name);
+    CHECK(CountAccess(c, wake, 'W', kRegGCSR2) == 1, "%s: %zu GCSR2 writes after the wake (want the one disable)",
+          o.name, CountAccess(c, wake, 'W', kRegGCSR2));
+    CheckPort1Alone("after the wake", r);
+    Irq(r, 1);
+    drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+}
+
 // p2-audio-phase: the original's phase alignment, converters on both ports.
 static void RunAudioPhase(const Options &o, Run &r)
 {
@@ -2003,6 +2066,7 @@ int main(int argc, char **argv)
             { "p2-audio-enable", Port::Symphony, Port::Converters, RunAudioEnable, false },
             { "p2-audio-refused", Port::Symphony, Port::Empty, RunAudioRefused, false },
             { "p2-audio-late-chain", Port::Symphony, Port::Empty, RunAudioLateChain, false },
+            { "p2-audio-sleep-mid-select", Port::Symphony, Port::Empty, RunAudioSleepMidSelect, false },
             { "p2-audio-phase", Port::Converters, Port::Converters, RunAudioPhase, false },
             { "p2-audio-switch", Port::Symphony, Port::Converters, RunAudioSwitch, false },
             { "p2-audio-port2-vanishes", Port::Symphony, Port::Converters, RunAudioPort2Vanishes, true },

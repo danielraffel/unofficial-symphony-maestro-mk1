@@ -46,6 +46,9 @@
 #      port 2 leaving every register as it was; rate changes at 64; and the
 #      port-2 chain disappearing in mid-stream, after which port 1 must be
 #      running alone again and Core Audio asked to go back to 32 channels.
+#      p2-audio-sleep-mid-select: a switch abandoned because the Mac went to
+#      sleep during it leaves port 2 enabled; the first link-watch tick after
+#      a wake that kept the card's registers disables it again.
 #      Until 64 is selected a two-port build writes exactly what stage 1 wrote.
 #
 # Usage:

@@ -393,6 +393,10 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  requestedPortMode;
     uint32_t  port2AudioFlags;       // atomic; outcome + reason bits of kSymphonyPort2Audio*
     uint32_t  port2ModeChanges;      // 32<->64 changes of the card since Start()
+    // EnablePort2Audio gave up because a stop or power-down began after it had
+    // enabled port 2, and wrote nothing more. The next link-watch tick that
+    // reaches the card at 32 channels disables port 2 again. xlinkQueue only.
+    bool      port2DisablePending;
     uint32_t  port2PhaseWord;        // kSymphonyPort2Phase*, the last alignment
     SymphonyPortSourceControl *portSourceControl[2];   // [0] input, [1] output
 };
@@ -2317,6 +2321,7 @@ static uint32_t GCSR2PortDisableBitsToSet(const SymphonyThunderbridge_IVars *iva
 static void SetPort2Enabled(SymphonyThunderbridge_IVars *ivars, bool on)
 {
     if (ivars->portCount != 2) return;
+    ivars->port2DisablePending = false;
     if (on) {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLinkClocking, kXLinkClockEnable2, 0);
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2, 0, kGCSR2_DisablePort2);
@@ -2492,7 +2497,17 @@ static void ClearPort2Units(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
 static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
                             uint32_t clk)
 {
-    if (__atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != 64) return;
+    if (__atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != 64) {
+        // A switch to 64 that was abandoned for a stop or power-down left
+        // port 2 enabled and wrote nothing more. The card answers again (the
+        // tick has just read it): disable port 2, as every other way back to
+        // 32 does. The only register this tick writes at 32 channels.
+        if (ivars->port2DisablePending) {
+            STLOG("Port 2: still enabled after an abandoned switch to 64 — disabling it");
+            SetPort2Enabled(ivars, false);
+        }
+        return;
+    }
     if ((clk & kXLinkClockEnable2) == 0) {
         // The card's registers are gone, and its DMA with them (a D3 power
         // cycle across sleep, the port-1 re-initialization not yet run).
@@ -2953,9 +2968,12 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     SetPort2Enabled(ivars, true);
     ProbeSecondPort(ivars, rate, "\"" kSymphonyPortSourceName64 "\" selected", kPort2ClockPollsOnSelect);
     // The probe can take seconds. If a stop or power-down began meanwhile,
-    // touch nothing more; port 2 may stay enabled until the next Start() or
-    // the wake re-initialization, which both disable it again.
+    // touch nothing more. Port 2 stays enabled until the next Start(), the
+    // wake re-initialization of a reset card, or, when the card kept its
+    // registers across the sleep, the first link-watch tick that reaches it
+    // (port2DisablePending).
     if (!XLinkTxAdmissible(ivars)) {
+        ivars->port2DisablePending = true;
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
         STERR("Port 2 audio: refused — stop or power-down began while port 2 was looked at");
         return false;
@@ -3002,7 +3020,9 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     // the endpoint went away meanwhile, touch nothing more: the card stays
     // muted with its engines off, which is what Stop() and the wake
     // re-initialization (CardLostConfiguration sees DMA off) both start from.
+    // Port 2 is disabled by either, or by the link watch (port2DisablePending).
     if (!XLinkTxAdmissible(ivars)) {
+        ivars->port2DisablePending = true;
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
         STERR("Port 2 audio: refused — stop or power-down began during the switch");
         return false;
@@ -3032,6 +3052,7 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     if (!XLinkTxAdmissible(ivars)) {
         Port2ProgramRouting(dev, mi, false);
         Port2ProgramBuffers(ivars, false);
+        ivars->port2DisablePending = true;
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
         STERR("Port 2 audio: refused — stop or power-down began before the engines were started");
         return false;
@@ -3118,12 +3139,14 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev
 // and the original's mapping for that path is not established.
 //
 // EXPERIMENT (64ch): host inputs 33-64 (port 2, while "Port 1-2: 64ch" runs)
-// are left unnamed, so Core Audio shows its default. The original resolved
-// each name through its routing controller to the unit stream the channel was
-// routed from, i.e. from that unit's own card types and prefix
-// (maestrolink/Software/SymphonyCard.cpp:828-866). This driver has no vendor
-// link to port-2 units (it only identifies them over XLink), so it does not
-// know their cards or prefix and names nothing it cannot read.
+// are left unnamed, so Core Audio shows its default. How the original named
+// them has not been established: its daemon resolved a channel's name through
+// the routing controller to the stream it was routed from
+// (maestrolink/Software/SymphonyCard.cpp:828-866), which suggests the names
+// came from the port-2 unit's own cards and prefix, but that path has not been
+// traced for a second port and nothing was observed on hardware. This driver
+// only identifies port-2 units over XLink and reads neither their cards nor
+// their prefix, so it names nothing there.
 //
 // Runs on the default queue (Start, or a block queued by
 // ScheduleChannelNames), never on xlinkQueue.
@@ -3259,8 +3282,10 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
     // Two-port experiment only: the state Start() left, port 1 enabled and
     // port 2 disabled until "Port 1-2: 64ch" is selected (the re-programming
     // is port 1 alone, so 64 is no longer running; see the caller).
-    if (ivars->portCount == 2)
+    if (ivars->portCount == 2) {
         ModifyRegister(dev, mi, kRegGCSR2, GCSR2PortDisableBitsToSet(ivars), GCSR2PortDisableBitsToClear(ivars));
+        ivars->port2DisablePending = false;
+    }
     // Routing tables: the app's card output routes where known, Start()'s
     // defaults elsewhere; input routing is always the default.
     for (uint32_t n = 0; n < kMaxChannelsPerPort; n++) {
