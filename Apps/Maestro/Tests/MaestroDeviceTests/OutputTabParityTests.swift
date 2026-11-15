@@ -255,9 +255,10 @@ struct OutputTabParityTests {
                     .spdifOptions(slot: 0, isInput: false)).map(\.name)
         }
 
-        // 8x8 optical: four analog output pairs, then four ADAT.
+        // 8x8 optical: four analog output pairs, then four optical, named
+        // "Optical" as the daemon named them (SymphonyIOBoard_AnalogOptical.cpp:151-155).
         #expect(names(.optical) == ["Analog 1-2", "Analog 3-4", "Analog 5-6", "Analog 7-8",
-                                    "ADAT 1-2", "ADAT 3-4", "ADAT 5-6", "ADAT 7-8"])
+                                    "Optical 1-2", "Optical 3-4", "Optical 5-6", "Optical 7-8"])
         // 8x8 AES names its digital pairs AES, not ADAT.
         #expect(names(.analogAES) == ["Analog 1-2", "Analog 3-4", "Analog 5-6", "Analog 7-8",
                                       "AES 1-2", "AES 3-4", "AES 5-6", "AES 7-8"])
@@ -279,9 +280,9 @@ struct OutputTabParityTests {
 
         #expect(layout.analogOutputStripCount == 0)
         #expect(options.count == 8)
-        #expect(options.allSatisfy { $0.name.hasPrefix("ADAT ") })
-        #expect(options.first?.name == "ADAT 1-2")
-        #expect(options.last?.name == "ADAT 15-16")
+        #expect(options.allSatisfy { $0.name.hasPrefix("Optical ") })
+        #expect(options.first?.name == "Optical 1-2")
+        #expect(options.last?.name == "Optical 15-16")
     }
 
     // MARK: - The developer's unit must not change
@@ -310,7 +311,7 @@ struct OutputTabParityTests {
             devUnit.spdifOptions(slot: 0, isInput: false))
         #expect(slot1.map(\.id) == [1, 2, 3, 4, 5, 6, 7, 8])
         #expect(slot1.map(\.name) == ["Analog 1-2", "Analog 3-4", "Analog 5-6", "Analog 7-8",
-                                      "ADAT 1-2", "ADAT 3-4", "ADAT 5-6", "ADAT 7-8"])
+                                      "Optical 1-2", "Optical 3-4", "Optical 5-6", "Optical 7-8"])
 
         // Module 2's channel numbers continue from module 1 — the legacy name
         // builder adds NumberPrecedingChannels() of the same plug type
@@ -318,8 +319,8 @@ struct OutputTabParityTests {
         let slot2 = OutputChannelLogic.mirrorOptions(
             devUnit.spdifOptions(slot: 1, isInput: false))
         #expect(slot2.map(\.id) == [1, 2, 3, 4, 5, 6, 7, 8])
-        #expect(slot2.first?.name == "ADAT 9-10")
-        #expect(slot2.last?.name == "ADAT 23-24")
+        #expect(slot2.first?.name == "Optical 9-10")
+        #expect(slot2.last?.name == "Optical 23-24")
     }
 
     // MARK: - Stored-value resolution

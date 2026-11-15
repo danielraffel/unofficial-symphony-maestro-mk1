@@ -30,7 +30,7 @@ static_assert(sizeof(SymphonyLinkStateOutput) == 64, "ReadLinkState layout chang
 #ifdef TRACE_HAVE_PORT2
 static_assert(sizeof(SymphonyPort2StateOutput) == 64, "ReadPort2State is 16 words");
 static_assert(offsetof(SymphonyPort2StateOutput, unit) == 7 * sizeof(uint32_t), "unit[] at word 7");
-static_assert(kSelectorReadLinkState == 5 && kSelectorReadPort2State == 6, "selector numbers");
+static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorReadPort2State == 7 && kSelectorCount == 8, "selector numbers");
 #endif
 
 HostBackend *gHostBackend = nullptr;

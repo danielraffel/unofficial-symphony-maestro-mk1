@@ -80,6 +80,10 @@ run_check "swift-test" swift test --package-path "$PACKAGE_DIR" --jobs "${MAESTR
 # only when someone remembered to invoke them by hand.
 run_check "shm-contract-test" bash "$REPO_ROOT/Drivers/Shared/run-tests.sh"
 
+# ThunderBridge driver host tests: header invariants and the OpticalFormat
+# (0x34) trace for every option-board combination. No hardware needed.
+run_check "thunderbolt-driver-tests" bash "$REPO_ROOT/Drivers/Thunderbolt/run-tests.sh"
+
 # 5. Build for release (catches optimisation-only errors)
 if [ "$QUICK_MODE" = false ]; then
   run_check "swift-build-release" swift build --package-path "$PACKAGE_DIR" --jobs "${MAESTRO_BUILD_JOBS:-4}" -c release

@@ -284,6 +284,126 @@ static void load_volume_state(void)
     }
 }
 
+/* ── Per-board digital settings (optical format, S/PDIF Coax) ─────────── */
+/*
+ * Apogee's daemon kept each board's optical format, S/PDIF Coax Replaces and
+ * Mirrors in its settings and applied them when the unit connected in the USB
+ * mode (og_source/maestrolink/Software/SymphonyIO_IOBoard.cpp:527-566,
+ * OpticalIn_SymphonyIO_Stream.cpp:387-437; SymphonyIO.cpp:1396-1412: in the
+ * USB mode the computer, not the unit, holds them). The firmware starts at
+ * ADAT/SMUX, Replaces Off, Mirrors Analog 1-2 (SymphonyIOStateData.cpp:127-151).
+ * The proxy used to force ADAT/SMUX on both boards at every start, which threw
+ * away a user's S/PDIF choice at each power cycle. It now remembers the last
+ * value the app wrote for each board (0x34 / 0x35 / 0x36) and puts it back.
+ *
+ * Only on the type of card it was written to. Replaces and Mirrors are pair
+ * numbers within one card's channels (SymphonyIOVendorSpecific.h:936-948):
+ * 6 is Optical 3-4 on an 8x8 and Analog 11-12 on a 16x16. After a card swap,
+ * or the 8x8 AES/OPT's DIG I/O switch moving, the remembered values are not
+ * sent and the card keeps the firmware's defaults until the app writes again.
+ */
+#define DIGITAL_STATE_PATH VOLUME_STATE_DIR "/digital-settings"
+static const char *gDigitalStatePath = DIGITAL_STATE_PATH;
+/* [command 0x34, 0x35, 0x36][board]; -1 = never written. */
+static int gSavedDigital[3][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };
+/* SymphonyIOOptionBoardType (0xA1) of the card each board's values were
+   written to; -1 = not known. */
+static int gSavedDigitalBoardType[2] = { -1, -1 };
+
+/* Whether a board's remembered values go back on the card fitted now. */
+static bool digital_replay_allowed(int savedType, int currentType)
+{
+    return savedType >= 0 && currentType == savedType;
+}
+
+/* Whether a board has anything remembered that differs from what the firmware
+   and this proxy set anyway (ADAT/SMUX, nothing for Replaces and Mirrors). The
+   board's type is read only then, so a unit that never had these set sees no
+   extra control transfer. */
+static bool digital_has_replay(uint32_t board)
+{
+    return board < 2 && (gSavedDigital[0][board] == 1 || gSavedDigital[1][board] >= 0
+                         || gSavedDigital[2][board] >= 0);
+}
+
+static int digital_setting_index(uint8_t bRequest)
+{
+    switch (bRequest) {
+    case 0x34: return 0;   /* OpticalFormat: 0 ADAT/SMUX, 1 S/PDIF */
+    case 0x35: return 1;   /* SPDIFCoaxReplaceInput: 0 Off, 1-8 */
+    case 0x36: return 2;   /* SPDIFCoaxMirrorOutput: 1-8 */
+    default:   return -1;
+    }
+}
+
+/* Record a successful vendor write. `boardType` is the type of the card on
+   that board now (0xA1), -1 when it could not be read. Returns true when
+   something remembered changed. */
+static bool note_digital_write(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len,
+                               int boardType)
+{
+    int idx = digital_setting_index(bRequest);
+    if (idx < 0 || nValue > 1 || !data || len < 1) return false;
+    int v = data[0];
+    bool valid = (idx == 0) ? v <= 1 : (idx == 1) ? v <= 8 : (v >= 1 && v <= 8);
+    if (!valid) return false;
+    bool changed = false;
+    if (gSavedDigitalBoardType[nValue] != boardType) {
+        /* A different card (or one whose type is not known): what was
+           remembered belonged to the other one. */
+        for (int i = 0; i < 3; i++) gSavedDigital[i][nValue] = -1;
+        gSavedDigitalBoardType[nValue] = boardType;
+        changed = true;
+    }
+    if (gSavedDigital[idx][nValue] != v) {
+        gSavedDigital[idx][nValue] = v;
+        changed = true;
+    }
+    return changed;
+}
+
+static void save_digital_state(void)
+{
+    mkdir(VOLUME_STATE_DIR, 0755);
+    FILE *f = fopen(gDigitalStatePath, "w");
+    if (!f) {
+        LOG("Could not save digital settings to %s: %s", gDigitalStatePath, strerror(errno));
+        return;
+    }
+    fprintf(f, "%d %d %d %d %d %d %d %d\n", gSavedDigital[0][0], gSavedDigital[0][1],
+            gSavedDigital[1][0], gSavedDigital[1][1], gSavedDigital[2][0], gSavedDigital[2][1],
+            gSavedDigitalBoardType[0], gSavedDigitalBoardType[1]);
+    fclose(f);
+}
+
+static void load_digital_state(void)
+{
+    FILE *f = fopen(gDigitalStatePath, "r");
+    if (!f) return;
+    int v[8];
+    /* All eight or nothing: values without the card types they belong to are
+       never replayed, so a short or damaged file is the same as no file. */
+    if (fscanf(f, "%d %d %d %d %d %d %d %d", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+               &v[6], &v[7]) == 8) {
+        for (int i = 0; i < 6; i++) {
+            int idx = i / 2, board = i % 2;
+            bool valid = v[i] == -1 ||
+                ((idx == 0) ? (v[i] >= 0 && v[i] <= 1) : (idx == 1) ? (v[i] >= 0 && v[i] <= 8)
+                                                                   : (v[i] >= 1 && v[i] <= 8));
+            gSavedDigital[idx][board] = valid ? v[i] : -1;
+        }
+        for (int board = 0; board < 2; board++) {
+            int type = v[6 + board];   /* SymphonyIOOptionBoardType 1-7 */
+            gSavedDigitalBoardType[board] = (type >= 1 && type <= 7) ? type : -1;
+        }
+        LOG("Loaded digital settings: optical %d/%d, replaces %d/%d, mirrors %d/%d, card types %d/%d",
+            gSavedDigital[0][0], gSavedDigital[0][1], gSavedDigital[1][0],
+            gSavedDigital[1][1], gSavedDigital[2][0], gSavedDigital[2][1],
+            gSavedDigitalBoardType[0], gSavedDigitalBoardType[1]);
+    }
+    fclose(f);
+}
+
 /* ── Routing mode ──────────────────────────────────────────────────────── */
 /*
  * DAW mode (default): Null all IOBoard output destinations except DAC L/R,
@@ -1159,6 +1279,8 @@ static void start_reconcile_timer(void)
 static int open_usb_device(void);
 static void close_usb_device(void);
 static int configure_fpga_routing(void);
+static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
+                           void *outBuf, uint16_t len);
 static void restore_cached_volume(void);
 static int set_hw_volume(uint8_t attenuation);
 static int set_hw_mute(bool muted);
@@ -1625,6 +1747,15 @@ static void close_usb_device(void)
      5. PreferenceLoadLock(false) — unlock XMOS, audio can flow
    The PreferenceLoadLock handshake is CRITICAL — without step 5 the XMOS
    stays muted and no audio reaches the DAC even though USB frames arrive. */
+/* The option board fitted on a slot (OptionBoardType 0xA1, board in wIndex),
+   -1 when the read fails. */
+static int current_board_type(uint32_t board)
+{
+    uint8_t type = 0;
+    if (usb_vendor_read(0xA1, 0, (uint16_t)board, &type, 1) != 1) return -1;
+    return (type >= 1 && type <= 7) ? type : -1;
+}
+
 static int configure_fpga_routing(void)
 {
     if (!gUSBDev) return -1;
@@ -1677,12 +1808,33 @@ static int configure_fpga_routing(void)
        Board-agnostic: harmless if board doesn't exist.
        Evidence: og_source SymphonyIOControl.cpp:1301-1320 setOpticalIsSPDIF(),
        SymphonyIOAnalogFPGA.cpp:82-99 writes FPGA register 0x24. */
+    /* The format is the one last chosen for each board (ADAT/SMUX, 0, until
+       one is), and the remembered S/PDIF Coax Replaces / Mirrors go back too;
+       see "Per-board digital settings" above. */
     {
-        uint8_t adat_mode = 0;  /* SymphonyIOOpticalFormat_ADAT_SMUX = 0 */
-        int e0 = usb_vendor_write(VCMD_OPTICAL_FORMAT, 0, &adat_mode, 1);
-        int e1 = usb_vendor_write(VCMD_OPTICAL_FORMAT, 1, &adat_mode, 1);
-        LOG("OpticalFormat(ADAT/SMUX): board0=%s, board1=%s",
-            e0 ? "FAILED" : "OK", e1 ? "FAILED" : "OK");
+        for (uint32_t b = 0; b < 2; b++) {
+            /* Remembered values go back only on the type of card they were
+               written to; see "Per-board digital settings". */
+            bool replay = false;
+            if (digital_has_replay(b)) {
+                int type = current_board_type(b);
+                replay = digital_replay_allowed(gSavedDigitalBoardType[b], type);
+                if (!replay)
+                    LOG("Digital settings board%u not replayed: card type %d, remembered for %d",
+                        b, type, gSavedDigitalBoardType[b]);
+            }
+            uint8_t format = (replay && gSavedDigital[0][b] == 1) ? 1 : 0;
+            int e = usb_vendor_write(VCMD_OPTICAL_FORMAT, b, &format, 1);
+            LOG("OpticalFormat board%u = %s: %s", b, format ? "SPDIF" : "ADAT/SMUX",
+                e ? "FAILED" : "OK");
+            for (int idx = 1; replay && idx <= 2; idx++) {
+                if (gSavedDigital[idx][b] < 0) continue;
+                uint8_t value = (uint8_t)gSavedDigital[idx][b];
+                int err = usb_vendor_write(idx == 1 ? 0x35 : 0x36, b, &value, 1);
+                LOG("S/PDIF Coax %s board%u = %u: %s", idx == 1 ? "Replaces" : "Mirrors",
+                    b, value, err ? "FAILED" : "OK");
+            }
+        }
     }
 
     /* ── Step 4: FPGA routing — USB → Mixer → DAC ────────────────────── */
@@ -2502,6 +2654,10 @@ static void handle_peer(xpc_connection_t peer) {
                 int err = usb_vendor_write(bReq, nValue, dataCopy, copyLen);
                 LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
                     bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
+                if (!err && digital_setting_index(bReq) >= 0 && nValue <= 1 &&
+                    note_digital_write(bReq, nValue, dataCopy, copyLen,
+                                       current_board_type(nValue)))
+                    save_digital_state();
                 if (setReply) {
                     xpc_dictionary_set_int64(setReply, "status", err ? -1 : 0);
                     xpc_connection_send_message(peer, setReply);
@@ -2938,6 +3094,7 @@ int main(void) {
 
     /* Load persisted volume/mute state from previous run (survives proxy restarts) */
     load_volume_state();
+    load_digital_state();
 
     /* Open USB device directly and configure FPGA routing.
        This bypasses the Apogee daemon which can't detect devices on macOS 26. */

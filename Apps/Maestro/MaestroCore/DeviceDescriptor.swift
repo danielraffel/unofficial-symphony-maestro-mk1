@@ -240,14 +240,18 @@ public enum IOCardType: UInt8, Sendable, Equatable, CaseIterable {
     /// Whether this module has optical (TOSLINK) ports whose format — ADAT/SMUX
     /// or S/PDIF — is selectable in Device Settings.
     ///
-    /// `.analogAES` is included because an 8x8 **AES/OPT** combo module reports
-    /// `.analogAES` when its `DIG I/O` switch is on AES (see
-    /// ``mayBeAESOpticalCombo``) and still has the optical ports. The 16x16 and
-    /// the 8MicPre have no optical hardware at all (user guide pp. 11, 13).
+    /// `.analogAES` is excluded. An 8x8 AES/OPT combo with its `DIG I/O` switch on
+    /// AES carries its digital channels on the AES DB25, not the optical ports
+    /// (user guide p. 10), and Apogee's software offered no optical format for an
+    /// AES board: it sent the format only from optical streams
+    /// (`og_source/maestrolink/Software/SymphonyIO_IOBoard.cpp:940-981`), and the
+    /// firmware ignores the command for an AES board
+    /// (`.../MainController/AudioManager/SymphonyIOAudioManager.cpp:257-290`). The
+    /// 16x16 and the 8MicPre have no optical hardware at all (pp. 11, 13).
     public var hasOpticalPorts: Bool {
         switch self {
-        case .none, .micPre8, .analogADDA16: return false
-        case .analogAES, .optical, .analogAD16, .analogDA16, .twoBySix: return true
+        case .none, .micPre8, .analogADDA16, .analogAES: return false
+        case .optical, .analogAD16, .analogDA16, .twoBySix: return true
         }
     }
 
@@ -702,10 +706,20 @@ public enum BoardDetectionSource: String, Sendable, Equatable, Hashable, CaseIte
 public struct BoardTypeReading: Sendable, Equatable, Hashable {
     public let card: IOCardType
     public let source: BoardDetectionSource
+    /// The board's hardware major version (`0xA0`, types 5 and 6), when read.
+    /// Distinguishes the 8x8 AES/OPT combo; see
+    /// ``IOCardType/productName(boardHardwareMajorVersion:)``.
+    public var hardwareMajor: UInt8?
 
-    public init(card: IOCardType, source: BoardDetectionSource) {
+    public init(card: IOCardType, source: BoardDetectionSource, hardwareMajor: UInt8? = nil) {
         self.card = card
         self.source = source
+        self.hardwareMajor = hardwareMajor
+    }
+
+    /// The same reading with the board's hardware major version attached.
+    public func withHardwareMajor(_ major: UInt8?) -> BoardTypeReading {
+        BoardTypeReading(card: card, source: source, hardwareMajor: major)
     }
 
     /// Nothing is known about this slot.
@@ -751,7 +765,7 @@ public struct BoardTypeReading: Sendable, Equatable, Hashable {
         case .unknown:
             return "Unknown (\(source.qualifier))"
         case .detected, .cached, .simulated:
-            return "\(card.productName) (\(source.qualifier))"
+            return "\(card.productName(boardHardwareMajorVersion: hardwareMajor)) (\(source.qualifier))"
         }
     }
 
@@ -1148,6 +1162,24 @@ extension String {
 
 // MARK: - Software Info Report
 
+/// What the ThunderBridge driver itself says about its build, asked through
+/// its user client. sysextd's list says which copy is installed and enabled;
+/// only the running driver can say which copy serves the card. After an
+/// update macOS can keep the old copy on the device until restart while the
+/// list already shows the new one as active.
+public enum ServingDextBuild: Sendable, Equatable {
+    /// The serving driver's CFBundleVersion (dext 123+). Zero when the binary
+    /// was built without its build number stamped in.
+    case build(UInt32)
+    /// The driver answers other requests but not the build request: it is a
+    /// build before 123, the first that reports itself.
+    case olderThanBuildReporting
+
+    /// The first dext build that answers the build request.
+    public static let firstReportingBuild = 123
+}
+
+
 /// The Software Info panel's content, as data.
 ///
 /// Device Info answers "what hardware am I talking to". This answers "what code is
@@ -1200,6 +1232,9 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     public var thunderBridgePresent: Bool
     /// Raw IOKit PCI personality, e.g. `pci19c2,2200` or `pci19c2,2100`.
     public var pciDeviceIdentifier: String?
+    /// What the driver serving the ThunderBridge says its build is. Nil when
+    /// the app has no ThunderBridge connection open and so did not ask.
+    public var servingDextBuild: ServingDextBuild?
 
     public init(
         appVersion: String,
@@ -1217,7 +1252,8 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         dextAwaitingApproval: Bool = false,
         dextAwaitingReboot: Bool = false,
         thunderBridgePresent: Bool = false,
-        pciDeviceIdentifier: String? = nil
+        pciDeviceIdentifier: String? = nil,
+        servingDextBuild: ServingDextBuild? = nil
     ) {
         self.appVersion = appVersion
         self.buildNumber = buildNumber
@@ -1235,6 +1271,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         self.dextAwaitingReboot = dextAwaitingReboot
         self.thunderBridgePresent = thunderBridgePresent
         self.pciDeviceIdentifier = pciDeviceIdentifier
+        self.servingDextBuild = servingDextBuild
     }
 
     /// The version line, e.g. `0.8.4 (build 585 · 483d8e7)`.
@@ -1244,10 +1281,44 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         return "\(appVersion) (\(suffix))"
     }
 
+    /// The plain instruction for a driver update that only a restart can finish.
+    public static let restartToFinishDriverUpdate = "Restart your Mac to finish the driver update"
+
+    /// The build serving the card, in words: "build 121", or "a build before
+    /// 123" from a driver too old to say. Nil when the app did not ask.
+    public var servingDextBuildDescription: String? {
+        switch servingDextBuild {
+        case .build(let build)?: return "build \(build)"
+        case .olderThanBuildReporting?: return "a build before \(ServingDextBuild.firstReportingBuild)"
+        case nil: return nil
+        }
+    }
+
+    /// The driver serving the ThunderBridge is not the build this app carries.
+    /// sysextd can list the bundled copy as installed and active while macOS
+    /// still runs the old copy for the device; only a restart moves the
+    /// device to the new one. A driver that cannot report its build predates
+    /// every bundled build that can, so it differs too. An unstamped build (0)
+    /// proves nothing and is not treated as a mismatch.
+    public var servingDextDiffersFromBundled: Bool {
+        guard let bundledDextBuild, let servingDextBuild else { return false }
+        switch servingDextBuild {
+        case .build(let build):
+            return build != 0 && String(build) != bundledDextBuild
+        case .olderThanBuildReporting:
+            guard let bundled = Int(bundledDextBuild) else { return false }
+            return bundled >= ServingDextBuild.firstReportingBuild
+        }
+    }
+
     /// What to show for the driver extension row.
     public var dextLine: String {
         if dextLookupFailed { return "Unknown — could not query the system" }
         guard let installedDextVersion else { return "Not installed" }
+        if servingDextDiffersFromBundled, let serving = servingDextBuildDescription {
+            return "\(installedDextVersion) installed; \(serving) still serves the ThunderBridge — "
+                + Self.restartToFinishDriverUpdate
+        }
         if dextCleanupPending {
             return "\(installedDextVersion) — active; older copy finishing cleanup"
         }
@@ -1265,6 +1336,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
                 ? "Not registered — install or approve the driver"
                 : "Ready — no ThunderBridge connected"
         }
+        if servingDextDiffersFromBundled { return Self.restartToFinishDriverUpdate }
         if dextAwaitingReboot { return "Installed — restart required" }
         if dextAwaitingApproval { return "Installed — approval required" }
         if dextUpgradePending { return "Upgrade pending — \(installedDextVersion)" }
@@ -1336,6 +1408,11 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         // A USB-only user does not need the ThunderBridge extension activated. Do not
         // instruct them to replug a Thunderbolt cable when the PCI card is absent.
         guard thunderBridgePresent else { return nil }
+        if servingDextDiffersFromBundled, let serving = servingDextBuildDescription,
+           let bundledDextBuild {
+            return "The ThunderBridge is still served by driver \(serving); this app carries build "
+                + "\(bundledDextBuild). \(Self.restartToFinishDriverUpdate)."
+        }
         if registeredDextCount > 1 && !dextCleanupPending {
             return "More than one version of the driver extension is registered. "
                 + "An upgrade cannot finish while the old one still holds the card — "
@@ -1358,6 +1435,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         lines.append("Audio path: \(audioPath)")
         if let pciDeviceIdentifier { lines.append("PCI device: \(pciDeviceIdentifier)") }
         lines.append("Driver extension: \(dextLine)")
+        if let serving = servingDextBuildDescription { lines.append("Serving driver extension: \(serving)") }
         if let bundledDextBuild { lines.append("Bundled driver extension: build \(bundledDextBuild)") }
         return lines.joined(separator: "\n")
     }

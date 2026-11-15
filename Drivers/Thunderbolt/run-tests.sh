@@ -1,5 +1,13 @@
 #!/bin/bash
-# Register-trace test for the ThunderBridge driver.
+# Host-side tests for the ThunderBridge driver. No hardware, no install.
+#
+# Part 1: Scripts/test-*.sh that compile a driver header with clang++ or check
+# driver source text (optical format, mixer route/pan, timing profile,
+# lifecycle, channel names, driver build report). Scripts/test-*.sh that check
+# app sources (meter map, control tab scroll, dext upgrade activation) or a
+# built package are not run here.
+#
+# Part 2: the register-trace test.
 #
 # What it proves: with the two-port experiment off (no SymphonyPortCount key in
 # the personality, which is how every released build runs), the driver does to
@@ -15,10 +23,12 @@
 # recovery and Stop against a simulated card that records every access.
 #
 #   1. The single-port traces (p1-*) are compared with golden/, recorded from
-#      the driver source as it is on main.
+#      the release driver source (option-card parity, 0.10.17 build 123).
 #   2. If git and the base ref are available, the base ref's driver source is
 #      compiled with the same harness and its traces are compared directly with
-#      the working tree's. This is the before/after check.
+#      the working tree's. This is the before/after check. The default base is
+#      the first of fix/card-parity and main that exists: the release driver
+#      this branch is built on (option-card parity) until it is on main.
 #   3. The two-port traces (p2-*) are compared with golden/ so a change to the
 #      port-2 sequence is always a visible diff, and the harness asserts the
 #      Stage 1 limits (no port-2 DMA, no channel-count or routing change).
@@ -37,7 +47,7 @@
 #      Until 64 is selected a two-port build writes exactly what stage 1 wrote.
 #
 # Usage:
-#   Drivers/Thunderbolt/run-tests.sh                 # all checks, base ref "main"
+#   Drivers/Thunderbolt/run-tests.sh                 # all checks, default base ref
 #   Drivers/Thunderbolt/run-tests.sh --against REF   # use another base ref
 #   Drivers/Thunderbolt/run-tests.sh --no-ref        # golden files only
 #   Drivers/Thunderbolt/run-tests.sh --record-p2     # rewrite golden/p2-*.trace
@@ -45,6 +55,7 @@
 #                                                    # (only when the default
 #                                                    # path is MEANT to change)
 #   Drivers/Thunderbolt/run-tests.sh --verbose       # driver log + raw accesses
+#   Drivers/Thunderbolt/run-tests.sh --traces-only   # skip part 1
 #
 # No hardware is touched and nothing is installed.
 set -euo pipefail
@@ -52,7 +63,8 @@ set -euo pipefail
 TB_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEST_DIR="$TB_DIR/Tests/RegisterTrace"
 GOLDEN="$TEST_DIR/golden"
-BASE_REF="main"
+BASE_REF=""
+RUN_HOST_TESTS=true
 USE_REF=true
 RECORD_P1=false
 RECORD_P2=false
@@ -65,10 +77,40 @@ while [[ $# -gt 0 ]]; do
         --record-p1) RECORD_P1=true ;;
         --record-p2) RECORD_P2=true ;;
         --verbose)   VERBOSE=(--verbose) ;;
+        --traces-only) RUN_HOST_TESTS=false ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
     shift
 done
+
+# ── Part 1: host tests of driver headers and sources ────────────────────────
+HOST_TESTS=(
+    test-optical-format.sh
+    test-mixer-route.sh
+    test-mixer-pan.sh
+    test-timing-profile.sh
+    test-thunderbolt-lifecycle.sh
+    test-channel-names.sh
+    test-driver-build.sh
+)
+if $RUN_HOST_TESTS; then
+    for t in "${HOST_TESTS[@]}"; do
+        echo "[tb] $t"
+        bash "$TB_DIR/Scripts/$t"
+    done
+    echo "[ok] ThunderBridge driver host tests passed (${#HOST_TESTS[@]})"
+    echo
+fi
+
+# ── Part 2: register traces ─────────────────────────────────────────────────
+if [[ -z "$BASE_REF" ]]; then
+    for candidate in fix/card-parity main; do
+        if git -C "$TB_DIR" rev-parse --verify --quiet "$candidate^{commit}" > /dev/null 2>&1; then
+            BASE_REF="$candidate"; break
+        fi
+    done
+    BASE_REF="${BASE_REF:-main}"
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -139,7 +181,7 @@ if $RECORD_P2; then
     echo "[trace] recorded two-port golden traces from the working tree"
 fi
 
-compare_dir 'p1-*.trace' "$GOLDEN" "$TMP/work" "golden (driver as on main)" || status=1
+compare_dir 'p1-*.trace' "$GOLDEN" "$TMP/work" "golden (release driver)" || status=1
 
 # A single-port trace the harness produced but nobody recorded is a hole.
 for f in "$TMP/work"/p1-*.trace; do

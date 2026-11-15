@@ -571,6 +571,18 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         if cachedClockSource == 0 { cachedClockSource = UInt32(reported) }
     }
 
+    /// A slot's board hardware major version: `SymphonyIOVersion` (0xA0) with
+    /// type 5 (slot 1) or 6 (slot 2), 3 bytes back (major, minor, build), the
+    /// way the original read it (`SymphonyIOControl.cpp:1120-1142`). The type is
+    /// nValue, which the USB transport puts in wIndex. Nil when unanswered.
+    public func readBoardHardwareMajor(slot: Int) async -> UInt8? {
+        guard transport.isConnected, slot == 0 || slot == 1,
+              let reply = try? await transport.sendGetProperty(
+                bRequest: 0xA0, wValue: 0, wIndex: UInt16(5 + slot), dataLength: 3),
+              reply.status == 0, reply.data.count >= 3 else { return nil }
+        return reply.data[0]
+    }
+
     static let readFromUnitWhenPossible: Set<AudioPropertySelector> = [.peakHoldMode, .oversHoldMode]
 
     private func readFromUnit(_ address: PropertyAddress) async throws -> PropertyValue {

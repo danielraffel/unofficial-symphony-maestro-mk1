@@ -103,7 +103,13 @@ struct InputRoutingView: View {
 
     private var routingCache: RoutingStateCache? {
         guard let id = appState.device?.identifier else { return nil }
-        return RoutingStateCache(direction: "input", productID: id.productID)
+        let cache = RoutingStateCache(direction: "input", productID: id.productID)
+        // Same one-time clear the connect-time replay runs, in case this page
+        // reads the saved choices first.
+        if appState.transportType == .thunderbolt {
+            ThunderboltInputRoutingMigration.run(routingKey: cache.key)
+        }
+        return cache
     }
 
     /// Pending refusal / confirmation for Reset Routing. See ``RoutingResetPrompt``.
@@ -159,10 +165,14 @@ struct InputRoutingView: View {
 
             GeometryReader { geo in
                 ScrollView([.horizontal, .vertical]) {
+                    // Each software input is named after what is routed to it
+                    // (the original's Core Audio names, `SymphonyCard.cpp:828-866`),
+                    // so a row follows its route, the rate, format and Replaces.
+                    let names = CardLayout.softwareInputRowNames(
+                        rowCount: pairCount, routes: routes, columns: columns,
+                        prefix: appState.peripheralPrefix)
                     let rowLabels: [(number: String, name: String)] = (0..<pairCount).map { i in
-                        let sw1 = i * 2 + 1
-                        let sw2 = i * 2 + 2
-                        return (number: "\(sw1)-\(sw2)", name: "A Line \(sw1)/\(sw2)")
+                        (number: "\(i * 2 + 1)-\(i * 2 + 2)", name: names[i])
                     }
                     RoutingGridView(
                         rowCount: pairCount,
@@ -251,25 +261,26 @@ struct InputRoutingView: View {
     }
 
     private func defaultRouteGrid() -> [Int: Int] {
+        // ThunderBridge: what the driver actually programs, card by card
+        // (host input n from slot 1 channel n, then slot 2 from where slot
+        // 1's inputs end: 12 behind a 2x6, 16 otherwise).
+        // The USB table below put every analog channel first, so this grid
+        // showed Line 9-24 on inputs 9-24 while the unit had slot 1's
+        // digital channels there.
+        if appState.transportType == .thunderbolt {
+            return SymphonyIODefaultRouting.inputGrid(
+                SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1), columns: columns)
+        }
         let board1 = appState.primaryBoardType
         let board2 = appState.secondaryBoardType
         // Same record-channel count Reset Routing writes (the mode's count:
-        // 32 over ThunderBridge, 16/8 in the USB modes). A fixed 16 drew only
-        // half the diagonal on ThunderBridge after a reset (2026-10-22 13:34).
+        // 16/8 in the USB modes).
         let routeList = SymphonyIODefaultRouting.inputRoutes(
             board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
             board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
             usbChannelCount: appState.device?.identifier.mode.channelCount
                 ?? SymphonyIODefaultRouting.usbChannelCount)
-        var grid: [Int: Int] = [:]
-        for route in routeList {
-            guard route.source != SymphonyIORoutingAddress.none,
-                  route.destination % 2 == 0,
-                  let col = column(forRoutingByte: route.source)
-            else { continue }
-            grid[Int(route.destination - SymphonyIORoutingAddress.p2pBase) / 2] = col
-        }
-        return grid
+        return SymphonyIODefaultRouting.inputGrid(routeList, columns: columns)
     }
 
     /// Persist only the crosspoints a person actually picked.
@@ -371,7 +382,9 @@ struct InputRoutingView: View {
         }
         let plan = RoutingResetGuard.inputPlanLines(
             board1: b1.card, board2: b2.card,
-            usbChannelCount: device.identifier.mode.channelCount)
+            usbChannelCount: device.identifier.mode.channelCount,
+            routes: appState.transportType == .thunderbolt
+                ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1) : nil)
         resetPrompt = RoutingResetPrompt(
             title: "Reset Input Routing",
             message: """
@@ -417,10 +430,14 @@ struct InputRoutingView: View {
         // never touch a hardware output.
         let usbChannels = device.identifier.mode.channelCount
 
-        let routeList = SymphonyIODefaultRouting.inputRoutes(
-            board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
-            board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
-            usbChannelCount: usbChannels)
+        // ThunderBridge resets to the driver's own board-order table, the one
+        // it programs at Start, never the USB analog-first one.
+        let routeList = appState.transportType == .thunderbolt
+            ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1)
+            : SymphonyIODefaultRouting.inputRoutes(
+                board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
+                board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
+                usbChannelCount: usbChannels)
 
         var newRoutes: [Int: Int] = [:]
         var failures = 0
@@ -491,23 +508,28 @@ struct OutputRoutingView: View {
 
     // Output routing row labels: board-aware "A Line"/"A ADAT" + Mixer buses.
     // Evidence: original Maestro 2 shows "A Line 1/2", "A ADAT 1/2" etc.
+    // The hardware part is the output column's name, so it is named by the
+    // card that has it (an 8x8 in AES mode is "AES", not "ADAT") and follows
+    // the rate and optical format (SMUX, SPDIF Opt, N.A.) as the daemon's
+    // channel names did.
     private var rowLabels: [(number: String, name: String)] {
         let total = swOutputPairCount
-        let board1 = appState.primaryBoardType
-        let board2 = appState.secondaryBoardType
-        // Count analog output pairs across both boards
-        let analogPairs = board1.analogOutputPairsForUI + board2.analogOutputPairsForUI
-
+        let hardware = layout.outputRoutingColumns
         var labels: [(number: String, name: String)] = []
         for i in 0..<total {
             let sw1 = i * 2 + 1
             let sw2 = i * 2 + 2
-            if i < analogPairs {
-                labels.append((number: "\(sw1)-\(sw2)", name: "A Line \(sw1)/\(sw2)"))
+            let name: String
+            // The unit's prefix letter, and a bare "N.A." for a pair with no
+            // channel the rate or format carries (`APUtilities.m:323-400`).
+            if i < hardware.count {
+                name = CardLayout.softwarePairName(hardwarePair: hardware[i].stereoName,
+                                                   prefix: appState.peripheralPrefix)
             } else {
-                let adatIdx = (i - analogPairs) * 2 + 1
-                labels.append((number: "\(sw1)-\(sw2)", name: "A ADAT \(adatIdx)/\(adatIdx + 1)"))
+                name = CardLayout.softwarePairName(hardwarePair: "Digital \(sw1)/\(sw2)",
+                                                   prefix: appState.peripheralPrefix)
             }
+            labels.append((number: "\(sw1)-\(sw2)", name: name))
         }
 
         // Mixer buses (Symphony IO MKI: always 2).
@@ -1004,6 +1026,13 @@ struct RoutingGridView: View {
 
     private let cellSize: CGFloat = 40
     private let cellHeight: CGFloat = 22
+
+    /// How far an "N.A." column header or row name is faded.
+    static let notApplicableOpacity: Double = 0.45
+
+    static func isNotApplicable(_ labels: [(type: String, channels: String)], _ col: Int) -> Bool {
+        col < labels.count && labels[col].channels.isEmpty && CardLayout.isNotApplicable(labels[col].type)
+    }
     private let numWidth: CGFloat = 40   // wide enough for "23-24" without wrapping
     private let nameWidth: CGFloat = 86
     private let colHeaderHeight: CGFloat = 40
@@ -1058,6 +1087,9 @@ struct RoutingGridView: View {
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.primary)
                     }
+                    // A pair the rate or format does not carry stays, as the
+                    // original's did, but reads as inactive.
+                    .opacity(Self.isNotApplicable(columnLabels, col) ? Self.notApplicableOpacity : 1)
                     .frame(width: cellSize, height: colHeaderHeight)
                     .border(Color.gray.opacity(0.15), width: 0.5)
                 }
@@ -1081,6 +1113,10 @@ struct RoutingGridView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .opacity(row < rowLabels.count && CardLayout.isNotApplicable(rowLabels[row].name)
+                                 ? Self.notApplicableOpacity : 1)
+                        .help(row < rowLabels.count ? rowLabels[row].name : "")
                         .padding(.trailing, 4)
                         .frame(width: nameWidth, height: cellHeight, alignment: .trailing)
                         .background(row % 2 == 0 ? Color.gray.opacity(0.08) : Color.gray.opacity(0.04))

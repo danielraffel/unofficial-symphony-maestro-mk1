@@ -243,10 +243,35 @@ public final class DextUserClient: @unchecked Sendable {
         return nil
     }
 
-    // kSelectorReadPort2State — EXPERIMENT (64 channels): what is on XLink port 2.
-    private static let selectorReadPort2State: UInt32 = 6
+    // kSelectorReadDriverBuild — the serving dext's CFBundleVersion (dext 123+).
+    private static let selectorReadDriverBuild: UInt32 = 6
 
-    /// What the driver found on its second XLink port (selector 6). No PCI
+    /// The CFBundleVersion of the dext binary serving this user client
+    /// (selector 6, dext 123+). This is the copy macOS actually runs for the
+    /// card, which after an update can still be the old one even though
+    /// sysextd lists the new copy as active. `nil` = no answer: no connection,
+    /// or a dext older than 123, which rejects the selector.
+    public func readDriverBuild() -> UInt32? {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        var out = [UInt32](repeating: 0, count: 2)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorReadDriverBuild, nil, 0, p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == 8, out[0] == 0 else { return nil }
+        return out[1]
+    }
+
+    // kSelectorReadPort2State — EXPERIMENT (64 channels): what is on XLink port 2.
+    private static let selectorReadPort2State: UInt32 = 7
+
+    /// What the driver found on its second XLink port (selector 7). Exp64
+    /// builds 9001-9003 used 6, now the released driver-build selector; each
+    /// selector checks its exact output size, so a mismatched pair rejects the
+    /// call and both reads come back nil. No PCI
     /// transaction. `nil` when the driver has no such selector, which is every
     /// released driver: that is the normal case, so it is not logged.
     public func readPort2State() -> SecondPortState? {

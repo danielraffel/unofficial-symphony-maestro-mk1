@@ -130,7 +130,7 @@ struct DeviceSettingsStoreTests {
     // MARK: - Thunderbolt
 
     /// Relaunch: a new connection on the same store reads back what the last
-    /// one wrote. `.prefix` has no hardware opcode, so the write needs no driver.
+    /// one wrote. `.prefix` is stored even when no driver takes its 0x37 send.
     @Test("Thunderbolt: a setting written in one session reads back in the next")
     func thunderboltSurvivesRelaunch() async throws {
         try await Self.withDefaults { defaults in

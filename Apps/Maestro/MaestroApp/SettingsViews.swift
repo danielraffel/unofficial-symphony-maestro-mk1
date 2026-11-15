@@ -112,8 +112,10 @@ struct DeviceSettingsView: View {
                             if opticalFormatCard1 == nil {
                                 Text("Unavailable").tag(nil as UInt32?)
                             }
+                            // The original's two choices, by name
+                            // (APDeviceOpticalFormatView.xib:126, 149).
                             Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
-                            Text("S/PDIF").tag(UInt32(1) as UInt32?)
+                            Text("SPDIF").tag(UInt32(1) as UInt32?)
                         }
                     }
 
@@ -123,7 +125,7 @@ struct DeviceSettingsView: View {
                                 Text("Unavailable").tag(nil as UInt32?)
                             }
                             Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
-                            Text("S/PDIF").tag(UInt32(1) as UInt32?)
+                            Text("SPDIF").tag(UInt32(1) as UInt32?)
                         }
                     }
                 }
@@ -199,6 +201,7 @@ struct DeviceSettingsView: View {
                 }
                 .onChange(of: peripheralPrefix) { _, newValue in
                     guard !isLoading else { return }
+                    appState.peripheralPrefix = CardLayout.peripheralPrefix(newValue)
                     Task { await writeProperty(.prefix, value: .string(newValue)) }
                 }
             }
@@ -420,6 +423,10 @@ struct DeviceSettingsView: View {
         let validValue = value.flatMap { $0 <= 1 ? $0 : nil }
         if card == 0 { opticalFormatCard1 = validValue }
         else { opticalFormatCard2 = validValue }
+        // Optical channel names everywhere follow the confirmed format.
+        if let validValue, card < 2 {
+            appState.channelNaming.opticalIsSPDIF[Int(card)] = validValue == 1
+        }
     }
 
     /// Keep showing confirmed hardware state until the write and readback finish.
@@ -453,6 +460,7 @@ struct DeviceSettingsView: View {
             }
             guard settingsLoadID == loadID else { return }
             setOpticalReadback(actual, card: card)
+            appState.rememberDigitalSetting(address.selector, slot: Int(card), value: actual)
             errorMessage = actual == format ? nil : "Card \(card + 1) did not confirm the requested optical format."
         } catch {
             guard settingsLoadID == loadID else { return }
@@ -503,7 +511,7 @@ struct DeviceSettingsView: View {
         if layout.hasOpticalPorts(slot: 0) {
             do {
                 if let fmt = (try await readSetting(opticalFormatSelector(card: 0), element: 0))?.asUInt32 {
-                    opticalFormatCard1 = fmt <= 1 ? fmt : nil
+                    setOpticalReadback(fmt, card: 0)
                 }
             } catch is CancellationError {
                 return
@@ -514,7 +522,7 @@ struct DeviceSettingsView: View {
         if layout.hasOpticalPorts(slot: 1) {
             do {
                 if let fmt = (try await readSetting(opticalFormatSelector(card: 1), element: 1))?.asUInt32 {
-                    opticalFormatCard2 = fmt <= 1 ? fmt : nil
+                    setOpticalReadback(fmt, card: 1)
                 }
             } catch is CancellationError {
                 return
@@ -586,6 +594,7 @@ struct DeviceSettingsView: View {
             if let pfx = (try await readSetting(.prefix))?.asString,
                !pfx.isEmpty {
                 peripheralPrefix = String(pfx.prefix(1))
+                appState.peripheralPrefix = CardLayout.peripheralPrefix(pfx)
             }
         } catch is CancellationError {
             return
@@ -828,19 +837,27 @@ struct SystemSetupView: View {
     /// on every refresh, and it clears whatever the last error said.
     @State private var programmaticRate: Double?
 
-    // Keys are the legacy eSymphonyIOClockSource enum values (SymphonyIOVendorSpecific.h:857-865),
+    // Keys 1-5 are the legacy eSymphonyIOClockSource enum values (SymphonyIOVendorSpecific.h:857-865),
     // sent verbatim as ClockMode pData[0]. The old dict was off-by-one with invented digital
     // "sources" (AES/EBU, S/PDIF, ADAT, Optical S/PDIF are board sub-sources, not clock sources).
-    // Note: Loop Sync (3) and IO Board 1/2 (4/5) currently send default flags/boardIndex — the
-    // isMaster/loopSync and board-index wiring is a known follow-up (CS2 gap); Internal and Word
-    // Clock are fully correct.
-    private let clockSourceNames: [UInt32: String] = [
-        1: "Internal",
-        2: "Word Clock",
-        3: "Loop Sync",
-        4: "IO Board 1",
-        5: "IO Board 2"
-    ]
+    // Each board's inputs are listed one by one with their own keys; see `ClockSourceMenu`.
+    //
+    // Over USB the Symphony runs on its internal clock only: Apogee's software
+    // offered no other source in the USB interface mode
+    // (`og_source/maestrolink/Software/SymphonyIO.cpp:1735-1738, 1754-1755`), and
+    // its daemon treated any other reading as Internal (`:6465-6466`). Offering
+    // Word Clock or IO Board here sent the unit choices it does not act on.
+    // Over ThunderBridge each fitted board is offered as its own inputs (coax,
+    // AES pairs, optical), as Apogee's software did in the Symphony mode. The
+    // optical row's name follows the rate and the board's optical format.
+    private var clockSourceChoices: [ClockSourceChoice] {
+        appState.transportType == .usb
+            ? ClockSourceMenu.usb
+            : ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
+                                          slot2: appState.secondaryBoardType,
+                                          sampleRate: sampleRate > 0 ? sampleRate : nil,
+                                          opticalIsSPDIF: appState.channelNaming.opticalIsSPDIF)
+    }
 
     /// Fallback rates shown when device doesn't report available rates.
     private static let defaultRates: [Double] = [
@@ -910,8 +927,8 @@ struct SystemSetupView: View {
 
                 // Clock Source
                 Picker("Clock Source", selection: $clockSource) {
-                    ForEach(Array(clockSourceNames.keys.sorted()), id: \.self) { key in
-                        Text(clockSourceNames[key] ?? "Unknown").tag(key)
+                    ForEach(clockSourceChoices) { choice in
+                        Text(choice.name).tag(choice.id)
                     }
                 }
                 .disabled(isProToolsMode)
@@ -925,6 +942,17 @@ struct SystemSetupView: View {
                     }
                     programmaticClockSource = nil
                     Task { await writeClockSource(newSource) }
+                }
+                // The rows change when the board types arrive or a card
+                // changes. Keep the selection on the row for the same source
+                // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and
+                // do not send it: nothing was chosen.
+                .onChange(of: clockSourceChoices.map(\.id)) { _, ids in
+                    guard !ids.contains(clockSource),
+                          let row = ClockSourceMenu.row(for: clockSource, in: clockSourceChoices),
+                          row != clockSource else { return }
+                    programmaticClockSource = row
+                    clockSource = row
                 }
 
                 if isProToolsMode {
@@ -1482,8 +1510,10 @@ struct SystemSetupView: View {
         let cached2 = defaults.object(forKey: "cachedSecondaryBoardType") != nil
             ? appState.secondaryBoardType : nil
 
-        board1Reading = .resolve(live: live1, cached: cached1, isSimulated: simulating)
-        board2Reading = .resolve(live: live2, cached: cached2, isSimulated: simulating)
+        board1Reading = BoardTypeReading.resolve(live: live1, cached: cached1, isSimulated: simulating)
+            .withHardwareMajor(appState.primaryBoardHardwareMajor)
+        board2Reading = BoardTypeReading.resolve(live: live2, cached: cached2, isSimulated: simulating)
+            .withHardwareMajor(appState.secondaryBoardHardwareMajor)
     }
 
     private func loadProperties() async {
@@ -1517,9 +1547,15 @@ struct SystemSetupView: View {
         // no read opcode and answers with what this session last wrote (0 until
         // then, which matches no row and is ignored). The USB CoreAudio device is
         // still not consulted: its clock-source IDs are not this enum.
-        if let source = (try? await device.getProperty(
+        // A board source comes back with its input; `row(for:in:)` picks the
+        // menu row for it.
+        // Each slot's optical format names the optical clock row and, on a
+        // DA16, picks the input byte that row sends.
+        if appState.transportType != .usb { await appState.refreshChannelNaming() }
+        if let reported = (try? await device.getProperty(
                 PropertyAddress(selector: .clockSource)))?.asUInt32,
-           clockSourceNames[source] != nil, source != clockSource {
+           let source = ClockSourceMenu.row(for: reported, in: clockSourceChoices),
+           source != clockSource {
             programmaticClockSource = source
             clockSource = source
         }

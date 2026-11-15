@@ -557,6 +557,17 @@ public:
         return kIOReturnSuccess;
     }
     kern_return_t SetName(OSString *) { return kIOReturnSuccess; }
+    // Per-channel names (option-card parity): recorded so a trace pins which
+    // host channels get which name, and when. A null name removes it.
+    kern_return_t SetElementName(uint32_t element, IOUserAudioObjectPropertyScope scope, OSString *name) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "element-name dir=%s ch=%u name=%s",
+                 scope == IOUserAudioObjectPropertyScope::Input ? "in"
+                 : scope == IOUserAudioObjectPropertyScope::Output ? "out" : "global",
+                 element, name ? name->getCStringNoCopy() : "(none)");
+        gHostBackend->HostEvent(buf);
+        return kIOReturnSuccess;
+    }
     kern_return_t UpdateCurrentZeroTimestamp(uint64_t, uint64_t) { return kIOReturnSuccess; }
     kern_return_t RequestDeviceConfigurationChange(uint64_t action, OSObject *) {
         gHostAudio.lastConfigChangeAction = action;

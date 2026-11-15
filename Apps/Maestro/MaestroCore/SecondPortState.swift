@@ -5,12 +5,12 @@
 /// With that it switches port 2 on and asks the units cabled to it what they
 /// are; port 2 carries audio only while "Port 1-2: 64ch" is selected (see
 /// `PortSelection`). It publishes the result through user-client
-/// selector 6 as `SymphonyPort2StateOutput`, sixteen 32-bit words
+/// selector 7 as `SymphonyPort2StateOutput`, sixteen 32-bit words
 /// (`Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h`). macOS does not
 /// keep this driver's log, so this is the only way a tester's findings reach us:
 /// Device Info shows it and the copied details carry it, raw words included.
 ///
-/// A released driver has no selector 6, and a one-port build of this driver
+/// A released driver has no selector 7, and a one-port build of this driver
 /// answers with `portCount` 1. In both cases nothing is shown and the copied
 /// text is exactly what it was.
 public struct SecondPortState: Sendable, Equatable {

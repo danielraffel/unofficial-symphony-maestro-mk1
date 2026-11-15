@@ -139,12 +139,60 @@ struct ThunderboltDeviceConnectionTests {
         }
     }
 
+    /// S/PDIF Coax Replaces and Mirrors are read from the unit over ThunderBridge
+    /// (0x35 / 0x36, nValue the board index), not refused. The reported log
+    /// line was `loadDigitalSettings spdifReplace1: unsupportedProperty('AEs0')`.
+    @Test("ThunderboltDeviceConnection: S/PDIF Replaces and Mirrors are read from the unit",
+          arguments: [UInt32(0), 1])
+    func spdifCoaxIsReadFromUnit(board: UInt32) async throws {
+        let replace = PropertyAddress(selector: .spdifReplaceID, scope: .input, element: board)
+        let mirror = PropertyAddress(selector: .spdifMirrorID, scope: .output, element: board)
+        #expect(try ThunderboltDeviceConnection.vendorRead(for: replace) == (0x35, board))
+        #expect(try ThunderboltDeviceConnection.vendorRead(for: mirror) == (0x36, board))
+
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        for address in [replace, mirror] {
+            do {
+                _ = try await conn.getProperty(address)
+                #expect(Bool(false), "No driver; should have thrown")
+            } catch let error as DeviceConnectionError {
+                if case .unsupportedProperty = error {
+                    #expect(Bool(false), "\(address.selector) must be read, not refused")
+                }
+            } catch {
+                // DextUserClient's own error: a read was attempted.
+            }
+        }
+    }
+
+    /// A key that is not a clock source, or a board input on a source that is
+    /// not a board, is refused before anything is sent.
+    @Test("ThunderboltDeviceConnection: a clock key that is not a source is refused")
+    func clockSourceKeyValidated() async {
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        for bad: UInt32 in [0, 6, 0x0101, 0x0203, 0x10004, 0x0804, 0xFF04] {
+            do {
+                try await conn.setProperty(PropertyAddress(selector: .clockSource), value: .uint32(bad))
+                #expect(Bool(false), "\(bad) should have been refused")
+            } catch let error as DeviceConnectionError {
+                guard case .typeMismatch = error else {
+                    #expect(Bool(false), "\(bad): wrong error \(error)")
+                    continue
+                }
+            } catch {
+                #expect(Bool(false), "\(bad): unexpected error \(error)")
+            }
+        }
+    }
+
     // MARK: - Remembered write-only settings
 
     /// The reported bug: change a setting, leave the tab, come back, and the
     /// control shows its default. The view re-reads the device on appearance, so
-    /// the read has to return what was written. `.prefix` has no hardware opcode
-    /// on any transport, so this exercises the real write path with no dext.
+    /// the read has to return what was written. `.prefix` is kept by the Mac
+    /// even when its 0x37 send has no dext to go to, so this runs without one.
     @Test("ThunderboltDeviceConnection: a written setting reads back")
     func rememberedSettingReadsBack() async throws {
         let conn = ThunderboltDeviceConnection(
@@ -156,6 +204,25 @@ struct ThunderboltDeviceConnectionTests {
 
         try await conn.setProperty(prefix, value: .string("F"))
         #expect(try await conn.getProperty(prefix) == .string("F"))
+    }
+
+    /// Peripheral Prefix goes to the unit as 0x37 (the daemon kept it there and
+    /// the driver names channels from it); only a letter A-Z is accepted, and
+    /// the Mac's copy is kept even when the send has no driver to go to.
+    @Test("ThunderboltDeviceConnection: prefix is a letter, kept without a driver")
+    func prefixWrite() async throws {
+        #expect(ThunderboltDeviceConnection.prefixCommand == 0x37)
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        let prefix = PropertyAddress(selector: .prefix)
+        await #expect(throws: DeviceConnectionError.self) {
+            try await conn.setProperty(prefix, value: .string("a"))
+        }
+        await #expect(throws: DeviceConnectionError.unsupportedProperty(.prefix)) {
+            _ = try await conn.getProperty(prefix)
+        }
+        try await conn.setProperty(prefix, value: .string("B"))
+        #expect(try await conn.getProperty(prefix) == .string("B"))
     }
 
     /// Nothing is invented: until this connection has written a value the read

@@ -21,7 +21,8 @@ struct SoftwareInfoReportTests {
         dextAwaitingApproval: Bool = false,
         dextAwaitingReboot: Bool = false,
         thunderBridgePresent: Bool = true,
-        pciDeviceIdentifier: String? = "pci19c2,2200"
+        pciDeviceIdentifier: String? = "pci19c2,2200",
+        servingDextBuild: ServingDextBuild? = nil
     ) -> SoftwareInfoReport {
         SoftwareInfoReport(
             appVersion: "0.8.4",
@@ -39,7 +40,8 @@ struct SoftwareInfoReportTests {
             dextAwaitingApproval: dextAwaitingApproval,
             dextAwaitingReboot: dextAwaitingReboot,
             thunderBridgePresent: thunderBridgePresent,
-            pciDeviceIdentifier: pciDeviceIdentifier
+            pciDeviceIdentifier: pciDeviceIdentifier,
+            servingDextBuild: servingDextBuild
         )
     }
 
@@ -236,5 +238,61 @@ struct SoftwareInfoReportTests {
         let text = report(installedDextVersion: nil, registeredDextCount: 0,
                           bundledDextBuild: nil, installedDextBuild: nil).clipboardText
         #expect(text.contains("Driver extension: Not installed"))
+    }
+
+    // MARK: - Serving driver build
+
+    /// The 2026-11 report: sysextd lists 122 enabled with an older copy
+    /// finishing cleanup, but the card is still served by 121, which predates
+    /// the build selector and so does not answer it.
+    @Test func olderServingCopyThatCannotReportSaysRestart() {
+        let r = report(installedDextVersion: "0.10.17 (123)", registeredDextCount: 2,
+                       bundledDextBuild: "123", installedDextBuild: "123",
+                       servingDextBuild: .olderThanBuildReporting)
+        #expect(r.servingDextDiffersFromBundled)
+        #expect(r.dextLine == "0.10.17 (123) installed; a build before 123 still serves the ThunderBridge — Restart your Mac to finish the driver update")
+        #expect(!r.dextLine.contains("cleanup"))
+        #expect(r.dextStatusLine == "Restart your Mac to finish the driver update")
+        #expect(r.dextNotice?.hasSuffix("Restart your Mac to finish the driver update.") == true)
+        #expect(r.clipboardText.contains("Serving driver extension: a build before 123"))
+    }
+
+    @Test func servingBuildThatDiffersIsNamed() {
+        let r = report(installedDextVersion: "0.10.18 (124)", registeredDextCount: 2,
+                       bundledDextBuild: "124", installedDextBuild: "124",
+                       servingDextBuild: .build(123))
+        #expect(r.servingDextDiffersFromBundled)
+        #expect(r.dextLine.contains("build 123 still serves the ThunderBridge"))
+        #expect(r.dextNotice == "The ThunderBridge is still served by driver build 123; this app carries build 124. Restart your Mac to finish the driver update.")
+    }
+
+    @Test func servingBuildThatMatchesKeepsTheUsualLines() {
+        let r = report(registeredDextCount: 2, bundledDextBuild: "123", installedDextBuild: "123",
+                       servingDextBuild: .build(123))
+        #expect(!r.servingDextDiffersFromBundled)
+        #expect(r.dextLine.contains("active; older copy finishing cleanup"))
+        #expect(r.dextStatusLine.hasPrefix("Enabled"))
+        #expect(r.clipboardText.contains("Serving driver extension: build 123"))
+    }
+
+    /// Not asked (USB, or no ThunderBridge connection open): no claim either way.
+    @Test func notAskedMakesNoClaim() {
+        let r = report(registeredDextCount: 2, bundledDextBuild: "123", installedDextBuild: "123")
+        #expect(!r.servingDextDiffersFromBundled)
+        #expect(!r.clipboardText.contains("Serving driver extension"))
+    }
+
+    /// A dev build without the stamped number answers 0: proves nothing.
+    @Test func unstampedServingBuildIsNotAMismatch() {
+        let r = report(bundledDextBuild: "123", installedDextBuild: "123", servingDextBuild: .build(0))
+        #expect(!r.servingDextDiffersFromBundled)
+    }
+
+    /// An app whose bundled dext itself predates the selector cannot read a
+    /// missing answer as "older".
+    @Test func silentDriverIsNotOlderThanAPreReportingBundle() {
+        let r = report(bundledDextBuild: "122", installedDextBuild: "122",
+                       servingDextBuild: .olderThanBuildReporting)
+        #expect(!r.servingDextDiffersFromBundled)
     }
 }
