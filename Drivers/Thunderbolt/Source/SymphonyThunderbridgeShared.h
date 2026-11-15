@@ -19,13 +19,13 @@
                                              // another selector's shape (an experimental app
                                              // polling 7 with no input) is refused.
 #define kSelectorReadPort2State 8            // EXPERIMENT (64ch): what is on XLink port 2 (no bus access).
-                                             // Was 6 in exp64 builds 9001-9003 and 7 in 9004-9005;
+                                             // Was 6 in exp64 builds 9001-9003 and 7 in 9004;
                                              // 6 and 7 are released selectors (driver build, retire).
                                              // Each selector checks its exact input and output
                                              // sizes, so an old/new app/dext mismatch is rejected
                                              // and the app treats the answer as absent: a new app
-                                             // asking 8 of 9004/9005 gets "no such selector", and
-                                             // a retire call (8-byte input) on 9004/9005's no-input
+                                             // asking 8 of 9004 gets "no such selector", and
+                                             // a retire call (8-byte input) on 9004's no-input
                                              // 7 is refused.
 #define kSelectorCount          9
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type

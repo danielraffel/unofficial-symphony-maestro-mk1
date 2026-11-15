@@ -269,7 +269,7 @@ public final class DextUserClient: @unchecked Sendable {
     private static let selectorReadPort2State: UInt32 = 8
 
     /// What the driver found on its second XLink port (selector 8). Exp64
-    /// builds 9001-9003 used 6 and 9004-9005 used 7, now the released
+    /// builds 9001-9003 used 6 and 9004 used 7, now the released
     /// driver-build and retire selectors; each selector checks its exact input
     /// and output sizes, so a mismatched pair rejects the call and the read
     /// comes back nil (no port 2 shown until the driver is updated). No PCI

@@ -17,7 +17,7 @@ APP_CLIENT="$ROOT/Apps/Maestro/MaestroDevice/DextUserClient.swift"
 grep -q 'private static let selectorReadDriverBuild: UInt32 = 6' "$APP_CLIENT"
 grep -q 'IOConnectCallStructMethod(conn, Self.selectorReadDriverBuild, nil, 0, p.baseAddress, &outSize)' "$APP_CLIENT"
 # The two-port experiment's port-2 state read moved from 6 (exp64 9001-9003)
-# to 7 (9004-9005) and then to 8, so the released driver-build (6) and retire
+# to 7 (9004) and then to 8 (from 9005), so the released driver-build (6) and retire
 # (7) selectors keep their numbers. App and dext must agree.
 grep -q 'private static let selectorReadPort2State: UInt32 = 8' "$APP_CLIENT"
 grep -q '\[kSelectorReadPort2State\]' "$DIR/Source/SymphonyUserClient.cpp"

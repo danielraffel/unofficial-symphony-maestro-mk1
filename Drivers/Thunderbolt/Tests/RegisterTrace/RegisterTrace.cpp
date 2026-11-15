@@ -779,6 +779,9 @@ static void RunRetire(const char *name, bool streaming, const std::string &outDi
         Irq(r, 2);
         if (gHostAudio.volume) gHostAudio.volume->SetDecibelValue(-20.0f);
         Irq(r, 1);   // queues the volume write; not pumped, so it is in flight at Stop()
+        size_t queued = 0;
+        for (auto *q : gQueues) if (q != &gHostCompletions) queued += q->size();
+        CHECK(queued > 0, "%s: no XLink work queued before the retire (the test proves nothing)", name);
     } else {
         card.phase("IO stopped");
         drv->StopDevice(1, IOUserAudioStartStopFlags::None);
