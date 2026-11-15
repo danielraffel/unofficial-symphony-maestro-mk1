@@ -1195,10 +1195,7 @@ struct SystemSetupView: View {
                         Text(info.dextStatusLine)
                             .foregroundStyle(info.dextNeedsAction ? .orange : .primary)
                         if info.dextNeedsAction {
-                            let needsSettings = info.dextUpgradePending
-                                || info.dextAwaitingApproval
-                                || info.dextAwaitingReboot
-                                || (info.installedDextVersion != nil && !info.dextEnabled)
+                            let needsSettings = info.dextActionOpensSettings
                             let actionTitle = needsSettings
                                 ? "Open Driver Settings…"
                                 : (dextActionInFlight ? "Working…" : "Install / Approve…")
@@ -1232,7 +1229,7 @@ struct SystemSetupView: View {
                         }
                     }
                 }
-                if info.dextNeedsAction && info.installedDextVersion != nil {
+                if info.dextNeedsAction && info.installedDextVersion != nil && !info.driverUpdateUnfinished {
                     Text("To enable or disable: open System Settings → Login Items & Extensions → By App → Maestro → Driver Extension.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

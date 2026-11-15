@@ -37,6 +37,12 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
 
     /// Called when activation finishes, fails, or needs approval. Always on the main queue.
     public var onStatusChange: ((Status) -> Void)?
+    /// Posted on the main queue when an activation request this process
+    /// submitted finishes with `.completed`. Separate from `onStatusChange`,
+    /// which a view replaces with its own handler: the driver hand-over in
+    /// AppState must see every completion.
+    public static let activationCompletedNotification =
+        Notification.Name("com.danielraffel.maestro.driverActivationCompleted")
     /// Most recent activation outcome, retained so a view that appears after the
     /// asynchronous request can still present the right next step.
     public private(set) var lastStatus: Status?
@@ -224,20 +230,23 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
             return false
         }
         // More than one registered copy means an upgrade is waiting for the old
-        // driver to release the card. The safe action is a physical reconnect,
-        // not another activation request.
+        // driver to release the card. Another activation request does not help
+        // (error 4); the banner offers reconnect, off and on, or restart.
         if registered.count > 1 {
             return false
         }
         // A single enabled copy with a different build is the normal clean
-        // upgrade state. Submit one replacement request so the embedded dext
-        // can become active after a reboot or physical reconnect. If the old
-        // process still owns the PCI function, the delegate reports error 4 and
-        // the request is not retried until the next hardware appearance. This
-        // avoids the repeated-request wedge while still allowing an upgrade to
-        // finish without a separate installer host.
+        // upgrade state. Submit one replacement request. sysextd registers and
+        // enables the embedded copy and reports .completed, but the old copy
+        // keeps the PCI device: kernelmanagerd declines to terminate a dext
+        // that is "being replaced" and leaves it until the next restart. The
+        // device moves to the new copy on a replug, on turning the driver off
+        // and on in System Settings, on a restart, or when the old copy retires
+        // on Maestro's request (AppState, kSelectorRetireForUpgrade, dext 123+).
+        // The request is not retried until the next hardware appearance, which
+        // avoids the repeated-request (error 4) wedge.
         if registered[0].bundleVersion != bundled {
-            log.notice("Older ThunderBridge dext (registered[0].bundleVersion, privacy: .public) is registered; requesting one replacement")
+            log.notice("Older ThunderBridge dext \(registered[0].bundleVersion, privacy: .public) is registered; requesting one replacement")
             return true
         }
         return false
@@ -259,8 +268,15 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
         activationRequestInFlight = false
         switch result {
         case .completed:
+            // .completed means sysextd registered and enabled the new copy. It
+            // does not mean the device moved to it: kernelmanagerd can refuse
+            // to terminate the old copy while it holds the PCI device and defer
+            // that to the next restart (logged 2026-11-14, 121 → 122). AppState
+            // checks which build answers on the card and, if it is not the
+            // bundled one, asks it to retire (kSelectorRetireForUpgrade).
             log.notice("Driver extension activated")
             report(.activated)
+            NotificationCenter.default.post(name: Self.activationCompletedNotification, object: self)
         case .willCompleteAfterReboot:
             log.notice("Driver extension activation completes after reboot")
             report(.willCompleteAfterReboot)
@@ -337,10 +353,12 @@ extension SystemExtensionInstaller {
     /// and an activation request through the same XPC link had just succeeded. A promise
     /// that never resolves reads on screen as a permanent "Unknown", so the file wins.
     ///
-    /// More than one entry comes back while an upgrade is half-applied: the outgoing
-    /// version cannot exit until it releases the PCI device, so it stays registered
-    /// alongside the incoming one until the Thunderbolt cable is replugged. The panel says
-    /// so rather than picking one and pretending it is the whole story.
+    /// More than one entry comes back after an upgrade: kernelmanagerd will not terminate
+    /// the outgoing version while it holds the PCI device, so it stays registered (and
+    /// can keep serving the card) alongside the incoming one until a replug, turning the
+    /// driver off and on, a restart, or its own retire (DriverHandover.swift). Only the
+    /// serving build says whether the device has moved; the panel says so rather than
+    /// picking one and pretending it is the whole story.
     ///
     /// Returns an empty array when nothing is registered, and nil when the database could
     /// not be read or parsed — which is not the same claim, and the panel says so.

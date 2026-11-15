@@ -521,6 +521,16 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return dextClient.readLinkState() != nil ? .olderThanBuildReporting : nil
     }
 
+    /// Ask the driver serving the card to retire for `replacementBuild`
+    /// (`DextUserClient.retireForUpgrade`). On acceptance the private client
+    /// is closed at once: the driver is terminating and nothing more should
+    /// be sent to it.
+    public func retireServingDriver(replacementBuild: UInt32) -> DextUserClient.RetireReply {
+        let reply = dextClient.retireForUpgrade(replacementBuild: replacementBuild)
+        if case .accepted = reply { closeDextClient() }
+        return reply
+    }
+
     /// One read of the unit's front panel state (vendor read `0x28`), through
     /// the driver's general vendor read. Nil when the unit does not answer or
     /// the reply is not a real reading. Runs off the caller's thread: the driver
