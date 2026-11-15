@@ -2138,6 +2138,80 @@ static std::vector<Options> TwoPortScenarios()
 }
 #endif
 
+// Defined in the driver source: what SymphonyAudioDevice::HandleChangeSampleRate
+// calls once Core Audio has accepted a nominal rate.
+void SymphonyNoteNominalSampleRate(IOUserAudioDevice *device, double rate);
+
+// The last name published for one host channel since `from`, "" if none.
+static std::string LastElementName(const FakeCard &c, size_t from, const char *dir, unsigned ch)
+{
+    char key[64];
+    snprintf(key, sizeof(key), "element-name dir=%s ch=%u name=", dir, ch);
+    std::string found;
+    for (size_t i = from; i < c.lines.size(); i++) {
+        const size_t at = c.lines[i].find(key);
+        if (at != std::string::npos) found = c.lines[i].substr(at + strlen(key));
+    }
+    return found;
+}
+
+// Channel names follow Core Audio's nominal rate, not only a stream start's
+// rate change. Seen on hardware after a replug: coreaudiod restored the saved
+// 176.4 kHz, a stream start ran there (every optical channel "N.A."), then the
+// nominal rate became 48 kHz with no stream start and nothing renamed them.
+// The fake card has an Optical card in slot 2: host output 25 is its first
+// optical output.
+static void RunNominalRateNames()
+{
+    const char *name = "nominal-rate-names";
+    Options o; o.name = name; o.shortFlow = true;
+    Run r;
+    RunScenario(o, r);
+    FakeCard &card = r.card;
+    SymphonyThunderbridge *drv = r.drv;
+    CHECK(r.startResult == kIOReturnSuccess && gHostAudio.device, "%s: Start failed", name);
+    if (r.startResult != kIOReturnSuccess || !gHostAudio.device) { Finish(o, r); return; }
+
+    card.phase("stream start at the restored 176.4 kHz");
+    drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    gHostAudio.device->SetSampleRate(176400.0);
+    CHECK(drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: StartDevice at 176.4k failed", name);
+    HostPump();
+    CHECK(LastElementName(card, 0, "out", 25) == "A N.A.", "%s: output 25 at 176.4k is \"%s\"", name,
+          LastElementName(card, 0, "out", 25).c_str());
+    drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    HostPump();
+
+    card.phase("nominal rate 48 kHz, no stream start");
+    size_t mark = card.lines.size();
+    gHostAudio.device->SetSampleRate(48000.0);
+    SymphonyNoteNominalSampleRate(gHostAudio.device, 48000.0);
+    HostPump();
+    CHECK(LastElementName(card, mark, "out", 25) == "A ADAT 1", "%s: output 25 after 48k nominal is \"%s\"", name,
+          LastElementName(card, mark, "out", 25).c_str());
+
+    card.phase("the same nominal rate again renames nothing");
+    mark = card.lines.size();
+    SymphonyNoteNominalSampleRate(gHostAudio.device, 48000.0);
+    HostPump();
+    CHECK(LastElementName(card, mark, "out", 25).empty(), "%s: repeated nominal rate renamed output 25", name);
+
+    // After Stop the hook is gone: a late rate change touches nothing.
+    card.phase("Stop");
+    IOUserAudioDevice *dev = gHostAudio.device;
+    dev->retain();
+    drv->Stop(r.pci);
+    HostPump();
+    mark = card.lines.size();
+    SymphonyNoteNominalSampleRate(dev, 176400.0);
+    HostPump();
+    CHECK(card.lines.size() == mark, "%s: nominal rate after Stop reached the driver", name);
+    dev->release();
+    drv->release();
+    r.pci->release();
+    gHostBackend = nullptr;
+}
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -2147,6 +2221,8 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "usage: %s --out <dir> [--verbose]\n", argv[0]); return 2; }
     }
     if (outDir.empty()) { fprintf(stderr, "--out <dir> is required\n"); return 2; }
+
+    RunNominalRateNames();
 
     size_t accesses = 0;
     for (const Options &o : SinglePortScenarios()) {
