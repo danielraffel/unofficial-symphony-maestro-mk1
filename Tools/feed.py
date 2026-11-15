@@ -101,14 +101,30 @@ def verify_feed_signature(path: Path) -> None:
 
 # ── Text model ───────────────────────────────────────────────────────────────
 
+def mask_cdata(text: str) -> str:
+    """The text with the body of every CDATA section blanked, same length.
+
+    Release notes are free text inside CDATA and may quote feed markup (notes
+    about channels can say "<sparkle:channel>beta</sparkle:channel>"). Sparkle
+    and Maestro read them as text; so must every search for an element here.
+    Positions are unchanged, so matches index the original text.
+    """
+    return re.sub(r'(<!\[CDATA\[)(.*?)(\]\]>)',
+                  lambda m: m.group(1) + ' ' * len(m.group(2)) + m.group(3), text, flags=re.S)
+
+
 @dataclass
 class Item:
     start: int
     end: int
     text: str
 
+    @property
+    def markup(self) -> str:
+        return mask_cdata(self.text)
+
     def field(self, name: str) -> str | None:
-        match = re.search(rf'<sparkle:{name}>\s*([^<]*?)\s*</sparkle:{name}>', self.text)
+        match = re.search(rf'<sparkle:{name}>\s*([^<]*?)\s*</sparkle:{name}>', self.markup)
         return match.group(1) if match else None
 
     @property
@@ -121,7 +137,7 @@ class Item:
 
     @property
     def enclosure(self) -> str | None:
-        match = re.search(r'<enclosure\b[^>]*?(?:/>|>\s*</enclosure>)', self.text, re.S)
+        match = re.search(r'<enclosure\b[^>]*?(?:/>|>\s*</enclosure>)', self.markup, re.S)
         return match.group(0) if match else None
 
     def enclosure_attribute(self, name: str) -> str | None:
@@ -146,7 +162,8 @@ def read_feed(path: Path) -> str:
 
 
 def items_of(content: str) -> list[Item]:
-    return [Item(m.start(), m.end(), m.group(0)) for m in re.finditer(r'<item>.*?</item>', content, re.S)]
+    return [Item(m.start(), m.end(), content[m.start():m.end()])
+            for m in re.finditer(r'<item>.*?</item>', mask_cdata(content), re.S)]
 
 
 def find_item(content: str, version: str) -> Item:
@@ -242,11 +259,12 @@ def command_add(args) -> None:
         'type="application/octet-stream" sparkle:installationType="package"></enclosure>\n'
         '    </item>\n'
     )
-    first = re.search(r'^[ \t]*<item>', content, re.M)
+    markup = mask_cdata(content)
+    first = re.search(r'^[ \t]*<item>', markup, re.M)
     if first:
         position = first.start()
     else:
-        closing = re.search(r'^[ \t]*</channel>', content, re.M)
+        closing = re.search(r'^[ \t]*</channel>', markup, re.M)
         if not closing:
             raise FeedError('the feed has no <channel>')
         position = closing.start()
@@ -268,9 +286,11 @@ def command_promote(args) -> None:
     before = item.enclosure
     if before is None:
         raise FeedError(f'{args.version} has no enclosure')
-    text, removed = re.subn(r'^[ \t]*<sparkle:channel>\s*beta\s*</sparkle:channel>[ \t]*\n', '', item.text, flags=re.M)
-    if removed != 1:
+    # Found in the markup only: notes may quote the element.
+    tags = list(re.finditer(r'^[ \t]*<sparkle:channel>\s*beta\s*</sparkle:channel>[ \t]*\n', item.markup, flags=re.M))
+    if len(tags) != 1:
         raise FeedError(f'could not remove the channel element of {args.version}')
+    text = item.text[:tags[0].start()] + item.text[tags[0].end():]
     text, replaced = re.subn(r'(<!\[CDATA\[\n).*?(\n[ \t]*\]\]>)', lambda m: m.group(1) + notes + m.group(2),
                              text, count=1, flags=re.S)
     if replaced != 1:

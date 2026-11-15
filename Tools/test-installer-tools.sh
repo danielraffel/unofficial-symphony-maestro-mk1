@@ -205,6 +205,19 @@ cv --feed "$V/feed.xml" --channel stable && fail "stable below the newest stable
 set_tuple 0.9.1 0.10.17 123 123 "$H40"
 cv --feed "$V/feed.xml" --channel beta || fail "beta above everything refused"
 python3 "$V/Tools/check-versions.py" --feed "$V/feed.xml" >/dev/null 2>&1 && fail "--feed without --channel accepted"
-ok "check-versions --feed: stable above the newest stable, beta above everything, no duplicates"
+# Notes are text: a stable item whose notes quote the channel element is still stable.
+cat > "$V/quoting.xml" <<'XML'
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>
+<item><sparkle:version>0.8.42</sparkle:version><description><![CDATA[
+Beta items carry <sparkle:channel>beta</sparkle:channel>. </item><item><sparkle:version>0.8.99</sparkle:version>
+]]></description></item>
+<item><sparkle:version>0.8.40</sparkle:version></item>
+</channel></rss>
+XML
+set_tuple 0.8.41 0.10.17 123 123 "$H40"
+cv --feed "$V/quoting.xml" --channel stable && fail "a stable item was read as beta from its notes (0.8.41 accepted below stable 0.8.42)"
+set_tuple 0.8.43 0.10.17 123 123 "$H40"
+cv --feed "$V/quoting.xml" --channel stable || fail "a version was read from notes (0.8.43 refused)"
+ok "check-versions --feed: stable above the newest stable, beta above everything, no duplicates, notes read as text"
 
 echo "Installer tool tests passed ($PASS)"
