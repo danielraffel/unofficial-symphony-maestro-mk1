@@ -113,20 +113,64 @@ static void check_digital_settings(void)
     close(fd);
     gDigitalStatePath = path;
     const uint8_t spdif = 1, replace = 6, mirror = 3, off = 0, bad = 9;
-    CHECK(note_digital_write(0x34, 1, &spdif, 1), "slot 2 S/PDIF format is remembered");
-    CHECK(!note_digital_write(0x34, 1, &spdif, 1), "an unchanged value is not a change");
-    CHECK(note_digital_write(0x35, 0, &replace, 1), "slot 1 Replaces is remembered");
-    CHECK(note_digital_write(0x36, 1, &mirror, 1), "slot 2 Mirrors is remembered");
-    CHECK(!note_digital_write(0x36, 0, &off, 1), "Mirrors Off is not a choice");
-    CHECK(!note_digital_write(0x35, 0, &bad, 1), "out-of-range Replaces is ignored");
-    CHECK(!note_digital_write(0x34, 0x10000, &spdif, 1), "board index must be the whole nValue");
-    CHECK(!note_digital_write(0x31, 0, &spdif, 1), "other commands are not remembered");
+    /* SymphonyIOOptionBoardType: 8x8 AES 2, 8x8 Optical 3, A16 IP 4, 16x16 6. */
+    enum { AES = 2, OPT = 3, AD16 = 4, ADDA16 = 6 };
+    CHECK(!digital_has_replay(0) && !digital_has_replay(1),
+          "first run: nothing to replay, so no board-type read");
+    CHECK(note_digital_write(0x34, 1, &spdif, 1, AD16), "slot 2 S/PDIF format is remembered");
+    CHECK(!note_digital_write(0x34, 1, &spdif, 1, AD16), "an unchanged value is not a change");
+    CHECK(note_digital_write(0x35, 0, &replace, 1, OPT), "slot 1 Replaces is remembered");
+    CHECK(note_digital_write(0x36, 1, &mirror, 1, AD16), "slot 2 Mirrors is remembered");
+    CHECK(!note_digital_write(0x36, 0, &off, 1, OPT), "Mirrors Off is not a choice");
+    CHECK(!note_digital_write(0x35, 0, &bad, 1, OPT), "out-of-range Replaces is ignored");
+    CHECK(!note_digital_write(0x34, 0x10000, &spdif, 1, OPT), "board index must be the whole nValue");
+    CHECK(!note_digital_write(0x31, 0, &spdif, 1, OPT), "other commands are not remembered");
     save_digital_state();
     for (int i = 0; i < 3; i++) gSavedDigital[i][0] = gSavedDigital[i][1] = -1;
+    gSavedDigitalBoardType[0] = gSavedDigitalBoardType[1] = -1;
     load_digital_state();
     CHECK(gSavedDigital[0][0] == -1 && gSavedDigital[0][1] == 1, "format reloads per board");
     CHECK(gSavedDigital[1][0] == 6 && gSavedDigital[1][1] == -1, "Replaces reloads per board");
     CHECK(gSavedDigital[2][0] == -1 && gSavedDigital[2][1] == 3, "Mirrors reloads per board");
+    CHECK(gSavedDigitalBoardType[0] == OPT && gSavedDigitalBoardType[1] == AD16,
+          "the card each board's values belong to reloads");
+
+    /* Replaces 6 is Optical 3-4 on the 8x8 it was chosen on and Analog 11-12
+       on a 16x16: it goes back only on the same type of card. */
+    CHECK(digital_has_replay(0) && digital_has_replay(1), "both boards have something to replay");
+    CHECK(digital_replay_allowed(gSavedDigitalBoardType[0], OPT), "same card: replayed");
+    CHECK(!digital_replay_allowed(gSavedDigitalBoardType[0], ADDA16), "card swapped: not replayed");
+    CHECK(!digital_replay_allowed(gSavedDigitalBoardType[0], AES),
+          "8x8 AES/OPT switched to AES: not replayed");
+    CHECK(!digital_replay_allowed(gSavedDigitalBoardType[0], -1), "card type unreadable: not replayed");
+    CHECK(!digital_replay_allowed(-1, OPT), "values with no known card: not replayed");
+    /* The first write to a different card drops what the old one had. */
+    CHECK(note_digital_write(0x36, 0, &mirror, 1, ADDA16), "a write to the new card is remembered");
+    CHECK(gSavedDigital[1][0] == -1 && gSavedDigital[2][0] == 3 && gSavedDigitalBoardType[0] == ADDA16,
+          "the old card's Replaces is forgotten, the new card's Mirrors kept");
+
+    /* A file from before the card types were stored, or a damaged one, is
+       ignored whole. */
+    FILE *f = fopen(path, "w");
+    assert(f);
+    fputs("1 1 6 6 3 3\n", f);
+    fclose(f);
+    for (int i = 0; i < 3; i++) gSavedDigital[i][0] = gSavedDigital[i][1] = -1;
+    gSavedDigitalBoardType[0] = gSavedDigitalBoardType[1] = -1;
+    load_digital_state();
+    CHECK(!digital_has_replay(0) && !digital_has_replay(1), "values without card types are not loaded");
+    f = fopen(path, "w");
+    assert(f);
+    fputs("1 7 9 -1 0 3 3 99\n", f);
+    fclose(f);
+    load_digital_state();
+    CHECK(gSavedDigital[0][0] == 1 && gSavedDigital[0][1] == -1, "an out-of-range format is dropped");
+    CHECK(gSavedDigital[1][0] == -1 && gSavedDigital[2][0] == -1 && gSavedDigital[2][1] == 3,
+          "out-of-range Replaces and Mirrors Off are dropped");
+    CHECK(gSavedDigitalBoardType[0] == OPT && gSavedDigitalBoardType[1] == -1,
+          "an unknown card type is dropped, so its board is never replayed");
+    for (int i = 0; i < 3; i++) gSavedDigital[i][0] = gSavedDigital[i][1] = -1;
+    gSavedDigitalBoardType[0] = gSavedDigitalBoardType[1] = -1;
     unlink(path);
 }
 
