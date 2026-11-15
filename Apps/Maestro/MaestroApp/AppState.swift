@@ -719,8 +719,8 @@ final class AppState {
     /// is shown or copied in those cases.
     var secondPortState: SecondPortState?
 
-    /// EXPERIMENT (64 channels, stage 2): the port selection ("Port 1: 32ch" /
-    /// "Port 1-2: 64ch") as the Core Audio device reports it. Empty (nothing
+    /// EXPERIMENT (64 channels, stage 2): the port selection (32 or 64
+    /// channels) as the Core Audio device reports it. Empty (nothing
     /// shown) unless a two-port driver publishes the selector.
     var portSelection = PortSelectionModel()
     private var portSelectionTask: Task<Void, Never>?

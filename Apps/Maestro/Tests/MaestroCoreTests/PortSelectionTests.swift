@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MaestroCore
 
@@ -12,12 +13,16 @@ struct PortSelectionTests {
         SecondPortState(portCount: 2, flags: 0x0F, audio: audio)
     }
 
-    @Test("the two entries are the original's, in its order, with its names and IDs")
+    @Test("the two entries are the original's, in its order and with its IDs; named after the device")
     func entries() {
         // og_source/symphonymk1/ext/Symphony64/SymphonyAPI/SymphonyCommon.h:182-183
         #expect(PortSelection.allCases == [.port1, .ports1And2])
-        #expect(PortSelection.port1.name == "Port 1: 32ch")
-        #expect(PortSelection.ports1And2.name == "Port 1-2: 64ch")
+        // Not Apogee's "Port 1: 32ch" / "Port 1-2: 64ch": the Sound menu shows
+        // the entry's name in place of the device name.
+        #expect(PortSelection.port1.name == "Symphony I/O: ThunderBridge")
+        #expect(PortSelection.ports1And2.name == "Symphony I/O: ThunderBridge 64ch")
+        #expect(PortSelection.port1.pickerLabel == "32 channels")
+        #expect(PortSelection.ports1And2.pickerLabel == "64 channels (two units)")
         #expect(PortSelection.port1.rawValue == 0 && PortSelection.ports1And2.rawValue == 1)
         #expect(PortSelection.port1.channelCount == 32 && PortSelection.ports1And2.channelCount == 64)
     }
@@ -68,7 +73,7 @@ struct PortSelectionTests {
         #expect(model.selection == .ports1And2 && model.pending == nil)
     }
 
-    @Test("a refused request comes back as 32 channels with the driver's reason")
+    @Test("a refused request comes back as 32 channels with the reason in plain words")
     func refused() {
         var model = PortSelectionModel()
         model.deviceReported(dataSourceID: 0, state: state(audio: stage2Capable))
@@ -78,7 +83,7 @@ struct PortSelectionTests {
         let refusedWord = stage2Capable | SecondPortState.audioRefusedFlag | (1 << 8)
         model.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
         #expect(model.selection == .port1 && model.pending == nil)
-        #expect(model.notice == "64 channels refused: there is no unit with its link up on port 2.")
+        #expect(model.notice == "64 channels needs a second unit on port 2, and none was found.")
         // The same pick made by accident in Sound settings ends the same way.
         var other = PortSelectionModel()
         other.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
@@ -95,7 +100,7 @@ struct PortSelectionTests {
         model.deviceReported(dataSourceID: 0,
                              state: state(audio: stage2Capable | SecondPortState.audioFellBackFlag | (5 << 8)))
         #expect(model.selection == .port1)
-        #expect(model.notice == "Went back to 32 channels: port 2's unit clock went away.")
+        #expect(model.notice == "Back to 32 channels: the unit on port 2 stopped sending its clock.")
         // Selecting 64 again and getting it clears the notice.
         model.deviceReported(dataSourceID: 1,
                              state: state(audio: stage2Capable | SecondPortState.audioActiveFlag))
@@ -158,7 +163,7 @@ struct SecondPortStateAudioTests {
         #expect(off.deviceInfoRows.map(\.label)
                 == ["Experimental two-port driver", "Port 2 Audio", "Port 2 Link", "Port 2 Clock", "Port 2 Units"])
         #expect(off.deviceInfoRows[0].value
-                == "On. Port 2 is switched on, looked at and carries audio only while \"Port 1-2: 64ch\" is selected.")
+                == "On. Port 2 is switched on, looked at and carries audio only while 64 channels are selected.")
         #expect(off.deviceInfoRows[1].value == "Off: 32 channels, port 1 only")
         let on = SecondPortState(portCount: 2, flags: 0x0F, audio: 0x0001_0007, phase: 0x8010_010B)
         #expect(on.deviceInfoRows.map(\.label).prefix(3) == ["Experimental two-port driver", "Port 2 Audio", "Port 2 Phase"])
@@ -204,5 +209,138 @@ struct SecondPortStateAudioTests {
         let state = SecondPortState(portCount: 2, audio: 0x0B, phase: 0x8010_0300)
         #expect(state.phaseText == "Not aligned (a unit did not answer, or the card was busy); 3 units read")
         #expect(SecondPortState(portCount: 2, audio: 0x03).phaseText == nil)
+    }
+}
+
+/// EXPERIMENT (64 channels): what Maestro calls the port selection and how
+/// Device Info lays it out.
+@Suite("Ports wording and layout")
+struct PortsWordingTests {
+    private let stage2Capable: UInt32 = SecondPortState.audioCapable
+
+    private func state(audio: UInt32) -> SecondPortState {
+        SecondPortState(portCount: 2, flags: 0x0F, audio: audio)
+    }
+
+    // MARK: - Maestro's wording
+
+    /// The names Maestro uses for the Source menu are the driver's
+    /// (`kSymphonyDeviceName`, `kSymphonyPortSourceName32/64`), read from the
+    /// header rather than copied.
+    @Test("the data-source names are the driver's, read from its header")
+    func namesMatchTheDriver() throws {
+        let header = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h")
+        let text = try String(contentsOf: header, encoding: .utf8)
+        func define(_ name: String) -> String? {
+            text.split(separator: "\n").first { $0.hasPrefix("#define \(name) ") }
+                .map { String($0.dropFirst("#define \(name) ".count)).trimmingCharacters(in: .whitespaces) }
+        }
+        let device = try #require(define("kSymphonyDeviceName"))
+        #expect(device.hasPrefix("\"\(PortSelection.deviceName)\""))
+        #expect(define("kSymphonyPortSourceName32") == "kSymphonyDeviceName")
+        #expect(define("kSymphonyPortSourceName64") == "kSymphonyDeviceName \" 64ch\"")
+        #expect(PortSelection.port1.name == PortSelection.deviceName)
+        #expect(PortSelection.ports1And2.name == PortSelection.deviceName + " 64ch")
+        #expect(define("kSymphonyPortSourcePort1")?.hasPrefix("0u") == true)
+        #expect(define("kSymphonyPortSourcePorts1And2")?.hasPrefix("1u") == true)
+    }
+
+    @Test("the info popover and Help name the two Source entries and say \"should keep\"")
+    func infoAndHelpUseTheDriverNames() {
+        let info = PortSelection.infoText
+        #expect(info == "In Audio MIDI Setup and the macOS Sound menu, the ThunderBridge appears as:\n"
+                + "• Symphony I/O: ThunderBridge — 32 channels\n"
+                + "• Symphony I/O: ThunderBridge 64ch — 64 channels (two units)\n"
+                + "Your DAW should keep the same device either way.")
+        let help = PortSelection.helpText.joined(separator: " ")
+        #expect(help.contains("**\(PortSelection.port1.name)**"))
+        #expect(help.contains("**\(PortSelection.ports1And2.name)**"))
+        #expect(help.contains(PortSelection.ports1And2.pickerLabel))
+        #expect(help.contains("refuses 64 channels"))
+        #expect(help.contains("has not been tried on hardware"))
+        #expect(help.contains("should keep"))
+        #expect(PortSelection.explanationLines == [
+            "32 channels: one Symphony I/O on ThunderBridge port 1.",
+            "64 channels: adds a second unit on port 2 as channels 33–64.",
+        ])
+    }
+
+    @Test("every driver reason has a plain sentence; the copied details keep the driver's words")
+    func plainReasons() {
+        for code in UInt32(1)...8 {
+            let refused = SecondPortState(portCount: 2, audio: 0x11 | (code << 8))
+            let plain = refused.plainProblemText ?? ""
+            #expect(plain.hasPrefix(code == 1 ? "64 channels needs" : "64 channels could not start: "))
+            #expect(plain.hasSuffix("."))
+            #expect(!plain.contains("reason "))
+            // The raw reason stays in the copied details.
+            #expect(refused.reportLines.contains("Port 2 Audio: Off. 64 channels refused: \(SecondPortState.reasonText(code))."))
+            let fell = SecondPortState(portCount: 2, audio: 0x21 | (code << 8))
+            #expect(fell.plainProblemText == "Back to 32 channels: \(SecondPortState.plainReason(code)).")
+        }
+        #expect(SecondPortState(portCount: 2, audio: 0x11 | (1 << 8)).plainProblemText
+                == "64 channels needs a second unit on port 2, and none was found.")
+        #expect(SecondPortState(portCount: 2, audio: 0x13 | (1 << 8)).plainProblemText == nil)
+        #expect(SecondPortState.plainReason(99) == "the driver gave reason 99")
+    }
+
+    // MARK: - Device Info layout
+
+    private func model(_ id: UInt32, _ state: SecondPortState, choose: PortSelection? = nil) -> PortSelectionModel {
+        var m = PortSelectionModel()
+        m.deviceReported(dataSourceID: id, state: state)
+        if let choose { _ = m.userChose(choose) }
+        return m
+    }
+
+    @Test("at 32 channels: the test-build row only, no port-2 rows")
+    func layoutAt32() {
+        let s = state(audio: stage2Capable)
+        let shown = PortsPresentation(model: model(0, s), state: s)
+        #expect(shown.rows == [PortsPresentation.testBuildRow])
+        #expect(shown.rows == [.init(label: "Two-unit test build", value: "Installed")])
+        #expect(shown.statusLine == nil)
+        // The copied details still carry everything.
+        #expect(s.reportLines.contains { $0.hasPrefix("Port 2 Link: ") })
+        #expect(s.reportLines.contains { $0.hasPrefix("Port 2 Raw: ") })
+    }
+
+    @Test("after a refusal: the plain reason once, under the picker, and no port-2 rows")
+    func layoutAfterRefusal() {
+        let s = state(audio: stage2Capable | SecondPortState.audioRefusedFlag | (1 << 8))
+        let shown = PortsPresentation(model: model(0, s), state: s)
+        #expect(shown.statusLine == "64 channels needs a second unit on port 2, and none was found.")
+        #expect(shown.rows == [PortsPresentation.testBuildRow])
+        #expect(!shown.rows.contains { $0.value.contains("refused") })
+        #expect(s.reportLines.contains { $0.contains("64 channels refused") })
+    }
+
+    @Test("while switching: one line under the picker, no port-2 rows")
+    func layoutSwitching() {
+        let s = state(audio: stage2Capable)
+        // Chosen in Maestro, not confirmed yet.
+        let chosen = PortsPresentation(model: model(0, s, choose: .ports1And2), state: s)
+        #expect(chosen.statusLine == "Switching to 64 channels…")
+        #expect(chosen.rows == [PortsPresentation.testBuildRow])
+        // Chosen elsewhere: the device says 64, the card is not running it yet.
+        let elsewhere = PortsPresentation(model: model(1, s), state: s)
+        #expect(elsewhere.statusLine == "Switching to 64 channels…")
+        #expect(elsewhere.rows == [PortsPresentation.testBuildRow])
+    }
+
+    @Test("64 channels running: Link, Clock, Units and Phase")
+    func layoutRunning() {
+        let s = SecondPortState(portCount: 2, flags: 0x0F, xlinkClocking: 0x0102_0000,
+                                units: [0x0007_FFFF], audio: stage2Capable | SecondPortState.audioActiveFlag | 0x04,
+                                phase: 0x8001_010B)
+        let shown = PortsPresentation(model: model(1, s), state: s)
+        #expect(shown.statusLine == nil)
+        #expect(shown.rows.map { $0.label } == ["Two-unit test build", "Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Phase"])
+        // Back to 32: the rows go again.
+        let back = state(audio: stage2Capable)
+        #expect(PortsPresentation(model: model(0, back), state: back).rows == [PortsPresentation.testBuildRow])
     }
 }

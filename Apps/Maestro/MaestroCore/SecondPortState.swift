@@ -2,9 +2,9 @@
 /// XLink port, and (stage 2) whether port 2 is carrying audio.
 ///
 /// The driver uses one port unless it was packaged with `SymphonyPortCount=2`.
-/// With that, when "Port 1-2: 64ch" is selected (see `PortSelection`), it
+/// With that, when 64 channels are selected (see `PortSelection`), it
 /// switches port 2 on, asks the units cabled to it what they are and runs
-/// audio there; at "Port 1: 32ch" port 2 stays off and is not looked at, as
+/// audio there; at 32 channels port 2 stays off and is not looked at, as
 /// in Apogee's driver. It publishes the result through user-client
 /// selector 8 as `SymphonyPort2StateOutput`, sixteen 32-bit words
 /// (`Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h`). macOS does not
@@ -162,6 +162,34 @@ public struct SecondPortState: Sendable, Equatable {
         }
     }
 
+    /// A reason code as the end of a plain sentence, for Maestro's own
+    /// screen. `reasonText` keeps the driver's wording for the copied details.
+    public static func plainReason(_ code: UInt32) -> String {
+        switch code {
+        case 1: return "no second unit was found on port 2"
+        case 2: return "the driver could not set up audio for port 2"
+        case 3: return "the unit on port 2 did not lock to the current sample rate"
+        case 4: return "the ThunderBridge did not accept the settings for port 2"
+        case 5: return "the unit on port 2 stopped sending its clock"
+        case 6: return "the ThunderBridge was reset after sleep; choose 64 channels again"
+        case 7: return "the unit on port 2 did not follow a sample rate change"
+        case 8: return "the ThunderBridge could not be reached, or it stopped after a failed sample rate change"
+        default: return "the driver gave reason \(code)"
+        }
+    }
+
+    /// Why 64 channels are not running, in plain words. Nil when they are
+    /// running, or were never asked for.
+    public var plainProblemText: String? {
+        guard !audioActive else { return nil }
+        if audioFellBack { return "Back to 32 channels: " + Self.plainReason(audioReason) + "." }
+        if audioRefused {
+            if audioReason == 1 { return "64 channels needs a second unit on port 2, and none was found." }
+            return "64 channels could not start: " + Self.plainReason(audioReason) + "."
+        }
+        return nil
+    }
+
     /// Why 64 channels are not running although they were asked for or were
     /// running before. Nil when they are running, or were never asked for.
     public var audioProblemText: String? {
@@ -198,11 +226,11 @@ public struct SecondPortState: Sendable, Equatable {
     public static let experimentValue = "On. Port 2 is identified only and carries no audio."
     /// A driver that can also run port 2 (stage 2).
     public static let experimentValueWithAudio =
-        "On. Port 2 is switched on, looked at and carries audio only while \"Port 1-2: 64ch\" is selected."
+        "On. Port 2 is switched on, looked at and carries audio only while 64 channels are selected."
 
-    /// Port 2 is looked at only when "Port 1-2: 64ch" is chosen, as the
+    /// Port 2 is looked at only when 64 channels are chosen, as the
     /// original driver did, so until then there is nothing to report.
-    public static let notLookedAtText = "Not looked at yet (port 2 is used only with \"Port 1-2: 64ch\")"
+    public static let notLookedAtText = "Not looked at yet (port 2 is used only with 64 channels)"
 
     public var linkText: String {
         guard probed else { return Self.notLookedAtText }
@@ -248,7 +276,8 @@ public struct SecondPortState: Sendable, Equatable {
         return text
     }
 
-    /// The rows Device Info shows. Empty unless the experiment is on.
+    /// Every row, for the copied details (and for a stage-1 driver, which has
+    /// no picker). Empty unless the experiment is on.
     public var deviceInfoRows: [(label: String, value: String)] {
         guard experimentOn else { return [] }
         var rows: [(label: String, value: String)] = [
@@ -269,6 +298,25 @@ public struct SecondPortState: Sendable, Equatable {
                 rows.append(("Port 2 Unit \(index + 1)", Self.unitText(word)))
             }
         }
+        return rows
+    }
+
+    /// The rows Device Info shows while 64 channels are running
+    /// (`PortsPresentation`): link, clock, units and phase.
+    public var port2DetailRows: [(label: String, value: String)] {
+        guard experimentOn else { return [] }
+        var rows: [(label: String, value: String)] = [
+            ("Port 2 Link", linkText),
+            ("Port 2 Clock", clockText),
+        ]
+        if units.isEmpty {
+            rows.append(("Port 2 Units", probed ? "None found" : "Unknown"))
+        } else {
+            for (index, word) in units.enumerated() {
+                rows.append(("Port 2 Unit \(index + 1)", Self.unitText(word)))
+            }
+        }
+        if let phaseText { rows.append(("Port 2 Phase", phaseText)) }
         return rows
     }
 

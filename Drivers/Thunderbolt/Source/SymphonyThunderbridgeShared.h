@@ -197,12 +197,19 @@ typedef struct {
 
 // ── EXPERIMENT (64ch, stage 2): audio on port 2 and the port selector ────────
 // Two-port builds publish an input and an output data-source selector with the
-// original's two entries (Symphony64AudioEngine.cpp:38-93, SymphonyCommon.h:182):
-// the selector value is the entry's index.
-#define kSymphonyPortSourcePort1     0u   // "Port 1: 32ch"
-#define kSymphonyPortSourcePorts1And2 1u  // "Port 1-2: 64ch"
-#define kSymphonyPortSourceName32 "Port 1: 32ch"
-#define kSymphonyPortSourceName64 "Port 1-2: 64ch"
+// original's two entries, in its order (Symphony64AudioEngine.cpp:38-93,
+// SymphonyCommon.h:182): the selector value is the entry's index.
+//
+// The NAMES depart from Apogee's ("Port 1: 32ch" / "Port 1-2: 64ch") on
+// purpose: macOS's Sound menu shows the selected data source's name in place
+// of the device name, so the default entry reads exactly like the device name
+// and the 64-channel one adds "64ch". The IDs and the behaviour are the
+// original's. Maestro's own picker uses plain labels (PortSelection.swift).
+#define kSymphonyDeviceName "Symphony I/O: ThunderBridge"   // the Core Audio device name
+#define kSymphonyPortSourcePort1     0u   // kSymphonyPortSourceName32, the default
+#define kSymphonyPortSourcePorts1And2 1u  // kSymphonyPortSourceName64
+#define kSymphonyPortSourceName32 kSymphonyDeviceName
+#define kSymphonyPortSourceName64 kSymphonyDeviceName " 64ch"
 
 // SymphonyPort2StateOutput.audio
 #define kSymphonyPort2AudioCapable      0x00000001u  // port-2 DMA buffers exist: 64 can be selected

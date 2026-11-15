@@ -43,6 +43,14 @@ Over ThunderBridge, Mac outputs 1-16 play through the card in slot 1 and 17-32 t
 
 The optical format, the S/PDIF settings, the prefix letter and your routing choices are kept when the Symphony is turned off and on.
 
+## Two units (64 channels)
+
+This is a test build; two units have not been tried on hardware yet. Connect the first Symphony I/O to ThunderBridge port 1 and the second unit to port 2.
+
+Audio MIDI Setup shows a **Source** menu for the ThunderBridge with two entries: **Symphony I/O: ThunderBridge** (32 channels, the default) and **Symphony I/O: ThunderBridge 64ch** (64 channels; 33-64 are the unit on port 2). The macOS Sound menu shows the selected entry's name in place of the device name, which is why the default entry reads like the device name. Apogee's driver called these "Port 1: 32ch" and "Port 1-2: 64ch"; the names differ on purpose, the behaviour does not.
+
+In Maestro the same setting is **Ports** in System Setup › Device Info, with the choices **32 channels** and **64 channels (two units)**. If no second unit is found on port 2, 64 channels is refused, the device stays at 32 and Device Info says why. Your DAW should keep the device selected when you switch.
+
 ## Appearance and updates
 
 Choose Auto, Light or Dark appearance in Device Settings. Software updates use Sparkle and the configured project update feed. An available update is not installed merely by opening this guide; follow the updater's prompts and save audio work before installing.

@@ -175,7 +175,7 @@ struct SymphonyThunderbridge_IVars {
     IOUserAudioLevelControl   *outputVolumeControl;
     IOUserAudioBooleanControl *outputMuteControl;
 
-    // Data source selector controls ("Source: Port 1: 32ch" dropdown)
+    // Data source selector controls (the "Source" menu: kSymphonyPortSourceName32 / 64)
     // Data source selectors removed — single-port device doesn't need them.
     // Re-add when Port 2 (dual Symphony IO) is implemented.
     float     lastVolumeDb;
@@ -5783,7 +5783,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         SetTransportType(IOUserAudioTransportType::Thunderbolt);
 
         // Display name — must be set after AddObject so CoreAudio sees it
-        OSString *deviceName = OSString::withCString("Symphony I/O: ThunderBridge");
+        OSString *deviceName = OSString::withCString(kSymphonyDeviceName);
         if (deviceName) {
             ivars->audioDevice->SetName(deviceName);
             OSSafeReleaseNULL(deviceName);

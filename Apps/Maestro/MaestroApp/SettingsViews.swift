@@ -800,6 +800,7 @@ struct SystemSetupView: View {
     /// Separate from `showCopied` so the two Copy buttons do not flash each other's
     /// checkmark.
     @State private var showSoftwareCopied: Bool = false
+    @State private var showPortsInfo = false
     @State private var dextActionInFlight = false
     @State private var dextActionStatus: String?
     @State private var showDextActionAlert = false
@@ -1107,26 +1108,52 @@ struct SystemSetupView: View {
                     // EXPERIMENT (64 channels): only with a driver that reports
                     // the two-port experiment on.
                     if let port2 = appState.secondPortState {
-                        // Stage 2: the same selector Audio MIDI Setup shows as
-                        // "Source", with the same two names. Shown only when
-                        // the device publishes it.
+                        // Stage 2: the same setting Audio MIDI Setup shows as
+                        // "Source" (named after the device there, for the Sound
+                        // menu), with plain labels here. Shown only when the
+                        // device publishes it.
                         if let selection = appState.portSelection.selection {
-                            Picker("Ports", selection: Binding(
-                                get: { appState.portSelection.pending ?? selection },
-                                set: { appState.choosePortSelection($0) })) {
-                                ForEach(PortSelection.allCases) { choice in
-                                    Text(choice.name).tag(choice)
+                            let shown = PortsPresentation(model: appState.portSelection, state: port2)
+                            LabeledContent("Ports") {
+                                HStack(spacing: 6) {
+                                    Picker("Ports", selection: Binding(
+                                        get: { appState.portSelection.pending ?? selection },
+                                        set: { appState.choosePortSelection($0) })) {
+                                        ForEach(PortSelection.allCases) { choice in
+                                            Text(choice.pickerLabel).tag(choice)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .fixedSize()
+                                    Button { showPortsInfo.toggle() } label: {
+                                        Image(systemName: "info.circle")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("About Ports")
+                                    .popover(isPresented: $showPortsInfo, arrowEdge: .trailing) {
+                                        Text(PortSelection.infoText)
+                                            .font(.callout)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                            .frame(width: 340, alignment: .leading)
+                                            .padding()
+                                    }
                                 }
                             }
-                            .help("The same setting as Source in Audio MIDI Setup. It also appears in Sound settings.")
-                            if let notice = appState.portSelection.notice {
-                                Text(notice)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(PortSelection.explanationLines, id: \.self) { Text($0) }
+                                if let status = shown.statusLine { Text(status).padding(.top, 2) }
                             }
-                        }
-                        ForEach(Array(port2.deviceInfoRows.enumerated()), id: \.offset) { _, row in
-                            LabeledContent(row.label, value: row.value)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            ForEach(Array(shown.rows.enumerated()), id: \.offset) { _, row in
+                                LabeledContent(row.label, value: row.value)
+                            }
+                        } else {
+                            // A stage-1 driver (no selector): its rows as before.
+                            ForEach(Array(port2.deviceInfoRows.enumerated()), id: \.offset) { _, row in
+                                LabeledContent(row.label, value: row.value)
+                            }
                         }
                     }
 
