@@ -34,6 +34,15 @@ remove_scratch() {  # $1 = directory from mktemp -d
     /usr/bin/find "$dir" -depth -delete
 }
 
+# True when the file is tracked by the git repository it sits in (the
+# production appcast.xml is; a rehearsal feed never is).
+feed_is_tracked() {  # $1 = feed file
+    local dir base
+    dir="$(cd "$(dirname "$1")" && pwd)" || return 1
+    base="$(basename "$1")"
+    git -C "$dir" ls-files --error-unmatch -- "$base" >/dev/null 2>&1
+}
+
 feed_py() { python3 "$RELEASE_REPO_ROOT/Tools/feed.py" "$@"; }
 
 # The Sparkle key: a file, mode 600. Never a keychain item (a different

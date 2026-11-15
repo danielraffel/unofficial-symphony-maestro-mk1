@@ -2,7 +2,11 @@
 # Publish a tested Maestro package on the Stable or Beta channel.
 #
 #   Tools/publish-release.sh --channel stable|beta --pkg <tested.pkg> --notes <notes.md> \
-#       --feed <appcast.xml> [--local-base-url http://127.0.0.1:8765] [--dry-run]
+#       --feed <appcast.xml> (--github | --local-base-url http://127.0.0.1:8765) [--dry-run]
+#
+# Where the package goes must be said: --github creates a release, and
+# --local-base-url is the rehearsal. There is no default, so leaving the
+# local URL out of a rehearsal command cannot create a real release.
 #
 # Steps 2-6 of the runbook's Publish section, for one package:
 #   1. read the version and source commit from the package, check it is
@@ -17,21 +21,23 @@
 #
 # With --local-base-url nothing goes to GitHub: the package (and the notes)
 # are copied next to the feed as <version>.pkg and <version>.notes.md, for the
-# rehearsal's local test feed. With --dry-run nothing is created or changed;
-# the feed edit is made on a copy to show the diff.
+# rehearsal's local test feed; a feed tracked by git (the production
+# appcast.xml) is refused. With --dry-run nothing is created or changed; the
+# feed edit is made on a copy to show the diff.
 set -euo pipefail
 . "$(dirname "$0")/lib/release-common.sh"
 
-CHANNEL="" PKG="" NOTES="" FEED="" LOCAL_BASE="" DRY_RUN=false
+CHANNEL="" PKG="" NOTES="" FEED="" LOCAL_BASE="" GITHUB=false DRY_RUN=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --channel) CHANNEL="${2:-}"; shift 2 ;;
         --pkg) PKG="${2:-}"; shift 2 ;;
         --notes) NOTES="${2:-}"; shift 2 ;;
         --feed) FEED="${2:-}"; shift 2 ;;
-        --local-base-url) LOCAL_BASE="${2:-}"; shift 2 ;;
+        --local-base-url) LOCAL_BASE="${2:-}"; [ -n "$LOCAL_BASE" ] || die "--local-base-url needs a URL"; shift 2 ;;
+        --github) GITHUB=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
-        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -40,8 +46,14 @@ case "$CHANNEL" in stable|beta) ;; *) die "--channel stable|beta is required" ;;
 [ -f "$FEED" ] || die "no feed at $FEED"
 [ -f "$PKG" ] || die "--pkg: no package at ${PKG:-<none>}"
 [ -f "$NOTES" ] || die "--notes: no notes file at ${NOTES:-<none>}"
+if [ "$GITHUB" = true ] && [ -n "$LOCAL_BASE" ]; then die "--github and --local-base-url exclude each other"; fi
+if [ "$GITHUB" = false ] && [ -z "$LOCAL_BASE" ]; then
+    die "say where the package goes: --github (creates a GitHub release) or --local-base-url <url> (rehearsal)"
+fi
 if [ -n "$LOCAL_BASE" ]; then
     case "$LOCAL_BASE" in http://127.0.0.1:*|http://localhost:*) ;; *) die "--local-base-url must be http://127.0.0.1:<port> or http://localhost:<port>" ;; esac
+    # An item that points at this Mac must never reach the production feed.
+    if feed_is_tracked "$FEED"; then die "$FEED is tracked by git; a local test item does not go into it (use a copy)"; fi
 fi
 require_sparkle_key
 

@@ -22,6 +22,8 @@ def version_key(text):
 def feed_items(path):
     """(version, channel) for each <item>; channel is None for stable."""
     text = Path(path).read_text(encoding='utf-8')
+    # Release notes are free text in CDATA and may quote feed markup.
+    text = re.sub(r'<!\[CDATA\[.*?\]\]>', '', text, flags=re.S)
     items = []
     for block in re.findall(r'<item>(.*?)</item>', text, re.S):
         version = re.search(r'<sparkle:version>\s*([^<]*?)\s*</sparkle:version>', block)

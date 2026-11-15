@@ -141,6 +141,35 @@ if "${FEED_PY[@]}" lint --feed "$F/nobeta.xml" --previous "$F/t.xml" >/dev/null 
 "${FEED_PY[@]}" lint --feed "$F/p.xml" --previous "$F/t.xml" >/dev/null || fail "lint refused a promotion (beta no longer above stable)"
 ok "lint: signature, channel names, a beta above stable must not disappear"
 
+# ── Notes that quote feed markup ────────────────────────────────────────────
+# Release notes are text. A stable item whose notes mention the channel
+# element, an item or a version stays one stable item with its own version.
+cat > "$F/quoting.md" <<'MD'
+## About channels
+
+Beta items carry <sparkle:channel>beta</sparkle:channel> in the feed.
+</item> <item> <sparkle:version>9.9.9</sparkle:version>
+<enclosure url="http://example.com/x.pkg" length="1" sparkle:edSignature="AAAA"></enclosure>
+MD
+cp "$F/base.xml" "$F/q.xml"
+"${FEED_PY[@]}" add --feed "$F/q.xml" --channel stable --version 0.8.40 --pkg "$F/0.8.40.pkg" \
+    --notes "$F/quoting.md" --enclosure-url http://127.0.0.1:8765/0.8.40.pkg >/dev/null
+[ "$("${FEED_PY[@]}" newest --feed "$F/q.xml" --channel stable)" = 0.8.40 ] || fail "notes quoting the channel element changed the newest stable"
+[ -z "$(field "$F/q.xml" 0.8.40 channel)" ] || fail "a stable item was read as beta from its notes"
+[ "$(field "$F/q.xml" 0.8.40 url)" = "http://127.0.0.1:8765/0.8.40.pkg" ] || fail "the enclosure was read from the notes"
+if "${FEED_PY[@]}" newest --feed "$F/q.xml" --channel beta >/dev/null 2>&1; then fail "a beta was read from notes"; fi
+if "${FEED_PY[@]}" item 9.9.9 --feed "$F/q.xml" >/dev/null 2>&1; then fail "an item was read from notes"; fi
+"${FEED_PY[@]}" lint --feed "$F/q.xml" >/dev/null || fail "lint of a feed whose notes quote markup"
+"${FEED_PY[@]}" add --feed "$F/q.xml" --channel beta --version 0.9.0 --pkg "$F/0.9.0.pkg" \
+    --notes "$F/quoting.md" --enclosure-url http://127.0.0.1:8765/0.9.0.pkg >/dev/null
+[ "$("${FEED_PY[@]}" newest --feed "$F/q.xml" --channel stable)" = 0.8.40 ] || fail "newest stable with two quoting items"
+"${FEED_PY[@]}" promote 0.9.0 --feed "$F/q.xml" --notes "$F/quoting.md" >/dev/null
+[ -z "$(field "$F/q.xml" 0.9.0 channel)" ] || fail "promote left the channel element (notes quote it)"
+[ "$(grep -c '<sparkle:channel>beta</sparkle:channel>' "$F/q.xml")" = 2 ] || fail "promote removed quoted text from the notes"
+[ "$(field "$F/q.xml" 0.9.0 url)" = "http://127.0.0.1:8765/0.9.0.pkg" ] || fail "promote changed the enclosure"
+"${FEED_PY[@]}" lint --feed "$F/q.xml" >/dev/null || fail "lint after promoting an item whose notes quote markup"
+ok "notes that quote feed markup are read as text by add, item, newest, promote and lint"
+
 # ── The tracked feed's own text ─────────────────────────────────────────────
 # A copy of appcast.xml, re-signed with the throwaway key: add, promote and
 # lint must leave all of its existing items byte for byte.
@@ -275,17 +304,36 @@ make_pkg 0.8.40 "$WORK/S40.pkg"
 
 # Refusals before anything is created.
 make_pkg 0.8.40 "$WORK/dirty.pkg" "$COMMIT-dirty"
-if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/dirty.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" >/dev/null 2>&1; then fail "published a dirty build"; fi
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/dirty.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github >/dev/null 2>&1; then fail "published a dirty build"; fi
 make_pkg 0.8.40 "$WORK/otherkey.pkg" "$COMMIT" "AAAA"
-if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/otherkey.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" >/dev/null 2>&1; then fail "published a package with another Sparkle key"; fi
-if SPCTL_BIN="$S/spctl-reject" "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" >/dev/null 2>&1; then fail "published a package spctl rejects"; fi
-if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" >/dev/null 2>&1; then fail "ran without --feed"; fi
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/otherkey.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github >/dev/null 2>&1; then fail "published a package with another Sparkle key"; fi
+if SPCTL_BIN="$S/spctl-reject" "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github >/dev/null 2>&1; then fail "published a package spctl rejects"; fi
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --github >/dev/null 2>&1; then fail "ran without --feed"; fi
+# Where the package goes must be said; there is no default.
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" > "$WORK/nomode.out" 2>&1; then fail "published with neither --github nor --local-base-url"; fi
+grep -q -- '--github' "$WORK/nomode.out" || fail "the refusal does not name the two modes: $(cat "$WORK/nomode.out")"
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github \
+    --local-base-url "http://127.0.0.1:$PORT/x" >/dev/null 2>&1; then fail "accepted --github with --local-base-url"; fi
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" \
+    --local-base-url >/dev/null 2>&1; then fail "accepted --local-base-url with no URL"; fi
+# A local test item never goes into a feed tracked by git.
+T="$WORK/tracked"
+mkdir -p "$T"
+cp "$F/base.xml" "$T/appcast.xml"
+git -C "$T" init -q
+git -C "$T" -c user.name=t -c user.email=t@t add appcast.xml
+git -C "$T" -c user.name=t -c user.email=t@t commit -q -m feed
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$T/appcast.xml" \
+    --local-base-url "http://127.0.0.1:$PORT/x" > "$WORK/tracked.out" 2>&1; then fail "put a local item into a tracked feed"; fi
+grep -q 'tracked by git' "$WORK/tracked.out" || fail "wrong refusal for a tracked feed: $(cat "$WORK/tracked.out")"
+cmp -s "$T/appcast.xml" "$F/base.xml" || fail "the tracked feed changed"
+[ ! -e "$T/0.8.40.pkg" ] || fail "a package was copied next to the tracked feed"
 [ ! -e "$S/calls" ] || ! grep -q '^gh ' "$S/calls" || fail "gh called during a refused publish"
 cmp -s "$FEED" "$F/base.xml" || fail "feed changed by a refused publish"
-ok "publish-release refuses dirty builds, another key, unnotarized packages, and a missing --feed"
+ok "publish-release refuses dirty builds, another key, unnotarized packages, a missing --feed, no stated mode, and a local item in a tracked feed"
 
 # Dry run: no release, no feed change.
-"$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --dry-run > "$WORK/dry.out"
+"$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github --dry-run > "$WORK/dry.out"
 grep -q 'would run:.*release create v0.8.40' "$WORK/dry.out" || fail "dry run did not show the release"
 grep -q '^+.*<sparkle:version>0.8.40</sparkle:version>' "$WORK/dry.out" || fail "dry run did not show the feed diff"
 cmp -s "$FEED" "$F/base.xml" || fail "dry run changed the feed"
@@ -293,7 +341,7 @@ cmp -s "$FEED" "$F/base.xml" || fail "dry run changed the feed"
 ok "publish-release --dry-run shows the release and the diff and changes nothing"
 
 # Stable publish.
-"$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" > "$WORK/pub.out"
+"$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S40.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github > "$WORK/pub.out"
 grep -Fq "gh release create v0.8.40 " "$S/calls" || fail "release not created"
 grep -Fq -- "--target $COMMIT" "$S/calls" || fail "release not tagged at the build commit"
 grep "release create v0.8.40" "$S/calls" | grep -q -- '--latest' || fail "stable not marked latest"
@@ -302,7 +350,9 @@ grep "release create v0.8.40" "$S/calls" | grep -q -- "--repo danielraffel/unoff
 cmp -s "$WORK/www/releases/download/v0.8.40/UnofficialSymphonyMaestro.pkg" "$WORK/S40.pkg" || fail "asset is not the package"
 [ "$(field "$FEED" 0.8.40 url)" = "$MAESTRO_RELEASES_BASE/download/v0.8.40/UnofficialSymphonyMaestro.pkg" ] || fail "stable enclosure URL"
 [ -z "$(field "$FEED" 0.8.40 channel)" ] || fail "stable item tagged"
-git -C "$R" status --porcelain | grep -q . && fail "publish committed or left changes in the repo"
+git -C "$R" status --porcelain | grep -q . && fail "publish left changes in the repo"
+[ "$(git -C "$R" rev-parse HEAD)" = "$COMMIT" ] || fail "publish committed"
+[ -z "$(git -C "$R" tag)" ] || fail "publish made a local tag"
 ok "publish stable: release at the build commit, latest, feed item added, nothing committed"
 
 # Beta publish.
@@ -311,13 +361,13 @@ git -C "$R" -c user.name=t -c user.email=t@t commit -qam beta
 COMMIT="$(git -C "$R" rev-parse HEAD)"
 git -C "$R" update-ref refs/remotes/origin/dev "$COMMIT"
 make_pkg 0.9.0 "$WORK/B0.pkg"
-"$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$FEED" > "$WORK/pub.out"
+"$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$FEED" --github > "$WORK/pub.out"
 grep "release create v0.9.0" "$S/calls" | grep -q -- '--prerelease' || fail "beta not a prerelease"
 grep "release create v0.9.0" "$S/calls" | grep -q -- '--latest=false' || fail "beta not explicitly kept off latest"
 grep "release create v0.9.0" "$S/calls" | grep -Eq -- '--latest( |$)' && fail "beta marked latest"
 [ "$(cat "$S/latest")" = v0.8.40 ] || fail "beta changed GitHub's latest"
 [ "$(field "$FEED" 0.9.0 channel)" = beta ] || fail "beta item not tagged"
-if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$FEED" >/dev/null 2>&1; then fail "published the same version twice"; fi
+if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$FEED" --github >/dev/null 2>&1; then fail "published the same version twice"; fi
 ok "publish beta: prerelease, latest unchanged, tagged item, no second publish"
 
 # A stable hotfix below the beta prints the hotfix rule.
@@ -326,9 +376,9 @@ set_repo_version 0.8.41
 git -C "$R" -c user.name=t -c user.email=t@t commit -qam hotfix
 COMMIT="$(git -C "$R" rev-parse HEAD)"
 make_pkg 0.8.41 "$WORK/S41.pkg"
-if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S41.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --dry-run >/dev/null 2>&1; then fail "published from an unpushed commit"; fi
+if "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S41.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github --dry-run >/dev/null 2>&1; then fail "published from an unpushed commit"; fi
 git -C "$R" update-ref refs/remotes/origin/main "$COMMIT"
-"$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S41.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --dry-run > "$WORK/hotfix.out"
+"$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S41.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --github --dry-run > "$WORK/hotfix.out"
 grep -q "Hotfix rule: beta 0.9.0 is above 0.8.41" "$WORK/hotfix.out" || fail "no hotfix reminder"
 ok "publish refuses an unpushed commit; a stable hotfix below a beta prints the hotfix rule"
 
@@ -336,30 +386,37 @@ ok "publish refuses an unpushed commit; a stable hotfix below a beta prints the 
 cp "$FEED" "$WORK/broken.xml"
 sed -i '' 's/Old notes/Old Notes/' "$WORK/broken.xml"
 : > "$S/calls"
-if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$WORK/broken.xml" >/dev/null 2>&1; then fail "published into a feed that does not verify"; fi
+if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$WORK/broken.xml" --github >/dev/null 2>&1; then fail "published into a feed that does not verify"; fi
 [ ! -s "$S/calls" ] || fail "GitHub was called for a feed that does not verify: $(cat "$S/calls")"
 ok "a feed problem stops the publish before any release is created"
 
 # Promote the beta.
 cp "$FEED" "$WORK/before-promote.xml"
-if "$R/Tools/promote-beta.sh" --feed "$FEED" >/dev/null 2>&1; then fail "promoted without notes"; fi
-"$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$FEED" --dry-run > "$WORK/promote-dry.out"
+if "$R/Tools/promote-beta.sh" --feed "$FEED" --github >/dev/null 2>&1; then fail "promoted without notes"; fi
+# A GitHub item is promoted only with --github: a rehearsal on a copy of the
+# production feed cannot edit the real release.
+: > "$S/calls"
+if "$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$FEED" > "$WORK/promote-nomode.out" 2>&1; then fail "promoted a GitHub item without --github"; fi
+grep -q -- '--github' "$WORK/promote-nomode.out" || fail "wrong refusal: $(cat "$WORK/promote-nomode.out")"
+[ ! -s "$S/calls" ] || fail "GitHub was called without --github: $(cat "$S/calls")"
+cmp -s "$FEED" "$WORK/before-promote.xml" || fail "feed changed by a refused promotion"
+"$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$FEED" --github --dry-run > "$WORK/promote-dry.out"
 cmp -s "$FEED" "$WORK/before-promote.xml" || fail "promote dry run changed the feed"
 grep -q 'would run:.*release edit v0.9.0' "$WORK/promote-dry.out" || fail "promote dry run did not show the edit"
-"$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$FEED" > "$WORK/promote.out"
+"$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$FEED" --github > "$WORK/promote.out"
 grep -Fq "gh release edit v0.9.0 --repo danielraffel/unofficial-symphony-maestro-mk1 --prerelease=false --latest --notes-file $F/stable-notes.md" "$S/calls" || fail "release not flipped"
 [ "$(cat "$S/latest")" = v0.9.0 ] || fail "promoted release is not latest"
 [ -z "$(field "$FEED" 0.9.0 channel)" ] || fail "promoted item still tagged"
 [ "$("${FEED_PY[@]}" newest --feed "$FEED" --channel stable)" = 0.9.0 ] || fail "newest stable after promotion"
 cmp -s "$WORK/www/releases/latest/download/UnofficialSymphonyMaestro.pkg" "$WORK/B0.pkg" || fail "latest download is not the tested beta"
-ok "promote-beta: newest beta by default, verified bytes, release flipped to latest, feed promoted"
+ok "promote-beta: --github required for a release, newest beta by default, verified bytes, release flipped to latest, feed promoted"
 
 # A swapped release asset is refused before anything changes.
 cp "$WORK/before-promote.xml" "$FEED"
 echo v0.8.40 > "$S/latest"
 cp "$WORK/S40.pkg" "$WORK/www/releases/download/v0.9.0/UnofficialSymphonyMaestro.pkg"
 : > "$S/calls"
-if "$R/Tools/promote-beta.sh" 0.9.0 --notes "$F/stable-notes.md" --feed "$FEED" >/dev/null 2>&1; then fail "promoted a swapped asset"; fi
+if "$R/Tools/promote-beta.sh" 0.9.0 --notes "$F/stable-notes.md" --feed "$FEED" --github >/dev/null 2>&1; then fail "promoted a swapped asset"; fi
 grep -q '^gh ' "$S/calls" && fail "gh called after a failed asset check"
 cmp -s "$FEED" "$WORK/before-promote.xml" || fail "feed changed after a failed asset check"
 cp "$WORK/B0.pkg" "$WORK/www/releases/download/v0.9.0/UnofficialSymphonyMaestro.pkg"
@@ -376,6 +433,8 @@ cp "$F/base.xml" "$L/appcast.xml"
 cmp -s "$L/0.9.0.pkg" "$WORK/B0.pkg" || fail "local package not copied"
 [ -f "$L/0.9.0.notes.md" ] || fail "local notes not copied"
 [ "$(field "$L/appcast.xml" 0.9.0 url)" = "http://127.0.0.1:$PORT/rehearsal/0.9.0.pkg" ] || fail "local enclosure URL"
+if "$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$L/appcast.xml" --github >/dev/null 2>&1; then fail "--github accepted for a local item"; fi
+[ "$(field "$L/appcast.xml" 0.9.0 channel)" = beta ] || fail "a refused local promotion changed the feed"
 "$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$L/appcast.xml" >/dev/null
 [ -z "$(field "$L/appcast.xml" 0.9.0 channel)" ] || fail "local promotion"
 [ ! -s "$S/calls" ] || fail "local mode called GitHub: $(cat "$S/calls")"
