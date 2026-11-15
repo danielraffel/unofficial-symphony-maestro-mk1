@@ -447,6 +447,17 @@ assert hcsr.index("super::HandleChangeSampleRate(in_sample_rate)") < hcsr.index(
 note = src[src.index("void SymphonyNoteNominalSampleRate"):]
 note = note[:note.index("\n}\n")]
 assert "SymphonyNamingRateHz(rate)" in note and "ScheduleChannelNames(" in note
+# The lifetime rules of the device -> driver table. The driver is retained
+# while the table lock is held (Stop cannot unregister and free it in between),
+# the lock covers only the table scan, the rename is queued after the unlock
+# and before the release, and nothing here talks to Core Audio directly.
+order = [note.index(s) for s in ("IOLockLock(lock)", "driver->retain();", "IOLockUnlock(lock)",
+                                 "ScheduleChannelNames(", "driver->release();")]
+assert order == sorted(order), "retain under the lock, schedule after unlock, release last"
+assert note.count("IOLockLock(") == 1 and note.count("IOLockUnlock(") == 1
+assert "SetElementName" not in note and "PublishChannelNames(" not in note and "DispatchSync" not in note
+unreg = src[src.index("static void UnregisterNominalRateObserver"):src.index("void SymphonyNoteNominalSampleRate")]
+assert "IOLockLock(lock)" in unreg and "o.driver == driver" in unreg
 # Start names at the device's nominal rate and registers the hook; Stop
 # unregisters it before anything is released; StartDevice keeps it in step.
 start = src[src.index("kern_return_t IMPL(SymphonyThunderbridge, Start)"):src.index("start_success:")]
