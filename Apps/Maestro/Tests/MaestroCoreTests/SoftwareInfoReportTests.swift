@@ -255,6 +255,10 @@ struct SoftwareInfoReportTests {
         #expect(r.dextStatusLine == "Restart your Mac to finish the driver update")
         #expect(r.dextNotice?.hasSuffix("Restart your Mac to finish the driver update.") == true)
         #expect(r.clipboardText.contains("Serving driver extension: a build before 123"))
+        // Device Info and Settings say it; the banner stays out of it, as for
+        // every other restart-required state (shouldShowThunderBridgeBanner).
+        #expect(r.restartFinishesDriverUpdate)
+        #expect(!r.shouldShowThunderBridgeBanner)
     }
 
     @Test func servingBuildThatDiffersIsNamed() {
