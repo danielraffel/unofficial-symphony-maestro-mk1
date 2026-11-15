@@ -1132,12 +1132,16 @@ struct SystemSetupView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityLabel("About Ports")
-                                    .popover(isPresented: $showPortsInfo, arrowEdge: .trailing) {
+                                    // Same look as the Audio Interface Mode popover:
+                                    // left-aligned (the row's trailing alignment
+                                    // would otherwise carry into the popover).
+                                    .popover(isPresented: $showPortsInfo, arrowEdge: .bottom) {
                                         Text(PortSelection.infoText)
                                             .font(.callout)
+                                            .multilineTextAlignment(.leading)
                                             .fixedSize(horizontal: false, vertical: true)
                                             .frame(width: 340, alignment: .leading)
-                                            .padding()
+                                            .padding(14)
                                     }
                                 }
                             }
