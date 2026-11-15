@@ -904,6 +904,38 @@ H element-name dir=in ch=29 name=A ADAT 5
 H element-name dir=in ch=30 name=A ADAT 6
 H element-name dir=in ch=31 name=A ADAT 7
 H element-name dir=in ch=32 name=A ADAT 8
+H element-name dir=out ch=1 name=N.A.
+H element-name dir=out ch=2 name=N.A.
+H element-name dir=out ch=3 name=N.A.
+H element-name dir=out ch=4 name=N.A.
+H element-name dir=out ch=5 name=N.A.
+H element-name dir=out ch=6 name=N.A.
+H element-name dir=out ch=7 name=N.A.
+H element-name dir=out ch=8 name=N.A.
+H element-name dir=out ch=9 name=N.A.
+H element-name dir=out ch=10 name=N.A.
+H element-name dir=out ch=11 name=N.A.
+H element-name dir=out ch=12 name=N.A.
+H element-name dir=out ch=13 name=N.A.
+H element-name dir=out ch=14 name=N.A.
+H element-name dir=out ch=15 name=N.A.
+H element-name dir=out ch=16 name=N.A.
+H element-name dir=out ch=17 name=A Line 1
+H element-name dir=out ch=18 name=A Line 2
+H element-name dir=out ch=19 name=A Line 3
+H element-name dir=out ch=20 name=A Line 4
+H element-name dir=out ch=21 name=A Line 5
+H element-name dir=out ch=22 name=A Line 6
+H element-name dir=out ch=23 name=A Line 7
+H element-name dir=out ch=24 name=A Line 8
+H element-name dir=out ch=25 name=A ADAT 1
+H element-name dir=out ch=26 name=A ADAT 2
+H element-name dir=out ch=27 name=A ADAT 3
+H element-name dir=out ch=28 name=A ADAT 4
+H element-name dir=out ch=29 name=A ADAT 5
+H element-name dir=out ch=30 name=A ADAT 6
+H element-name dir=out ch=31 name=A ADAT 7
+H element-name dir=out ch=32 name=A ADAT 8
 -- after Start: queued work
 -- StartDevice
 CR32 0x00 0x220019c2
@@ -951,6 +983,14 @@ H element-name dir=in ch=29 name=A SMUX 5
 H element-name dir=in ch=30 name=A SMUX 6
 H element-name dir=in ch=31 name=A SMUX 7
 H element-name dir=in ch=32 name=A SMUX 8
+H element-name dir=out ch=25 name=A SMUX 1
+H element-name dir=out ch=26 name=A SMUX 2
+H element-name dir=out ch=27 name=A SMUX 3
+H element-name dir=out ch=28 name=A SMUX 4
+H element-name dir=out ch=29 name=A SMUX 5
+H element-name dir=out ch=30 name=A SMUX 6
+H element-name dir=out ch=31 name=A SMUX 7
+H element-name dir=out ch=32 name=A SMUX 8
 -- select 64 at 96000
 H device-config-change-request
 CR32 0x00 0x220019c2
@@ -1218,6 +1258,14 @@ H element-name dir=in ch=29 name=A N.A.
 H element-name dir=in ch=30 name=A N.A.
 H element-name dir=in ch=31 name=A N.A.
 H element-name dir=in ch=32 name=A N.A.
+H element-name dir=out ch=25 name=A N.A.
+H element-name dir=out ch=26 name=A N.A.
+H element-name dir=out ch=27 name=A N.A.
+H element-name dir=out ch=28 name=A N.A.
+H element-name dir=out ch=29 name=A N.A.
+H element-name dir=out ch=30 name=A N.A.
+H element-name dir=out ch=31 name=A N.A.
+H element-name dir=out ch=32 name=A N.A.
 -- rate change to 44100 at 64 channels
 CR32 0x00 0x220019c2 | CR16 0x04 0x0006 x2
 R 0x000014 0x7000017c
@@ -1288,6 +1336,14 @@ H element-name dir=in ch=29 name=A ADAT 5
 H element-name dir=in ch=30 name=A ADAT 6
 H element-name dir=in ch=31 name=A ADAT 7
 H element-name dir=in ch=32 name=A ADAT 8
+H element-name dir=out ch=25 name=A ADAT 1
+H element-name dir=out ch=26 name=A ADAT 2
+H element-name dir=out ch=27 name=A ADAT 3
+H element-name dir=out ch=28 name=A ADAT 4
+H element-name dir=out ch=29 name=A ADAT 5
+H element-name dir=out ch=30 name=A ADAT 6
+H element-name dir=out ch=31 name=A ADAT 7
+H element-name dir=out ch=32 name=A ADAT 8
 -- rate change to 88200 at 64, port 1 does not follow
 CR32 0x00 0x220019c2 | CR16 0x04 0x0006 x2
 R 0x000014 0x7000010c
@@ -1516,6 +1572,14 @@ H element-name dir=in ch=29 name=A SMUX 5
 H element-name dir=in ch=30 name=A SMUX 6
 H element-name dir=in ch=31 name=A SMUX 7
 H element-name dir=in ch=32 name=A SMUX 8
+H element-name dir=out ch=25 name=A SMUX 1
+H element-name dir=out ch=26 name=A SMUX 2
+H element-name dir=out ch=27 name=A SMUX 3
+H element-name dir=out ch=28 name=A SMUX 4
+H element-name dir=out ch=29 name=A SMUX 5
+H element-name dir=out ch=30 name=A SMUX 6
+H element-name dir=out ch=31 name=A SMUX 7
+H element-name dir=out ch=32 name=A SMUX 8
 -- select 64 at 88200
 H device-config-change-request
 CR32 0x00 0x220019c2
@@ -1835,6 +1899,14 @@ H element-name dir=in ch=29 name=A ADAT 5
 H element-name dir=in ch=30 name=A ADAT 6
 H element-name dir=in ch=31 name=A ADAT 7
 H element-name dir=in ch=32 name=A ADAT 8
+H element-name dir=out ch=25 name=A ADAT 1
+H element-name dir=out ch=26 name=A ADAT 2
+H element-name dir=out ch=27 name=A ADAT 3
+H element-name dir=out ch=28 name=A ADAT 4
+H element-name dir=out ch=29 name=A ADAT 5
+H element-name dir=out ch=30 name=A ADAT 6
+H element-name dir=out ch=31 name=A ADAT 7
+H element-name dir=out ch=32 name=A ADAT 8
 -- configuration change after the fallback
 H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
@@ -2169,6 +2241,14 @@ H element-name dir=in ch=29 name=A SMUX 5
 H element-name dir=in ch=30 name=A SMUX 6
 H element-name dir=in ch=31 name=A SMUX 7
 H element-name dir=in ch=32 name=A SMUX 8
+H element-name dir=out ch=25 name=A SMUX 1
+H element-name dir=out ch=26 name=A SMUX 2
+H element-name dir=out ch=27 name=A SMUX 3
+H element-name dir=out ch=28 name=A SMUX 4
+H element-name dir=out ch=29 name=A SMUX 5
+H element-name dir=out ch=30 name=A SMUX 6
+H element-name dir=out ch=31 name=A SMUX 7
+H element-name dir=out ch=32 name=A SMUX 8
 -- select 64 before the fallback's configuration change is performed
 H device-config-change-request
 CR32 0x00 0x220019c2
@@ -2422,6 +2502,14 @@ H element-name dir=in ch=29 name=A ADAT 5
 H element-name dir=in ch=30 name=A ADAT 6
 H element-name dir=in ch=31 name=A ADAT 7
 H element-name dir=in ch=32 name=A ADAT 8
+H element-name dir=out ch=25 name=A ADAT 1
+H element-name dir=out ch=26 name=A ADAT 2
+H element-name dir=out ch=27 name=A ADAT 3
+H element-name dir=out ch=28 name=A ADAT 4
+H element-name dir=out ch=29 name=A ADAT 5
+H element-name dir=out ch=30 name=A ADAT 6
+H element-name dir=out ch=31 name=A ADAT 7
+H element-name dir=out ch=32 name=A ADAT 8
 -- sleep at 64, wake with the FPGA reset
 CR32 0x00 0x220019c2
 CR16 0x04 0x0006

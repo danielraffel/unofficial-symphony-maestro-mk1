@@ -3142,8 +3142,8 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev
 // routes or mixer (SymphonyHostOutputName). Both are republished on the same
 // events: rate, optical format, prefix, Replaces and a card read or recovery.
 //
-// EXPERIMENT (64ch): host inputs 33-64 (port 2, while "Port 1-2: 64ch" runs)
-// are left unnamed, so Core Audio shows its default. How the original named
+// EXPERIMENT (64ch): host inputs and outputs 33-64 (port 2, while "Port 1-2:
+// 64ch" runs) are left unnamed (SymphonyHostOutputName names only 1-32), so Core Audio shows its default. How the original named
 // them has not been established: its daemon resolved a channel's name through
 // the routing controller to the stream it was routed from
 // (maestrolink/Software/SymphonyCard.cpp:828-866), which suggests the names
