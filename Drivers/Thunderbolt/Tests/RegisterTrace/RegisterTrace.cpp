@@ -1452,8 +1452,8 @@ static void RunAudioEnable(const Options &o, Run &r)
     FakeCard &c = r.card;
     CHECK(gHostAudio.portSources.size() == 2, "%s: %zu port selectors published (want 2)", o.name, gHostAudio.portSources.size());
     for (auto *sel : gHostAudio.portSources) {
-        CHECK(sel->names.size() == 2 && sel->names[0] == "Symphony I/O: ThunderBridge" && sel->names[1] == "Symphony I/O: ThunderBridge 64ch",
-              "%s: selector entries are not the two names (the device name, then it plus \"64ch\")", o.name);
+        CHECK(sel->names.size() == 2 && sel->names[0] == kSymphonyPortSourceName32 && sel->names[1] == kSymphonyPortSourceName64,
+              "%s: selector entries are not the two names", o.name);
         CHECK(sel->selected == 0, "%s: selector does not start at the 32-channel entry", o.name);
     }
     CheckPublished("at start", 32);

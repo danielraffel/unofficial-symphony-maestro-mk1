@@ -4,11 +4,8 @@
 // the entries "Port 1: 32ch" and "Port 1-2: 64ch"
 // (og_source/symphonymk1/ext/Symphony64/Driver/Symphony64AudioEngine.cpp:38-93);
 // Audio MIDI Setup shows it as "Source". A two-port build of this driver
-// publishes the same two selectors, one instance of this class each, with the
-// same IDs but named "Symphony I/O: ThunderBridge" and "Symphony I/O:
-// ThunderBridge 64ch" on purpose: the macOS Sound menu shows the selected
-// entry's name in place of the device name (kSymphonyPortSourceName32/64). No
-// one-port build creates one.
+// publishes the same two selectors, one instance of this class each
+// (kSymphonyPortSourceName32/64). No one-port build creates one.
 //
 // Like the clock and optical selectors, the user's choice only reaches the
 // driver through HandleChangeSelectedValues, so this subclass forwards it to

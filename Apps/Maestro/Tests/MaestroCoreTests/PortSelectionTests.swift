@@ -13,14 +13,12 @@ struct PortSelectionTests {
         SecondPortState(portCount: 2, flags: 0x0F, audio: audio)
     }
 
-    @Test("the two entries are the original's, in its order and with its IDs; named after the device")
+    @Test("the two entries are the original's, in its order, with its names and IDs")
     func entries() {
         // og_source/symphonymk1/ext/Symphony64/SymphonyAPI/SymphonyCommon.h:182-183
         #expect(PortSelection.allCases == [.port1, .ports1And2])
-        // Not Apogee's "Port 1: 32ch" / "Port 1-2: 64ch": the Sound menu shows
-        // the entry's name in place of the device name.
-        #expect(PortSelection.port1.name == "Symphony I/O: ThunderBridge")
-        #expect(PortSelection.ports1And2.name == "Symphony I/O: ThunderBridge 64ch")
+        #expect(PortSelection.port1.name == "Port 1: 32ch")
+        #expect(PortSelection.ports1And2.name == "Port 1-2: 64ch")
         #expect(PortSelection.port1.pickerLabel == "32 channels")
         #expect(PortSelection.ports1And2.pickerLabel == "64 channels (two units)")
         #expect(PortSelection.port1.rawValue == 0 && PortSelection.ports1And2.rawValue == 1)
@@ -238,23 +236,22 @@ struct PortsWordingTests {
             text.split(separator: "\n").first { $0.hasPrefix("#define \(name) ") }
                 .map { String($0.dropFirst("#define \(name) ".count)).trimmingCharacters(in: .whitespaces) }
         }
-        let device = try #require(define("kSymphonyDeviceName"))
-        #expect(device.hasPrefix("\"\(PortSelection.deviceName)\""))
-        #expect(define("kSymphonyPortSourceName32") == "kSymphonyDeviceName")
-        #expect(define("kSymphonyPortSourceName64") == "kSymphonyDeviceName \" 64ch\"")
-        #expect(PortSelection.port1.name == PortSelection.deviceName)
-        #expect(PortSelection.ports1And2.name == PortSelection.deviceName + " 64ch")
+        let name32 = try #require(define("kSymphonyPortSourceName32"))
+        let name64 = try #require(define("kSymphonyPortSourceName64"))
+        #expect(name32 == "\"\(PortSelection.port1.name)\"")
+        #expect(name64 == "\"\(PortSelection.ports1And2.name)\"")
         #expect(define("kSymphonyPortSourcePort1")?.hasPrefix("0u") == true)
         #expect(define("kSymphonyPortSourcePorts1And2")?.hasPrefix("1u") == true)
     }
 
-    @Test("the info popover and Help name the two Source entries and say \"should keep\"")
+    @Test("the info popover and Help use the driver's Source names and say \"should keep\"")
     func infoAndHelpUseTheDriverNames() {
         let info = PortSelection.infoText
-        #expect(info == "In Audio MIDI Setup and the macOS Sound menu, the ThunderBridge appears as:\n"
-                + "• Symphony I/O: ThunderBridge — 32 channels\n"
-                + "• Symphony I/O: ThunderBridge 64ch — 64 channels (two units)\n"
+        #expect(info == "In Audio MIDI Setup (Source) and the macOS Sound menu, these choices are named:\n"
+                + "• \(PortSelection.port1.name) — 32 channels\n"
+                + "• \(PortSelection.ports1And2.name) — 64 channels (two units)\n"
                 + "Your DAW should keep the same device either way.")
+        #expect(info.contains("• Port 1: 32ch — 32 channels"))
         let help = PortSelection.helpText.joined(separator: " ")
         #expect(help.contains("**\(PortSelection.port1.name)**"))
         #expect(help.contains("**\(PortSelection.ports1And2.name)**"))

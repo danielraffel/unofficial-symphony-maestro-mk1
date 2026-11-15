@@ -3,17 +3,14 @@
 /// A two-port build of the driver publishes Apogee's original data-source
 /// selector on the Core Audio device, on the input and the output side: Audio
 /// MIDI Setup shows it as "Source", and macOS also offers it in Sound settings.
-/// The two entries and their order are the original's
+/// The two entries, their order and their names are the original's
 /// (`og_source/symphonymk1/ext/Symphony64/SymphonyAPI/SymphonyCommon.h:182`,
 /// `Driver/Symphony64AudioEngine.cpp:38-93`), and the raw value is the entry's
 /// index, which is the Core Audio data-source ID
-/// (`kSymphonyPortSource*` in `SymphonyThunderbridgeShared.h`).
-///
-/// The names are not the original's ("Port 1: 32ch" / "Port 1-2: 64ch"), on
-/// purpose: the macOS Sound menu shows the selected entry's name in place of
-/// the device name, so the default entry is the device name itself and the
-/// other adds "64ch". Inside Maestro the picker uses plain labels instead
-/// (`pickerLabel`).
+/// (`kSymphonyPortSource*` in `SymphonyThunderbridgeShared.h`). The names are
+/// under review; everything Maestro shows of them comes from `name`, which a
+/// test checks against the driver's header. Inside Maestro the picker uses
+/// plain labels (`pickerLabel`).
 ///
 /// A released driver publishes no such selector, so none of this is shown.
 public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
@@ -24,16 +21,12 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
 
     public var id: UInt32 { rawValue }
 
-    /// The Core Audio device name, which the default entry repeats
-    /// (`kSymphonyDeviceName`).
-    public static let deviceName = "Symphony I/O: ThunderBridge"
-
     /// The name the driver publishes and Audio MIDI Setup and the Sound menu
     /// show (`kSymphonyPortSourceName32` / `kSymphonyPortSourceName64`).
     public var name: String {
         switch self {
-        case .port1: return Self.deviceName
-        case .ports1And2: return Self.deviceName + " 64ch"
+        case .port1: return "Port 1: 32ch"
+        case .ports1And2: return "Port 1-2: 64ch"
         }
     }
 
@@ -54,7 +47,7 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
     /// The ⓘ popover next to the picker. Whether a DAW keeps the device across
     /// a switch has not been tried yet, hence "should".
     public static var infoText: String {
-        "In Audio MIDI Setup and the macOS Sound menu, the ThunderBridge appears as:\n"
+        "In Audio MIDI Setup (Source) and the macOS Sound menu, these choices are named:\n"
             + "• \(PortSelection.port1.name) — 32 channels\n"
             + "• \(PortSelection.ports1And2.name) — 64 channels (two units)\n"
             + "Your DAW should keep the same device either way."
