@@ -47,7 +47,7 @@ The optical format, the S/PDIF settings, the prefix letter and your routing choi
 
 This is a test build; two units have not been tried on hardware yet. Connect the first Symphony I/O to ThunderBridge port 1 and the second unit to port 2.
 
-Audio MIDI Setup shows a **Source** menu for the ThunderBridge with two entries, as Apogee's driver had: **Port 1: 32ch** (32 channels, the default) and **Port 1-2: 64ch** (64 channels; 33-64 are the unit on port 2). The macOS Sound menu also offers them, showing the selected entry's name in place of the device name.
+Audio MIDI Setup shows a **Source** menu for the ThunderBridge, on the Input and Output tabs, with two entries: **Symphony I/O: ThunderBridge** (32 channels, the default) and **Symphony I/O: ThunderBridge 64** (64 channels; 33-64 are the unit on port 2). The macOS Sound menu in the menu bar shows the selected entry's name in place of the device name, which is why the default entry reads like the device name. Apogee's software called these "Port 1: 32ch" and "Port 1-2: 64ch".
 
 In Maestro the same setting is **Ports** in System Setup › Device Info, with the choices **32 channels** and **64 channels (two units)**. If no second unit is found on port 2, 64 channels is refused, the device stays at 32 and Device Info says why. Your DAW should keep the device selected when you switch.
 

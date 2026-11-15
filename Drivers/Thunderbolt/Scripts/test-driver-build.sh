@@ -21,6 +21,9 @@ grep -q 'IOConnectCallStructMethod(conn, Self.selectorReadDriverBuild, nil, 0, p
 # (7) selectors keep their numbers. App and dext must agree.
 grep -q 'private static let selectorReadPort2State: UInt32 = 8' "$APP_CLIENT"
 grep -q '\[kSelectorReadPort2State\]' "$DIR/Source/SymphonyUserClient.cpp"
+# The temporary port-source naming switch (experiment only): selector 9.
+grep -q 'static let selectorSetPortSourceNames: UInt32 = 9' "$APP_CLIENT"
+grep -q '\[kSelectorSetPortSourceNames\]' "$DIR/Source/SymphonyUserClient.cpp"
 
 # The build read is a user-client call, and those wait behind whatever the
 # driver is doing for another call (seconds during a link recovery). The app
@@ -39,7 +42,10 @@ cat > "$TMP/t.cpp" <<'CPP'
 static_assert(kSelectorReadDriverBuild == 6, "app asks selector 6");
 static_assert(kSelectorRetireForUpgrade == 7, "7 is the released retire selector");
 static_assert(kSelectorReadPort2State == 8, "app asks selector 8 for port 2");
-static_assert(kSelectorCount == 9, "dispatch table covers all three");
+static_assert(kSelectorSetPortSourceNames == 9, "app asks selector 9 for the temporary naming switch");
+static_assert(kSelectorCount == 10, "dispatch table covers all four");
+static_assert(sizeof(SymphonyPortSourceNamesInput) == 8 && sizeof(SymphonyPortSourceNamesOutput) == 8,
+              "app sends and reads two words");
 static_assert(sizeof(SymphonyDriverBuildOutput) == 8, "app reads two words");
 // Different output sizes are what make an old/new mismatch fail safe: an exp64
 // 9001-9003 dext answers selector 6 only with 64 bytes, so the app's 8-byte

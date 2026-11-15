@@ -1,16 +1,24 @@
+import Foundation
+
 /// EXPERIMENT (64 channels, stage 2): the ThunderBridge port selection.
 ///
 /// A two-port build of the driver publishes Apogee's original data-source
 /// selector on the Core Audio device, on the input and the output side: Audio
 /// MIDI Setup shows it as "Source", and macOS also offers it in Sound settings.
-/// The two entries, their order and their names are the original's
+/// The two entries and their order are the original's
 /// (`og_source/symphonymk1/ext/Symphony64/SymphonyAPI/SymphonyCommon.h:182`,
 /// `Driver/Symphony64AudioEngine.cpp:38-93`), and the raw value is the entry's
 /// index, which is the Core Audio data-source ID
-/// (`kSymphonyPortSource*` in `SymphonyThunderbridgeShared.h`). The names are
-/// under review; everything Maestro shows of them comes from `name`, which a
-/// test checks against the driver's header. Inside Maestro the picker uses
-/// plain labels (`pickerLabel`).
+/// (`kSymphonyPortSource*` in `SymphonyThunderbridgeShared.h`).
+///
+/// The names are not the original's ("Port 1: 32ch" / "Port 1-2: 64ch"), on
+/// purpose: the macOS menu-bar Sound menu shows the selected entry's name in
+/// place of the device name (Apple names its built-in sources after the
+/// device, e.g. "MacBook Pro Speakers"), while Logic shows only the device
+/// name. Naming the default entry after the device keeps "Symphony I/O:
+/// ThunderBridge" on screen everywhere in normal use. A test checks `name`
+/// against the driver's header. Inside Maestro the picker uses plain labels
+/// (`pickerLabel`).
 ///
 /// A released driver publishes no such selector, so none of this is shown.
 public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
@@ -25,9 +33,23 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
     /// show (`kSymphonyPortSourceName32` / `kSymphonyPortSourceName64`).
     public var name: String {
         switch self {
+        case .port1: return "Symphony I/O: ThunderBridge"
+        case .ports1And2: return "Symphony I/O: ThunderBridge 64"
+        }
+    }
+
+    /// What Apogee's own software called the entry.
+    public var apogeeName: String {
+        switch self {
         case .port1: return "Port 1: 32ch"
         case .ports1And2: return "Port 1-2: 64ch"
         }
+    }
+
+    /// The sentence that ties the names back to Apogee's.
+    public static var apogeeNamesSentence: String {
+        "Apogee's software called these \"\(PortSelection.port1.apogeeName)\" "
+            + "and \"\(PortSelection.ports1And2.apogeeName)\"."
     }
 
     /// What Maestro's own Ports picker says.
@@ -50,6 +72,7 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
         "In Audio MIDI Setup (Source) and the macOS Sound menu, these choices are named:\n"
             + "• \(PortSelection.port1.name) — 32 channels\n"
             + "• \(PortSelection.ports1And2.name) — 64 channels (two units)\n"
+            + "\(apogeeNamesSentence)\n"
             + "Your DAW should keep the same device either way."
     }
 
@@ -61,7 +84,7 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
                 + "Choose **64 channels (two units)** under **Ports** in System Setup › Device Info, "
                 + "or pick **\(PortSelection.ports1And2.name)** in Audio MIDI Setup's **Source** menu "
                 + "or the macOS Sound menu. **\(PortSelection.port1.name)** is the usual 32 channels. "
-                + "Channels 33–64 are the unit on port 2.",
+                + "Channels 33–64 are the unit on port 2. \(apogeeNamesSentence)",
             "If no second unit is found on port 2, the driver refuses 64 channels and stays at 32; "
                 + "Device Info says why. Your DAW should keep the same device either way.",
         ]
@@ -176,6 +199,43 @@ public struct PortsPresentation: Sendable, Equatable {
         rows = [Self.testBuildRow]
         if running {
             rows += state.port2DetailRows.map { Row(label: $0.label, value: $0.value) }
+        }
+    }
+}
+
+/// EXPERIMENT (64 channels) — TEMPORARY, remove after naming is chosen.
+///
+/// A hidden debug setting that asks a two-port driver to rename its two Source
+/// entries, so the candidate names can be compared on screen:
+/// `defaults write com.danielraffel.maestro MaestroDebugPortSourceScheme -int N`
+/// (0-3). Maestro sends it when it connects and whenever the setting changes
+/// (`kSelectorSetPortSourceNames`). The driver does not keep it across a
+/// restart; it starts with scheme 0. No visible UI.
+public enum PortSourceNameScheme: UInt32, CaseIterable, Sendable {
+    /// The shipped names (`kSymphonyPortSourceName32/64`).
+    case deviceName = 0
+    case deviceName32And64 = 1
+    case deviceNameAndApogee = 2
+    case apogee = 3
+
+    public static let defaultsKey = "MaestroDebugPortSourceScheme"
+
+    /// The scheme a defaults value asks for: 0 when unset or out of range, so
+    /// deleting the key puts the shipped names back.
+    public init(defaultsValue: Any?) {
+        let raw = (defaultsValue as? NSNumber)?.intValue ?? 0
+        self = (0...3).contains(raw) ? PortSourceNameScheme(rawValue: UInt32(raw))! : .deviceName
+    }
+
+    /// The two names the driver shows in this scheme
+    /// (`SymphonyPortSourceSchemeName` in `SymphonyThunderbridgeShared.h`).
+    public func name(_ selection: PortSelection) -> String {
+        switch (self, selection) {
+        case (.deviceName, _): return selection.name
+        case (.deviceName32And64, .port1): return "Symphony I/O: ThunderBridge 32"
+        case (.deviceName32And64, .ports1And2): return "Symphony I/O: ThunderBridge 64"
+        case (.deviceNameAndApogee, _): return "Symphony I/O: " + selection.apogeeName
+        case (.apogee, _): return selection.apogeeName
         }
     }
 }

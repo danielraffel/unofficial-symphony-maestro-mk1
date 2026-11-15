@@ -13,12 +13,16 @@ struct PortSelectionTests {
         SecondPortState(portCount: 2, flags: 0x0F, audio: audio)
     }
 
-    @Test("the two entries are the original's, in its order, with its names and IDs")
+    @Test("the two entries are the original's, in its order and with its IDs; named after the device")
     func entries() {
         // og_source/symphonymk1/ext/Symphony64/SymphonyAPI/SymphonyCommon.h:182-183
         #expect(PortSelection.allCases == [.port1, .ports1And2])
-        #expect(PortSelection.port1.name == "Port 1: 32ch")
-        #expect(PortSelection.ports1And2.name == "Port 1-2: 64ch")
+        // Not Apogee's names, on purpose: the menu-bar Sound menu shows the
+        // selected entry's name in place of the device name.
+        #expect(PortSelection.port1.name == "Symphony I/O: ThunderBridge")
+        #expect(PortSelection.ports1And2.name == "Symphony I/O: ThunderBridge 64")
+        #expect(PortSelection.port1.apogeeName == "Port 1: 32ch")
+        #expect(PortSelection.ports1And2.apogeeName == "Port 1-2: 64ch")
         #expect(PortSelection.port1.pickerLabel == "32 channels")
         #expect(PortSelection.ports1And2.pickerLabel == "64 channels (two units)")
         #expect(PortSelection.port1.rawValue == 0 && PortSelection.ports1And2.rawValue == 1)
@@ -240,6 +244,19 @@ struct PortsWordingTests {
         let name64 = try #require(define("kSymphonyPortSourceName64"))
         #expect(name32 == "\"\(PortSelection.port1.name)\"")
         #expect(name64 == "\"\(PortSelection.ports1And2.name)\"")
+        let device = try #require(define("kSymphonyDeviceName"))
+        #expect(device.hasPrefix("\"\(PortSelection.port1.name)\""))
+        // TEMPORARY naming switch (remove after naming is chosen): Maestro's
+        // idea of each scheme's names is the driver's table.
+        #expect(define("kSymphonyPortSourceSchemeCount")?.hasPrefix("4u") == true)
+        #expect(PortSourceNameScheme.allCases.count == 4)
+        for scheme in PortSourceNameScheme.allCases where scheme != .deviceName {
+            let n = scheme.rawValue
+            #expect(define("kSymphonyPortSourceScheme\(n)Name32") == "\"\(scheme.name(.port1))\"")
+            #expect(define("kSymphonyPortSourceScheme\(n)Name64") == "\"\(scheme.name(.ports1And2))\"")
+        }
+        #expect(PortSourceNameScheme.deviceName.name(.port1) == PortSelection.port1.name)
+        #expect(PortSourceNameScheme.deviceName.name(.ports1And2) == PortSelection.ports1And2.name)
         #expect(define("kSymphonyPortSourcePort1")?.hasPrefix("0u") == true)
         #expect(define("kSymphonyPortSourcePorts1And2")?.hasPrefix("1u") == true)
     }
@@ -250,8 +267,10 @@ struct PortsWordingTests {
         #expect(info == "In Audio MIDI Setup (Source) and the macOS Sound menu, these choices are named:\n"
                 + "• \(PortSelection.port1.name) — 32 channels\n"
                 + "• \(PortSelection.ports1And2.name) — 64 channels (two units)\n"
+                + "Apogee's software called these \"Port 1: 32ch\" and \"Port 1-2: 64ch\".\n"
                 + "Your DAW should keep the same device either way.")
-        #expect(info.contains("• Port 1: 32ch — 32 channels"))
+        #expect(info.contains("• Symphony I/O: ThunderBridge — 32 channels"))
+        #expect(info.contains("• Symphony I/O: ThunderBridge 64 — 64 channels (two units)"))
         let help = PortSelection.helpText.joined(separator: " ")
         #expect(help.contains("**\(PortSelection.port1.name)**"))
         #expect(help.contains("**\(PortSelection.ports1And2.name)**"))
@@ -259,9 +278,30 @@ struct PortsWordingTests {
         #expect(help.contains("refuses 64 channels"))
         #expect(help.contains("has not been tried on hardware"))
         #expect(help.contains("should keep"))
+        #expect(help.contains(PortSelection.apogeeNamesSentence))
         #expect(PortSelection.explanationLines == [
             "32 channels: one Symphony I/O on ThunderBridge port 1.",
             "64 channels: adds a second unit on port 2 as channels 33–64.",
+        ])
+    }
+
+    @Test("the temporary naming switch: defaults value to scheme, and each scheme's names")
+    func portSourceNameSchemes() {
+        #expect(PortSourceNameScheme.defaultsKey == "MaestroDebugPortSourceScheme")
+        // Unset, wrong type or out of range: the shipped names.
+        #expect(PortSourceNameScheme(defaultsValue: nil) == .deviceName)
+        #expect(PortSourceNameScheme(defaultsValue: "2") == .deviceName)
+        #expect(PortSourceNameScheme(defaultsValue: NSNumber(value: -1)) == .deviceName)
+        #expect(PortSourceNameScheme(defaultsValue: NSNumber(value: 4)) == .deviceName)
+        for n in 0...3 {
+            #expect(PortSourceNameScheme(defaultsValue: NSNumber(value: n)).rawValue == UInt32(n))
+        }
+        let names = PortSourceNameScheme.allCases.map { [$0.name(.port1), $0.name(.ports1And2)] }
+        #expect(names == [
+            ["Symphony I/O: ThunderBridge", "Symphony I/O: ThunderBridge 64"],
+            ["Symphony I/O: ThunderBridge 32", "Symphony I/O: ThunderBridge 64"],
+            ["Symphony I/O: Port 1: 32ch", "Symphony I/O: Port 1-2: 64ch"],
+            ["Port 1: 32ch", "Port 1-2: 64ch"],
         ])
     }
 

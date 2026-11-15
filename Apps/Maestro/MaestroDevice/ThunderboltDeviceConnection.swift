@@ -529,6 +529,14 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// publishes on the Core Audio device. Nil from every released driver.
     public func portSelectionID() -> UInt32? { PortSelectionProperty.read(deviceID: audioDeviceID) }
 
+    /// EXPERIMENT, TEMPORARY (remove after naming is chosen): ask a two-port
+    /// driver to show another naming scheme for its Source entries. A driver
+    /// without the selector rejects it. Blocking; not on the main thread.
+    @discardableResult
+    public func setPortSourceNames(_ scheme: PortSourceNameScheme) -> kern_return_t {
+        dextClient.setPortSourceNames(scheme: scheme.rawValue)
+    }
+
     /// Ask the device for a port selection, as Audio MIDI Setup does.
     public func setPortSelection(_ selection: PortSelection) throws {
         try PortSelectionProperty.write(deviceID: audioDeviceID, selection: selection)

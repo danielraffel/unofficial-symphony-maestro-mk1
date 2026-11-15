@@ -404,6 +404,10 @@ struct SymphonyThunderbridge_IVars {
     bool      port2DisablePending;
     uint32_t  port2PhaseWord;        // kSymphonyPort2Phase*, the last alignment
     SymphonyPortSourceControl *portSourceControl[2];   // [0] input, [1] output
+    // TEMPORARY (kSelectorSetPortSourceNames), remove after naming is chosen:
+    // the naming scheme the selectors show. 0 at every Start(); under
+    // portPublishLock.
+    uint32_t  portSourceScheme;
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -3827,6 +3831,62 @@ kern_return_t SymphonyThunderbridge::RequestPortMode(uint32_t selectorValue)
     return kIOReturnSuccess;
 }
 
+// ── SetPortSourceNames (kSelectorSetPortSourceNames) ────────────────────────
+// TEMPORARY, remove after naming is chosen. Renames the two entries of both
+// port selectors (input and output) to `scheme`'s names, so the candidate
+// names can be compared on screen. The entries keep their values and order,
+// and each selector keeps its selected value; nothing else changes and the
+// card is not touched. AudioDriverKit has no call that replaces a description,
+// so the old two are removed and the new two added, and the selection is set
+// again afterwards. Not persisted: Start() publishes scheme 0.
+//
+// What it cannot change: the scope. Both selectors keep existing; showing a
+// source on the input side only would mean removing a control from the live
+// device, which this does not do.
+kern_return_t SymphonyThunderbridge::SetPortSourceNames(uint32_t scheme)
+{
+    if (!ivars || ivars->portCount != 2 || !ivars->portPublishLock) return kIOReturnUnsupported;
+    if (scheme >= kSymphonyPortSourceSchemeCount) return kIOReturnBadArgument;
+    kern_return_t result = kIOReturnSuccess;
+    IOLockLock(ivars->portPublishLock);
+    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE)) {
+        IOLockUnlock(ivars->portPublishLock);
+        return kIOReturnNotReady;
+    }
+    ivars->portSourceScheme = scheme;   // used by a device published later in this Start()
+    IOUserAudioSelectorValueDescription fresh[2] = {
+        { kSymphonyPortSourcePort1,
+          OSSharedPtr<OSString>(OSString::withCString(
+              SymphonyPortSourceSchemeName(scheme, kSymphonyPortSourcePort1)), OSNoRetain) },
+        { kSymphonyPortSourcePorts1And2,
+          OSSharedPtr<OSString>(OSString::withCString(
+              SymphonyPortSourceSchemeName(scheme, kSymphonyPortSourcePorts1And2)), OSNoRetain) },
+    };
+    for (uint32_t i = 0; i < 2; i++) {
+        SymphonyPortSourceControl *pc = ivars->portSourceControl[i];
+        if (!pc) continue;
+        IOUserAudioSelectorValue selected = kSymphonyPortSourcePort1;
+        const size_t haveSelected = pc->GetCurrentSelectedValues(&selected, 1);
+        IOUserAudioSelectorValueDescription old[2];
+        const size_t oldCount = pc->GetControlValueDescriptions(old, 2);
+        if (oldCount) pc->RemoveControlValueDescriptions(old, oldCount);
+        kern_return_t r = pc->AddControlValueDescriptions(fresh, 2);
+        if (r != kIOReturnSuccess) {
+            // Put the old names back rather than leave an empty selector.
+            if (oldCount) pc->AddControlValueDescriptions(old, oldCount);
+            STERR("Port selector %u: renaming to scheme %u failed: 0x%x", i, scheme, r);
+            result = r;
+        }
+        if (haveSelected) pc->SetCurrentSelectedValues(&selected, 1);
+    }
+    IOLockUnlock(ivars->portPublishLock);
+    if (result == kIOReturnSuccess)
+        STLOG("EXPERIMENT (temporary): port selector names now scheme %u (\"%s\" / \"%s\")", scheme,
+              SymphonyPortSourceSchemeName(scheme, kSymphonyPortSourcePort1),
+              SymphonyPortSourceSchemeName(scheme, kSymphonyPortSourcePorts1And2));
+    return result;
+}
+
 // Called by SymphonyAudioDevice::PerformDeviceConfigurationChange, with IO
 // stopped by Core Audio, for every configuration change of a two-port build.
 // 1. If the selector asked for a mode the card is not in, switch the card. That
@@ -3835,7 +3895,7 @@ kern_return_t SymphonyThunderbridge::RequestPortMode(uint32_t selectorValue)
 // 2. On this thread, under portPublishLock (Stop()'s teardown takes it before
 //    releasing these objects), give the streams the buffer and formats of the
 //    mode the card ended up in and set both selectors to it. A refused request
-//    therefore shows as "Port 1: 32ch" again, and a fallback the driver made on
+//    therefore shows as the 32-channel entry again, and a fallback the driver made on
 //    its own is published here too.
 kern_return_t SymphonyThunderbridge::PerformPortModeChange()
 {
@@ -5560,7 +5620,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // ── 36e. EXPERIMENT (64ch, stage 2): the port selector ─────────────
         // Two-port builds only. The original's input and output data-source
         // selectors, same two entries in the same order, the first selected
-        // (Symphony64AudioEngine.cpp:38-93; names from SymphonyCommon.h:182).
+        // (Symphony64AudioEngine.cpp:38-93), named after the device rather
+        // than Apogee's "Port 1: 32ch" / "Port 1-2: 64ch" (see
+        // SymphonyThunderbridgeShared.h for why).
         // Audio MIDI Setup shows them as "Source". They sit on the main
         // element; the optical format selectors above use elements 1 and 2.
         // macOS also offers a data source in Sound settings and shows its name
@@ -5573,11 +5635,16 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                         i == 0 ? IOUserAudioObjectPropertyScope::Input
                                : IOUserAudioObjectPropertyScope::Output,
                         IOUserAudioClassID::DataSourceControl)) {
+                    // The scheme is 0 (kSymphonyPortSourceName32/64) unless the
+                    // temporary naming switch changed it since Start().
+                    const uint32_t scheme = ivars->portSourceScheme;
                     IOUserAudioSelectorValueDescription portValues[2] = {
                         { kSymphonyPortSourcePort1,
-                          OSSharedPtr<OSString>(OSString::withCString(kSymphonyPortSourceName32), OSNoRetain) },
+                          OSSharedPtr<OSString>(OSString::withCString(
+                              SymphonyPortSourceSchemeName(scheme, kSymphonyPortSourcePort1)), OSNoRetain) },
                         { kSymphonyPortSourcePorts1And2,
-                          OSSharedPtr<OSString>(OSString::withCString(kSymphonyPortSourceName64), OSNoRetain) },
+                          OSSharedPtr<OSString>(OSString::withCString(
+                              SymphonyPortSourceSchemeName(scheme, kSymphonyPortSourcePorts1And2)), OSNoRetain) },
                     };
                     pc->AddControlValueDescriptions(portValues, 2);
                     IOUserAudioSelectorValue initSel = kSymphonyPortSourcePort1;

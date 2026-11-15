@@ -453,10 +453,38 @@ public:
     using OSObject::init;
     virtual bool init(IOUserAudioDriver *, bool, IOUserAudioObjectPropertyElement,
                       IOUserAudioObjectPropertyScope, IOUserAudioClassID) { return true; }
+    // Appends, like AudioDriverKit: a rename that forgets to remove the old
+    // entries shows up as four.
     kern_return_t AddControlValueDescriptions(const IOUserAudioSelectorValueDescription *d, size_t n) {
-        names.clear();
-        for (size_t i = 0; i < n; i++) names.push_back(d[i].mName.get()->getCStringNoCopy());
+        if (failNextAdd) { failNextAdd = false; return kIOReturnNoMemory; }
+        for (size_t i = 0; i < n; i++) {
+            values.push_back(d[i].mValue);
+            names.push_back(d[i].mName.get()->getCStringNoCopy());
+        }
         return kIOReturnSuccess;
+    }
+    kern_return_t RemoveControlValueDescriptions(const IOUserAudioSelectorValueDescription *d, size_t n) {
+        for (size_t i = 0; i < n; i++)
+            for (size_t j = 0; j < values.size(); j++)
+                if (values[j] == d[i].mValue) {
+                    values.erase(values.begin() + j);
+                    names.erase(names.begin() + j);
+                    break;
+                }
+        return kIOReturnSuccess;
+    }
+    size_t GetControlValueDescriptions(IOUserAudioSelectorValueDescription *out, size_t n) {
+        size_t k = 0;
+        for (; k < n && k < values.size(); k++) {
+            out[k].mValue = values[k];
+            out[k].mName = OSSharedPtr<OSString>(OSString::withCString(names[k].c_str()), OSNoRetain);
+        }
+        return k;
+    }
+    size_t GetCurrentSelectedValues(IOUserAudioSelectorValue *out, size_t n) {
+        if (!n) return 0;
+        out[0] = selected;
+        return 1;
     }
     kern_return_t SetCurrentSelectedValues(const IOUserAudioSelectorValue *v, size_t n) {
         if (n) selected = v[0];
@@ -466,6 +494,8 @@ public:
     // Host-test state (no trace lines).
     IOUserAudioSelectorValue selected = 0;
     uint32_t sets = 0;
+    bool failNextAdd = false;   // the next add fails (a rename's error path)
+    std::vector<IOUserAudioSelectorValue> values;
     std::vector<std::string> names;
 };
 

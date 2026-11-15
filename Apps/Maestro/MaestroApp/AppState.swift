@@ -749,6 +749,7 @@ final class AppState {
             if portSelection != PortSelectionModel() { portSelection = PortSelectionModel() }
             return
         }
+        startPortSourceNameSchemeObservation()
         portSelectionTask = Task { @MainActor [weak self] in
             do {
                 let observation = try connection.observePortSelection()
@@ -769,8 +770,55 @@ final class AppState {
         }
     }
 
+    // MARK: EXPERIMENT (64 channels) — TEMPORARY, remove after naming is chosen
+    //
+    // The hidden debug setting `MaestroDebugPortSourceScheme` (0-3,
+    // PortSourceNameScheme) renames the driver's two Source entries for an
+    // on-screen comparison. Sent on connect (0 when unset, so deleting the key
+    // restores the shipped names on a driver still showing another scheme) and
+    // whenever `defaults write` changes it. Off the main thread: a user-client
+    // call can wait behind a link recovery.
+    @ObservationIgnored
+    private var portSourceSchemeObservation: NSKeyValueObservation?
+    @ObservationIgnored
+    private var portSourceSchemeTask: Task<Void, Never>?
+
+    @MainActor
+    private func startPortSourceNameSchemeObservation() {
+        applyPortSourceNameScheme()
+        guard portSourceSchemeObservation == nil else { return }
+        let (changes, continuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        portSourceSchemeObservation = UserDefaults.standard.observe(
+            \.MaestroDebugPortSourceScheme, options: [.new]
+        ) { _, _ in continuation.yield() }
+        portSourceSchemeTask = Task { @MainActor [weak self] in
+            for await _ in changes {
+                guard !Task.isCancelled, let self else { return }
+                self.applyPortSourceNameScheme()
+            }
+        }
+    }
+
+    @MainActor
+    private func applyPortSourceNameScheme() {
+        // Only observed while a two-port driver is connected; a one-port
+        // driver would refuse it anyway.
+        guard let connection = device as? ThunderboltDeviceConnection else { return }
+        let scheme = PortSourceNameScheme(
+            defaultsValue: UserDefaults.standard.object(forKey: PortSourceNameScheme.defaultsKey))
+        Task.detached(priority: .utility) {
+            let kr = connection.setPortSourceNames(scheme)
+            print("[Maestro] EXPERIMENT (temporary) port source names scheme \(scheme.rawValue): "
+                  + (kr == KERN_SUCCESS ? "applied" : String(format: "driver said 0x%x", kr)))
+        }
+    }
+
     @MainActor
     func stopPortSelectionObservation() {
+        portSourceSchemeObservation?.invalidate()
+        portSourceSchemeObservation = nil
+        portSourceSchemeTask?.cancel()
+        portSourceSchemeTask = nil
         portSelectionTask?.cancel()
         portSelectionTask = nil
         if portSelection != PortSelectionModel() { portSelection = PortSelectionModel() }
@@ -3565,5 +3613,14 @@ final class AppState {
         // Trigger view reloads (.task(id: appState.viewReloadToken) re-runs on UUID change)
         viewReloadToken = UUID()
         print("[Maestro] applyPreset: applied \(preset.inputChannelStates.count) input channels, \(preset.channelNames.count) channel names, output level \(preset.outputLevel) dB")
+    }
+}
+
+// EXPERIMENT (64 channels) — TEMPORARY, remove after naming is chosen: lets
+// AppState observe the hidden debug setting with KVO, which also reports a
+// change made from outside the app with `defaults write`.
+extension UserDefaults {
+    @objc dynamic var MaestroDebugPortSourceScheme: Any? {
+        object(forKey: PortSourceNameScheme.defaultsKey)
     }
 }

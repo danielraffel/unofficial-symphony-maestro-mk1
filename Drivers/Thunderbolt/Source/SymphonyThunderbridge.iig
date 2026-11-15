@@ -86,6 +86,10 @@ public:
     // streams and the selectors match what the card is doing. Does nothing in a
     // one-port build.
     virtual kern_return_t PerformPortModeChange() LOCALONLY;
+    // TEMPORARY, remove after naming is chosen (kSelectorSetPortSourceNames):
+    // rename both port selectors' entries to a naming scheme
+    // (kSymphonyPortSourceScheme*). Selected values unchanged, no hardware.
+    virtual kern_return_t SetPortSourceNames(uint32_t scheme) LOCALONLY;
 
     // Stop serving the device so the copy macOS registered to replace this one
     // can attach (kSelectorRetireForUpgrade). Calls Terminate(0) on this
