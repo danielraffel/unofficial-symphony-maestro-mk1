@@ -557,26 +557,34 @@ struct SymphonyIOPropertyMapperTests {
 
     /// HP1 and HP2 share one hardware register (0x54): low nibble = HP1,
     /// high nibble = HP2. Writing one output must preserve the sibling's nibble.
-    /// This is the exact "HP1 write zeroes HP2" regression guard. The mapper keeps
-    /// a process-global cache of the last-written nibbles; the test drives both in
-    /// sequence so the outcome is deterministic regardless of prior cache state.
+    /// This is the exact "HP1 write zeroes HP2" regression guard. It uses its
+    /// own register: the mapper's is process-wide, and other tests running in
+    /// parallel write headphone sources through it, which made this flaky.
     @Test func headphoneRoutingPreservesSiblingNibble() throws {
-        // Establish HP2 = 5 (high nibble). HP1 nibble is whatever the cache held;
-        // we don't assert it here — the next write pins it.
-        _ = try SymphonyIOPropertyMapper.buildWriteRequest(
-            for: PropertyAddress(selector: .headphone2RoutingID), value: .uint32(5))
+        let register = HeadphoneAssignmentRegister()
+        _ = register.request(settingHP2: 5)
 
         // Write HP1 = 3. HP2's nibble (5) MUST be preserved, not zeroed.
-        let afterHP1 = try SymphonyIOPropertyMapper.buildWriteRequest(
-            for: PropertyAddress(selector: .headphone1RoutingID), value: .uint32(3))
+        let afterHP1 = register.request(settingHP1: 3)
         #expect(afterHP1.request == 0x54)
         #expect(afterHP1.data == Data([(5 << 4) | 3]))  // 0x53 — HP2 preserved
 
         // Write HP2 = 6. HP1's nibble (3) MUST be preserved, not zeroed.
-        let afterHP2 = try SymphonyIOPropertyMapper.buildWriteRequest(
-            for: PropertyAddress(selector: .headphone2RoutingID), value: .uint32(6))
+        let afterHP2 = register.request(settingHP2: 6)
         #expect(afterHP2.request == 0x54)
         #expect(afterHP2.data == Data([(6 << 4) | 3]))  // 0x63 — HP1 preserved
+    }
+
+    /// The mapper goes through its register: the nibble just written is in
+    /// place whatever another test wrote to the other one.
+    @Test func headphoneRoutingWriteUsesTheRegister() throws {
+        let hp1 = try SymphonyIOPropertyMapper.buildWriteRequest(
+            for: PropertyAddress(selector: .headphone1RoutingID), value: .uint32(3))
+        #expect(hp1.request == 0x54)
+        #expect(hp1.data.first.map { $0 & 0x0F } == 3)
+        let hp2 = try SymphonyIOPropertyMapper.buildWriteRequest(
+            for: PropertyAddress(selector: .headphone2RoutingID), value: .uint32(6))
+        #expect(hp2.data.first.map { $0 >> 4 } == 6)
     }
 
     // MARK: - I/O Card Type Tests

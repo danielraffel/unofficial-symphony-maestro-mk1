@@ -380,22 +380,14 @@ public enum SymphonyIOPropertyMapper {
     /// (`SymphonyIO_Stream.cpp:264-276`), not the `kmAEstroHeadPhoneAssign*`
     /// constants, so "Line 1-2" is 0. The previous default of 1 pre-seeded the
     /// sibling nibble with "Line 3-4".
-    private static let hpRoutingLock = NSLock()
-    private nonisolated(unsafe) static var cachedHP1Nibble: UInt8 = 0
-    private nonisolated(unsafe) static var cachedHP2Nibble: UInt8 = 0
+    static let headphoneRegister = HeadphoneAssignmentRegister()
 
     /// Build a headphone-assignments write that preserves the sibling nibble.
     private static func headphoneAssignmentsRequest(
         settingHP1 hp1: UInt8? = nil,
         settingHP2 hp2: UInt8? = nil
     ) -> USBControlRequest {
-        hpRoutingLock.lock()
-        defer { hpRoutingLock.unlock() }
-        if let hp1 { cachedHP1Nibble = hp1 & 0x0F }
-        if let hp2 { cachedHP2Nibble = hp2 & 0x0F }
-        return SymphonyIORequestBuilder.setHeadphoneAssignments(
-            hp1: cachedHP1Nibble, hp2: cachedHP2Nibble
-        )
+        headphoneRegister.request(settingHP1: hp1, settingHP2: hp2)
     }
 
     // MARK: - Write Request
@@ -1058,5 +1050,24 @@ public enum SymphonyIOPropertyMapper {
         return mixerIndex == 0
             ? SymphonyIORoutingAddress.mixer0AppInputBase
             : SymphonyIORoutingAddress.mixer1AppInputBase
+    }
+}
+
+/// The last-written nibbles of the shared headphone-assignments register
+/// (0x54): low nibble HP1's source, high nibble HP2's. The mapper uses one
+/// process-wide instance (there is one physical register); tests make their
+/// own, so parallel tests that write a headphone source cannot change what
+/// another test reads.
+final class HeadphoneAssignmentRegister: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hp1: UInt8 = 0
+    private var hp2: UInt8 = 0
+
+    func request(settingHP1 newHP1: UInt8? = nil, settingHP2 newHP2: UInt8? = nil) -> USBControlRequest {
+        lock.lock()
+        defer { lock.unlock() }
+        if let newHP1 { hp1 = newHP1 & 0x0F }
+        if let newHP2 { hp2 = newHP2 & 0x0F }
+        return SymphonyIORequestBuilder.setHeadphoneAssignments(hp1: hp1, hp2: hp2)
     }
 }
