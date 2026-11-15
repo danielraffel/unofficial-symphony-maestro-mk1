@@ -1487,7 +1487,7 @@ final class AppState {
         }
         refreshSecondPortState()
         if let secondPortState {
-            print("[Maestro] EXPERIMENT two-port driver: \(secondPortState.rawText)")
+            print("[Maestro] Two-port driver: \(secondPortState.rawText)")
         }
         startPortSelectionObservation()
         // ThunderBridge's dext returns a validity bit alongside each raw

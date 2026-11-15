@@ -154,7 +154,7 @@ struct SecondPortStateAudioTests {
         let state = try #require(SecondPortState.decode(words(audio: 0)))
         #expect(!state.supportsPort2Audio && !state.audioActive && state.phaseText == nil)
         #expect(state.deviceInfoRows.map(\.label)
-                == ["Experimental two-port driver", "Port 2 Link", "Port 2 Clock", "Port 2 Units"])
+                == ["Two-port driver", "Port 2 Link", "Port 2 Clock", "Port 2 Units"])
         #expect(state.deviceInfoRows[0].value == SecondPortState.experimentValue)
         #expect(!state.rawText.contains("audio="))
     }
@@ -163,12 +163,12 @@ struct SecondPortStateAudioTests {
     func rows() {
         let off = SecondPortState(portCount: 2, flags: 0x0F, audio: 0x01)
         #expect(off.deviceInfoRows.map(\.label)
-                == ["Experimental two-port driver", "Port 2 Audio", "Port 2 Link", "Port 2 Clock", "Port 2 Units"])
+                == ["Two-port driver", "Port 2 Audio", "Port 2 Link", "Port 2 Clock", "Port 2 Units"])
         #expect(off.deviceInfoRows[0].value
                 == "On. Port 2 is switched on, looked at and carries audio only while 64 channels are selected.")
         #expect(off.deviceInfoRows[1].value == "Off: 32 channels, port 1 only")
         let on = SecondPortState(portCount: 2, flags: 0x0F, audio: 0x0001_0007, phase: 0x8010_010B)
-        #expect(on.deviceInfoRows.map(\.label).prefix(3) == ["Experimental two-port driver", "Port 2 Audio", "Port 2 Phase"])
+        #expect(on.deviceInfoRows.map(\.label).prefix(3) == ["Two-port driver", "Port 2 Audio", "Port 2 Phase"])
         #expect(on.deviceInfoRows[1].value == "On: 64 channels, 33-64 are port 2 (Core Audio has not switched yet)")
         #expect(on.deviceInfoRows[2].value == "Aligned, jam 0x0b; 1 unit read")
         #expect(on.reportLines.last?.hasSuffix(" audio=0x00010007 phase=0x8010010b") == true)
@@ -268,7 +268,12 @@ struct PortsWordingTests {
         #expect(help.contains("**\(PortSelection.ports1And2.name)**"))
         #expect(help.contains(PortSelection.ports1And2.pickerLabel))
         #expect(help.contains("refuses 64 channels"))
-        #expect(help.contains("has not been tried on hardware"))
+        #expect(help.contains("Reports from people using it are welcome"))
+        // Same bytes become stable at promotion: nothing may call this a test build or a beta.
+        for word in ["test build", "Test build", "beta", "Beta", "EXPERIMENT"] {
+            #expect(!help.contains(word))
+            #expect(!PortSelection.infoText.contains(word))
+        }
         #expect(help.contains("should keep"))
         #expect(help.contains(PortSelection.apogeeNamesSentence))
         #expect(PortSelection.explanationLines == [
@@ -305,12 +310,11 @@ struct PortsWordingTests {
         return m
     }
 
-    @Test("at 32 channels: the test-build row only, no port-2 rows")
+    @Test("at 32 channels: no rows (no test-build row, no port-2 rows)")
     func layoutAt32() {
         let s = state(audio: stage2Capable)
         let shown = PortsPresentation(model: model(0, s), state: s)
-        #expect(shown.rows == [PortsPresentation.testBuildRow])
-        #expect(shown.rows == [.init(label: "Two-unit test build", value: "Installed")])
+        #expect(shown.rows.isEmpty)
         #expect(shown.statusLine == nil)
         // The copied details still carry everything.
         #expect(s.reportLines.contains { $0.hasPrefix("Port 2 Link: ") })
@@ -322,7 +326,7 @@ struct PortsWordingTests {
         let s = state(audio: stage2Capable | SecondPortState.audioRefusedFlag | (1 << 8))
         let shown = PortsPresentation(model: model(0, s), state: s)
         #expect(shown.statusLine == "64 channels needs a second unit on port 2, and none was found.")
-        #expect(shown.rows == [PortsPresentation.testBuildRow])
+        #expect(shown.rows.isEmpty)
         #expect(!shown.rows.contains { $0.value.contains("refused") })
         #expect(s.reportLines.contains { $0.contains("64 channels refused") })
     }
@@ -333,11 +337,11 @@ struct PortsWordingTests {
         // Chosen in Maestro, not confirmed yet.
         let chosen = PortsPresentation(model: model(0, s, choose: .ports1And2), state: s)
         #expect(chosen.statusLine == "Switching to 64 channels…")
-        #expect(chosen.rows == [PortsPresentation.testBuildRow])
+        #expect(chosen.rows.isEmpty)
         // Chosen elsewhere: the device says 64, the card is not running it yet.
         let elsewhere = PortsPresentation(model: model(1, s), state: s)
         #expect(elsewhere.statusLine == "Switching to 64 channels…")
-        #expect(elsewhere.rows == [PortsPresentation.testBuildRow])
+        #expect(elsewhere.rows.isEmpty)
     }
 
     @Test("64 channels running: Link, Clock, Units and Phase")
@@ -347,10 +351,10 @@ struct PortsWordingTests {
                                 phase: 0x8001_010B)
         let shown = PortsPresentation(model: model(1, s), state: s)
         #expect(shown.statusLine == nil)
-        #expect(shown.rows.map { $0.label } == ["Two-unit test build", "Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Phase"])
+        #expect(shown.rows.map { $0.label } == ["Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Phase"])
         // Back to 32: the rows go again.
         let back = state(audio: stage2Capable)
-        #expect(PortsPresentation(model: model(0, back), state: back).rows == [PortsPresentation.testBuildRow])
+        #expect(PortsPresentation(model: model(0, back), state: back).rows.isEmpty)
     }
 
     @Test("the picker shows the device's value, not the request: pick 64, refused, stays 32")

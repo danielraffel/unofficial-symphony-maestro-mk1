@@ -221,7 +221,7 @@ public struct SecondPortState: Sendable, Equatable {
     }
 
     /// Shown in Device Info whenever the driver reports the experiment on.
-    public static let experimentLabel = "Experimental two-port driver"
+    public static let experimentLabel = "Two-port driver"
     /// A driver that only identifies port 2 (stage 1).
     public static let experimentValue = "On. Port 2 is identified only and carries no audio."
     /// A driver that can also run port 2 (stage 2).

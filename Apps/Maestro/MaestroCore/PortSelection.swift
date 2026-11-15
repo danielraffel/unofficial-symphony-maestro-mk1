@@ -76,10 +76,12 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
             + "Your DAW should keep the same device either way."
     }
 
-    /// The Help answer for the two-unit test build (HelpView).
+    /// The Help answer for the two-unit setup (HelpView). Nothing here may
+    /// call the build a test or a beta: the same package becomes stable when
+    /// it is promoted.
     public static var helpText: [String] {
         [
-            "This is a test build of the two-unit (64-channel) setup. It has not been tried on hardware yet.",
+            "Two-unit (64-channel) support is new. Reports from people using it are welcome.",
             "Connect the first Symphony I/O to ThunderBridge port 1 and the second unit to port 2. "
                 + "Choose **64 channels (two units)** under **Ports** in System Setup › Device Info, "
                 + "or pick **\(PortSelection.ports1And2.name)** in Audio MIDI Setup's **Source** menu "
@@ -179,8 +181,8 @@ public struct PortSelectionModel: Sendable, Equatable {
 
 /// What Device Info shows around the Ports picker. At 32 channels port 2 is
 /// off and nothing is looked at, so there is nothing to report about it: the
-/// picker, its explanation, one "Two-unit test build" row and, after a refused
-/// request, the plain reason once under the picker. The port-2 detail rows
+/// picker, its explanation and, after a refused request, the plain reason once
+/// under the picker. The port-2 detail rows
 /// appear only while 64 channels are selected and actually running. The copied
 /// details keep everything (`SecondPortState.reportLines`).
 public struct PortsPresentation: Sendable, Equatable {
@@ -189,7 +191,6 @@ public struct PortsPresentation: Sendable, Equatable {
         public var value: String
     }
 
-    public static let testBuildRow = Row(label: "Two-unit test build", value: "Installed")
     public static let switchingText = "Switching to 64 channels…"
 
     /// The grey line under the picker: switching, or why 64 is not running.
@@ -209,9 +210,6 @@ public struct PortsPresentation: Sendable, Equatable {
         } else {
             statusLine = nil
         }
-        rows = [Self.testBuildRow]
-        if running {
-            rows += state.port2DetailRows.map { Row(label: $0.label, value: $0.value) }
-        }
+        rows = running ? state.port2DetailRows.map { Row(label: $0.label, value: $0.value) } : []
     }
 }

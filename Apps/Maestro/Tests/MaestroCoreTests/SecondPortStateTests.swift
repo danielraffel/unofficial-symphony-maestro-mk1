@@ -124,7 +124,7 @@ struct SecondPortStateTests {
         let state = SecondPortState(portCount: 2, flags: 0x0F, xlinkClocking: 0x4102_4102,
                                     units: [ok | 0x30, ok | 0xC0], probeCount: 1)
         #expect(state.deviceInfoRows.map(\.label)
-                == ["Experimental two-port driver", "Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Unit 2"])
+                == ["Two-port driver", "Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Unit 2"])
         #expect(state.deviceInfoRows[3].value == "AD-16X (16 inputs) [replies 0x30, none]")
         // The experiment line is there even when port 2 is empty.
         let empty = SecondPortState(portCount: 2, flags: 0x01)
@@ -141,7 +141,7 @@ struct SecondPortStateTests {
             portCount: 2, flags: 0x0F, xlink2Status: 0x0010_0000, xlinkClocking: 0x4102_4102,
             gcsr2: 0x40, units: [ok | 0x30, ok | 0xC0], probeCount: 2).reportLines
         let expected = fullReport.clipboardText + "\n" + """
-        Experimental two-port driver: On. Port 2 is identified only and carries no audio.
+        Two-port driver: On. Port 2 is identified only and carries no audio.
         Port 2 Link: Data link up and locked
         Port 2 Clock: 48000 Hz
         Port 2 Unit 1: AD-16X (16 inputs) [replies 0x30, none]
