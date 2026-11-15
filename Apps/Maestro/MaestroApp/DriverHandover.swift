@@ -54,6 +54,12 @@ extension AppState {
     /// the hardware is connected).
     @MainActor
     func considerDriverHandover() {
+        // A completion that arrived before the observer was installed.
+        let completed = SystemExtensionInstaller.shared.completedActivationCount
+        if completed > driverActivationsHandled {
+            driverActivationsHandled = completed
+            driverActivationCompletedPending = true
+        }
         if driverHandover == .timedOut, softwareInfoReport.servingDextMatchesBundled {
             Self.handoverLog.notice("bundled driver now serves the ThunderBridge; guidance cleared")
             driverHandover = .idle
@@ -70,6 +76,7 @@ extension AppState {
     /// the next serving-build read, which this starts.
     @MainActor
     func driverActivationCompleted() {
+        driverActivationsHandled = SystemExtensionInstaller.shared.completedActivationCount
         driverActivationCompletedPending = true
         refreshInstalledDexts()
     }

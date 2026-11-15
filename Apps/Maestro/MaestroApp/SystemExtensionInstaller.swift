@@ -43,6 +43,10 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     /// AppState must see every completion.
     public static let activationCompletedNotification =
         Notification.Name("com.danielraffel.maestro.driverActivationCompleted")
+    /// How many activation requests finished with `.completed`. AppState
+    /// compares it with what it has handled, so a completion that arrives
+    /// before anyone listens (the request is submitted at launch) is not lost.
+    public private(set) var completedActivationCount = 0
     /// Most recent activation outcome, retained so a view that appears after the
     /// asynchronous request can still present the right next step.
     public private(set) var lastStatus: Status?
@@ -275,6 +279,7 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
             // checks which build answers on the card and, if it is not the
             // bundled one, asks it to retire (kSelectorRetireForUpgrade).
             log.notice("Driver extension activated")
+            completedActivationCount += 1
             report(.activated)
             NotificationCenter.default.post(name: Self.activationCompletedNotification, object: self)
         case .willCompleteAfterReboot:

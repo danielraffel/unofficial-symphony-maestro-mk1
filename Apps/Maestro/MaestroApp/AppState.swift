@@ -569,6 +569,9 @@ final class AppState {
     /// serving build in hand yet (`considerDriverHandover`).
     @ObservationIgnored
     var driverActivationCompletedPending = false
+    /// `SystemExtensionInstaller.completedActivationCount` already handled.
+    @ObservationIgnored
+    var driverActivationsHandled = 0
 
     /// Board hardware major versions, when read (0xA0). See
     /// `BoardTypeReading.hardwareMajor`.
