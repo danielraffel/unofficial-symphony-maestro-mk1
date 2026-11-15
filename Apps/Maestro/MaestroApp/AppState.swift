@@ -1453,6 +1453,9 @@ final class AppState {
             print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
         } else {
             let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            if ThunderboltInputRoutingMigration.run(routingKey: cache.key) {
+                print("[Maestro] syncInputRouting: cleared input routing saved before 0.8.40 (made on the old grid); the driver's default stands")
+            }
             let writes = InputRoutingReplay.writes(
                 saved: cache.load() ?? [:], columns: cardLayout.inputRoutingColumns,
                 pairCount: tb.identifier.mode.channelCount / 2)

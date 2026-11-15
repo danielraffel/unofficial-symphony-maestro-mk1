@@ -1950,6 +1950,37 @@ public enum InputRoutingReplay {
     }
 }
 
+/// One-time, ThunderBridge only: forget Input Routing choices saved before
+/// 0.8.40.
+///
+/// Until 0.8.40 the Input Routing grid on ThunderBridge drew the USB default
+/// (every Line input first), not the table the driver really programs (each
+/// card's inputs in slot order), and a saved choice was never sent again after
+/// a reconnect. So a saved click was made against a picture that did not match
+/// the unit, and the unit had long since gone back to its default. From 0.8.40
+/// saved choices are replayed at every connect; replaying the old ones would
+/// move a user's inputs on update. Clearing them once lets the driver's default
+/// stand, which is what those users have been recording all along.
+///
+/// The first ThunderBridge connect of 0.8.40 or later runs this, before any
+/// replay; whatever is saved at that moment predates it.
+public enum ThunderboltInputRoutingMigration {
+    public static let doneKey = "thunderboltInputRoutingBoardOrderMigration_v1"
+
+    /// Removes the saved input routes under `routingKey` (the
+    /// `routing_input_<productID>_v2` entry) the first time it is called on
+    /// `defaults`, and records that it ran. Returns true when it removed
+    /// something.
+    @discardableResult
+    public static func run(routingKey: String, defaults: UserDefaults = .standard) -> Bool {
+        guard !defaults.bool(forKey: doneKey) else { return false }
+        defaults.set(true, forKey: doneKey)
+        guard defaults.object(forKey: routingKey) != nil else { return false }
+        defaults.removeObject(forKey: routingKey)
+        return true
+    }
+}
+
 // MARK: - Routing Reset Safety
 
 /// The guard and the plain-language plan that sit in front of "Reset Routing".

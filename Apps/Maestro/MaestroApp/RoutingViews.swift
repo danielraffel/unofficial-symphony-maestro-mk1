@@ -103,7 +103,13 @@ struct InputRoutingView: View {
 
     private var routingCache: RoutingStateCache? {
         guard let id = appState.device?.identifier else { return nil }
-        return RoutingStateCache(direction: "input", productID: id.productID)
+        let cache = RoutingStateCache(direction: "input", productID: id.productID)
+        // Same one-time clear the connect-time replay runs, in case this page
+        // reads the saved choices first.
+        if appState.transportType == .thunderbolt {
+            ThunderboltInputRoutingMigration.run(routingKey: cache.key)
+        }
+        return cache
     }
 
     /// Pending refusal / confirmation for Reset Routing. See ``RoutingResetPrompt``.
