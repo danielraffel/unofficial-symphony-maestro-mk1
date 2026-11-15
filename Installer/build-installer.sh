@@ -83,7 +83,13 @@ MAESTRO_DEXT_BUILD="${MAESTRO_DEXT_BUILD:-$(python3 -c 'import json,sys; print(j
 export MAESTRO_DEXT_BUILD
 case "$BUILD_NUM" in ''|*[!0-9]*) echo "BUILD_NUM must be numeric" >&2; exit 1;; esac
 BUILD_HASH=$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)
-if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then BUILD_HASH="$BUILD_HASH-dirty"; fi
+# The full commit goes into the app's Info.plist (MaestroSourceCommit), so a
+# release can be tagged at the commit the package was built from.
+SOURCE_COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD)
+if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
+    BUILD_HASH="$BUILD_HASH-dirty"
+    SOURCE_COMMIT="$SOURCE_COMMIT-dirty"
+fi
 : "${MAESTRO_APP_PROFILE:?Set MAESTRO_APP_PROFILE to your external Developer ID app profile}"
 : "${MAESTRO_DEXT_PROFILE:?Set MAESTRO_DEXT_PROFILE to your external Developer ID extension profile}"
 export SIGNING_IDENTITY INSTALLER_IDENTITY
@@ -181,6 +187,7 @@ install_name_tool -add_rpath "@loader_path/../Frameworks" "$APP_BUNDLE/Contents/
 cp "$APP_RESOURCES/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :MaestroSourceCommit string $SOURCE_COMMIT" "$APP_BUNDLE/Contents/Info.plist"
 
 # Resources (icon, legal pages)
 for RES in AppIcon.icns AppIconRounded.icns Acknowledgements.html Privacy.html Terms.html; do
