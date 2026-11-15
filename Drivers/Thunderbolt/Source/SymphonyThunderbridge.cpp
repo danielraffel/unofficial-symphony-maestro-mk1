@@ -329,6 +329,7 @@ struct SymphonyThunderbridge_IVars {
     uint8_t   sessionCoaxMirror[2];   // last Mirrors (0x36) sent, 0 = none this session
     uint8_t   sessionCoaxBoardType[2]; // the slot's card type those two belong to, 0 = none
     char      publishedInputName[32][20]; // what Core Audio has now; "" = no name set
+    uint8_t   namingPrefix;               // unit's peripheral prefix byte (0x37); not A-Z = "A"
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -2114,6 +2115,7 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
         s.coaxReplace[b] = __atomic_load_n(&ivars->namingCoaxReplace[b], __ATOMIC_ACQUIRE);
     }
     s.sampleRate = (uint32_t)(ivars->lastSampleRate + 0.5);
+    s.prefix = __atomic_load_n(&ivars->namingPrefix, __ATOMIC_ACQUIRE);
 
     // Only a channel whose name differs from what Core Audio has is set: each
     // SetElementName notifies every client, and a rate change on a unit with
@@ -2132,8 +2134,8 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
         changed++;
     }
     if (changed)
-        STLOG("Channel names: %u input names changed (boards %u/%u known %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
-              changed, s.boardType[0], s.boardType[1],
+        STLOG("Channel names: %u input names changed (prefix %c, boards %u/%u known %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
+              changed, SymphonyPrefixLetter(s.prefix), s.boardType[0], s.boardType[1],
               s.boardKnown[0] ? 1u : 0u, s.boardKnown[1] ? 1u : 0u, s.sampleRate,
               s.opticalIsSPDIF[0] ? 1u : 0u, s.opticalIsSPDIF[1] ? 1u : 0u,
               s.coaxReplace[0], s.coaxReplace[1]);
@@ -2160,13 +2162,31 @@ static void NoteCoaxBoardType(SymphonyThunderbridge_IVars *ivars, uint32_t board
     __atomic_store_n(&ivars->sessionCoaxBoardType[board], type, __ATOMIC_RELEASE);
 }
 
+// The unit's peripheral prefix letter (0x37), which every channel name starts
+// with. Read where the option-board types are read (Start, link recovery):
+// the unit keeps the letter across power cycles, as the daemon relied on
+// (SymphonyIO.cpp:1245-1258). Unlike the daemon, nothing is written back when
+// the unit has no letter yet; names then use "A". Returns true when the stored
+// byte changed. XLink init path only (ReadVendorRequest polls with IOSleep).
+static bool ReadNamingPrefix(SymphonyThunderbridge_IVars *ivars, uint8_t &txSeq)
+{
+    uint8_t raw = 0;
+    if (!ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                           kSymphonyCmdPrefix, 0, &raw, 1, txSeq)) {
+        STLOG("SymphonyIO: Prefix (0x37) read failed; names keep '%c'",
+              SymphonyPrefixLetter(__atomic_load_n(&ivars->namingPrefix, __ATOMIC_ACQUIRE)));
+        return false;
+    }
+    STLOG("SymphonyIO: Prefix (0x37) = 0x%02x → names use '%c'", raw, SymphonyPrefixLetter(raw));
+    return __atomic_exchange_n(&ivars->namingPrefix, raw, __ATOMIC_ACQ_REL) != raw;
+}
+
 // The Symphony's capture routing as ConfigureSymphonyLink leaves it:
 // P2P n ← IOBoard0 ch n (0-15), P2P 16+n ← IOBoard1 ch n.
 static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars)
 {
     for (uint8_t n = 0; n < 32; n++)
-        __atomic_store_n(&ivars->inputRouteSource[n],
-                         (uint8_t)(kSymphonyRoutingSourceIOBoard0 + n), __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->inputRouteSource[n], SymphonyDefaultInputSource(n), __ATOMIC_RELEASE);
 }
 
 // ── dext 115: card re-initialization after a PCI power cycle ────────────────
@@ -2362,6 +2382,7 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
             ivars->optionBoardType[b]     = okb ? bt : 0;
             ivars->optionBoardTypeValid[b] = okb;
         }
+        ReadNamingPrefix(ivars, ivars->runtimeTxSeq);
         ScheduleChannelNames(ivars, self);
         if (!LinkRecoveryAborted(ivars)) IndicateLinkOK(ivars);
         STLOG("Link recovery: Symphony re-enumerated and configured at %u Hz "
@@ -3927,6 +3948,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // board, because that's harmless on an empty slot, but a CONTROL must
         // reflect real hardware. Runs on the XLink
         // init path, so ReadVendorRequest's bounded IOSleep polling is safe here.
+        // The peripheral prefix the channel names start with (0x37).
+        ReadNamingPrefix(ivars, ivars->runtimeTxSeq);
         ivars->numOpticalBoards = 0;
         for (uint32_t b = 0; b < 2; b++) {
             uint8_t bt = kSIOOptionBoard_None;
@@ -5591,6 +5614,11 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             __atomic_store_n(&ivars->namingCoaxReplace[value], payload[0], __ATOMIC_RELEASE);
             NoteCoaxBoardType(ivars, value);
             namesChanged = true;
+        } else if (command == kSymphonyCmdPrefix && payload && payloadLen == 1 &&
+                   SymphonyIsPrefixLetter(payload[0])) {
+            // The app's Peripheral Prefix, written to the unit as the daemon did.
+            if (__atomic_exchange_n(&ivars->namingPrefix, payload[0], __ATOMIC_ACQ_REL) != payload[0])
+                namesChanged = true;
         } else if (command == kSIOCmd_SPDIFCoaxMirrorOutput && value < 2 && payload && payloadLen >= 1) {
             // Kept so a link recovery can put it back.
             __atomic_store_n(&ivars->sessionCoaxMirror[value], payload[0], __ATOMIC_RELEASE);
@@ -5661,6 +5689,10 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
         for (uint16_t i = 0; i < responseLen; i++) outPayload[i] = response[i];
     // The app reads S/PDIF Coax Replaces at connect; the unit keeps it across a
     // driver restart, so this is where the driver learns it.
+    if (result == kIOReturnSuccess && command == kSymphonyCmdPrefix && responseLen == 1 &&
+        __atomic_exchange_n(&ivars->namingPrefix, outPayload[0], __ATOMIC_ACQ_REL) != outPayload[0]) {
+        ScheduleChannelNames(ivars, this);
+    }
     if (result == kIOReturnSuccess && command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2) {
         const uint8_t before = __atomic_exchange_n(&ivars->namingCoaxReplace[value], outPayload[0],
                                                    __ATOMIC_ACQ_REL);

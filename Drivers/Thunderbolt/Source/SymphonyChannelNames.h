@@ -23,8 +23,15 @@
 //       44.1/48 kHz: "ADAT n"
 //   - an input pair the board's coax replaces: "SPDIF Cx n"
 //     (SymphonyIO_IOBoard.cpp:1312-1349)
-// Numbers continue from slot 1's channels of the same kind. The one-letter
-// unit prefix the daemon put in front is not reproduced.
+// Numbers continue from slot 1's channels of the same kind. Every name of a
+// real board channel starts with the unit's one-letter peripheral prefix,
+// "A Line 1", "A N.A." (`"%c Line %d"`, `"%c N.A."` with GetPrefix(), e.g.
+// SymphonyIO_Stream.cpp:655, OpticalIn_SymphonyIO_Stream.cpp:194-225,
+// SymphonyIO_IOBoard.cpp:1327); the letter is kept in the unit (vendor command
+// 0x37, SymphonyIO.cpp:1245-1258) and anything outside A-Z there means "not
+// assigned yet", which the daemon replaced with its default, "A" for the first
+// unit. A host channel with no board channel behind it is a bare "N.A."
+// (SymphonyCardStream.cpp:219-236).
 #pragma once
 
 #include <stdint.h>
@@ -39,7 +46,17 @@ struct SymphonyNamingState {
     uint8_t  coaxReplace[2];    // S/PDIF Coax Replaces wire value per slot, 0 = Off
     bool     boardKnown[2];     // the slot's type was read from the unit
     uint32_t sampleRate;        // Hz; 0 = unknown, named as 44.1/48 kHz
+    uint8_t  prefix;            // peripheral prefix byte read from / written to the unit (0x37)
 };
+
+// The prefix letter names carry: the unit's byte when it is a letter A-Z,
+// else "A", the daemon's default for the first unit.
+static constexpr uint8_t kSymphonyCmdPrefix = 0x37;
+static inline bool SymphonyIsPrefixLetter(uint8_t raw) { return raw >= 'A' && raw <= 'Z'; }
+static inline char SymphonyPrefixLetter(uint8_t raw)
+{
+    return SymphonyIsPrefixLetter(raw) ? (char)raw : 'A';
+}
 
 // Per-board channel layout, matching the app's IOCardType counts.
 struct SymphonyBoardLayout {
@@ -119,7 +136,7 @@ static inline bool SymphonyBoardChannelName(const SymphonyNamingState &s, bool i
 // Name of host INPUT channel `hostChannel` (0..31) whose Symphony routing
 // source byte is `source` (the [dest, src] pairs of AudioRouting 0x31 for
 // dest P2P 0xC0 + n). Board sources are IOBoard0 32-47 and IOBoard1 48-63;
-// "None" (236) is "N.A." as the original's unrouted channel. Any other source
+// "None" (236) is a bare "N.A." as the original's unrouted channel. Any other source
 // (a mixer bus, playback) returns false and gets no name of its own, and so
 // does a board whose type has not been read: with no Symphony answering (the
 // unit is off, or an older converter is on the cable) nothing is known about
@@ -143,7 +160,13 @@ static inline bool SymphonyHostInputName(const SymphonyNamingState &s, uint8_t s
             if (len) out[0] = 0;
             return false;
         }
-        SymphonyBoardChannelName(s, true, board, ch, out, len);
+        // A channel the board has gets the prefix, "A N.A." included; one it
+        // does not have (an empty slot, past the card's inputs) is bare "N.A.".
+        char base[24];
+        if (SymphonyBoardChannelName(s, true, board, ch, base, sizeof(base)))
+            snprintf(out, len, "%c %s", SymphonyPrefixLetter(s.prefix), base);
+        else
+            snprintf(out, len, "%s", kSymphonyChannelNotApplicable);
         return true;
     }
     if (len) out[0] = 0;
@@ -164,4 +187,27 @@ static inline bool SymphonyNoteInputRoutes(uint8_t inputSource[32],
         if (slot != payload[i + 1]) { slot = payload[i + 1]; changed = true; }
     }
     return changed;
+}
+
+// The capture routes link configuration sends: [dest, src] pairs for host
+// inputs 16 * half .. 16 * half + 15 (half 0 or 1), each from inputSource.
+// After Start that is the board-order table (P2P n <- IOBoard0 ch n,
+// P2P 16 + n <- IOBoard1 ch n, as the original's PCIe reset routed host input
+// i from the i-th hardware plug, board by board: SymphonyPCIeRoutingController.cpp
+// :849-866 with plugs sorted by board then start channel, NonCAStreamObject.cpp
+// :326-384); after a link recovery it is whatever this session last routed.
+static inline void SymphonyCapturePayload(const uint8_t inputSource[32], unsigned half,
+                                          uint8_t out[32])
+{
+    for (unsigned n = 0; n < 16; n++) {
+        const unsigned host = (half ? 16u : 0u) + n;
+        out[n * 2]     = (uint8_t)(kSymphonyRoutingDestP2P0 + host);
+        out[n * 2 + 1] = inputSource[host];
+    }
+}
+
+// The board-order source of host input n at Start.
+static inline uint8_t SymphonyDefaultInputSource(unsigned host)
+{
+    return (uint8_t)(kSymphonyRoutingSourceIOBoard0 + host);   // IOBoard1 = 48 = 32 + 16
 }

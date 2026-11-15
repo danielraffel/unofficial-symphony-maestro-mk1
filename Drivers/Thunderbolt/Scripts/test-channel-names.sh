@@ -116,15 +116,15 @@ int main() {
     assert(!SymphonyBoardChannelName(state(0, 0), true, 0, 0, buf, sizeof(buf)));
 
     // Host inputs follow the capture route: P2P n <- source byte.
-    assert(SymphonyHostInputName(owner, 32 + 8, buf, sizeof(buf)) && !strcmp(buf, "AES 1"));
-    assert(SymphonyHostInputName(owner, 48 + 3, buf, sizeof(buf)) && !strcmp(buf, "Line 12"));
+    assert(SymphonyHostInputName(owner, 32 + 8, buf, sizeof(buf)) && !strcmp(buf, "A AES 1"));
+    assert(SymphonyHostInputName(owner, 48 + 3, buf, sizeof(buf)) && !strcmp(buf, "A Line 12"));
     assert(SymphonyHostInputName(owner, kSymphonyRoutingSourceNone, buf, sizeof(buf)) && !strcmp(buf, "N.A."));
     assert(!SymphonyHostInputName(owner, 64, buf, sizeof(buf)));   // a mixer bus: no name of its own
 
     // The original named an unrouted or empty channel "N.A."
     // (SymphonyCardStream.cpp:219-236): a slot read as empty is that.
     auto single = state(kSIOOptionBoard_AnalogADDA16, kSIOOptionBoard_None, 48000);
-    assert(SymphonyHostInputName(single, 32 + 15, buf, sizeof(buf)) && !strcmp(buf, "Line 16"));
+    assert(SymphonyHostInputName(single, 32 + 15, buf, sizeof(buf)) && !strcmp(buf, "A Line 16"));
     assert(SymphonyHostInputName(single, 48, buf, sizeof(buf)) && !strcmp(buf, "N.A."));
     // A slot whose type was never read (no Symphony answering: the unit is
     // off, or an older converter is on the cable) gets no name at all, so
@@ -138,8 +138,37 @@ int main() {
     // One slot read, the other not: only the read one is named.
     auto half = state(kSIOOptionBoard_Optical, 0, 48000);
     half.boardKnown[1] = false;
-    assert(SymphonyHostInputName(half, 32, buf, sizeof(buf)) && !strcmp(buf, "Line 1"));
+    assert(SymphonyHostInputName(half, 32, buf, sizeof(buf)) && !strcmp(buf, "A Line 1"));
     assert(!SymphonyHostInputName(half, 48, buf, sizeof(buf)));
+
+    // Peripheral prefix (0x37): every real board channel starts with the
+    // unit's letter, "A N.A." included; no channel behind it is bare "N.A.".
+    // The user's unit: 8x8 on optical with S/PDIF in slot 1, A16 IP in slot 2.
+    auto user = state(kSIOOptionBoard_Optical, kSIOOptionBoard_AnalogAD16, 48000, true);
+    assert(SymphonyHostInputName(user, 32 + 8, buf, sizeof(buf)) && !strcmp(buf, "A SPDIF Opt 1"));
+    assert(SymphonyHostInputName(user, 32 + 10, buf, sizeof(buf)) && !strcmp(buf, "A N.A."));
+    assert(SymphonyHostInputName(user, 48 + 15, buf, sizeof(buf)) && !strcmp(buf, "A Line 24"));
+    assert(SymphonyHostInputName(user, kSymphonyRoutingSourceNone, buf, sizeof(buf)) && !strcmp(buf, "N.A."));
+    user.prefix = 'C';
+    assert(SymphonyHostInputName(user, 32, buf, sizeof(buf)) && !strcmp(buf, "C Line 1"));
+    assert(SymphonyHostInputName(single, 48, buf, sizeof(buf)) && !strcmp(buf, "N.A."));   // empty slot: no letter
+    user.prefix = 0xFF;   // never assigned on the unit: the daemon's default
+    assert(SymphonyHostInputName(user, 32, buf, sizeof(buf)) && !strcmp(buf, "A Line 1"));
+    assert(SymphonyIsPrefixLetter('A') && SymphonyIsPrefixLetter('Z'));
+    assert(!SymphonyIsPrefixLetter('a') && !SymphonyIsPrefixLetter('@') && !SymphonyIsPrefixLetter('['));
+    assert(SymphonyPrefixLetter(0) == 'A' && SymphonyPrefixLetter('Q') == 'Q');
+
+    // Capture routes: board order at Start, session routes after recovery.
+    uint8_t table[32], payload[32];
+    for (unsigned n = 0; n < 32; n++) table[n] = SymphonyDefaultInputSource(n);
+    assert(table[0] == 32 && table[8] == 40 && table[16] == 48 && table[31] == 63);
+    SymphonyCapturePayload(table, 0, payload);
+    assert(payload[0] == 0xC0 && payload[1] == 32 && payload[30] == 0xCF && payload[31] == 47);
+    SymphonyCapturePayload(table, 1, payload);
+    assert(payload[0] == 0xD0 && payload[1] == 48 && payload[30] == 0xDF && payload[31] == 63);
+    table[24] = 40; table[25] = 41;   // host 25-26 rerouted to slot 1 optical 1-2
+    SymphonyCapturePayload(table, 1, payload);
+    assert(payload[16] == 0xD8 && payload[17] == 40 && payload[18] == 0xD9 && payload[19] == 41);
 
     // Session Replaces / Mirrors go back only to the type of card they were
     // chosen for: the same wire value names another pair on another card.
@@ -170,7 +199,7 @@ clang++ -std=c++17 -Wall -Wextra -Werror -I "$SOURCE_DIR" "$TMP_DIR/test.cpp" -o
 
 # The driver publishes them and republishes on the events that rename channels.
 grep -q 'SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input' "$SOURCE_DIR/SymphonyThunderbridge.cpp"
-for hook in 'hardware now at' 'RequestOpticalFormat: board=%u fmt=%u' 'namesChanged' 'kSIOCmd_SPDIFCoaxReplaceInput && value < 2'; do
+for hook in 'hardware now at' 'RequestOpticalFormat: board=%u fmt=%u' 'namesChanged' 'kSIOCmd_SPDIFCoaxReplaceInput && value < 2' 'command == kSymphonyCmdPrefix && payload && payloadLen == 1' 's.prefix = __atomic_load_n(&ivars->namingPrefix'; do
     grep -q "$hook" "$SOURCE_DIR/SymphonyThunderbridge.cpp"
 done
 echo "ThunderBridge channel names: PASS"
@@ -197,5 +226,7 @@ assert src.count("NoteCoaxBoardType(ivars, value);") == 3   # 0x35 write, 0x36 w
 publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
 assert "s.boardKnown[b] = ivars->optionBoardTypeValid[b];" in publish
 assert publish.index("strncmp(name, ivars->publishedInputName[n]") < publish.index("SetElementName(")
+# The prefix is read where the board types are, at Start and on link recovery.
+assert src.count("ReadNamingPrefix(ivars, ivars->runtimeTxSeq);") == 2
 PY
 echo "ThunderBridge session digital settings replay: PASS"
