@@ -95,4 +95,56 @@ grep -q "trap '/bin/rm -f \"\$USB_MARKER\"' EXIT" "$USB" || fail "USB marker is 
 bash -n "$CORE" && bash -n "$USB" || fail "syntax"
 ok "USB postinstall holds the marker around the coreaudiod restart"
 
+# ── Package: an older Maestro replaces a newer one ──────────────────────────
+# shellcheck source=lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
+
+make_fake_app() {  # $1 = payload root
+    local app="$1/Applications/Fake.app" dext
+    dext="$app/Contents/Library/SystemExtensions/com.example.fake.dext"
+    mkdir -p "$app/Contents/MacOS" "$dext"
+    cp /usr/bin/true "$app/Contents/MacOS/Fake"
+    cp /usr/bin/true "$dext/com.example.fake.dext"
+    for pair in "$app/Contents:com.example.fake:Fake:APPL" "$dext:com.example.fake.dext:com.example.fake.dext:DEXT"; do
+        IFS=: read -r dir id exe type <<<"$pair"
+        cat > "$dir/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>$id</string>
+<key>CFBundleExecutable</key><string>$exe</string>
+<key>CFBundlePackageType</key><string>$type</string>
+<key>CFBundleVersion</key><string>1.2.3</string>
+<key>CFBundleShortVersionString</key><string>1.2.3</string>
+</dict></plist>
+PLIST
+    done
+}
+
+P="$WORK/pkg"
+mkdir -p "$P/root"
+make_fake_app "$P/root"
+make_component_plist "$P/root" "$P/component.plist" >/dev/null
+python3 - "$P/component.plist" <<'PY' || fail "component plist flags"
+import plistlib, sys
+comps = plistlib.load(open(sys.argv[1], 'rb'))
+assert comps and all(c['BundleIsVersionChecked'] is False and c['BundleIsRelocatable'] is False for c in comps), comps
+PY
+pkgbuild --root "$P/root" --component-plist "$P/component.plist" --identifier com.example.fake --version 1 "$P/fixed.pkg" >/dev/null
+check_not_version_checked "$P/fixed.pkg" >/dev/null || fail "a package built with the fixed plist is still version-checked"
+pkgutil --expand "$P/fixed.pkg" "$P/fixed-expanded"
+grep -q '<upgrade-bundle>' "$P/fixed-expanded/PackageInfo" || fail "upgrade-bundle changed"
+grep -q '<strict-identifier>' "$P/fixed-expanded/PackageInfo" || fail "strict-identifier changed"
+ok "component plist turns the version check off; PackageInfo has an empty bundle-version"
+
+# Control: pkgbuild's default plist is version-checked, and the check says so.
+pkgbuild --analyze --root "$P/root" "$P/default.plist" >/dev/null
+pkgbuild --root "$P/root" --component-plist "$P/default.plist" --identifier com.example.fake --version 1 "$P/default.pkg" >/dev/null
+if check_not_version_checked "$P/default.pkg" 2>/dev/null; then fail "the check passed a version-checked package"; fi
+ok "the check refuses a version-checked package"
+
+grep -q 'check_not_version_checked "\$CORE_PKG"' "$REPO_ROOT/Installer/build-installer.sh" || fail "build does not check the core package"
+grep -q 'check_not_version_checked "\$USB_PKG"' "$REPO_ROOT/Installer/build-installer.sh" || fail "build does not check the USB package"
+ok "the build checks both component packages"
+
 echo "Installer tool tests passed ($PASS)"

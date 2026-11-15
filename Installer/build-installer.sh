@@ -380,30 +380,10 @@ done
 echo "  core payload: Maestro.app (dext embedded)"
 echo "  usb  payload: ApogeeSymIO.driver, MaestroVolumeProxy, LaunchDaemon"
 
-# Disable bundle relocation on every TOP-LEVEL bundle. Without this, pkgbuild treats .app
-# bundles as relocatable and macOS Installer moves Maestro.app to wherever LaunchServices
-# last saw a copy with the same bundle ID, instead of /Applications.
-#
-# Do not count "BundleOverwriteAction" occurrences to size a loop: the embedded dext appears
-# as a ChildBundles entry inside Maestro.app and carries its own, so the count overshoots the
-# array length and PlistBuddy silently appends a junk dict with no RootRelativeBundlePath,
-# which pkgbuild then rejects. Edit the array directly.
-make_component_plist() {  # $1 = payload root, $2 = output plist
-    pkgbuild --analyze --root "$1" "$2" >/dev/null
-    python3 - "$2" <<'PY'
-import plistlib, sys
-path = sys.argv[1]
-with open(path, 'rb') as f:
-    comps = plistlib.load(f)
-for c in comps:
-    c['BundleIsRelocatable'] = False
-    print(f"    non-relocatable: {c.get('RootRelativeBundlePath', '<no path>')}")
-    for child in c.get('ChildBundles', []):
-        print(f"        child: {child.get('RootRelativeBundlePath', '<no path>')}")
-with open(path, 'wb') as f:
-    plistlib.dump(comps, f)
-PY
-}
+# make_component_plist (Tools/lib/package-checks.sh) marks every top-level bundle
+# non-relocatable and not version-checked; check_not_version_checked proves it.
+# shellcheck source=../Tools/lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
 
 CORE_PKG="$BUILD_DIR/SymphonyMaestroCore.pkg"
 USB_PKG="$BUILD_DIR/SymphonyMaestroUSB.pkg"
@@ -429,6 +409,10 @@ pkgbuild \
     --ownership recommended \
     "$USB_PKG" >/dev/null
 echo "Component package built: $USB_PKG"
+
+# An older Maestro package must replace a newer app (going back to stable).
+check_not_version_checked "$CORE_PKG"
+check_not_version_checked "$USB_PKG"
 
 # ── 5. Build distribution .pkg (with installer screens) ────────────────────
 
