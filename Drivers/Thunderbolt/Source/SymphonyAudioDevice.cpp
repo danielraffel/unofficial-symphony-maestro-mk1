@@ -174,6 +174,10 @@ kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
     return result;
 }
 
+// Defined in SymphonyThunderbridge.cpp: the channel names follow the nominal
+// rate, which can change with no IO start (see there).
+void SymphonyNoteNominalSampleRate(IOUserAudioDevice *device, double rate);
+
 kern_return_t SymphonyAudioDevice::HandleChangeSampleRate(double in_sample_rate)
 {
     ADLOG("HandleChangeSampleRate begin rate=%.0f current=%.0f tuple=(%u,%u,%u,%u)",
@@ -207,6 +211,9 @@ kern_return_t SymphonyAudioDevice::HandleChangeSampleRate(double in_sample_rate)
         }
         return result;
     }
+
+    // The rate is now the device's nominal rate: rename the optical channels.
+    SymphonyNoteNominalSampleRate(this, in_sample_rate);
 
     // Re-read and reapply after the superclass transition as a defensive
     // check, while the pre-apply is what makes the host notification correct.

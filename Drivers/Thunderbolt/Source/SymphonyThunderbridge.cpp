@@ -270,6 +270,8 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  pendingMuteGen;      // bumped by IRQ on each new mute state
     bool      muteTxScheduled;     // a mute drain block is scheduled or in-flight
     double    lastSampleRate;  // Last SUCCESSFULLY programmed hardware sample rate
+    uint32_t  namingSampleRate; // Hz the channel names follow: Core Audio's nominal rate
+                               // (SymphonyNamingRateHz), updated on every HandleChangeSampleRate
     double    xlinkRate;       // Rate actually broadcast to the XLink units (updated on
                                // every successful SetSampleRate broadcast, even if the
                                // subsequent lock/verify then failed). The DDS-rollback
@@ -3178,7 +3180,7 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
         s.opticalIsSPDIF[b] = __atomic_load_n(&ivars->pendingOpticalFmt[b], __ATOMIC_ACQUIRE) != 0;
         s.coaxReplace[b] = __atomic_load_n(&ivars->namingCoaxReplace[b], __ATOMIC_ACQUIRE);
     }
-    s.sampleRate = (uint32_t)(ivars->lastSampleRate + 0.5);
+    s.sampleRate = __atomic_load_n(&ivars->namingSampleRate, __ATOMIC_ACQUIRE);
     s.prefix = __atomic_load_n(&ivars->namingPrefix, __ATOMIC_ACQUIRE);
 
     // Only a channel whose name differs from what Core Audio has is set: each
@@ -3224,6 +3226,91 @@ static void ScheduleChannelNames(SymphonyThunderbridge_IVars *ivars, SymphonyThu
         PublishChannelNames(ivars);
         self->release();
     });
+}
+
+// ── Nominal rate → channel names ────────────────────────────────────────────
+// Core Audio changes the nominal rate through HandleChangeSampleRate on the
+// device, with or without IO running: coreaudiod restores a device's saved
+// rate when it arrives, and Audio MIDI Setup or an app can set one with no
+// client streaming. The hardware follows only at the next StartDevice, but the
+// names must follow at once, or a 176.4/192 kHz stream start followed by a
+// 48 kHz nominal change leaves every optical channel "N.A." (seen after a
+// replug with the device saved at 176.4 kHz). SymphonyAudioDevice has no
+// pointer to this driver, so Start registers the pair here and Stop removes it.
+struct NominalRateObserver {
+    IOUserAudioDevice           *device;
+    SymphonyThunderbridge       *driver;
+    SymphonyThunderbridge_IVars *ivars;
+};
+static constexpr uint32_t kMaxNominalRateObservers = 4;
+static NominalRateObserver sNominalRateObservers[kMaxNominalRateObservers];
+static IOLock *sNominalRateLock;
+
+static IOLock *NominalRateLock()
+{
+    IOLock *lock = __atomic_load_n(&sNominalRateLock, __ATOMIC_ACQUIRE);
+    if (lock) return lock;
+    IOLock *fresh = IOLockAlloc();
+    if (!fresh) return nullptr;
+    IOLock *expected = nullptr;
+    if (!__atomic_compare_exchange_n(&sNominalRateLock, &expected, fresh, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        IOLockFree(fresh);
+        return expected;
+    }
+    return fresh;
+}
+
+static void RegisterNominalRateObserver(IOUserAudioDevice *device, SymphonyThunderbridge *driver,
+                                        SymphonyThunderbridge_IVars *ivars)
+{
+    IOLock *lock = NominalRateLock();
+    if (!lock || !device || !driver || !ivars) return;
+    IOLockLock(lock);
+    for (auto &o : sNominalRateObservers) {
+        if (!o.device) { o = { device, driver, ivars }; break; }
+    }
+    IOLockUnlock(lock);
+}
+
+static void UnregisterNominalRateObserver(SymphonyThunderbridge *driver)
+{
+    IOLock *lock = __atomic_load_n(&sNominalRateLock, __ATOMIC_ACQUIRE);
+    if (!lock || !driver) return;
+    IOLockLock(lock);
+    for (auto &o : sNominalRateObservers) {
+        if (o.driver == driver) o = { nullptr, nullptr, nullptr };
+    }
+    IOLockUnlock(lock);
+}
+
+// Called by SymphonyAudioDevice::HandleChangeSampleRate once the framework has
+// accepted `rate` as the nominal rate. The driver is retained across the call,
+// so a concurrent Stop cannot free its ivars underneath it.
+void SymphonyNoteNominalSampleRate(IOUserAudioDevice *device, double rate)
+{
+    IOLock *lock = __atomic_load_n(&sNominalRateLock, __ATOMIC_ACQUIRE);
+    if (!lock || !device) return;
+    SymphonyThunderbridge *driver = nullptr;
+    SymphonyThunderbridge_IVars *ivars = nullptr;
+    IOLockLock(lock);
+    for (auto &o : sNominalRateObservers) {
+        if (o.device == device) {
+            driver = o.driver;
+            ivars = o.ivars;
+            driver->retain();
+            break;
+        }
+    }
+    IOLockUnlock(lock);
+    if (!driver) return;
+    const uint32_t hz = SymphonyNamingRateHz(rate);
+    const uint32_t before = __atomic_exchange_n(&ivars->namingSampleRate, hz, __ATOMIC_ACQ_REL);
+    if (before != hz) {
+        STLOG("Channel names: nominal rate %u -> %u Hz", before, hz);
+        ScheduleChannelNames(ivars, driver);
+    }
+    driver->release();
 }
 
 // The card a slot's S/PDIF Coax Replaces / Mirrors were just written to or
@@ -5169,6 +5256,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // Retain raw pointer for IVars (OSSharedPtr will release the Create reference)
         ivars->audioDevice = device.get();
         ivars->audioDevice->retain();
+        // Nominal-rate changes rename the optical channels (SymphonyNoteNominalSampleRate).
+        RegisterNominalRateObserver(ivars->audioDevice, this, ivars);
 
         STLOG("Audio: Device created (UID=%s, ZTS period=%u)", uidStr, kNumSampleFrames);
     }
@@ -5185,6 +5274,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         ivars->audioDevice->SetSampleRate(44100.0);
         ivars->lastSampleRate = 44100.0;
         ivars->xlinkRate      = 44100.0;   // hardware boots configured at 44.1k
+        __atomic_store_n(&ivars->namingSampleRate, SymphonyNamingRateHz(44100.0), __ATOMIC_RELEASE);
 
         // Transport type
         ivars->audioDevice->SetTransportType(
@@ -6520,6 +6610,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 return kIOReturnIOError;
             }
             ivars->lastSampleRate = requestedRate;
+            __atomic_store_n(&ivars->namingSampleRate, SymphonyNamingRateHz(requestedRate), __ATOMIC_RELEASE);
             STLOG("StartDevice: hardware now at %.0f Hz", requestedRate);
             // Optical channel names follow the rate (ADAT / SMUX / N.A.).
             ScheduleChannelNames(ivars, this);
@@ -6600,6 +6691,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
         __atomic_store_n(&ivars->stopping, true, __ATOMIC_RELEASE);
         __atomic_store_n(&ivars->ioRunning, false, __ATOMIC_RELEASE);  // M2
         __atomic_store_n(&ivars->txShutdown, true, __ATOMIC_RELEASE);
+        // No more nominal-rate renames: the device is about to be released.
+        UnregisterNominalRateObserver(this);
 
         // dext 113: stop the link watch before anything else is torn down. Its
         // handler checks 'stopping' first and never re-arms past it; Cancel with a

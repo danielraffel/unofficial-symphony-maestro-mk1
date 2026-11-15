@@ -426,3 +426,64 @@ assert src.count("ConfigureSymphonyLink(ivars,") == 2
 assert src.count("ReadNamingPrefix(ivars, ivars->runtimeTxSeq);") == 2
 PY
 echo "ThunderBridge session digital settings replay: PASS"
+
+# Optical names follow Core Audio's nominal rate, not only the rate a stream
+# start last programmed. A nominal-rate change with no IO start (coreaudiod
+# restoring a saved 176.4 kHz at arrival, then 48 kHz set with nothing
+# running) must rename the channels; before this, lastSampleRate stayed at the
+# last StartDevice rate and every optical channel kept "N.A.".
+python3 - "$SOURCE_DIR" <<'PY'
+import re, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+src = (d / "SymphonyThunderbridge.cpp").read_text()
+dev = (d / "SymphonyAudioDevice.cpp").read_text()
+publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
+assert "lastSampleRate" not in publish, "names must not follow the last StartDevice rate"
+assert "s.sampleRate = __atomic_load_n(&ivars->namingSampleRate, __ATOMIC_ACQUIRE);" in publish
+# Every nominal change the HAL makes reaches the driver, after the framework accepted it.
+hcsr = dev[dev.index("SymphonyAudioDevice::HandleChangeSampleRate"):]
+assert hcsr.index("super::HandleChangeSampleRate(in_sample_rate)") < hcsr.index("SymphonyNoteNominalSampleRate(this, in_sample_rate)")
+note = src[src.index("void SymphonyNoteNominalSampleRate"):]
+note = note[:note.index("\n}\n")]
+assert "SymphonyNamingRateHz(rate)" in note and "ScheduleChannelNames(" in note
+# Start names at the device's nominal rate and registers the hook; Stop
+# unregisters it before anything is released; StartDevice keeps it in step.
+start = src[src.index("kern_return_t IMPL(SymphonyThunderbridge, Start)"):src.index("start_success:")]
+assert "RegisterNominalRateObserver(" in start
+assert start.index("RegisterNominalRateObserver(") < start.index("PublishChannelNames(ivars);")
+assert "namingSampleRate, SymphonyNamingRateHz(44100.0)" in start
+stop = src[src.index("kern_return_t IMPL(SymphonyThunderbridge, Stop)"):]
+stop = stop[:stop.index("// ── 9.")]
+assert "UnregisterNominalRateObserver(this)" in stop
+sd = src[src.index("kern_return_t SymphonyThunderbridge::StartDevice("):src.index("kern_return_t SymphonyThunderbridge::StopDevice(")]
+assert sd.index("ivars->lastSampleRate = requestedRate;") < sd.index("namingSampleRate, SymphonyNamingRateHz(requestedRate)")
+PY
+cat > "$TMP_DIR/rate.cpp" <<'CPP'
+#include <cassert>
+#include <cstring>
+#include "SymphonyChannelNames.h"
+int main() {
+    assert(SymphonyNamingRateHz(48000.0) == 48000 && SymphonyNamingRateHz(176400.0) == 176400);
+    assert(SymphonyNamingRateHz(44099.6) == 44100 && SymphonyNamingRateHz(0.0) == 0 && SymphonyNamingRateHz(-1.0) == 0);
+    // The rig the bug was seen on, named at the 48 kHz Core Audio reports
+    // after a 176.4 kHz session: 8x8 (S/PDIF) in slot 1, A16 in slot 2.
+    SymphonyNamingState s = {};
+    s.boardType[0] = kSIOOptionBoard_Optical; s.boardType[1] = kSIOOptionBoard_AnalogAD16;
+    s.boardKnown[0] = s.boardKnown[1] = true; s.opticalIsSPDIF[0] = true; s.prefix = 'A';
+    char b[32];
+    s.sampleRate = SymphonyNamingRateHz(176400.0);
+    assert(SymphonyHostInputName(s, kSymphonyRoutingSourceIOBoard0 + 8, b, sizeof(b)) && !strcmp(b, "A N.A."));
+    s.sampleRate = SymphonyNamingRateHz(48000.0);
+    assert(SymphonyHostInputName(s, kSymphonyRoutingSourceIOBoard0 + 8, b, sizeof(b)) && !strcmp(b, "A SPDIF Opt 1"));
+    assert(SymphonyHostInputName(s, kSymphonyRoutingSourceIOBoard0 + 9, b, sizeof(b)) && !strcmp(b, "A SPDIF Opt 2"));
+    assert(SymphonyHostInputName(s, kSymphonyRoutingSourceIOBoard0 + 10, b, sizeof(b)) && !strcmp(b, "A N.A."));
+    assert(SymphonyHostOutputName(s, 8, b, sizeof(b)) && !strcmp(b, "A SPDIF Opt 1"));
+    assert(SymphonyHostOutputName(s, 16, b, sizeof(b)) && !strcmp(b, "A ADAT 9"));
+    assert(SymphonyHostOutputName(s, 31, b, sizeof(b)) && !strcmp(b, "A ADAT 24"));
+    return 0;
+}
+CPP
+clang++ -std=c++17 -Wall -Wextra -Werror -I "$SOURCE_DIR" "$TMP_DIR/rate.cpp" -o "$TMP_DIR/rate"
+"$TMP_DIR/rate"
+echo "ThunderBridge channel names follow the nominal rate: PASS"
