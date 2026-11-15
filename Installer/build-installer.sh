@@ -83,7 +83,13 @@ MAESTRO_DEXT_BUILD="${MAESTRO_DEXT_BUILD:-$(python3 -c 'import json,sys; print(j
 export MAESTRO_DEXT_BUILD
 case "$BUILD_NUM" in ''|*[!0-9]*) echo "BUILD_NUM must be numeric" >&2; exit 1;; esac
 BUILD_HASH=$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)
-if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then BUILD_HASH="$BUILD_HASH-dirty"; fi
+# The full commit goes into the app's Info.plist (MaestroSourceCommit), so a
+# release can be tagged at the commit the package was built from.
+SOURCE_COMMIT=$(git -C "$REPO_ROOT" rev-parse HEAD)
+if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
+    BUILD_HASH="$BUILD_HASH-dirty"
+    SOURCE_COMMIT="$SOURCE_COMMIT-dirty"
+fi
 : "${MAESTRO_APP_PROFILE:?Set MAESTRO_APP_PROFILE to your external Developer ID app profile}"
 : "${MAESTRO_DEXT_PROFILE:?Set MAESTRO_DEXT_PROFILE to your external Developer ID extension profile}"
 export SIGNING_IDENTITY INSTALLER_IDENTITY
@@ -181,6 +187,7 @@ install_name_tool -add_rpath "@loader_path/../Frameworks" "$APP_BUNDLE/Contents/
 cp "$APP_RESOURCES/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :MaestroSourceCommit string $SOURCE_COMMIT" "$APP_BUNDLE/Contents/Info.plist"
 
 # Resources (icon, legal pages)
 for RES in AppIcon.icns AppIconRounded.icns Acknowledgements.html Privacy.html Terms.html; do
@@ -251,6 +258,19 @@ codesign --sign "$SIGNING_IDENTITY" --force --options runtime --timestamp \
     --entitlements "$REPO_ROOT/Drivers/Thunderbolt/Entitlements/SymphonyThunderbridge-production.entitlements" \
     --generate-entitlement-der \
     "$DEXT_SRC"
+
+# The driver gate: one driver build number per CDHash. A rebuild of unchanged
+# driver source keeps its CDHash; a different one needs a new dextBuild.
+DEXT_BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$DEXT_SRC/Info.plist")"
+DEXT_EXPECTED_BUILD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dextBuild"])' "$REPO_ROOT/Tools/versions.json")"
+DEXT_EXPECTED_CDHASH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dextCDHash", ""))' "$REPO_ROOT/Tools/versions.json")"
+if [ "$DEXT_BUILT_VERSION" != "$DEXT_EXPECTED_BUILD" ]; then
+    echo "ERROR: the built driver is build $DEXT_BUILT_VERSION; Tools/versions.json says $DEXT_EXPECTED_BUILD" >&2
+    exit 1
+fi
+# shellcheck source=../Tools/lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
+check_dext_cdhash "$DEXT_SRC" "$DEXT_EXPECTED_CDHASH" "$DEXT_EXPECTED_BUILD"
 
 mkdir -p "$APP_BUNDLE/Contents/Library/SystemExtensions"
 ditto "$DEXT_SRC" "$APP_BUNDLE/Contents/Library/SystemExtensions/$DEXT_BUNDLE"
@@ -392,30 +412,10 @@ done
 echo "  core payload: Maestro.app (dext embedded)"
 echo "  usb  payload: ApogeeSymIO.driver, MaestroVolumeProxy, LaunchDaemon"
 
-# Disable bundle relocation on every TOP-LEVEL bundle. Without this, pkgbuild treats .app
-# bundles as relocatable and macOS Installer moves Maestro.app to wherever LaunchServices
-# last saw a copy with the same bundle ID, instead of /Applications.
-#
-# Do not count "BundleOverwriteAction" occurrences to size a loop: the embedded dext appears
-# as a ChildBundles entry inside Maestro.app and carries its own, so the count overshoots the
-# array length and PlistBuddy silently appends a junk dict with no RootRelativeBundlePath,
-# which pkgbuild then rejects. Edit the array directly.
-make_component_plist() {  # $1 = payload root, $2 = output plist
-    pkgbuild --analyze --root "$1" "$2" >/dev/null
-    python3 - "$2" <<'PY'
-import plistlib, sys
-path = sys.argv[1]
-with open(path, 'rb') as f:
-    comps = plistlib.load(f)
-for c in comps:
-    c['BundleIsRelocatable'] = False
-    print(f"    non-relocatable: {c.get('RootRelativeBundlePath', '<no path>')}")
-    for child in c.get('ChildBundles', []):
-        print(f"        child: {child.get('RootRelativeBundlePath', '<no path>')}")
-with open(path, 'wb') as f:
-    plistlib.dump(comps, f)
-PY
-}
+# make_component_plist (Tools/lib/package-checks.sh) marks every top-level bundle
+# non-relocatable and not version-checked; check_not_version_checked proves it.
+# shellcheck source=../Tools/lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
 
 CORE_PKG="$BUILD_DIR/SymphonyMaestroCore.pkg"
 USB_PKG="$BUILD_DIR/SymphonyMaestroUSB.pkg"
@@ -441,6 +441,10 @@ pkgbuild \
     --ownership recommended \
     "$USB_PKG" >/dev/null
 echo "Component package built: $USB_PKG"
+
+# An older Maestro package must replace a newer app (going back to stable).
+check_not_version_checked "$CORE_PKG"
+check_not_version_checked "$USB_PKG"
 
 # ── 5. Build distribution .pkg (with installer screens) ────────────────────
 

@@ -18,6 +18,12 @@ These work differently from 0.8.39. Most match Apogee's original; check them aft
 - **The Peripheral Prefix letter is now stored in the Symphony,** as the original did, and is written to it when Maestro connects.
 - **Optical format and S/PDIF coax settings are now restored when the Symphony connects** (USB and ThunderBridge). Before, the Symphony started from ADAT and the defaults after every power cycle.
 
+### New
+
+- **Update channel: Stable or Beta.** Device Settings › Preferences has a new Update channel setting. Stable is the default and is what most people should use: nothing changes unless you choose Beta. Beta offers versions that are still being tested; they may have bugs and can replace the ThunderBridge driver. Switching back to Stable offers to download and reinstall the latest stable version.
+- **Maestro reopens after an update is installed.**
+- **An older Maestro package can be installed over a newer one.** From this version on, the installer replaces the app instead of leaving the newer one in place.
+
 ### What's fixed
 
 - **S/PDIF settings for the card in slot 2 now take effect.** "SPDIF Coax 3-4 Replaces" and "SPDIF Coax 3-4 Mirrors" were sent in a form the Symphony ignores, and the Mirrors menu was not sent at all. Both now work, over USB and ThunderBridge.

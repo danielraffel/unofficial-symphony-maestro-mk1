@@ -99,6 +99,14 @@ struct AboutView: View {
                 .help("Copy full device and software info for a bug report")
                 .accessibilityLabel("Copy device and software info")
             }
+            // A forgotten test-feed override would silently stop production updates.
+            if let feed = UserDefaults.standard.string(forKey: "SUFeedURL") {
+                Text(UpdateChannelCopy.testFeed(feed))
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+            }
             Divider()
             Button("OK") { dismiss() }
                 .keyboardShortcut(.defaultAction)

@@ -84,6 +84,9 @@ struct HelpView: View {
             HelpQuestion("Can I choose a light or dark appearance?") {
                 Text("In **Device Settings › Preferences**, set **Appearance** to **Auto**, **Light**, or **Dark**. Auto is the default and follows your Mac’s appearance. Light and Dark apply only to Maestro. Your choice is saved and takes effect immediately.")
             }
+            HelpQuestion("What are the Stable and Beta update channels?") {
+                Text("Maestro normally offers stable versions only. In **Device Settings › Preferences** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.")
+            }
             HelpQuestion("Why doesn't the D/A meter move when I change a Trim?") {
                 Text("The D/A meter shows the level **before** conversion, so the trim is applied after the point being measured. This is expected. To calibrate against a trim you need to measure the analog output itself with an external voltmeter — send a 1 kHz sine at the digital reference level and adjust the trim until the meter reads the analog reference you chose (1.228 V AC for +4 dBu).")
             }

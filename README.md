@@ -5,6 +5,8 @@ Modern Apple Silicon support for the Apogee Symphony I/O MK I over **USB and Thu
 <h1><a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg">
 Download the latest Unofficial Symphony Maestro Installer (.pkg)</a></h1>
 
+The download link above is always the latest stable version.
+
 _Note: If you find this useful and you’re motivated to support, please make a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org)._
 
 For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
@@ -83,9 +85,9 @@ _This version of Maestro works with only one Symphony I/O at a time._
 
 _As of 0.8.40, option-card features (optical format, S/PDIF coax, AES, per-card clock choices) follow Apogee's original software. They are verified on an 8x8 AES/OPT and an A16 IP; the AES-only 8x8, 2x6, 16x16 and A16 OP are unverified, and reports are welcome._
 
-## Beta Status
+## Project status
 
-This is **beta software** developed by one person. It has been tested on a small number of systems, listed below. If your Mac is mission-critical, you may prefer to test on a secondary machine first.
+Maestro is young software developed by one person. It has been tested on a small number of systems, listed below. (This is separate from the optional Beta update channel.) If your Mac is mission-critical, you may prefer to test on a secondary machine first.
 
 ## Tested Hardware
 
@@ -146,6 +148,10 @@ During development I sent countless commands that could easily have bricked my d
 Maestro follows your Mac by default with **Auto** appearance. You can choose **Light** or **Dark** in **Device Settings › Preferences**; the choice applies only to Maestro and is saved for the next launch.
 
 Updates are downloaded from this repository; the updater collects no telemetry.
+
+### Beta versions
+
+From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in Device Settings › Preferences; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page.
 
 <table>
 <tr>

@@ -1,0 +1,64 @@
+import Foundation
+import Testing
+import MaestroCore
+@testable import MaestroApp
+
+/// The Sparkle delegate answers `allowedChannels` from the channel rule, and
+/// the feed Sparkle loads is applied before Sparkle filters it.
+@MainActor
+@Suite("Update channel delegate")
+struct UpdateChannelDelegateTests {
+    private func makeStore() -> (ChannelStore, UserDefaults, String) {
+        let name = "UpdateChannelDelegateTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        return (ChannelStore(defaults: defaults), defaults, name)
+    }
+
+    @Test func stableCopyAsksForNoChannels() {
+        let (store, defaults, name) = makeStore()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let delegate = UpdateChannelDelegate(store: store, installedVersion: "0.8.40")
+        #expect(delegate.currentAllowedChannels() == [])
+        delegate.record(items: [FeedItem(version: "0.8.40"), FeedItem(version: "0.9.0", channel: "beta")])
+        #expect(delegate.currentAllowedChannels() == [])
+        #expect(store.preference == nil)
+    }
+
+    @Test func handInstalledBetaAsksForBetaInTheSameCheck() {
+        let (store, defaults, name) = makeStore()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let delegate = UpdateChannelDelegate(store: store, installedVersion: "0.9.0")
+        var changes = 0
+        delegate.onChange = { changes += 1 }
+        #expect(delegate.currentAllowedChannels() == [])
+        delegate.record(items: [FeedItem(version: "0.8.40"), FeedItem(version: "0.9.0", channel: "beta")])
+        #expect(delegate.currentAllowedChannels() == ["beta"])
+        #expect(store.preference == .beta)
+        #expect(changes == 1)
+    }
+
+    @Test func explicitChoiceDecides() {
+        let (store, defaults, name) = makeStore()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let delegate = UpdateChannelDelegate(store: store, installedVersion: "0.8.40")
+        store.preference = .beta
+        #expect(delegate.currentAllowedChannels() == ["beta"])
+        store.preference = .stable
+        let betaCopy = UpdateChannelDelegate(store: store, installedVersion: "0.9.0")
+        betaCopy.record(items: [FeedItem(version: "0.8.40"), FeedItem(version: "0.9.0", channel: "beta")])
+        #expect(betaCopy.currentAllowedChannels() == [])
+    }
+}
+
+/// Sparkle finds the delegate methods by selector; a Swift name that did not
+/// map to them would leave Beta silently unused.
+@MainActor
+@Suite("Update channel delegate selectors")
+struct UpdateChannelDelegateSelectorTests {
+    @Test func respondsToSparkleSelectors() {
+        let delegate = UpdateChannelDelegate(store: ChannelStore(defaults: UserDefaults(suiteName: "UpdateChannelDelegateSelectorTests")!), installedVersion: "0.8.40")
+        #expect(delegate.responds(to: NSSelectorFromString("allowedChannelsForUpdater:")))
+        #expect(delegate.responds(to: NSSelectorFromString("updater:didFinishLoadingAppcast:")))
+        #expect(delegate.responds(to: NSSelectorFromString("updater:didFinishUpdateCycleForUpdateCheck:error:")))
+    }
+}
