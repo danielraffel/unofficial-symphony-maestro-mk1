@@ -10,18 +10,24 @@ Every option card now behaves the way it did in Apogee's original Maestro: the o
 - **S/PDIF settings show what the Symphony is set to over ThunderBridge.** The Replaces and Mirrors menus used to go back to their defaults whenever you left the tab.
 - **Your optical format and S/PDIF settings are kept when the Symphony is turned off and on.** They used to go back to ADAT and the defaults. Maestro and the USB helper now put them back when the Symphony connects, as the original did. They go back only onto the card they were chosen for, so a card you swap in starts from its defaults.
 - **Presets keep the optical format and S/PDIF settings of both cards.** They used to keep the first card's only.
+- **Input Routing over ThunderBridge shows what the Symphony actually records.** The page drew the USB layout (all Line inputs first), but the ThunderBridge driver sends each card's inputs in order: Mac inputs 1-16 from the card in slot 1, 17-32 from slot 2. The page now shows that, and Reset Routing puts that layout back.
+- **Saved input routing choices are now put back when the Symphony reconnects** over ThunderBridge, including after the driver recovers the link. Until now the page kept showing your choices while the Symphony had gone back to the default.
+- **The software inputs on Input Routing are named after what is routed to them,** as in the original: "A SPDIF Opt 1/2" for a pair fed from the optical input, "N.A." for a pair with nothing behind it. They used to read "A Line" for every row.
+- **"SPDIF Opt 1/2" fits on its Input and Output tab strip** instead of being cut short.
 
 ### What's better
 
 - **Channel names follow the optical format and sample rate.** In the Mixer, the Input and Output tabs and both routing pages, optical channels are named ADAT at 44.1 and 48 kHz, SMUX at 88.2 and 96 kHz, and "N.A." where the optical ports carry nothing (at 176.4 and 192 kHz, or beyond the first pair in S/PDIF format, where they show SPDIF Opt). A pair replaced by the coax input is named "SPDIF Cx". The names change as soon as you change the rate or format.
 - **Clock Source over ThunderBridge lists each card's own inputs,** as the original did: the S/PDIF coax input, then AES pairs or the optical input. An 8x8 Optical card shows "ADAT 1-8" (or SMUX, SPDIF Opt), an A16 IP or 16x16 card shows its coax input, an A16 OP its coax and optical inputs, and an empty or Mic Pre slot shows nothing. A second AES card continues the AES numbering (9-10 to 15-16). Loop Sync is no longer listed; the original offered it only in Pro Tools HD mode.
 - **Menu names as in the original:** optical pairs are "Optical 1-2" in the S/PDIF and headphone menus, the input menu is "SPDIF Coax Replaces", and the optical format choices are "ADAT/SMUX" and "SPDIF".
-- **Audio apps see channel names over ThunderBridge.** The driver now names each input channel ("Line 1", "ADAT 3", "SPDIF Cx 1"...) for Audio MIDI Setup and DAWs, following the same rules.
+- **Audio apps see channel names over ThunderBridge.** The driver now names each input channel ("A Line 1", "A ADAT 3", "A SPDIF Cx 1"...) for Audio MIDI Setup and DAWs, following the same rules. The letter in front is the Peripheral Prefix from Device Settings, which Maestro now stores in the Symphony, as the original did.
+- **Channels that carry nothing are greyed out.** "N.A." strips, routing columns and mixer names stay where they are, as in the original, but are faded.
 - **The ThunderBridge driver no longer sends an optical format to an AES card.** An AES card has no optical format to set, and Apogee's software never sent one.
 
 ### Release notes
 
-- The driver changes (input channel names, no optical format for an AES card, keeping your settings after a link recovery) arrive with the next driver release.
+- The driver changes (input channel names with the prefix letter, no optical format for an AES card, keeping your settings after a link recovery) arrive with the next driver release.
+- Output channel names are not published yet: over ThunderBridge a Mac output can reach the hardware through the card's mixer, and which output it ends up on is not yet worked out.
 - The USB helper changes with this release.
 
 ## 0.8.39 (build 1035)
