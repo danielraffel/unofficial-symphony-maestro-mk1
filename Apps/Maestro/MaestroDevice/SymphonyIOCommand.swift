@@ -2392,7 +2392,7 @@ public enum RoutingResetGuard {
                 }
             }
         }
-        lines.append("Only USB record channels are written. No hardware output is touched — ADAT outputs are unaffected.")
+        lines.append("Only the Mac's record channels change. No hardware output is touched — ADAT outputs are unaffected.")
         return lines
     }
 

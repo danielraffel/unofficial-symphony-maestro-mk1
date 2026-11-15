@@ -4,6 +4,20 @@
 
 Every option card now behaves the way it did in Apogee's original Maestro: the optical format, the S/PDIF coax settings, the clock choices and the channel names.
 
+### Changes that may affect your setup
+
+These work differently from 0.8.39. Most match Apogee's original; check them after updating.
+
+- **This release updates the ThunderBridge driver.** After installing, unplug the ThunderBridge cable and plug it back in (or turn the Maestro driver off and on in System Settings, or restart). Until then the old driver keeps running and Maestro shows a banner.
+- **Input routing choices saved over ThunderBridge are cleared once.** The Symphony goes back to its default layout (each card's inputs in order). Choose them again on Input Routing; from now on they are kept and put back after reconnecting. Choices made over USB in 32-channel mode are cleared too.
+- **2x6 card in slot 1 with a second card (ThunderBridge only):** the second card's inputs move from Mac inputs 17-32 to 13-28, as in the original. Check your DAW's input assignments.
+- **Channel names in your DAW change over ThunderBridge.** Inputs and outputs now have names ("A Line 1", "A ADAT 3", "A N.A."...) instead of plain numbers. The channels themselves don't move.
+- **Clock Source over ThunderBridge:** "Loop Sync" and the "IO Board 1" / "IO Board 2" entries are gone; each card's own inputs are listed instead. If you used one of those, choose the clock source again.
+- **Headphones following an output of the slot 2 card** now play that output over ThunderBridge. Before, they played the matching output of the slot 1 card.
+- **Reset Routing over ThunderBridge** puts back the layout the driver actually uses. With two 8x8 cards, or with slot 1 empty, this differs from what earlier versions wrote.
+- **The Peripheral Prefix letter is now stored in the Symphony,** as the original did, and is written to it when Maestro connects.
+- **Optical format and S/PDIF coax settings are now restored when the Symphony connects** (USB and ThunderBridge). Before, the Symphony started from ADAT and the defaults after every power cycle.
+
 ### What's fixed
 
 - **S/PDIF settings for the card in slot 2 now take effect.** "SPDIF Coax 3-4 Replaces" and "SPDIF Coax 3-4 Mirrors" were sent in a form the Symphony ignores, and the Mirrors menu was not sent at all. Both now work, over USB and ThunderBridge.
@@ -33,7 +47,7 @@ Every option card now behaves the way it did in Apogee's original Maestro: the o
 
 ### Release notes
 
-- The driver changes (input and output channel names with the prefix letter, no optical format for an AES card, keeping your settings after a link recovery) arrive with the next driver release.
+- This release includes a new ThunderBridge driver (0.10.17, build 123) carrying the driver changes above: input and output channel names with the prefix letter, names that follow the sample rate, no optical format for an AES card, keeping your settings after a link recovery, and Device Info's driver build report.
 - Mac outputs keep fixed names based on their position, on purpose. They do not change when you re-route an output on Output Routing or send it through the mixer. The original renamed each output after the hardware it reached, so an output feeding the mixer read "N.A.". The user guide explains channel names.
 - The USB helper changes with this release.
 
