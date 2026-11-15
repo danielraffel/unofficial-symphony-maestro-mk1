@@ -6,7 +6,9 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/maestro-installer-tests.XXXXXX")"
-trap '/bin/rm -rf "$WORK"' EXIT
+# shellcheck source=lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
+trap 'remove_scratch "$WORK"' EXIT
 PASS=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { PASS=$((PASS + 1)); echo "ok - $*"; }

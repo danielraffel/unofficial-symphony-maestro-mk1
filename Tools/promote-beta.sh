@@ -36,7 +36,7 @@ done
 require_sparkle_key
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/maestro-promote.XXXXXX")"
-trap '/bin/rm -rf "$WORK"' EXIT
+trap 'remove_scratch "$WORK"' EXIT
 
 [ -n "$VERSION" ] || VERSION="$(feed_py newest --feed "$FEED" --channel beta)" || die "no beta in $FEED"
 ITEM="$(feed_py item "$VERSION" --feed "$FEED")"

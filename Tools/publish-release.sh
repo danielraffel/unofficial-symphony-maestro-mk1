@@ -8,10 +8,11 @@
 #   1. read the version and source commit from the package, check it is
 #      notarized and carries the app's Sparkle key, and check the version can
 #      be published on the channel (Tools/check-versions.py --feed);
-#   2. create GitHub release v<version> tagged at the commit the package was
+#   2. add the feed item (Tools/feed.py add) to a copy of the feed, re-sign
+#      and lint it, so a feed problem stops before anything is created;
+#   3. create GitHub release v<version> tagged at the commit the package was
 #      built from, as a pre-release (beta) or the latest release (stable), with
 #      the package as UnofficialSymphonyMaestro.pkg, and confirm "latest";
-#   3. add the feed item (Tools/feed.py add) and re-sign the feed;
 #   4. print the feed diff and stop. It never commits or pushes.
 #
 # With --local-base-url nothing goes to GitHub: the package (and the notes)
@@ -45,7 +46,7 @@ fi
 require_sparkle_key
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/maestro-publish.XXXXXX")"
-trap '/bin/rm -rf "$WORK"' EXIT
+trap 'remove_scratch "$WORK"' EXIT
 
 # ── 1. What is being published ──────────────────────────────────────────────
 pkgutil --expand-full "$PKG" "$WORK/expanded" >/dev/null || die "cannot expand $PKG"
@@ -66,13 +67,24 @@ echo "Publishing $CHANNEL $VERSION from $COMMIT"
 echo "  package $PKG ($(stat -f %z "$PKG") bytes, sha256 $SHA256)"
 
 ADD_ARGS=(add --feed "$WORK/feed.xml" --channel "$CHANNEL" --version "$VERSION" --pkg "$PKG" --notes "$NOTES")
-
-# ── 2. Release ──────────────────────────────────────────────────────────────
 if [ -n "$LOCAL_BASE" ]; then
     FEED_DIR="$(cd "$(dirname "$FEED")" && pwd)"
     LOCAL_PKG="$FEED_DIR/$VERSION.pkg"
     if [ -e "$LOCAL_PKG" ] && ! cmp -s "$PKG" "$LOCAL_PKG"; then die "$LOCAL_PKG exists with other bytes"; fi
     ADD_ARGS+=(--enclosure-url "${LOCAL_BASE%/}/$VERSION.pkg" --notes-url "${LOCAL_BASE%/}/$VERSION.notes.md")
+else
+    ADD_ARGS+=(--base-url "$RELEASES_BASE/download")
+fi
+
+# ── 2. Feed item, on a copy, before anything is created ─────────────────────
+# A feed that cannot be edited or does not lint stops here, so no release is
+# left without its feed item.
+cp "$FEED" "$WORK/feed.xml"
+feed_py "${ADD_ARGS[@]}"
+feed_py lint --feed "$WORK/feed.xml" --previous "$FEED" >/dev/null
+
+# ── 3. Release ──────────────────────────────────────────────────────────────
+if [ -n "$LOCAL_BASE" ]; then
     if [ "$DRY_RUN" = true ]; then
         echo "dry run: would copy the package to $LOCAL_PKG"
     else
@@ -93,8 +105,7 @@ else
     cp "$PKG" "$WORK/asset/$RELEASE_ASSET"
     CREATE=("$GH_BIN" release create "v$VERSION" "$WORK/asset/$RELEASE_ASSET" --repo "$RELEASE_SLUG"
             --title "Symphony Maestro $VERSION" --notes-file "$NOTES" --target "$COMMIT")
-    if [ "$CHANNEL" = beta ]; then CREATE+=(--prerelease); else CREATE+=(--latest); fi
-    ADD_ARGS+=(--base-url "$RELEASES_BASE/download")
+    if [ "$CHANNEL" = beta ]; then CREATE+=(--prerelease --latest=false); else CREATE+=(--latest); fi
     if [ "$DRY_RUN" = true ]; then
         printf 'dry run: would run:'; printf ' %q' "${CREATE[@]}"; echo
     else
@@ -108,11 +119,6 @@ else
         echo "GitHub latest release: $LATEST"
     fi
 fi
-
-# ── 3. Feed item ────────────────────────────────────────────────────────────
-cp "$FEED" "$WORK/feed.xml"
-feed_py "${ADD_ARGS[@]}"
-feed_py lint --feed "$WORK/feed.xml" --previous "$FEED" >/dev/null
 
 # ── 4. Diff, then stop ──────────────────────────────────────────────────────
 diff -u "$FEED" "$WORK/feed.xml" || true

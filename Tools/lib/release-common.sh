@@ -20,6 +20,20 @@ export SPARKLE_SIGN_UPDATE="$SIGN_UPDATE"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Removes a scratch directory this script made with mktemp, and nothing else:
+# the path must be one mktemp returned under $TMPDIR (or /tmp). No rm -rf.
+remove_scratch() {  # $1 = directory from mktemp -d
+    local dir="$1" base="${TMPDIR:-/tmp}"
+    dir="$(printf '%s' "$dir" | /usr/bin/tr -s /)"
+    base="${base%/}"
+    case "$dir" in
+        "$base"/maestro-*.??????|/tmp/maestro-*.??????|/private/tmp/maestro-*.??????) ;;
+        *) echo "remove_scratch: refusing to remove $dir" >&2; return 1 ;;
+    esac
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+    /usr/bin/find "$dir" -depth -delete
+}
+
 feed_py() { python3 "$RELEASE_REPO_ROOT/Tools/feed.py" "$@"; }
 
 # The Sparkle key: a file, mode 600. Never a keychain item (a different

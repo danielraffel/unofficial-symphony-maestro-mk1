@@ -2,6 +2,20 @@
 # Package-building helpers shared by Installer/build-installer.sh and
 # Tools/test-installer-tools.sh. Sourced, never run. No signing identity needed.
 
+# Removes a scratch directory this script made with mktemp, and nothing else:
+# the path must be one mktemp returned under $TMPDIR (or /tmp). No rm -rf.
+remove_scratch() {  # $1 = directory from mktemp -d
+    local dir="$1" base="${TMPDIR:-/tmp}"
+    dir="$(printf '%s' "$dir" | /usr/bin/tr -s /)"
+    base="${base%/}"
+    case "$dir" in
+        "$base"/maestro-*.??????|/tmp/maestro-*.??????|/private/tmp/maestro-*.??????) ;;
+        *) echo "remove_scratch: refusing to remove $dir" >&2; return 1 ;;
+    esac
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+    /usr/bin/find "$dir" -depth -delete
+}
+
 # Writes the component plist for a payload root with every top-level bundle
 # non-relocatable and not version-checked.
 #
@@ -52,10 +66,10 @@ if checked:
     sys.exit(1)
 PY
     then
-        /bin/rm -rf "$dir"
+        remove_scratch "$dir"
         return 1
     fi
-    /bin/rm -rf "$dir"
+    remove_scratch "$dir"
     echo "    not version-checked: $(basename "$1")"
 }
 

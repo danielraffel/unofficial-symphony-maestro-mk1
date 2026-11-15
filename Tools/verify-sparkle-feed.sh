@@ -20,7 +20,7 @@ case "$CHANNEL" in ''|stable|beta) ;; *) die "channel must be stable or beta" ;;
 require_sparkle_key
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/maestro-verify-feed.XXXXXX")"
-trap '/bin/rm -rf "$WORK"' EXIT
+trap 'remove_scratch "$WORK"' EXIT
 TMP="$WORK/appcast.xml"
 fetch "$FEED_URL" "$TMP"
 
