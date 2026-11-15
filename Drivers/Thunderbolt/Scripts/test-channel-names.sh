@@ -1,0 +1,147 @@
+#!/bin/bash
+# Host test for SymphonyChannelNames.h: the per-channel names the driver
+# publishes to Core Audio. The table matches the app's CardLayout tests
+# (ChannelNamingTests), which pin the same names to Apogee's daemon.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_DIR="$(cd "$SCRIPT_DIR/../Source" && pwd)"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+cat > "$TMP_DIR/test.cpp" <<'CPP'
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include "SymphonyChannelNames.h"
+
+static int failures = 0;
+
+static void expectName(const SymphonyNamingState &s, bool in, unsigned board, unsigned ch,
+                       const char *want, int line)
+{
+    char got[32];
+    SymphonyBoardChannelName(s, in, board, ch, got, sizeof(got));
+    if (strcmp(got, want) != 0) {
+        fprintf(stderr, "line %d: board %u ch %u %s: got \"%s\", want \"%s\"\n",
+                line, board, ch, in ? "in" : "out", got, want);
+        failures++;
+    }
+}
+#define NAME(s, in, b, c, want) expectName(s, in, b, c, want, __LINE__)
+
+static SymphonyNamingState state(uint8_t t0, uint8_t t1, uint32_t rate = 0,
+                                 bool spdif0 = false, bool spdif1 = false,
+                                 uint8_t cx0 = 0, uint8_t cx1 = 0)
+{
+    SymphonyNamingState s = {};
+    s.boardType[0] = t0; s.boardType[1] = t1;
+    s.opticalIsSPDIF[0] = spdif0; s.opticalIsSPDIF[1] = spdif1;
+    s.coaxReplace[0] = cx0; s.coaxReplace[1] = cx1;
+    s.sampleRate = rate;
+    return s;
+}
+
+int main() {
+    // 8x8 Optical: Line 1-8 then ADAT / SMUX / N.A. by rate.
+    auto opt48 = state(kSIOOptionBoard_Optical, kSIOOptionBoard_None, 48000);
+    NAME(opt48, true, 0, 0, "Line 1");
+    NAME(opt48, true, 0, 8, "ADAT 1");
+    NAME(opt48, false, 0, 15, "ADAT 8");
+    auto opt96 = state(kSIOOptionBoard_Optical, kSIOOptionBoard_None, 96000);
+    NAME(opt96, true, 0, 15, "SMUX 8");
+    auto opt192 = state(kSIOOptionBoard_Optical, kSIOOptionBoard_None, 192000);
+    NAME(opt192, true, 0, 8, "N.A.");
+    NAME(opt192, true, 0, 7, "Line 8");
+    // Unknown rate names as 44.1/48 kHz.
+    NAME(state(kSIOOptionBoard_Optical, 0), true, 0, 8, "ADAT 1");
+
+    // S/PDIF format.
+    auto optSPDIF = state(kSIOOptionBoard_Optical, 0, 44100, true);
+    NAME(optSPDIF, true, 0, 8, "SPDIF Opt 1");
+    NAME(optSPDIF, true, 0, 9, "SPDIF Opt 2");
+    NAME(optSPDIF, true, 0, 10, "N.A.");
+    NAME(state(kSIOOptionBoard_Optical, 0, 176400, true), true, 0, 8, "N.A.");
+    // A16 OP inputs: channels 1-2 and 9-10 of the 16.
+    auto da16 = state(kSIOOptionBoard_AnalogDA16, 0, 48000, true);
+    NAME(da16, true, 0, 0, "SPDIF Opt 1");
+    NAME(da16, true, 0, 8, "SPDIF Opt 3");
+    NAME(da16, true, 0, 9, "SPDIF Opt 4");
+    NAME(da16, true, 0, 2, "N.A.");
+    NAME(da16, false, 0, 0, "Line 1");
+    // A16 IP outputs: only the first pair (outputs test against all 16).
+    auto ad16 = state(kSIOOptionBoard_AnalogAD16, 0, 48000, true);
+    NAME(ad16, false, 0, 1, "SPDIF Opt 2");
+    NAME(ad16, false, 0, 8, "N.A.");
+    NAME(ad16, true, 0, 15, "Line 16");
+
+    // 2x6: one optical port, so four SMUX channels at 96k; AES at every rate.
+    auto twoBySix96 = state(kSIOOptionBoard_TwoBySix, 0, 96000);
+    NAME(twoBySix96, true, 0, 1, "Line 2");
+    NAME(twoBySix96, true, 0, 2, "AES 1");
+    NAME(twoBySix96, true, 0, 4, "SMUX 1");
+    NAME(twoBySix96, true, 0, 7, "SMUX 4");
+    NAME(twoBySix96, true, 0, 8, "N.A.");
+    NAME(twoBySix96, false, 0, 6, "AES 1");
+    NAME(state(kSIOOptionBoard_TwoBySix, 0, 192000), false, 0, 7, "AES 2");
+    NAME(state(kSIOOptionBoard_TwoBySix, 0, 48000), true, 0, 12, "N.A.");   // past the 12 inputs
+
+    // Slot 2 numbers on from slot 1, per kind.
+    auto twoOpt = state(kSIOOptionBoard_Optical, kSIOOptionBoard_Optical, 48000);
+    NAME(twoOpt, true, 1, 0, "Line 9");
+    NAME(twoOpt, true, 1, 8, "ADAT 9");
+    NAME(state(kSIOOptionBoard_Optical, kSIOOptionBoard_Optical, 48000, false, true),
+         true, 1, 8, "SPDIF Opt 3");
+    // Owner's unit: combo (AES position) + A16 IP.
+    auto owner = state(kSIOOptionBoard_AnalogAES, kSIOOptionBoard_AnalogAD16, 48000);
+    NAME(owner, true, 0, 8, "AES 1");
+    NAME(owner, true, 1, 0, "Line 9");
+    NAME(owner, false, 1, 0, "ADAT 1");     // AES board has no optical outputs
+    NAME(owner, false, 0, 15, "AES 8");
+
+    // Coax Replaces renames the replaced input pair, never an output.
+    auto cxAES = state(kSIOOptionBoard_AnalogAES, kSIOOptionBoard_AnalogAD16, 48000, false, false, 5, 1);
+    NAME(cxAES, true, 0, 8, "SPDIF Cx 1");
+    NAME(cxAES, true, 0, 9, "SPDIF Cx 2");
+    NAME(cxAES, true, 0, 10, "AES 3");
+    NAME(cxAES, false, 0, 8, "AES 1");
+    NAME(cxAES, true, 1, 0, "SPDIF Cx 3");
+    NAME(cxAES, true, 1, 1, "SPDIF Cx 4");
+    NAME(state(kSIOOptionBoard_TwoBySix, 0, 48000, false, false, 3), true, 0, 4, "SPDIF Cx 1");
+
+    // Empty slot and 8MicPre have no channels.
+    NAME(state(kSIOOptionBoard_Optical, kSIOOptionBoard_MicPre8), true, 1, 0, "N.A.");
+    char buf[32];
+    assert(!SymphonyBoardChannelName(state(0, 0), true, 0, 0, buf, sizeof(buf)));
+
+    // Host inputs follow the capture route: P2P n <- source byte.
+    assert(SymphonyHostInputName(owner, 32 + 8, buf, sizeof(buf)) && !strcmp(buf, "AES 1"));
+    assert(SymphonyHostInputName(owner, 48 + 3, buf, sizeof(buf)) && !strcmp(buf, "Line 12"));
+    assert(SymphonyHostInputName(owner, kSymphonyRoutingSourceNone, buf, sizeof(buf)) && !strcmp(buf, "N.A."));
+    assert(!SymphonyHostInputName(owner, 64, buf, sizeof(buf)));   // a mixer bus: no name of its own
+
+    // AudioRouting payloads: only P2P destinations are noted.
+    uint8_t sources[32];
+    for (int n = 0; n < 32; n++) sources[n] = (uint8_t)(32 + n);
+    const uint8_t toOutputs[] = { 32, 0, 33, 1 };          // board outputs: ignored
+    assert(!SymphonyNoteInputRoutes(sources, toOutputs, sizeof(toOutputs)));
+    const uint8_t swap[] = { 0xC0, 33, 0xC1, 32, 0xC2, 34 }; // P2P 0/1 swapped, P2P 2 unchanged
+    assert(SymphonyNoteInputRoutes(sources, swap, sizeof(swap)));
+    assert(sources[0] == 33 && sources[1] == 32 && sources[2] == 34);
+    const uint8_t odd[] = { 0xC3 };                       // a lone byte is not a pair
+    assert(!SymphonyNoteInputRoutes(sources, odd, sizeof(odd)));
+
+    if (failures) { fprintf(stderr, "%d channel-name failures\n", failures); return 1; }
+    return 0;
+}
+CPP
+
+clang++ -std=c++17 -Wall -Wextra -Werror -I "$SOURCE_DIR" "$TMP_DIR/test.cpp" -o "$TMP_DIR/test"
+"$TMP_DIR/test"
+
+# The driver publishes them and republishes on the events that rename channels.
+grep -q 'SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input' "$SOURCE_DIR/SymphonyThunderbridge.cpp"
+for hook in 'hardware now at' 'RequestOpticalFormat: board=%u fmt=%u' 'namesChanged' 'kSIOCmd_SPDIFCoaxReplaceInput && value < 2'; do
+    grep -q "$hook" "$SOURCE_DIR/SymphonyThunderbridge.cpp"
+done
+echo "ThunderBridge channel names: PASS"

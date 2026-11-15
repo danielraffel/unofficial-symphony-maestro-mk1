@@ -13,6 +13,7 @@ TESTS=(
     test-mixer-pan.sh
     test-timing-profile.sh
     test-thunderbolt-lifecycle.sh
+    test-channel-names.sh
 )
 
 for t in "${TESTS[@]}"; do

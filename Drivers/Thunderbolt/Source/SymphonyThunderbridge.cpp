@@ -36,6 +36,7 @@
 #include "Sym64Registers.h"
 #include "SymphonyTimingProfile.h"
 #include "SymphonyMixerPan.h"
+#include "SymphonyChannelNames.h"
 #include "SymphonyCardMixerRouting.h"
 #include "SymphonyOptionBoard.h"
 
@@ -318,6 +319,16 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  lastWatchGcsr;
     uint32_t  lastWatchXlinkStatus;
     uint32_t  cardReinitCount;
+    // Per-channel Core Audio names (SymphonyChannelNames.h). inputRouteSource[n]
+    // is the Symphony routing source feeding host input n (P2P n), tracked from
+    // the AudioRouting (0x31) writes this driver sends; coaxReplace from the
+    // S/PDIF Coax Replaces (0x35) writes and reads. Written on xlinkQueue,
+    // read on the default queue, both with __atomic_*.
+    uint8_t   inputRouteSource[32];
+    uint8_t   namingCoaxReplace[2];
+    bool      channelNamesPublished;
+    SymphonyNamingState publishedNaming;
+    uint8_t   publishedInputSource[32];
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -575,6 +586,7 @@ static constexpr uint8_t kSIOCmd_HeadphoneVolume      = 0x23;  // 1 byte: nValue
 static constexpr uint8_t kSIOCmd_HeadphoneMute        = 0x24;  // 1 byte: nValue=HP index, 0=unmuted, 1=muted
 static constexpr uint8_t kSIOCmd_AudioRouting          = 0x31;  // N×2 bytes: [dest, src] pairs
 static constexpr uint8_t kSIOCmd_OpticalFormat         = 0x34;  // 1 byte: 0=ADAT/SMUX, 1=SPDIF. nValue=board index (0 or 1).
+static constexpr uint8_t kSIOCmd_SPDIFCoaxReplaceInput = 0x35; // 1 byte: SymphonyIOBoardSPDIFCoaxReplace (0 Off, 1-8 pair). nValue=board index.
 static constexpr uint8_t kSIOCmd_ClockMode             = 0x50;  // 4 bytes: clock source config
 static constexpr uint8_t kSIOCmd_MixerFaderLevel       = 0xB0;  // 1 byte: dB+48 (0..48). nValue=(mixer<<16)|channel.
 static constexpr uint8_t kSIOCmd_MixerInputPan         = 0xB1;  // 1 byte: (pan+1)*64 (0..128). nValue=(mixer<<16)|channel.
@@ -1274,9 +1286,14 @@ struct SymphonyLinkInitResult {
     bool    hp1Mute;
 };
 
+static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars);
+
 static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rate,
                                   SymphonyLinkInitResult *out)
 {
+    // The capture routes below put every host input back on its own board
+    // channel; the coax replacement is the unit's, read back by the app.
+    ResetInputRouteSources(ivars);
     uint8_t rateCode = SampleRateToXLinkCode(rate);
     if (rateCode == 0xFF) {
         rateCode = kXLinkSRate44100;
@@ -2035,6 +2052,76 @@ static void RequestIORestartFromDefaultQueue(SymphonyThunderbridge_IVars *ivars,
 static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev, uint8_t mi,
                                uint16_t mixerID);
 
+// ── Per-channel names ───────────────────────────────────────────────────────
+// Apogee's daemon gave every host channel of the Symphony card the name of the
+// hardware channel it carried (SymphonyCard.cpp:828-866), following the rate,
+// optical format and S/PDIF Coax Replaces; see SymphonyChannelNames.h. Input
+// channels are published: each is fed by the Symphony routing source this
+// driver last sent for P2P n. Output channels are not: on ThunderBridge a host
+// output reaches the hardware through the card's own output routes and mixer,
+// and the original's mapping for that path is not established.
+//
+// Runs on the default queue (Start, or a block queued by
+// ScheduleChannelNames), never on xlinkQueue.
+static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
+{
+    if (!ivars || !ivars->audioDevice || __atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE))
+        return;
+    SymphonyNamingState s = {};
+    for (uint32_t b = 0; b < 2; b++) {
+        s.boardType[b] = ivars->optionBoardTypeValid[b] ? ivars->optionBoardType[b] : 0;
+        s.opticalIsSPDIF[b] = __atomic_load_n(&ivars->pendingOpticalFmt[b], __ATOMIC_ACQUIRE) != 0;
+        s.coaxReplace[b] = __atomic_load_n(&ivars->namingCoaxReplace[b], __ATOMIC_ACQUIRE);
+    }
+    s.sampleRate = (uint32_t)(ivars->lastSampleRate + 0.5);
+    uint8_t sources[32];
+    for (uint32_t n = 0; n < 32; n++)
+        sources[n] = __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE);
+    if (ivars->channelNamesPublished &&
+        memcmp(&s, &ivars->publishedNaming, sizeof(s)) == 0 &&
+        memcmp(sources, ivars->publishedInputSource, sizeof(sources)) == 0)
+        return;
+
+    uint32_t named = 0;
+    for (uint32_t n = 0; n < 32; n++) {
+        char name[32];
+        OSString *str = nullptr;
+        if (SymphonyHostInputName(s, sources[n], name, sizeof(name))) {
+            str = OSString::withCString(name);
+            named++;
+        }
+        // A null name removes it, leaving Core Audio's default for that channel.
+        ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, str);
+        OSSafeReleaseNULL(str);
+    }
+    ivars->publishedNaming = s;
+    memcpy(ivars->publishedInputSource, sources, sizeof(sources));
+    ivars->channelNamesPublished = true;
+    STLOG("Channel names: published %u input names (boards %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
+          named, s.boardType[0], s.boardType[1], s.sampleRate,
+          s.opticalIsSPDIF[0] ? 1u : 0u, s.opticalIsSPDIF[1] ? 1u : 0u,
+          s.coaxReplace[0], s.coaxReplace[1]);
+}
+
+static void ScheduleChannelNames(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self)
+{
+    if (!ivars || !ivars->defaultQueue || !self) return;
+    self->retain();
+    ivars->defaultQueue->DispatchAsync(^{
+        PublishChannelNames(ivars);
+        self->release();
+    });
+}
+
+// The Symphony's capture routing as ConfigureSymphonyLink leaves it:
+// P2P n ← IOBoard0 ch n (0-15), P2P 16+n ← IOBoard1 ch n.
+static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars)
+{
+    for (uint8_t n = 0; n < 32; n++)
+        __atomic_store_n(&ivars->inputRouteSource[n],
+                         (uint8_t)(kSymphonyRoutingSourceIOBoard0 + n), __ATOMIC_RELEASE);
+}
+
 // ── dext 115: card re-initialization after a PCI power cycle ────────────────
 // Sleep puts the ThunderBridge in D3. On wake the kernel restores PCI config
 // space, the driver instance survives (no Start()), but the FPGA's own registers
@@ -2228,6 +2315,7 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
             ivars->optionBoardType[b]     = okb ? bt : 0;
             ivars->optionBoardTypeValid[b] = okb;
         }
+        ScheduleChannelNames(ivars, self);
         if (!LinkRecoveryAborted(ivars)) IndicateLinkOK(ivars);
         STLOG("Link recovery: Symphony re-enumerated and configured at %u Hz "
               "(recovery #%u, monitor=%s atten=%u)",
@@ -4131,6 +4219,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             OSSafeReleaseNULL(deviceName);
         }
 
+        // Per-channel input names, as the original published them.
+        PublishChannelNames(ivars);
+
         STLOG("Audio: Device published to CoreAudio (32ch SInt32 in + 32ch SInt32 out, 44.1-192kHz, Thunderbolt)");
     }
 
@@ -4716,6 +4807,8 @@ kern_return_t SymphonyThunderbridge::StartDevice(
             }
             ivars->lastSampleRate = requestedRate;
             STLOG("StartDevice: hardware now at %.0f Hz", requestedRate);
+            // Optical channel names follow the rate (ADAT / SMUX / N.A.).
+            ScheduleChannelNames(ivars, this);
         }
     }
 
@@ -5300,6 +5393,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
     }
 
     __block kern_return_t result = kIOReturnNotReady;
+    __block bool namesChanged = false;
     q->DispatchSync(^{
         if (!XLinkTxAdmissible(ivars)) {
             STERR("SendVendorCommand: TX shut down / stopping — not sending");
@@ -5436,6 +5530,20 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             result = kIOReturnIOError;
             return;
         }
+        // Host input names follow the capture routes and S/PDIF Coax Replaces.
+        if (command == kSIOCmd_AudioRouting) {
+            uint8_t sources[32];
+            for (uint32_t n = 0; n < 32; n++)
+                sources[n] = __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE);
+            if (SymphonyNoteInputRoutes(sources, payload, payloadLen)) {
+                for (uint32_t n = 0; n < 32; n++)
+                    __atomic_store_n(&ivars->inputRouteSource[n], sources[n], __ATOMIC_RELEASE);
+                namesChanged = true;
+            }
+        } else if (command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2 && payload && payloadLen >= 1) {
+            __atomic_store_n(&ivars->namingCoaxReplace[value], payload[0], __ATOMIC_RELEASE);
+            namesChanged = true;
+        }
         // Legacy SymphonyIO::UpdateMainOutputChannelMode makes Line (mode 0)
         // an HP1 monitor target.  The HAL exposes one volume/mute control, so
         // remember that target only after the hardware mode write succeeds;
@@ -5465,6 +5573,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         }
         result = kIOReturnSuccess;
     });
+    if (namesChanged) ScheduleChannelNames(ivars, this);
     return result;
 }
 
@@ -5498,6 +5607,13 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
     });
     if (result == kIOReturnSuccess)
         for (uint16_t i = 0; i < responseLen; i++) outPayload[i] = response[i];
+    // The app reads S/PDIF Coax Replaces at connect; the unit keeps it across a
+    // driver restart, so this is where the driver learns it.
+    if (result == kIOReturnSuccess && command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2) {
+        const uint8_t before = __atomic_exchange_n(&ivars->namingCoaxReplace[value], outPayload[0],
+                                                   __ATOMIC_ACQ_REL);
+        if (before != outPayload[0]) ScheduleChannelNames(ivars, this);
+    }
     return result;
 }
 
@@ -5771,6 +5887,8 @@ kern_return_t SymphonyThunderbridge::RequestOpticalFormat(uint32_t board, uint32
         });
     }
     STLOG("RequestOpticalFormat: board=%u fmt=%u [coalesced]", b, fmt ? 1 : 0);
+    // Optical channel names follow the format (ADAT/SMUX or SPDIF Opt).
+    ScheduleChannelNames(ivars, this);
     return kIOReturnSuccess;
 }
 
