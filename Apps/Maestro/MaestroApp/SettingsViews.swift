@@ -287,11 +287,12 @@ struct DeviceSettingsView: View {
                 .unredacted()
 
                 Toggle("Automatically check for updates", isOn: $updates.automaticallyChecksForUpdates)
-                    .help("On by default. Turn this off to stop scheduled update checks; Maestro only connects when you choose Check for Updates.")
+                    .help(UpdateChannelCopy.automaticCheckHelp)
                     .unredacted()
                 Button("Check for Updates…", action: updates.checkForUpdates)
                     .disabled(!updates.canCheckForUpdates)
                     .unredacted()
+                UpdateChannelSettings()
                 Text("Updates download from the [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1). Installing an update may briefly interrupt audio and require an administrator password. Updates are never installed automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

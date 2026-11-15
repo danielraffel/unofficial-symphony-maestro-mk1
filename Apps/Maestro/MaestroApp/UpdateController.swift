@@ -35,6 +35,8 @@ final class UpdateController: ObservableObject {
 
     let installedVersion: String
     let publicKey: String?
+    /// The verified download used to go back to stable.
+    let reinstaller: StableReinstaller
 
     private let controller: SPUStandardUpdaterController
     /// Sparkle holds its delegate weakly; this keeps it alive.
@@ -47,6 +49,7 @@ final class UpdateController: ObservableObject {
         self.store = store
         installedVersion = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0.0.0"
         publicKey = bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
+        reinstaller = StableReinstaller(publicKey: publicKey)
         channelDelegate = UpdateChannelDelegate(store: store, installedVersion: installedVersion)
         controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: channelDelegate, userDriverDelegate: nil)
         automaticallyChecksForUpdates = false
@@ -198,8 +201,11 @@ final class UpdateController: ObservableObject {
         case done
         /// Installed version above the newest stable: ask (go-back dialog).
         case askToGoBack(FeedItem)
-        /// Saved; the feed could not be read or used.
-        case savedWithoutFeed(String)
+        /// Saved; the feed could not be downloaded (offline, server down).
+        case savedFeedUnreachable(String)
+        /// Saved; the feed was read but cannot be used to go back (unsigned,
+        /// no stable package, below the floor).
+        case savedRefused(String)
     }
 
     /// Choosing Stable (plan §5). Cancel in the go-back dialog leaves the
@@ -209,9 +215,13 @@ final class UpdateController: ObservableObject {
         let feed: FeedSnapshot
         do {
             feed = try await loadFeed()
+        } catch let error as FeedError {
+            setPreference(.stable)
+            if case .network = error { return .savedFeedUnreachable(error.description) }
+            return .savedRefused(error.description)
         } catch {
             setPreference(.stable)
-            return .savedWithoutFeed(String(describing: error))
+            return .savedFeedUnreachable(String(describing: error))
         }
         switch StableTarget.choose(snapshot: feed, installed: installedVersion, macOS: ProcessInfo.processInfo.operatingSystemVersion) {
         case .upToDate:
@@ -225,7 +235,7 @@ final class UpdateController: ObservableObject {
             return .askToGoBack(item)
         case .refused(let reason):
             setPreference(.stable)
-            return .savedWithoutFeed(reason.description)
+            return .savedRefused(reason.description)
         }
     }
 
