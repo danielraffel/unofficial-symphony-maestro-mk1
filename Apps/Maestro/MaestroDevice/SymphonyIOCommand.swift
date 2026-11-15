@@ -492,9 +492,19 @@ public enum SymphonyIOHeadphoneRouting {
     /// * IOBoard1 ch0-15 (dest 48-63) ← USB ch0-15 (192 + (dest - 48))
     ///
     /// On ThunderBridge the boot table is the dext's, not the proxy's
-    /// (`SymphonyThunderbridge.cpp` steps 19b-1/19b-1b): every IOBoard0 and
-    /// IOBoard1 channel n is fed directly from XLink RX n, DAC L/R included
-    /// (routing through Mixer0 went silent on hardware, see the 19b-1 note).
+    /// (`SymphonyThunderbridge.cpp` steps 19b-1/19b-1b), and the two slots
+    /// are not mirrored:
+    ///
+    /// * IOBoard0 ch0-15 (dest 32-47) ← XLink RX 0-15, DAC L/R included
+    ///   (routing through Mixer0 went silent on hardware, see the 19b-1 note)
+    /// * IOBoard1 ch0-15 (dest 48-63) ← XLink RX 16-31 (step 19b-1b)
+    ///
+    /// A Symphony I/O takes 32 channels on its XLink port and the legacy
+    /// daemon answers the same question for slot 2 with XLink 16 + n
+    /// (`og_source/maestrolink/Software/SymphonyIOPTHDRoutingController.cpp`
+    /// `GetRoutedToHWSource`: board 1 → `eSymphonyIORoutingSource_XLinkCh16`).
+    /// Dext builds 110 and earlier mirrored XLink 0-15 onto both slots, which
+    /// is where the old slot-2 value here came from.
     ///
     /// Returns nil for anything that is not a hardware output destination.
     public static func bootTableSource(forDestination destination: UInt8,
@@ -511,7 +521,11 @@ public enum SymphonyIOHeadphoneRouting {
         case (board0 &+ 2)...(board1 &- 1):
             return playback &+ (destination &- board0)
         case board1...lastBoard1:
-            return playback &+ (destination &- board1)
+            // USB: the proxy mirrors USB 1-16 onto slot 2. ThunderBridge: the
+            // dext feeds slot 2 from XLink 16-31.
+            return transport == .thunderbolt
+                ? playback &+ (destination &- board0)
+                : playback &+ (destination &- board1)
         default:
             return nil
         }
