@@ -39,6 +39,18 @@ public enum UpdateLinks {
     public static let latestStablePackage = URL(string: "https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg")!
 }
 
+extension UpdateLinks {
+    /// Where the go-back path may download from: HTTPS anywhere, or plain
+    /// HTTP to this Mac only (the rehearsal's local test feed).
+    public static func isAllowedDownload(_ url: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "https": return url.host != nil
+        case "http": return ["127.0.0.1", "localhost", "::1"].contains(url.host?.lowercased() ?? "")
+        default: return false
+        }
+    }
+}
+
 // MARK: - Versions
 
 /// A plain numeric `x.y.z` version (any number of components), compared

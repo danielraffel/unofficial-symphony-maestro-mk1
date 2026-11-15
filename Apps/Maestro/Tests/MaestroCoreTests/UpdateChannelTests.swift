@@ -391,6 +391,14 @@ length: 1661
         #expect(SignedFeed.verifiedContent(unsigned, publicKeyBase64: Self.sparkleSignedFeedPublicKey) == nil)
     }
 
+    @Test func goBackDownloadsOnlyOverHTTPSOrFromThisMac() {
+        #expect(UpdateLinks.isAllowedDownload(URL(string: "https://github.com/a/b.pkg")!))
+        #expect(UpdateLinks.isAllowedDownload(URL(string: "http://127.0.0.1:8765/0.8.40.pkg")!))
+        #expect(UpdateLinks.isAllowedDownload(URL(string: "http://localhost:8765/0.8.40.pkg")!))
+        #expect(!UpdateLinks.isAllowedDownload(URL(string: "http://example.com/0.8.40.pkg")!))
+        #expect(!UpdateLinks.isAllowedDownload(URL(string: "file:///tmp/0.8.40.pkg")!))
+    }
+
     // MARK: Installer assessment
 
     @Test func spctlAcceptsOnlyNotarizedPackagesFromTheTeam() {
