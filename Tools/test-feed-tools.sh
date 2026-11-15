@@ -345,6 +345,39 @@ if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F
     --local-base-url "http://example.com" >/dev/null 2>&1; then fail "accepted a non-local base URL"; fi
 ok "local feed: publish and promote without GitHub"
 
+# ── verify-sparkle-feed.sh ──────────────────────────────────────────────────
+V="$R/Tools/verify-sparkle-feed.sh"
+VF="http://127.0.0.1:$PORT/rehearsal/appcast.xml"
+cp "$F/base.xml" "$L/appcast.xml"
+/bin/rm -f "$L/0.9.0.pkg" "$L/0.9.0.notes.md"
+git -C "$R" checkout -q hotfix
+make_pkg 0.8.41 "$WORK/S41.pkg"
+"$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S41.pkg" --notes "$F/n-0.8.40.md" --feed "$L/appcast.xml" \
+    --local-base-url "http://127.0.0.1:$PORT/rehearsal" >/dev/null
+git -C "$R" checkout -q -
+"$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$L/appcast.xml" \
+    --local-base-url "http://127.0.0.1:$PORT/rehearsal" >/dev/null
+"$V" 0.8.41 "$VF" stable >/dev/null || fail "verify stable with a beta on top"
+"$V" 0.9.0 "$VF" beta >/dev/null || fail "verify beta"
+"$V" 0.9.0 "$VF" >/dev/null || fail "verify without a channel"
+if "$V" 0.9.0 "$VF" stable >/dev/null 2>&1; then fail "a beta verified as stable"; fi
+if "$V" 0.8.41 "$VF" beta >/dev/null 2>&1; then fail "a stable verified as beta"; fi
+if "$V" 0.8.39 "$VF" stable >/dev/null 2>&1; then fail "an old stable verified as the newest"; fi
+if "$V" 0.9.5 "$VF" >/dev/null 2>&1; then fail "a missing version verified"; fi
+ok "verify-sparkle-feed selects by version and checks the channel and the newest stable"
+
+cp "$L/0.9.0.pkg" "$WORK/keep.pkg"
+printf 'x' | dd of="$L/0.9.0.pkg" bs=1 seek=100 conv=notrunc 2>/dev/null
+if "$V" 0.9.0 "$VF" beta >/dev/null 2>&1; then fail "a changed package verified"; fi
+cp "$WORK/keep.pkg" "$L/0.9.0.pkg"
+cp "$L/appcast.xml" "$WORK/keep.xml"
+sed -i '' 's/Beta notes for testers/Beta notes for Testers/' "$L/appcast.xml"
+if "$V" 0.9.0 "$VF" beta >/dev/null 2>&1; then fail "an edited feed verified"; fi
+cp "$WORK/keep.xml" "$L/appcast.xml"
+if SPARKLE_PUBLIC_ED_KEY=AAAA "$V" 0.9.0 "$VF" beta >/dev/null 2>&1; then fail "a package with another app key verified"; fi
+"$V" 0.9.0 "$VF" beta >/dev/null || fail "control after restoring"
+ok "verify-sparkle-feed refuses a changed package, an edited feed and a key mismatch"
+
 [ "$(shasum -a 256 "$REPO_ROOT/appcast.xml" | cut -d' ' -f1)" = "$TRACKED_BEFORE" ] || fail "the tracked appcast.xml changed"
 ok "tracked appcast.xml untouched"
 
