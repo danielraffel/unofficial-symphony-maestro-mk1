@@ -2952,6 +2952,14 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     // waits up to 2 s for it (unverified on hardware).
     SetPort2Enabled(ivars, true);
     ProbeSecondPort(ivars, rate, "\"" kSymphonyPortSourceName64 "\" selected", kPort2ClockPollsOnSelect);
+    // The probe can take seconds. If a stop or power-down began meanwhile,
+    // touch nothing more; port 2 may stay enabled until the next Start() or
+    // the wake re-initialization, which both disable it again.
+    if (!XLinkTxAdmissible(ivars)) {
+        Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
+        STERR("Port 2 audio: refused — stop or power-down began while port 2 was looked at");
+        return false;
+    }
     if (!Port2FoundUnit(ivars)) {
         // Deliberate departure: the original kept reconfiguring, muted, while
         // port 2 had no clock (XLink.cpp:300-304). This driver refuses and
