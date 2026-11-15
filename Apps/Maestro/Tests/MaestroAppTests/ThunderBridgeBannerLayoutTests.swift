@@ -9,7 +9,7 @@ import MaestroCore
 ///
 /// Tester build 9005 with driver 9004 still serving drew a blank main window
 /// (sidebar, status bar and page empty; only the toolbar showed) whenever the
-/// "Finish the Maestro driver update" banner was up. The banner's message had
+/// "Unplug the ThunderBridge cable" banner was up. The banner's message had
 /// `.fixedSize(horizontal: false, vertical: true)`: when the split view asks
 /// for its minimum size it proposes a near-zero width, the long guidance then
 /// wraps one word per line, and the window's content needed about 3,600 pt of
@@ -54,7 +54,7 @@ struct ThunderBridgeBannerLayoutTests {
                     .frame(minWidth: 158, idealWidth: 158)
             } detail: {
                 VStack(spacing: 0) {
-                    ThunderBridgeActionBanner(banner: banner, onAction: {}, onDismiss: {}, onFinishUpdateNow: {})
+                    ThunderBridgeActionBanner(banner: banner, onAction: {}, onDismiss: {})
                     Text("Status").frame(maxWidth: .infinity)
                     Color.clear.frame(maxHeight: .infinity)
                 }
@@ -72,8 +72,8 @@ struct ThunderBridgeBannerLayoutTests {
 
     @Test func unfinishedUpdateBannerKeepsTheWindowsMinimumHeight() throws {
         let banner = try #require(unfinishedUpdateReport().thunderBridgeBanner)
-        #expect(banner.title == "Finish the Maestro driver update")
-        #expect(banner.offersFinishUpdateNow)
+        #expect(banner.title == "Unplug the ThunderBridge cable and plug it back in")
+        #expect(banner.secondaryMessage != nil)
         let (window, host) = window(with: banner)
         defer { window.close() }
         // 500 is the window's own minimum; the banner must not raise it.

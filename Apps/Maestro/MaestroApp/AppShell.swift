@@ -105,10 +105,7 @@ struct ContentView: View {
                             case .none: break
                             }
                         },
-                        onDismiss: { dismissedThunderBridgeBanner = bannerToken },
-                        // Only after the confirmation in the banner; Maestro
-                        // never retires the old driver by itself.
-                        onFinishUpdateNow: { appState.finishDriverUpdateNow() }
+                        onDismiss: { dismissedThunderBridgeBanner = bannerToken }
                     )
                 }
                 StatusBarView()
@@ -140,7 +137,7 @@ struct ContentView: View {
         }
         .task {
             // Keep the driver-update banner current after an activation
-            // (DriverHandover.swift). Never retires the old driver by itself.
+            // (DriverHandover.swift). Maestro never retires the old driver.
             appState.installDriverHandoverObserver()
             // What driver extension is registered. Read before the hardware work below,
             // which can take seconds, so the About box is never asked for a report it
@@ -229,9 +226,6 @@ struct ThunderBridgeActionBanner: View {
     let banner: ThunderBridgeBanner
     let onAction: () -> Void
     let onDismiss: () -> Void
-    /// Runs the hand-over. Called only from the confirmation's Finish Update button.
-    let onFinishUpdateNow: () -> Void
-    @State private var confirmingFinishUpdate = false
 
     private var actionTitle: String? {
         switch banner.action {
@@ -255,21 +249,29 @@ struct ThunderBridgeActionBanner: View {
                 Text(banner.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let secondary = banner.secondaryMessage {
+                    Text(secondary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 // No .fixedSize(vertical: true) here: the split view measures
                 // its minimum at a near-zero width, the message then wraps a
                 // word per line, and the window's content became taller than
                 // the window, which then drew blank (MaestroAppTests).
             }
             Spacer(minLength: 8)
-            if banner.offersFinishUpdateNow {
-                Button(ThunderBridgeBanner.finishUpdateNowTitle) { confirmingFinishUpdate = true }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
             if let actionTitle {
-                Button(actionTitle, action: onAction)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                // The unfinished-update banner's one instruction is the
+                // cable; the Settings route is a small link beside it.
+                if banner.secondaryMessage != nil {
+                    Button(actionTitle, action: onAction)
+                        .buttonStyle(.link)
+                        .controlSize(.small)
+                } else {
+                    Button(actionTitle, action: onAction)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
             }
             if banner.dismissible {
                 Button(action: onDismiss) {
@@ -284,12 +286,6 @@ struct ThunderBridgeActionBanner: View {
         .padding(.vertical, 8)
         .background(.yellow.opacity(0.14))
         .overlay(alignment: .bottom) { Rectangle().fill(.yellow.opacity(0.35)).frame(height: 1) }
-        .alert(ThunderBridgeBanner.finishUpdateNowConfirmationTitle, isPresented: $confirmingFinishUpdate) {
-            Button(ThunderBridgeBanner.finishUpdateNowCancelTitle, role: .cancel) {}
-            Button(ThunderBridgeBanner.finishUpdateNowConfirmTitle) { onFinishUpdateNow() }
-        } message: {
-            Text(ThunderBridgeBanner.finishUpdateNowConfirmationMessage)
-        }
     }
 }
 

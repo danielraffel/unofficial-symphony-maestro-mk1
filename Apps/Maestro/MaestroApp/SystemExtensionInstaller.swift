@@ -41,7 +41,7 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     /// submitted finishes with `.completed`. Separate from `onStatusChange`,
     /// which a view replaces with its own handler: AppState re-reads what is
     /// registered on every completion so the banner is current. It never
-    /// retires the old driver; only Finish Update Now does (DriverHandover.swift).
+    /// retires the old driver (DriverHandover.swift).
     public static let activationCompletedNotification =
         Notification.Name("com.danielraffel.maestro.driverActivationCompleted")
     /// Most recent activation outcome, retained so a view that appears after the
@@ -242,9 +242,7 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
         // keeps the PCI device: kernelmanagerd declines to terminate a dext
         // that is "being replaced" and leaves it until the next restart. The
         // device moves to the new copy on a replug, on turning the driver off
-        // and on in System Settings, on a restart, or when the user chooses
-        // Finish Update Now and the old copy retires (DriverHandover.swift,
-        // kSelectorRetireForUpgrade, dext 123+).
+        // and on in System Settings, or on a restart (DriverHandover.swift).
         // The request is not retried until the next hardware appearance, which
         // avoids the repeated-request (error 4) wedge.
         if registered[0].bundleVersion != bundled {
@@ -275,8 +273,8 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
             // to terminate the old copy while it holds the PCI device and defer
             // that to the next restart (logged 2026-11-14, 121 → 122). AppState
             // checks which build answers on the card and, if it is not the
-            // bundled one, the banner says so and offers Finish Update Now;
-            // nothing is retired without the user's confirmation.
+            // bundled one, the banner says to unplug the cable and plug it
+            // back in; nothing is retired by Maestro.
             log.notice("Driver extension activated")
             report(.activated)
             NotificationCenter.default.post(name: Self.activationCompletedNotification, object: self)
@@ -359,7 +357,7 @@ extension SystemExtensionInstaller {
     /// More than one entry comes back after an upgrade: kernelmanagerd will not terminate
     /// the outgoing version while it holds the PCI device, so it stays registered (and
     /// can keep serving the card) alongside the incoming one until a replug, turning the
-    /// driver off and on, a restart, or Finish Update Now (DriverHandover.swift). Only the
+    /// driver off and on, or a restart (DriverHandover.swift). Only the
     /// serving build says whether the device has moved; the panel says so rather than
     /// picking one and pretending it is the whole story.
     ///

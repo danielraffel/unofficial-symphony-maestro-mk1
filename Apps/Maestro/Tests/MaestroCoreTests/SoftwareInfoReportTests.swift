@@ -22,9 +22,7 @@ struct SoftwareInfoReportTests {
         dextAwaitingReboot: Bool = false,
         thunderBridgePresent: Bool = true,
         pciDeviceIdentifier: String? = "pci19c2,2200",
-        servingDextBuild: ServingDextBuild? = nil,
-        driverHandover: DriverHandover = .idle,
-        driverHandoverAttempted: Bool = false
+        servingDextBuild: ServingDextBuild? = nil
     ) -> SoftwareInfoReport {
         SoftwareInfoReport(
             appVersion: "0.8.4",
@@ -43,9 +41,7 @@ struct SoftwareInfoReportTests {
             dextAwaitingReboot: dextAwaitingReboot,
             thunderBridgePresent: thunderBridgePresent,
             pciDeviceIdentifier: pciDeviceIdentifier,
-            servingDextBuild: servingDextBuild,
-            driverHandover: driverHandover,
-            driverHandoverAttempted: driverHandoverAttempted
+            servingDextBuild: servingDextBuild
         )
     }
 
@@ -278,10 +274,7 @@ struct SoftwareInfoReportTests {
         #expect(r.dextNotice?.contains("(a build before 123)") == true)
         #expect(r.clipboardText.contains("Serving driver extension: a build before 123"))
         #expect(r.shouldShowThunderBridgeBanner)
-        #expect(r.thunderBridgeBanner?.message == r.dextNotice)
-        // A driver this old has no retire selector: guidance only.
-        #expect(!r.canFinishDriverUpdateNow)
-        #expect(r.thunderBridgeBanner?.offersFinishUpdateNow == false)
+        #expect(r.thunderBridgeBanner?.message == ThunderBridgeBanner.unfinishedUpdateMessage)
     }
 
     @Test func servingBuildThatDiffersIsNamed() {
@@ -299,13 +292,10 @@ struct SoftwareInfoReportTests {
 
     // MARK: - Unfinished update (2026-11-14: 122 registered and enabled, 121 still on the card)
 
-    private func loggedUpgrade(serving: ServingDextBuild? = .build(123),
-                               handover: DriverHandover = .idle,
-                               attempted: Bool = false) -> SoftwareInfoReport {
+    private func loggedUpgrade(serving: ServingDextBuild? = .build(123)) -> SoftwareInfoReport {
         report(installedDextVersion: "0.10.18 (124)", registeredDextCount: 2,
                bundledDextBuild: "124", installedDextBuild: "124",
-               servingDextBuild: serving, driverHandover: handover,
-               driverHandoverAttempted: attempted)
+               servingDextBuild: serving)
     }
 
     @Test func twoCopiesWithAnotherBuildServingIsNeverCleanup() {
@@ -323,8 +313,17 @@ struct SoftwareInfoReportTests {
     @Test func unfinishedUpdateBannerIsPersistentAndMatchesDeviceInfo() throws {
         let r = loggedUpgrade()
         let banner = try #require(r.thunderBridgeBanner)
-        #expect(banner.title == "Finish the Maestro driver update")
-        #expect(banner.message == r.dextNotice)
+        #expect(banner.title == "Unplug the ThunderBridge cable and plug it back in")
+        #expect(banner.message == "This finishes the Maestro driver update. Audio stops for a few seconds.")
+        #expect(banner.secondaryMessage
+                == "Other ways: turn the Maestro driver off and on in System Settings, or restart your Mac.")
+        // Build numbers live in Device Info, not the banner.
+        for text in [banner.title, banner.message, banner.secondaryMessage ?? ""] {
+            #expect(!text.contains("build"))
+            #expect(!text.contains("123"))
+            #expect(!text.contains("124"))
+        }
+        #expect(r.dextNotice?.contains("previous Maestro driver (build 123)") == true)
         #expect(banner.action == .openDriverSettings)
         #expect(!banner.dismissible)
         #expect(!banner.inProgress)
@@ -350,107 +349,21 @@ struct SoftwareInfoReportTests {
         #expect(done.thunderBridgeBanner == nil)
     }
 
-    @Test func finishingStateIsBriefAndHasNoAction() throws {
-        // The connection is closed during the hand-over, so nothing is served.
-        let r = loggedUpgrade(serving: nil, handover: .finishing)
-        let banner = try #require(r.thunderBridgeBanner)
-        #expect(banner.title == "Finishing the driver update…")
-        #expect(banner.inProgress)
-        #expect(banner.action == .none)
-        #expect(!banner.dismissible)
-        #expect(r.dextStatusLine == "Finishing the driver update…")
-        #expect(r.dextLine == "0.10.18 (124) installed — Finishing the driver update…")
-        #expect(r.dextNotice == nil)
-    }
-
-    /// Finish Update Now did not bring the card back on the bundled build in
-    /// time and nothing answers: say so plainly, then the other routes.
-    @Test func timedOutHandoverSaysTheSymphonyDidNotComeBack() throws {
-        let r = loggedUpgrade(serving: nil, handover: .timedOut)
-        #expect(r.driverUpdateUnfinished)
-        #expect(!r.dextCleanupPending)
-        let banner = try #require(r.thunderBridgeBanner)
-        #expect(banner.title == "Finish the Maestro driver update")
-        #expect(!banner.dismissible)
-        #expect(banner.message == "The Symphony did not come back. Unplug and reconnect the ThunderBridge cable. "
-                + "If that doesn't help, turn the Maestro driver off and on "
-                + "in System Settings › General › Login Items & Extensions › Driver Extensions, "
-                + "or restart your Mac.")
-        #expect(banner.message == SoftwareInfoReport.handoverTimedOut)
-        // The other routes stay: the Driver Settings button, no second try.
-        #expect(banner.action == .openDriverSettings)
-        #expect(!banner.offersFinishUpdateNow)
-        #expect(r.dextNotice == banner.message)
-        #expect(r.dextStatusLine == "Driver update not finished")
-        // The old copy came back instead: the Symphony is back, so the usual
-        // unfinished text names it, and the attempt is not offered again.
-        let back = loggedUpgrade(serving: .build(123), handover: .timedOut, attempted: true)
-        #expect(back.thunderBridgeBanner?.message.contains("(build 123)") == true)
-        #expect(back.thunderBridgeBanner?.offersFinishUpdateNow == false)
-    }
-
-    /// The button is offered only in the unfinished-update banner, when the
-    /// serving driver reports a build that differs, is new enough to retire,
-    /// and the bundled copy is installed and enabled.
-    @Test func finishUpdateNowIsOfferedOnlyWhenTheServingDriverCanRetire() throws {
-        let r = loggedUpgrade()
-        #expect(r.canFinishDriverUpdateNow)
-        let banner = try #require(r.thunderBridgeBanner)
-        #expect(banner.title == "Finish the Maestro driver update")
-        #expect(banner.offersFinishUpdateNow)
-        // The existing guidance and Open Driver Settings stay alongside it.
-        #expect(banner.message == r.driverUpdateGuidance)
-        #expect(banner.action == .openDriverSettings)
-        // Not while a hand-over is under way or after one timed out.
-        #expect(!loggedUpgrade(serving: nil, handover: .finishing).canFinishDriverUpdateNow)
-        #expect(loggedUpgrade(serving: nil, handover: .finishing).thunderBridgeBanner?.offersFinishUpdateNow == false)
-        #expect(!loggedUpgrade(handover: .finishing).canFinishDriverUpdateNow)
-        #expect(!loggedUpgrade(handover: .timedOut).canFinishDriverUpdateNow)
-        // One attempt per serving → bundled pair per session.
-        let tried = loggedUpgrade(attempted: true)
-        #expect(!tried.canFinishDriverUpdateNow)
-        #expect(tried.thunderBridgeBanner?.offersFinishUpdateNow == false)
-        #expect(tried.thunderBridgeBanner?.message == r.driverUpdateGuidance)
-        // Not when the serving build matches, cannot report, is unstamped,
-        // predates the retire request, or is unknown.
-        for serving: ServingDextBuild? in [.build(124), .olderThanBuildReporting, .build(0), .build(122), nil] {
-            #expect(!loggedUpgrade(serving: serving).canFinishDriverUpdateNow)
-            #expect(loggedUpgrade(serving: serving).thunderBridgeBanner?.offersFinishUpdateNow != true)
+    /// No "Finish Update Now", no in-progress or timed-out state: the one
+    /// instruction is the cable, in every unfinished-update variant.
+    @Test func noFinishUpdateNowIsOfferedAnywhere() throws {
+        for serving: ServingDextBuild? in [.build(123), .build(9005), .olderThanBuildReporting, .build(122)] {
+            let banner = try #require(loggedUpgrade(serving: serving).thunderBridgeBanner)
+            #expect(banner.title == ThunderBridgeBanner.unfinishedUpdateTitle)
+            #expect(!banner.inProgress)
+            #expect(!banner.dismissible)
+            #expect(banner.action == .openDriverSettings)
+            let all = [banner.title, banner.message, banner.secondaryMessage ?? ""].joined(separator: " ")
+            #expect(!all.contains("Finish Update"))
+            #expect(!all.contains("did not come back"))
         }
-        // A newer driver serving (an experimental build) can retire too.
-        #expect(loggedUpgrade(serving: .build(9005)).canFinishDriverUpdateNow)
-        // Not with one copy registered (nothing for the device to move to).
-        let single = report(installedDextVersion: "0.10.18 (124)", bundledDextBuild: "124",
-                            installedDextBuild: "124", servingDextBuild: .build(123))
-        #expect(!single.canFinishDriverUpdateNow)
-        // Not before the bundled copy is the installed, enabled one.
-        let notYet = report(registeredDextCount: 2, bundledDextBuild: "124", installedDextBuild: "123",
-                            servingDextBuild: .build(123))
-        #expect(!notYet.canFinishDriverUpdateNow)
-        #expect(notYet.thunderBridgeBanner?.offersFinishUpdateNow == false)
-        let waiting = report(registeredDextCount: 2, bundledDextBuild: "124", installedDextBuild: "124",
-                             dextEnabled: false, dextAwaitingApproval: true, servingDextBuild: .build(123))
-        #expect(!waiting.canFinishDriverUpdateNow)
-        let disabled = report(registeredDextCount: 2, bundledDextBuild: "124", installedDextBuild: "124",
-                              dextEnabled: false, servingDextBuild: .build(123))
-        #expect(!disabled.canFinishDriverUpdateNow)
-        // No other banner offers it.
-        let approval = try #require(report(dextEnabled: false, dextAwaitingApproval: true).thunderBridgeBanner)
-        #expect(!approval.offersFinishUpdateNow)
-    }
-
-    /// The button never acts by itself: it asks first, in these words.
-    @Test func finishUpdateNowAsksForConfirmation() {
-        #expect(ThunderBridgeBanner.finishUpdateNowTitle == "Finish Update Now")
-        #expect(ThunderBridgeBanner.finishUpdateNowConfirmationMessage
-                == "Audio from the Symphony stops for a few seconds while the new driver takes over. "
-                + "If the Symphony doesn't come back, unplug and reconnect the ThunderBridge cable.")
-        #expect(ThunderBridgeBanner.finishUpdateNowCancelTitle == "Cancel")
-        #expect(ThunderBridgeBanner.finishUpdateNowConfirmTitle == "Finish Update")
-    }
-
-    @Test func handoverKeyNamesThePair() {
-        #expect(SoftwareInfoReport.driverHandoverKey(serving: 123, bundled: 124) == "123->124")
+        // Not asked: no claim, so no unfinished-update banner.
+        #expect(loggedUpgrade(serving: nil).thunderBridgeBanner == nil)
     }
 
     @Test func otherBannersKeepTheirWordingAndCanBeDismissed() throws {

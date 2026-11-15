@@ -42,7 +42,6 @@ extension AppState {
             if (self.device as? ThunderboltDeviceConnection) === tb, self.servingDextBuild != build {
                 self.servingDextBuild = build
             }
-            self.considerDriverHandover()
         }
     }
 
@@ -87,11 +86,7 @@ extension AppState {
             dextAwaitingReboot: primary?.isAwaitingReboot ?? false,
             thunderBridgePresent: SystemExtensionInstaller.shared.isThunderBridgePresent(),
             pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier(),
-            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil,
-            driverHandover: driverHandover,
-            driverHandoverAttempted: driverHandoverAttempted(
-                serving: transportType == .thunderbolt ? servingDextBuild : nil,
-                bundled: SystemExtensionInstaller.shared.bundledDextBuildVersion)
+            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil
         )
     }
 
