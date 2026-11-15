@@ -448,6 +448,20 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// port. Nil from a driver without that selector (every released one).
     public func secondPortState() -> SecondPortState? { dextClient.readPort2State() }
 
+    /// EXPERIMENT (64 channels, stage 2): the port selector a two-port driver
+    /// publishes on the Core Audio device. Nil from every released driver.
+    public func portSelectionID() -> UInt32? { PortSelectionProperty.read(deviceID: audioDeviceID) }
+
+    /// Ask the device for a port selection, as Audio MIDI Setup does.
+    public func setPortSelection(_ selection: PortSelection) throws {
+        try PortSelectionProperty.write(deviceID: audioDeviceID, selection: selection)
+    }
+
+    /// Follow the port selector, whoever changes it.
+    public func observePortSelection() throws -> PortSelectionObservation {
+        try PortSelectionObservation(deviceID: audioDeviceID)
+    }
+
     /// One read of the unit's front panel state (vendor read `0x28`), through
     /// the driver's general vendor read. Nil when the unit does not answer or
     /// the reply is not a real reading. Runs off the caller's thread: the driver

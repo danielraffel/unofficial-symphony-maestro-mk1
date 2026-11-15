@@ -1079,6 +1079,24 @@ struct SystemSetupView: View {
                     // EXPERIMENT (64 channels): only with a driver that reports
                     // the two-port experiment on.
                     if let port2 = appState.secondPortState {
+                        // Stage 2: the same selector Audio MIDI Setup shows as
+                        // "Source", with the same two names. Shown only when
+                        // the device publishes it.
+                        if let selection = appState.portSelection.selection {
+                            Picker("Ports", selection: Binding(
+                                get: { appState.portSelection.pending ?? selection },
+                                set: { appState.choosePortSelection($0) })) {
+                                ForEach(PortSelection.allCases) { choice in
+                                    Text(choice.name).tag(choice)
+                                }
+                            }
+                            .help("The same setting as Source in Audio MIDI Setup. It also appears in Sound settings.")
+                            if let notice = appState.portSelection.notice {
+                                Text(notice)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         ForEach(Array(port2.deviceInfoRows.enumerated()), id: \.offset) { _, row in
                             LabeledContent(row.label, value: row.value)
                         }

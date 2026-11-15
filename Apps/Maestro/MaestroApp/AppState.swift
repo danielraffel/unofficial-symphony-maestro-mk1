@@ -479,6 +479,9 @@ final class AppState {
     func stopThunderboltHealthCheck() {
         thunderboltHealthTask?.cancel()
         thunderboltHealthTask = nil
+        // EXPERIMENT (64 channels): the port selector belongs to the device
+        // that is going away. A no-op unless a two-port driver published one.
+        stopPortSelectionObservation()
     }
 
     @MainActor
@@ -571,11 +574,87 @@ final class AppState {
     /// is shown or copied in those cases.
     var secondPortState: SecondPortState?
 
+    /// EXPERIMENT (64 channels, stage 2): the port selection ("Port 1: 32ch" /
+    /// "Port 1-2: 64ch") as the Core Audio device reports it. Empty (nothing
+    /// shown) unless a two-port driver publishes the selector.
+    var portSelection = PortSelectionModel()
+    private var portSelectionTask: Task<Void, Never>?
+
     /// Ask the driver again. It costs no bus access, and a chain switched on
     /// after the Mac is only found by the driver's later probe.
     func refreshSecondPortState() {
         let shown = currentSecondPortState()
         if shown != secondPortState { secondPortState = shown }
+    }
+
+    /// Follow the device's port selector for as long as this device is
+    /// connected: a change made in Audio MIDI Setup, in Sound settings, here, or
+    /// by the driver itself all arrive through the same Core Audio listener.
+    /// Does nothing unless the driver reports the two-port experiment on.
+    @MainActor
+    func startPortSelectionObservation() {
+        portSelectionTask?.cancel()
+        portSelectionTask = nil
+        guard let connection = device as? ThunderboltDeviceConnection,
+              currentSecondPortState() != nil,
+              connection.portSelectionID() != nil else {
+            if portSelection != PortSelectionModel() { portSelection = PortSelectionModel() }
+            return
+        }
+        portSelectionTask = Task { @MainActor [weak self] in
+            do {
+                let observation = try connection.observePortSelection()
+                defer { observation.stop() }
+                for await id in observation.selections {
+                    guard !Task.isCancelled, let self else { return }
+                    self.applyPortSelection(id: id)
+                    // The driver performs the switch a moment after the selector
+                    // changes; its verdict (running, or refused and why) is
+                    // ready shortly afterwards.
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled else { return }
+                    self.applyPortSelection(id: connection.portSelectionID())
+                }
+            } catch {
+                print("[Maestro] Port selection observation failed: \(error)")
+            }
+        }
+    }
+
+    @MainActor
+    func stopPortSelectionObservation() {
+        portSelectionTask?.cancel()
+        portSelectionTask = nil
+        if portSelection != PortSelectionModel() { portSelection = PortSelectionModel() }
+    }
+
+    @MainActor
+    private func applyPortSelection(id: UInt32?) {
+        refreshSecondPortState()
+        var model = portSelection
+        model.deviceReported(dataSourceID: id, state: secondPortState)
+        if model != portSelection {
+            portSelection = model
+            print("[Maestro] Port selection: \(model.selection?.name ?? "none")"
+                  + (model.notice.map { " (\($0))" } ?? ""))
+        }
+    }
+
+    /// The user picked an entry in Maestro: write it to the device, the way
+    /// Audio MIDI Setup does. What is shown changes when the device reports it.
+    @MainActor
+    func choosePortSelection(_ choice: PortSelection) {
+        guard let connection = device as? ThunderboltDeviceConnection else { return }
+        var model = portSelection
+        guard model.userChose(choice) != nil else { return }
+        portSelection = model
+        do {
+            try connection.setPortSelection(choice)
+        } catch {
+            print("[Maestro] Port selection write failed: \(error)")
+            model.writeFailed()
+            portSelection = model
+        }
     }
 
     /// The driver's answer right now, without storing it. Nil unless the
@@ -1237,6 +1316,7 @@ final class AppState {
         if let secondPortState {
             print("[Maestro] EXPERIMENT two-port driver: \(secondPortState.rawText)")
         }
+        startPortSelectionObservation()
         // ThunderBridge's dext returns a validity bit alongside each raw
         // OptionBoardType value, so a valid raw zero means the slot was
         // measured empty. USB's proxy cannot make that distinction and keeps

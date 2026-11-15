@@ -1,9 +1,10 @@
-/// EXPERIMENT (64 channels, stage 1): what the ThunderBridge driver found on
-/// its second XLink port.
+/// EXPERIMENT (64 channels): what the ThunderBridge driver found on its second
+/// XLink port, and (stage 2) whether port 2 is carrying audio.
 ///
 /// The driver uses one port unless it was packaged with `SymphonyPortCount=2`.
 /// With that it switches port 2 on and asks the units cabled to it what they
-/// are; port 2 carries no audio. It publishes the result through user-client
+/// are; port 2 carries audio only while "Port 1-2: 64ch" is selected (see
+/// `PortSelection`). It publishes the result through user-client
 /// selector 6 as `SymphonyPort2StateOutput`, sixteen 32-bit words
 /// (`Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h`). macOS does not
 /// keep this driver's log, so this is the only way a tester's findings reach us:
@@ -30,6 +31,18 @@ public struct SecondPortState: Sendable, Equatable {
     public static let unitXtdOK: UInt32 = 0x0002_0000
     public static let unitAddressed: UInt32 = 0x0004_0000
 
+    // SymphonyPort2StateOutput.audio (kSymphonyPort2Audio*), stage 2. Zero from
+    // a stage-1 driver, which had these two words reserved.
+    public static let audioCapable: UInt32 = 0x01
+    public static let audioActiveFlag: UInt32 = 0x02
+    public static let audioPhaseAligned: UInt32 = 0x04
+    public static let audioPhaseFailed: UInt32 = 0x08
+    public static let audioRefusedFlag: UInt32 = 0x10
+    public static let audioFellBackFlag: UInt32 = 0x20
+    public static let audioPublished64: UInt32 = 0x40
+    // SymphonyPort2StateOutput.phase (kSymphonyPort2Phase*).
+    public static let phaseValid: UInt32 = 0x8000_0000
+
     public let portCount: UInt32
     public let flags: UInt32
     /// XLink 2 status, XLink clocking and GCSR2 registers at the last probe.
@@ -44,10 +57,15 @@ public struct SecondPortState: Sendable, Equatable {
     public let rateHz: UInt32
     /// Sample rate changes the driver has sent to port 2 since it started.
     public let rateChanges: UInt32
+    /// Stage 2: the audio state word and the last phase alignment. Both zero
+    /// from a driver that only identifies port 2.
+    public let audio: UInt32
+    public let phase: UInt32
 
     public init(portCount: UInt32, flags: UInt32 = 0, xlink2Status: UInt32 = 0,
                 xlinkClocking: UInt32 = 0, gcsr2: UInt32 = 0, units: [UInt32] = [],
-                probeCount: UInt32 = 0, rateHz: UInt32 = 0, rateChanges: UInt32 = 0) {
+                probeCount: UInt32 = 0, rateHz: UInt32 = 0, rateChanges: UInt32 = 0,
+                audio: UInt32 = 0, phase: UInt32 = 0) {
         self.portCount = portCount
         self.flags = flags
         self.xlink2Status = xlink2Status
@@ -57,6 +75,8 @@ public struct SecondPortState: Sendable, Equatable {
         self.probeCount = probeCount
         self.rateHz = rateHz
         self.rateChanges = rateChanges
+        self.audio = audio
+        self.phase = phase
     }
 
     /// Decode the driver's sixteen words. Nil when the size is wrong or the
@@ -67,7 +87,8 @@ public struct SecondPortState: Sendable, Equatable {
         return SecondPortState(portCount: words[1], flags: words[2], xlink2Status: words[3],
                                xlinkClocking: words[4], gcsr2: words[5],
                                units: Array(words[7..<(7 + count)]), probeCount: words[11],
-                               rateHz: words[12], rateChanges: words[13])
+                               rateHz: words[12], rateChanges: words[13],
+                               audio: words[14], phase: words[15])
     }
 
     /// True only for a driver packaged with the two-port experiment switched on.
@@ -105,9 +126,74 @@ public struct SecondPortState: Sendable, Equatable {
         }
     }
 
+    // MARK: Stage 2: audio on port 2
+
+    /// The driver can run both ports (it has stage 2 and its port-2 buffers).
+    public var supportsPort2Audio: Bool { audio & Self.audioCapable != 0 }
+    /// The card is running both ports now.
+    public var audioActive: Bool { audio & Self.audioActiveFlag != 0 }
+    /// Core Audio's streams are 64 channels wide now.
+    public var audioPublished64: Bool { audio & Self.audioPublished64 != 0 }
+    /// The last request for 64 channels was refused.
+    public var audioRefused: Bool { audio & Self.audioRefusedFlag != 0 }
+    /// The driver went from 64 back to 32 channels by itself.
+    public var audioFellBack: Bool { audio & Self.audioFellBackFlag != 0 }
+    /// The driver's reason code (kSymphonyPort2Reason*), 0 for none.
+    public var audioReason: UInt32 { (audio >> 8) & 0xFF }
+    /// Times the card has switched between 32 and 64 since the driver started.
+    public var audioModeChanges: UInt32 { audio >> 16 }
+
+    /// A reason code in words. The codes are `kSymphonyPort2Reason*` in
+    /// `SymphonyThunderbridgeShared.h`.
+    public static func reasonText(_ code: UInt32) -> String {
+        switch code {
+        case 1: return "there is no unit with its link up on port 2"
+        case 2: return "the driver could not set up port 2's audio buffers"
+        case 3: return "port 2 did not lock at the current sample rate"
+        case 4: return "the card did not accept port 2's buffer addresses"
+        case 5: return "port 2's unit clock went away"
+        case 6: return "the card was reset (after sleep); select 64 channels again"
+        case 7: return "port 2 did not follow a sample rate change"
+        case 8: return "the card could not be reached, or it is stopped after a failed sample rate change"
+        default: return "reason \(code)"
+        }
+    }
+
+    /// Why 64 channels are not running although they were asked for or were
+    /// running before. Nil when they are running, or were never asked for.
+    public var audioProblemText: String? {
+        guard !audioActive else { return nil }
+        if audioFellBack { return "Went back to 32 channels: " + Self.reasonText(audioReason) + "." }
+        if audioRefused { return "64 channels refused: " + Self.reasonText(audioReason) + "." }
+        return nil
+    }
+
+    public var audioText: String {
+        if audioActive {
+            return "On: 64 channels, 33-64 are port 2"
+                + (audioPublished64 ? "" : " (Core Audio has not switched yet)")
+        }
+        return audioProblemText.map { "Off. " + $0 } ?? "Off: 32 channels, port 1 only"
+    }
+
+    /// The last phase alignment, nil until one has run.
+    public var phaseText: String? {
+        guard phase & Self.phaseValid != 0 else { return nil }
+        let units = (phase >> 8) & 0xFF
+        let read = "\(units) unit" + (units == 1 ? "" : "s") + " read"
+        if audio & Self.audioPhaseFailed != 0 {
+            return "Not aligned (a unit did not answer, or the card was busy); " + read
+        }
+        return "Aligned, jam " + Self.hex(phase & 0xFF, digits: 2) + "; " + read
+    }
+
     /// Shown in Device Info whenever the driver reports the experiment on.
     public static let experimentLabel = "Experimental two-port driver"
+    /// A driver that only identifies port 2 (stage 1).
     public static let experimentValue = "On. Port 2 is identified only and carries no audio."
+    /// A driver that can also run port 2 (stage 2).
+    public static let experimentValueWithAudio =
+        "On. Port 2 carries audio when \"Port 1-2: 64ch\" is selected."
 
     public var linkText: String {
         guard probed else { return "Not looked at yet" }
@@ -157,10 +243,15 @@ public struct SecondPortState: Sendable, Equatable {
     public var deviceInfoRows: [(label: String, value: String)] {
         guard experimentOn else { return [] }
         var rows: [(label: String, value: String)] = [
-            (Self.experimentLabel, Self.experimentValue),
-            ("Port 2 Link", linkText),
-            ("Port 2 Clock", clockText),
+            (Self.experimentLabel, audio == 0 ? Self.experimentValue : Self.experimentValueWithAudio),
         ]
+        // Stage 2 rows only from a driver that reports stage 2.
+        if audio != 0 {
+            rows.append(("Port 2 Audio", audioText))
+            if let phaseText { rows.append(("Port 2 Phase", phaseText)) }
+        }
+        rows.append(("Port 2 Link", linkText))
+        rows.append(("Port 2 Clock", clockText))
         if let rateChangeText { rows.append(("Port 2 Rate Change", rateChangeText)) }
         if units.isEmpty {
             rows.append(("Port 2 Units", probed ? "None found" : "Unknown"))
@@ -178,6 +269,7 @@ public struct SecondPortState: Sendable, Equatable {
             + "xlinkClocking=\(Self.hex(xlinkClocking)) gcsr2=\(Self.hex(gcsr2)) "
             + "units=[" + units.map { Self.hex($0) }.joined(separator: ", ") + "] probes=\(probeCount)"
             + (rateChanges > 0 ? " rate=\(rateHz) rateChanges=\(rateChanges)" : "")
+            + (audio != 0 ? " audio=\(Self.hex(audio)) phase=\(Self.hex(phase))" : "")
     }
 
     /// The lines added to the copied device details. Empty unless the
