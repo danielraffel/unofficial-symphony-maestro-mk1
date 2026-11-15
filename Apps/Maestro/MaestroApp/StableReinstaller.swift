@@ -67,6 +67,9 @@ final class StableReinstaller: ObservableObject {
 
     func start(item: FeedItem) {
         guard !isBusy else { return }
+        // Busy at once, before the task runs: the progress sheet treats idle
+        // as "cancelled" and would close itself.
+        phase = .downloading(version: item.displayVersion, fraction: nil)
         task = Task { await run(item: item) }
     }
 

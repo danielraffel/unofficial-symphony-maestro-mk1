@@ -399,6 +399,38 @@ length: 1661
         #expect(!UpdateLinks.isAllowedDownload(URL(string: "file:///tmp/0.8.40.pkg")!))
     }
 
+    // MARK: Choosing Stable and refreshing Preferences
+
+    /// Every outcome of choosing Stable, and whether Stable is saved at once.
+    @Test func choosingStablePlans() {
+        let feed = Self.feed(Self.item("0.8.40"), Self.item("0.9.0", beta: true))
+        func plan(_ installed: String, _ snapshot: FeedSnapshot = feed) -> StableChoicePlan {
+            StableChoicePlan.plan(for: StableTarget.choose(snapshot: snapshot, installed: installed, macOS: Self.tahoe))
+        }
+        #expect(plan("0.8.40") == .saveStable)
+        #expect(plan("0.8.39") == .saveStableAndCheck)
+        #expect(plan("0.9.0") == .askToGoBack(Self.item("0.8.40")))
+        #expect(plan("0.9.0", Self.feed(Self.item("0.8.39"), Self.item("0.9.0", beta: true)))
+                == .saveStableRefused(StableRefusal.belowFloor(version: "0.8.39", floor: "0.8.40").description))
+        #expect(plan("0.9.0", Self.feed(Self.item("0.9.0", beta: true))) == .saveStableRefused(StableRefusal.noStableItem.description))
+        #expect(StableChoicePlan.plan(for: FeedReadError.network("offline")) == .saveStableOffline)
+        #expect(StableChoicePlan.plan(for: FeedReadError.unsigned) == .saveStableRefused(FeedReadError.unsigned.description))
+        #expect(StableChoicePlan.plan(for: FeedReadError.parse("bad")) == .saveStableRefused("bad"))
+        #expect(!StableChoicePlan.askToGoBack(Self.item("0.8.40")).savesStable)
+        for saved in [StableChoicePlan.saveStable, .saveStableAndCheck, .saveStableOffline, .saveStableRefused("x")] {
+            #expect(saved.savesStable)
+        }
+    }
+
+    @Test func preferencesReadTheFeedOnlyWithScheduledChecksAndNotTooOften() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        #expect(!FeedRefreshPolicy.shouldRefreshOnPreferences(automaticChecks: false, lastRead: nil, now: now))
+        #expect(!FeedRefreshPolicy.shouldRefreshOnPreferences(automaticChecks: false, lastRead: now.addingTimeInterval(-3600), now: now))
+        #expect(FeedRefreshPolicy.shouldRefreshOnPreferences(automaticChecks: true, lastRead: nil, now: now))
+        #expect(!FeedRefreshPolicy.shouldRefreshOnPreferences(automaticChecks: true, lastRead: now.addingTimeInterval(-599), now: now))
+        #expect(FeedRefreshPolicy.shouldRefreshOnPreferences(automaticChecks: true, lastRead: now.addingTimeInterval(-600), now: now))
+    }
+
     // MARK: Installer assessment
 
     @Test func spctlAcceptsOnlyNotarizedPackagesFromTheTeam() {

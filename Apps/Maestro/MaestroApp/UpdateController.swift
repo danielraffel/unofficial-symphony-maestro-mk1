@@ -125,23 +125,7 @@ final class UpdateController: ObservableObject {
 
     // MARK: Maestro's own feed read
 
-    enum FeedError: Error, CustomStringConvertible {
-        case noFeedURL
-        case noPublicKey
-        case network(String)
-        case unsigned
-        case parse(String)
-
-        var description: String {
-            switch self {
-            case .noFeedURL: "no update feed is configured"
-            case .noPublicKey: "this copy of Maestro has no update key"
-            case .network(let detail): "the update feed could not be downloaded (\(detail))"
-            case .unsigned: "the update feed is not signed with Maestro's key"
-            case .parse(let detail): detail
-            }
-        }
-    }
+    typealias FeedError = FeedReadError
 
     /// Fetches the feed Sparkle uses (so a test-feed override applies),
     /// verifies its signature with the app's `SUPublicEDKey`, and applies the
@@ -180,8 +164,8 @@ final class UpdateController: ObservableObject {
     /// Failures are silent.
     func refreshForPreferencesIfAllowed() {
         refreshChannelState()
-        guard automaticallyChecksForUpdates else { return }
-        if let lastFeedRead, Date().timeIntervalSince(lastFeedRead) < 600 { return }
+        guard FeedRefreshPolicy.shouldRefreshOnPreferences(
+            automaticChecks: automaticallyChecksForUpdates, lastRead: lastFeedRead, now: Date()) else { return }
         Task { try? await self.loadFeed() }
     }
 
@@ -196,47 +180,23 @@ final class UpdateController: ObservableObject {
         checkForUpdates()
     }
 
-    enum StableChoice {
-        /// Saved; nothing more to show.
-        case done
-        /// Installed version above the newest stable: ask (go-back dialog).
-        case askToGoBack(FeedItem)
-        /// Saved; the feed could not be downloaded (offline, server down).
-        case savedFeedUnreachable(String)
-        /// Saved; the feed was read but cannot be used to go back (unsigned,
-        /// no stable package, below the floor).
-        case savedRefused(String)
-    }
-
     /// Choosing Stable (plan §5). Cancel in the go-back dialog leaves the
     /// preference as it was, so nothing is saved for `.askToGoBack`.
-    func chooseStable() async -> StableChoice {
-        guard !isSessionInProgress else { return .done }
-        let feed: FeedSnapshot
+    func chooseStable() async -> StableChoicePlan {
+        guard !isSessionInProgress else { return .saveStable }
+        let plan: StableChoicePlan
         do {
-            feed = try await loadFeed()
-        } catch let error as FeedError {
-            setPreference(.stable)
-            if case .network = error { return .savedFeedUnreachable(error.description) }
-            return .savedRefused(error.description)
+            let feed = try await loadFeed()
+            plan = StableChoicePlan.plan(for: StableTarget.choose(
+                snapshot: feed, installed: installedVersion, macOS: ProcessInfo.processInfo.operatingSystemVersion))
+        } catch let error as FeedReadError {
+            plan = StableChoicePlan.plan(for: error)
         } catch {
-            setPreference(.stable)
-            return .savedFeedUnreachable(String(describing: error))
+            plan = .saveStableOffline
         }
-        switch StableTarget.choose(snapshot: feed, installed: installedVersion, macOS: ProcessInfo.processInfo.operatingSystemVersion) {
-        case .upToDate:
-            setPreference(.stable)
-            return .done
-        case .sparkleWillOffer:
-            setPreference(.stable)
-            if !isSessionInProgress { checkForUpdates() }
-            return .done
-        case .goBack(let item):
-            return .askToGoBack(item)
-        case .refused(let reason):
-            setPreference(.stable)
-            return .savedRefused(reason.description)
-        }
+        if plan.savesStable { setPreference(.stable) }
+        if plan == .saveStableAndCheck, !isSessionInProgress { checkForUpdates() }
+        return plan
     }
 
     /// "Install X…" in Preferences: re-read and verify the feed, never trust

@@ -136,10 +136,10 @@ struct UpdateChannelSettings: View {
             let outcome = await updates.chooseStable()
             busy = false
             switch outcome {
-            case .done: break
+            case .saveStable, .saveStableAndCheck: break
             case .askToGoBack(let item): dialog = .goBack(item, offerSwitchOnly: true)
-            case .savedFeedUnreachable: dialog = .feedUnreachable
-            case .savedRefused(let reason): dialog = .refused(reason)
+            case .saveStableOffline: dialog = .feedUnreachable
+            case .saveStableRefused(let reason): dialog = .refused(reason)
             }
         }
     }
@@ -157,8 +157,8 @@ struct UpdateChannelSettings: View {
                 case .sparkleWillOffer: updates.checkForUpdates()
                 case .refused(let reason): dialog = .refused(reason.description)
                 }
-            } catch let error as UpdateController.FeedError {
-                if case .network = error { dialog = .feedUnreachable } else { dialog = .refused(error.description) }
+            } catch let error as FeedReadError {
+                dialog = error.isUnreachable ? .feedUnreachable : .refused(error.description)
             } catch {
                 dialog = .feedUnreachable
             }

@@ -6,10 +6,12 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/maestro-feed-tests.XXXXXX")"
+# shellcheck source=lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
 SERVER_PID=""
 cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
-    /bin/rm -rf "$WORK"
+    remove_scratch "$WORK"
 }
 trap cleanup EXIT
 PASS=0
@@ -138,6 +140,33 @@ cp "$F/base.xml" "$F/nobeta.xml"
 if "${FEED_PY[@]}" lint --feed "$F/nobeta.xml" --previous "$F/t.xml" >/dev/null 2>&1; then fail "lint passed a removed beta above stable"; fi
 "${FEED_PY[@]}" lint --feed "$F/p.xml" --previous "$F/t.xml" >/dev/null || fail "lint refused a promotion (beta no longer above stable)"
 ok "lint: signature, channel names, a beta above stable must not disappear"
+
+# ── The tracked feed's own text ─────────────────────────────────────────────
+# A copy of appcast.xml, re-signed with the throwaway key: add, promote and
+# lint must leave all of its existing items byte for byte.
+RF="$WORK/real"
+mkdir -p "$RF"
+cp "$REPO_ROOT/appcast.xml" "$RF/appcast.xml"
+"$SIGN_UPDATE" --ed-key-file "$SPARKLE_ED_KEY_FILE" "$RF/appcast.xml" >/dev/null
+items_text() { python3 -c 'import re,sys; t=open(sys.argv[1]).read(); print("\n".join(re.findall(r"<item>.*?</item>", t, re.S)))' "$1"; }
+COUNT_BEFORE="$(grep -c '<item>' "$RF/appcast.xml")"
+items_text "$RF/appcast.xml" > "$RF/items-before"
+"${FEED_PY[@]}" lint --feed "$RF/appcast.xml" >/dev/null || fail "lint of the tracked feed's text"
+OLD_STABLE="$("${FEED_PY[@]}" newest --feed "$RF/appcast.xml" --channel stable)"
+"${FEED_PY[@]}" add --feed "$RF/appcast.xml" --channel beta --version 9.9.0 --pkg "$F/0.9.0.pkg" \
+    --notes "$F/n-0.9.0.md" --enclosure-url http://127.0.0.1:8765/9.9.0.pkg >/dev/null
+"${FEED_PY[@]}" promote 9.9.0 --feed "$RF/appcast.xml" --notes "$F/stable-notes.md" >/dev/null
+"${FEED_PY[@]}" lint --feed "$RF/appcast.xml" >/dev/null || fail "lint after add and promote on the tracked feed's text"
+[ "$(grep -c '<item>' "$RF/appcast.xml")" = $((COUNT_BEFORE + 1)) ] || fail "item count"
+python3 - "$RF/items-before" "$RF/appcast.xml" <<'PY' || fail "existing items changed"
+import re, sys
+before = open(sys.argv[1]).read()
+after = "\n".join(re.findall(r"<item>.*?</item>", open(sys.argv[2]).read(), re.S)[1:])
+assert before.rstrip("\n") == after, "items differ"
+PY
+[ "$("${FEED_PY[@]}" newest --feed "$RF/appcast.xml" --channel stable)" = 9.9.0 ] || fail "promoted item not newest stable"
+[ "$OLD_STABLE" != 9.9.0 ] || fail "control"
+ok "the tracked feed's $COUNT_BEFORE items are byte-identical after add, promote and lint"
 
 # ── publish-release.sh and promote-beta.sh ──────────────────────────────────
 # A copy of the tools in a scratch repository with one pushed commit, real
@@ -284,7 +313,8 @@ git -C "$R" update-ref refs/remotes/origin/dev "$COMMIT"
 make_pkg 0.9.0 "$WORK/B0.pkg"
 "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$FEED" > "$WORK/pub.out"
 grep "release create v0.9.0" "$S/calls" | grep -q -- '--prerelease' || fail "beta not a prerelease"
-grep "release create v0.9.0" "$S/calls" | grep -q -- '--latest' && fail "beta marked latest"
+grep "release create v0.9.0" "$S/calls" | grep -q -- '--latest=false' || fail "beta not explicitly kept off latest"
+grep "release create v0.9.0" "$S/calls" | grep -Eq -- '--latest( |$)' && fail "beta marked latest"
 [ "$(cat "$S/latest")" = v0.8.40 ] || fail "beta changed GitHub's latest"
 [ "$(field "$FEED" 0.9.0 channel)" = beta ] || fail "beta item not tagged"
 if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$FEED" >/dev/null 2>&1; then fail "published the same version twice"; fi
@@ -301,6 +331,14 @@ git -C "$R" update-ref refs/remotes/origin/main "$COMMIT"
 "$R/Tools/publish-release.sh" --channel stable --pkg "$WORK/S41.pkg" --notes "$F/n-0.8.40.md" --feed "$FEED" --dry-run > "$WORK/hotfix.out"
 grep -q "Hotfix rule: beta 0.9.0 is above 0.8.41" "$WORK/hotfix.out" || fail "no hotfix reminder"
 ok "publish refuses an unpushed commit; a stable hotfix below a beta prints the hotfix rule"
+
+# A feed that does not verify stops the publish before GitHub is called.
+cp "$FEED" "$WORK/broken.xml"
+sed -i '' 's/Old notes/Old Notes/' "$WORK/broken.xml"
+: > "$S/calls"
+if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$WORK/broken.xml" >/dev/null 2>&1; then fail "published into a feed that does not verify"; fi
+[ ! -s "$S/calls" ] || fail "GitHub was called for a feed that does not verify: $(cat "$S/calls")"
+ok "a feed problem stops the publish before any release is created"
 
 # Promote the beta.
 cp "$FEED" "$WORK/before-promote.xml"

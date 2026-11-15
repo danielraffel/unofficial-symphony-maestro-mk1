@@ -536,3 +536,78 @@ public enum InstallerAssessment {
         return nil
     }
 }
+
+// MARK: - Channel actions (what the controller does, decided here so it can be tested)
+
+/// Why Maestro's own read of the feed failed.
+public enum FeedReadError: Error, Equatable, Sendable, CustomStringConvertible {
+    case noFeedURL
+    case noPublicKey
+    /// Could not be downloaded (offline, server down, HTTP error).
+    case network(String)
+    case unsigned
+    case parse(String)
+
+    /// True when the feed simply could not be reached.
+    public var isUnreachable: Bool {
+        if case .network = self { return true }
+        return false
+    }
+
+    public var description: String {
+        switch self {
+        case .noFeedURL: "no update feed is configured"
+        case .noPublicKey: "this copy of Maestro has no update key"
+        case .network(let detail): "the update feed could not be downloaded (\(detail))"
+        case .unsigned: "the update feed is not signed with Maestro's key"
+        case .parse(let detail): detail
+        }
+    }
+}
+
+/// What choosing Stable does (plan §5, "When").
+public enum StableChoicePlan: Equatable, Sendable {
+    /// Installed version is the newest stable: save Stable, nothing else.
+    case saveStable
+    /// Installed version is older: save Stable, then check; Sparkle offers it.
+    case saveStableAndCheck
+    /// Installed version is newer: ask first. Nothing is saved yet (Cancel
+    /// leaves the preference as it was).
+    case askToGoBack(FeedItem)
+    /// Feed unreachable: save Stable, say so.
+    case saveStableOffline
+    /// Feed read but unusable for going back: save Stable, show the reason.
+    case saveStableRefused(String)
+
+    public static func plan(for target: StableTarget) -> StableChoicePlan {
+        switch target {
+        case .upToDate: .saveStable
+        case .sparkleWillOffer: .saveStableAndCheck
+        case .goBack(let item): .askToGoBack(item)
+        case .refused(let reason): .saveStableRefused(reason.description)
+        }
+    }
+
+    public static func plan(for failure: FeedReadError) -> StableChoicePlan {
+        failure.isUnreachable ? .saveStableOffline : .saveStableRefused(failure.description)
+    }
+
+    /// Whether this plan saves Stable at once.
+    public var savesStable: Bool {
+        if case .askToGoBack = self { return false }
+        return true
+    }
+}
+
+/// When Preferences appearing may read the feed: only with scheduled checks
+/// on (the promise for people who turned them off) and when the last read is
+/// more than ten minutes old. Never at launch, never on a timer.
+public enum FeedRefreshPolicy {
+    public static let minimumInterval: TimeInterval = 600
+
+    public static func shouldRefreshOnPreferences(automaticChecks: Bool, lastRead: Date?, now: Date) -> Bool {
+        guard automaticChecks else { return false }
+        guard let lastRead else { return true }
+        return now.timeIntervalSince(lastRead) >= minimumInterval
+    }
+}
