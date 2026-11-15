@@ -261,14 +261,15 @@ struct InputRoutingView: View {
     }
 
     private func defaultRouteGrid() -> [Int: Int] {
-        // ThunderBridge: what the driver actually programs at Start, board
-        // order (host input n from slot 1 channel n, 16 + n from slot 2).
+        // ThunderBridge: what the driver actually programs, card by card
+        // (host input n from slot 1 channel n, then slot 2 from where slot
+        // 1's inputs end: 12 behind a 2x6, 16 otherwise).
         // The USB table below put every analog channel first, so this grid
         // showed Line 9-24 on inputs 9-24 while the unit had slot 1's
         // digital channels there.
         if appState.transportType == .thunderbolt {
             return SymphonyIODefaultRouting.inputGrid(
-                SymphonyIODefaultRouting.thunderboltInputRoutes(), columns: columns)
+                SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1), columns: columns)
         }
         let board1 = appState.primaryBoardType
         let board2 = appState.secondaryBoardType
@@ -383,7 +384,7 @@ struct InputRoutingView: View {
             board1: b1.card, board2: b2.card,
             usbChannelCount: device.identifier.mode.channelCount,
             routes: appState.transportType == .thunderbolt
-                ? SymphonyIODefaultRouting.thunderboltInputRoutes() : nil)
+                ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1) : nil)
         resetPrompt = RoutingResetPrompt(
             title: "Reset Input Routing",
             message: """
@@ -432,7 +433,7 @@ struct InputRoutingView: View {
         // ThunderBridge resets to the driver's own board-order table, the one
         // it programs at Start, never the USB analog-first one.
         let routeList = appState.transportType == .thunderbolt
-            ? SymphonyIODefaultRouting.thunderboltInputRoutes()
+            ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1)
             : SymphonyIODefaultRouting.inputRoutes(
                 board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
                 board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),

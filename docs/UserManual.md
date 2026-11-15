@@ -37,7 +37,7 @@ N.A. channels stay in place but are faded, as in Apogee's original Maestro.
 
 Every name starts with the unit's peripheral prefix letter, set in Device Settings ("A Line 1"). The letter is stored in the Symphony.
 
-Over ThunderBridge, Mac inputs follow the cards in slot order by default: the inputs of the card in slot 1 first, then those of slot 2. Each Mac input is named after what feeds it, so a change on Input Routing renames it.
+Over ThunderBridge, Mac inputs follow the cards in slot order by default: the inputs of the card in slot 1 first, then those of slot 2. Slot 2 starts at Mac input 17, or at 13 behind a 2x6 card, which has 12 inputs. Each Mac input is named after what feeds it, so a change on Input Routing renames it.
 
 Mac outputs keep fixed names based on their position. This differs from the original, which renamed each output after the hardware it reached: an output that fed the mixer rather than a hardware output read "N.A.".
 

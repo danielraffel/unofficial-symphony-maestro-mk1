@@ -1864,19 +1864,56 @@ public enum SymphonyIODefaultRouting {
         return routes
     }
 
-    /// The capture routing the ThunderBridge driver programs at Start
-    /// (`SymphonyThunderbridge.cpp` step 19b-2, `SymphonyDefaultInputSource`):
-    /// board order, host input n from IOBoard0 channel n (0-15) and host input
-    /// 16 + n from IOBoard1 channel n, whatever the cards. The original's PCIe
-    /// reset did the same: host input i from the i-th hardware plug, board by
-    /// board (`SymphonyPCIeRoutingController.cpp:849-866`, plugs sorted by board
-    /// then start channel, `NonCAStreamObject.cpp:326-384`). It is NOT the USB
-    /// table below, which puts every analog channel first.
-    public static func thunderboltInputRoutes() -> [Route] {
-        (0..<(2 * SymphonyIORoutingAddress.channelsPerIOBoard)).map { n in
-            (destination: SymphonyIORoutingAddress.p2pBase + UInt8(n),
-             source: SymphonyIORoutingAddress.ioBoard0Base + UInt8(n))
+    /// The capture routing the ThunderBridge driver programs at link
+    /// configuration (`SymphonyThunderbridge.cpp` step 19b-2,
+    /// `SymphonyCaptureSource` in `SymphonyChannelNames.h`): card by card,
+    /// host input n from slot 1 channel n, then slot 2's channels from where
+    /// slot 1's real inputs end. The original laid the Mac's inputs out the
+    /// same way, at each card's real channel count (`SymphonyPCIeRoutingController.cpp:200-217, 849-866`,
+    /// plugs sorted by board then start channel, `NonCAStreamObject.cpp:326-384`).
+    /// Every card has 16 inputs except the 2x6 (12), so slot 2 starts at host
+    /// input 13 behind a 2x6 and 17 otherwise. `slot1` nil (type not read), an
+    /// empty slot 1 and a Mic Pre in slot 1 keep the fixed 16 + 16, as the
+    /// driver does. Host inputs past slot 2's 16 are fed from silence (236).
+    /// It is NOT the USB table below, which puts every analog channel first.
+    public static func thunderboltInputRoutes(slot1: IOCardType? = nil) -> [Route] {
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        let base = thunderboltSlot2InputBase(slot1: slot1)
+        return (0..<(2 * perBoard)).map { n in
+            let source: UInt8
+            if n < base {
+                source = SymphonyIORoutingAddress.ioBoard0Base + UInt8(n)
+            } else if n - base < perBoard {
+                source = SymphonyIORoutingAddress.ioBoard1Base + UInt8(n - base)
+            } else {
+                source = SymphonyIORoutingAddress.none
+            }
+            return (destination: SymphonyIORoutingAddress.p2pBase + UInt8(n), source: source)
         }
+    }
+
+    /// Slot 1's card as the serving ThunderBridge driver lays its capture
+    /// table out from it, for `thunderboltInputRoutes(slot1:)`. Nil (the
+    /// fixed 16 + 16) unless the type was read from the unit this session and
+    /// the driver on the card packs: a driver before build 123 (Task B's
+    /// "older copy still serving" case) programs 16 + 16 whatever the cards.
+    /// An unstamped build (0) is a local build of this code. A simulated card
+    /// has no driver behind it and is drawn as the current driver would.
+    public static func thunderboltCaptureSlot1(card: IOCardType, source: BoardDetectionSource,
+                                               serving: ServingDextBuild?) -> IOCardType? {
+        if source == .simulated { return card }
+        guard source.isTrustworthy, case .build(let build)? = serving,
+              build == 0 || build >= UInt32(ServingDextBuild.firstReportingBuild) else { return nil }
+        return card
+    }
+
+    /// The host input (0-based) where slot 2's inputs start on ThunderBridge;
+    /// `SymphonySlot2InputBase` in the driver.
+    public static func thunderboltSlot2InputBase(slot1: IOCardType?) -> Int {
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        guard let slot1 else { return perBoard }
+        let inputs = slot1.analogInputChannels + slot1.digitalInputChannels
+        return (inputs == 0 || inputs > perBoard) ? perBoard : inputs
     }
 
     /// An input routing table as the grid draws it: software pair → column,

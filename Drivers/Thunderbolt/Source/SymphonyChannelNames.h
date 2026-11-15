@@ -173,6 +173,39 @@ static inline bool SymphonyHostInputName(const SymphonyNamingState &s, uint8_t s
     return false;
 }
 
+// The capture table the driver programs at link configuration: which board
+// channel feeds each of the 32 host inputs (P2P 0xC0 + n). The original laid
+// the Mac's inputs out card by card at each card's real channel count (plugs
+// per stream, sorted by board then start channel:
+// SymphonyPCIeRoutingController.cpp:200-217, 849-866; NonCAStreamObject.cpp:
+// 326-384; SymphonyIO_IOBoard.cpp:180-197). Every card has 16 inputs except
+// the 2x6 (2 Line + 2 AES + 8 optical = 12), so slot 2 starts at host input 13
+// behind a 2x6 and at 17 behind anything else.
+//
+// Two cases keep the fixed 16 where the original would have packed:
+//   - slot 1's type was not read (no Symphony answering): nothing is known;
+//   - slot 1 read as empty or Mic Pre (no inputs of its own): the original
+//     would put slot 2 at host input 1, but that setup works here today with
+//     slot 2 at 17-32, and moving it would move a working setup's inputs.
+// Host inputs past slot 2's 16 are left on "None" (236), so none of them keeps
+// an earlier table's route.
+static inline unsigned SymphonySlot2InputBase(uint8_t slot1Type, bool slot1Known)
+{
+    if (!slot1Known) return 16;
+    const SymphonyBoardLayout b = SymphonyBoardChannels(slot1Type, true);
+    const unsigned n = (unsigned)(b.analog + b.aes + b.optical);
+    return (n == 0 || n > 16) ? 16 : n;
+}
+
+static inline uint8_t SymphonyCaptureSource(uint8_t slot1Type, bool slot1Known, unsigned hostInput)
+{
+    const unsigned base = SymphonySlot2InputBase(slot1Type, slot1Known);
+    if (hostInput < base) return (uint8_t)(kSymphonyRoutingSourceIOBoard0 + hostInput);
+    if (hostInput < base + 16 && hostInput < 32)
+        return (uint8_t)(kSymphonyRoutingSourceIOBoard1 + (hostInput - base));
+    return kSymphonyRoutingSourceNone;
+}
+
 // Record the P2P input routes found in an AudioRouting (0x31) payload of
 // [dest, src] pairs. Returns true when any host input's source changed.
 static inline bool SymphonyNoteInputRoutes(uint8_t inputSource[32],

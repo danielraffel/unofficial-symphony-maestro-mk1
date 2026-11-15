@@ -74,17 +74,18 @@ struct InputRoutingDefaultGridTests {
     }
 }
 
-/// ThunderBridge: the grid's default is the table the driver programs at
-/// Start (board order: host input n from slot 1 channel n, 16 + n from slot 2),
-/// not the USB analog-first table. `SymphonyThunderbridge.cpp` step 19b-2 and
-/// `SymphonyChannelNames.h` `SymphonyDefaultInputSource`; the original's PCIe
-/// reset ordered plugs the same way (`SymphonyPCIeRoutingController.cpp:849-866`).
+/// ThunderBridge: the grid's default is the table the driver programs at link
+/// configuration (card by card: host input n from slot 1 channel n, then slot
+/// 2 from where slot 1's inputs end), not the USB analog-first table.
+/// `SymphonyThunderbridge.cpp` step 19b-2 and `SymphonyChannelNames.h`
+/// `SymphonyCaptureSource`; the original's PCIe reset ordered plugs the same
+/// way (`SymphonyPCIeRoutingController.cpp:849-866`).
 @Suite("ThunderBridge input routing")
 struct ThunderboltInputRoutingTests {
 
-    @Test("The driver's capture table is board order")
+    @Test("Unread slot 1: the capture table is the fixed 16 + 16")
     func boardOrderTable() {
-        let routes = SymphonyIODefaultRouting.thunderboltInputRoutes()
+        let routes = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: nil)
         #expect(routes.count == 32)
         #expect(routes[0] == (destination: 192, source: 32))
         #expect(routes[8] == (destination: 200, source: 40))
@@ -146,5 +147,76 @@ struct ThunderboltInputRoutingTests {
             routes: SymphonyIODefaultRouting.thunderboltInputRoutes())
         let text = plan.joined(separator: "\n")
         #expect(text.contains("17-32"), "\(text)")
+    }
+
+    // MARK: - Channel packing per slot
+
+    /// Where slot 2 starts for every slot-1 case. Only the 2x6 (12 inputs)
+    /// moves it; an empty or Mic Pre slot 1, or an unread one, keeps 16.
+    @Test("Slot 2's first host input for every slot-1 card",
+          arguments: [
+            (IOCardType?.none, 16), (.some(.none), 16), (.some(.micPre8), 16),
+            (.some(.analogAES), 16), (.some(.optical), 16), (.some(.analogAD16), 16),
+            (.some(.analogDA16), 16), (.some(.analogADDA16), 16), (.some(.twoBySix), 12),
+          ] as [(IOCardType?, Int)])
+    func slot2Base(slot1: IOCardType?, base: Int) {
+        #expect(SymphonyIODefaultRouting.thunderboltSlot2InputBase(slot1: slot1) == base)
+        let routes = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1)
+        #expect(routes.count == 32)
+        #expect(routes[base].source == SymphonyIORoutingAddress.ioBoard1Base)
+        #expect(routes[base - 1].source == SymphonyIORoutingAddress.ioBoard0Base + UInt8(base - 1))
+        #expect(routes.map(\.destination) == (0..<32).map { SymphonyIORoutingAddress.p2pBase + UInt8($0) })
+    }
+
+    /// 2x6 + A16 IP: slot 2's Line 3-18 on Mac 13-28, Mac 29-32 silent. Rows,
+    /// grid and reset plan say the same.
+    @Test("2x6 in slot 1 packs slot 2 behind its 12 inputs")
+    func twoBySixPacks() {
+        let routes = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: .twoBySix)
+        #expect(routes[11] == (destination: 203, source: 43))
+        #expect(routes[12] == (destination: 204, source: 48))
+        #expect(routes[27] == (destination: 219, source: 63))
+        #expect(routes[28...].allSatisfy { $0.source == SymphonyIORoutingAddress.none })
+
+        let layout = CardLayout(slot1: .twoBySix, slot2: .analogAD16)
+        let cols = layout.inputRoutingColumns
+        let grid = SymphonyIODefaultRouting.inputGrid(routes, columns: cols)
+        let rows = CardLayout.softwareInputRowNames(rowCount: 16, routes: grid, columns: cols, prefix: "A")
+        #expect(rows[0] == "A Line 1/2")
+        #expect(rows[6] == "A Line 3/4")      // Mac 13-14
+        #expect(rows[13] == "A Line 17/18")   // Mac 27-28
+        #expect(rows[14] == "N.A.")           // Mac 29-30
+        #expect(grid[14] == nil && grid[15] == nil)
+
+        let plan = RoutingResetGuard.inputPlanLines(
+            board1: .twoBySix, board2: .analogAD16, usbChannelCount: 32, routes: routes)
+        let text = plan.joined(separator: "\n")
+        #expect(text.contains("DAW in 13-28 ← Slot 2 Analog in 1-16"), "\(text)")
+    }
+
+    /// The common setups do not move: slot 2 stays on Mac 17-32.
+    @Test("Every other slot-1 card keeps slot 2 on Mac 17-32",
+          arguments: [IOCardType.analogAES, .optical, .analogAD16, .analogDA16, .analogADDA16, .micPre8, .none])
+    func othersDoNotMove(slot1: IOCardType) {
+        #expect(SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1).map(\.source)
+                == SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: nil).map(\.source))
+    }
+
+    /// The app draws the packed table only when the driver on the card packs.
+    @Test("Packing follows the serving driver and the card read")
+    func captureSlot1Gate() {
+        let f = SymphonyIODefaultRouting.thunderboltCaptureSlot1
+        #expect(f(.twoBySix, .detected, .build(123)) == .twoBySix)
+        #expect(f(.twoBySix, .detected, .build(124)) == .twoBySix)
+        #expect(f(.twoBySix, .detected, .build(0)) == .twoBySix)          // local build of this code
+        #expect(f(.twoBySix, .detected, .build(122)) == nil)
+        #expect(f(.twoBySix, .detected, .olderThanBuildReporting) == nil) // old copy still serving
+        #expect(f(.twoBySix, .detected, nil) == nil)                      // not asked
+        #expect(f(.twoBySix, .cached, .build(123)) == nil)                // not read this session
+        #expect(f(.twoBySix, .unknown, .build(123)) == nil)
+        #expect(f(.twoBySix, .simulated, nil) == .twoBySix)
+        // An old driver serving a 2x6 unit: the grid keeps 16 + 16, as that driver programs.
+        #expect(SymphonyIODefaultRouting.thunderboltSlot2InputBase(
+            slot1: f(.twoBySix, .detected, .olderThanBuildReporting)) == 16)
     }
 }

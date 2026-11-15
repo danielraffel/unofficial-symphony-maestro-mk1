@@ -177,6 +177,65 @@ int main() {
     const uint8_t odd[] = { 0xC3 };                       // a lone byte is not a pair
     assert(!SymphonyNoteInputRoutes(sources, odd, sizeof(odd)));
 
+    // Capture table, card by card (SymphonyCaptureSource): slot 2 starts
+    // where slot 1's real inputs end. Per slot-1 case:
+    struct { uint8_t type; bool known; unsigned base; } bases[] = {
+        { kSIOOptionBoard_None,         false, 16 },   // not read: fixed 16 + 16
+        { kSIOOptionBoard_None,         true,  16 },   // empty: kept at 16 (works today)
+        { kSIOOptionBoard_MicPre8,      true,  16 },
+        { kSIOOptionBoard_AnalogAES,    true,  16 },
+        { kSIOOptionBoard_Optical,      true,  16 },
+        { kSIOOptionBoard_AnalogAD16,   true,  16 },
+        { kSIOOptionBoard_AnalogDA16,   true,  16 },
+        { kSIOOptionBoard_AnalogADDA16, true,  16 },
+        { kSIOOptionBoard_TwoBySix,     true,  12 },
+    };
+    for (const auto &c : bases) {
+        assert(SymphonySlot2InputBase(c.type, c.known) == c.base);
+        for (unsigned n = 0; n < 32; n++) {
+            const uint8_t want = n < c.base ? (uint8_t)(32 + n)
+                               : n < c.base + 16 ? (uint8_t)(48 + n - c.base)
+                               : kSymphonyRoutingSourceNone;
+            assert(SymphonyCaptureSource(c.type, c.known, n) == want);
+        }
+    }
+
+    // Register trace: the Symphony is off at Start, so the table goes out (or
+    // is assumed) as 16 + 16; on link recovery the types are read (2x6 + A16
+    // IP) and the table changes mid-session. The dext sends two 0x31 requests
+    // of 16 [dest, src] pairs (step 19b-2); the unit keeps every destination
+    // it is not sent, so all 32 must be in them.
+    {
+        uint8_t unit[32];                          // the Symphony's P2P sources
+        uint8_t tracked[32];                       // the dext's inputRouteSource
+        auto configure = [&](uint8_t t0, bool k0) {
+            for (int half = 0; half < 2; half++) {
+                uint8_t payload[32];
+                for (int n = 0; n < 16; n++) {
+                    const unsigned host = (unsigned)(half * 16 + n);
+                    payload[n * 2] = (uint8_t)(kSymphonyRoutingDestP2P0 + host);
+                    payload[n * 2 + 1] = SymphonyCaptureSource(t0, k0, host);
+                }
+                for (int i = 0; i < 32; i += 2) unit[payload[i] - kSymphonyRoutingDestP2P0] = payload[i + 1];
+            }
+            for (unsigned n = 0; n < 32; n++) tracked[n] = SymphonyCaptureSource(t0, k0, n);
+        };
+        configure(kSIOOptionBoard_None, false);    // Start, nothing read
+        assert(unit[16] == 48 && unit[31] == 63);
+        configure(kSIOOptionBoard_TwoBySix, true); // link recovery, types read
+        assert(!memcmp(unit, tracked, sizeof(unit)));
+        assert(unit[11] == 43 && unit[12] == 48 && unit[27] == 63);
+        for (int n = 28; n < 32; n++) assert(unit[n] == kSymphonyRoutingSourceNone);   // no stale 16 + 16 routes
+        auto pack = state(kSIOOptionBoard_TwoBySix, kSIOOptionBoard_AnalogAD16, 48000);
+        assert(SymphonyHostInputName(pack, tracked[11], buf, sizeof(buf)) && !strcmp(buf, "A ADAT 8"));
+        assert(SymphonyHostInputName(pack, tracked[12], buf, sizeof(buf)) && !strcmp(buf, "A Line 3"));
+        assert(SymphonyHostInputName(pack, tracked[27], buf, sizeof(buf)) && !strcmp(buf, "A Line 18"));
+        assert(SymphonyHostInputName(pack, tracked[28], buf, sizeof(buf)) && !strcmp(buf, "N.A."));
+        // Back to an 8x8 (card swapped while off): 16 + 16 again, nothing left over.
+        configure(kSIOOptionBoard_Optical, true);
+        assert(unit[12] == 44 && unit[16] == 48 && unit[31] == 63);
+    }
+
     if (failures) { fprintf(stderr, "%d channel-name failures\n", failures); return 1; }
     return 0;
 }
@@ -214,6 +273,21 @@ assert src.count("NoteCoaxBoardType(ivars, value);") == 3   # 0x35 write, 0x36 w
 publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
 assert "s.boardKnown[b] = ivars->optionBoardTypeValid[b];" in publish
 assert publish.index("strncmp(name, ivars->publishedInputName[n]") < publish.index("SetElementName(")
+# The capture table is laid out from slot 1's type read in the same link
+# configuration (Start and link recovery both run ConfigureSymphonyLink), all
+# 32 destinations through SymphonyCaptureSource, and the tracked sources
+# follow the table actually sent.
+link = src[src.index("static bool ConfigureSymphonyLink"):src.index("// ── Status LED: link OK")]
+read = link.index("kSIOCmd_OptionBoardType")
+cap = link.index("19b-2. Capture")
+assert read < cap
+capture = link[cap:link.index("19b-3. Mute mixer")]
+assert "SymphonyCaptureSource(slot1Type, slot1Known, host)" in capture
+assert "for (int half = 0; half < 2; half++)" in capture and "for (int n = 0; n < 16; n++)" in capture
+assert "kSIOSrc_IOBoard0Ch0 + n" not in capture and "kSIOSrc_IOBoard1Ch0 + n" not in capture
+assert capture.index("SendVendorRequest") < capture.index("ResetInputRouteSources(ivars, slot1Type, slot1Known);")
+assert link.index("ResetInputRouteSources(ivars, kSIOOptionBoard_None, false);") < read
+assert src.count("ConfigureSymphonyLink(ivars,") == 2
 # The prefix is read where the board types are, at Start and on link recovery.
 assert src.count("ReadNamingPrefix(ivars, ivars->runtimeTxSeq);") == 2
 PY

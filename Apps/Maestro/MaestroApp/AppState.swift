@@ -405,7 +405,12 @@ final class AppState {
                     if let count = tb.lastLinkState?.recoveryCount {
                         if let seen = self.thunderboltSeenRecoveryCount, count != seen,
                            self.connectionMode == .hardware {
-                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): replaying input routing")
+                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying input routing")
+                            // The driver lays its capture table out from the
+                            // cards it read during the recovery (a Symphony off
+                            // at Start, or a card swapped while off): read them
+                            // too, so the grid and the replay use the same table.
+                            await self.readCardTypes()
                             await self.syncInputRoutingToHardware()
                         }
                         self.thunderboltSeenRecoveryCount = count
@@ -554,6 +559,14 @@ final class AppState {
     var primaryBoardReading: BoardTypeReading {
         BoardTypeReading(card: primaryBoardType, source: primaryBoardSource,
                          hardwareMajor: primaryBoardHardwareMajor)
+    }
+    /// Slot 1's card as the ThunderBridge driver lays its capture table out
+    /// from it (`SymphonyIODefaultRouting.thunderboltInputRoutes(slot1:)`):
+    /// nil until the type has been read from the unit this session by a
+    /// driver that packs.
+    var thunderboltCaptureSlot1: IOCardType? {
+        SymphonyIODefaultRouting.thunderboltCaptureSlot1(
+            card: primaryBoardType, source: primaryBoardSource, serving: servingDextBuild)
     }
     /// Slot 1 board type WITH provenance.
     var secondaryBoardReading: BoardTypeReading {

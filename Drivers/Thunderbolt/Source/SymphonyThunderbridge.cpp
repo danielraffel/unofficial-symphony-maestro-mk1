@@ -1288,14 +1288,16 @@ struct SymphonyLinkInitResult {
     bool    hp1Mute;
 };
 
-static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars);
+static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
+                                   uint8_t slot1Type, bool slot1Known);
 
 static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rate,
                                   SymphonyLinkInitResult *out)
 {
-    // The capture routes below put every host input back on its own board
-    // channel; the coax replacement is the unit's, read back by the app.
-    ResetInputRouteSources(ivars);
+    // The capture routes below put every host input back on its board
+    // channel (step 19b-2); until the card types are read there, assume the
+    // fixed 16 + 16. The coax replacement is the unit's, read back by the app.
+    ResetInputRouteSources(ivars, kSIOOptionBoard_None, false);
     uint8_t rateCode = SampleRateToXLinkCode(rate);
     if (rateCode == 0xFF) {
         rateCode = kXLinkSRate44100;
@@ -1518,6 +1520,10 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
     {
         uint8_t txSeq = 0;  // Message sequence counter
         const uint8_t symphonyAddr = 1;  // Device address assigned in enumeration
+        // Each slot's card type, read at step 19b-0c; step 19b-2 lays the
+        // capture table out from slot 1's.
+        uint8_t slotType[2] = { kSIOOptionBoard_None, kSIOOptionBoard_None };
+        bool slotTypeOK[2] = { false, false };
 
         // Preserve the Symphony IO's stored monitor state across a PCIe
         // reconnect.  The legacy ApplySettingsToHardware path re-read and
@@ -1799,8 +1805,6 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // app replays the Mac's saved formats after it connects.
         {
             const char* result[2] = { "skipped", "skipped" };
-            uint8_t slotType[2] = { kSIOOptionBoard_None, kSIOOptionBoard_None };
-            bool slotTypeOK[2] = { false, false };
             for (uint32_t b = 0; b < 2; b++) {
                 uint8_t bt = kSIOOptionBoard_None;
                 bool typeOK = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
@@ -1894,7 +1898,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             IOSleep(20);
         }
 
-        // ── 19b-2. Capture: IOBoard0 ADC 0-15 → P2P ch 0-15 ────────
+        // ── 19b-2. Capture: board inputs → P2P ch 0-31, card by card ──
         // Route hardware inputs to P2P (Peer-to-Peer) destinations.
         // P2P (0xC0+) is the XMOS abstract host interface — the XMOS firmware
         // routes P2P traffic to the active transport (XLink for Thunderbolt,
@@ -1902,36 +1906,35 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // because XLink 0x00 as destination refers to the XLink control channel,
         // not the audio data path. P2P is what the legacy PCIe routing controller
         // used (SymphonyIOUSBAudioRoutingController.cpp:111, SymphonyIORouting.h:330).
-        // IOBoard0: ch0-7 = Analog 1-8 (Line/Mic), ch8-15 = ADAT 1-8 (Optical).
+        //
+        // Host input n ← slot 1 channel n, then slot 2's channels from where
+        // slot 1's real inputs end: 12 behind a 2x6, 16 otherwise, the fixed
+        // 16 + 16 when slot 1's type was not read (SymphonySlot2InputBase,
+        // SymphonyChannelNames.h). All 32 destinations are written each time,
+        // the unused tail as None, so a table from an earlier configuration
+        // (e.g. 16 + 16 at a Start with the Symphony off, then a 2x6 read on
+        // link recovery) leaves nothing behind.
+        // IOBoard0 on an 8x8: ch0-7 = Analog 1-8 (Line/Mic), ch8-15 = optical/AES.
+        // ── 19b-2b. Second half (P2P 16-31) in its own 0x31 request ──────
         {
-            uint8_t captureRoutes[32];
-            for (int n = 0; n < 16; n++) {
-                captureRoutes[n * 2]     = (uint8_t)(kSIODest_P2PCh0 + n);
-                captureRoutes[n * 2 + 1] = (uint8_t)(kSIOSrc_IOBoard0Ch0 + n);
+            const uint8_t slot1Type = slotType[0];
+            const bool slot1Known = slotTypeOK[0];
+            for (int half = 0; half < 2; half++) {
+                uint8_t captureRoutes[32];
+                for (int n = 0; n < 16; n++) {
+                    const unsigned host = (unsigned)(half * 16 + n);
+                    captureRoutes[n * 2]     = (uint8_t)(kSIODest_P2PCh0 + host);
+                    captureRoutes[n * 2 + 1] = SymphonyCaptureSource(slot1Type, slot1Known, host);
+                }
+                bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                             symphonyAddr, kSIOCmd_AudioRouting,
+                                             0, captureRoutes, sizeof(captureRoutes), txSeq);
+                STLOG("SymphonyIO: Capture routing (P2P %d-%d, slot 2 from host input %u): %s",
+                      half * 16, half * 16 + 15,
+                      SymphonySlot2InputBase(slot1Type, slot1Known) + 1, ok ? "OK" : "FAILED");
+                IOSleep(20);
             }
-            bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                         symphonyAddr, kSIOCmd_AudioRouting,
-                                         0, captureRoutes, sizeof(captureRoutes), txSeq);
-            STLOG("SymphonyIO: Capture routing (IOBoard0 ADC 0-15 → P2P 0-15): %s",
-                  ok ? "OK" : "FAILED");
-            IOSleep(20);
-        }
-
-        // ── 19b-2b. Capture: IOBoard1 ADC 0-15 → P2P ch 16-31 ────
-        // Route IOBoard1 inputs to P2P channels 16-31 (maps to DMA channels 16-31).
-        // Harmless if IOBoard1 slot is empty.
-        {
-            uint8_t capture1Routes[32];
-            for (int n = 0; n < 16; n++) {
-                capture1Routes[n * 2]     = (uint8_t)(kSIODest_P2PCh0 + 16 + n);
-                capture1Routes[n * 2 + 1] = (uint8_t)(kSIOSrc_IOBoard1Ch0 + n);
-            }
-            bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                         symphonyAddr, kSIOCmd_AudioRouting,
-                                         0, capture1Routes, sizeof(capture1Routes), txSeq);
-            STLOG("SymphonyIO: Capture routing (IOBoard1 ADC 0-15 → P2P 16-31): %s",
-                  ok ? "OK" : "FAILED");
-            IOSleep(20);
+            ResetInputRouteSources(ivars, slot1Type, slot1Known);
         }
 
         // ── 19b-3. Mute mixer hardware inputs (DAW mode) ────────────
@@ -2181,13 +2184,15 @@ static bool ReadNamingPrefix(SymphonyThunderbridge_IVars *ivars, uint8_t &txSeq)
     return __atomic_exchange_n(&ivars->namingPrefix, raw, __ATOMIC_ACQ_REL) != raw;
 }
 
-// The Symphony's capture routing as ConfigureSymphonyLink leaves it:
-// P2P n ← IOBoard0 ch n (0-15), P2P 16+n ← IOBoard1 ch n.
-static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars)
+// The Symphony's capture routing as ConfigureSymphonyLink leaves it
+// (SymphonyCaptureSource): slot 1's channels from P2P 0, slot 2's from where
+// slot 1's inputs end, the fixed 16 + 16 while slot 1's type is unread.
+static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
+                                   uint8_t slot1Type, bool slot1Known)
 {
-    for (uint8_t n = 0; n < 32; n++)
+    for (unsigned n = 0; n < 32; n++)
         __atomic_store_n(&ivars->inputRouteSource[n],
-                         (uint8_t)(kSymphonyRoutingSourceIOBoard0 + n), __ATOMIC_RELEASE);
+                         SymphonyCaptureSource(slot1Type, slot1Known, n), __ATOMIC_RELEASE);
 }
 
 // ── dext 115: card re-initialization after a PCI power cycle ────────────────
