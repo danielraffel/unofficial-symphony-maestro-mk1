@@ -122,6 +122,15 @@ for p in swift:
         for bad in ('retireServingDriver(', 'finishDriverUpdateNow', 'Finish Update Now', 'offersFinishUpdateNow'):
             if bad in line and 'func retireServingDriver' not in line:
                 raise SystemExit(f'FAIL: {os.path.relpath(p, app)}:{i} uses {bad}; no retire may be triggered from the app')
+        # The two dormant entry points themselves: DextUserClient sends
+        # selector 7, and the one wrapper in ThunderboltDeviceConnection calls
+        # it. Any other use of either would be a path to a retire.
+        rel = os.path.relpath(p, app)
+        if 'retireForUpgrade(' in line and 'func retireForUpgrade(' not in line \
+                and rel != 'MaestroDevice/ThunderboltDeviceConnection.swift':
+            raise SystemExit(f'FAIL: {rel}:{i} calls retireForUpgrade; no retire may be triggered from the app')
+        if 'selectorRetireForUpgrade' in line and rel != 'MaestroDevice/DextUserClient.swift':
+            raise SystemExit(f'FAIL: {rel}:{i} uses selector 7 outside DextUserClient')
 shell = open(os.path.join(app, 'MaestroApp/AppShell.swift')).read()
 if 'Finish Update' in shell or 'onFinishUpdateNow' in shell:
     raise SystemExit('FAIL: the banner must not offer Finish Update Now')
