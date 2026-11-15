@@ -232,6 +232,9 @@ private struct ThunderBridgeActionBanner: View {
     let onDismiss: () -> Void
 
     private var message: String {
+        if report.servingDextDiffersFromBundled {
+            return "\(SoftwareInfoReport.restartToFinishDriverUpdate)."
+        }
         if report.dextUpgradePending {
             return "The Maestro ThunderBridge driver extension is updating. Close audio applications, then reconnect the ThunderBridge."
         }

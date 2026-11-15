@@ -14,6 +14,7 @@ Every option card now behaves the way it did in Apogee's original Maestro: the o
 - **Saved input routing choices are now put back when the Symphony reconnects** over ThunderBridge, including after the driver recovers the link. Until now the page kept showing your choices while the Symphony had gone back to the default.
 - **The software inputs on Input Routing are named after what is routed to them,** as in the original: "A SPDIF Opt 1/2" for a pair fed from the optical input, "N.A." for a pair with nothing behind it. They used to read "A Line" for every row.
 - **"SPDIF Opt 1/2" fits on its Input and Output tab strip** instead of being cut short.
+- **Device Info names the driver build that is actually running the ThunderBridge.** After a driver update macOS can keep the old driver on the card until you restart, while the system already lists the new one as active. Device Info used to show the new build. It now asks the running driver for its build and, when that is not the one Maestro carries, says "Restart your Mac to finish the driver update". Drivers from before this release cannot answer, so they are reported as "a build before 123".
 
 ### What's better
 

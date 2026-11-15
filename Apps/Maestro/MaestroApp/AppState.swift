@@ -540,6 +540,11 @@ final class AppState {
     /// which is a different claim and is reported as such.
     var installedDexts: [InstalledDextInfo]?
 
+    /// The build the driver serving the ThunderBridge reports for itself (nil
+    /// when no ThunderBridge connection is open). Differs from what sysextd
+    /// lists when macOS keeps an old copy on the card until restart.
+    var servingDextBuild: ServingDextBuild?
+
     /// Board hardware major versions, when read (0xA0). See
     /// `BoardTypeReading.hardwareMajor`.
     var primaryBoardHardwareMajor: UInt8?
@@ -1318,6 +1323,7 @@ final class AppState {
         // What the driver found on the cable, if it is not a Symphony I/O.
         connectedUnit = (device as? ThunderboltDeviceConnection)?.linkState()
             .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
+        servingDextBuild = (device as? ThunderboltDeviceConnection)?.servingDriverBuild()
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
         }

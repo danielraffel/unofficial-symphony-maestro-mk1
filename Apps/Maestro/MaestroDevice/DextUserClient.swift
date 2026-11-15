@@ -242,6 +242,25 @@ public final class DextUserClient: @unchecked Sendable {
         return nil
     }
 
+    /// The CFBundleVersion of the dext binary serving this user client
+    /// (selector 6, dext 123+). This is the copy macOS actually runs for the
+    /// card, which after an update can still be the old one even though
+    /// sysextd lists the new copy as active. `nil` = no answer: no connection,
+    /// or a dext older than 123, which rejects the selector.
+    public func readDriverBuild() -> UInt32? {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        var out = [UInt32](repeating: 0, count: 2)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, 6, nil, 0, p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == 8, out[0] == 0 else { return nil }
+        return out[1]
+    }
+
     /// Read the dext's timing and FPGA health snapshot for latency studies.
     public func readTimingHealth() -> TimingHealth? {
         lock.lock()

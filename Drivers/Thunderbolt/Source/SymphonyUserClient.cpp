@@ -70,6 +70,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyVendorReadOutput),
     },
+    [kSelectorReadDriverBuild] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = 0,
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = sizeof(SymphonyDriverBuildOutput),
+    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -262,6 +270,17 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         kern_return_t r = ivars->driver->ReadVendorCommand(
             input->command, input->value, output.payload, input->responseLen);
         output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadDriverBuild) {
+        // The build of the binary running this user client, i.e. the copy that
+        // serves the device, whatever sysextd lists as installed.
+        SymphonyDriverBuildOutput output = {};
+        output.status = 0;
+        output.build = (uint32_t)SYMPHONY_DEXT_BUILD;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;

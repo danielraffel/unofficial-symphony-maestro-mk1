@@ -11,7 +11,8 @@
 #define kSelectorReadTimingHealth 3         // ExternalMethod selector: timing/register snapshot
 #define kSelectorReadVendor     4            // ExternalMethod selector: read XLink vendor command
 #define kSelectorReadLinkState  5            // ExternalMethod selector: link watch state (no bus access)
-#define kSelectorCount          6
+#define kSelectorReadDriverBuild 6           // ExternalMethod selector: this dext's CFBundleVersion (dext 123+)
+#define kSelectorCount          7
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type
 #define kSymphonyMeterWordCount 256          // words in the card meter DMA buffer
 
@@ -95,6 +96,20 @@ typedef struct {
     uint32_t cardReinitCount; // dext 117: ReprogramCardAfterReset runs since Start()
     uint32_t reserved;
 } SymphonyLinkStateOutput; // 64 bytes
+
+// The CFBundleVersion of the dext binary answering, so the app can tell which
+// build actually serves the ThunderBridge. After an update macOS can keep an
+// older copy running the device until restart while sysextd already reports
+// the new copy as active. build.sh passes the Info.plist value; a build made
+// without it answers 0. Dexts before 123 reject the selector.
+#ifndef SYMPHONY_DEXT_BUILD
+#define SYMPHONY_DEXT_BUILD 0
+#endif
+
+typedef struct {
+    uint32_t status;
+    uint32_t build;           // CFBundleVersion of the serving dext, 0 = not stamped
+} SymphonyDriverBuildOutput; // 8 bytes
 
 // Input/output for kSelectorReadVendor. This is deliberately a bounded,
 // read-only counterpart to SymphonyVendorCommandInput. It lets the app read

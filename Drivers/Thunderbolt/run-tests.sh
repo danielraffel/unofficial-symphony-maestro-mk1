@@ -14,6 +14,7 @@ TESTS=(
     test-timing-profile.sh
     test-thunderbolt-lifecycle.sh
     test-channel-names.sh
+    test-driver-build.sh
 )
 
 for t in "${TESTS[@]}"; do

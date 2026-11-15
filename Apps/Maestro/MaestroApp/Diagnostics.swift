@@ -7,6 +7,7 @@
 
 import Foundation
 import MaestroCore
+import MaestroDevice
 
 extension AppState {
 
@@ -16,6 +17,7 @@ extension AppState {
     /// trusting a launch-time snapshot taken before an activation had finished.
     func refreshInstalledDexts() {
         installedDexts = SystemExtensionInstaller.shared.installedDexts()
+        servingDextBuild = (device as? ThunderboltDeviceConnection)?.servingDriverBuild()
     }
 
     /// Everything the Software Info panel shows, assembled from what the process can see
@@ -58,7 +60,8 @@ extension AppState {
             dextAwaitingApproval: primary?.isAwaitingUserApproval ?? false,
             dextAwaitingReboot: primary?.isAwaitingReboot ?? false,
             thunderBridgePresent: SystemExtensionInstaller.shared.isThunderBridgePresent(),
-            pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier()
+            pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier(),
+            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil
         )
     }
 

@@ -513,6 +513,14 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// Raw link-watch state for diagnostics panels.
     public func linkState() -> LinkState? { dextClient.readLinkState() }
 
+    /// Which dext build serves the card. A dext that answers the link-state
+    /// read but not the build read predates the build selector (123): an
+    /// older copy is still running. Nil when the user client answers neither.
+    public func servingDriverBuild() -> ServingDextBuild? {
+        if let build = dextClient.readDriverBuild() { return .build(build) }
+        return dextClient.readLinkState() != nil ? .olderThanBuildReporting : nil
+    }
+
     /// One read of the unit's front panel state (vendor read `0x28`), through
     /// the driver's general vendor read. Nil when the unit does not answer or
     /// the reply is not a real reading. Runs off the caller's thread: the driver
