@@ -46,7 +46,7 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 ## What's Included
 
 - **Maestro**, a native macOS app for device configuration: inputs, outputs, monitor section, two low-latency mixers, input and output routing with presets, device and system settings
-- A native **ThunderBridge DriverKit driver** (32 channels in and out, 44.1–192 kHz where the installed converter FPGA supports it, ADAT and optical output)
+- A native **ThunderBridge DriverKit driver** (32 channels in and out, 44.1–192 kHz where the installed converter FPGA supports it, ADAT and optical output; channel names in Maestro, Audio MIDI Setup and DAWs follow each card's optical format and sample rate)
 - A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
 - Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
 - Appearance controls with **Auto**, **Light**, and **Dark** modes
@@ -81,6 +81,8 @@ _The original Symphony 64 PCIe card (in a Thunderbolt chassis) is experimental: 
 
 _This version of Maestro works with only one Symphony I/O at a time._
 
+_As of 0.8.40, option-card features (optical format, S/PDIF coax, AES, per-card clock choices) follow Apogee's original software. They are verified on an 8x8 AES/OPT and an A16 IP; the AES-only 8x8, 2x6, 16x16 and A16 OP are unverified, and reports are welcome._
+
 ## Beta Status
 
 This is **beta software** developed by one person. It has been tested on a small number of systems, listed below. If your Mac is mission-critical, you may prefer to test on a secondary machine first.
@@ -102,7 +104,7 @@ If your configuration differs, it may work, but it has not been verified.
 
 ## Installation
 
-The installer is Apple signed and notarized, so no security workarounds are needed. Install, launch Maestro, and approve the driver extension when macOS asks (ThunderBridge users). When a release updates the driver extension, one ThunderBridge cable unplug/replug lets the new driver take over; the release notes say when that applies.
+The installer is Apple signed and notarized, so no security workarounds are needed. Install, launch Maestro, and approve the driver extension when macOS asks (ThunderBridge users). After a driver update, once Maestro has reopened, reconnect the ThunderBridge, or turn the driver off and on in System Settings › General › Login Items & Extensions, or restart. Maestro shows a banner until the new driver is running.
 
 The project source is available under the [MIT license](license.md), without warranty. Third-party components retain their own licenses. Previously published installers retain their original embedded notices.
 
