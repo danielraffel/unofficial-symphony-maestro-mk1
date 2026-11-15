@@ -29,7 +29,7 @@ Every option card now behaves the way it did in Apogee's original Maestro: the o
 ### Release notes
 
 - The driver changes (input channel names with the prefix letter, no optical format for an AES card, keeping your settings after a link recovery) arrive with the next driver release.
-- Output channel names are not published yet: over ThunderBridge a Mac output can reach the hardware through the card's mixer, and which output it ends up on is not yet worked out.
+- Mac outputs keep fixed names based on their position, on purpose. The original renamed each output after the hardware it reached, so an output feeding the mixer read "N.A.". The user guide explains channel names.
 - The USB helper changes with this release.
 
 ## 0.8.39 (build 1035)
