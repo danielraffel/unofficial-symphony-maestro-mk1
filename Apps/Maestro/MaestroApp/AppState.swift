@@ -555,14 +555,6 @@ final class AppState {
     /// A read of `servingDextBuild` is under way (`refreshServingDextBuild`).
     @ObservationIgnored
     var servingDextBuildReadInFlight = false
-    /// Maestro's part in moving the card to a newly registered driver
-    /// (DriverHandover.swift). Shown by the banner and Device Info.
-    var driverHandover: DriverHandover = .idle
-    /// "<serving>-><bundled>" pairs Maestro has already asked to retire this
-    /// session (Finish Update Now). One attempt each: if IOKit puts the old
-    /// copy straight back on the card, asking again would only stop the
-    /// audio again. Observed, so the button goes away after a refusal too.
-    var driverHandoverAttempts: Set<String> = []
     @ObservationIgnored
     var driverActivationObserver: Task<Void, Never>?
 

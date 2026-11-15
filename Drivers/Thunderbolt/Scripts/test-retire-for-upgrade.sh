@@ -10,8 +10,8 @@
 #      polling its port-2 read there) never reaches the handler.
 #   4. Terminate is called only from RetireForUpgrade, never on xlinkQueue, and
 #      Stop() drains xlinkQueue before it releases the audio objects.
-#   5. The app asks only right after its own completed activation, once per
-#      serving/bundled pair, quiesces first, and waits about 10 s.
+#   5. The app no longer offers or calls the retire (the banner says to replug
+#      the ThunderBridge cable); selector 7 stays in the driver, dormant.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
@@ -108,49 +108,23 @@ PY
 grep -q 'static let selectorRetireForUpgrade: UInt32 = 7' "$APP/MaestroDevice/DextUserClient.swift" || fail "app selector"
 grep -q 'static let retireMagic: UInt32 = 0x52455449' "$APP/MaestroDevice/DextUserClient.swift" || fail "app magic"
 grep -q 'var input: \[UInt32\] = \[Self.retireMagic, replacementBuild\]' "$APP/MaestroDevice/DextUserClient.swift" || fail "app input"
-H="$APP/MaestroApp/DriverHandover.swift"
-grep -q 'report.canFinishDriverUpdateNow' "$H" || fail "app gate"
-grep -q 'driverHandoverAttempts.contains(key)' "$H" || fail "one attempt per pair"
-grep -q 'static let driverHandoverTimeout: Duration = .seconds(10)' "$H" || fail "10 s"
-grep -q 'handoverLog.notice("user requested hand-over")' "$H" || fail "user request logged"
-python3 - "$H" "$APP" <<'PY' || exit 1
-import sys, os, re
-t = open(sys.argv[1]).read()
-f = t[t.index('private func handOverToBundledDriver'):]
-order = [f.index(s) for s in ('stopMeterPolling()', 'stopThunderboltHealthCheck()',
-                              'tb.retireServingDriver(', 'driverHandover = .finishing')]
-if order != sorted(order): raise SystemExit('FAIL: quiesce, then retire, then show finishing')
-# Never automatic: one retire call site in the app, reached only from the
-# user's confirmed Finish Update Now.
-app = sys.argv[2]
+# The app no longer offers or calls the retire: the banner says to replug the
+# cable. Selector 7 stays in the driver and DextUserClient, dormant.
+python3 - "$APP" <<'PY' || exit 1
+import sys, os
+app = sys.argv[1]
 swift = [os.path.join(r, n) for r, _, fs in os.walk(app) for n in fs if n.endswith('.swift')]
-calls = []
 for p in swift:
+    if '/Tests/' in p: continue
     for i, line in enumerate(open(p), 1):
-        if 'retireServingDriver(' in line and 'func retireServingDriver' not in line \
-                and not line.lstrip().startswith('//'):
-            calls.append((os.path.relpath(p, app), i))
-if len(calls) != 1 or calls[0][0] != 'MaestroApp/DriverHandover.swift':
-    raise SystemExit(f'FAIL: retireServingDriver must have one call site, in DriverHandover.swift: {calls}')
-def body(name):
-    s = t.index(name); e = t.index('\n    }\n', s); return t[s:e]
-for auto in ('func considerDriverHandover()', 'func driverActivationCompleted()',
-             'func installDriverHandoverObserver()'):
-    if 'handOverToBundledDriver' in body(auto) or 'finishDriverUpdateNow' in body(auto):
-        raise SystemExit(f'FAIL: {auto} must not start a hand-over')
-if t.count('handOverToBundledDriver(') != 2:
-    raise SystemExit('FAIL: the hand-over runs only from finishDriverUpdateNow')
-users = sorted(os.path.relpath(p, app) for p in swift if 'finishDriverUpdateNow()' in open(p).read())
-if users != ['MaestroApp/AppShell.swift', 'MaestroApp/DriverHandover.swift']:
-    raise SystemExit(f'FAIL: finishDriverUpdateNow is called only by the banner: {users}')
+        code = line.lstrip()
+        if code.startswith('//'): continue
+        for bad in ('retireServingDriver(', 'finishDriverUpdateNow', 'Finish Update Now', 'offersFinishUpdateNow'):
+            if bad in line and 'func retireServingDriver' not in line:
+                raise SystemExit(f'FAIL: {os.path.relpath(p, app)}:{i} uses {bad}; no retire may be triggered from the app')
 shell = open(os.path.join(app, 'MaestroApp/AppShell.swift')).read()
-m = re.search(r'Button\(ThunderBridgeBanner\.finishUpdateNowTitle\)\s*\{([^}]*)\}', shell)
-if not m or m.group(1).strip() != 'confirmingFinishUpdate = true':
-    raise SystemExit('FAIL: Finish Update Now must only open the confirmation')
-if not re.search(r'Button\(ThunderBridgeBanner\.finishUpdateNowConfirmTitle\)\s*\{\s*onFinishUpdateNow\(\)\s*\}', shell):
-    raise SystemExit('FAIL: the hand-over runs from the confirmation button')
-if shell.count('onFinishUpdateNow()') != 1:
-    raise SystemExit('FAIL: onFinishUpdateNow is called only from the confirmation')
+if 'Finish Update' in shell or 'onFinishUpdateNow' in shell:
+    raise SystemExit('FAIL: the banner must not offer Finish Update Now')
 PY
 grep -q 'activationCompletedNotification' "$APP/MaestroApp/SystemExtensionInstaller.swift" || fail "completion notice"
 
