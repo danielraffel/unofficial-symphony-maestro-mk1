@@ -206,6 +206,25 @@ struct ThunderboltDeviceConnectionTests {
         #expect(try await conn.getProperty(prefix) == .string("F"))
     }
 
+    /// Peripheral Prefix goes to the unit as 0x37 (the daemon kept it there and
+    /// the driver names channels from it); only a letter A-Z is accepted, and
+    /// the Mac's copy is kept even when the send has no driver to go to.
+    @Test("ThunderboltDeviceConnection: prefix is a letter, kept without a driver")
+    func prefixWrite() async throws {
+        #expect(ThunderboltDeviceConnection.prefixCommand == 0x37)
+        let conn = ThunderboltDeviceConnection(
+            identifier: Self.testIdentifier, audioDeviceID: 0)
+        let prefix = PropertyAddress(selector: .prefix)
+        await #expect(throws: DeviceConnectionError.self) {
+            try await conn.setProperty(prefix, value: .string("a"))
+        }
+        await #expect(throws: DeviceConnectionError.unsupportedProperty(.prefix)) {
+            _ = try await conn.getProperty(prefix)
+        }
+        try await conn.setProperty(prefix, value: .string("B"))
+        #expect(try await conn.getProperty(prefix) == .string("B"))
+    }
+
     /// Nothing is invented: until this connection has written a value the read
     /// throws as it always did, and the caller keeps its own default.
     @Test("ThunderboltDeviceConnection: an unwritten setting still throws")

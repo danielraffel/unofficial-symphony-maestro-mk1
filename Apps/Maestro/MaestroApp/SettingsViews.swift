@@ -201,6 +201,7 @@ struct DeviceSettingsView: View {
                 }
                 .onChange(of: peripheralPrefix) { _, newValue in
                     guard !isLoading else { return }
+                    appState.peripheralPrefix = CardLayout.peripheralPrefix(newValue)
                     Task { await writeProperty(.prefix, value: .string(newValue)) }
                 }
             }
@@ -593,6 +594,7 @@ struct DeviceSettingsView: View {
             if let pfx = (try await readSetting(.prefix))?.asString,
                !pfx.isEmpty {
                 peripheralPrefix = String(pfx.prefix(1))
+                appState.peripheralPrefix = CardLayout.peripheralPrefix(pfx)
             }
         } catch is CancellationError {
             return

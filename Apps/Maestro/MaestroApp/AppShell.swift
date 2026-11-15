@@ -158,8 +158,11 @@ struct ContentView: View {
                 // Sync persisted output routing to hardware after card types are known.
                 // This overwrites proxy boot defaults with any user-customized routes.
                 await appState.syncOutputRoutingToHardware()
+                await appState.syncInputRoutingToHardware()
                 // Then the settings this Mac owns (peak hold, monitor mode, ...).
                 await appState.syncDeviceSettingsToHardware()
+                // And the names that follow them (prefix, optical format, Replaces).
+                await appState.refreshChannelNaming()
             }
             // Follow the unit's front panel encoder (USB). Idles without a unit.
             appState.startFrontPanelSync()

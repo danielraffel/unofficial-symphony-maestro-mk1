@@ -1864,6 +1864,38 @@ public enum SymphonyIODefaultRouting {
         return routes
     }
 
+    /// The capture routing the ThunderBridge driver programs at Start
+    /// (`SymphonyThunderbridge.cpp` step 19b-2, `SymphonyDefaultInputSource`):
+    /// board order, host input n from IOBoard0 channel n (0-15) and host input
+    /// 16 + n from IOBoard1 channel n, whatever the cards. The original's PCIe
+    /// reset did the same: host input i from the i-th hardware plug, board by
+    /// board (`SymphonyPCIeRoutingController.cpp:849-866`, plugs sorted by board
+    /// then start channel, `NonCAStreamObject.cpp:326-384`). It is NOT the USB
+    /// table below, which puts every analog channel first.
+    public static func thunderboltInputRoutes() -> [Route] {
+        (0..<(2 * SymphonyIORoutingAddress.channelsPerIOBoard)).map { n in
+            (destination: SymphonyIORoutingAddress.p2pBase + UInt8(n),
+             source: SymphonyIORoutingAddress.ioBoard0Base + UInt8(n))
+        }
+    }
+
+    /// An input routing table as the grid draws it: software pair → column,
+    /// for every pair whose left channel is fed from a column's left channel.
+    /// Pairs fed from silence or from a pair the cards do not have are left
+    /// out (they read "N.A.").
+    public static func inputGrid(_ routes: [Route], columns: [CardLayout.RoutingColumn]) -> [Int: Int] {
+        var grid: [Int: Int] = [:]
+        for route in routes {
+            guard route.source != SymphonyIORoutingAddress.none,
+                  route.destination >= SymphonyIORoutingAddress.p2pBase,
+                  route.destination % 2 == 0,
+                  let col = columns.firstIndex(where: { $0.routingByte == route.source - route.source % 2 })
+            else { continue }
+            grid[Int(route.destination - SymphonyIORoutingAddress.p2pBase) / 2] = col
+        }
+        return grid
+    }
+
     /// Default INPUT routing: P2P (USB record) destinations fed from IOBoard sources.
     public static func inputRoutes(
         board0: BoardChannels,
@@ -1893,6 +1925,28 @@ public enum SymphonyIODefaultRouting {
         return (0..<destinationCount).map { index in
             (destination: SymphonyIORoutingAddress.p2pBase + UInt8(index), source: table[index])
         }
+    }
+}
+
+// MARK: - Saved input routing replay
+
+/// The 0x31 writes that put saved Input Routing choices back on the unit.
+public enum InputRoutingReplay {
+    /// Two writes per saved row, left and right: host pair `row` (P2P
+    /// 192 + 2·row, +1) from the column's routing byte and the next. Rows
+    /// outside the mode's pair count and columns these cards do not have are
+    /// skipped; rows are written in order.
+    public static func writes(saved: [Int: Int], columns: [CardLayout.RoutingColumn],
+                              pairCount: Int) -> [SymphonyIODefaultRouting.Route] {
+        var out: [SymphonyIODefaultRouting.Route] = []
+        for (row, col) in saved.sorted(by: { $0.key < $1.key })
+        where row >= 0 && row < pairCount && row < 32 && col >= 0 && col < columns.count {
+            let dest = SymphonyIORoutingAddress.p2pBase + UInt8(row * 2)
+            let src = columns[col].routingByte
+            out.append((destination: dest, source: src))
+            out.append((destination: dest + 1, source: src + 1))
+        }
+        return out
     }
 }
 
@@ -2006,9 +2060,12 @@ public enum RoutingResetGuard {
     public static func inputPlanLines(
         board1: IOCardType,
         board2: IOCardType,
-        usbChannelCount: Int
+        usbChannelCount: Int,
+        routes table: [SymphonyIODefaultRouting.Route]? = nil
     ) -> [String] {
-        let routes = SymphonyIODefaultRouting.inputRoutes(
+        // `table` is the routing the reset will write when it is not the USB
+        // default (ThunderBridge writes the driver's board-order table).
+        let routes = table ?? SymphonyIODefaultRouting.inputRoutes(
             board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
             board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
             usbChannelCount: usbChannelCount)
@@ -2026,6 +2083,8 @@ public enum RoutingResetGuard {
                 : SymphonyIORoutingAddress.ioBoard0Base
             let card = slot == 1 ? board1 : board2
             let channelOnBoard = Int(source &- base)
+            // A channel the card does not have carries nothing.
+            guard channelOnBoard < card.analogInputChannels + card.digitalInputChannels else { return nil }
             let isDigital = channelOnBoard >= card.analogInputChannels
             let digitalOffset = channelOnBoard - card.analogInputChannels
             let label = isDigital ? card.digitalLabel(forChannel: digitalOffset) : "Analog"

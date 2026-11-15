@@ -240,6 +240,9 @@ final class AppState {
     /// proven healthy. Once a live probe has succeeded, use the shorter loss
     /// threshold so power-off is reflected promptly.
     private var thunderboltHasHealthyProbe = false
+    /// The driver's link-recovery count when last seen, nil until the first
+    /// probe. A recovery re-sends the board-order capture table.
+    private var thunderboltSeenRecoveryCount: UInt32?
     /// Avoid reopening the private dext client on every one-second failed probe.
     private var thunderboltControlReconnectAttempted = false
     /// Bounded tolerance for a DriverKit upgrade handoff, owned by the health
@@ -394,6 +397,17 @@ final class AppState {
                 if healthy {
                     self.thunderboltHasHealthyProbe = true
                     self.thunderboltControlReconnectAttempted = false
+                    // A link recovery in place (no disconnect, so no connect
+                    // replay) puts the driver's board-order capture table back
+                    // on the unit: put the saved input routing back over it.
+                    if let count = tb.lastLinkState?.recoveryCount {
+                        if let seen = self.thunderboltSeenRecoveryCount, count > seen,
+                           self.connectionMode == .hardware {
+                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): replaying input routing")
+                            await self.syncInputRoutingToHardware()
+                        }
+                        self.thunderboltSeenRecoveryCount = count
+                    }
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
                         Self.tbLog.notice("probe recovered after \(failures) failures")
@@ -568,6 +582,11 @@ final class AppState {
     /// daemon re-named its channels (`OpticalIn_SymphonyIO_Stream.cpp:70-80, 141-153`).
     var channelNaming = CardLayout.ChannelNaming()
 
+    /// The unit's Peripheral Prefix letter, which software channel names start
+    /// with ("A Line 1/2"). Read at connect (`refreshChannelNaming`) and set by
+    /// Device Settings, so routing labels follow it without opening that tab.
+    var peripheralPrefix = CardLayout.defaultPeripheralPrefix
+
     // MARK: Per-slot digital settings the Mac owns
 
     /// UserDefaults key for this card pair's remembered optical format,
@@ -617,6 +636,9 @@ final class AppState {
     @MainActor
     func refreshChannelNaming() async {
         guard let device else { return }
+        if let raw = (try? await device.getProperty(PropertyAddress(selector: .prefix)))?.asString {
+            peripheralPrefix = CardLayout.peripheralPrefix(raw)
+        }
         for slot in 0..<2 {
             let card = cardLayout.card(atSlot: slot)
             if card.hasOpticalPorts {
@@ -1407,6 +1429,41 @@ final class AppState {
         print("[Maestro] syncOutputRouting: wrote \(written) cached routes to hardware")
     }
 
+    /// Put the input routing choices saved on this Mac back on a ThunderBridge
+    /// unit. The driver programs its board-order capture table every time it
+    /// starts, and the Input Routing grid lays saved choices over that same
+    /// table, so without this the grid showed choices the unit no longer had.
+    /// Only rows the user picked are written; the rest stay at the driver's
+    /// table. Card types must have been read this session (Reset Routing's
+    /// provenance rule), since a column means a different routing byte on
+    /// other cards. Then the unit's 32 capture routes are read back and logged
+    /// once, as evidence of what it really carries.
+    @MainActor
+    func syncInputRoutingToHardware() async {
+        guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
+        if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
+            print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
+        } else {
+            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            let writes = InputRoutingReplay.writes(
+                saved: cache.load() ?? [:], columns: cardLayout.inputRoutingColumns,
+                pairCount: tb.identifier.mode.channelCount / 2)
+            var written = 0
+            for write in writes {
+                do {
+                    try await tb.setProperty(
+                        PropertyAddress(selector: .routing, scope: .input, element: UInt32(write.destination)),
+                        value: .uint32(UInt32(write.source)))
+                    written += 1
+                } catch {
+                    print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
+                }
+            }
+            print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) saved input routes")
+        }
+        await tb.logInputRoutes()
+    }
+
     static let mainPairMixerMigrationKey = "thunderboltMainPairMixerMigration_v1"
 
     /// One-time, ThunderBridge only: a saved "Software 1-2 → main pair" becomes
@@ -1737,6 +1794,7 @@ final class AppState {
                 await self.reapplyDigitalSettings()
                 await self.refreshChannelNaming()
                 await self.syncOutputRoutingToHardware()
+                await self.syncInputRoutingToHardware()
                 await self.syncDeviceSettingsToHardware()
 
                 let meterCA = CoreAudioDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)

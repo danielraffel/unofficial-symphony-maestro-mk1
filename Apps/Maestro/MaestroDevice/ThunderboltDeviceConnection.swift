@@ -233,6 +233,18 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 throw DeviceConnectionError.transportError("ThunderBridge S/PDIF coax read returned no data")
             }
             return .uint32(UInt32(byte))
+        case .prefix:
+            // The Mac's own choice first (it is written to the unit at
+            // connect); otherwise the letter the unit keeps (0x37), which is
+            // what the driver names channels with. A unit with no letter yet
+            // answers 0xFF, and the read keeps throwing as before.
+            if let value = rememberedValue(for: address) { return value }
+            let data = try? dextClient.readVendorCommand(
+                command: Self.prefixCommand, value: 0, responseLength: 1)
+            guard let byte = data?.first, (0x41...0x5A).contains(byte) else {
+                throw DeviceConnectionError.unsupportedProperty(address.selector)
+            }
+            return .string(String(UnicodeScalar(byte)))
         case .routing:
             let data = try dextClient.readVendorCommand(
                 command: SymphonyIOCommand.audioRouting.rawValue,
@@ -370,6 +382,27 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 command: Self.mixerSoftwareReturnSourceCommand,
                 value: address.element,
                 payload: Data([UInt8(source)]))
+            notifyListeners(for: address.selector, value: value)
+            return
+        }
+
+        // Peripheral Prefix: the daemon kept the letter in the unit (0x37,
+        // `SymphonyIOControl.cpp:1568-1600`, firmware
+        // `SymphonyIOCore3MainController.cpp:1005-1025`) and named every
+        // channel with it; the ThunderBridge driver reads it there and follows
+        // this write. The Mac's copy is what the app shows, so it is kept even
+        // when the send fails (no driver, an older one): the next connect
+        // sends it again from the store.
+        if address.selector == .prefix {
+            guard let byte = CardLayout.peripheralPrefixByte(value.asString) else {
+                throw DeviceConnectionError.typeMismatch(expected: "a letter A-Z", got: "\(value)")
+            }
+            remember(value, for: address)
+            do {
+                try dextClient.sendVendorCommand(command: Self.prefixCommand, value: 0, payload: Data([byte]))
+            } catch {
+                print("[Maestro] ThunderBridge prefix 0x37 write not sent: \(error)")
+            }
             notifyListeners(for: address.selector, value: value)
             return
         }
@@ -526,6 +559,27 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                   data.count >= 3 else { return nil }
             return data[0]
         }.value
+    }
+
+    /// SymphonyIOCommands_Prefix: the unit's peripheral prefix letter, one byte.
+    static let prefixCommand: UInt8 = 0x37
+
+    /// Diagnostic: the unit's 32 capture routes (0x31 read for P2P 192-223),
+    /// logged once per connect, so a hardware run shows which hardware input
+    /// each Mac input really carries. Reads only.
+    public func logInputRoutes() async {
+        guard isConnected, dextClient.isConnected else { return }
+        let client = dextClient
+        let line: String = await Task.detached(priority: .utility) {
+            (0..<32).map { n -> String in
+                let dest = UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(n)
+                guard let data = try? client.readVendorCommand(
+                        command: SymphonyIOCommand.audioRouting.rawValue, value: dest, responseLength: 1),
+                      let src = data.first else { return "\(n + 1)=err" }
+                return "\(n + 1)=\(src)"
+            }.joined(separator: " ")
+        }.value
+        print("[Maestro] TB input routes (Mac input=source byte; 32-47 slot 1, 48-63 slot 2, 236 none): \(line)")
     }
 
     /// The first few front panel reads of a session are logged in full: whether

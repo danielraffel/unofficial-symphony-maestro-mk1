@@ -206,6 +206,53 @@ public struct CardLayout: Sendable, Equatable {
         return "\(left)/\(right)"
     }
 
+    // MARK: - Peripheral prefix and software channel names
+
+    /// The prefix letter the daemon used when the unit had none assigned:
+    /// "A" for the first unit (`SymphonyIO.cpp:1245-1258`).
+    public static let defaultPeripheralPrefix = "A"
+
+    /// The prefix letter to show for a stored or read value: its first
+    /// character when that is A-Z, else ``defaultPeripheralPrefix``.
+    public static func peripheralPrefix(_ raw: String?) -> String {
+        guard let first = raw?.first, let ascii = first.asciiValue,
+              ascii >= 0x41, ascii <= 0x5A else { return defaultPeripheralPrefix }
+        return String(first)
+    }
+
+    /// The prefix byte for vendor command 0x37, nil unless `raw` starts with A-Z.
+    public static func peripheralPrefixByte(_ raw: String?) -> UInt8? {
+        guard let ascii = raw?.first?.asciiValue, ascii >= 0x41, ascii <= 0x5A else { return nil }
+        return ascii
+    }
+
+    /// Whether a channel or pair name is the daemon's "not applicable".
+    public static func isNotApplicable(_ name: String) -> Bool { name == notApplicable }
+
+    /// A host (software) channel pair's name as Maestro labelled it: the
+    /// prefix letter, then the stereo name of the hardware pair it is routed
+    /// from or to, "A Line 1/2"; a bare "N.A." when both channels are N.A.
+    /// (`APUtilities.m:323-400`, from per-channel names "<prefix> <name>",
+    /// e.g. `SymphonyIO_Stream.cpp:655`).
+    public static func softwarePairName(hardwarePair stereo: String, prefix: String) -> String {
+        if isNotApplicable(stereo) || stereo.isEmpty { return notApplicable }
+        return "\(peripheralPrefix(prefix)) \(stereo)"
+    }
+
+    /// The software INPUT row labels for a routing grid: each row named after
+    /// the hardware column routed to it (`routes[row]`), "N.A." when nothing
+    /// is. Maestro bound each row to the host channels' Core Audio names
+    /// (`APInputRoutingTabRowViewController.m:178-205`), which the daemon set
+    /// to the routed hardware channel's (`SymphonyCard.cpp:828-866`), so a row
+    /// follows its route, the rate, the optical format and Replaces.
+    public static func softwareInputRowNames(rowCount: Int, routes: [Int: Int],
+                                             columns: [RoutingColumn], prefix: String) -> [String] {
+        (0..<max(0, rowCount)).map { row in
+            guard let col = routes[row], col >= 0, col < columns.count else { return notApplicable }
+            return softwarePairName(hardwarePair: columns[col].stereoName, prefix: prefix)
+        }
+    }
+
     /// A stereo name split into the routing header's two lines.
     static func headerLines(_ stereo: String) -> (type: String, channels: String) {
         guard let space = stereo.lastIndex(of: " ") else { return (stereo, "") }
@@ -573,6 +620,12 @@ public struct CardLayout: Sendable, Equatable {
             self.isDigital = isDigital
             self.routingByte = routingByte
         }
+
+        /// The pair's stereo name on one line, e.g. "SPDIF Opt 1/2" or "N.A.".
+        public var stereoName: String { channels.isEmpty ? type : "\(type) \(channels)" }
+
+        /// Whether the pair has no channel the rate or format carries.
+        public var isNotApplicable: Bool { CardLayout.isNotApplicable(stereoName) }
     }
 
     /// Hardware INPUT columns for the Input Routing grid.

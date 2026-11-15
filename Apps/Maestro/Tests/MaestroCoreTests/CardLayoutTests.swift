@@ -714,6 +714,54 @@ struct ChannelNamingTests {
         #expect(CardLayout.stereoName(left: "SPDIF Opt 1", right: "SPDIF Opt 2") == "SPDIF Opt 1/2")
         #expect(CardLayout.stereoName(left: "SMUX 3", right: "N.A.") == "SMUX 3/N.A.")
     }
+
+    /// Software pair names: the prefix letter in front of the routed pair's
+    /// name, a bare "N.A." when both channels are N.A. (`APUtilities.m:323-400`).
+    @Test func softwarePairNamesCarryThePrefix() {
+        #expect(CardLayout.softwarePairName(hardwarePair: "Line 1/2", prefix: "A") == "A Line 1/2")
+        #expect(CardLayout.softwarePairName(hardwarePair: "SPDIF Opt 1/2", prefix: "C") == "C SPDIF Opt 1/2")
+        #expect(CardLayout.softwarePairName(hardwarePair: "N.A.", prefix: "A") == "N.A.")
+        // A letter the unit has not been given reads as the daemon's default.
+        #expect(CardLayout.softwarePairName(hardwarePair: "Line 1/2", prefix: "") == "A Line 1/2")
+        #expect(CardLayout.peripheralPrefix("z") == "A")
+        #expect(CardLayout.peripheralPrefix("Q") == "Q")
+        #expect(CardLayout.peripheralPrefixByte("B") == 0x42)
+        #expect(CardLayout.peripheralPrefixByte("b") == nil)
+        #expect(CardLayout.peripheralPrefixByte(nil) == nil)
+    }
+
+    /// The reported unit (8x8 on optical, S/PDIF, + A16 IP, 48 kHz): software
+    /// input rows follow what is routed to them, not their position. The
+    /// original named each host input after its routed hardware source
+    /// (`SymphonyCard.cpp:828-866`, bound in `APInputRoutingTabRowViewController.m:178-205`).
+    @Test func softwareInputRowsFollowTheirRoutes() {
+        let l = layout(.optical, .analogAD16, rate: 48000, spdif: [true, nil])
+        let cols = l.inputRoutingColumns
+        func col(_ name: String) -> Int { cols.firstIndex { $0.stereoName == name }! }
+        let routes = [0: col("Line 1/2"), 4: col("SPDIF Opt 1/2"), 8: col("Line 9/10"),
+                      12: col("Line 1/2")]
+        let rows = CardLayout.softwareInputRowNames(rowCount: 16, routes: routes, columns: cols, prefix: "A")
+        #expect(rows[0] == "A Line 1/2")
+        #expect(rows[4] == "A SPDIF Opt 1/2")
+        #expect(rows[8] == "A Line 9/10")
+        #expect(rows[12] == "A Line 1/2")            // one input feeding two pairs
+        #expect(rows[1] == "N.A.")                   // nothing routed
+        #expect(rows[15] == "N.A.")
+        // An N.A. column routed to a row names it N.A., and the column is marked.
+        let na = cols.firstIndex { $0.isNotApplicable }!
+        #expect(cols[na].stereoName == "N.A.")
+        #expect(CardLayout.softwareInputRowNames(rowCount: 1, routes: [0: na], columns: cols, prefix: "A") == ["N.A."])
+        // Live: the same route renames with the format and the prefix.
+        let adat = layout(.optical, .analogAD16, rate: 48000, spdif: [false, nil]).inputRoutingColumns
+        #expect(CardLayout.softwareInputRowNames(rowCount: 5, routes: routes, columns: adat, prefix: "B")[4]
+                == "B ADAT 1/2")
+        let high = layout(.optical, .analogAD16, rate: 192000, spdif: [true, nil]).inputRoutingColumns
+        #expect(CardLayout.softwareInputRowNames(rowCount: 5, routes: routes, columns: high, prefix: "A")[4]
+                == "N.A.")
+        // Out-of-range routes are N.A., never a crash.
+        #expect(CardLayout.softwareInputRowNames(rowCount: 2, routes: [0: 99, 1: -1], columns: cols, prefix: "A")
+                == ["N.A.", "N.A."])
+    }
 }
 
 @Suite("Analog strip names under S/PDIF Coax Replaces")
