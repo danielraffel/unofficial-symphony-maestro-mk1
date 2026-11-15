@@ -516,10 +516,39 @@ struct TwoBySixLayoutTests {
 @Suite("S/PDIF menus per card")
 struct SPDIFMenuParityTests {
 
-    private func menu(_ card: IOCardType, input: Bool, slot2 other: IOCardType? = nil) -> [String] {
+    /// The menu as the tab shows it: Replaces (input) as `spdifOptions` gives
+    /// it, Mirrors (output) through `OutputChannelLogic.mirrorOptions`, which
+    /// is what the Output tab lists.
+    private func options(_ card: IOCardType, input: Bool,
+                         slot2 other: IOCardType? = nil) -> [CardLayout.SPDIFOption] {
         let layout = other.map { CardLayout(slot1: $0, slot2: card) }
             ?? CardLayout(slot1: card, slot2: .none)
-        return layout.spdifOptions(slot: other == nil ? 0 : 1, isInput: input).map(\.name)
+        let all = layout.spdifOptions(slot: other == nil ? 0 : 1, isInput: input)
+        return input ? all : OutputChannelLogic.mirrorOptions(all)
+    }
+
+    private func menu(_ card: IOCardType, input: Bool, slot2 other: IOCardType? = nil) -> [String] {
+        options(card, input: input, slot2: other).map(\.name)
+    }
+
+    /// Replaces starts with Off; Mirrors has no Off
+    /// (`SymphonyIO_IOBoard.cpp:1195-1220`: nine Replaces IDs from 1, eight
+    /// Mirrors IDs from 2).
+    private func off(_ input: Bool) -> [String] { input ? ["Off"] : [] }
+
+    /// The IDs are the wire values: the daemon's menu ID minus one
+    /// (`SymphonyIO_IOBoard.cpp:536-562`). Replaces 0-8 (2x6: 0-6,
+    /// `SymphonyIOBoard_2x6.cpp:568-584`), Mirrors 1-8, never 0.
+    @Test func wireValues() {
+        for card in [IOCardType.optical, .analogAES, .analogAD16, .analogDA16, .analogADDA16] {
+            #expect(options(card, input: true).map(\.id) == Array(0...8))
+            #expect(options(card, input: false).map(\.id) == Array(1...8))
+        }
+        #expect(options(.twoBySix, input: true).map(\.id) == Array(0...6))
+        #expect(options(.twoBySix, input: false).map(\.id) == Array(1...8))
+        // No coax jacks, no entries beyond Replaces' Off.
+        #expect(options(.micPre8, input: false).isEmpty)
+        #expect(options(.none, input: true).map(\.name) == ["Off"])
     }
 
     private func pairs(_ prefix: String, from first: Int, count: Int) -> [String] {
@@ -530,9 +559,9 @@ struct SPDIFMenuParityTests {
     @Test func eightByEight() {
         for input in [true, false] {
             #expect(menu(.optical, input: input)
-                    == ["Off"] + pairs("Analog", from: 1, count: 4) + pairs("Optical", from: 1, count: 4))
+                    == off(input) + pairs("Analog", from: 1, count: 4) + pairs("Optical", from: 1, count: 4))
             #expect(menu(.analogAES, input: input)
-                    == ["Off"] + pairs("Analog", from: 1, count: 4) + pairs("AES", from: 1, count: 4))
+                    == off(input) + pairs("Analog", from: 1, count: 4) + pairs("AES", from: 1, count: 4))
         }
     }
 
@@ -542,11 +571,11 @@ struct SPDIFMenuParityTests {
     /// analog both ways (`SymphonyIOBoard_ADDA16ch.cpp:80-117`).
     @Test func sixteenChannelCards() {
         #expect(menu(.analogAD16, input: true) == ["Off"] + pairs("Analog", from: 1, count: 8))
-        #expect(menu(.analogAD16, input: false) == ["Off"] + pairs("Optical", from: 1, count: 8))
+        #expect(menu(.analogAD16, input: false) == pairs("Optical", from: 1, count: 8))
         #expect(menu(.analogDA16, input: true) == ["Off"] + pairs("Optical", from: 1, count: 8))
-        #expect(menu(.analogDA16, input: false) == ["Off"] + pairs("Analog", from: 1, count: 8))
+        #expect(menu(.analogDA16, input: false) == pairs("Analog", from: 1, count: 8))
         for input in [true, false] {
-            #expect(menu(.analogADDA16, input: input) == ["Off"] + pairs("Analog", from: 1, count: 8))
+            #expect(menu(.analogADDA16, input: input) == off(input) + pairs("Analog", from: 1, count: 8))
         }
     }
 
@@ -557,7 +586,7 @@ struct SPDIFMenuParityTests {
         #expect(menu(.twoBySix, input: true)
                 == ["Off", "Analog 1-2", "AES 1-2"] + pairs("Optical", from: 1, count: 4))
         #expect(menu(.twoBySix, input: false)
-                == ["Off"] + pairs("Analog", from: 1, count: 3) + ["AES 1-2"] + pairs("Optical", from: 1, count: 4))
+                == pairs("Analog", from: 1, count: 3) + ["AES 1-2"] + pairs("Optical", from: 1, count: 4))
     }
 
     /// Slot 2 numbers on from slot 1's channels of the same plug type
@@ -568,9 +597,9 @@ struct SPDIFMenuParityTests {
                 == ["Off"] + pairs("Analog", from: 9, count: 8))
         // An AES board has no optical channels, so the A16 IP's optical starts at 1.
         #expect(menu(.analogAD16, input: false, slot2: .analogAES)
-                == ["Off"] + pairs("Optical", from: 1, count: 8))
+                == pairs("Optical", from: 1, count: 8))
         #expect(menu(.analogAD16, input: false, slot2: .optical)
-                == ["Off"] + pairs("Optical", from: 9, count: 8))
+                == pairs("Optical", from: 9, count: 8))
     }
 
     /// Optical outputs are "Optical n-m" in the headphone source list
