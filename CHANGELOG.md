@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.0 (beta)
+
+The first beta, for people helping to test two Symphony I/O units on one ThunderBridge (64 channels). It contains everything in 0.8.40. Betas may have bugs; if you rely on your setup, stay on Stable.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge driver.** After installing, unplug the ThunderBridge cable and plug it back in (or turn the Maestro driver off and on in System Settings, or restart). Until then the old driver keeps running and Maestro shows a banner.
+- **The ThunderBridge now has a Source choice** in Audio MIDI Setup and the macOS Sound menu: "Symphony I/O: ThunderBridge" (the usual 32 channels) and "Symphony I/O: ThunderBridge 64". Leave it on the first unless you have two units. Your DAW keeps the same device either way.
+
+### New
+
+- **64 channels with two Symphony I/O units.** Connect the second unit to ThunderBridge port 2, then choose 64 channels (two units) under Ports in System Setup › Device Info, or pick "Symphony I/O: ThunderBridge 64" as the Source. Channels 33-64 are the unit on port 2. If no second unit is found, the driver stays at 32 channels and Device Info says why. This has not yet been confirmed on real hardware.
+
+### For testers
+
+- Please report whether 64 channels work with two units, and whether 32 channels still work as before with one.
+- If you have one of the 64-channel test builds (9004-9006), install this package by hand once. When Maestro next checks for updates it sets the update channel to Beta, and you keep getting betas.
+- To leave the beta, choose Stable under Update channel in Device Settings › Preferences; Maestro offers to reinstall the latest stable version.
+
 ## 0.8.40 (candidate, not released)
 
 Every option card now behaves the way it did in Apogee's original Maestro: the optical format, the S/PDIF coax settings, the clock choices and the channel names.
