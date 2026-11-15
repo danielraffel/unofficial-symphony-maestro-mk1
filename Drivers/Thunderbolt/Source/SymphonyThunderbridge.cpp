@@ -5055,6 +5055,15 @@ kern_return_t SymphonyThunderbridge::StartDevice(
         }
     }
 
+    // The hardware now runs at the nominal rate. If that rate reached the
+    // device some way that skipped HandleChangeSampleRate (a stream format
+    // set directly), the names catch up here.
+    if (ivars->audioDevice) {
+        const uint32_t hz = SymphonyNamingRateHz(ivars->audioDevice->GetSampleRate());
+        if (__atomic_exchange_n(&ivars->namingSampleRate, hz, __ATOMIC_ACQ_REL) != hz)
+            ScheduleChannelNames(ivars, this);
+    }
+
     // Clear stale zero timestamp — HAL needs a fresh anchor pair.
     // Apple sample: UpdateCurrentZeroTimestamp(0, 0) in StartIO to clear old state.
     // Without this, HAL sees stale (sampleTime, hostTime) from previous IO session
