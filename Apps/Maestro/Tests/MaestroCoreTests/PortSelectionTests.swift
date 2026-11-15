@@ -157,7 +157,8 @@ struct SecondPortStateAudioTests {
         let off = SecondPortState(portCount: 2, flags: 0x0F, audio: 0x01)
         #expect(off.deviceInfoRows.map(\.label)
                 == ["Experimental two-port driver", "Port 2 Audio", "Port 2 Link", "Port 2 Clock", "Port 2 Units"])
-        #expect(off.deviceInfoRows[0].value == "On. Port 2 carries audio when \"Port 1-2: 64ch\" is selected.")
+        #expect(off.deviceInfoRows[0].value
+                == "On. Port 2 is switched on, looked at and carries audio only while \"Port 1-2: 64ch\" is selected.")
         #expect(off.deviceInfoRows[1].value == "Off: 32 channels, port 1 only")
         let on = SecondPortState(portCount: 2, flags: 0x0F, audio: 0x0001_0007, phase: 0x8010_010B)
         #expect(on.deviceInfoRows.map(\.label).prefix(3) == ["Experimental two-port driver", "Port 2 Audio", "Port 2 Phase"])

@@ -288,6 +288,17 @@ struct FakeCard : HostBackend {
     bool     endpointPresent = true;
     bool     jamBusy = false;          // the jam register reports a jam in progress
     bool     dropPort2Addresses = false;   // the card does not keep A2H2/H2A2 HBA
+    // Two-port scenarios: port 2's receive clock is seen only while the port is
+    // enabled (GCSR2 DisablePort2 clear, XLINK_CLOCKING_ENABLE_2 set), and only
+    // from the 4th clocking read after that, so a probe that does not wait for
+    // it, or runs with the port disabled, finds nothing. How long real units
+    // take is not known; this only makes the order observable.
+    bool     gatePort2 = false;
+    uint32_t port2ClockReads = 0;
+    uint64_t port2TxWhileDisabled = 0;    // TX writes to a disabled port 2
+    bool port2Enabled() {
+        return (reg[kRegGCSR2] & kGCSR2_DisablePort2) == 0 && (reg[kRegXLinkClocking] & kXLinkClockEnable2) != 0;
+    }
     uint64_t nextDMA = 0x10000000;
     std::vector<std::string> lines;
 
@@ -326,7 +337,13 @@ struct FakeCard : HostBackend {
     uint32_t clocking() {
         uint32_t v = reg[kRegXLinkClocking] & (kXLinkClockEnable1 | kXLinkClockEnable2);
         if (port[0].present()) v |= kXLinkRX1ClockDetect | port[0].detectBit();
-        if (port[1].present()) v |= kXLinkRX2ClockDetect | (port[1].detectBit() << 16);
+        bool port2Clock = port[1].present();
+        if (gatePort2) {
+            if (!port2Enabled()) port2ClockReads = 0;
+            else port2ClockReads++;
+            port2Clock = port2Clock && port2ClockReads > 3;
+        }
+        if (port2Clock) v |= kXLinkRX2ClockDetect | (port[1].detectBit() << 16);
         return v;
     }
 
@@ -359,7 +376,10 @@ struct FakeCard : HostBackend {
         switch (off) {
         case kRegIntStatus:     intPending &= ~v; break;
         case kRegXLink1TX:      port[0].writeTX(v); break;
-        case kRegXLink2TX:      port[1].writeTX(v); break;
+        case kRegXLink2TX:
+            if (gatePort2 && !port2Enabled()) port2TxWhileDisabled++;
+            port[1].writeTX(v);
+            break;
         case kRegXLink1RX:      port[0].writeRX(); break;
         case kRegXLink2RX:      port[1].writeRX(); break;
         case kRegXLink1Status:  port[0].sticky &= ~v; break;
@@ -520,6 +540,7 @@ static void RunScenario(const Options &o, Run &r)
     if (o.portCountProperty >= 0) card.personalityNumbers["SymphonyPortCount"] = (uint64_t)o.portCountProperty;
     if (o.portCountString) card.personalityStrings["SymphonyPortCount"] = o.portCountString;
     if (o.legacy2100) card.pciDeviceID = kSymphonyPCIeDeviceID;
+    card.gatePort2 = o.portCountProperty == 2;
     if (!o.lateSymphony) Attach(card.port[0], o.port1);
     if (!o.latePort2) Attach(card.port[1], o.port2);
     if (o.dirtyRegisters) {
@@ -724,80 +745,91 @@ static Port2State ReadPort2(Run &r)
     return s;
 }
 
-// Things that must hold in two-port mode during Stage 1, checked on the raw
-// trace: the port is switched on the way the original did it, and nothing that
-// carries audio on port 2 is touched.
-static void CheckStage1(const Options &o, Run &r, bool expectUnits)
+// Things that must hold in two-port mode while "Port 1: 32ch" is selected,
+// checked on the raw trace from line `from` on: as the original at 32
+// channels (setCardEnabled(true, 1): both clock enables set, SetNumPorts(1):
+// DisablePort2 set; BusInit skips the disabled bus), port 2 is never probed,
+// never sent a command and never given audio.
+static void CheckAt32(const Options &o, Run &r, size_t from = 0)
 {
     FakeCard &c = r.card;
+    // The whole-session checks (Start allocated nothing for port 2 and
+    // published 32 channels) only for a session that never left 32.
+    if (from == 0) {
 #ifdef TRACE_HAVE_PORT2_AUDIO
-    // Stage 2 allocates the port-2 buffer pair at Start; it is not programmed
-    // into the card (the register checks below) until 64 is selected.
-    CHECK(c.count("H dma-prepare") == 5, "%s: %zu DMA mappings (want 5: A2H, H2A, meters, A2H2, H2A2)",
-          o.name, c.count("H dma-prepare"));
+        // Stage 2 allocates the port-2 buffer pair at Start; it is not programmed
+        // into the card (the register checks below) until 64 is selected.
+        CHECK(c.count("H dma-prepare") == 5, "%s: %zu DMA mappings (want 5: A2H, H2A, meters, A2H2, H2A2)",
+              o.name, c.count("H dma-prepare"));
 #else
-    CHECK(c.count("H dma-prepare") == 3, "%s: %zu DMA mappings (want 3: A2H, H2A, meters)",
-          o.name, c.count("H dma-prepare"));
+        CHECK(c.count("H dma-prepare") == 3, "%s: %zu DMA mappings (want 3: A2H, H2A, meters)",
+              o.name, c.count("H dma-prepare"));
 #endif
-    CHECK(c.count("H stream-create") == 2, "%s: %zu streams (want 2)", o.name, c.count("H stream-create"));
-    for (auto &l : c.lines) {
-        if (l.compare(0, 16, "H stream-format ") == 0)
-            CHECK(l.find("channels=32 ") != std::string::npos, "%s: stream format changed: %s", o.name, l.c_str());
-        // The streams are created on the same 1 MB buffers as with one port.
-        if (l.compare(0, 16, "H stream-create ") == 0)
-            CHECK(l.find("buffer=1048576") != std::string::npos, "%s: stream buffer size changed: %s", o.name, l.c_str());
-        CHECK(l.compare(0, 16, "H stream-buffer ") != 0, "%s: a stream buffer was swapped: %s", o.name, l.c_str());
+        CHECK(c.count("H stream-create") == 2, "%s: %zu streams (want 2)", o.name, c.count("H stream-create"));
+        for (auto &l : c.lines) {
+            if (l.compare(0, 16, "H stream-format ") == 0)
+                CHECK(l.find("channels=32 ") != std::string::npos, "%s: stream format changed: %s", o.name, l.c_str());
+            // The streams are created on the same 1 MB buffers as with one port.
+            if (l.compare(0, 16, "H stream-create ") == 0)
+                CHECK(l.find("buffer=1048576") != std::string::npos, "%s: stream buffer size changed: %s", o.name, l.c_str());
+            CHECK(l.compare(0, 16, "H stream-buffer ") != 0, "%s: a stream buffer was swapped: %s", o.name, l.c_str());
+        }
+        for (uint64_t off : { kRegA2H2BUFSIZE, kRegH2A2BUFSIZE, kRegA2H2HBA, kRegH2A2HBA }) {
+            char w[32];
+            snprintf(w, sizeof(w), "W 0x%06llx ", (unsigned long long)off);
+            for (auto &l : c.lines)
+                if (l.compare(0, strlen(w), w) == 0)
+                    CHECK(l == std::string(w) + "0x00000000", "%s: port-2 DMA register programmed: %s", o.name, l.c_str());
+        }
+        // No routing entry beyond the 32 port-1 channels.
+        for (auto &l : c.lines) {
+            unsigned long long off = 0;
+            unsigned val = 0;
+            if (sscanf(l.c_str(), "W 0x%llx 0x%x", &off, &val) != 2) continue;
+            const bool in2  = off >= kRegInputRouting + 32 * 4 && off < kRegInputRouting + 64 * 4;
+            const bool out2 = off >= kRegOutputRouting + 32 * 4 && off < kRegOutputRouting + 64 * 4;
+            CHECK(!in2 && !out2, "%s: port-2 routing written: %s", o.name, l.c_str());
+            if (off == kRegGCSR2)
+                CHECK((val & kGCSR2_DMAEnableMask) == 0, "%s: port-2 DMA enabled: %s", o.name, l.c_str());
+            if (off == kRegIntMask)
+                CHECK((val & ~kInt_A2HWrap) == 0, "%s: extra interrupt enabled: %s", o.name, l.c_str());
+        }
     }
-    for (uint64_t off : { kRegA2H2BUFSIZE, kRegH2A2BUFSIZE, kRegA2H2HBA, kRegH2A2HBA }) {
-        char w[32];
-        snprintf(w, sizeof(w), "W 0x%06llx ", (unsigned long long)off);
-        for (auto &l : c.lines)
-            if (l.compare(0, strlen(w), w) == 0)
-                CHECK(l == std::string(w) + "0x00000000", "%s: port-2 DMA register programmed: %s", o.name, l.c_str());
-    }
-    // No routing entry beyond the 32 port-1 channels.
-    for (auto &l : c.lines) {
+    // No access at all to port 2's XLink registers, no command reaches it.
+    size_t port2Access = 0;
+    for (size_t i = from; i < c.lines.size(); i++) {
         unsigned long long off = 0;
         unsigned val = 0;
-        if (sscanf(l.c_str(), "W 0x%llx 0x%x", &off, &val) != 2) continue;
-        const bool in2  = off >= kRegInputRouting + 32 * 4 && off < kRegInputRouting + 64 * 4;
-        const bool out2 = off >= kRegOutputRouting + 32 * 4 && off < kRegOutputRouting + 64 * 4;
-        CHECK(!in2 && !out2, "%s: port-2 routing written: %s", o.name, l.c_str());
-        if (off == kRegGCSR2)
-            CHECK((val & kGCSR2_DMAEnableMask) == 0, "%s: port-2 DMA enabled: %s", o.name, l.c_str());
-        if (off == kRegIntMask)
-            CHECK((val & ~kInt_A2HWrap) == 0, "%s: extra interrupt enabled: %s", o.name, l.c_str());
+        char kind = 0;
+        if (sscanf(c.lines[i].c_str(), "%c 0x%llx 0x%x", &kind, &off, &val) != 3 || (kind != 'R' && kind != 'W'))
+            continue;
+        // The one-port driver's start-up status snapshot reads XLink2Status
+        // too; a read of the status register alone is not a probe.
+        if (off == kRegXLink2TX || off == kRegXLink2RX || (off == kRegXLink2Status && kind == 'W')) port2Access++;
     }
-    // Port 2 never gets an unmute command in Stage 1 (cmd 0x0A, broadcast).
-    char unmute[40];
-    snprintf(unmute, sizeof(unmute), "W 0x%06llx 0x%08x", (unsigned long long)kRegXLink2TX,
-             (uint32_t)((0x0Au << 9) | (0x80u << 1)));
-    CHECK(c.count(unmute) == 0, "%s: port 2 was unmuted", o.name);
+    CHECK(port2Access == 0, "%s: %zu accesses to port 2's XLink registers at 32 channels", o.name, port2Access);
+    CHECK(c.port2TxWhileDisabled == 0, "%s: commands written to port 2 while it was disabled", o.name);
+    if (from == 0)
+        CHECK(c.port[1].commandsSeen == 0, "%s: port 2 was sent commands at 32 channels", o.name);
 
-    bool enabled2 = false, cleared2 = false;
+    bool enabled2 = false;
     for (auto &l : c.lines) {
         unsigned long long off = 0;
         unsigned val = 0;
         if (sscanf(l.c_str(), "W 0x%llx 0x%x", &off, &val) != 2) continue;
         if (off == kRegXLinkClocking && (val & kXLinkClockEnable2) && (val & kXLinkClockEnable1)) enabled2 = true;
     }
-    cleared2 = (c.reg[kRegGCSR2] & (kGCSR2_DisablePort1 | kGCSR2_DisablePort2)) == 0;
-    CHECK(enabled2, "%s: XLINK_CLOCKING_ENABLE_2 never written", o.name);
-    CHECK(cleared2, "%s: SM_MISC2_DISABLE_PORT2 still set (GCSR2=0x%08x)", o.name, c.reg[kRegGCSR2]);
-    CHECK((c.reg[kRegXLinkClocking] & kXLinkClockEnable2) != 0, "%s: port 2 clocking not enabled at the end", o.name);
+    CHECK(enabled2, "%s: XLINK_CLOCKING_ENABLE_2 never written (the original set both)", o.name);
+    // Port 2 disabled (or the card reset and not yet re-programmed, which
+    // leaves port 2 off as well).
+    CHECK(!c.port2Enabled(), "%s: port 2 enabled at 32 channels (GCSR2=0x%08x, XLinkClocking=0x%08x)",
+          o.name, c.reg[kRegGCSR2], c.reg[kRegXLinkClocking]);
 
     Port2State s = ReadPort2(r);
     CHECK(s.w[1] == 2, "%s: ReadPort2State portCount=%u", o.name, s.w[1]);
-    CHECK((s.w[2] & 1u) != 0, "%s: port 2 probe did not run (flags=0x%x)", o.name, s.w[2]);
-    if (expectUnits) {
-        CHECK((s.w[2] & 2u) != 0, "%s: port 2 clock not reported (flags=0x%x)", o.name, s.w[2]);
-        CHECK(s.w[6] == 2, "%s: port 2 units=%u (want 2)", o.name, s.w[6]);
-        CHECK((s.w[7] & 0xFF) == 0x30 && (s.w[8] & 0xFF) == 0xC0,
-              "%s: port 2 unit words 0x%08x 0x%08x", o.name, s.w[7], s.w[8]);
-    } else {
-        CHECK((s.w[2] & 2u) == 0 && s.w[6] == 0, "%s: port 2 reported units with nothing attached", o.name);
-        CHECK(c.port[1].commandsSeen == 0, "%s: commands sent on port 2 with no clock there", o.name);
-    }
+    if (from == 0)
+        CHECK((s.w[2] & 1u) == 0 && s.w[6] == 0 && s.w[11] == 0,
+              "%s: port 2 probed at 32 channels (flags=0x%x units=%u probes=%u)", o.name, s.w[2], s.w[6], s.w[11]);
     // The existing link-state words are untouched by the new selector.
     uint32_t link[16] = {};
     r.drv->ReadLinkState(link);
@@ -839,7 +871,13 @@ static uint8_t RateCode(double rate)
     return 0xFF;
 }
 
-// The device's rate changes reach port 2 when a unit was found there, in the
+#ifdef TRACE_HAVE_PORT2_AUDIO
+static size_t Select(Run &r, uint32_t value, const char *phase, bool ioRunning = false);
+#endif
+
+// At 32 channels a device rate change leaves port 2 alone, as the original
+// sent rates only to enabled buses. With 64 selected they reach port 2 when a
+// unit was found there, in the
 // original's order (port 2 told first, then port 1 changed and verified, then
 // port 2 again and verified), and a port-2 failure does not fail port 1.
 static void RunPort2RateChange(const Options &o, Run &r)
@@ -858,6 +896,39 @@ static void RunPort2RateChange(const Options &o, Run &r)
         return std::make_pair(rc, mark);
     };
 
+    // "Port 1: 32ch": port 2 is disabled and is told nothing.
+    {
+        auto [rc, mark] = change("rate change to 48000 at 32 channels", 48000.0);
+        CHECK(rc == kIOReturnSuccess, "%s: rate change at 32 returned 0x%x", o.name, rc);
+        CHECK(FirstRateCommand(c, mark, tx2) == SIZE_MAX && c.port[1].commandsSeen == 0,
+              "%s: port 2 was told a rate at 32 channels", o.name);
+        CheckAt32(o, r);
+        auto [rc2, mark2] = change("rate change back to 44100 at 32 channels", 44100.0);
+        (void)rc2; (void)mark2;
+        CheckAt32(o, r);
+    }
+#ifdef TRACE_HAVE_PORT2_AUDIO
+    // A port-2 failure during a rate change at 64 sends the driver back to
+    // 32 channels (stage 2): select 64 again before the next case.
+#define ENSURE64(after) ensure64(after)
+    auto ensure64 = [&](const char *after) {
+        Port2State s = ReadPort2(r);
+        if (s.w[14] & kSymphonyPort2AudioActive) return false;
+        char phase[96];
+        snprintf(phase, sizeof(phase), "select Port 1-2: 64ch again (%s)", after);
+        Select(r, 1, phase);
+        CHECK(ReadPort2(r).w[14] & kSymphonyPort2AudioActive, "%s: 64 not running again after %s", o.name, after);
+        return true;
+    };
+    Select(r, 1, "select Port 1-2: 64ch");
+#else
+#define ENSURE64(after) false
+#endif
+    {
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[14] & kSymphonyPort2AudioActive) != 0 && s.w[6] == 2 && s.w[11] == 1,
+              "%s: 64 not running after the select (audio 0x%08x units %u probes %u)", o.name, s.w[14], s.w[6], s.w[11]);
+    }
     static const double rates[] = { 96000.0, 192000.0, 44100.0 };
     uint32_t changes = 0;
     for (double rate : rates) {
@@ -899,6 +970,8 @@ static void RunPort2RateChange(const Options &o, Run &r)
               "%s: port-2 rate failure not reported (flags 0x%x rate %u changes %u)", o.name, s.w[2], s.w[12], s.w[13]);
     }
     c.port[1].ignoreRate = false;
+    // Port 2 did not follow at 64: the driver went back to 32 on its own.
+    CHECK(ENSURE64("port 2 did not follow a rate change"), "%s: still at 64 after port 2 did not follow", o.name);
 
     // Port 1's TX is busy after port 2 was told: port 1 stays at 48k, the
     // change fails, DDS goes back, and port 2 is put back to 48k as well.
@@ -918,6 +991,7 @@ static void RunPort2RateChange(const Options &o, Run &r)
               "%s: failed change not reported (flags 0x%x rate %u)", o.name, s.w[2], s.w[12]);
     }
     c.port[0].txBusy = false;
+    ENSURE64("port 1 TX busy");
     {
         c.phase("two-port rate change retried");
         drv->StartDevice(1, IOUserAudioStartStopFlags::None);
@@ -944,6 +1018,7 @@ static void RunPort2RateChange(const Options &o, Run &r)
     // Port 2 slips through the whole before-step wait (2000 ms budget = 8
     // passes, each broken by its first slipping read): it is not told first,
     // but is still told after port 1 and follows.
+    ENSURE64("the retry");
     c.port[1].slipReads = 8;
     {
         auto [rc, mark] = change("two-port rate change to 192000, port 2 slipping beforehand", 192000.0);
@@ -960,6 +1035,7 @@ static void RunPort2RateChange(const Options &o, Run &r)
     }
     // Port 2 never stops slipping: the change still succeeds, the port-2
     // failure is reported, and the port-2 waits stay within their budget.
+    ENSURE64("port 2 slipping beforehand");
     c.port[1].slipReads = 1000000;
     {
         auto [rc, mark] = change("two-port rate change to 44100, port 2 always slipping", 44100.0);
@@ -974,6 +1050,7 @@ static void RunPort2RateChange(const Options &o, Run &r)
     }
     // Healthy again: next change succeeds on both ports and clears the flag.
     {
+        CHECK(ENSURE64("port 2 always slipping"), "%s: still at 64 after port 2 never locked", o.name);
         auto [rc, mark] = change("two-port rate change to 48000 after the slip", 48000.0);
         changes++;
         const uint64_t ms = sleptMs(mark);
@@ -984,7 +1061,11 @@ static void RunPort2RateChange(const Options &o, Run &r)
         CHECK(ms < 2500, "%s: healthy two-port rate change slept %llu ms", o.name, (unsigned long long)ms);
     }
 
-    CheckStage1(o, r, true);
+    {
+        Port2State s = ReadPort2(r);
+        CHECK(s.w[6] == 2, "%s: port 2 units %u before it is switched off", o.name, s.w[6]);
+    }
+    ENSURE64("the good change");
 
     // Port 2's chain switched off before the link watch noticed: the driver
     // checks port 2's clock itself and sends nothing there.
@@ -1008,7 +1089,9 @@ static void RunPort2RateChange(const Options &o, Run &r)
         CHECK(FirstRateCommand(c, mark, tx2) == SIZE_MAX,
               "%s: port 2 told a rate after it was reported gone", o.name);
         Port2State s = ReadPort2(r);
-        CHECK(s.w[13] == changes && s.w[6] == 0, "%s: rate change counted with port 2 gone (%u)", o.name, s.w[13]);
+        CHECK(s.w[13] == changes && s.w[6] == 0, "%s: rate change counted with port 2 gone (%u changes, %u units)",
+              o.name, s.w[13], s.w[6]);
+        CHECK(!c.port2Enabled(), "%s: port 2 left enabled after the driver went back to 32", o.name);
     }
 }
 
@@ -1038,7 +1121,7 @@ static kern_return_t HostPerformConfigChange(Run &r, bool ioWasRunning)
 // The user picks an entry in Audio MIDI Setup (or Sound settings, or Maestro):
 // Core Audio sets the selector, the driver asks for a configuration change, and
 // Core Audio performs it. Returns the line the request started at.
-static size_t Select(Run &r, uint32_t value, const char *phase, bool ioRunning = false)
+static size_t Select(Run &r, uint32_t value, const char *phase, bool ioRunning)
 {
     FakeCard &c = r.card;
     c.phase(phase);
@@ -1167,6 +1250,8 @@ static void CheckPort1Alone(const char *what, Run &r, bool expectRunning = true)
         CHECK((c.reg[kRegClkCtrl] & 0x70000000u) == 0x70000000u, "%s: card left muted (ClkCtrl=0x%08x)", what, c.reg[kRegClkCtrl]);
     }
     CHECK((gcsr2 & kGCSR2_DMAEnableMask) == 0, "%s: port 2 DMA still on (GCSR2=0x%08x)", what, gcsr2);
+    // Port 2 itself is disabled again at 32 (the original's SetNumPorts(1)).
+    CHECK(!c.port2Enabled(), "%s: port 2 still enabled at 32 (GCSR2=0x%08x)", what, gcsr2);
     for (uint64_t off : { kRegA2H2BUFSIZE, kRegH2A2BUFSIZE, kRegA2H2HBA, kRegH2A2HBA })
         CHECK(c.reg[off] == 0, "%s: port-2 buffer register 0x%02llx = 0x%08x", what, (unsigned long long)off, c.reg[off]);
     for (uint32_t n = 32; n < 64; n++)
@@ -1271,12 +1356,25 @@ static void RunAudioEnable(const Options &o, Run &r)
     CheckBothPortsRunning("after selecting 64", r, mark);
     CheckPublished("after selecting 64", 64);
     {
-        // Port 2 told the rate, then phase read from both of its converters and
-        // the jam written, then each unit unmuted.
-        // One command (each is written to the register twice).
-        CHECK(RateCommands(c, mark, kRegXLink2TX) == std::vector<uint8_t>({ 0x04, 0x04 }),
-              "%s: port 2 not told the current rate exactly once (%zu rate writes)", o.name,
+        // Port 2 enabled, then probed (bus reset, the rate to all, units
+        // addressed, the rate again), then told the rate and verified, then
+        // phase read from both of its converters and the jam written, then
+        // each unit unmuted. Three rate commands (each is written to the
+        // register twice), all the current rate.
+        CHECK(RateCommands(c, mark, kRegXLink2TX) == std::vector<uint8_t>({ 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 }),
+              "%s: port 2 not told the current rate by the probe and the switch (%zu rate writes)", o.name,
               RateCommands(c, mark, kRegXLink2TX).size());
+        size_t firstPort2 = SIZE_MAX, cleared = SIZE_MAX;
+        for (size_t i = mark; i < c.lines.size(); i++) {
+            unsigned long long off = 0;
+            unsigned val = 0;
+            if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) != 2) continue;
+            if (off == kRegGCSR2 && (val & kGCSR2_DisablePort2) == 0 && cleared == SIZE_MAX) cleared = i;
+            if ((off == kRegXLink2TX || off == kRegXLink2Status) && firstPort2 == SIZE_MAX) firstPort2 = i;
+        }
+        CHECK(cleared != SIZE_MAX && firstPort2 != SIZE_MAX && cleared < firstPort2,
+              "%s: port 2 was talked to before it was enabled", o.name);
+        CHECK(ReadPort2(r).w[11] == 1, "%s: port 2 probed %u times by the first select (want 1)", o.name, ReadPort2(r).w[11]);
         CHECK(FirstRateCommand(c, mark, kRegXLink2TX) < FindWrite(c, mark, kRegA2H2HBA, 0x10300000),
               "%s: port-2 buffers programmed before port 2 was told the rate", o.name);
         auto phases = Commands(c, mark, kRegXLink2TX, 0x09);
@@ -1312,7 +1410,24 @@ static void RunAudioEnable(const Options &o, Run &r)
     CheckIOHandler("32 channels after 64", 32);
     CHECK(CountAccess(c, mark, 'W', kRegXLink2TX) == 0 && CountAccess(c, mark, 'W', kRegXLink1TX) == 0,
           "%s: switching back to 32 sent XLink commands", o.name);
+    CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort2) != 0, "%s: port 2 left enabled after going back to 32", o.name);
     r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    // Back at 32 a rate change leaves port 2 alone, though its units are known.
+    {
+        c.phase("rate change to 48000 back at 32 channels");
+        const size_t m = c.lines.size();
+        gHostAudio.device->SetSampleRate(48000.0);
+        CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: rate change at 32 failed", o.name);
+        Irq(r, 1);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        CHECK(CountAccess(c, m, 'W', kRegXLink2TX) == 0 && CountAccess(c, m, 'R', kRegXLink2Status) == 0,
+              "%s: port 2 was told a rate at 32 channels after 64", o.name);
+        CHECK(c.port2TxWhileDisabled == 0, "%s: commands written to a disabled port 2", o.name);
+        gHostAudio.device->SetSampleRate(44100.0);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        Irq(r, 1);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    }
 
     // The card does not keep the port-2 buffer addresses: refused, port 1 back.
     c.dropPort2Addresses = true;
@@ -1355,13 +1470,21 @@ static void RunAudioRefused(const Options &o, Run &r)
     Irq(r, 1);
     const std::map<uint64_t, uint32_t> before = c.reg;
     const size_t mark = Select(r, 1, "select Port 1-2: 64ch with nothing on port 2", /*ioRunning*/true);
+    // Port 2 is enabled to be looked at, found empty within the probe's
+    // clock wait, and disabled again: the only writes are the enable bits.
     size_t writes = 0;
+    uint64_t sleptMs = 0;
     for (size_t i = mark; i < c.lines.size(); i++) {
         unsigned long long off = 0;
         unsigned val = 0;
-        if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) == 2 && off != kRegIntStatus) writes++;
+        if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) == 2 && off != kRegIntStatus) {
+            CHECK(off == kRegGCSR2 || off == kRegXLinkClocking, "%s: a refused request wrote 0x%llx", o.name, off);
+            writes++;
+        }
+        if (sscanf(c.lines[i].c_str(), "S %llu", &off) == 1) sleptMs += off;
     }
-    CHECK(writes == 0, "%s: a refused request wrote %zu registers", o.name, writes);
+    CHECK(writes == 3, "%s: a refused request wrote %zu registers (want the 3 port-2 enable writes)", o.name, writes);
+    CHECK(sleptMs <= 2100, "%s: looking at an empty port 2 took %llu ms", o.name, (unsigned long long)sleptMs);
     CHECK(c.reg == before, "%s: a refused request changed the card's registers", o.name);
     CHECK(c.port[1].commandsSeen == 0, "%s: a refused request sent commands on port 2", o.name);
     CheckPort1Alone("after the refusal", r);
@@ -1371,6 +1494,28 @@ static void RunAudioRefused(const Options &o, Run &r)
           (s.w[14] >> 16) == 0, "%s: refusal not reported (0x%08x)", o.name, s.w[14]);
     Irq(r, 1);
     r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+}
+
+// p2-audio-late-chain: a chain switched on at port 2 while "Port 1: 32ch" is
+// selected is not looked at (the original's thread ignored a disabled bus);
+// choosing 64 afterwards finds it.
+static void RunAudioLateChain(const Options &o, Run &r)
+{
+    FakeCard &c = r.card;
+    c.phase("port 2 chain powered on at 32 channels");
+    const size_t mark = c.lines.size();
+    Attach(c.port[1], Port::Converters);
+    for (int i = 0; i < 3; i++) {
+        r.drv->LinkWatchTimerOccurred(nullptr, 0);
+        HostPump();
+    }
+    CheckAt32(o, r, mark);
+    CHECK(c.port[1].commandsSeen == 0 && ReadPort2(r).w[11] == 0, "%s: the new chain was probed at 32", o.name);
+    const size_t sel = Select(r, 1, "select Port 1-2: 64ch");
+    CheckBothPortsRunning("after selecting 64 with the late chain", r, sel);
+    CheckPublished("after selecting 64 with the late chain", 64);
+    Port2State s = ReadPort2(r);
+    CHECK(s.w[6] == 2 && s.w[11] == 1, "%s: late chain units %u probes %u", o.name, s.w[6], s.w[11]);
 }
 
 // p2-audio-phase: the original's phase alignment, converters on both ports.
@@ -1818,7 +1963,26 @@ int main(int argc, char **argv)
     for (const Options &o : TwoPortScenarios()) {
         Run r;
         RunScenario(o, r);
-        CheckStage1(o, r, o.port2 != Port::Empty);
+        CheckAt32(o, r);
+#ifdef TRACE_HAVE_PORT2_AUDIO
+        // Port 2 is looked at only now, when 64 is chosen.
+        Select(r, 1, "select Port 1-2: 64ch after the 32-channel flow");
+        {
+            Port2State s = ReadPort2(r);
+            CHECK((s.w[2] & 1u) != 0 && s.w[11] == 1, "%s: selecting 64 did not probe port 2 once (flags 0x%x, %u probes)",
+                  o.name, s.w[2], s.w[11]);
+            if (o.port2 != Port::Empty) {
+                CHECK((s.w[2] & 2u) != 0 && s.w[6] == 2 && (s.w[7] & 0xFF) == 0x30 && (s.w[8] & 0xFF) == 0xC0,
+                      "%s: port 2 units not found on selecting 64 (flags 0x%x, %u units)", o.name, s.w[2], s.w[6]);
+            } else {
+                CHECK((s.w[14] & kSymphonyPort2AudioRefused) && AudioReason(s) == kSymphonyPort2ReasonNoUnit,
+                      "%s: 64 with nothing on port 2 not refused (0x%08x)", o.name, s.w[14]);
+                CHECK((r.card.reg[kRegGCSR2] & kGCSR2_DisablePort2) != 0, "%s: port 2 left enabled after the refusal", o.name);
+            }
+        }
+        const size_t back = Select(r, 0, "select Port 1: 32ch again");
+        CheckAt32(o, r, back);
+#endif
         Finish(o, r);
         accesses += r.card.lines.size();
         if (!WriteFile(outDir, o.name, r.card.lines)) return 2;
@@ -1838,6 +2002,7 @@ int main(int argc, char **argv)
         struct { const char *name; Port::Kind port1, port2; void (*run)(const Options &, Run &); bool unplug; } audio[] = {
             { "p2-audio-enable", Port::Symphony, Port::Converters, RunAudioEnable, false },
             { "p2-audio-refused", Port::Symphony, Port::Empty, RunAudioRefused, false },
+            { "p2-audio-late-chain", Port::Symphony, Port::Empty, RunAudioLateChain, false },
             { "p2-audio-phase", Port::Converters, Port::Converters, RunAudioPhase, false },
             { "p2-audio-switch", Port::Symphony, Port::Converters, RunAudioSwitch, false },
             { "p2-audio-port2-vanishes", Port::Symphony, Port::Converters, RunAudioPort2Vanishes, true },

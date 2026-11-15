@@ -2,9 +2,10 @@
 /// XLink port, and (stage 2) whether port 2 is carrying audio.
 ///
 /// The driver uses one port unless it was packaged with `SymphonyPortCount=2`.
-/// With that it switches port 2 on and asks the units cabled to it what they
-/// are; port 2 carries audio only while "Port 1-2: 64ch" is selected (see
-/// `PortSelection`). It publishes the result through user-client
+/// With that, when "Port 1-2: 64ch" is selected (see `PortSelection`), it
+/// switches port 2 on, asks the units cabled to it what they are and runs
+/// audio there; at "Port 1: 32ch" port 2 stays off and is not looked at, as
+/// in Apogee's driver. It publishes the result through user-client
 /// selector 7 as `SymphonyPort2StateOutput`, sixteen 32-bit words
 /// (`Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h`). macOS does not
 /// keep this driver's log, so this is the only way a tester's findings reach us:
@@ -197,10 +198,14 @@ public struct SecondPortState: Sendable, Equatable {
     public static let experimentValue = "On. Port 2 is identified only and carries no audio."
     /// A driver that can also run port 2 (stage 2).
     public static let experimentValueWithAudio =
-        "On. Port 2 carries audio when \"Port 1-2: 64ch\" is selected."
+        "On. Port 2 is switched on, looked at and carries audio only while \"Port 1-2: 64ch\" is selected."
+
+    /// Port 2 is looked at only when "Port 1-2: 64ch" is chosen, as the
+    /// original driver did, so until then there is nothing to report.
+    public static let notLookedAtText = "Not looked at yet (port 2 is used only with \"Port 1-2: 64ch\")"
 
     public var linkText: String {
-        guard probed else { return "Not looked at yet" }
+        guard probed else { return Self.notLookedAtText }
         guard clockDetected else { return "Nothing found (no unit clock on port 2)" }
         guard dataLinkUp else { return "Unit clock found, data link down" }
         var text = locked ? "Data link up and locked" : "Data link up, not locked (still slipping)"

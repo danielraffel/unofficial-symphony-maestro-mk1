@@ -1196,6 +1196,8 @@ static uint32_t GetActualClockRate(IOPCIDevice *dev, uint8_t memIndex)
 //     told after port 1 (the original would have failed the change and
 //     retried it on its next pass, og :353-358).
 static constexpr int kPort2LockBudgetMs = 2000;
+// Clock polls (50 ms each) after port 2 is enabled for "Port 1-2: 64ch".
+static constexpr int kPort2ClockPollsOnSelect = 40;
 
 struct Port2RateChange {
     SymphonyThunderbridge_IVars *ivars = nullptr;   // for the stop check
@@ -2278,9 +2280,14 @@ static void IndicateLinkOK(SymphonyThunderbridge_IVars *ivars)
 //     then walk the chain: INQUIRE + XTD_INQUIRE to the broadcast address,
 //     stop at the first unit that reports no channels, otherwise SET_ADDR and
 //     PASS_COMMANDS and ask again (:596-660), up to XLINK_MAX_DEVICES.
-// Stage 1 does that much and stops. It allocates no port-2 DMA memory, leaves
-// A2H2/H2A2 at zero, leaves GCSR2's DMA enables off, adds no stream and no
-// routing entry, and never unmutes port 2: nothing can play or record there.
+// The original did this only once a 64-channel source was selected: it started
+// at "Port 1: 32ch" with port 2 disabled (SetNumPorts(1): DisablePort2 set,
+// XLINK_CLOCKING_ENABLE_2 set by setCardEnabled anyway) and BusInit skipped
+// the disabled bus. So does this driver: at 32 channels port 2 is disabled,
+// never probed and never sent a command. ProbeSecondPort runs from
+// EnablePort2Audio, after SetPort2Enabled(true); every way back to 32 disables
+// port 2 again. The probe itself sends no audio: no port-2 DMA, no routing,
+// no unmute (EnablePort2Audio does those once a unit has answered).
 // ══════════════════════════════════════════════════════════════════════════
 
 // XLINK_CLOCKING enable bits written at Start() and after a card reset.
@@ -2291,12 +2298,32 @@ static uint32_t XLinkClockEnableBits(const SymphonyThunderbridge_IVars *ivars)
                                  : kXLinkClockEnable1;
 }
 
-// GCSR2 port-disable bits cleared at Start(). One port: exactly what the driver
-// has always cleared (port 1 only; port 2's bit is left as found).
-static uint32_t GCSR2PortDisableBitsToClear(const SymphonyThunderbridge_IVars *ivars)
+// GCSR2 port-disable bits at Start() and after a card reset: port 1 enabled.
+// One port: exactly what the driver has always done (DisablePort1 cleared,
+// port 2's bit left as found). Two ports: port 2 disabled as well, as the
+// original's XLink::SetNumPorts(1) at 32 channels (XLink.cpp:906-907); it is
+// enabled only while "Port 1-2: 64ch" is being set up or running.
+static uint32_t GCSR2PortDisableBitsToClear(const SymphonyThunderbridge_IVars *)
 {
-    return ivars->portCount == 2 ? (kGCSR2_DisablePort1 | kGCSR2_DisablePort2)
-                                 : kGCSR2_DisablePort1;
+    return kGCSR2_DisablePort1;
+}
+
+static uint32_t GCSR2PortDisableBitsToSet(const SymphonyThunderbridge_IVars *ivars)
+{
+    return ivars->portCount == 2 ? kGCSR2_DisablePort2 : 0u;
+}
+
+// Port 2 on (64 being selected) or back off (32), in GCSR2 only. Two-port only.
+static void SetPort2Enabled(SymphonyThunderbridge_IVars *ivars, bool on)
+{
+    if (ivars->portCount != 2) return;
+    if (on) {
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLinkClocking, kXLinkClockEnable2, 0);
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2, 0, kGCSR2_DisablePort2);
+    } else {
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2, kGCSR2_DisablePort2, 0);
+    }
+    STLOG("Port 2: %s (GCSR2 DisablePort2 %s)", on ? "enabled" : "disabled", on ? "cleared" : "set");
 }
 
 // Wait for port 2's data link to stop slipping: the same three passes of
@@ -2325,7 +2352,8 @@ static bool WaitForPort2Lock(IOPCIDevice *dev, uint8_t mi)
 // Identify what is cabled to port 2 and record it for ReadPort2State.
 // Caller: Start() before DMA starts, or a block on xlinkQueue that has already
 // passed XLinkTxAdmissible. Uses bounded IOSleep polling; never the IRQ queue.
-static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, const char *why)
+static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, const char *why,
+                            int clockPolls)
 {
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
@@ -2341,7 +2369,7 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
     // Port 2's receive clock and a detected rate, with the patience the port-1
     // bring-up has (the original read it five times, XLink.cpp:2631-2690).
     bool clock = false;
-    for (int poll = 0; poll < 10; poll++) {
+    for (int poll = 0; poll < clockPolls; poll++) {
         ReadRegister(dev, mi, kRegXLinkClocking, &clk);
         clock = (clk & kXLinkRX2ClockDetect) != 0 && (clk & kXLinkSR2Mask) != 0;
         if (clock) break;
@@ -2445,63 +2473,58 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
 }
 
 // Link-watch hook (two-port mode only): `clk` is the kRegXLinkClocking value the
-// tick has just read, so this costs no extra bus access unless port 2's clock
-// has appeared or gone since the last probe. A chain powered on after the Mac
-// is found here; one that goes away is reported as gone.
+// tick has just read, so this costs no bus access. Port 2 is looked at only
+// while "Port 1-2: 64ch" is running, as the original's XLink thread ignored a
+// disabled bus (PortEnabled(), XLink.cpp:125-129, :300). At 32 channels a
+// chain plugged into port 2 is found when 64 is selected, not before.
 static void Port2AudioFallBack(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
                                uint32_t reason, bool touchHardware);
+
+static void ClearPort2Units(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
+{
+    ivars->port2Clocking  = clk;
+    ivars->port2UnitCount = 0;
+    ivars->port2RateHz    = 0;
+    for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = 0;
+    __atomic_store_n(&ivars->port2Flags, kSymphonyPort2FlagProbed, __ATOMIC_RELEASE);
+}
 
 static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
                             uint32_t clk)
 {
+    if (__atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != 64) return;
     if ((clk & kXLinkClockEnable2) == 0) {
-        // Stage 2: the card's registers are gone, and its DMA with them. Record
-        // that 64 is no longer running; no register is written for it here.
+        // The card's registers are gone, and its DMA with them (a D3 power
+        // cycle across sleep, the port-1 re-initialization not yet run).
+        // Record that 64 is no longer running; nothing is written for it.
         Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonCardReset, false);
-        // The card lost its registers (a D3 power cycle across sleep) and the
-        // port-1 re-initialization has not run, which it only does while port 1
-        // has a unit. Switch port 2 back on; the next tick looks at its clock.
-        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLinkClocking,
-                       kXLinkClockEnable2, 0);
-        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2,
-                       0, kGCSR2_DisablePort2);
-        STLOG("Port 2: XLINK_CLOCKING_ENABLE_2 was clear (XLinkClocking=0x%08x) — port 2 re-enabled", clk);
-        ivars->port2UnitCount = 0;
-        ivars->port2RateHz    = 0;
-        for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = 0;
-        __atomic_store_n(&ivars->port2Flags, kSymphonyPort2FlagProbed, __ATOMIC_RELEASE);
+        STLOG("Port 2: XLINK_CLOCKING_ENABLE_2 was clear (XLinkClocking=0x%08x) — card reset; back at 32", clk);
+        ClearPort2Units(ivars, clk);
         return;
     }
     const bool present = (clk & kXLinkRX2ClockDetect) != 0 && (clk & kXLinkSR2Mask) != 0;
-    const uint32_t flags = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE);
-    const bool known = (flags & kSymphonyPort2FlagClockDetected) != 0;
-    if (present == known) return;
-    if (present) {
-        const double rate = ivars->xlinkRate > 0.0
-            ? ivars->xlinkRate
-            : (ivars->audioDevice ? ivars->audioDevice->GetSampleRate() : 44100.0);
-        ProbeSecondPort(ivars, rate, "port 2 clock appeared");
-    } else {
-        STLOG("Port 2: unit clock gone (XLinkClocking=0x%08x) — port 2 reported empty", clk);
-        // Stage 2: if both ports were running, go back to port 1 alone now.
-        Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonClockGone, true);
-        ivars->port2Clocking  = clk;
-        ivars->port2UnitCount = 0;
-        ivars->port2RateHz    = 0;
-        for (uint32_t i = 0; i < kXLinkMaxDevices; i++) ivars->port2Unit[i] = 0;
-        __atomic_store_n(&ivars->port2Flags, kSymphonyPort2FlagProbed, __ATOMIC_RELEASE);
-    }
+    if (present) return;
+    STLOG("Port 2: unit clock gone (XLinkClocking=0x%08x) — back to port 1 alone", clk);
+    Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonClockGone, true);
+    ClearPort2Units(ivars, clk);
 }
 
-// Whether a device rate change should go to port 2 too: two-port mode and the
-// last probe found a unit there with its data link up. ChangeSampleRate still
-// checks port 2's clock itself before sending (the unit may have gone since).
+// Whether the last probe found a unit on port 2 with its data link up.
 // Runs on xlinkQueue, where the probe writes these fields.
-static bool Port2TakesRateChanges(const SymphonyThunderbridge_IVars *ivars)
+static bool Port2FoundUnit(const SymphonyThunderbridge_IVars *ivars)
 {
     if (ivars->portCount != 2) return false;
     const uint32_t flags = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE);
     return (flags & kSymphonyPort2FlagDataLinkUp) != 0 && ivars->port2UnitCount > 0;
+}
+
+// Whether a device rate change should go to port 2 too: 64 channels running
+// (port 2 enabled, as the original sent rates only to enabled buses,
+// XLink.cpp:993) and the probe found a unit. ChangeSampleRate still checks
+// port 2's clock itself before sending (the unit may have gone since).
+static bool Port2TakesRateChanges(const SymphonyThunderbridge_IVars *ivars)
+{
+    return Port2FoundUnit(ivars) && __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64;
 }
 
 // After ChangeSampleRate (xlinkQueue). If port 2 was told the new rate but
@@ -2919,17 +2942,30 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
         STERR("Port 2 audio: refused — the port-2 DMA buffers do not exist");
         return false;
     }
-    if (!Port2TakesRateChanges(ivars)) {
+    const double rate = ivars->xlinkRate > 0.0 ? ivars->xlinkRate : 44100.0;
+    const uint8_t rateCode = SampleRateToXLinkCode(rate);
+    // Port 2 is switched on and identified now, not at Start: the original
+    // enabled a second bus only for a 64-channel source and its next BusInit
+    // enumerated it (setCardEnabled(true, 2) → XLink::SetNumPorts(2) →
+    // ForceReconfigure, Symphony64Card.cpp:2249-2262, XLink.cpp:888-913).
+    // The unit's clock needs a moment once the port is enabled, so the probe
+    // waits up to 2 s for it (unverified on hardware).
+    SetPort2Enabled(ivars, true);
+    ProbeSecondPort(ivars, rate, "\"" kSymphonyPortSourceName64 "\" selected", kPort2ClockPollsOnSelect);
+    if (!Port2FoundUnit(ivars)) {
+        // Deliberate departure: the original kept reconfiguring, muted, while
+        // port 2 had no clock (XLink.cpp:300-304). This driver refuses and
+        // stays at 32 with port 2 disabled again.
+        SetPort2Enabled(ivars, false);
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonNoUnit);
         STLOG("Port 2 audio: refused — no unit with its data link up on port 2");
         return false;
     }
-    const double rate = ivars->xlinkRate > 0.0 ? ivars->xlinkRate : 44100.0;
-    const uint8_t rateCode = SampleRateToXLinkCode(rate);
     STLOG("Port 2 audio: enabling at %.0f Hz (%u unit(s) on port 2)", rate, ivars->port2UnitCount);
 
     if (!Port2StopBothEngines(dev, mi)) {
         // The card was stopped and muted (a failed rate change). It stays so.
+        SetPort2Enabled(ivars, false);
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
         STERR("Port 2 audio: refused — the card's DMA was stopped (failed rate change); left stopped");
         return false;
@@ -2947,6 +2983,7 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     if (p2.clock && rateCode != 0xFF) Port2RateAfter(dev, mi, rate, rateCode, &p2);
     ivars->port2RateHz = p2.ok ? (uint32_t)(rate + 0.5) : 0;
     if (!p2.ok) {
+        SetPort2Enabled(ivars, false);
         Port2StartPort1Engine(ivars);
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonRateNotLocked);
         STERR("Port 2 audio: refused — port 2 did not lock at %.0f Hz; port 1 restarted alone", rate);
@@ -2968,6 +3005,7 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     Port2SilenceBuffers(ivars);
     if (!Port2ProgramBuffers(ivars, true)) {
         Port2ProgramBuffers(ivars, false);
+        SetPort2Enabled(ivars, false);
         Port2StartPort1Engine(ivars);
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonRegisters);
         return false;
@@ -3009,6 +3047,8 @@ static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outco
     Port2ProgramRouting(dev, mi, false);
     Port2ProgramBuffers(ivars, false);
     Port2SilenceBuffers(ivars);
+    // Port 2 off again, as the original's SetNumPorts(1) (XLink.cpp:906-907).
+    SetPort2Enabled(ivars, false);
     if (wasRunning) Port2StartPort1Engine(ivars);   // else: stopped and muted stays stopped and muted
     Port2SetCardMode(ivars, 32);
     Port2AudioNote(ivars, outcome, reason);
@@ -3208,9 +3248,11 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
     WriteRegister(dev, mi, kRegRxStatusErr, 0xFFFFFFFF);
     WriteRegister(dev, mi, kRegGCSR, kGCSR_SwapToLE);
     ModifyRegister(dev, mi, kRegXLinkClocking, XLinkClockEnableBits(ivars), 0);
-    // Two-port experiment only: Start() cleared both port-disable bits.
+    // Two-port experiment only: the state Start() left, port 1 enabled and
+    // port 2 disabled until "Port 1-2: 64ch" is selected (the re-programming
+    // is port 1 alone, so 64 is no longer running; see the caller).
     if (ivars->portCount == 2)
-        ModifyRegister(dev, mi, kRegGCSR2, 0, GCSR2PortDisableBitsToClear(ivars));
+        ModifyRegister(dev, mi, kRegGCSR2, GCSR2PortDisableBitsToSet(ivars), GCSR2PortDisableBitsToClear(ivars));
     // Routing tables: the app's card output routes where known, Start()'s
     // defaults elsewhere; input routing is always the default.
     for (uint32_t n = 0; n < kMaxChannelsPerPort; n++) {
@@ -3333,10 +3375,10 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         : (ivars->audioDevice ? ivars->audioDevice->GetSampleRate() : 44100.0);
     SymphonyLinkInitResult restored = {};
     bool ok = ConfigureSymphonyLink(ivars, rate, &restored);
-    // Two-port experiment only: a card that lost its registers lost port 2's
-    // enables too (restored above), so identify port 2 again.
-    if (ivars->portCount == 2 && cardReprogrammed && !LinkRecoveryAborted(ivars))
-        ProbeSecondPort(ivars, rate, "card re-initialized");
+    // Two-port experiment: port 2 is not looked at here. It is switched on
+    // and identified only when "Port 1-2: 64ch" is selected, as the original
+    // (XLink::BusInit skips a bus PortEnabled() says is off, XLink.cpp:510).
+    (void)cardReprogrammed;
     // Abort checks between phases (review item 3): a power-down or a vanished
     // endpoint mid-recovery must not replay state or restart IO.
     if (ok && LinkRecoveryAborted(ivars)) {
@@ -4194,7 +4236,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                    XLinkClockEnableBits(ivars), 0);
     STLOG("XLink port 1 enabled (XLINK_CLOCKING_ENABLE_1)");
     if (ivars->portCount == 2)
-        STLOG("EXPERIMENT: XLink port 2 enabled as well (XLINK_CLOCKING_ENABLE_2)");
+        STLOG("EXPERIMENT: XLINK_CLOCKING_ENABLE_2 set as well, as the original's setCardEnabled "
+              "(port 2 itself stays disabled in GCSR2 until \"" kSymphonyPortSourceName64 "\" is selected)");
 
     SymphonyLinkInitResult linkInit = {};
     ivars->symphonyLinkConfigured = ConfigureSymphonyLink(ivars, 44100.0, &linkInit);
@@ -4340,10 +4383,10 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // Legacy: setCardEnabled() clears DisablePort1. Bit may be stale.
 
     ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2,
-                   0, GCSR2PortDisableBitsToClear(ivars));
+                   GCSR2PortDisableBitsToSet(ivars), GCSR2PortDisableBitsToClear(ivars));
     STLOG("GCSR2: Port 1 enabled (DisablePort1 cleared)");
     if (ivars->portCount == 2)
-        STLOG("EXPERIMENT: GCSR2: Port 2 enabled as well (DisablePort2 cleared)");
+        STLOG("EXPERIMENT: GCSR2: Port 2 disabled (DisablePort2 set) until \"" kSymphonyPortSourceName64 "\" is selected");
 
     // NOTE: ClkCtrl unmute moved to AFTER DMA start (step 29b).
     // Legacy: performAudioEngineStart() unmutes AFTER StartDMA() + 10ms delay.
@@ -4385,11 +4428,14 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
               (gcsr2 & kGCSR2_DisablePort1) ? 1 : 0);
     }
 
-    // ── 21g. EXPERIMENT (64ch, stage 1): identify what is on port 2 ─────────
-    // Two-port mode only. Runs here, before any DMA exists and with the card
-    // still muted, as the original enumerated its buses. Discovery only.
-    if (ivars->portCount == 2)
-        ProbeSecondPort(ivars, 44100.0, "Start");
+    // ── 21g. EXPERIMENT (64ch): port 2 is NOT looked at here ─────────────
+    // The original started at "Port 1: 32ch" (Symphony64AudioEngine.cpp:66,
+    // :87) with one port enabled (Symphony64Card.cpp:73, :208 → XLink::
+    // SetNumPorts(1)), and its BusInit skipped a disabled bus
+    // (XLink.cpp:510, :2827). Port 2 was enabled and enumerated only when a
+    // 64-channel source was chosen (UpdateEnabledSymphonyPorts →
+    // EnableSymphonyCards → setCardEnabled(true, 2)). EnablePort2Audio does
+    // the same here.
 
     // ══════════════════════════════════════════════════════════════════════════
     // ── PT-06: DMA Buffer Allocation + FPGA Programming ─────────────────────
@@ -6103,6 +6149,14 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 if (bothPorts && rateOk && !(port2 && port2Rate.ok)) {
                     Port2ProgramRouting(ivars->pciDevice, ivars->barMemoryIndex, false);
                     Port2ProgramBuffers(ivars, false);
+                    SetPort2Enabled(ivars, false);   // back at 32: port 2 disabled, as SetNumPorts(1)
+                    // Port 2 had no unit clock at all: its units are gone.
+                    if (port2 && port2Rate.attempted && !port2Rate.clock) {
+                        const uint32_t failed = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE)
+                                              & kSymphonyPort2FlagRateFailed;
+                        ClearPort2Units(ivars, ivars->port2Clocking);
+                        __atomic_fetch_or(&ivars->port2Flags, failed, __ATOMIC_ACQ_REL);
+                    }
                     Port2AudioFallBack(ivars, this, kSymphonyPort2ReasonRateChange, false);
                     restartBothPorts = false;
                 }

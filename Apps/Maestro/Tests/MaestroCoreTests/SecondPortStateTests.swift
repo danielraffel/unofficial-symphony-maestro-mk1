@@ -87,7 +87,7 @@ struct SecondPortStateTests {
 
     @Test("the link line follows the probe flags")
     func link() {
-        #expect(SecondPortState(portCount: 2).linkText == "Not looked at yet")
+        #expect(SecondPortState(portCount: 2).linkText == SecondPortState.notLookedAtText)
         #expect(SecondPortState(portCount: 2, flags: 0x01).linkText == "Nothing found (no unit clock on port 2)")
         #expect(SecondPortState(portCount: 2, flags: 0x03).linkText == "Unit clock found, data link down")
         #expect(SecondPortState(portCount: 2, flags: 0x07).linkText == "Data link up, not locked (still slipping)")

@@ -119,8 +119,9 @@ typedef struct {
 // ── EXPERIMENT (64ch, stage 1): second XLink port ───────────────────────────
 // The driver uses one XLink port unless the matched IOKit personality carries
 // this key with the integer 2. No released Info.plist has it. With 2 the driver
-// switches port 2 on and identifies the units cabled to it; port 2 carries no
-// audio until "Port 1-2: 64ch" is selected (stage 2, below).
+// publishes the port selector; port 2 stays disabled and is not looked at until
+// "Port 1-2: 64ch" is selected, as in Apogee's driver. Then it is switched on,
+// the units cabled to it are identified and it carries audio (stage 2, below).
 #define kSymphonyPortCountKey "SymphonyPortCount"
 
 // SymphonyPort2StateOutput.flags
