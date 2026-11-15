@@ -895,6 +895,9 @@ struct InputControlsView: View {
                                     PropertyAddress(selector: selector, scope: .input, element: element),
                                     value: .uint32(optVal)
                                 )
+                                // The replaced pair is renamed "SPDIF Cx" in routing
+                                // and mixer labels, as the daemon renamed it.
+                                if element < 2 { appState.channelNaming.spdifReplace[Int(element)] = optVal }
                             } catch {
                                 print("[Maestro] SPDIF Replace write failed: \(error)")
                             }
@@ -910,13 +913,19 @@ struct InputControlsView: View {
         guard let device = appState.device else { return }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input))
-            if let u = val.asUInt32 { spdifReplace1 = u }
+            if let u = val.asUInt32 {
+                spdifReplace1 = u
+                if u <= 8 { appState.channelNaming.spdifReplace[0] = u }
+            }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace1: \(error)")
         }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input, element: 1))
-            if let u = val.asUInt32 { spdifReplace2 = u }
+            if let u = val.asUInt32 {
+                spdifReplace2 = u
+                if u <= 8 { appState.channelNaming.spdifReplace[1] = u }
+            }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace2: \(error)")
         }

@@ -583,3 +583,106 @@ struct SPDIFMenuParityTests {
                 + pairs("Optical", from: 1, count: 8))
     }
 }
+
+/// Channel names follow the optical format, the rate and S/PDIF Coax Replaces,
+/// as the daemon's `kAudioObjectPropertyElementName` did
+/// (`OpticalIn_SymphonyIO_Stream.cpp:166-234`, `OpticalOut_SymphonyIO_Stream.cpp:170-232`,
+/// `SymphonyIO_IOBoard.cpp:1312-1349`). The channel count never changes.
+@Suite("Channel names follow rate, format and coax replace")
+struct ChannelNamingTests {
+
+    private func layout(_ s1: IOCardType, _ s2: IOCardType = .none, rate: Double? = nil,
+                        spdif: [Bool?] = [nil, nil], replace: [UInt32] = [0, 0]) -> CardLayout {
+        CardLayout(slot1: s1, slot2: s2,
+                   naming: .init(sampleRate: rate, opticalIsSPDIF: spdif, spdifReplace: replace))
+    }
+
+    @Test func eightByEightOpticalByRate() {
+        #expect(layout(.optical, rate: 48000).digitalInputPairs.map(\.label)
+                == ["ADAT 1/2", "ADAT 3/4", "ADAT 5/6", "ADAT 7/8"])
+        // Two ports carry four SMUX channels each: all eight are live.
+        #expect(layout(.optical, rate: 96000).digitalOutputPairs.map(\.label)
+                == ["SMUX 1/2", "SMUX 3/4", "SMUX 5/6", "SMUX 7/8"])
+        #expect(layout(.optical, rate: 192000).digitalInputPairs.map(\.label)
+                == ["N.A.", "N.A.", "N.A.", "N.A."])
+        // Unknown rate names as the hardware starts: 44.1/48 kHz.
+        #expect(layout(.optical).digitalInputPairs.first?.label == "ADAT 1/2")
+    }
+
+    @Test func spdifFormat() {
+        #expect(layout(.optical, rate: 44100, spdif: [true, nil]).digitalInputPairs.map(\.label)
+                == ["SPDIF Opt 1/2", "N.A.", "N.A.", "N.A."])
+        #expect(layout(.optical, rate: 176400, spdif: [true, nil]).digitalInputPairs.first?.label == "N.A.")
+        // DA16 inputs: two per eight-channel port (channels 1-2 and 9-10).
+        #expect(layout(.analogDA16, rate: 48000, spdif: [true, nil]).digitalInputPairs.map(\.label)
+                == ["SPDIF Opt 1/2", "N.A.", "N.A.", "N.A.", "SPDIF Opt 3/4", "N.A.", "N.A.", "N.A."])
+        // AD16 outputs: the output stream tests against all 16 channels, so
+        // only the first pair (`OpticalOut_SymphonyIO_Stream.cpp:188`).
+        #expect(layout(.analogAD16, rate: 48000, spdif: [true, nil]).digitalOutputPairs.map(\.label)
+                == ["SPDIF Opt 1/2"] + Array(repeating: "N.A.", count: 7))
+    }
+
+    @Test func twoBySixHasOneSMUXPort() {
+        #expect(layout(.twoBySix, rate: 96000).digitalInputPairs.map(\.label)
+                == ["AES 1/2", "SMUX 1/2", "SMUX 3/4", "N.A.", "N.A."])
+        // AES is named the same at every rate.
+        #expect(layout(.twoBySix, rate: 192000).digitalOutputPairs.map(\.label)
+                == ["AES 1/2", "N.A.", "N.A.", "N.A.", "N.A."])
+    }
+
+    @Test func secondSlotNumbersOn() {
+        #expect(layout(.optical, .optical, rate: 48000).digitalInputPairs[4].label == "ADAT 9/10")
+        #expect(layout(.optical, .optical, rate: 88200).digitalInputPairs[4].label == "SMUX 9/10")
+        #expect(layout(.optical, .optical, rate: 48000, spdif: [nil, true]).digitalInputPairs[4].label
+                == "SPDIF Opt 3/4")
+        // Owner's unit, combo on optical + A16 IP: the A16's outputs continue
+        // after the combo's eight optical outputs.
+        #expect(layout(.optical, .analogAD16, rate: 96000).digitalOutputPairs[4].label == "SMUX 9/10")
+    }
+
+    @Test func routingHeadersAndMixerFollowTheNames() {
+        let l = layout(.optical, .analogAD16, rate: 192000)
+        let digital = l.outputRoutingColumns.filter(\.isDigital)
+        #expect(digital.allSatisfy { $0.type == "N.A." && $0.channels.isEmpty })
+        // Same columns and bytes as at 48 kHz: only the names change.
+        #expect(l.outputRoutingColumns.map(\.routingByte)
+                == layout(.optical, .analogAD16, rate: 48000).outputRoutingColumns.map(\.routingByte))
+        #expect(layout(.optical, rate: 96000).mixerChannels.map(\.label).suffix(8)
+                == (1...8).map { "SMUX \($0)" })
+        let smux = layout(.optical, rate: 96000).inputRoutingColumns.filter(\.isDigital)
+        #expect(smux.map { "\($0.type) \($0.channels)" } == ["SMUX 1/2", "SMUX 3/4", "SMUX 5/6", "SMUX 7/8"])
+    }
+
+    /// S/PDIF Coax Replaces renames the replaced input pair "SPDIF Cx n";
+    /// outputs are never renamed (`SymphonyIO_IOBoard.cpp:1317-1318`).
+    @Test func coaxReplaceRenamesTheInputPair() {
+        // Combo on AES, Replaces = AES 1-2 (wire 5).
+        let aes = layout(.analogAES, .analogAD16, replace: [5, 0])
+        #expect(aes.digitalInputPairs.map(\.label) == ["SPDIF Cx 1/2", "AES 3/4", "AES 5/6", "AES 7/8"])
+        #expect(aes.digitalOutputPairs.first?.label == "AES 1/2")
+        #expect(aes.mixerChannels.first { $0.label.hasPrefix("SPDIF") }?.label == "SPDIF Cx 1")
+        // Slot 2 (A16 IP) replacing Analog 1-2 of that board: coax 3-4.
+        let a16 = layout(.analogAES, .analogAD16, replace: [0, 1])
+        let column = a16.inputRoutingColumns.first { $0.boardIndex == 1 }
+        #expect(column.map { "\($0.type) \($0.channels)" } == "SPDIF Cx 3/4")
+        #expect(a16.inputRoutingColumns.first.map { "\($0.type) \($0.channels)" } == "Line 1/2")
+        // 2x6: wire 2 is its AES pair, wire 3 its first optical pair.
+        #expect(layout(.twoBySix, replace: [2, 0]).digitalInputPairs.first?.label == "SPDIF Cx 1/2")
+        #expect(layout(.twoBySix, replace: [3, 0]).digitalInputPairs[1].label == "SPDIF Cx 1/2")
+    }
+
+    /// Menus Apogee named statically stay static.
+    @Test func menusDoNotFollowTheRate() {
+        let l = layout(.optical, rate: 192000, spdif: [true, nil])
+        #expect(l.headphoneSources.last?.name == "Optical 7-8")
+        #expect(l.spdifOptions(slot: 0, isInput: true).last?.name == "Optical 7-8")
+    }
+
+    /// `APUtilities.m:323-400`.
+    @Test func stereoNames() {
+        #expect(CardLayout.stereoName(left: "ADAT 1", right: "ADAT 2") == "ADAT 1/2")
+        #expect(CardLayout.stereoName(left: "N.A.", right: "N.A.") == "N.A.")
+        #expect(CardLayout.stereoName(left: "SPDIF Opt 1", right: "SPDIF Opt 2") == "SPDIF Opt 1/2")
+        #expect(CardLayout.stereoName(left: "SMUX 3", right: "N.A.") == "SMUX 3/N.A.")
+    }
+}

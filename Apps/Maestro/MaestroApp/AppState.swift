@@ -557,7 +557,40 @@ final class AppState {
             isKnown: CardLayout.readingsDescribeAUnit(
                 slot1: primaryBoardType, slot2: secondaryBoardType),
             fallbackChannelCount: device?.identifier.mode.channelCount ?? 16,
-            converter: connectedUnit)
+            converter: connectedUnit,
+            naming: channelNaming)
+    }
+
+    /// What channel names follow besides the cards: the sample rate (the status
+    /// bar's), each slot's optical format and S/PDIF Coax Replaces setting. The
+    /// views that read or write those settings keep this current, so routing,
+    /// mixer and strip labels re-label as soon as one changes, the way Apogee's
+    /// daemon re-named its channels (`OpticalIn_SymphonyIO_Stream.cpp:70-80, 141-153`).
+    var channelNaming = CardLayout.ChannelNaming()
+
+    /// Read each slot's optical format and S/PDIF Coax Replaces from the unit
+    /// for `channelNaming`. A read that fails leaves the value as it was.
+    @MainActor
+    func refreshChannelNaming() async {
+        guard let device else { return }
+        for slot in 0..<2 {
+            let card = cardLayout.card(atSlot: slot)
+            if card.hasOpticalPorts {
+                let selector: AudioPropertySelector = card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat
+                if let raw = (try? await device.getProperty(
+                        PropertyAddress(selector: selector, element: UInt32(slot))))?.asUInt32, raw <= 1 {
+                    channelNaming.opticalIsSPDIF[slot] = raw == 1
+                }
+            } else {
+                channelNaming.opticalIsSPDIF[slot] = nil
+            }
+            if card.hasSPDIFCoax,
+               let raw = (try? await device.getProperty(
+                    PropertyAddress(selector: .spdifReplaceID, scope: .input, element: UInt32(slot))))?.asUInt32,
+               raw <= 8 {
+                channelNaming.spdifReplace[slot] = raw
+            }
+        }
     }
 
     /// "Connection" as shown in Device Info and the copied details: names the
@@ -1657,6 +1690,7 @@ final class AppState {
 
                 // Read card types and sync routing (USB-specific but harmless for TB)
                 await self.readCardTypes()
+                await self.refreshChannelNaming()
                 await self.syncOutputRoutingToHardware()
                 await self.syncDeviceSettingsToHardware()
 

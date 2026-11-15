@@ -420,6 +420,10 @@ struct DeviceSettingsView: View {
         let validValue = value.flatMap { $0 <= 1 ? $0 : nil }
         if card == 0 { opticalFormatCard1 = validValue }
         else { opticalFormatCard2 = validValue }
+        // Optical channel names everywhere follow the confirmed format.
+        if let validValue, card < 2 {
+            appState.channelNaming.opticalIsSPDIF[Int(card)] = validValue == 1
+        }
     }
 
     /// Keep showing confirmed hardware state until the write and readback finish.
@@ -503,7 +507,7 @@ struct DeviceSettingsView: View {
         if layout.hasOpticalPorts(slot: 0) {
             do {
                 if let fmt = (try await readSetting(opticalFormatSelector(card: 0), element: 0))?.asUInt32 {
-                    opticalFormatCard1 = fmt <= 1 ? fmt : nil
+                    setOpticalReadback(fmt, card: 0)
                 }
             } catch is CancellationError {
                 return
@@ -514,7 +518,7 @@ struct DeviceSettingsView: View {
         if layout.hasOpticalPorts(slot: 1) {
             do {
                 if let fmt = (try await readSetting(opticalFormatSelector(card: 1), element: 1))?.asUInt32 {
-                    opticalFormatCard2 = fmt <= 1 ? fmt : nil
+                    setOpticalReadback(fmt, card: 1)
                 }
             } catch is CancellationError {
                 return
@@ -850,26 +854,7 @@ struct SystemSetupView: View {
             : ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
                                           slot2: appState.secondaryBoardType,
                                           sampleRate: sampleRate > 0 ? sampleRate : nil,
-                                          opticalIsSPDIF: opticalIsSPDIF)
-    }
-
-    /// Each slot's optical format as last read (true = S/PDIF), nil when the
-    /// slot has no optical ports or the read failed. It names the optical
-    /// clock row and, on a DA16, picks the input byte that row sends.
-    @State private var opticalIsSPDIF: [Bool?] = [nil, nil]
-
-    private func loadOpticalFormats(_ device: any DeviceConnection) async {
-        var formats: [Bool?] = [nil, nil]
-        for slot in 0..<2 {
-            let card = appState.cardLayout.card(atSlot: slot)
-            guard card.hasOpticalPorts else { continue }
-            let selector: AudioPropertySelector = card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat
-            if let raw = (try? await device.getProperty(
-                    PropertyAddress(selector: selector, element: UInt32(slot))))?.asUInt32, raw <= 1 {
-                formats[slot] = raw == 1
-            }
-        }
-        opticalIsSPDIF = formats
+                                          opticalIsSPDIF: appState.channelNaming.opticalIsSPDIF)
     }
 
     /// Fallback rates shown when device doesn't report available rates.
@@ -1534,7 +1519,9 @@ struct SystemSetupView: View {
         // still not consulted: its clock-source IDs are not this enum.
         // A board source comes back with its input; `row(for:in:)` picks the
         // menu row for it.
-        if appState.transportType != .usb { await loadOpticalFormats(device) }
+        // Each slot's optical format names the optical clock row and, on a
+        // DA16, picks the input byte that row sends.
+        if appState.transportType != .usb { await appState.refreshChannelNaming() }
         if let reported = (try? await device.getProperty(
                 PropertyAddress(selector: .clockSource)))?.asUInt32,
            let source = ClockSourceMenu.row(for: reported, in: clockSourceChoices),

@@ -52,18 +52,50 @@ public struct CardLayout: Sendable, Equatable {
     /// taken from it; everything else stays on the unknown-layout behaviour.
     public let converter: ConnectedUnit?
 
+    /// What the channel names depend on besides the cards: the sample rate,
+    /// each slot's optical format and each slot's S/PDIF Coax Replaces setting.
+    /// See ``digitalChannelName(board:channelOnCard:isInput:)``.
+    public let naming: ChannelNaming
+
     public init(
         slot1: IOCardType = .none,
         slot2: IOCardType = .none,
         isKnown: Bool = true,
         fallbackChannelCount: Int = 16,
-        converter: ConnectedUnit? = nil
+        converter: ConnectedUnit? = nil,
+        naming: ChannelNaming = ChannelNaming()
     ) {
         self.slot1 = slot1
         self.slot2 = slot2
         self.isKnown = isKnown
         self.fallbackChannelCount = fallbackChannelCount
         self.converter = converter
+        self.naming = naming
+    }
+
+    /// The live state Apogee's daemon named channels from. Unknown values name
+    /// channels as the hardware starts: 44.1/48 kHz naming, ADAT/SMUX format,
+    /// no coax replacement.
+    public struct ChannelNaming: Sendable, Equatable {
+        /// Current sample rate in Hz, nil when not known.
+        public var sampleRate: Double?
+        /// Per slot: true when the optical ports are set to S/PDIF, false for
+        /// ADAT/SMUX, nil when not known or the slot has no optical ports.
+        public var opticalIsSPDIF: [Bool?]
+        /// Per slot: the S/PDIF Coax Replaces wire value (0 Off, 1-8 the pair
+        /// replaced; `SymphonyIOVendorSpecific.h:940-951`).
+        public var spdifReplace: [UInt32]
+
+        public init(sampleRate: Double? = nil,
+                    opticalIsSPDIF: [Bool?] = [nil, nil],
+                    spdifReplace: [UInt32] = [0, 0]) {
+            self.sampleRate = sampleRate
+            self.opticalIsSPDIF = opticalIsSPDIF
+            self.spdifReplace = spdifReplace
+        }
+
+        func isSPDIF(slot: Int) -> Bool { slot < opticalIsSPDIF.count && opticalIsSPDIF[slot] == true }
+        func replace(slot: Int) -> UInt32 { slot < spdifReplace.count ? spdifReplace[slot] : 0 }
     }
 
     /// Whether a pair of slot readings describes an actual unit.
@@ -77,6 +109,107 @@ public struct CardLayout: Sendable, Equatable {
     /// also cached. Unknown falls back to the generic layout instead.
     public static func readingsDescribeAUnit(slot1: IOCardType, slot2: IOCardType) -> Bool {
         slot1 != .none || slot2 != .none
+    }
+
+    // MARK: - Channel names
+
+    /// The daemon's "not applicable" channel name: an optical channel that the
+    /// current rate or format does not carry. The channel stays in every list;
+    /// only its name changes (the device's channel count never does).
+    public static let notApplicable = "N.A."
+
+    /// The name of one channel on a board as Apogee's daemon gave it to Core
+    /// Audio (`kAudioObjectPropertyElementName`), without the one-letter prefix.
+    ///
+    /// - An input pair the board's S/PDIF coax replaces is "SPDIF Cx n", n
+    ///   numbered on from slot 1's coax (`SymphonyIO_IOBoard.cpp:1312-1349`,
+    ///   reached from every input stream: `SymphonyIO_Stream.cpp:640-650`,
+    ///   `AESIn_SymphonyIO_Stream.cpp:165-188`, `OpticalIn_SymphonyIO_Stream.cpp:170-182`).
+    /// - AES is "AES n" at every rate; the double-wide 192 kHz mode is never
+    ///   enabled (`AESIn_SymphonyIO_Stream.cpp:27, 95-122`).
+    /// - Optical follows the format and the rate
+    ///   (`OpticalIn_SymphonyIO_Stream.cpp:166-234`,
+    ///   `OpticalOut_SymphonyIO_Stream.cpp:170-232`):
+    ///   - S/PDIF, below 176.4 kHz: the first two channels of each eight-channel
+    ///     port on inputs, the first two of the stream on outputs, are
+    ///     "SPDIF Opt n"; the rest "N.A.".
+    ///   - ADAT/SMUX, 88.2/96 kHz: "SMUX n" for the channels SMUX carries (all
+    ///     of them on two-port cards, the first four on the 2x6's single port,
+    ///     `Optical2x6Module_SymphonyIO_Streams.h:20-35`); the rest "N.A.".
+    ///   - ADAT/SMUX, 44.1/48 kHz: "ADAT n".
+    ///   - 176.4 kHz and up: "N.A.".
+    ///   Numbers continue from slot 1's optical channels in the same direction.
+    public func digitalChannelName(board: Int, channelOnCard channel: Int, isInput: Bool) -> String {
+        let card = card(atSlot: board)
+        let analog = isInput ? card.analogInputChannels : card.analogOutputChannels
+        if let coax = coaxReplaceName(board: board, boardChannel: analog + channel, isInput: isInput) {
+            return coax
+        }
+        let label = card.digitalLabel(forChannel: channel)
+        let preceding = board == 1 ? slot1.digitalChannelCount(label: label, isInput: isInput) : 0
+        let number = card.digitalChannelNumber(forChannel: channel)
+        guard label == "ADAT" else { return "\(label) \(preceding + number)" }
+
+        let rate = naming.sampleRate ?? 48000
+        guard rate < 176400 else { return Self.notApplicable }
+        let opticalChannels = card.digitalChannelCount(label: "ADAT", isInput: isInput)
+        if naming.isSPDIF(slot: board) {
+            // Inputs test against each 8-channel port, outputs against the
+            // whole stream (`OpticalIn_...:187` vs `OpticalOut_...:188`).
+            let period = isInput ? 8 : max(opticalChannels, 1)
+            guard (number - 1) % period < 2 else { return Self.notApplicable }
+            return "SPDIF Opt \(number % 8 + 2 * (number / 8) + preceding / 4)"
+        }
+        if rate > 48000 {
+            let smux = card == .twoBySix ? opticalChannels / 2 : opticalChannels
+            return number - 1 < smux ? "SMUX \(preceding + number)" : Self.notApplicable
+        }
+        return "ADAT \(preceding + number)"
+    }
+
+    /// The name of an analog channel: "Line n", or "SPDIF Cx n" when the coax
+    /// replaces it (`SymphonyIO_Stream.cpp:636-660`).
+    public func analogChannelName(board: Int, channelOnCard channel: Int, isInput: Bool) -> String {
+        if let coax = coaxReplaceName(board: board, boardChannel: channel, isInput: isInput) {
+            return coax
+        }
+        let preceding = board == 1
+            ? (isInput ? slot1.analogInputChannels : slot1.analogOutputChannels) : 0
+        return "Line \(preceding + channel + 1)"
+    }
+
+    /// "SPDIF Cx n" for an input channel the board's coax replaces. The
+    /// replaced pair is board channels `(wire - 1) * 2` and the next, counted
+    /// across the board's inputs analog first (`SymphonyIO_IOBoard.cpp:1319-1346`,
+    /// whose menu ID is the wire value plus one).
+    private func coaxReplaceName(board: Int, boardChannel: Int, isInput: Bool) -> String? {
+        guard isInput, isKnown, card(atSlot: board).hasSPDIFCoax else { return nil }
+        let wire = Int(naming.replace(slot: board))
+        guard (1...8).contains(wire) else { return nil }
+        let left = (wire - 1) * 2
+        guard boardChannel == left || boardChannel == left + 1 else { return nil }
+        let coaxBefore = board == 1 && slot1.hasSPDIFCoax ? 2 : 0
+        return "SPDIF Cx \(coaxBefore + 1 + boardChannel - left)"
+    }
+
+    /// A pair's name from its two channel names, as Maestro built it
+    /// (`og_source/maestro2/App/APUtilities.m:323-400`): "N.A." when both are
+    /// N.A., "Function l/r" when both share a function, else "F l/G r".
+    public static func stereoName(left: String, right: String) -> String {
+        if left == notApplicable && right == notApplicable { return notApplicable }
+        func split(_ name: String) -> (function: String, number: String) {
+            guard let space = name.lastIndex(of: " ") else { return ("", name) }
+            return (String(name[..<space]), String(name[name.index(after: space)...]))
+        }
+        let l = split(left), r = split(right)
+        if l.function == r.function { return "\(l.function) \(l.number)/\(r.number)" }
+        return "\(left)/\(right)"
+    }
+
+    /// A stereo name split into the routing header's two lines.
+    static func headerLines(_ stereo: String) -> (type: String, channels: String) {
+        guard let space = stereo.lastIndex(of: " ") else { return (stereo, "") }
+        return (String(stereo[..<space]), String(stereo[stereo.index(after: space)...]))
     }
 
     /// Build a layout from a validated `CardConfiguration`.
@@ -184,23 +317,33 @@ public struct CardLayout: Sendable, Equatable {
     private func digitalPairs(isInput: Bool) -> [DigitalPair] {
         guard isKnown else { return [] }
         var pairs: [DigitalPair] = []
-        // AES and ADAT are different plug types and each is numbered from 1
-        // across the device, the way the daemon names its streams
-        // (`SymphonyIO_Stream.cpp:485-495`, `OpticalOut_SymphonyIO_Stream.cpp:132-148`).
-        var channel: [String: Int] = [:]
+        // Named from the channel names, so AES and optical each number from 1
+        // across the device and optical follows the rate and format.
         for (boardIndex, card) in slots.enumerated() {
             let count = isInput ? card.digitalInputPairsForUI : card.digitalOutputPairsForUI
             for pair in 0..<count {
-                let label = card.digitalLabel(forPair: pair)
-                let number = channel[label, default: 1]
                 pairs.append(DigitalPair(
-                    label: "\(label) \(number)/\(number + 1)",
+                    label: digitalPairName(board: boardIndex, pair: pair, isInput: isInput),
                     boardIndex: boardIndex,
                     pairOnBoard: pair))
-                channel[label] = number + 2
             }
         }
         return pairs
+    }
+
+    /// The stereo name of a digital pair on a board, e.g. "ADAT 1/2",
+    /// "SMUX 9/10", "SPDIF Opt 1/2", "SPDIF Cx 1/2" or "N.A.".
+    public func digitalPairName(board: Int, pair: Int, isInput: Bool) -> String {
+        Self.stereoName(
+            left: digitalChannelName(board: board, channelOnCard: pair * 2, isInput: isInput),
+            right: digitalChannelName(board: board, channelOnCard: pair * 2 + 1, isInput: isInput))
+    }
+
+    /// The stereo name of an analog pair on a board, e.g. "Line 1/2".
+    public func analogPairName(board: Int, pair: Int, isInput: Bool) -> String {
+        Self.stereoName(
+            left: analogChannelName(board: board, channelOnCard: pair * 2, isInput: isInput),
+            right: analogChannelName(board: board, channelOnCard: pair * 2 + 1, isInput: isInput))
     }
 
     // MARK: - S/PDIF coax
@@ -365,23 +508,25 @@ public struct CardLayout: Sendable, Equatable {
         var analog: [(label: String, board: Int)] = []
         var aes: [(label: String, board: Int)] = []
         var optical: [(label: String, board: Int)] = []
-        var analogChannel = 1
-        var digitalChannel: [String: Int] = [:]
 
         for (boardIndex, card) in slots.enumerated() {
-            for _ in 0..<card.analogInputChannels {
-                analog.append((label: "Line \(analogChannel)", board: boardIndex))
-                analogChannel += 1
+            for channelOnCard in 0..<card.analogInputChannels {
+                analog.append((label: analogChannelName(board: boardIndex, channelOnCard: channelOnCard,
+                                                        isInput: true),
+                               board: boardIndex))
             }
         }
         for (boardIndex, card) in slots.enumerated() {
             for channelOnCard in 0..<card.digitalInputChannels {
-                let label = card.digitalLabel(forChannel: channelOnCard)
-                let number = digitalChannel[label, default: 1]
-                let entry = (label: "\(label) \(number)", board: boardIndex)
+                let entry = (label: digitalChannelName(board: boardIndex, channelOnCard: channelOnCard,
+                                                       isInput: true),
+                             board: boardIndex)
                 // AES3 is walked before Optical by the daemon's plug-type loop.
-                if label == "AES" { aes.append(entry) } else { optical.append(entry) }
-                digitalChannel[label] = number + 1
+                if card.digitalLabel(forChannel: channelOnCard) == "AES" {
+                    aes.append(entry)
+                } else {
+                    optical.append(entry)
+                }
             }
         }
         return (analog + aes + optical).enumerated().map { index, entry in
@@ -442,14 +587,21 @@ public struct CardLayout: Sendable, Equatable {
         var analogColumns: [RoutingColumn] = []
         var digitalColumns: [RoutingColumn] = []
         var analogChannel = 1
-        // AES and ADAT are separate plug types, each numbered from 1.
-        var digitalChannel: [String: Int] = [:]
+        // Unknown layout only: digital columns numbered as "Digital n/m".
+        var digitalChannel = 1
 
+        // Column headers are the pair's channel names, so they follow the rate,
+        // the optical format and S/PDIF Coax Replaces, as the original grid's
+        // did: one column per pair whatever its name, "N.A." included
+        // (`og_source/maestro2/App/Controllers/APRoutingDeviceColumnViewController.m:107-178`).
         for boardIndex in 0..<2 {
             for pair in 0..<board[boardIndex].analog {
+                let header = isKnown
+                    ? Self.headerLines(analogPairName(board: boardIndex, pair: pair, isInput: isInput))
+                    : (type: "Line", channels: "\(analogChannel)/\(analogChannel + 1)")
                 analogColumns.append(RoutingColumn(
-                    type: "Line",
-                    channels: "\(analogChannel)/\(analogChannel + 1)",
+                    type: header.type,
+                    channels: header.channels,
                     boardIndex: boardIndex,
                     isDigital: false,
                     routingByte: bases[boardIndex] + UInt8(pair * 2)))
@@ -462,15 +614,19 @@ public struct CardLayout: Sendable, Equatable {
             // own 16-channel region.
             let digitalStart = board[boardIndex].analog * 2
             for pair in 0..<board[boardIndex].digital {
-                let label = card != .none ? card.digitalLabel(forPair: pair) : "Digital"
-                let number = digitalChannel[label, default: 1]
+                let header: (type: String, channels: String)
+                if isKnown && card != .none {
+                    header = Self.headerLines(digitalPairName(board: boardIndex, pair: pair, isInput: isInput))
+                } else {
+                    header = (type: "Digital", channels: "\(digitalChannel)/\(digitalChannel + 1)")
+                    digitalChannel += 2
+                }
                 digitalColumns.append(RoutingColumn(
-                    type: label,
-                    channels: "\(number)/\(number + 1)",
+                    type: header.type,
+                    channels: header.channels,
                     boardIndex: boardIndex,
                     isDigital: true,
                     routingByte: bases[boardIndex] + UInt8(digitalStart + pair * 2)))
-                digitalChannel[label] = number + 2
             }
         }
         // Column order is analog (both boards) then digital (both boards), which

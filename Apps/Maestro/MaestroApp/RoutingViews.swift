@@ -491,38 +491,25 @@ struct OutputRoutingView: View {
 
     // Output routing row labels: board-aware "A Line"/"A ADAT" + Mixer buses.
     // Evidence: original Maestro 2 shows "A Line 1/2", "A ADAT 1/2" etc.
+    // The hardware part is the output column's name, so it is named by the
+    // card that has it (an 8x8 in AES mode is "AES", not "ADAT") and follows
+    // the rate and optical format (SMUX, SPDIF Opt, N.A.) as the daemon's
+    // channel names did.
     private var rowLabels: [(number: String, name: String)] {
         let total = swOutputPairCount
-        let board1 = appState.primaryBoardType
-        let board2 = appState.secondaryBoardType
-        // Count analog output pairs across both boards
-        let analogPairs = board1.analogOutputPairsForUI + board2.analogOutputPairsForUI
-
-        // Digital pairs are named by the card that has them: an 8x8 in AES mode
-        // (or the AES pair of a 2x6) is "AES", not "ADAT". These rows used to
-        // say "ADAT" whatever card was fitted, which an AES user reported as
-        // Maestro not knowing about their AES port.
-        var digitalLabels: [String] = []
-        for card in [board1, board2] {
-            for pair in 0..<card.digitalOutputPairsForUI {
-                digitalLabels.append(card.digitalLabel(forPair: pair))
-            }
-        }
-        var digitalNumber: [String: Int] = [:]
-
+        let hardware = layout.outputRoutingColumns
         var labels: [(number: String, name: String)] = []
         for i in 0..<total {
             let sw1 = i * 2 + 1
             let sw2 = i * 2 + 2
-            if i < analogPairs {
-                labels.append((number: "\(sw1)-\(sw2)", name: "A Line \(sw1)/\(sw2)"))
+            let name: String
+            if i < hardware.count {
+                let column = hardware[i]
+                name = column.channels.isEmpty ? "A \(column.type)" : "A \(column.type) \(column.channels)"
             } else {
-                let index = i - analogPairs
-                let label = index < digitalLabels.count ? digitalLabels[index] : "Digital"
-                let first = digitalNumber[label, default: 1]
-                digitalNumber[label] = first + 2
-                labels.append((number: "\(sw1)-\(sw2)", name: "A \(label) \(first)/\(first + 1)"))
+                name = "A Digital \(sw1)/\(sw2)"
             }
+            labels.append((number: "\(sw1)-\(sw2)", name: name))
         }
 
         // Mixer buses (Symphony IO MKI: always 2).
