@@ -1307,11 +1307,24 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         }
     }
 
+    /// A restart is what finishes the driver update: the serving driver is not
+    /// the bundled build although macOS already lists the bundled build as the
+    /// installed, enabled copy. While the bundled build is not registered yet,
+    /// is disabled or still waits for approval, a restart alone does not bring
+    /// it onto the card, and the lines for those states stand (the serving
+    /// build is still named in the copied details).
+    public var restartFinishesDriverUpdate: Bool {
+        servingDextDiffersFromBundled
+            && bundledDextBuild == installedDextBuild
+            && dextEnabled
+            && !dextAwaitingApproval
+    }
+
     /// What to show for the driver extension row.
     public var dextLine: String {
         if dextLookupFailed { return "Unknown — could not query the system" }
         guard let installedDextVersion else { return "Not installed" }
-        if servingDextDiffersFromBundled, let serving = servingDextBuildDescription {
+        if restartFinishesDriverUpdate, let serving = servingDextBuildDescription {
             return "\(installedDextVersion) installed; \(serving) still serves the ThunderBridge — "
                 + Self.restartToFinishDriverUpdate
         }
@@ -1332,7 +1345,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
                 ? "Not registered — install or approve the driver"
                 : "Ready — no ThunderBridge connected"
         }
-        if servingDextDiffersFromBundled { return Self.restartToFinishDriverUpdate }
+        if restartFinishesDriverUpdate { return Self.restartToFinishDriverUpdate }
         if dextAwaitingReboot { return "Installed — restart required" }
         if dextAwaitingApproval { return "Installed — approval required" }
         if dextUpgradePending { return "Upgrade pending — \(installedDextVersion)" }
@@ -1404,7 +1417,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         // A USB-only user does not need the ThunderBridge extension activated. Do not
         // instruct them to replug a Thunderbolt cable when the PCI card is absent.
         guard thunderBridgePresent else { return nil }
-        if servingDextDiffersFromBundled, let serving = servingDextBuildDescription,
+        if restartFinishesDriverUpdate, let serving = servingDextBuildDescription,
            let bundledDextBuild {
             return "The ThunderBridge is still served by driver \(serving); this app carries build "
                 + "\(bundledDextBuild). \(Self.restartToFinishDriverUpdate)."

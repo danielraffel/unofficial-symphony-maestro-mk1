@@ -16,6 +16,16 @@ grep -q 'output.build = (uint32_t)SYMPHONY_DEXT_BUILD' "$DIR/Source/SymphonyUser
 grep -q 'IOConnectCallStructMethod(conn, 6, nil, 0, p.baseAddress, &outSize)' \
     "$ROOT/Apps/Maestro/MaestroDevice/DextUserClient.swift"
 
+# The build read is a user-client call, and those wait behind whatever the
+# driver is doing for another call (seconds during a link recovery). The app
+# refreshes it every two seconds, so it is never made on the main thread.
+APP="$ROOT/Apps/Maestro/MaestroApp"
+if grep -n 'servingDextBuild = (device as? ThunderboltDeviceConnection)?.servingDriverBuild()' "$APP"/*.swift; then
+    echo "FAIL: the serving driver build is read on the main thread again" >&2; exit 1
+fi
+grep -q 'Task.detached(priority: .utility) { tb.servingDriverBuild() }' "$APP/Diagnostics.swift"
+grep -q 'Task.detached(priority: .utility) { tb.servingDriverBuild() }' "$APP/AppState.swift"
+
 BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$DIR/Info.plist")
 cat > "$TMP/t.cpp" <<'CPP'
 #include "SymphonyThunderbridgeShared.h"

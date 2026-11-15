@@ -275,6 +275,45 @@ struct SoftwareInfoReportTests {
         #expect(r.clipboardText.contains("Serving driver extension: build 123"))
     }
 
+    /// The bundled build is not the registered one yet (the swap has not been
+    /// submitted or approved): a restart alone does not finish that, so the
+    /// upgrade-pending lines stand. The serving build is still in the details.
+    @Test func restartIsNotAdvisedBeforeTheBundledBuildIsInstalled() {
+        let r = report(installedDextVersion: "0.10.16 (121)", bundledDextBuild: "123",
+                       installedDextBuild: "121", servingDextBuild: .olderThanBuildReporting)
+        #expect(r.servingDextDiffersFromBundled)
+        #expect(!r.restartFinishesDriverUpdate)
+        #expect(r.dextStatusLine == "Upgrade pending — 0.10.16 (121)")
+        #expect(r.dextLine == "0.10.16 (121)")
+        #expect(r.dextNotice?.contains("Restart your Mac") == false)
+        #expect(r.dextNotice?.contains("reconnect it to let the swap finish") == true)
+        #expect(r.clipboardText.contains("Serving driver extension: a build before 123"))
+    }
+
+    /// The bundled build is registered but waits for approval or is disabled:
+    /// the approval and disabled lines stand.
+    @Test func restartIsNotAdvisedWhileTheBundledBuildWaitsForApproval() {
+        let waiting = report(installedDextVersion: "0.10.17 (123)", bundledDextBuild: "123",
+                             installedDextBuild: "123", dextEnabled: false, dextAwaitingApproval: true,
+                             servingDextBuild: .olderThanBuildReporting)
+        #expect(!waiting.restartFinishesDriverUpdate)
+        #expect(waiting.dextStatusLine == "Installed — approval required")
+        let disabled = report(installedDextVersion: "0.10.17 (123)", bundledDextBuild: "123",
+                              installedDextBuild: "123", dextEnabled: false,
+                              servingDextBuild: .build(122))
+        #expect(!disabled.restartFinishesDriverUpdate)
+        #expect(disabled.dextStatusLine == "Installed — disabled")
+    }
+
+    /// Going back from a newer build (a tester build to the release): the
+    /// newer copy still serving is a restart case like any other.
+    @Test func newerServingCopySaysRestartOnceTheBundledBuildIsInstalled() {
+        let r = report(installedDextVersion: "0.10.17 (123)", bundledDextBuild: "123",
+                       installedDextBuild: "123", servingDextBuild: .build(9004))
+        #expect(r.restartFinishesDriverUpdate)
+        #expect(r.dextLine.contains("build 9004 still serves the ThunderBridge"))
+    }
+
     /// Not asked (USB, or no ThunderBridge connection open): no claim either way.
     @Test func notAskedMakesNoClaim() {
         let r = report(registeredDextCount: 2, bundledDextBuild: "123", installedDextBuild: "123")

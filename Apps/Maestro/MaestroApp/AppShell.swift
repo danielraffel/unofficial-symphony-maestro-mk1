@@ -232,7 +232,7 @@ private struct ThunderBridgeActionBanner: View {
     let onDismiss: () -> Void
 
     private var message: String {
-        if report.servingDextDiffersFromBundled {
+        if report.restartFinishesDriverUpdate {
             return "\(SoftwareInfoReport.restartToFinishDriverUpdate)."
         }
         if report.dextUpgradePending {
