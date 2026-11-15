@@ -500,9 +500,12 @@ public enum SymphonyIOHeadphoneRouting {
     /// * IOBoard1 ch0-15 (dest 48-63) ← XLink RX 16-31 (step 19b-1b)
     ///
     /// A Symphony I/O takes 32 channels on its XLink port and the legacy
-    /// daemon answers the same question for slot 2 with XLink 16 + n
+    /// daemon answers the same question for slot 2 with XLink 16 + n: the
+    /// Pro Tools HD mode controller directly
     /// (`og_source/maestrolink/Software/SymphonyIOPTHDRoutingController.cpp`
-    /// `GetRoutedToHWSource`: board 1 → `eSymphonyIORoutingSource_XLinkCh16`).
+    /// `GetRoutedToHWSource`: board 1 → `eSymphonyIORoutingSource_XLinkCh16`),
+    /// the PCIe one as `XLinkCh0 + routed element - 1`, where slot 2's outputs
+    /// are device elements 17-32 (`SymphonyPCIeRoutingController.cpp:1435-1447`).
     /// Dext builds 110 and earlier mirrored XLink 0-15 onto both slots, which
     /// is where the old slot-2 value here came from.
     ///
