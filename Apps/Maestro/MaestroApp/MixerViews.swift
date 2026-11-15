@@ -1407,8 +1407,10 @@ struct MixerChannelStripView: View {
         VStack(spacing: 3) {
             // Channel label — pill style matching Input/Output tabs, clickable for selection
             // An "N.A." channel's name is faded like the Input and Output tabs'
-            // strips. Its controls still work: the mixer channel exists on the
-            // unit whatever the optical format, as it did in the original.
+            // strips. Its controls still work: the daemon built the mixer's
+            // channel list once from the boards' channel counts, whatever the
+            // rate or format (`SymphonyIOMixer.cpp:142-152`), so the channel
+            // and its 0xB0-0xB3 ID stay; only its name changes.
             Text(label)
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(isSelected ? .white : .primary)

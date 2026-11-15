@@ -821,8 +821,10 @@ public enum SymphonyIOPropertyMapper {
             }
             return SymphonyIORequestBuilder.setFrontPanelMeterShow(bank: bank, source: source)
 
-        // Peripheral prefix — display-only name prefix. The XMOS firmware has no
-        // USB opcode for this, so it is cache-only (never send the 0xFF sentinel).
+        // Peripheral prefix. The firmware does keep it (SymphonyIOCommands_Prefix
+        // 0x37, handled in every image: SymphonyIOCore3MainController.cpp:1005-1025),
+        // but over USB it has never been tried on hardware, so it stays
+        // cache-only here. ThunderBridge sends 0x37 itself (ThunderboltDeviceConnection).
         case .prefix:
             throw DeviceConnectionError.cacheOnly(selector)
 

@@ -400,8 +400,10 @@ final class AppState {
                     // A link recovery in place (no disconnect, so no connect
                     // replay) puts the driver's board-order capture table back
                     // on the unit: put the saved input routing back over it.
+                    // Every ConfigureSymphonyLink after Start is a recovery and
+                    // bumps this count; != also covers a driver restart.
                     if let count = tb.lastLinkState?.recoveryCount {
-                        if let seen = self.thunderboltSeenRecoveryCount, count > seen,
+                        if let seen = self.thunderboltSeenRecoveryCount, count != seen,
                            self.connectionMode == .hardware {
                             print("[Maestro] ThunderBridge link recovery \(seen) → \(count): replaying input routing")
                             await self.syncInputRoutingToHardware()

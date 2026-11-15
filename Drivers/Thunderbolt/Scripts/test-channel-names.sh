@@ -158,18 +158,6 @@ int main() {
     assert(!SymphonyIsPrefixLetter('a') && !SymphonyIsPrefixLetter('@') && !SymphonyIsPrefixLetter('['));
     assert(SymphonyPrefixLetter(0) == 'A' && SymphonyPrefixLetter('Q') == 'Q');
 
-    // Capture routes: board order at Start, session routes after recovery.
-    uint8_t table[32], payload[32];
-    for (unsigned n = 0; n < 32; n++) table[n] = SymphonyDefaultInputSource(n);
-    assert(table[0] == 32 && table[8] == 40 && table[16] == 48 && table[31] == 63);
-    SymphonyCapturePayload(table, 0, payload);
-    assert(payload[0] == 0xC0 && payload[1] == 32 && payload[30] == 0xCF && payload[31] == 47);
-    SymphonyCapturePayload(table, 1, payload);
-    assert(payload[0] == 0xD0 && payload[1] == 48 && payload[30] == 0xDF && payload[31] == 63);
-    table[24] = 40; table[25] = 41;   // host 25-26 rerouted to slot 1 optical 1-2
-    SymphonyCapturePayload(table, 1, payload);
-    assert(payload[16] == 0xD8 && payload[17] == 40 && payload[18] == 0xD9 && payload[19] == 41);
-
     // Session Replaces / Mirrors go back only to the type of card they were
     // chosen for: the same wire value names another pair on another card.
     static_assert(ReplaysCoaxSettings(true, kSIOOptionBoard_Optical, kSIOOptionBoard_Optical), "same card");

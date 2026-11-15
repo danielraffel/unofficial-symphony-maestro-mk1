@@ -191,8 +191,8 @@ struct ThunderboltDeviceConnectionTests {
 
     /// The reported bug: change a setting, leave the tab, come back, and the
     /// control shows its default. The view re-reads the device on appearance, so
-    /// the read has to return what was written. `.prefix` has no hardware opcode
-    /// on any transport, so this exercises the real write path with no dext.
+    /// the read has to return what was written. `.prefix` is kept by the Mac
+    /// even when its 0x37 send has no dext to go to, so this runs without one.
     @Test("ThunderboltDeviceConnection: a written setting reads back")
     func rememberedSettingReadsBack() async throws {
         let conn = ThunderboltDeviceConnection(

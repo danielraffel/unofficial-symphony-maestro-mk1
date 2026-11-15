@@ -2186,7 +2186,8 @@ static bool ReadNamingPrefix(SymphonyThunderbridge_IVars *ivars, uint8_t &txSeq)
 static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars)
 {
     for (uint8_t n = 0; n < 32; n++)
-        __atomic_store_n(&ivars->inputRouteSource[n], SymphonyDefaultInputSource(n), __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->inputRouteSource[n],
+                         (uint8_t)(kSymphonyRoutingSourceIOBoard0 + n), __ATOMIC_RELEASE);
 }
 
 // ── dext 115: card re-initialization after a PCI power cycle ────────────────

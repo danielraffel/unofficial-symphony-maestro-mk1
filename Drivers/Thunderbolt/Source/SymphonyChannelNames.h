@@ -189,25 +189,3 @@ static inline bool SymphonyNoteInputRoutes(uint8_t inputSource[32],
     return changed;
 }
 
-// The capture routes link configuration sends: [dest, src] pairs for host
-// inputs 16 * half .. 16 * half + 15 (half 0 or 1), each from inputSource.
-// After Start that is the board-order table (P2P n <- IOBoard0 ch n,
-// P2P 16 + n <- IOBoard1 ch n, as the original's PCIe reset routed host input
-// i from the i-th hardware plug, board by board: SymphonyPCIeRoutingController.cpp
-// :849-866 with plugs sorted by board then start channel, NonCAStreamObject.cpp
-// :326-384); after a link recovery it is whatever this session last routed.
-static inline void SymphonyCapturePayload(const uint8_t inputSource[32], unsigned half,
-                                          uint8_t out[32])
-{
-    for (unsigned n = 0; n < 16; n++) {
-        const unsigned host = (half ? 16u : 0u) + n;
-        out[n * 2]     = (uint8_t)(kSymphonyRoutingDestP2P0 + host);
-        out[n * 2 + 1] = inputSource[host];
-    }
-}
-
-// The board-order source of host input n at Start.
-static inline uint8_t SymphonyDefaultInputSource(unsigned host)
-{
-    return (uint8_t)(kSymphonyRoutingSourceIOBoard0 + host);   // IOBoard1 = 48 = 32 + 16
-}
