@@ -84,6 +84,9 @@ run_check "shm-contract-test" bash "$REPO_ROOT/Drivers/Shared/run-tests.sh"
 # (0x34) trace for every option-board combination. No hardware needed.
 run_check "thunderbolt-driver-tests" bash "$REPO_ROOT/Drivers/Thunderbolt/run-tests.sh"
 
+# Feed tools with fixtures and a throwaway key (never the real feed or key).
+run_check "feed-tool-tests" bash "$REPO_ROOT/Tools/test-feed-tools.sh"
+
 # Installer host tests: postinstall reopen, package checks, driver CDHash gate.
 run_check "installer-tool-tests" bash "$REPO_ROOT/Tools/test-installer-tools.sh"
 
