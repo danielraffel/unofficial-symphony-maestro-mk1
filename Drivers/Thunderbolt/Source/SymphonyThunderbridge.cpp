@@ -2859,6 +2859,16 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
         return false;
     }
 
+    // The lock waits above can take seconds. If a stop or a power-down began, or
+    // the endpoint went away meanwhile, touch nothing more: the card stays
+    // muted with its engines off, which is what Stop() and the wake
+    // re-initialization (CardLostConfiguration sees DMA off) both start from.
+    if (!XLinkTxAdmissible(ivars)) {
+        Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
+        STERR("Port 2 audio: refused — stop or power-down began during the switch");
+        return false;
+    }
+
     AlignXLinkPhase(ivars);
 
     ivars->a2h2DMA->PerformOperation(
