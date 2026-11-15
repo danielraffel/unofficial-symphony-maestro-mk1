@@ -1468,9 +1468,30 @@ static void CheckPortSourceRenames(const Options &o, Run &r, uint32_t selected, 
         return true;
     };
     CHECK(entriesAre(0), "%s (%s): selectors do not show scheme 0 before the rename", o.name, when);
+    // What the selectors were asked to do: description adds, removes and
+    // selection sets, summed over both.
+    auto touches = [&]() {
+        uint32_t n = 0;
+        for (auto *sel : gHostAudio.portSources) n += sel->adds + sel->removes + sel->sets;
+        return n;
+    };
+    // Maestro sends its setting on every connect, scheme 0 when unset: asking
+    // for the scheme already shown must leave the live selectors untouched.
+    {
+        const uint32_t before = touches();
+        CHECK(r.drv->SetPortSourceNames(0) == kIOReturnSuccess, "%s (%s): the shown scheme was refused", o.name, when);
+        CHECK(touches() == before, "%s (%s): asking for the shown scheme touched the selectors (%u calls)",
+              o.name, when, touches() - before);
+        CHECK(entriesAre(0), "%s (%s): asking for the shown scheme changed the names", o.name, when);
+    }
     for (uint32_t scheme : { 1u, 2u, 3u, 0u }) {
+        const uint32_t before = touches();
         CHECK(r.drv->SetPortSourceNames(scheme) == kIOReturnSuccess, "%s (%s): scheme %u refused", o.name, when, scheme);
         CHECK(entriesAre(scheme), "%s (%s): selectors do not show scheme %u (or lost their selection)", o.name, when, scheme);
+        CHECK(touches() > before, "%s (%s): scheme %u renamed nothing", o.name, when, scheme);
+        const uint32_t renamed = touches();
+        CHECK(r.drv->SetPortSourceNames(scheme) == kIOReturnSuccess && touches() == renamed,
+              "%s (%s): scheme %u asked twice touched the selectors again", o.name, when, scheme);
     }
     CHECK(r.drv->SetPortSourceNames(kSymphonyPortSourceSchemeCount) == kIOReturnBadArgument,
           "%s (%s): an unknown scheme was accepted", o.name, when);
@@ -1485,6 +1506,15 @@ static void CheckPortSourceRenames(const Options &o, Run &r, uint32_t selected, 
               in->names[1] == kSymphonyPortSourceName64 && in->selected == selected,
               "%s (%s): a failed rename did not restore the old names", o.name, when);
     }
+    // After the failure the two selectors differ (input scheme 0, output
+    // scheme 2), so neither request is "already shown": asking for 2 again
+    // finishes the rename, and asking for 0 puts both back.
+    CHECK(r.drv->SetPortSourceNames(2) == kIOReturnSuccess, "%s (%s): the retry of a failed rename was refused", o.name, when);
+    CHECK(entriesAre(2), "%s (%s): the retry of a failed rename was skipped as already shown", o.name, when);
+    gHostAudio.portSources[0]->failNextAdd = true;
+    CHECK(r.drv->SetPortSourceNames(1) != kIOReturnSuccess, "%s (%s): a second failed rename reported success", o.name, when);
+    CHECK(r.drv->SetPortSourceNames(2) == kIOReturnSuccess, "%s (%s): scheme 2 after a failed rename", o.name, when);
+    CHECK(entriesAre(2), "%s (%s): going back to the scheme shown before a failed rename was skipped", o.name, when);
     CHECK(r.drv->SetPortSourceNames(0) == kIOReturnSuccess, "%s (%s): scheme 0 after a failed rename", o.name, when);
     CHECK(entriesAre(0), "%s (%s): selectors not back to scheme 0", o.name, when);
     CHECK(c.lines.size() == mark, "%s (%s): renaming the selectors touched the card", o.name, when);

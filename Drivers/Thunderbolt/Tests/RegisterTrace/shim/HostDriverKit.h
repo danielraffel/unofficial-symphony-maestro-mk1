@@ -456,6 +456,7 @@ public:
     // Appends, like AudioDriverKit: a rename that forgets to remove the old
     // entries shows up as four.
     kern_return_t AddControlValueDescriptions(const IOUserAudioSelectorValueDescription *d, size_t n) {
+        adds++;
         if (failNextAdd) { failNextAdd = false; return kIOReturnNoMemory; }
         for (size_t i = 0; i < n; i++) {
             values.push_back(d[i].mValue);
@@ -464,6 +465,7 @@ public:
         return kIOReturnSuccess;
     }
     kern_return_t RemoveControlValueDescriptions(const IOUserAudioSelectorValueDescription *d, size_t n) {
+        removes++;
         for (size_t i = 0; i < n; i++)
             for (size_t j = 0; j < values.size(); j++)
                 if (values[j] == d[i].mValue) {
@@ -494,6 +496,7 @@ public:
     // Host-test state (no trace lines).
     IOUserAudioSelectorValue selected = 0;
     uint32_t sets = 0;
+    uint32_t adds = 0, removes = 0;   // description add/remove calls (a rename is one of each)
     bool failNextAdd = false;   // the next add fails (a rename's error path)
     std::vector<IOUserAudioSelectorValue> values;
     std::vector<std::string> names;

@@ -406,8 +406,11 @@ struct SymphonyThunderbridge_IVars {
     SymphonyPortSourceControl *portSourceControl[2];   // [0] input, [1] output
     // TEMPORARY (kSelectorSetPortSourceNames), remove after naming is chosen:
     // the naming scheme the selectors show. 0 at every Start(); under
-    // portPublishLock.
+    // portPublishLock. portSourceSchemeMixed: a rename failed part-way, so the
+    // two selectors may not show the same scheme and the next request is
+    // never skipped as "already shown".
     uint32_t  portSourceScheme;
+    bool      portSourceSchemeMixed;
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -3853,7 +3856,14 @@ kern_return_t SymphonyThunderbridge::SetPortSourceNames(uint32_t scheme)
         IOLockUnlock(ivars->portPublishLock);
         return kIOReturnNotReady;
     }
-    ivars->portSourceScheme = scheme;   // used by a device published later in this Start()
+    // Already shown: leave the live selectors alone. Maestro sends its setting
+    // on every connect (scheme 0 when unset), and removing and re-adding the
+    // descriptions of a control Core Audio may be reading is only worth doing
+    // when the names really change.
+    if (scheme == ivars->portSourceScheme && !ivars->portSourceSchemeMixed) {
+        IOLockUnlock(ivars->portPublishLock);
+        return kIOReturnSuccess;
+    }
     IOUserAudioSelectorValueDescription fresh[2] = {
         { kSymphonyPortSourcePort1,
           OSSharedPtr<OSString>(OSString::withCString(
@@ -3878,6 +3888,16 @@ kern_return_t SymphonyThunderbridge::SetPortSourceNames(uint32_t scheme)
             result = r;
         }
         if (haveSelected) pc->SetCurrentSelectedValues(&selected, 1);
+    }
+    // Recorded only when every selector took the names (it is also what a
+    // device published later in this Start() uses). After a failure one
+    // selector may show the old scheme and the other the new one, so neither
+    // is "already shown" until a rename succeeds.
+    if (result == kIOReturnSuccess) {
+        ivars->portSourceScheme = scheme;
+        ivars->portSourceSchemeMixed = false;
+    } else {
+        ivars->portSourceSchemeMixed = true;
     }
     IOLockUnlock(ivars->portPublishLock);
     if (result == kIOReturnSuccess)
