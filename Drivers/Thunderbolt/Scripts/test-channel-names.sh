@@ -458,6 +458,9 @@ stop = stop[:stop.index("// ── 9.")]
 assert "UnregisterNominalRateObserver(this)" in stop
 sd = src[src.index("kern_return_t SymphonyThunderbridge::StartDevice("):src.index("kern_return_t SymphonyThunderbridge::StopDevice(")]
 assert sd.index("ivars->lastSampleRate = requestedRate;") < sd.index("namingSampleRate, SymphonyNamingRateHz(requestedRate)")
+# ... and whatever the nominal rate is when IO starts, the names follow it.
+sync = sd.index("SymphonyNamingRateHz(ivars->audioDevice->GetSampleRate())")
+assert sd.index("hardware now at") < sync < sd.index("Clear stale zero timestamp")
 PY
 cat > "$TMP_DIR/rate.cpp" <<'CPP'
 #include <cassert>
