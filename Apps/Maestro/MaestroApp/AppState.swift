@@ -2985,14 +2985,33 @@ final class AppState {
                 preset.hp2RoutingID = rid
             }
             // Device settings
-            if let fmt = (try? await dev.getProperty(PropertyAddress(selector: .opticalInFormat)))?.asUInt32 {
-                preset.opticalInFormat = fmt
-            }
-            if let rep = (try? await dev.getProperty(PropertyAddress(selector: .spdifReplaceID)))?.asUInt32 {
-                preset.spdifReplaceID = rep
-            }
-            if let mir = (try? await dev.getProperty(PropertyAddress(selector: .spdifMirrorID)))?.asUInt32 {
-                preset.spdifMirrorID = mir
+            // Per slot, as the daemon saved them. The optical format is read
+            // through the direction the card has (an A16 IP has optical outputs
+            // only), and only for a card with optical ports or coax jacks.
+            for slot in 0..<2 {
+                let card = cardLayout.card(atSlot: slot)
+                let element = UInt32(slot)
+                var fmt: UInt32?
+                if card.hasOpticalPorts {
+                    let selector: AudioPropertySelector = card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat
+                    fmt = (try? await dev.getProperty(PropertyAddress(selector: selector, element: element)))?.asUInt32
+                }
+                var rep: UInt32?, mir: UInt32?
+                if card.hasSPDIFCoax {
+                    rep = (try? await dev.getProperty(
+                        PropertyAddress(selector: .spdifReplaceID, scope: .input, element: element)))?.asUInt32
+                    mir = (try? await dev.getProperty(
+                        PropertyAddress(selector: .spdifMirrorID, scope: .output, element: element)))?.asUInt32
+                }
+                if slot == 0 {
+                    if let fmt { preset.opticalInFormat = fmt }
+                    if let rep { preset.spdifReplaceID = rep }
+                    if let mir { preset.spdifMirrorID = mir }
+                } else {
+                    preset.slot2OpticalFormat = fmt
+                    preset.slot2SPDIFReplaceID = rep
+                    preset.slot2SPDIFMirrorID = mir
+                }
             }
             if let pk = (try? await dev.getProperty(PropertyAddress(selector: .peakHoldMode)))?.asUInt32 {
                 preset.peakHoldMode = pk
@@ -3191,9 +3210,10 @@ final class AppState {
             await write(PropertyAddress(selector: .headphone2Mute), .bool(preset.hp2Muted))
             await write(PropertyAddress(selector: .headphone2RoutingID), .uint32(preset.hp2RoutingID))
             // Device settings
-            await write(PropertyAddress(selector: .opticalInFormat), .uint32(preset.opticalInFormat))
-            await write(PropertyAddress(selector: .spdifReplaceID), .uint32(preset.spdifReplaceID))
-            await write(PropertyAddress(selector: .spdifMirrorID), .uint32(preset.spdifMirrorID))
+            for digital in PresetDigitalWrites.writes(for: preset, layout: cardLayout) {
+                await write(digital.address, .uint32(digital.value))
+            }
+            await refreshChannelNaming()
             await write(PropertyAddress(selector: .peakHoldMode), .uint32(preset.peakHoldMode))
             await write(PropertyAddress(selector: .oversHoldMode), .uint32(preset.overHoldMode))
             await write(PropertyAddress(selector: .metersShowInput, element: 1), .uint32(preset.meterBank1Source))

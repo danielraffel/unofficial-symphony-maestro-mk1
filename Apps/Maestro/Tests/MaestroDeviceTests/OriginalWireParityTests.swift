@@ -292,3 +292,51 @@ struct OriginalWireParityTests {
         }
     }
 }
+
+@Suite("Preset digital settings per slot")
+struct PresetDigitalWritesTests {
+    @Test("both slots' optical format, Replaces and Mirrors are written to the cards that have them")
+    func bothSlots() {
+        var preset = MaestroPreset()
+        preset.opticalInFormat = 1
+        preset.spdifReplaceID = 5
+        preset.spdifMirrorID = 2
+        preset.slot2OpticalFormat = 1
+        preset.slot2SPDIFReplaceID = 1
+        preset.slot2SPDIFMirrorID = 8
+        // Combo on optical + A16 IP (optical outputs only).
+        let writes = PresetDigitalWrites.writes(
+            for: preset, layout: CardLayout(slot1: .optical, slot2: .analogAD16))
+        #expect(writes.map { "\($0.address.selector)/\($0.address.element)=\($0.value)" } == [
+            "'AEoi'/0=1", "'AEs0'/0=5", "'AEs7'/0=2",
+            "'AEoo'/1=1", "'AEs0'/1=1", "'AEs7'/1=8",
+        ])
+        // On the wire: board index in nValue for both slots.
+        for write in writes where write.address.selector != .opticalInFormat
+            && write.address.selector != .opticalOutFormat {
+            let request = try? SymphonyIOPropertyMapper.buildWriteRequest(
+                for: write.address, value: .uint32(write.value))
+            #expect(request.map { (UInt32($0.value) << 16) | UInt32($0.index) } == write.address.element)
+        }
+    }
+
+    @Test("no optical format for an AES card, Mirrors never Off, unsaved slot 2 untouched")
+    func skips() {
+        var preset = MaestroPreset()          // spdifMirrorID 0 = an old preset's default
+        preset.opticalInFormat = 1
+        let writes = PresetDigitalWrites.writes(
+            for: preset, layout: CardLayout(slot1: .analogAES, slot2: .micPre8))
+        #expect(writes.map(\.address.selector) == [.spdifReplaceID])
+    }
+
+    @Test("a preset saved before the slot-2 fields loads")
+    func oldPresetDecodes() throws {
+        let old = MaestroPreset()
+        var data = try PropertyListEncoder().encode(old)
+        var dict = try PropertyListSerialization.propertyList(from: data, format: nil) as! [String: Any]
+        dict.removeValue(forKey: "slot2OpticalFormat")
+        data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+        let decoded = try PropertyListDecoder().decode(MaestroPreset.self, from: data)
+        #expect(decoded.slot2SPDIFReplaceID == nil)
+    }
+}
