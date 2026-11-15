@@ -329,6 +329,7 @@ struct SymphonyThunderbridge_IVars {
     uint8_t   sessionCoaxMirror[2];   // last Mirrors (0x36) sent, 0 = none this session
     uint8_t   sessionCoaxBoardType[2]; // the slot's card type those two belong to, 0 = none
     char      publishedInputName[32][20]; // what Core Audio has now; "" = no name set
+    char      publishedOutputName[32][20]; // same, for the 32 host outputs
     uint8_t   namingPrefix;               // unit's peripheral prefix byte (0x37); not A-Z = "A"
 };
 
@@ -2097,10 +2098,13 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev
 // Apogee's daemon gave every host channel of the Symphony card the name of the
 // hardware channel it carried (SymphonyCard.cpp:828-866), following the rate,
 // optical format and S/PDIF Coax Replaces; see SymphonyChannelNames.h. Input
-// channels are published: each is fed by the Symphony routing source this
-// driver last sent for P2P n. Output channels are not: on ThunderBridge a host
-// output reaches the hardware through the card's own output routes and mixer,
-// and the original's mapping for that path is not established.
+// channels are named after the Symphony routing source this driver last sent
+// for P2P n. Output channels keep fixed names from their position: host
+// output n is named after the board output the fixed table at step 19b-1
+// sends it to (slot 1 output n for 1-16, slot 2 output n-16 for 17-32), as
+// the app's Output Routing rows name them, and never after the card's output
+// routes or mixer (SymphonyHostOutputName). Both are republished on the same
+// events: rate, optical format, prefix, Replaces and a card read or recovery.
 //
 // Runs on the default queue (Start, or a block queued by
 // ScheduleChannelNames), never on xlinkQueue.
@@ -2136,9 +2140,20 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
         strlcpy(ivars->publishedInputName[n], name, sizeof(ivars->publishedInputName[n]));
         changed++;
     }
-    if (changed)
-        STLOG("Channel names: %u input names changed (prefix %c, boards %u/%u known %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
-              changed, SymphonyPrefixLetter(s.prefix), s.boardType[0], s.boardType[1],
+    uint32_t outChanged = 0;
+    for (uint32_t n = 0; n < 32; n++) {
+        char name[sizeof(ivars->publishedOutputName[0])] = {};
+        if (!SymphonyHostOutputName(s, n, name, sizeof(name))) name[0] = 0;
+        if (strncmp(name, ivars->publishedOutputName[n], sizeof(name)) == 0) continue;
+        OSString *str = name[0] ? OSString::withCString(name) : nullptr;
+        ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Output, str);
+        OSSafeReleaseNULL(str);
+        strlcpy(ivars->publishedOutputName[n], name, sizeof(ivars->publishedOutputName[n]));
+        outChanged++;
+    }
+    if (changed || outChanged)
+        STLOG("Channel names: %u input, %u output names changed (prefix %c, boards %u/%u known %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
+              changed, outChanged, SymphonyPrefixLetter(s.prefix), s.boardType[0], s.boardType[1],
               s.boardKnown[0] ? 1u : 0u, s.boardKnown[1] ? 1u : 0u, s.sampleRate,
               s.opticalIsSPDIF[0] ? 1u : 0u, s.opticalIsSPDIF[1] ? 1u : 0u,
               s.coaxReplace[0], s.coaxReplace[1]);
@@ -4295,7 +4310,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             OSSafeReleaseNULL(deviceName);
         }
 
-        // Per-channel input names, as the original published them.
+        // Per-channel input and output names (SymphonyChannelNames.h).
         PublishChannelNames(ivars);
 
         STLOG("Audio: Device published to CoreAudio (32ch SInt32 in + 32ch SInt32 out, 44.1-192kHz, Thunderbolt)");

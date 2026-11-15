@@ -253,6 +253,53 @@ public struct CardLayout: Sendable, Equatable {
         }
     }
 
+    /// The board output a ThunderBridge Mac output plays through by default
+    /// (0-based `hostOutput`): slot 1 output n for Mac 1-16, slot 2 output
+    /// n-16 for 17-32, the driver's fixed table (`SymphonyHostOutputBoardChannel`
+    /// in `SymphonyChannelNames.h`). Nil past the 32.
+    public static func thunderboltOutputBoardChannel(hostOutput: Int) -> (board: Int, channel: Int)? {
+        guard (0..<32).contains(hostOutput) else { return nil }
+        return (hostOutput / 16, hostOutput % 16)
+    }
+
+    /// The name of a board OUTPUT channel (0-15 across the card, analog
+    /// first) without the prefix, nil when the card has no such output (an
+    /// empty slot, a Mic Pre, past the card's outputs).
+    public func outputChannelName(board: Int, channel: Int) -> String? {
+        let card = card(atSlot: board)
+        guard channel >= 0, channel < card.totalOutputChannels else { return nil }
+        let analog = card.analogOutputChannels
+        return channel < analog
+            ? analogChannelName(board: board, channelOnCard: channel, isInput: false)
+            : digitalChannelName(board: board, channelOnCard: channel - analog, isInput: false)
+    }
+
+    /// A ThunderBridge Mac output's Core Audio name as the driver publishes it
+    /// (`SymphonyHostOutputName`): the prefix and the name of the board output
+    /// at the same position, "A N.A." included; a bare "N.A." when the card
+    /// has no output there. Nil when the layout is not known or past the 32
+    /// (the driver publishes no name then). Fixed by position, a deliberate
+    /// departure from the original, which followed each output's route.
+    public func thunderboltOutputChannelName(hostOutput: Int, prefix: String) -> String? {
+        guard isKnown, let at = Self.thunderboltOutputBoardChannel(hostOutput: hostOutput) else { return nil }
+        guard let name = outputChannelName(board: at.board, channel: at.channel) else { return Self.notApplicable }
+        return "\(Self.peripheralPrefix(prefix)) \(name)"
+    }
+
+    /// A ThunderBridge Output Routing software row's label (0-based `pair`,
+    /// Mac outputs `2 * pair + 1` and `+ 2`): the pair name of the two board
+    /// outputs at the same position, "A Line 1/2", a bare "N.A." when neither
+    /// carries anything. It is the pair of the driver's two channel names.
+    /// Nil when the layout is not known or past the 32 outputs.
+    public func thunderboltOutputPairName(pair: Int, prefix: String) -> String? {
+        guard isKnown,
+              let left = Self.thunderboltOutputBoardChannel(hostOutput: pair * 2),
+              Self.thunderboltOutputBoardChannel(hostOutput: pair * 2 + 1) != nil else { return nil }
+        let l = outputChannelName(board: left.board, channel: left.channel) ?? Self.notApplicable
+        let r = outputChannelName(board: left.board, channel: left.channel + 1) ?? Self.notApplicable
+        return Self.softwarePairName(hardwarePair: Self.stereoName(left: l, right: r), prefix: prefix)
+    }
+
     /// A stereo name split into the routing header's two lines.
     static func headerLines(_ stereo: String) -> (type: String, channels: String) {
         guard let space = stereo.lastIndex(of: " ") else { return (stereo, "") }

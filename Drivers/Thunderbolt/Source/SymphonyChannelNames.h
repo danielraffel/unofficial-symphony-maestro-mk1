@@ -32,6 +32,10 @@
 // assigned yet", which the daemon replaced with its default, "A" for the first
 // unit. A host channel with no board channel behind it is a bare "N.A."
 // (SymphonyCardStream.cpp:219-236).
+//
+// This driver names host inputs after the board channel routed to them, as
+// the original did, and host outputs after the board output at the same
+// position, which the original did not (see SymphonyHostOutputName).
 #pragma once
 
 #include <stdint.h>
@@ -171,6 +175,44 @@ static inline bool SymphonyHostInputName(const SymphonyNamingState &s, uint8_t s
     }
     if (len) out[0] = 0;
     return false;
+}
+
+// The board output Mac (host) OUTPUT `hostOutput` (0-based) plays through
+// when nothing has re-routed it: the driver's fixed Symphony-side table sends
+// XLink n to board output n (step 19b-1: XLink 0-15 to slot 1's outputs 0-15,
+// 16-31 to slot 2's), and the card's default route feeds XLink TX n from host
+// playback n. Returns false past the 32 (no board behind it).
+static inline bool SymphonyHostOutputBoardChannel(unsigned hostOutput, unsigned *board, unsigned *ch)
+{
+    if (hostOutput >= 32) return false;
+    *board = hostOutput / 16;
+    *ch = hostOutput % 16;
+    return true;
+}
+
+// Name of host OUTPUT channel `hostOutput` (0..31). A deliberate departure
+// from the original, which renamed each host output after the hardware
+// channel it was routed to (SymphonyCard.cpp:850-862), "N.A." when it reached
+// none: Mac outputs keep fixed names from their position, the name of the
+// board output at the same position (SymphonyHostOutputBoardChannel), with
+// the prefix letter, "A N.A." included, as the Output tab names that output.
+// They do not follow the card's output routes or mixer. A slot read as empty
+// (or past a card's outputs) is a bare "N.A."; a slot whose type was never
+// read, or a channel past the 32, gets no name (returns false).
+static inline bool SymphonyHostOutputName(const SymphonyNamingState &s, unsigned hostOutput,
+                                          char *out, size_t len)
+{
+    unsigned board = 0, ch = 0;
+    if (!SymphonyHostOutputBoardChannel(hostOutput, &board, &ch) || !s.boardKnown[board]) {
+        if (len) out[0] = 0;
+        return false;
+    }
+    char base[24];
+    if (SymphonyBoardChannelName(s, false, board, ch, base, sizeof(base)))
+        snprintf(out, len, "%c %s", SymphonyPrefixLetter(s.prefix), base);
+    else
+        snprintf(out, len, "%s", kSymphonyChannelNotApplicable);
+    return true;
 }
 
 // The capture table the driver programs at link configuration: which board

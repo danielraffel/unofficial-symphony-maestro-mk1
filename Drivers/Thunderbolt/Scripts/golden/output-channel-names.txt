@@ -1,0 +1,330 @@
+layout 3 4 48000 1 0 A 1
+1 A Line 1
+2 A Line 2
+3 A Line 3
+4 A Line 4
+5 A Line 5
+6 A Line 6
+7 A Line 7
+8 A Line 8
+9 A SPDIF Opt 1
+10 A SPDIF Opt 2
+11 A N.A.
+12 A N.A.
+13 A N.A.
+14 A N.A.
+15 A N.A.
+16 A N.A.
+17 A ADAT 9
+18 A ADAT 10
+19 A ADAT 11
+20 A ADAT 12
+21 A ADAT 13
+22 A ADAT 14
+23 A ADAT 15
+24 A ADAT 16
+25 A ADAT 17
+26 A ADAT 18
+27 A ADAT 19
+28 A ADAT 20
+29 A ADAT 21
+30 A ADAT 22
+31 A ADAT 23
+32 A ADAT 24
+layout 3 4 96000 0 0 A 1
+1 A Line 1
+2 A Line 2
+3 A Line 3
+4 A Line 4
+5 A Line 5
+6 A Line 6
+7 A Line 7
+8 A Line 8
+9 A SMUX 1
+10 A SMUX 2
+11 A SMUX 3
+12 A SMUX 4
+13 A SMUX 5
+14 A SMUX 6
+15 A SMUX 7
+16 A SMUX 8
+17 A SMUX 9
+18 A SMUX 10
+19 A SMUX 11
+20 A SMUX 12
+21 A SMUX 13
+22 A SMUX 14
+23 A SMUX 15
+24 A SMUX 16
+25 A SMUX 17
+26 A SMUX 18
+27 A SMUX 19
+28 A SMUX 20
+29 A SMUX 21
+30 A SMUX 22
+31 A SMUX 23
+32 A SMUX 24
+layout 3 4 192000 1 0 A 1
+1 A Line 1
+2 A Line 2
+3 A Line 3
+4 A Line 4
+5 A Line 5
+6 A Line 6
+7 A Line 7
+8 A Line 8
+9 A N.A.
+10 A N.A.
+11 A N.A.
+12 A N.A.
+13 A N.A.
+14 A N.A.
+15 A N.A.
+16 A N.A.
+17 A N.A.
+18 A N.A.
+19 A N.A.
+20 A N.A.
+21 A N.A.
+22 A N.A.
+23 A N.A.
+24 A N.A.
+25 A N.A.
+26 A N.A.
+27 A N.A.
+28 A N.A.
+29 A N.A.
+30 A N.A.
+31 A N.A.
+32 A N.A.
+layout 2 4 48000 0 0 C 1
+1 C Line 1
+2 C Line 2
+3 C Line 3
+4 C Line 4
+5 C Line 5
+6 C Line 6
+7 C Line 7
+8 C Line 8
+9 C AES 1
+10 C AES 2
+11 C AES 3
+12 C AES 4
+13 C AES 5
+14 C AES 6
+15 C AES 7
+16 C AES 8
+17 C ADAT 1
+18 C ADAT 2
+19 C ADAT 3
+20 C ADAT 4
+21 C ADAT 5
+22 C ADAT 6
+23 C ADAT 7
+24 C ADAT 8
+25 C ADAT 9
+26 C ADAT 10
+27 C ADAT 11
+28 C ADAT 12
+29 C ADAT 13
+30 C ADAT 14
+31 C ADAT 15
+32 C ADAT 16
+layout 3 3 48000 0 0 A 1
+1 A Line 1
+2 A Line 2
+3 A Line 3
+4 A Line 4
+5 A Line 5
+6 A Line 6
+7 A Line 7
+8 A Line 8
+9 A ADAT 1
+10 A ADAT 2
+11 A ADAT 3
+12 A ADAT 4
+13 A ADAT 5
+14 A ADAT 6
+15 A ADAT 7
+16 A ADAT 8
+17 A Line 9
+18 A Line 10
+19 A Line 11
+20 A Line 12
+21 A Line 13
+22 A Line 14
+23 A Line 15
+24 A Line 16
+25 A ADAT 9
+26 A ADAT 10
+27 A ADAT 11
+28 A ADAT 12
+29 A ADAT 13
+30 A ADAT 14
+31 A ADAT 15
+32 A ADAT 16
+layout 0 3 44100 0 0 A 1
+1 N.A.
+2 N.A.
+3 N.A.
+4 N.A.
+5 N.A.
+6 N.A.
+7 N.A.
+8 N.A.
+9 N.A.
+10 N.A.
+11 N.A.
+12 N.A.
+13 N.A.
+14 N.A.
+15 N.A.
+16 N.A.
+17 A Line 1
+18 A Line 2
+19 A Line 3
+20 A Line 4
+21 A Line 5
+22 A Line 6
+23 A Line 7
+24 A Line 8
+25 A ADAT 1
+26 A ADAT 2
+27 A ADAT 3
+28 A ADAT 4
+29 A ADAT 5
+30 A ADAT 6
+31 A ADAT 7
+32 A ADAT 8
+layout 7 0 96000 0 0 A 1
+1 A Line 1
+2 A Line 2
+3 A Line 3
+4 A Line 4
+5 A Line 5
+6 A Line 6
+7 A AES 1
+8 A AES 2
+9 A SMUX 1
+10 A SMUX 2
+11 A SMUX 3
+12 A SMUX 4
+13 A N.A.
+14 A N.A.
+15 A N.A.
+16 A N.A.
+17 N.A.
+18 N.A.
+19 N.A.
+20 N.A.
+21 N.A.
+22 N.A.
+23 N.A.
+24 N.A.
+25 N.A.
+26 N.A.
+27 N.A.
+28 N.A.
+29 N.A.
+30 N.A.
+31 N.A.
+32 N.A.
+layout 6 1 48000 0 0 B 1
+1 B Line 1
+2 B Line 2
+3 B Line 3
+4 B Line 4
+5 B Line 5
+6 B Line 6
+7 B Line 7
+8 B Line 8
+9 B Line 9
+10 B Line 10
+11 B Line 11
+12 B Line 12
+13 B Line 13
+14 B Line 14
+15 B Line 15
+16 B Line 16
+17 N.A.
+18 N.A.
+19 N.A.
+20 N.A.
+21 N.A.
+22 N.A.
+23 N.A.
+24 N.A.
+25 N.A.
+26 N.A.
+27 N.A.
+28 N.A.
+29 N.A.
+30 N.A.
+31 N.A.
+32 N.A.
+layout 5 4 48000 1 1 A 1
+1 A Line 1
+2 A Line 2
+3 A Line 3
+4 A Line 4
+5 A Line 5
+6 A Line 6
+7 A Line 7
+8 A Line 8
+9 A Line 9
+10 A Line 10
+11 A Line 11
+12 A Line 12
+13 A Line 13
+14 A Line 14
+15 A Line 15
+16 A Line 16
+17 A SPDIF Opt 1
+18 A SPDIF Opt 2
+19 A N.A.
+20 A N.A.
+21 A N.A.
+22 A N.A.
+23 A N.A.
+24 A N.A.
+25 A N.A.
+26 A N.A.
+27 A N.A.
+28 A N.A.
+29 A N.A.
+30 A N.A.
+31 A N.A.
+32 A N.A.
+layout 0 0 48000 0 0 A 0
+1 -
+2 -
+3 -
+4 -
+5 -
+6 -
+7 -
+8 -
+9 -
+10 -
+11 -
+12 -
+13 -
+14 -
+15 -
+16 -
+17 -
+18 -
+19 -
+20 -
+21 -
+22 -
+23 -
+24 -
+25 -
+26 -
+27 -
+28 -
+29 -
+30 -
+31 -
+32 -
