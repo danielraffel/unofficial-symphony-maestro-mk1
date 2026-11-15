@@ -284,6 +284,78 @@ static void load_volume_state(void)
     }
 }
 
+/* ── Per-board digital settings (optical format, S/PDIF Coax) ─────────── */
+/*
+ * Apogee's daemon kept each board's optical format, S/PDIF Coax Replaces and
+ * Mirrors in its settings and applied them when the unit connected in the USB
+ * mode (og_source/maestrolink/Software/SymphonyIO_IOBoard.cpp:527-566,
+ * OpticalIn_SymphonyIO_Stream.cpp:387-437; SymphonyIO.cpp:1396-1412: in the
+ * USB mode the computer, not the unit, holds them). The firmware starts at
+ * ADAT/SMUX, Replaces Off, Mirrors Analog 1-2 (SymphonyIOStateData.cpp:127-151).
+ * The proxy used to force ADAT/SMUX on both boards at every start, which threw
+ * away a user's S/PDIF choice at each power cycle. It now remembers the last
+ * value the app wrote for each board (0x34 / 0x35 / 0x36) and puts it back.
+ */
+#define DIGITAL_STATE_PATH VOLUME_STATE_DIR "/digital-settings"
+static const char *gDigitalStatePath = DIGITAL_STATE_PATH;
+/* [command 0x34, 0x35, 0x36][board]; -1 = never written. */
+static int gSavedDigital[3][2] = { { -1, -1 }, { -1, -1 }, { -1, -1 } };
+
+static int digital_setting_index(uint8_t bRequest)
+{
+    switch (bRequest) {
+    case 0x34: return 0;   /* OpticalFormat: 0 ADAT/SMUX, 1 S/PDIF */
+    case 0x35: return 1;   /* SPDIFCoaxReplaceInput: 0 Off, 1-8 */
+    case 0x36: return 2;   /* SPDIFCoaxMirrorOutput: 1-8 */
+    default:   return -1;
+    }
+}
+
+/* Record a successful vendor write. Returns true when a remembered value changed. */
+static bool note_digital_write(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
+{
+    int idx = digital_setting_index(bRequest);
+    if (idx < 0 || nValue > 1 || !data || len < 1) return false;
+    int v = data[0];
+    bool valid = (idx == 0) ? v <= 1 : (idx == 1) ? v <= 8 : (v >= 1 && v <= 8);
+    if (!valid || gSavedDigital[idx][nValue] == v) return false;
+    gSavedDigital[idx][nValue] = v;
+    return true;
+}
+
+static void save_digital_state(void)
+{
+    mkdir(VOLUME_STATE_DIR, 0755);
+    FILE *f = fopen(gDigitalStatePath, "w");
+    if (!f) {
+        LOG("Could not save digital settings to %s: %s", gDigitalStatePath, strerror(errno));
+        return;
+    }
+    fprintf(f, "%d %d %d %d %d %d\n", gSavedDigital[0][0], gSavedDigital[0][1],
+            gSavedDigital[1][0], gSavedDigital[1][1], gSavedDigital[2][0], gSavedDigital[2][1]);
+    fclose(f);
+}
+
+static void load_digital_state(void)
+{
+    FILE *f = fopen(gDigitalStatePath, "r");
+    if (!f) return;
+    int v[6];
+    if (fscanf(f, "%d %d %d %d %d %d", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6) {
+        for (int i = 0; i < 6; i++) {
+            int idx = i / 2, board = i % 2;
+            bool valid = v[i] == -1 ||
+                ((idx == 0) ? (v[i] >= 0 && v[i] <= 1) : (idx == 1) ? (v[i] >= 0 && v[i] <= 8)
+                                                                   : (v[i] >= 1 && v[i] <= 8));
+            gSavedDigital[idx][board] = valid ? v[i] : -1;
+        }
+        LOG("Loaded digital settings: optical %d/%d, replaces %d/%d, mirrors %d/%d",
+            gSavedDigital[0][0], gSavedDigital[0][1], gSavedDigital[1][0],
+            gSavedDigital[1][1], gSavedDigital[2][0], gSavedDigital[2][1]);
+    }
+    fclose(f);
+}
+
 /* ── Routing mode ──────────────────────────────────────────────────────── */
 /*
  * DAW mode (default): Null all IOBoard output destinations except DAC L/R,
@@ -1677,12 +1749,23 @@ static int configure_fpga_routing(void)
        Board-agnostic: harmless if board doesn't exist.
        Evidence: og_source SymphonyIOControl.cpp:1301-1320 setOpticalIsSPDIF(),
        SymphonyIOAnalogFPGA.cpp:82-99 writes FPGA register 0x24. */
+    /* The format is the one last chosen for each board (ADAT/SMUX, 0, until
+       one is), and the remembered S/PDIF Coax Replaces / Mirrors go back too;
+       see "Per-board digital settings" above. */
     {
-        uint8_t adat_mode = 0;  /* SymphonyIOOpticalFormat_ADAT_SMUX = 0 */
-        int e0 = usb_vendor_write(VCMD_OPTICAL_FORMAT, 0, &adat_mode, 1);
-        int e1 = usb_vendor_write(VCMD_OPTICAL_FORMAT, 1, &adat_mode, 1);
-        LOG("OpticalFormat(ADAT/SMUX): board0=%s, board1=%s",
-            e0 ? "FAILED" : "OK", e1 ? "FAILED" : "OK");
+        for (uint32_t b = 0; b < 2; b++) {
+            uint8_t format = gSavedDigital[0][b] == 1 ? 1 : 0;
+            int e = usb_vendor_write(VCMD_OPTICAL_FORMAT, b, &format, 1);
+            LOG("OpticalFormat board%u = %s: %s", b, format ? "SPDIF" : "ADAT/SMUX",
+                e ? "FAILED" : "OK");
+            for (int idx = 1; idx <= 2; idx++) {
+                if (gSavedDigital[idx][b] < 0) continue;
+                uint8_t value = (uint8_t)gSavedDigital[idx][b];
+                int err = usb_vendor_write(idx == 1 ? 0x35 : 0x36, b, &value, 1);
+                LOG("S/PDIF Coax %s board%u = %u: %s", idx == 1 ? "Replaces" : "Mirrors",
+                    b, value, err ? "FAILED" : "OK");
+            }
+        }
     }
 
     /* ── Step 4: FPGA routing — USB → Mixer → DAC ────────────────────── */
@@ -2502,6 +2585,8 @@ static void handle_peer(xpc_connection_t peer) {
                 int err = usb_vendor_write(bReq, nValue, dataCopy, copyLen);
                 LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
                     bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
+                if (!err && note_digital_write(bReq, nValue, dataCopy, copyLen))
+                    save_digital_state();
                 if (setReply) {
                     xpc_dictionary_set_int64(setReply, "status", err ? -1 : 0);
                     xpc_connection_send_message(peer, setReply);
@@ -2938,6 +3023,7 @@ int main(void) {
 
     /* Load persisted volume/mute state from previous run (survives proxy restarts) */
     load_volume_state();
+    load_digital_state();
 
     /* Open USB device directly and configure FPGA routing.
        This bypasses the Apogee daemon which can't detect devices on macOS 26. */

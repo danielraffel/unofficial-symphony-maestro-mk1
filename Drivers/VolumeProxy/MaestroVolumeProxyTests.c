@@ -105,8 +105,34 @@ static void check_reconfigure_holdoff(void)
     CHECK(gConfiguredAtNs == 0, "closing the handle must forget the configure");
 }
 
+static void check_digital_settings(void)
+{
+    char path[] = "/tmp/maestro-proxy-digital-XXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+    close(fd);
+    gDigitalStatePath = path;
+    const uint8_t spdif = 1, replace = 6, mirror = 3, off = 0, bad = 9;
+    CHECK(note_digital_write(0x34, 1, &spdif, 1), "slot 2 S/PDIF format is remembered");
+    CHECK(!note_digital_write(0x34, 1, &spdif, 1), "an unchanged value is not a change");
+    CHECK(note_digital_write(0x35, 0, &replace, 1), "slot 1 Replaces is remembered");
+    CHECK(note_digital_write(0x36, 1, &mirror, 1), "slot 2 Mirrors is remembered");
+    CHECK(!note_digital_write(0x36, 0, &off, 1), "Mirrors Off is not a choice");
+    CHECK(!note_digital_write(0x35, 0, &bad, 1), "out-of-range Replaces is ignored");
+    CHECK(!note_digital_write(0x34, 0x10000, &spdif, 1), "board index must be the whole nValue");
+    CHECK(!note_digital_write(0x31, 0, &spdif, 1), "other commands are not remembered");
+    save_digital_state();
+    for (int i = 0; i < 3; i++) gSavedDigital[i][0] = gSavedDigital[i][1] = -1;
+    load_digital_state();
+    CHECK(gSavedDigital[0][0] == -1 && gSavedDigital[0][1] == 1, "format reloads per board");
+    CHECK(gSavedDigital[1][0] == 6 && gSavedDigital[1][1] == -1, "Replaces reloads per board");
+    CHECK(gSavedDigital[2][0] == -1 && gSavedDigital[2][1] == 3, "Mirrors reloads per board");
+    unlink(path);
+}
+
 int main(void)
 {
+    check_digital_settings();
     check_reconfigure_holdoff();
     check_transport_filter();
     printf("Production startup gains: L=%.8f R=%.8f (%.5f dB)\n",

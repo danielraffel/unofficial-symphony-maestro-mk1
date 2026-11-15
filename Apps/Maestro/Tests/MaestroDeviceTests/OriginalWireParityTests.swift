@@ -340,3 +340,24 @@ struct PresetDigitalWritesTests {
         #expect(decoded.slot2SPDIFReplaceID == nil)
     }
 }
+
+@Suite("Remembered per-slot digital settings")
+struct SlotDigitalSettingsTests {
+    @Test("what the app wrote is replayed per slot at connect, to the cards that have it")
+    func recordAndReplay() throws {
+        var settings = SlotDigitalSettings()
+        settings.record(.opticalOutFormat, slot: 1, value: 1)    // A16 IP to S/PDIF
+        settings.record(.spdifReplaceID, slot: 0, value: 6)
+        settings.record(.spdifMirrorID, slot: 1, value: 3)
+        settings.record(.spdifMirrorID, slot: 0, value: 0)       // not a Mirrors choice: ignored
+        settings.record(.opticalInFormat, slot: 0, value: 7)     // not a format: ignored
+        let writes = settings.writes(layout: CardLayout(slot1: .analogAES, slot2: .analogAD16))
+        #expect(writes.map { "\($0.address.selector)/\($0.address.element)=\($0.value)" }
+                == ["'AEs0'/0=6", "'AEoo'/1=1", "'AEs7'/1=3"])
+        // Round-trips through UserDefaults' plist encoding.
+        let data = try PropertyListEncoder().encode(settings)
+        #expect(try PropertyListDecoder().decode(SlotDigitalSettings.self, from: data) == settings)
+        // Nothing remembered: nothing written (the drivers' and firmware's defaults stand).
+        #expect(SlotDigitalSettings().writes(layout: CardLayout(slot1: .optical)).isEmpty)
+    }
+}

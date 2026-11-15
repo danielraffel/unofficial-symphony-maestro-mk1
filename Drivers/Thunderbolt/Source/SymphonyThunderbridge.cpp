@@ -326,6 +326,7 @@ struct SymphonyThunderbridge_IVars {
     // read on the default queue, both with __atomic_*.
     uint8_t   inputRouteSource[32];
     uint8_t   namingCoaxReplace[2];
+    uint8_t   sessionCoaxMirror[2];   // last Mirrors (0x36) sent, 0 = none this session
     bool      channelNamesPublished;
     SymphonyNamingState publishedNaming;
     uint8_t   publishedInputSource[32];
@@ -587,6 +588,7 @@ static constexpr uint8_t kSIOCmd_HeadphoneMute        = 0x24;  // 1 byte: nValue
 static constexpr uint8_t kSIOCmd_AudioRouting          = 0x31;  // N×2 bytes: [dest, src] pairs
 static constexpr uint8_t kSIOCmd_OpticalFormat         = 0x34;  // 1 byte: 0=ADAT/SMUX, 1=SPDIF. nValue=board index (0 or 1).
 static constexpr uint8_t kSIOCmd_SPDIFCoaxReplaceInput = 0x35; // 1 byte: SymphonyIOBoardSPDIFCoaxReplace (0 Off, 1-8 pair). nValue=board index.
+static constexpr uint8_t kSIOCmd_SPDIFCoaxMirrorOutput = 0x36; // 1 byte: pair 1-8 mirrored by the coax output. nValue=board index.
 static constexpr uint8_t kSIOCmd_ClockMode             = 0x50;  // 4 bytes: clock source config
 static constexpr uint8_t kSIOCmd_MixerFaderLevel       = 0xB0;  // 1 byte: dB+48 (0..48). nValue=(mixer<<16)|channel.
 static constexpr uint8_t kSIOCmd_MixerInputPan         = 0xB1;  // 1 byte: (pan+1)*64 (0..128). nValue=(mixer<<16)|channel.
@@ -1788,8 +1790,14 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // see SymphonyOptionBoard.h). The slot's type is read first (0xA1, the
         // same bounded read Start() and link recovery use); if that read fails
         // the send goes out as before.
+        //
+        // The format sent is the one chosen through the driver's optical
+        // control this session (ADAT/SMUX, 0, until one is chosen), so a link
+        // recovery puts back what the user had, as the daemon re-applied its
+        // saved settings (SymphonyIO_IOBoard.cpp:527-566,
+        // OpticalIn_SymphonyIO_Stream.cpp:387-396). Across a driver restart the
+        // app replays the Mac's saved formats after it connects.
         {
-            uint8_t adatMode = 0;  // SymphonyIOOpticalFormat_ADAT_SMUX
             const char* result[2] = { "skipped", "skipped" };
             for (uint32_t b = 0; b < 2; b++) {
                 uint8_t bt = kSIOOptionBoard_None;
@@ -1801,14 +1809,26 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                           b, bt);
                     continue;
                 }
+                uint8_t format = __atomic_load_n(&ivars->pendingOpticalFmt[b], __ATOMIC_ACQUIRE) ? 1 : 0;
                 bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                             symphonyAddr, kSIOCmd_OpticalFormat,
-                                            b, &adatMode, 1, txSeq);
-                result[b] = ok ? "OK" : "FAILED";
+                                            b, &format, 1, txSeq);
+                result[b] = ok ? (format ? "OK (SPDIF)" : "OK (ADAT/SMUX)") : "FAILED";
                 IOSleep(10);
             }
-            STLOG("SymphonyIO: OpticalFormat(ADAT/SMUX): board0=%s, board1=%s",
-                  result[0], result[1]);
+            STLOG("SymphonyIO: OpticalFormat: board0=%s, board1=%s", result[0], result[1]);
+            // S/PDIF Coax Replaces and Mirrors written this session, likewise
+            // (the firmware starts at Off / Analog 1-2, SymphonyIOStateData.cpp:127-131).
+            for (uint32_t b = 0; b < 2; b++) {
+                uint8_t replace = __atomic_load_n(&ivars->namingCoaxReplace[b], __ATOMIC_ACQUIRE);
+                uint8_t mirror = __atomic_load_n(&ivars->sessionCoaxMirror[b], __ATOMIC_ACQUIRE);
+                if (replace >= 1 && replace <= 8)
+                    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, symphonyAddr,
+                                      kSIOCmd_SPDIFCoaxReplaceInput, b, &replace, 1, txSeq);
+                if (mirror >= 1 && mirror <= 8)
+                    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, symphonyAddr,
+                                      kSIOCmd_SPDIFCoaxMirrorOutput, b, &mirror, 1, txSeq);
+            }
         }
 
         // ── 19b-1. Playback routing: XLink → IOBoard0 (direct) ─────
@@ -5543,6 +5563,9 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         } else if (command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2 && payload && payloadLen >= 1) {
             __atomic_store_n(&ivars->namingCoaxReplace[value], payload[0], __ATOMIC_RELEASE);
             namesChanged = true;
+        } else if (command == kSIOCmd_SPDIFCoaxMirrorOutput && value < 2 && payload && payloadLen >= 1) {
+            // Kept so a link recovery can put it back.
+            __atomic_store_n(&ivars->sessionCoaxMirror[value], payload[0], __ATOMIC_RELEASE);
         }
         // Legacy SymphonyIO::UpdateMainOutputChannelMode makes Line (mode 0)
         // an HP1 monitor target.  The HAL exposes one volume/mute control, so

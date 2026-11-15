@@ -459,6 +459,7 @@ struct DeviceSettingsView: View {
             }
             guard settingsLoadID == loadID else { return }
             setOpticalReadback(actual, card: card)
+            appState.rememberDigitalSetting(address.selector, slot: Int(card), value: actual)
             errorMessage = actual == format ? nil : "Card \(card + 1) did not confirm the requested optical format."
         } catch {
             guard settingsLoadID == loadID else { return }

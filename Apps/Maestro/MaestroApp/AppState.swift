@@ -568,6 +568,50 @@ final class AppState {
     /// daemon re-named its channels (`OpticalIn_SymphonyIO_Stream.cpp:70-80, 141-153`).
     var channelNaming = CardLayout.ChannelNaming()
 
+    // MARK: Per-slot digital settings the Mac owns
+
+    /// UserDefaults key for this card pair's remembered optical format,
+    /// Replaces and Mirrors (see `SlotDigitalSettings`). Per card pair, as the
+    /// daemon kept them per board.
+    private var digitalSettingsKey: String? {
+        cardLayout.savedStateScope.map { "slotDigitalSettings.\($0)" }
+    }
+
+    private var rememberedDigitalSettings: SlotDigitalSettings {
+        guard let key = digitalSettingsKey,
+              let data = UserDefaults.standard.data(forKey: key),
+              let settings = try? PropertyListDecoder().decode(SlotDigitalSettings.self, from: data)
+        else { return SlotDigitalSettings() }
+        return settings
+    }
+
+    /// Remember a value written to (or confirmed by) the unit, so it is put back
+    /// at the next connect.
+    @MainActor
+    func rememberDigitalSetting(_ selector: AudioPropertySelector, slot: Int, value: UInt32) {
+        guard let key = digitalSettingsKey else { return }
+        var settings = rememberedDigitalSettings
+        settings.record(selector, slot: slot, value: value)
+        if let data = try? PropertyListEncoder().encode(settings) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    /// Put the remembered optical formats, Replaces and Mirrors back on the
+    /// unit, as the daemon did at connect. Both drivers start the optical ports
+    /// at ADAT/SMUX and the firmware starts Replaces Off, Mirrors Analog 1-2.
+    @MainActor
+    func reapplyDigitalSettings() async {
+        guard let device else { return }
+        for write in rememberedDigitalSettings.writes(layout: cardLayout) {
+            do {
+                try await device.setProperty(write.address, value: .uint32(write.value))
+            } catch {
+                print("[Maestro] reapplyDigitalSettings \(write.address.selector) slot \(write.address.element): \(error)")
+            }
+        }
+    }
+
     /// Read each slot's optical format and S/PDIF Coax Replaces from the unit
     /// for `channelNaming`. A read that fails leaves the value as it was.
     @MainActor
@@ -1690,6 +1734,7 @@ final class AppState {
 
                 // Read card types and sync routing (USB-specific but harmless for TB)
                 await self.readCardTypes()
+                await self.reapplyDigitalSettings()
                 await self.refreshChannelNaming()
                 await self.syncOutputRoutingToHardware()
                 await self.syncDeviceSettingsToHardware()
@@ -3212,6 +3257,8 @@ final class AppState {
             // Device settings
             for digital in PresetDigitalWrites.writes(for: preset, layout: cardLayout) {
                 await write(digital.address, .uint32(digital.value))
+                rememberDigitalSetting(digital.address.selector, slot: Int(digital.address.element),
+                                       value: digital.value)
             }
             await refreshChannelNaming()
             await write(PropertyAddress(selector: .peakHoldMode), .uint32(preset.peakHoldMode))

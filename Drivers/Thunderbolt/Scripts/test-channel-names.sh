@@ -145,3 +145,13 @@ for hook in 'hardware now at' 'RequestOpticalFormat: board=%u fmt=%u' 'namesChan
     grep -q "$hook" "$SOURCE_DIR/SymphonyThunderbridge.cpp"
 done
 echo "ThunderBridge channel names: PASS"
+
+# A link recovery re-sends this session's optical format, Replaces and
+# Mirrors instead of resetting the optical ports to ADAT.
+grep -q 'pendingOpticalFmt\[b\], __ATOMIC_ACQUIRE) ? 1 : 0' "$SOURCE_DIR/SymphonyThunderbridge.cpp"
+grep -q 'kSIOCmd_SPDIFCoaxMirrorOutput, b, &mirror, 1, txSeq' "$SOURCE_DIR/SymphonyThunderbridge.cpp"
+grep -q 'sessionCoaxMirror\[value\], payload\[0\]' "$SOURCE_DIR/SymphonyThunderbridge.cpp"
+if grep -q 'adatMode' "$SOURCE_DIR/SymphonyThunderbridge.cpp"; then
+    echo "FAIL: the link configuration still forces ADAT" >&2; exit 1
+fi
+echo "ThunderBridge session digital settings replay: PASS"

@@ -899,7 +899,10 @@ struct InputControlsView: View {
                                 )
                                 // The replaced pair is renamed "SPDIF Cx" in routing
                                 // and mixer labels, as the daemon renamed it.
-                                if element < 2 { appState.channelNaming.spdifReplace[Int(element)] = optVal }
+                                if element < 2 {
+                                    appState.channelNaming.spdifReplace[Int(element)] = optVal
+                                    appState.rememberDigitalSetting(.spdifReplaceID, slot: Int(element), value: optVal)
+                                }
                             } catch {
                                 print("[Maestro] SPDIF Replace write failed: \(error)")
                             }

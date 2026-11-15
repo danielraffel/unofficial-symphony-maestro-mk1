@@ -751,6 +751,7 @@ struct OutputControlsView: View {
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output),
                                     value: .uint32(optVal)
                                 )
+                                appState.rememberDigitalSetting(.spdifMirrorID, slot: 0, value: optVal)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 1-2 write failed: \(error)")
                             }
@@ -787,6 +788,7 @@ struct OutputControlsView: View {
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output, element: 1),
                                     value: .uint32(optVal)
                                 )
+                                appState.rememberDigitalSetting(.spdifMirrorID, slot: 1, value: optVal)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 3-4 write failed: \(error)")
                             }
