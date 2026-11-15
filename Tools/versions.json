@@ -1,6 +1,7 @@
 {
   "appVersion": "0.8.40",
-  "buildNumber": 1037,
+  "buildNumber": 1038,
   "dextVersion": "0.10.17",
-  "dextBuild": 123
+  "dextBuild": 123,
+  "dextCDHash": "1cb0362e5a8ab718cf839c5ee2a54a3c7c7f21a0"
 }

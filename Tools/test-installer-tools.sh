@@ -147,4 +147,62 @@ grep -q 'check_not_version_checked "\$CORE_PKG"' "$REPO_ROOT/Installer/build-ins
 grep -q 'check_not_version_checked "\$USB_PKG"' "$REPO_ROOT/Installer/build-installer.sh" || fail "build does not check the USB package"
 ok "the build checks both component packages"
 
+# ── Driver CDHash gate ──────────────────────────────────────────────────────
+G="$WORK/gate"
+mkdir -p "$G"
+cp /usr/bin/true "$G/driver"
+codesign -s - -f "$G/driver" 2>/dev/null
+HASH="$(code_cdhash "$G/driver")"
+[[ "$HASH" =~ ^[0-9a-f]{40}$ ]] || fail "code_cdhash did not read a CDHash ($HASH)"
+check_dext_cdhash "$G/driver" "$HASH" 123 >/dev/null || fail "gate refused the matching driver"
+if check_dext_cdhash "$G/driver" 0000000000000000000000000000000000000000 123 2>"$G/err"; then fail "gate passed a different driver"; fi
+grep -q "$HASH" "$G/err" && grep -q 0000000000000000000000000000000000000000 "$G/err" || fail "gate does not print both hashes"
+check_dext_cdhash "$G/driver" "" 124 | grep -q "$HASH" || fail "first build of a driver number does not print its hash"
+grep -q 'check_dext_cdhash "\$DEXT_SRC"' "$REPO_ROOT/Installer/build-installer.sh" || fail "build does not gate the driver"
+ok "driver CDHash gate"
+
+# ── Version tuple (Tools/check-versions.py) ─────────────────────────────────
+V="$WORK/versions"
+mkdir -p "$V/Tools" "$V/Apps/Maestro/MaestroCore" "$V/Drivers/Thunderbolt"
+cp "$REPO_ROOT/Tools/check-versions.py" "$V/Tools/"
+set_tuple() {  # app dextVersion dextBuild plistBuild [cdhash]
+    printf '{"appVersion": "%s", "buildNumber": 1, "dextVersion": "%s", "dextBuild": %s%s}\n' \
+        "$1" "$2" "$3" "${5:+, \"dextCDHash\": \"$5\"}" > "$V/Tools/versions.json"
+    printf 'public enum MaestroCore {\n    public static let version = "%s"\n}\n' "$1" > "$V/Apps/Maestro/MaestroCore/MaestroCore.swift"
+    cat > "$V/Drivers/Thunderbolt/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleShortVersionString</key><string>$2</string>
+<key>CFBundleVersion</key><string>$4</string>
+</dict></plist>
+PLIST
+}
+cv() { python3 "$V/Tools/check-versions.py" "$@" >/dev/null 2>&1; }
+H40=1cb0362e5a8ab718cf839c5ee2a54a3c7c7f21a0
+set_tuple 0.8.40 0.10.17 123 123 "$H40"; cv || fail "valid tuple refused"
+set_tuple 0.8.40 0.10.17 123 123; cv || fail "tuple without a recorded CDHash refused"
+set_tuple 0.8.40 0.10.17 123 123 "1CB0"; cv && fail "short CDHash accepted"
+set_tuple 0.8.40 0.10.17 124 123 "$H40"; cv && fail "driver plist build disagreeing with dextBuild accepted"
+ok "check-versions: dextCDHash format and driver plist build"
+
+cat > "$V/feed.xml" <<'XML'
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>
+<item><sparkle:version>0.9.0</sparkle:version><sparkle:channel>beta</sparkle:channel></item>
+<item><sparkle:version>0.8.40</sparkle:version></item>
+<item><sparkle:version>0.8.39</sparkle:version></item>
+</channel></rss>
+XML
+set_tuple 0.8.41 0.10.17 123 123 "$H40"
+cv --feed "$V/feed.xml" --channel stable || fail "hotfix below an outstanding beta refused"
+cv --feed "$V/feed.xml" --channel beta && fail "beta below an existing beta accepted"
+set_tuple 0.8.40 0.10.17 123 123 "$H40"
+cv --feed "$V/feed.xml" --channel stable && fail "version already in the feed accepted"
+set_tuple 0.8.39 0.10.17 123 123 "$H40"
+cv --feed "$V/feed.xml" --channel stable && fail "stable below the newest stable accepted"
+set_tuple 0.9.1 0.10.17 123 123 "$H40"
+cv --feed "$V/feed.xml" --channel beta || fail "beta above everything refused"
+python3 "$V/Tools/check-versions.py" --feed "$V/feed.xml" >/dev/null 2>&1 && fail "--feed without --channel accepted"
+ok "check-versions --feed: stable above the newest stable, beta above everything, no duplicates"
+
 echo "Installer tool tests passed ($PASS)"

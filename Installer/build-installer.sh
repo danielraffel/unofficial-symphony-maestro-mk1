@@ -240,6 +240,19 @@ codesign --sign "$SIGNING_IDENTITY" --force --options runtime --timestamp \
     --generate-entitlement-der \
     "$DEXT_SRC"
 
+# The driver gate: one driver build number per CDHash. A rebuild of unchanged
+# driver source keeps its CDHash; a different one needs a new dextBuild.
+DEXT_BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$DEXT_SRC/Info.plist")"
+DEXT_EXPECTED_BUILD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dextBuild"])' "$REPO_ROOT/Tools/versions.json")"
+DEXT_EXPECTED_CDHASH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dextCDHash", ""))' "$REPO_ROOT/Tools/versions.json")"
+if [ "$DEXT_BUILT_VERSION" != "$DEXT_EXPECTED_BUILD" ]; then
+    echo "ERROR: the built driver is build $DEXT_BUILT_VERSION; Tools/versions.json says $DEXT_EXPECTED_BUILD" >&2
+    exit 1
+fi
+# shellcheck source=../Tools/lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
+check_dext_cdhash "$DEXT_SRC" "$DEXT_EXPECTED_CDHASH" "$DEXT_EXPECTED_BUILD"
+
 mkdir -p "$APP_BUNDLE/Contents/Library/SystemExtensions"
 ditto "$DEXT_SRC" "$APP_BUNDLE/Contents/Library/SystemExtensions/$DEXT_BUNDLE"
 echo "  Embedded $DEXT_BUNDLE (v$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$DEXT_SRC/Info.plist"))"
