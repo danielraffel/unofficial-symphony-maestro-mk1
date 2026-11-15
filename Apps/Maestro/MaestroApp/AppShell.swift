@@ -224,7 +224,8 @@ struct ContentView: View {
     }
 }
 
-private struct ThunderBridgeActionBanner: View {
+/// Internal, not private, so MaestroAppTests can lay it out.
+struct ThunderBridgeActionBanner: View {
     let banner: ThunderBridgeBanner
     let onAction: () -> Void
     let onDismiss: () -> Void
@@ -254,7 +255,10 @@ private struct ThunderBridgeActionBanner: View {
                 Text(banner.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // No .fixedSize(vertical: true) here: the split view measures
+                // its minimum at a near-zero width, the message then wraps a
+                // word per line, and the window's content became taller than
+                // the window, which then drew blank (MaestroAppTests).
             }
             Spacer(minLength: 8)
             if banner.offersFinishUpdateNow {

@@ -72,6 +72,12 @@ let package = Package(
             dependencies: ["MaestroCore"],
             path: "Tests/MaestroCoreTests"
         ),
+        // Layout checks for app views that need no AppState or hardware.
+        .testTarget(
+            name: "MaestroAppTests",
+            dependencies: ["MaestroApp", "MaestroCore"],
+            path: "Tests/MaestroAppTests"
+        ),
         .testTarget(
             name: "MaestroDeviceTests",
             dependencies: ["MaestroDevice"],
