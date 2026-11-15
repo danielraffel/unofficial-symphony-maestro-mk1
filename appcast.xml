@@ -7,6 +7,28 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.8.39</title>
+      <pubDate>Sat, 14 Nov 2026 18:56:46 GMT</pubDate>
+      <sparkle:version>0.8.39</sparkle:version>
+      <sparkle:shortVersionString>0.8.39</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.39</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+## What's new
+
+- **AES outputs are called AES** on the Output Routing page, instead of "ADAT".
+- **The 8x8 AES/OPT card is named correctly** in System Setup > Device Info.
+- **No optical format setting for a card set to AES,** as in Apogee's original Maestro.
+- **Clock Source over USB offers Internal only,** as Apogee's software did. ThunderBridge keeps every clock source.
+- Using the AES port on an 8x8 card: set the card's DIG I/O button to AES, then turn the Symphony off and on again.
+- **Quit your audio apps before installing.** Audio is interrupted for a few seconds.
+
+[Read the full release notes on GitHub](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.8.39)
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.8.39/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="i8KEMhoQ0PceRhpT7VdA729p6k1fblWliPJBGisoVlr/CW/kHyjt+Vsm8ei7ypS4jvgUnDZdfP/yypDkCPzvCQ==" length="3944439" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.8.38</title>
       <pubDate>Sat, 14 Nov 2026 04:14:54 GMT</pubDate>
       <sparkle:version>0.8.38</sparkle:version>
@@ -525,6 +547,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: Kbap1tJaGFOP4TM5SOfs7p8FHj4g3IlLLG/UzLDGSocA1GXNPxn2UiQdzEoosgd6PIlt2RXcaWh0NdVX8QYmCQ==
-length: 42960
+edSignature: Q8xNzqNmZ2jzTV2EPKcA+M0QOaCjH0Blt2QFVJGEE3qwdN9LfBM15RjMlNhDE7HvhJJmqCovr4ihKdWSFwfjAA==
+length: 44624
 -->
