@@ -1987,6 +1987,121 @@ public enum InputRoutingReplay {
     }
 }
 
+// MARK: - ThunderBridge input meters
+
+/// Which ThunderBridge meter word each input strip reads.
+///
+/// The card's input meter words 0-31 meter what arrives over XLink, which is
+/// host input n (P2P n): whatever the unit's capture table routes there. Until
+/// 0.8.40 the app read word i for the strip of device-wide input i, which only
+/// lines up while host input i happens to carry that channel. On the
+/// board-order table (`SymphonyIODefaultRouting.thunderboltInputRoutes`) it
+/// does not past slot 1's analog inputs: on an 8x8 + A16 unit, A16 Line 1
+/// (host input 17) showed host input 9 (slot 1's first digital channel), and
+/// the Mixer's digital strips showed A16 Line 9-16.
+///
+/// So each strip is resolved to its hardware routing source (IOBoard0/1 base +
+/// its channel on the board) and reads the word of the host input that the
+/// unit's current table feeds from that source: the driver's board-order table
+/// with the saved Input Routing choices the app replays over it. A channel
+/// routed to no host input has no meter word (nil, drawn as silence); one
+/// routed to several reads the lowest.
+public enum ThunderboltInputMeterMap {
+    public typealias Route = SymphonyIODefaultRouting.Route
+
+    /// Host inputs the meter payload carries (words 0-31).
+    public static let hostInputCount = 32
+
+    /// The capture table the unit carries: the driver's board-order table
+    /// with `replayed` (``InputRoutingReplay/writes(saved:columns:pairCount:)``)
+    /// written over it, as the app sends them at connect.
+    public static func currentRoutes(slot1: IOCardType?, replayed: [Route]) -> [Route] {
+        var table = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1)
+        for write in replayed {
+            guard write.destination >= SymphonyIORoutingAddress.p2pBase else { continue }
+            let n = Int(write.destination - SymphonyIORoutingAddress.p2pBase)
+            guard n < table.count else { continue }
+            table[n] = (destination: write.destination, source: write.source)
+        }
+        return table
+    }
+
+    /// The host input (0-based meter word) fed from `source`, or nil.
+    public static func word(forSource source: UInt8, routes: [Route]) -> Int? {
+        routes.compactMap { route -> Int? in
+            guard route.source == source, route.destination >= SymphonyIORoutingAddress.p2pBase else { return nil }
+            let n = Int(route.destination - SymphonyIORoutingAddress.p2pBase)
+            return n < hostInputCount ? n : nil
+        }.min()
+    }
+
+    /// The routing source of a board's input channel.
+    public static func source(board: Int, channelOnBoard: Int) -> UInt8? {
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        guard (0...1).contains(board), channelOnBoard >= 0, channelOnBoard < perBoard else { return nil }
+        let base = board == 0 ? SymphonyIORoutingAddress.ioBoard0Base : SymphonyIORoutingAddress.ioBoard1Base
+        return base + UInt8(channelOnBoard)
+    }
+
+    /// Meter words for one card layout.
+    public struct Words: Sendable, Equatable {
+        /// One entry per ``CardLayout/mixerChannels`` entry, the order of
+        /// `AppState.inputMeterLevels`: every analog input (slot 1 then slot
+        /// 2, so the Input tab's analog strips are the first entries), then
+        /// AES, then optical. Empty for an unknown layout.
+        public let channels: [Int?]
+        /// The layout of `AppState.digitalInputMeterLevels` (24 entries):
+        /// board b's digital channel k at `b * 8 + k`, k < 8, as
+        /// ``CardLayout/DigitalPair/meterIndex`` reads it.
+        public let digital: [Int?]
+
+        public init(channels: [Int?], digital: [Int?]) {
+            self.channels = channels
+            self.digital = digital
+        }
+    }
+
+    public static let digitalSlots = 24
+
+    public static func words(layout: CardLayout, routes: [Route]) -> Words {
+        guard layout.isKnown else {
+            return Words(channels: [], digital: Array(repeating: nil, count: digitalSlots))
+        }
+        let channels = layout.mixerChannels.map { channel -> Int? in
+            source(board: channel.boardIndex, channelOnBoard: channel.channelOnBoard)
+                .flatMap { word(forSource: $0, routes: routes) }
+        }
+        var digital = [Int?](repeating: nil, count: digitalSlots)
+        let perBoard = CardLayout.meteredDigitalPairsPerBoard * 2
+        for (board, card) in layout.slots.enumerated() {
+            for k in 0..<min(perBoard, card.digitalInputChannels) {
+                digital[board * perBoard + k] =
+                    source(board: board, channelOnBoard: card.analogInputChannels + k)
+                        .flatMap { word(forSource: $0, routes: routes) }
+            }
+        }
+        return Words(channels: channels, digital: digital)
+    }
+
+    /// Strip levels from host-input levels (word n = host input n). With no
+    /// layout (`words.channels` empty) strip i keeps host input i, as before.
+    public static func stripLevels(host: [Double], words: Words, count: Int) -> [Double] {
+        (0..<count).map { i in
+            if words.channels.isEmpty { return i < host.count ? host[i] : -60.0 }
+            guard i < words.channels.count, let n = words.channels[i], n < host.count else { return -60.0 }
+            return host[n]
+        }
+    }
+
+    /// Digital strip levels (24 entries) from host-input levels.
+    public static func digitalLevels(host: [Double], words: Words) -> [Double] {
+        (0..<digitalSlots).map { i in
+            guard i < words.digital.count, let n = words.digital[i], n < host.count else { return -60.0 }
+            return host[n]
+        }
+    }
+}
+
 /// One-time, ThunderBridge only: forget Input Routing choices saved before
 /// 0.8.40.
 ///

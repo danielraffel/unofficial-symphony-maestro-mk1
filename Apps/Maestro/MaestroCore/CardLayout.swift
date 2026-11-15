@@ -537,11 +537,16 @@ public struct CardLayout: Sendable, Equatable {
         public let hardwareIndex: Int
         /// 0 = primary slot, 1 = secondary slot.
         public let boardIndex: Int
+        /// The input's channel within its board's 16-channel region: the
+        /// card's analog inputs first, then its digital ones (the order of the
+        /// routing grid's columns and of the unit's IOBoard routing sources).
+        public let channelOnBoard: Int
 
-        public init(label: String, hardwareIndex: Int, boardIndex: Int = 0) {
+        public init(label: String, hardwareIndex: Int, boardIndex: Int = 0, channelOnBoard: Int? = nil) {
             self.label = label
             self.hardwareIndex = hardwareIndex
             self.boardIndex = boardIndex
+            self.channelOnBoard = channelOnBoard ?? hardwareIndex
         }
     }
 
@@ -565,22 +570,22 @@ public struct CardLayout: Sendable, Equatable {
                 MixerChannel(label: "Line \($0 + 1)", hardwareIndex: $0)
             }
         }
-        var analog: [(label: String, board: Int)] = []
-        var aes: [(label: String, board: Int)] = []
-        var optical: [(label: String, board: Int)] = []
+        var analog: [(label: String, board: Int, channel: Int)] = []
+        var aes: [(label: String, board: Int, channel: Int)] = []
+        var optical: [(label: String, board: Int, channel: Int)] = []
 
         for (boardIndex, card) in slots.enumerated() {
             for channelOnCard in 0..<card.analogInputChannels {
                 analog.append((label: analogChannelName(board: boardIndex, channelOnCard: channelOnCard,
                                                         isInput: true),
-                               board: boardIndex))
+                               board: boardIndex, channel: channelOnCard))
             }
         }
         for (boardIndex, card) in slots.enumerated() {
             for channelOnCard in 0..<card.digitalInputChannels {
                 let entry = (label: digitalChannelName(board: boardIndex, channelOnCard: channelOnCard,
                                                        isInput: true),
-                             board: boardIndex)
+                             board: boardIndex, channel: card.analogInputChannels + channelOnCard)
                 // AES3 is walked before Optical by the daemon's plug-type loop.
                 if card.digitalLabel(forChannel: channelOnCard) == "AES" {
                     aes.append(entry)
@@ -590,7 +595,8 @@ public struct CardLayout: Sendable, Equatable {
             }
         }
         return (analog + aes + optical).enumerated().map { index, entry in
-            MixerChannel(label: entry.label, hardwareIndex: index, boardIndex: entry.board)
+            MixerChannel(label: entry.label, hardwareIndex: index, boardIndex: entry.board,
+                         channelOnBoard: entry.channel)
         }
     }
 

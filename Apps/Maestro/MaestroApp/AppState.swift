@@ -882,6 +882,12 @@ final class AppState {
     /// output meter model; re-read from RoutingStateCache every ~2 s.
     private var softwareOutputRoutes: [UInt8: UInt8] = [:]
     private var softwareOutputRoutesPollStamp: Int = -1
+    /// ThunderBridge: the meter word (host input) each input strip reads,
+    /// from the unit's capture table (`ThunderboltInputMeterMap`); re-derived
+    /// every ~2 s so card detection and Input Routing changes are followed.
+    private var thunderboltInputMeterWords = ThunderboltInputMeterMap.Words(channels: [], digital: [])
+    private var thunderboltInputMeterWordsPollStamp: Int = -1
+    private var thunderboltInputMeterLayout: CardLayout?
     /// Count of consecutive all-zero TDM reads. Used to detect when signal stops
     /// and begin decaying held meter values (firmware returns zeros when idle too).
     private var tdmZeroReadCount: Int = 0
@@ -2341,23 +2347,34 @@ final class AppState {
                             let peak = Double((words[i] >> 24) & 0xFF)
                             return peak <= 0 ? -60 : max(-60, 20 * log10(peak / 256.0))
                         }
-                        var inp = self.inputMeterLevels
-                        for i in 0..<inp.count { inp[i] = dbW(i) }            // inputs 0-31
+                        // Words 0-31 meter host inputs 1-32: what the unit's
+                        // capture table sends over XLink, not the device-wide
+                        // input order the strips use. Each strip reads the word
+                        // of the host input its hardware channel is routed to
+                        // (ThunderboltInputMeterMap).
+                        self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                        let meterWords = self.thunderboltInputMeterWords
+                        var hostInputs = (0..<ThunderboltInputMeterMap.hostInputCount).map { dbW($0) }
                         var outp = self.outputMeterLevels
                         for i in 0..<outp.count { outp[i] = dbW(64 + i) }     // host playback 64-95
-                        newInput = inp
                         newOutput = outp
 
                         // If the FPGA input snapshot is unavailable or silent,
                         // use the active Core Audio capture stream. This keeps
                         // Input and Mixer hardware strips useful on cards whose
                         // meter DMA is absent, while preserving real FPGA peaks.
-                        if (newInput.max() ?? -60.0) <= -60.0,
+                        // Its channel n is host input n too.
+                        if (hostInputs.max() ?? -60.0) <= -60.0,
                            let softwareInputs = self.meterDevice?.softwareInputPeaks(),
                            !softwareInputs.isEmpty {
-                            newInput = self.linearMeterLevels(
-                                from: softwareInputs, count: self.inputMeterLevels.count)
+                            hostInputs = self.linearMeterLevels(
+                                from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount)
                         }
+                        newInput = ThunderboltInputMeterMap.stripLevels(
+                            host: hostInputs, words: meterWords, count: self.inputMeterLevels.count)
+                        self.digitalInputMeterLevels = self.smoothMeterLevels(
+                            self.digitalInputMeterLevels,
+                            raw: ThunderboltInputMeterMap.digitalLevels(host: hostInputs, words: meterWords))
 
                         // The FPGA meter DMA is not available on every
                         // ThunderBridge FPGA revision and may be temporarily
@@ -2491,8 +2508,14 @@ final class AppState {
                            softwarePeaks.count >= 2 {
                             if let softwareInputs = self.meterDevice?.softwareInputPeaks(),
                                !softwareInputs.isEmpty {
-                                newInput = self.linearMeterLevels(
-                                    from: softwareInputs, count: self.inputMeterLevels.count)
+                                // Core Audio channel n is host input n: map it
+                                // to the strips as the FPGA words are.
+                                self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                                newInput = ThunderboltInputMeterMap.stripLevels(
+                                    host: self.linearMeterLevels(
+                                        from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount),
+                                    words: self.thunderboltInputMeterWords,
+                                    count: self.inputMeterLevels.count)
                             } else {
                                 newInput = [Double](repeating: -60.0, count: self.inputMeterLevels.count)
                             }
@@ -3034,6 +3057,28 @@ final class AppState {
         guard softwareOutputRoutesPollStamp < 0 || pollCount - softwareOutputRoutesPollStamp >= 40 else { return }
         softwareOutputRoutesPollStamp = pollCount
         softwareOutputRoutes = cachedOutputRouteMap()
+    }
+
+    /// Re-derive `thunderboltInputMeterWords` every ~2 s, and at once when the
+    /// card layout changes. The table is the driver's board-order table with
+    /// the saved Input Routing choices that `syncInputRoutingToHardware`
+    /// writes over it (only when the cards were read this session, as there).
+    private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
+        let layout = cardLayout
+        guard thunderboltInputMeterWordsPollStamp < 0
+                || pollCount - thunderboltInputMeterWordsPollStamp >= 40
+                || thunderboltInputMeterLayout != layout else { return }
+        thunderboltInputMeterWordsPollStamp = pollCount
+        thunderboltInputMeterLayout = layout
+        var replayed: [SymphonyIODefaultRouting.Route] = []
+        if RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil {
+            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            replayed = InputRoutingReplay.writes(
+                saved: cache.load() ?? [:], columns: layout.inputRoutingColumns,
+                pairCount: tb.identifier.mode.channelCount / 2)
+        }
+        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: thunderboltCaptureSlot1, replayed: replayed)
+        thunderboltInputMeterWords = ThunderboltInputMeterMap.words(layout: layout, routes: routes)
     }
 
     /// The output routes the app has persisted, as destination byte -> source
