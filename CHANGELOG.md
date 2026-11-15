@@ -2,12 +2,27 @@
 
 ## Unreleased
 
-More fixes for the AES port on an 8x8 card.
+Every option card now behaves the way it did in Apogee's original Maestro: the optical format, the S/PDIF coax settings, the clock choices and the channel names.
+
+### What's fixed
+
+- **S/PDIF settings for the card in slot 2 now take effect.** "SPDIF Coax 3-4 Replaces" and "SPDIF Coax 3-4 Mirrors" were sent in a form the Symphony ignores, and the Mirrors menu was not sent at all. Both now work, over USB and ThunderBridge.
+- **S/PDIF settings show what the Symphony is set to over ThunderBridge.** The Replaces and Mirrors menus used to go back to their defaults whenever you left the tab.
+- **Your optical format and S/PDIF settings are kept when the Symphony is turned off and on.** They used to go back to ADAT and the defaults. Maestro and the USB helper now put them back when the Symphony connects, as the original did.
+- **Presets keep the optical format and S/PDIF settings of both cards.** They used to keep the first card's only.
 
 ### What's better
 
-- **Clock from an AES input over ThunderBridge.** With an AES card in a slot, Clock Source now lists that card's S/PDIF Coax input and its AES pairs (AES 1-2, 3-4, 5-6 and 7-8) instead of a single "IO Board" entry, so you can pick the AES input your device is connected to. A second AES card continues the numbering (AES 9-10 to 15-16). This is the list Apogee's original Maestro offered. Other cards are unchanged. Audio MIDI Setup keeps showing "I/O Board" choices; make AES choices in Maestro.
-- **The ThunderBridge driver no longer sends an optical format to an AES card.** An AES card has no optical format to set, and Apogee's software never sent one. This change is in the driver and arrives with the next driver release.
+- **Channel names follow the optical format and sample rate.** In the Mixer, the Input and Output tabs and both routing pages, optical channels are named ADAT at 44.1 and 48 kHz, SMUX at 88.2 and 96 kHz, and "N.A." where the optical ports carry nothing (at 176.4 and 192 kHz, or beyond the first pair in S/PDIF format, where they show SPDIF Opt). A pair replaced by the coax input is named "SPDIF Cx". The names change as soon as you change the rate or format.
+- **Clock Source over ThunderBridge lists each card's own inputs,** as the original did: the S/PDIF coax input, then AES pairs or the optical input. An 8x8 Optical card shows "ADAT 1-8" (or SMUX, SPDIF Opt), a 16-channel card or 16x16 shows its coax input, and an empty or Mic Pre slot shows nothing. A second AES card continues the AES numbering (9-10 to 15-16). Loop Sync is no longer listed; the original offered it only in Pro Tools HD mode.
+- **Menu names as in the original:** optical pairs are "Optical 1-2" in the S/PDIF and headphone menus, the input menu is "SPDIF Coax Replaces", and the optical format choices are "ADAT/SMUX" and "SPDIF".
+- **Audio apps see channel names over ThunderBridge.** The driver now names each input channel ("Line 1", "ADAT 3", "SPDIF Cx 1"...) for Audio MIDI Setup and DAWs, following the same rules.
+- **The ThunderBridge driver no longer sends an optical format to an AES card.** An AES card has no optical format to set, and Apogee's software never sent one.
+
+### Release notes
+
+- The driver changes (input channel names, no optical format for an AES card, keeping your settings after a link recovery) arrive with the next driver release.
+- The USB helper changes with this release.
 
 ## 0.8.39 (build 1035)
 
