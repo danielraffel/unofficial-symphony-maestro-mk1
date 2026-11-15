@@ -560,7 +560,7 @@ H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10000000
 H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10100000
-H buffer-create size=2097152 x2
+H buffer-create size=1048576 x2
 H buffer-create size=1024
 H dma-prepare size=1024 addr=0x10200000
 W 0x00001c 0x00003200
@@ -569,6 +569,7 @@ H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10300000
 H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10400000
+H buffer-create size=2097152 x2
 W 0x000024 0x00040000
 W 0x00004c 0x00040000
 W 0x000028 0x10000000
@@ -605,7 +606,7 @@ S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
 R 0x000014 0x7000010c
-H stream-create dir=in buffer=2097152
+H stream-create dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -613,7 +614,7 @@ H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
 H stream-starting-channel dir=in ch=1
-H stream-create dir=out buffer=2097152
+H stream-create dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -885,6 +886,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x09041240
 W 0x00006c 0x00000000
 R 0x00006c 0x09041240
+R 0x00005c 0x41084108
 R 0x000018 0x00000000
 W 0x000018 0x0000001b
 W 0x000078 0x00040000
@@ -961,6 +963,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018819b
 R 0x000090 0x0000001b
@@ -973,12 +977,14 @@ W 0x000004 0x2db8819b
 S 10
 R 0x000014 0x0000011c
 W 0x000014 0x7000011c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -1031,6 +1037,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x09041240
 W 0x00006c 0x00000000
 R 0x00006c 0x09041240
+R 0x00005c 0x41204120
 R 0x000018 0x00000000
 W 0x000018 0x0000001b
 R 0x000004 0x0018c19b
@@ -1092,6 +1099,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x09041240
 W 0x00006c 0x00000000
 R 0x00006c 0x09041240
+R 0x00005c 0x41014101
 R 0x000018 0x00000000
 W 0x000018 0x0000001b
 R 0x000004 0x0018219b
@@ -1210,12 +1218,14 @@ W 0x000078 0x00000000
 W 0x00008c 0x00000000
 W 0x00007c 0x00000000
 W 0x000084 0x00000000
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -1309,6 +1319,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x09041240
 W 0x00006c 0x00000000
 R 0x00006c 0x09041240
+R 0x00005c 0x41044104
 R 0x000018 0x00000000
 W 0x000018 0x0000001b
 W 0x000078 0x00040000
@@ -1385,6 +1396,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018619b
 R 0x000090 0x0000001b
@@ -1397,12 +1410,14 @@ W 0x000004 0x2db8619b
 S 10
 R 0x000014 0x0000011c
 W 0x000014 0x7000011c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -1522,19 +1537,21 @@ R 0x000008 0x80000000
 W 0x000008 0xffffffff
 H device-config-change-request
 -- configuration change after the fallback
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=192000 channels=32 bytesPerFrame=128 bits=32
--- select 64 at 48000
+-- select 64 at 48000 (first)
 H device-config-change-request
 CR32 0x00 0x220019c2
 CR16 0x04 0x0006
@@ -1567,6 +1584,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x09041240
 W 0x00006c 0x00000000
 R 0x00006c 0x09041240
+R 0x00005c 0x41024102
 R 0x000018 0x00000000
 W 0x000018 0x0000001b
 W 0x000078 0x00040000
@@ -1643,6 +1661,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018419b
 R 0x000090 0x0000001b
@@ -1655,18 +1675,318 @@ W 0x000004 0x2db8419b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=192000 channels=64 bytesPerFrame=256 bits=32
+-- rate change to 96000 at 64, port 2 does not follow (again)
+CR32 0x00 0x220019c2 | CR16 0x04 0x0006 x2
+R 0x000014 0x7000010c
+W 0x000014 0x0000010c
+R 0x000004 0x2db8419b
+W 0x000004 0x0018419b
+R 0x000090 0x05a0001b
+W 0x000090 0x0000001b
+S 10
+R 0x000004 0x0018419b
+W 0x000004 0x0018819b
+R 0x00005c 0x41024102
+W 0x000060 0x00000200
+S 50 | R 0x000060 0x00000000 x5
+R 0x000068 0x00000000
+W 0x000068 0x00000602 x2
+R 0x000038 0x00000000
+W 0x000038 0x00000602 x2
+W 0x000040 0x00000200
+S 50 | R 0x000040 0x00000000 x5
+R 0x00005c 0x41024108
+W 0x000040 0x00000200
+S 50 | R 0x000040 0x00000000 x5
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
+R 0x000068 0x00000000
+W 0x000068 0x00000602 x2
+W 0x000060 0x00000200
+S 50 | R 0x000060 0x00000000 x5
+R 0x00005c 0x41024108 | S 10 x100
+W 0x002080 0x00000020
+W 0x002180 0x00000060
+W 0x002084 0x00000021
+W 0x002184 0x00000061
+W 0x002088 0x00000022
+W 0x002188 0x00000062
+W 0x00208c 0x00000023
+W 0x00218c 0x00000063
+W 0x002090 0x00000024
+W 0x002190 0x00000064
+W 0x002094 0x00000025
+W 0x002194 0x00000065
+W 0x002098 0x00000026
+W 0x002198 0x00000066
+W 0x00209c 0x00000027
+W 0x00219c 0x00000067
+W 0x0020a0 0x00000028
+W 0x0021a0 0x00000068
+W 0x0020a4 0x00000029
+W 0x0021a4 0x00000069
+W 0x0020a8 0x0000002a
+W 0x0021a8 0x0000006a
+W 0x0020ac 0x0000002b
+W 0x0021ac 0x0000006b
+W 0x0020b0 0x0000002c
+W 0x0021b0 0x0000006c
+W 0x0020b4 0x0000002d
+W 0x0021b4 0x0000006d
+W 0x0020b8 0x0000002e
+W 0x0021b8 0x0000006e
+W 0x0020bc 0x0000002f
+W 0x0021bc 0x0000006f
+W 0x0020c0 0x00000030
+W 0x0021c0 0x00000070
+W 0x0020c4 0x00000031
+W 0x0021c4 0x00000071
+W 0x0020c8 0x00000032
+W 0x0021c8 0x00000072
+W 0x0020cc 0x00000033
+W 0x0021cc 0x00000073
+W 0x0020d0 0x00000034
+W 0x0021d0 0x00000074
+W 0x0020d4 0x00000035
+W 0x0021d4 0x00000075
+W 0x0020d8 0x00000036
+W 0x0021d8 0x00000076
+W 0x0020dc 0x00000037
+W 0x0021dc 0x00000077
+W 0x0020e0 0x00000038
+W 0x0021e0 0x00000078
+W 0x0020e4 0x00000039
+W 0x0021e4 0x00000079
+W 0x0020e8 0x0000003a
+W 0x0021e8 0x0000007a
+W 0x0020ec 0x0000003b
+W 0x0021ec 0x0000007b
+W 0x0020f0 0x0000003c
+W 0x0021f0 0x0000007c
+W 0x0020f4 0x0000003d
+W 0x0021f4 0x0000007d
+W 0x0020f8 0x0000003e
+W 0x0021f8 0x0000007e
+W 0x0020fc 0x0000003f
+W 0x0021fc 0x0000007f
+W 0x000078 0x00000000
+W 0x00008c 0x00000000
+W 0x00007c 0x00000000
+W 0x000084 0x00000000
+R 0x000014 0x0000010c
+W 0x000014 0x0000011c
+R 0x000014 0x0000011c
+W 0x000008 0xffffffff
+R 0x000004 0x0018819b
+W 0x000004 0x0018819b x2
+W 0x000004 0x0938819b
+W 0x000004 0x2db8819b
+S 10
+R 0x000014 0x0000011c
+W 0x000014 0x7000011c
+R 0x000008 0x80000000
+W 0x000008 0xffffffff
+H device-config-change-request
+-- select 64 before the fallback's configuration change is performed
+H device-config-change-request
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
+R 0x000014 0x7000011c
+W 0x000014 0x0000011c
+R 0x000004 0x2db8819b
+W 0x000004 0x0018819b
+R 0x000090 0x0000001b
+W 0x000090 0x0000001b
+S 100
+R 0x00005c 0x41024108
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
+R 0x000068 0x00000000
+W 0x000068 0x00000602 x2
+W 0x000060 0x00000200
+S 50 | R 0x000060 0x00000000 x5
+R 0x00005c 0x41084108
+W 0x000060 0x00000200
+S 50 | R 0x000060 0x00000000 x5
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
+R 0x000068 0x00000000
+W 0x000068 0x00021200 x2
+R 0x00006c 0x09021240
+W 0x00006c 0x00000000
+R 0x00006c 0x09021240
+R 0x000068 0x00000000
+W 0x000068 0x00041200 x2
+R 0x00006c 0x09041240
+W 0x00006c 0x00000000
+R 0x00006c 0x09041240
+R 0x00005c 0x41084108
+R 0x000018 0x00000000
+W 0x000018 0x0000001b
+W 0x000078 0x00040000
+W 0x00008c 0x00040000
+W 0x00007c 0x10300000
+W 0x000084 0x10400000
+R 0x00007c 0x10300000
+R 0x000084 0x10400000
+W 0x002080 0x00000120
+W 0x002180 0x00000160
+W 0x002084 0x00000121
+W 0x002184 0x00000161
+W 0x002088 0x00000122
+W 0x002188 0x00000162
+W 0x00208c 0x00000123
+W 0x00218c 0x00000163
+W 0x002090 0x00000124
+W 0x002190 0x00000164
+W 0x002094 0x00000125
+W 0x002194 0x00000165
+W 0x002098 0x00000126
+W 0x002198 0x00000166
+W 0x00209c 0x00000127
+W 0x00219c 0x00000167
+W 0x0020a0 0x00000128
+W 0x0021a0 0x00000168
+W 0x0020a4 0x00000129
+W 0x0021a4 0x00000169
+W 0x0020a8 0x0000012a
+W 0x0021a8 0x0000016a
+W 0x0020ac 0x0000012b
+W 0x0021ac 0x0000016b
+W 0x0020b0 0x0000012c
+W 0x0021b0 0x0000016c
+W 0x0020b4 0x0000012d
+W 0x0021b4 0x0000016d
+W 0x0020b8 0x0000012e
+W 0x0021b8 0x0000016e
+W 0x0020bc 0x0000012f
+W 0x0021bc 0x0000016f
+W 0x0020c0 0x00000130
+W 0x0021c0 0x00000170
+W 0x0020c4 0x00000131
+W 0x0021c4 0x00000171
+W 0x0020c8 0x00000132
+W 0x0021c8 0x00000172
+W 0x0020cc 0x00000133
+W 0x0021cc 0x00000173
+W 0x0020d0 0x00000134
+W 0x0021d0 0x00000174
+W 0x0020d4 0x00000135
+W 0x0021d4 0x00000175
+W 0x0020d8 0x00000136
+W 0x0021d8 0x00000176
+W 0x0020dc 0x00000137
+W 0x0021dc 0x00000177
+W 0x0020e0 0x00000138
+W 0x0021e0 0x00000178
+W 0x0020e4 0x00000139
+W 0x0021e4 0x00000179
+W 0x0020e8 0x0000013a
+W 0x0021e8 0x0000017a
+W 0x0020ec 0x0000013b
+W 0x0021ec 0x0000017b
+W 0x0020f0 0x0000013c
+W 0x0021f0 0x0000017c
+W 0x0020f4 0x0000013d
+W 0x0021f4 0x0000017d
+W 0x0020f8 0x0000013e
+W 0x0021f8 0x0000017e
+W 0x0020fc 0x0000013f
+W 0x0021fc 0x0000017f
+R 0x000068 0x00000000
+W 0x000068 0x00021500 x2
+R 0x000068 0x00000000
+W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
+W 0x000008 0xffffffff
+R 0x000004 0x0018819b
+R 0x000090 0x0000001b
+W 0x000004 0x0018819b x2
+W 0x000090 0x0000001b
+W 0x000090 0x0120001b
+W 0x000004 0x0938819b
+W 0x000090 0x05a0001b
+W 0x000004 0x2db8819b
+S 10
+R 0x000014 0x0000011c
+W 0x000014 0x7000011c
+-- rate change to 48000 at 64
+CR32 0x00 0x220019c2 | CR16 0x04 0x0006 x2
+R 0x000014 0x7000011c
+W 0x000014 0x0000011c
+R 0x000004 0x2db8819b
+W 0x000004 0x0018819b
+R 0x000090 0x05a0001b
+W 0x000090 0x0000001b
+S 10
+R 0x000004 0x0018819b
+W 0x000004 0x0018419b
+R 0x00005c 0x41084108
+W 0x000060 0x00000200
+S 50 | R 0x000060 0x00000000 x5
+R 0x000068 0x00000000
+W 0x000068 0x00000600 x2
+R 0x000038 0x00000000
+W 0x000038 0x00000600 x2
+W 0x000040 0x00000200
+S 50 | R 0x000040 0x00000000 x5
+R 0x00005c 0x41024102
+W 0x000040 0x00000200
+S 50 | R 0x000040 0x00000000 x5
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
+R 0x000068 0x00000000
+W 0x000068 0x00000600 x2
+W 0x000060 0x00000200
+S 50 | R 0x000060 0x00000000 x5
+R 0x00005c 0x41024102
+W 0x000060 0x00000200
+S 50 | R 0x000060 0x00000000 x5
+R 0x000014 0x0000011c
+W 0x000014 0x0000010c
+R 0x000014 0x0000010c
+W 0x000008 0xffffffff
+R 0x000068 0x00000000
+W 0x000068 0x00021200 x2
+R 0x00006c 0x09021240
+W 0x00006c 0x00000000
+R 0x00006c 0x09021240
+R 0x000068 0x00000000
+W 0x000068 0x00041200 x2
+R 0x00006c 0x09041240
+W 0x00006c 0x00000000
+R 0x00006c 0x09041240
+R 0x00005c 0x41024102
+R 0x000018 0x00000000
+W 0x000018 0x0000001b
+R 0x000004 0x0018419b
+R 0x000090 0x0000001b
+W 0x000004 0x0018419b x2
+W 0x000090 0x0000001b
+W 0x000090 0x0120001b
+W 0x000004 0x0938419b
+W 0x000090 0x05a0001b
+W 0x000004 0x2db8419b
+S 10
+R 0x000014 0x0000010c
+W 0x000014 0x7000010c
+R 0x000008 0x80000000
+W 0x000008 0xffffffff
 -- sleep at 64, wake with the FPGA reset
 CR32 0x00 0x220019c2
 CR16 0x04 0x0006
@@ -2339,12 +2659,14 @@ CR16 0x04 0x0006
 R 0x00005c 0x41024102
 R 0x000004 0x2db8419b
 R 0x000040 0x00000000
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -2384,6 +2706,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x09041240
 W 0x00006c 0x00000000
 R 0x00006c 0x09041240
+R 0x00005c 0x41024102
 R 0x000018 0x00000000
 W 0x000018 0x0000001b
 W 0x000078 0x00040000
@@ -2460,6 +2783,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018419b
 R 0x000090 0x0000001b
@@ -2472,12 +2797,14 @@ W 0x000004 0x2db8419b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32

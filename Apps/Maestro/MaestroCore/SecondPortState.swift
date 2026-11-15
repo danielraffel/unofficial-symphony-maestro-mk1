@@ -40,6 +40,8 @@ public struct SecondPortState: Sendable, Equatable {
     public static let audioRefusedFlag: UInt32 = 0x10
     public static let audioFellBackFlag: UInt32 = 0x20
     public static let audioPublished64: UInt32 = 0x40
+    /// Always set by a two-port driver that has stage 2, so the word is never 0.
+    public static let audioStage2: UInt32 = 0x80
     // SymphonyPort2StateOutput.phase (kSymphonyPort2Phase*).
     public static let phaseValid: UInt32 = 0x8000_0000
 
@@ -173,7 +175,9 @@ public struct SecondPortState: Sendable, Equatable {
             return "On: 64 channels, 33-64 are port 2"
                 + (audioPublished64 ? "" : " (Core Audio has not switched yet)")
         }
-        return audioProblemText.map { "Off. " + $0 } ?? "Off: 32 channels, port 1 only"
+        if let problem = audioProblemText { return "Off. " + problem }
+        if !supportsPort2Audio { return "Not available: " + Self.reasonText(2) }
+        return "Off: 32 channels, port 1 only"
     }
 
     /// The last phase alignment, nil until one has run.

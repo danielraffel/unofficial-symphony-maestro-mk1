@@ -325,7 +325,7 @@ H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10000000
 H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10100000
-H buffer-create size=2097152 x2
+H buffer-create size=1048576 x2
 H buffer-create size=1024
 H dma-prepare size=1024 addr=0x10200000
 W 0x00001c 0x00003200
@@ -334,6 +334,7 @@ H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10300000
 H buffer-create size=1048576
 H dma-prepare size=1048576 addr=0x10400000
+H buffer-create size=2097152 x2
 W 0x000024 0x00040000
 W 0x00004c 0x00040000
 W 0x000028 0x10000000
@@ -370,7 +371,7 @@ S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
 R 0x000014 0x7000010c
-H stream-create dir=in buffer=2097152
+H stream-create dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -378,7 +379,7 @@ H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
 H stream-starting-channel dir=in ch=1
-H stream-create dir=out buffer=2097152
+H stream-create dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -453,6 +454,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x090412a4
 W 0x00006c 0x00000000
 R 0x00006c 0x090412a4
+R 0x00005c 0x41014101
 R 0x000018 0x00000000
 W 0x000018 0x0000004b
 W 0x000078 0x00040000
@@ -529,6 +531,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018219b
 R 0x000090 0x0000001b
@@ -541,12 +545,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -640,12 +646,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -695,6 +703,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x090412a0
 W 0x00006c 0x00000000
 R 0x00006c 0x090412a0
+R 0x00005c 0x41014101
 R 0x000018 0x00000000
 W 0x000018 0x0000001b
 W 0x000078 0x00040000
@@ -771,6 +780,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018219b
 R 0x000090 0x0000001b
@@ -783,12 +794,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -882,12 +895,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -937,6 +952,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x0904120c
 W 0x00006c 0x00000000
 R 0x00006c 0x0904120c
+R 0x00005c 0x41014101
 R 0x000018 0x00000000
 W 0x000018 0x00000000
 W 0x000078 0x00040000
@@ -1013,6 +1029,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018219b
 R 0x000090 0x0000001b
@@ -1025,12 +1043,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -1124,12 +1144,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -1179,6 +1201,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x09041220
 W 0x00006c 0x00000000
 R 0x00006c 0x09041220
+R 0x00005c 0x41014101
 R 0x000018 0x00000000
 W 0x000018 0x000000eb
 W 0x000078 0x00040000
@@ -1255,6 +1278,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018219b
 R 0x000090 0x0000001b
@@ -1267,12 +1292,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -1366,12 +1393,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -1493,6 +1522,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018219b
 R 0x000090 0x0000001b
@@ -1505,12 +1536,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -1604,12 +1637,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -1659,6 +1694,7 @@ W 0x000068 0x00041200 x2
 R 0x00006c 0x090412a4
 W 0x00006c 0x00000000
 R 0x00006c 0x090412a4
+R 0x00005c 0x41014101
 R 0x000018 0x00000100
 W 0x000078 0x00040000
 W 0x00008c 0x00040000
@@ -1734,6 +1770,8 @@ R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
 R 0x000068 0x00000000
 W 0x000068 0x00041500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018219b
 R 0x000090 0x0000001b
@@ -1746,12 +1784,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -1845,12 +1885,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32
@@ -1938,6 +1980,7 @@ W 0x000038 0x00041200 x2
 R 0x00003c 0x0904126a
 W 0x00003c 0x00000000
 R 0x00003c 0x0904126a
+R 0x00005c 0x41014101
 R 0x000018 0x00000000
 W 0x000018 0x0000002e
 W 0x000078 0x00040000
@@ -2012,6 +2055,8 @@ W 0x0020fc 0x0000013f
 W 0x0021fc 0x0000017f
 R 0x000068 0x00000000
 W 0x000068 0x00021500 x2
+CR32 0x00 0x220019c2
+CR16 0x04 0x0006
 W 0x000008 0xffffffff
 R 0x000004 0x0018219b
 R 0x000090 0x0000001b
@@ -2024,12 +2069,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=2097152
 H stream-format dir=in rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=88200 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=96000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=176400 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=in rate=192000 channels=64 bytesPerFrame=256 bits=32
+H stream-buffer dir=out buffer=2097152
 H stream-format dir=out rate=44100 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=48000 channels=64 bytesPerFrame=256 bits=32
 H stream-format dir=out rate=88200 channels=64 bytesPerFrame=256 bits=32
@@ -2123,12 +2170,14 @@ W 0x000004 0x2db8219b
 S 10
 R 0x000014 0x0000010c
 W 0x000014 0x7000010c
+H stream-buffer dir=in buffer=1048576
 H stream-format dir=in rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=88200 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=96000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=176400 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=in rate=192000 channels=32 bytesPerFrame=128 bits=32
+H stream-buffer dir=out buffer=1048576
 H stream-format dir=out rate=44100 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=48000 channels=32 bytesPerFrame=128 bits=32
 H stream-format dir=out rate=88200 channels=32 bytesPerFrame=128 bits=32

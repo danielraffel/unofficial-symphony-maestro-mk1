@@ -49,6 +49,15 @@ void HostLog(const char *fmt, ...);
 
 static inline void IOSleep(uint64_t ms) { gHostBackend->Sleep(ms); }
 
+// IOLock: the host test is single-threaded; count the holds so a test can see
+// an unbalanced lock.
+struct IOLock { int held = 0; };
+static inline IOLock *IOLockAlloc() { return new IOLock; }
+static inline void IOLockFree(IOLock *l) { delete l; }
+extern int gHostLocksHeld;
+static inline void IOLockLock(IOLock *l) { l->held++; gHostLocksHeld++; }
+static inline void IOLockUnlock(IOLock *l) { l->held--; gHostLocksHeld--; }
+
 // ── libkern ─────────────────────────────────────────────────────────────────
 class OSObject {
 public:
@@ -260,6 +269,7 @@ public:
                                 uint64_t *flags, uint32_t *segCount, IOAddressSegment *segs) {
         addr_ = gHostBackend->NextDMAAddress(mem->size_);
         size_ = mem->size_;
+        mem_ = mem;
         *flags = 0;
         *segCount = 1;
         segs[0].address = addr_;
@@ -276,11 +286,15 @@ public:
         gHostBackend->HostEvent(buf);
         return kIOReturnSuccess;
     }
-    kern_return_t PerformOperation(uint64_t, uint64_t, uint64_t, uint64_t, IOMemoryDescriptor *) {
+    kern_return_t PerformOperation(uint64_t op, uint64_t offset, uint64_t length, uint64_t, IOMemoryDescriptor *) {
+        // The zero operation really zeroes (no trace line), so a test can see it.
+        if (op == kIODMACommandPerformOperationOptionZero && mem_ && mem_->mem_ && offset + length <= mem_->size_)
+            memset((char *)mem_->mem_ + offset, 0, length);
         return kIOReturnSuccess;
     }
 private:
     uint64_t addr_ = 0, size_ = 0;
+    IOMemoryDescriptor *mem_ = nullptr;
 };
 
 // ── PCI ─────────────────────────────────────────────────────────────────────
@@ -483,6 +497,14 @@ public:
     }
     kern_return_t SetCurrentStreamFormat(const IOUserAudioStreamBasicDescription *f) {
         current = *f;
+        return kIOReturnSuccess;
+    }
+    kern_return_t SetIOMemoryDescriptor(IOMemoryDescriptor *mem) {
+        memory = mem;
+        char buf[80];
+        snprintf(buf, sizeof(buf), "stream-buffer dir=%s buffer=%llu", input_ ? "in" : "out",
+                 (unsigned long long)mem->size_);
+        gHostBackend->HostEvent(buf);
         return kIOReturnSuccess;
     }
     // Host-test state (no trace lines).

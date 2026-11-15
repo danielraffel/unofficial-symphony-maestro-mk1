@@ -54,9 +54,10 @@ kern_return_t SymphonyPortSourceControl::HandleChangeSelectedValues(
     if (value != kSymphonyPortSourcePort1 && value != kSymphonyPortSourcePorts1And2)
         return kIOReturnBadArgument;
 
-    // Show the choice at once, as the original's selector did. The driver sets
-    // both selectors to what the card is really doing once the configuration
-    // change has been performed, so a refused request shows as "Port 1: 32ch".
+    // Show the choice at once on this selector, as the original's did. The
+    // driver sets both selectors to what the card is really doing once the
+    // configuration change has been performed, so the other one follows there
+    // and a refused request shows as "Port 1: 32ch".
     kern_return_t r = SetCurrentSelectedValues(in_control_values, in_num_values);
     if (r != kIOReturnSuccess) {
         PSLOG("SetCurrentSelectedValues failed 0x%x", r);

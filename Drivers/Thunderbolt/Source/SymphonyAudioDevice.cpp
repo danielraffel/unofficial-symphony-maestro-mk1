@@ -14,22 +14,26 @@
 // SetPortModeDriver; in a one-port build `ivars` stays null and nothing below
 // that mentions it runs.
 struct SymphonyAudioDevice_IVars {
-    SymphonyThunderbridge *portModeDriver;   // not retained
+    // Retained, set once before the device is published and released in
+    // free(), like the selector controls' back-pointers: it is never cleared
+    // while a configuration change could be reading it. The driver drops its
+    // reference to this device in Stop(), so the pair does not keep itself alive.
+    SymphonyThunderbridge *portModeDriver;
 };
 
 void SymphonyAudioDevice::SetPortModeDriver(SymphonyThunderbridge* in_driver)
 {
-    if (!ivars) {
-        if (!in_driver) return;
-        ivars = IONewZero(SymphonyAudioDevice_IVars, 1);
-        if (!ivars) return;
-    }
+    if (ivars || !in_driver) return;   // set once
+    ivars = IONewZero(SymphonyAudioDevice_IVars, 1);
+    if (!ivars) return;
+    in_driver->retain();
     ivars->portModeDriver = in_driver;
 }
 
 void SymphonyAudioDevice::free()
 {
     if (ivars) {
+        OSSafeReleaseNULL(ivars->portModeDriver);
         IODelete(ivars, SymphonyAudioDevice_IVars, 1);
         ivars = nullptr;
     }

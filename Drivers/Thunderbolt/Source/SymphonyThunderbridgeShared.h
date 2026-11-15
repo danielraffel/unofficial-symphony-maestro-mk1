@@ -158,6 +158,7 @@ typedef struct {
 #define kSymphonyPort2AudioRefused      0x00000010u  // the last request for 64 was refused (see reason)
 #define kSymphonyPort2AudioFellBack     0x00000020u  // the driver went from 64 back to 32 by itself
 #define kSymphonyPort2AudioPublished64  0x00000040u  // Core Audio's streams are 64 channels now
+#define kSymphonyPort2AudioStage2       0x00000080u  // always set by a two-port driver with stage 2
 #define kSymphonyPort2AudioReasonShift  8            // bits 15:8: kSymphonyPort2Reason*
 #define kSymphonyPort2AudioReasonMask   0x0000FF00u
 #define kSymphonyPort2AudioChangesShift 16           // bits 31:16: 32<->64 changes since Start()

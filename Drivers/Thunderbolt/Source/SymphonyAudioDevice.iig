@@ -16,8 +16,8 @@ public:
     virtual kern_return_t PerformDeviceConfigurationChange(uint64_t in_change_action,
                                                             OSObject* in_change_info) override;
     virtual kern_return_t HandleChangeSampleRate(double in_sample_rate) override;
-    // EXPERIMENT (64ch, stage 2): set by a two-port driver only (and cleared by
-    // it in Stop(); the pointer is not retained, the driver owns this device).
+    // EXPERIMENT (64ch, stage 2): set once by a two-port driver before the
+    // device is published; retained, released in free().
     // With it set, every configuration change first lets the driver apply a
     // requested port selection (SymphonyThunderbridge::PerformPortModeChange).
     // Never set, and so never used, in a one-port build.

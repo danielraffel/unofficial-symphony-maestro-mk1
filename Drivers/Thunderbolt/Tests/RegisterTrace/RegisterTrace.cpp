@@ -34,6 +34,7 @@ static_assert(kSelectorReadLinkState == 5 && kSelectorReadPort2State == 6, "sele
 #endif
 
 HostBackend *gHostBackend = nullptr;
+int gHostLocksHeld = 0;
 HostAudioRegistry gHostAudio;
 std::deque<HostBlock> gHostCompletions;
 static std::vector<std::deque<HostBlock> *> gQueues;
@@ -739,9 +740,14 @@ static void CheckStage1(const Options &o, Run &r, bool expectUnits)
           o.name, c.count("H dma-prepare"));
 #endif
     CHECK(c.count("H stream-create") == 2, "%s: %zu streams (want 2)", o.name, c.count("H stream-create"));
-    for (auto &l : c.lines)
+    for (auto &l : c.lines) {
         if (l.compare(0, 16, "H stream-format ") == 0)
             CHECK(l.find("channels=32 ") != std::string::npos, "%s: stream format changed: %s", o.name, l.c_str());
+        // The streams are created on the same 1 MB buffers as with one port.
+        if (l.compare(0, 16, "H stream-create ") == 0)
+            CHECK(l.find("buffer=1048576") != std::string::npos, "%s: stream buffer size changed: %s", o.name, l.c_str());
+        CHECK(l.compare(0, 16, "H stream-buffer ") != 0, "%s: a stream buffer was swapped: %s", o.name, l.c_str());
+    }
     for (uint64_t off : { kRegA2H2BUFSIZE, kRegH2A2BUFSIZE, kRegA2H2HBA, kRegH2A2HBA }) {
         char w[32];
         snprintf(w, sizeof(w), "W 0x%06llx ", (unsigned long long)off);
@@ -1038,8 +1044,16 @@ static size_t Select(Run &r, uint32_t value, const char *phase, bool ioRunning =
     c.phase(phase);
     const size_t mark = c.lines.size();
     const uint32_t before = gHostAudio.configChangeRequests;
+    // SymphonyPortSourceControl::HandleChangeSelectedValues: the selector that
+    // was changed (the output one here) sets itself, then tells the driver. The
+    // driver must bring the input selector along.
+    if (gHostAudio.portSources.size() == 2) gHostAudio.portSources[1]->selected = value;
+    const uint32_t inputSetsBefore = gHostAudio.portSources.empty() ? 0 : gHostAudio.portSources[0]->sets;
     kern_return_t rc = r.drv->RequestPortMode(value);
     CHECK(rc == kIOReturnSuccess, "%s: RequestPortMode(%u) returned 0x%x", phase, value, rc);
+    // The request itself touches no other AudioDriverKit object.
+    CHECK(gHostAudio.portSources.empty() || gHostAudio.portSources[0]->sets == inputSetsBefore,
+          "%s: RequestPortMode set a selector from the control's handler", phase);
     // The request itself must not touch the card.
     for (size_t i = mark; i < c.lines.size(); i++)
         CHECK(c.lines[i].compare(0, 2, "R ") != 0 && c.lines[i].compare(0, 2, "W ") != 0,
@@ -1174,6 +1188,12 @@ static void CheckPublished(const char *what, uint32_t channels)
     CHECK(gHostAudio.portSources.size() == 2, "%s: %zu port selectors (want 2)", what, gHostAudio.portSources.size());
     for (auto *sel : gHostAudio.portSources)
         CHECK(sel->selected == (channels == 64 ? 1u : 0u), "%s: a selector shows %u", what, sel->selected);
+    // Each stream's buffer is exactly one ring of the format in effect.
+    for (IOUserAudioStream *st : { gHostAudio.inStream, gHostAudio.outStream })
+        CHECK(st && st->memory && st->memory->size_ == (uint64_t)kNumSampleFrames * channels * 4,
+              "%s: stream buffer is %llu bytes for %u channels", what,
+              (unsigned long long)(st && st->memory ? st->memory->size_ : 0), channels);
+    CHECK(gHostLocksHeld == 0, "%s: a lock is still held", what);
 }
 
 // Run the two-port IO handler over a block that wraps the end of the ring and
@@ -1181,11 +1201,18 @@ static void CheckPublished(const char *what, uint32_t channels)
 static void CheckIOHandler(const char *what, uint32_t channels)
 {
     auto handler = (IOOperationHandler)gHostAudio.ioHandler;
-    CHECK(handler != nullptr && gHostAudio.buffers.size() >= 7, "%s: no IO handler or buffers", what);
-    if (!handler || gHostAudio.buffers.size() < 7) return;
+    // Creation order: A2H, H2A, 32-ch in/out stream buffers, meters, A2H2, H2A2,
+    // 64-ch in/out stream buffers.
+    CHECK(handler != nullptr && gHostAudio.buffers.size() >= 9, "%s: no IO handler or buffers", what);
+    if (!handler || gHostAudio.buffers.size() < 9) return;
     int32_t *a2h1 = (int32_t *)gHostAudio.buffers[0]->mem_, *h2a1 = (int32_t *)gHostAudio.buffers[1]->mem_;
-    int32_t *in = (int32_t *)gHostAudio.buffers[2]->mem_, *out = (int32_t *)gHostAudio.buffers[3]->mem_;
+    int32_t *in = (int32_t *)gHostAudio.buffers[channels == 64 ? 7 : 2]->mem_;
+    int32_t *out = (int32_t *)gHostAudio.buffers[channels == 64 ? 8 : 3]->mem_;
     int32_t *a2h2 = (int32_t *)gHostAudio.buffers[5]->mem_, *h2a2 = (int32_t *)gHostAudio.buffers[6]->mem_;
+    // The handler must be using the buffer the stream has been given.
+    CHECK(gHostAudio.inStream->memory == gHostAudio.buffers[channels == 64 ? 7 : 2] &&
+          gHostAudio.outStream->memory == gHostAudio.buffers[channels == 64 ? 8 : 3],
+          "%s: the streams are not on the %u-channel buffers", what, channels);
     const uint32_t ring = kNumSampleFrames, frames = 512, start = ring - 200;
     auto frameAt = [&](uint32_t n) { return (start + n) % ring; };
     auto tag = [](uint32_t frame, uint32_t ch, uint32_t salt) { return (int32_t)((salt << 28) | (frame << 8) | ch); };
@@ -1246,8 +1273,12 @@ static void RunAudioEnable(const Options &o, Run &r)
     {
         // Port 2 told the rate, then phase read from both of its converters and
         // the jam written, then each unit unmuted.
-        CHECK(RateCommands(c, mark, kRegXLink2TX) == std::vector<uint8_t>({ 0x04, 0x04 }) ||
-              RateCommands(c, mark, kRegXLink2TX).size() == 2, "%s: port 2 not told the rate before carrying audio", o.name);
+        // One command (each is written to the register twice).
+        CHECK(RateCommands(c, mark, kRegXLink2TX) == std::vector<uint8_t>({ 0x04, 0x04 }),
+              "%s: port 2 not told the current rate exactly once (%zu rate writes)", o.name,
+              RateCommands(c, mark, kRegXLink2TX).size());
+        CHECK(FirstRateCommand(c, mark, kRegXLink2TX) < FindWrite(c, mark, kRegA2H2HBA, 0x10300000),
+              "%s: port-2 buffers programmed before port 2 was told the rate", o.name);
         auto phases = Commands(c, mark, kRegXLink2TX, 0x09);
         CHECK(phases == std::vector<uint32_t>({ 0x0100, 0x0200 }), "%s: %zu phase queries on port 2 (want units 1 and 2)", o.name, phases.size());
         CHECK(Commands(c, mark, kRegXLink1TX, 0x09).empty(), "%s: a Symphony I/O on port 1 was asked its phase", o.name);
@@ -1467,6 +1498,7 @@ static void RunAudioSwitch(const Options &o, Run &r)
           "%s: 64-channel format is %.0f Hz, %u bytes per frame", o.name,
           gHostAudio.inStream->current.mSampleRate, gHostAudio.inStream->current.mBytesPerFrame);
 
+    const uint32_t requestsAt64 = gHostAudio.configChangeRequests;
     // Rate changes at 64: both engines stop and restart, port 2 first; the
     // phase is aligned again; both ports end at the new rate.
     for (double rate : { 192000.0, 44100.0 }) {
@@ -1490,7 +1522,7 @@ static void RunAudioSwitch(const Options &o, Run &r)
         CHECK(stop2 < FirstRateCommand(c, m, kRegXLink2TX) && stop2 < FirstRateCommand(c, m, kRegXLink1TX),
               "%s: %s: port 2 DMA not stopped before the rate commands", o.name, name);
         CheckPublished(name, 64);
-        CHECK(gHostAudio.configChangeRequests == 1, "%s: %s asked for a configuration change", o.name, name);
+        CHECK(gHostAudio.configChangeRequests == requestsAt64, "%s: %s asked for a configuration change", o.name, name);
     }
     CheckIOHandler("64 channels after rate changes", 64);
 
@@ -1547,9 +1579,37 @@ static void RunAudioSwitch(const Options &o, Run &r)
         CheckIOHandler("32 channels after the fallback", 32);
     }
 
+    // A fallback's configuration change is still pending when the user asks
+    // for 64 again: the request must not be lost to the fallback's bookkeeping.
+    mark = Select(r, 1, "select 64 at 48000 (first)");
+    CheckBothPortsRunning("64 at 48000 (first)", r, mark);
+    c.port[1].ignoreRate = true;
+    { auto [rc, m] = rateChange("rate change to 96000 at 64, port 2 does not follow (again)", 96000.0);
+      (void)m; (void)rc; }
+    c.port[1].ignoreRate = false;
+    CheckPort1Alone("second rate fallback", r);
+    {
+        c.phase("select 64 before the fallback's configuration change is performed");
+        gHostAudio.portSources[1]->selected = 1;
+        CHECK(drv->RequestPortMode(1) == kIOReturnSuccess, "%s: request during a pending fallback refused", o.name);
+        HostPump();
+        const size_t m = c.lines.size();
+        HostPerformConfigChange(r, false);
+        CheckBothPortsRunning("64 requested during a pending fallback", r, m);
+        CheckPublished("64 requested during a pending fallback", 64);
+        CHECK(c.port[1].rateCode == 0x01, "%s: port 2 not brought to 96000", o.name);
+        // The second (now redundant) configuration change changes nothing.
+        const size_t m2 = c.lines.size();
+        HostPerformConfigChange(r, false);
+        CHECK(CountAccess(c, m2, 'W', kRegGCSR) == 0 && CountAccess(c, m2, 'W', kRegGCSR2) == 0,
+              "%s: a redundant configuration change touched the DMA engines", o.name);
+        CheckPublished("after the redundant configuration change", 64);
+    }
+    { auto [rc, m] = rateChange("rate change to 48000 at 64", 48000.0);
+      CHECK(rc == kIOReturnSuccess, "%s: rate change back to 48000 failed", o.name);
+      CheckBothPortsRunning("64 at 48000 after the rate change", r, m); }
+
     // Sleep with an FPGA reset while 64 is running: back at 32 afterwards.
-    mark = Select(r, 1, "select 64 at 48000");
-    CheckBothPortsRunning("64 at 48000", r, mark);
     c.phase("sleep at 64, wake with the FPGA reset");
     drv->SetPowerState(kIOServicePowerCapabilityOff);
     c.powerCycleFPGA();
@@ -1585,6 +1645,7 @@ static void RunAudioPort2Vanishes(const Options &o, Run &r)
     Irq(r, 1);
     Irq(r, 1);
 
+    CheckIOHandler("64 channels before port 2 goes", 64);   // leaves audio in port 2's buffers
     c.phase("port 2 chain switched off in mid-stream");
     const Port saved = c.port[1];
     c.port[1] = Port();
@@ -1602,6 +1663,15 @@ static void RunAudioPort2Vanishes(const Options &o, Run &r)
             if (sscanf(c.lines[i].c_str(), "S %llu", &v) == 1) ms += v;
         }
         CHECK(ms <= 150, "%s: the fallback kept the XLink queue for %llu ms", o.name, (unsigned long long)ms);
+    }
+    {
+        // Port 2's capture and playback buffers were silenced, so the 64-wide
+        // IO that continues until the configuration change replays nothing.
+        const unsigned char *a2h2 = (const unsigned char *)gHostAudio.buffers[5]->mem_;
+        const unsigned char *h2a2 = (const unsigned char *)gHostAudio.buffers[6]->mem_;
+        size_t nonzero = 0;
+        for (size_t i = 0; i < kDMABufferSize; i++) nonzero += (a2h2[i] != 0) + (h2a2[i] != 0);
+        CHECK(nonzero == 0, "%s: %zu stale bytes left in port 2's buffers after the fallback", o.name, nonzero);
     }
     Port2State s = ReadPort2(r);
     CHECK((s.w[14] & kSymphonyPort2AudioFellBack) && AudioReason(s) == kSymphonyPort2ReasonClockGone && s.w[6] == 0,
@@ -1727,6 +1797,7 @@ int main(int argc, char **argv)
             if (r.startResult == kIOReturnSuccess && gHostAudio.device) {
                 auto *dev = dynamic_cast<SymphonyAudioDevice *>(gHostAudio.device);
                 CHECK(dev && dev->portModeDriver == nullptr, "%s: single-port device has a port-mode driver", o.name);
+            CHECK(gHostAudio.buffers.size() <= 5, "%s: %zu buffers with one port (want at most 5)", o.name, gHostAudio.buffers.size());
                 const size_t mark = r.card.lines.size();
                 const uint32_t requests = gHostAudio.configChangeRequests;
                 CHECK(r.drv->RequestPortMode(1) == kIOReturnUnsupported, "%s: RequestPortMode accepted with one port", o.name);

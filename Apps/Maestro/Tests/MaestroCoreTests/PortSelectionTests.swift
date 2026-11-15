@@ -164,6 +164,11 @@ struct SecondPortStateAudioTests {
         #expect(on.deviceInfoRows[1].value == "On: 64 channels, 33-64 are port 2 (Core Audio has not switched yet)")
         #expect(on.deviceInfoRows[2].value == "Aligned, jam 0x0b; 1 unit read")
         #expect(on.reportLines.last?.hasSuffix(" audio=0x00010007 phase=0x8010010b") == true)
+        // Stage 2 without its buffers: said plainly, not shown as a stage-1 driver.
+        let unavailable = SecondPortState(portCount: 2, flags: 0x0F, audio: SecondPortState.audioStage2)
+        #expect(unavailable.deviceInfoRows[0].value == SecondPortState.experimentValueWithAudio)
+        #expect(unavailable.deviceInfoRows[1].value
+                == "Not available: the driver could not set up port 2's audio buffers")
         // One-port answer: still nothing at all.
         #expect(SecondPortState(portCount: 1, audio: 0x47).deviceInfoRows.isEmpty)
     }
