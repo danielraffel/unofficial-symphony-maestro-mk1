@@ -265,6 +265,19 @@ public struct CardLayout: Sendable, Equatable {
         return index < slot1.analogInputChannels ? slot1 : slot2
     }
 
+    /// "SPDIF Cx n" when the coax replaces this 0-based analog input strip,
+    /// as the daemon renamed the channel (`SymphonyIO_IOBoard.cpp:1312-1349`,
+    /// reached from the analog stream at `SymphonyIO_Stream.cpp:640-650`);
+    /// nil otherwise.
+    public func coaxNameForAnalogInputStrip(_ index: Int) -> String? {
+        guard isKnown, index >= 0 else { return nil }
+        let board = index < slot1.analogInputChannels ? 0 : 1
+        let channel = board == 0 ? index : index - slot1.analogInputChannels
+        guard channel < card(atSlot: board).analogInputChannels else { return nil }
+        let name = analogChannelName(board: board, channelOnCard: channel, isInput: true)
+        return name.hasPrefix("SPDIF Cx") ? name : nil
+    }
+
     /// The card that owns a 0-based analog output strip.
     public func cardForAnalogOutputStrip(_ index: Int) -> IOCardType {
         guard isKnown else { return .none }

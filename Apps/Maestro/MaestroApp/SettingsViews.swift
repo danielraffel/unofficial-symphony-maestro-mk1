@@ -112,8 +112,10 @@ struct DeviceSettingsView: View {
                             if opticalFormatCard1 == nil {
                                 Text("Unavailable").tag(nil as UInt32?)
                             }
+                            // The original's two choices, by name
+                            // (APDeviceOpticalFormatView.xib:126, 149).
                             Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
-                            Text("S/PDIF").tag(UInt32(1) as UInt32?)
+                            Text("SPDIF").tag(UInt32(1) as UInt32?)
                         }
                     }
 
@@ -123,7 +125,7 @@ struct DeviceSettingsView: View {
                                 Text("Unavailable").tag(nil as UInt32?)
                             }
                             Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
-                            Text("S/PDIF").tag(UInt32(1) as UInt32?)
+                            Text("SPDIF").tag(UInt32(1) as UInt32?)
                         }
                     }
                 }

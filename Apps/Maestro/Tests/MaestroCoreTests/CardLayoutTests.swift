@@ -686,3 +686,21 @@ struct ChannelNamingTests {
         #expect(CardLayout.stereoName(left: "SMUX 3", right: "N.A.") == "SMUX 3/N.A.")
     }
 }
+
+@Suite("Analog strip names under S/PDIF Coax Replaces")
+struct AnalogStripCoaxNameTests {
+    @Test func replacedAnalogPairIsNamedSPDIFCx() {
+        // Combo + A16 IP; slot 1 replaces Analog 3-4 (wire 2), slot 2 Analog 1-2 (wire 1).
+        let layout = CardLayout(slot1: .analogAES, slot2: .analogAD16,
+                                naming: .init(spdifReplace: [2, 1]))
+        #expect(layout.coaxNameForAnalogInputStrip(1) == nil)
+        #expect(layout.coaxNameForAnalogInputStrip(2) == "SPDIF Cx 1")
+        #expect(layout.coaxNameForAnalogInputStrip(3) == "SPDIF Cx 2")
+        #expect(layout.coaxNameForAnalogInputStrip(8) == "SPDIF Cx 3")   // slot 2 Line 9
+        #expect(layout.coaxNameForAnalogInputStrip(9) == "SPDIF Cx 4")
+        #expect(layout.coaxNameForAnalogInputStrip(10) == nil)
+        // A digital replacement leaves every analog strip alone.
+        let digital = CardLayout(slot1: .optical, naming: .init(spdifReplace: [5, 0]))
+        #expect((0..<8).allSatisfy { digital.coaxNameForAnalogInputStrip($0) == nil })
+    }
+}
