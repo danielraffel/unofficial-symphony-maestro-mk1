@@ -559,19 +559,12 @@ final class AppState {
     /// (DriverHandover.swift). Shown by the banner and Device Info.
     var driverHandover: DriverHandover = .idle
     /// "<serving>-><bundled>" pairs Maestro has already asked to retire this
-    /// session. One attempt each: if IOKit puts the old copy straight back on
-    /// the card, asking again would tear the device down every few seconds.
-    @ObservationIgnored
+    /// session (Finish Update Now). One attempt each: if IOKit puts the old
+    /// copy straight back on the card, asking again would only stop the
+    /// audio again. Observed, so the button goes away after a refusal too.
     var driverHandoverAttempts: Set<String> = []
     @ObservationIgnored
     var driverActivationObserver: Task<Void, Never>?
-    /// An activation request completed and has not been looked at with a
-    /// serving build in hand yet (`considerDriverHandover`).
-    @ObservationIgnored
-    var driverActivationCompletedPending = false
-    /// `SystemExtensionInstaller.completedActivationCount` already handled.
-    @ObservationIgnored
-    var driverActivationsHandled = 0
 
     /// Board hardware major versions, when read (0xA0). See
     /// `BoardTypeReading.hardwareMajor`.

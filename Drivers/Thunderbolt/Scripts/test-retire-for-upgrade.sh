@@ -109,16 +109,48 @@ grep -q 'static let selectorRetireForUpgrade: UInt32 = 7' "$APP/MaestroDevice/De
 grep -q 'static let retireMagic: UInt32 = 0x52455449' "$APP/MaestroDevice/DextUserClient.swift" || fail "app magic"
 grep -q 'var input: \[UInt32\] = \[Self.retireMagic, replacementBuild\]' "$APP/MaestroDevice/DextUserClient.swift" || fail "app input"
 H="$APP/MaestroApp/DriverHandover.swift"
-grep -q 'shouldAskServingDriverToRetire(activationCompleted: true)' "$H" || fail "app gate"
+grep -q 'report.canFinishDriverUpdateNow' "$H" || fail "app gate"
 grep -q 'driverHandoverAttempts.contains(key)' "$H" || fail "one attempt per pair"
 grep -q 'static let driverHandoverTimeout: Duration = .seconds(10)' "$H" || fail "10 s"
-python3 - "$H" <<'PY' || exit 1
-import sys
+grep -q 'handoverLog.notice("user requested hand-over")' "$H" || fail "user request logged"
+python3 - "$H" "$APP" <<'PY' || exit 1
+import sys, os, re
 t = open(sys.argv[1]).read()
-f = t[t.index('private func retireServingDriverIfNeeded'):]
+f = t[t.index('private func handOverToBundledDriver'):]
 order = [f.index(s) for s in ('stopMeterPolling()', 'stopThunderboltHealthCheck()',
                               'tb.retireServingDriver(', 'driverHandover = .finishing')]
 if order != sorted(order): raise SystemExit('FAIL: quiesce, then retire, then show finishing')
+# Never automatic: one retire call site in the app, reached only from the
+# user's confirmed Finish Update Now.
+app = sys.argv[2]
+swift = [os.path.join(r, n) for r, _, fs in os.walk(app) for n in fs if n.endswith('.swift')]
+calls = []
+for p in swift:
+    for i, line in enumerate(open(p), 1):
+        if 'retireServingDriver(' in line and 'func retireServingDriver' not in line \
+                and not line.lstrip().startswith('//'):
+            calls.append((os.path.relpath(p, app), i))
+if len(calls) != 1 or calls[0][0] != 'MaestroApp/DriverHandover.swift':
+    raise SystemExit(f'FAIL: retireServingDriver must have one call site, in DriverHandover.swift: {calls}')
+def body(name):
+    s = t.index(name); e = t.index('\n    }\n', s); return t[s:e]
+for auto in ('func considerDriverHandover()', 'func driverActivationCompleted()',
+             'func installDriverHandoverObserver()'):
+    if 'handOverToBundledDriver' in body(auto) or 'finishDriverUpdateNow' in body(auto):
+        raise SystemExit(f'FAIL: {auto} must not start a hand-over')
+if t.count('handOverToBundledDriver(') != 2:
+    raise SystemExit('FAIL: the hand-over runs only from finishDriverUpdateNow')
+users = sorted(os.path.relpath(p, app) for p in swift if 'finishDriverUpdateNow()' in open(p).read())
+if users != ['MaestroApp/AppShell.swift', 'MaestroApp/DriverHandover.swift']:
+    raise SystemExit(f'FAIL: finishDriverUpdateNow is called only by the banner: {users}')
+shell = open(os.path.join(app, 'MaestroApp/AppShell.swift')).read()
+m = re.search(r'Button\(ThunderBridgeBanner\.finishUpdateNowTitle\)\s*\{([^}]*)\}', shell)
+if not m or m.group(1).strip() != 'confirmingFinishUpdate = true':
+    raise SystemExit('FAIL: Finish Update Now must only open the confirmation')
+if not re.search(r'Button\(ThunderBridgeBanner\.finishUpdateNowConfirmTitle\)\s*\{\s*onFinishUpdateNow\(\)\s*\}', shell):
+    raise SystemExit('FAIL: the hand-over runs from the confirmation button')
+if shell.count('onFinishUpdateNow()') != 1:
+    raise SystemExit('FAIL: onFinishUpdateNow is called only from the confirmation')
 PY
 grep -q 'activationCompletedNotification' "$APP/MaestroApp/SystemExtensionInstaller.swift" || fail "completion notice"
 

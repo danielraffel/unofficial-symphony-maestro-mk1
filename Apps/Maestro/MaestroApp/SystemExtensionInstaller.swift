@@ -39,14 +39,11 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     public var onStatusChange: ((Status) -> Void)?
     /// Posted on the main queue when an activation request this process
     /// submitted finishes with `.completed`. Separate from `onStatusChange`,
-    /// which a view replaces with its own handler: the driver hand-over in
-    /// AppState must see every completion.
+    /// which a view replaces with its own handler: AppState re-reads what is
+    /// registered on every completion so the banner is current. It never
+    /// retires the old driver; only Finish Update Now does (DriverHandover.swift).
     public static let activationCompletedNotification =
         Notification.Name("com.danielraffel.maestro.driverActivationCompleted")
-    /// How many activation requests finished with `.completed`. AppState
-    /// compares it with what it has handled, so a completion that arrives
-    /// before anyone listens (the request is submitted at launch) is not lost.
-    public private(set) var completedActivationCount = 0
     /// Most recent activation outcome, retained so a view that appears after the
     /// asynchronous request can still present the right next step.
     public private(set) var lastStatus: Status?
@@ -245,8 +242,9 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
         // keeps the PCI device: kernelmanagerd declines to terminate a dext
         // that is "being replaced" and leaves it until the next restart. The
         // device moves to the new copy on a replug, on turning the driver off
-        // and on in System Settings, on a restart, or when the old copy retires
-        // on Maestro's request (AppState, kSelectorRetireForUpgrade, dext 123+).
+        // and on in System Settings, on a restart, or when the user chooses
+        // Finish Update Now and the old copy retires (DriverHandover.swift,
+        // kSelectorRetireForUpgrade, dext 123+).
         // The request is not retried until the next hardware appearance, which
         // avoids the repeated-request (error 4) wedge.
         if registered[0].bundleVersion != bundled {
@@ -277,9 +275,9 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
             // to terminate the old copy while it holds the PCI device and defer
             // that to the next restart (logged 2026-11-14, 121 → 122). AppState
             // checks which build answers on the card and, if it is not the
-            // bundled one, asks it to retire (kSelectorRetireForUpgrade).
+            // bundled one, the banner says so and offers Finish Update Now;
+            // nothing is retired without the user's confirmation.
             log.notice("Driver extension activated")
-            completedActivationCount += 1
             report(.activated)
             NotificationCenter.default.post(name: Self.activationCompletedNotification, object: self)
         case .willCompleteAfterReboot:
@@ -361,7 +359,7 @@ extension SystemExtensionInstaller {
     /// More than one entry comes back after an upgrade: kernelmanagerd will not terminate
     /// the outgoing version while it holds the PCI device, so it stays registered (and
     /// can keep serving the card) alongside the incoming one until a replug, turning the
-    /// driver off and on, a restart, or its own retire (DriverHandover.swift). Only the
+    /// driver off and on, a restart, or Finish Update Now (DriverHandover.swift). Only the
     /// serving build says whether the device has moved; the panel says so rather than
     /// picking one and pretending it is the whole story.
     ///

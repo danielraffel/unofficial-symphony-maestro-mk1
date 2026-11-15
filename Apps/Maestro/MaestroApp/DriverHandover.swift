@@ -7,19 +7,24 @@
 // the old binary until a replug, a restart, or the driver is turned off and on
 // in System Settings (logged 2026-11-14, 121 → 122).
 //
-// When Maestro's own activation request completes and the build answering on
-// the card is not the bundled one, Maestro asks that driver to retire
+// Maestro never retires the old driver on its own. Whether IOKit matches the
+// replacement onto the PCI nub after a provider-matched service terminates
+// itself is not documented (public XNU suggests a dext's Terminate does not
+// rematch), so a retire could leave the card with no driver until a replug,
+// and asking at launch could cut off playback. Instead, when the update is
+// unfinished and the serving driver is new enough to retire
+// (`SoftwareInfoReport.canFinishDriverUpdateNow`), the banner offers
+// Finish Update Now next to the reconnect / turn off and on / restart
+// guidance. After the user confirms, Maestro asks that driver to retire
 // (kSelectorRetireForUpgrade, dext 123+): it calls Terminate(0) on itself so
 // Stop() runs and the device is free for the copy macOS registered. Maestro
 // stops its own use of the device first, closes its connection once the driver
 // accepts, shows "Finishing the driver update…", and waits about 10 s for the
-// card to answer with the bundled build. Anything else (no selector, a refusal,
-// no answer in time, the old copy put back) leaves the reconnect / turn off and
-// on / restart guidance up until the serving build matches.
+// card to answer with the bundled build. Anything else (a refusal, no answer
+// in time, the old copy put back) leaves the guidance up until the serving
+// build matches. One attempt per serving → bundled pair per session.
 //
-// Whether IOKit matches the replacement onto the PCI nub after a provider-
-// matched service terminates itself is not documented; this needs the hardware
-// test (exp64 9005 → 9006). See SymphonyThunderbridge::RetireForUpgrade.
+// See SymphonyThunderbridge::RetireForUpgrade.
 
 import Foundation
 import os
@@ -33,7 +38,9 @@ extension AppState {
     /// How long the card has to come back on the bundled build.
     static let driverHandoverTimeout: Duration = .seconds(10)
 
-    /// Start listening for activation requests that complete. Idempotent.
+    /// Start listening for activation requests that complete, so the banner
+    /// reflects the newly registered driver promptly. Idempotent. Never
+    /// retires anything.
     @MainActor
     func installDriverHandoverObserver() {
         guard driverActivationObserver == nil else { return }
@@ -48,48 +55,56 @@ extension AppState {
     }
 
     /// Called after every serving-build read (`refreshServingDextBuild`):
-    /// clears a timed-out hand-over once the bundled build answers, and acts
-    /// on an activation that completed before a ThunderBridge connection was
-    /// open to ask (at launch the request finishes in about a second, before
-    /// the hardware is connected).
+    /// clears a timed-out hand-over once the bundled build answers. Never
+    /// asks the serving driver to retire; only Finish Update Now does.
     @MainActor
     func considerDriverHandover() {
-        // A completion that arrived before the observer was installed.
-        let completed = SystemExtensionInstaller.shared.completedActivationCount
-        if completed > driverActivationsHandled {
-            driverActivationsHandled = completed
-            driverActivationCompletedPending = true
-        }
         if driverHandover == .timedOut, softwareInfoReport.servingDextMatchesBundled {
             Self.handoverLog.notice("bundled driver now serves the ThunderBridge; guidance cleared")
             driverHandover = .idle
         }
-        guard driverActivationCompletedPending, driverHandover == .idle,
-              transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection,
-              servingDextBuild != nil
-        else { return }
-        driverActivationCompletedPending = false
-        Task { @MainActor [weak self] in await self?.retireServingDriverIfNeeded(tb) }
     }
 
-    /// Maestro's activation request finished with `.completed`. Decided at
-    /// the next serving-build read, which this starts.
+    /// Maestro's activation request finished with `.completed`: re-read what
+    /// is registered so the banner can say the update is unfinished.
     @MainActor
     func driverActivationCompleted() {
-        driverActivationsHandled = SystemExtensionInstaller.shared.completedActivationCount
-        driverActivationCompletedPending = true
         refreshInstalledDexts()
     }
 
+    /// Whether this session already asked `serving` to retire for `bundled`.
+    func driverHandoverAttempted(serving: ServingDextBuild?, bundled: String?) -> Bool {
+        guard case .build(let servingBuild)? = serving,
+              let bundled, let bundledBuild = UInt32(bundled) else { return false }
+        return driverHandoverAttempts.contains(
+            SoftwareInfoReport.driverHandoverKey(serving: servingBuild, bundled: bundledBuild))
+    }
+
+    /// The user confirmed Finish Update Now in the banner. The only caller of
+    /// the hand-over; the gate is checked again here because the state can
+    /// change while the confirmation is open.
     @MainActor
-    private func retireServingDriverIfNeeded(_ tb: ThunderboltDeviceConnection) async {
+    func finishDriverUpdateNow() {
+        Self.handoverLog.notice("user requested hand-over")
+        guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else {
+            Self.handoverLog.notice("no ThunderBridge connection; guidance only")
+            return
+        }
+        Task { @MainActor [weak self] in await self?.handOverToBundledDriver(tb) }
+    }
+
+    @MainActor
+    private func handOverToBundledDriver(_ tb: ThunderboltDeviceConnection) async {
         guard (device as? ThunderboltDeviceConnection) === tb else { return }
         let report = softwareInfoReport
-        guard report.shouldAskServingDriverToRetire(activationCompleted: true),
+        guard report.canFinishDriverUpdateNow,
               let bundled = report.bundledDextBuild, let bundledBuild = UInt32(bundled),
               case .build(let servingBuild)? = report.servingDextBuild
-        else { return }
-        let key = "\(servingBuild)->\(bundledBuild)"
+        else {
+            Self.handoverLog.notice("hand-over no longer applies; guidance only")
+            return
+        }
+        let key = SoftwareInfoReport.driverHandoverKey(serving: servingBuild, bundled: bundledBuild)
         guard !driverHandoverAttempts.contains(key) else {
             Self.handoverLog.notice("already asked build \(servingBuild) to retire for \(bundledBuild); guidance only")
             return

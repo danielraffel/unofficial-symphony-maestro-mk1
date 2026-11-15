@@ -88,7 +88,10 @@ extension AppState {
             thunderBridgePresent: SystemExtensionInstaller.shared.isThunderBridgePresent(),
             pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier(),
             servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil,
-            driverHandover: driverHandover
+            driverHandover: driverHandover,
+            driverHandoverAttempted: driverHandoverAttempted(
+                serving: transportType == .thunderbolt ? servingDextBuild : nil,
+                bundled: SystemExtensionInstaller.shared.bundledDextBuildVersion)
         )
     }
 
