@@ -17,6 +17,7 @@ TESTS=(
     test-thunderbolt-lifecycle.sh
     test-channel-names.sh
     test-driver-build.sh
+    test-retire-for-upgrade.sh
     test-thunderbolt-meter-map.sh
 )
 

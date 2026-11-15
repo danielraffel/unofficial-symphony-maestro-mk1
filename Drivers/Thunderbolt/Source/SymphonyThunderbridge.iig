@@ -73,6 +73,11 @@ public:
         uint64_t   time) TYPE(IOTimerDispatchSource::TimerOccurred);
     virtual kern_return_t ReadLinkState(uint32_t *outWords) LOCALONLY;
 
+    // Stop serving the device so the copy macOS registered to replace this one
+    // can attach (kSelectorRetireForUpgrade). Calls Terminate(0) on this
+    // service; Stop() then runs as for any other teardown.
+    virtual kern_return_t RetireForUpgrade(uint32_t replacementBuild) LOCALONLY;
+
     // Read a bounded XLink vendor response for app-side property readback.
     virtual kern_return_t ReadVendorCommand(
         uint8_t command,

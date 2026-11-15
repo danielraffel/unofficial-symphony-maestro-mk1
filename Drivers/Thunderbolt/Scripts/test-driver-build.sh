@@ -31,7 +31,7 @@ cat > "$TMP/t.cpp" <<'CPP'
 #include "SymphonyThunderbridgeShared.h"
 #include <stdio.h>
 static_assert(kSelectorReadDriverBuild == 6, "app asks selector 6");
-static_assert(kSelectorCount == kSelectorReadDriverBuild + 1, "dispatch table covers it");
+static_assert(kSelectorCount > kSelectorReadDriverBuild, "dispatch table covers it");
 static_assert(sizeof(SymphonyDriverBuildOutput) == 8, "app reads two words");
 int main() { printf("%u\n", (unsigned)SYMPHONY_DEXT_BUILD); return 0; }
 CPP
