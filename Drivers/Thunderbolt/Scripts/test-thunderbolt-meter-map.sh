@@ -20,6 +20,15 @@ grep -q 'thunderboltHardwareResponsive = false' "$APP_STATE"
 grep -q 'self.mixerMeterLevels = \[Double\](repeating: -60.0' "$APP_STATE"
 grep -q 'self.digitalInputPeakHold = \[Double\](repeating: -60.0' "$APP_STATE"
 
+# Input meter words are host inputs (the capture table), not device-wide
+# channels: each strip goes through ThunderboltInputMeterMap, for the FPGA
+# words and the Core Audio fallback alike (tests: ThunderboltInputMeterMapTests).
+grep -q 'ThunderboltInputMeterMap.stripLevels(' "$APP_STATE"
+grep -q 'ThunderboltInputMeterMap.digitalLevels(host: hostInputs' "$APP_STATE"
+if grep -q 'for i in 0..<inp.count { inp\[i\] = dbW(i) }' "$APP_STATE"; then
+    echo "FAIL: ThunderBridge input strips read meter word i again" >&2; exit 1
+fi
+
 # A newly published ThunderBridge can need a few seconds before its FPGA/XLink
 # probe is usable. Preserve the startup grace while retaining the shorter loss
 # threshold after the first successful live probe.
