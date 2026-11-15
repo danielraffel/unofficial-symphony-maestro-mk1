@@ -507,6 +507,9 @@ struct OutputRoutingView: View {
     }
 
     // Output routing row labels: board-aware "A Line"/"A ADAT" + Mixer buses.
+    // Over USB, row i is named after hardware column i (analog of both slots
+    // first, as the USB default table routes them); over ThunderBridge, after
+    // the board outputs at the same position (CardLayout.thunderboltOutputPairName).
     // Evidence: original Maestro 2 shows "A Line 1/2", "A ADAT 1/2" etc.
     // The hardware part is the output column's name, so it is named by the
     // card that has it (an 8x8 in AES mode is "AES", not "ADAT") and follows
@@ -522,7 +525,13 @@ struct OutputRoutingView: View {
             let name: String
             // The unit's prefix letter, and a bare "N.A." for a pair with no
             // channel the rate or format carries (`APUtilities.m:323-400`).
-            if i < hardware.count {
+            // ThunderBridge: the board outputs at the same position (Mac 1-16
+            // on slot 1, 17-32 on slot 2), which is where the driver plays
+            // them and the names it gives them in Core Audio.
+            if appState.transportType == .thunderbolt,
+               let positional = layout.thunderboltOutputPairName(pair: i, prefix: appState.peripheralPrefix) {
+                name = positional
+            } else if i < hardware.count {
                 name = CardLayout.softwarePairName(hardwarePair: hardware[i].stereoName,
                                                    prefix: appState.peripheralPrefix)
             } else {
@@ -749,23 +758,18 @@ struct OutputRoutingView: View {
     /// `SymphonyIODefaultRouting.usbChannelCount`); ThunderBridge carries 32,
     /// board 1 ← playback 17-32, as XLink sources.
     private func defaultOutputRouteList(board1: IOCardType, board2: IOCardType) -> [SymphonyIODefaultRouting.Route] {
-        let transport = appState.transportType ?? .usb
-        let routes = SymphonyIODefaultRouting.outputRoutes(
+        // On ThunderBridge: what the driver and card program at start-up, Mac
+        // output n on slot 1 output n (1-16) and slot 2 output n-16 (17-32),
+        // with the main pair on Mixer 1. The grid shows it and Reset Routing
+        // writes it, so the picture matches the sound.
+        if appState.transportType == .thunderbolt {
+            return SymphonyIODefaultRouting.thunderboltOutputRoutes(
+                board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
+        }
+        return SymphonyIODefaultRouting.outputRoutes(
             board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
             board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),
-            usbChannelCount: transport == .thunderbolt
-                ? Int(ThunderboltCardRouting.channelCount)
-                : SymphonyIODefaultRouting.usbChannelCount,
-            playbackBase: SymphonyIORoutingAddress.hostPlaybackBase(for: transport))
-        guard transport == .thunderbolt else { return routes }
-        // On ThunderBridge the main pair's default is Mixer 1, which is what the
-        // driver programs and what is actually heard. The grid shows it and
-        // Reset Routing writes it, so the picture matches the sound.
-        return routes.map { route in
-            guard let mixer = ThunderboltCardRouting.mainPairDefaultSource(
-                forDestination: route.destination) else { return route }
-            return SymphonyIODefaultRouting.Route(destination: route.destination, source: mixer)
-        }
+            usbChannelCount: SymphonyIODefaultRouting.usbChannelCount)
     }
 
     private func defaultRouteGrid() -> [Int: Set<Int>] {
@@ -926,7 +930,8 @@ struct OutputRoutingView: View {
             print("[Maestro] OutputRouting: reset refused — slot provenance \(b1.source.rawValue)/\(b2.source.rawValue)")
             return
         }
-        let plan = RoutingResetGuard.outputPlanLines(board1: b1.card, board2: b2.card)
+        let plan = RoutingResetGuard.outputPlanLines(board1: b1.card, board2: b2.card,
+                                                     transport: appState.transportType ?? .usb)
         resetPrompt = RoutingResetPrompt(
             title: "Reset Output Routing",
             message: """
@@ -941,9 +946,11 @@ struct OutputRoutingView: View {
 
     /// Restore the daemon's default output routing (`ResetOutputRouting`).
     ///
-    /// Board-aware: analog destinations across both slots first, then digital,
-    /// each fed from the next USB playback channel. This is not a diagonal and
-    /// not the dual map we used to write — see ``SymphonyIODefaultRouting``.
+    /// Over USB, board-aware: analog destinations across both slots first, then
+    /// digital, each fed from the next USB playback channel. This is not a
+    /// diagonal and not the dual map we used to write — see
+    /// ``SymphonyIODefaultRouting``. Over ThunderBridge, the driver's position
+    /// table (`SymphonyIODefaultRouting.thunderboltOutputRoutes`).
     ///
     /// Only reachable through ``requestRoutingReset()``, which refuses unless both
     /// slots were genuinely detected this session.

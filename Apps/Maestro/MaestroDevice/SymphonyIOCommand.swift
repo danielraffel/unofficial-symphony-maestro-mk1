@@ -1864,6 +1864,38 @@ public enum SymphonyIODefaultRouting {
         return routes
     }
 
+    /// Default OUTPUT routing on ThunderBridge: what the driver and the card
+    /// program at start-up, by position. The Symphony side is the driver's
+    /// fixed table, XLink n → board output n (`SymphonyThunderbridge.cpp`
+    /// steps 19b-1 / 19b-1b: XLink 0-15 → slot 1's outputs, 16-31 → slot 2's),
+    /// and the card feeds XLink TX n from playback n (step 21b), so Mac output
+    /// n plays through slot 1 output n for 1-16 and slot 2 output n-16 for
+    /// 17-32. The main pair defaults to card mixer 1
+    /// (`ThunderboltCardRouting.mainPairDefaultSource`). A destination past a
+    /// card's outputs (or in an empty slot) is silent.
+    ///
+    /// It is NOT the USB table above, which puts every analog output first:
+    /// with two cards that have analog outputs, that table drew Mac 9-10 on
+    /// slot 2's Line 1/2 while the unit played it on slot 1's digital outputs.
+    public static func thunderboltOutputRoutes(board0Outputs: Int, board1Outputs: Int) -> [Route] {
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        let bases = [SymphonyIORoutingAddress.ioBoard0Base, SymphonyIORoutingAddress.ioBoard1Base]
+        let outputs = [board0Outputs, board1Outputs]
+        var routes: [Route] = []
+        for board in 0..<2 {
+            for index in 0..<perBoard {
+                let destination = bases[board] + UInt8(index)
+                let source = index < outputs[board]
+                    ? SymphonyIORoutingAddress.xlinkPlaybackBase + UInt8(board * perBoard + index)
+                    : SymphonyIORoutingAddress.none
+                routes.append((destination: destination,
+                               source: ThunderboltCardRouting.mainPairDefaultSource(forDestination: destination)
+                                   ?? source))
+            }
+        }
+        return routes
+    }
+
     /// The capture routing the ThunderBridge driver programs at link
     /// configuration (`SymphonyThunderbridge.cpp` step 19b-2,
     /// `SymphonyCaptureSource` in `SymphonyChannelNames.h`): card by card,
@@ -2185,11 +2217,17 @@ public enum RoutingResetGuard {
     /// Derived from the same table the reset writes, so the text cannot drift from
     /// the behaviour. One line per destination run, naming the card and the DAW
     /// channels that will feed it.
-    public static func outputPlanLines(board1: IOCardType, board2: IOCardType) -> [String] {
-        let routes = SymphonyIODefaultRouting.outputRoutes(
-            board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
-            board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),
-            usbChannelCount: SymphonyIODefaultRouting.usbChannelCount)
+    /// Over ThunderBridge it is the position table the reset writes there
+    /// (`SymphonyIODefaultRouting.thunderboltOutputRoutes`).
+    public static func outputPlanLines(board1: IOCardType, board2: IOCardType,
+                                       transport: TransportType = .usb) -> [String] {
+        let routes = transport == .thunderbolt
+            ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
+                board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
+            : SymphonyIODefaultRouting.outputRoutes(
+                board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
+                board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),
+                usbChannelCount: SymphonyIODefaultRouting.usbChannelCount)
         var byDestination: [UInt8: UInt8] = [:]
         for route in routes { byDestination[route.destination] = route.source }
 
@@ -2350,17 +2388,23 @@ public enum RoutingResetGuard {
     private static func describe(_ sources: [UInt8]) -> String {
         var daw: [Int] = []
         var hasSilence = false
+        var mixers: [String] = []
         for source in sources {
             if source == SymphonyIORoutingAddress.none {
                 hasSilence = true
+            } else if source == SymphonyIORoutingAddress.mixer0Base || source == SymphonyIORoutingAddress.mixer0Base &+ 1 {
+                if !mixers.contains("Mixer 1") { mixers.append("Mixer 1") }
+            } else if source == SymphonyIORoutingAddress.mixer1Base || source == SymphonyIORoutingAddress.mixer1Base &+ 1 {
+                if !mixers.contains("Mixer 2") { mixers.append("Mixer 2") }
             } else if source >= SymphonyIORoutingAddress.p2pBase {
                 daw.append(Int(source &- SymphonyIORoutingAddress.p2pBase) + 1)
             } else if source <= SymphonyIORoutingAddress.xlinkPlaybackBase &+ 31 {
                 daw.append(Int(source &- SymphonyIORoutingAddress.xlinkPlaybackBase) + 1)
             }
         }
-        if daw.isEmpty { return "silence" }
-        let text = "DAW \(compactRuns(daw))"
+        let parts = mixers + (daw.isEmpty ? [] : ["DAW \(compactRuns(daw))"])
+        if parts.isEmpty { return "silence" }
+        let text = parts.joined(separator: ", ")
         return hasSilence ? "\(text) (remainder silent)" : text
     }
 

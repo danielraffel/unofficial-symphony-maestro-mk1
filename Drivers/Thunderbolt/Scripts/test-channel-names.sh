@@ -32,7 +32,9 @@ static void expectName(const SymphonyNamingState &s, bool in, unsigned board, un
 
 static SymphonyNamingState state(uint8_t t0, uint8_t t1, uint32_t rate = 0,
                                  bool spdif0 = false, bool spdif1 = false,
-                                 uint8_t cx0 = 0, uint8_t cx1 = 0)
+                                 uint8_t cx0 = 0, uint8_t cx1 = 0);
+static SymphonyNamingState state(uint8_t t0, uint8_t t1, uint32_t rate,
+                                 bool spdif0, bool spdif1, uint8_t cx0, uint8_t cx1)
 {
     SymphonyNamingState s = {};
     s.boardType[0] = t0; s.boardType[1] = t1;
@@ -43,7 +45,70 @@ static SymphonyNamingState state(uint8_t t0, uint8_t t1, uint32_t rate = 0,
     return s;
 }
 
-int main() {
+// Host OUTPUT names, every channel: "-" where the driver publishes none.
+static void dumpOutputs(const SymphonyNamingState &s)
+{
+    printf("layout %u %u %u %u %u %c %u\n", s.boardType[0], s.boardType[1], s.sampleRate,
+           s.opticalIsSPDIF[0] ? 1u : 0u, s.opticalIsSPDIF[1] ? 1u : 0u,
+           SymphonyPrefixLetter(s.prefix), s.boardKnown[0] ? 1u : 0u);
+    for (unsigned n = 0; n < 32; n++) {
+        char buf[32];
+        if (!SymphonyHostOutputName(s, n, buf, sizeof(buf))) strcpy(buf, "-");
+        printf("%u %s\n", n + 1, buf);
+    }
+}
+
+static int expectOutputs(const SymphonyNamingState &s, unsigned first, unsigned last,
+                         const char *kind, unsigned number, int line)
+{
+    // Mac outputs first..last (1-based) named "<kind> number", number counting
+    // up; kind "A N.A." / "N.A." with number 0 for a run of N.A.
+    int bad = 0;
+    for (unsigned n = first; n <= last; n++) {
+        char want[32], got[32];
+        if (number) snprintf(want, sizeof(want), "%s %u", kind, number + (n - first));
+        else snprintf(want, sizeof(want), "%s", kind);
+        if (!SymphonyHostOutputName(s, n - 1, got, sizeof(got))) strcpy(got, "(none)");
+        if (strcmp(got, want) != 0) {
+            fprintf(stderr, "line %d: Mac output %u: got \"%s\", want \"%s\"\n", line, n, got, want);
+            bad++;
+        }
+    }
+    failures += bad;
+    return bad;
+}
+#define OUTS(s, first, last, kind, number) expectOutputs(s, first, last, kind, number, __LINE__)
+
+static SymphonyNamingState state(uint8_t t0, uint8_t t1, uint32_t rate,
+                                 bool spdif0, bool spdif1, uint8_t cx0, uint8_t cx1);
+
+// The layouts output-channel-names.txt pins for the app's cross-check
+// (OutputChannelNameParityTests): slot types, rate, S/PDIF per slot, prefix,
+// both slots read.
+static void dumpOutputLayouts()
+{
+    struct L { uint8_t t0, t1; uint32_t rate; bool sp0, sp1; uint8_t prefix; bool known; } ls[] = {
+        { kSIOOptionBoard_Optical,   kSIOOptionBoard_AnalogAD16, 48000,  true,  false, 'A', true },  // Daniel's rig
+        { kSIOOptionBoard_Optical,   kSIOOptionBoard_AnalogAD16, 96000,  false, false, 'A', true },
+        { kSIOOptionBoard_Optical,   kSIOOptionBoard_AnalogAD16, 192000, true,  false, 'A', true },
+        { kSIOOptionBoard_AnalogAES, kSIOOptionBoard_AnalogAD16, 48000,  false, false, 'C', true },  // AES position
+        { kSIOOptionBoard_Optical,   kSIOOptionBoard_Optical,    48000,  false, false, 'A', true },  // 8x8 + 8x8
+        { kSIOOptionBoard_None,      kSIOOptionBoard_Optical,    44100,  false, false, 'A', true },  // empty slot 1
+        { kSIOOptionBoard_TwoBySix,  kSIOOptionBoard_None,       96000,  false, false, 'A', true },
+        { kSIOOptionBoard_AnalogADDA16, kSIOOptionBoard_MicPre8, 48000,  false, false, 'B', true },
+        { kSIOOptionBoard_AnalogDA16, kSIOOptionBoard_AnalogAD16, 48000, true,  true,  'A', true },
+        { kSIOOptionBoard_None,      kSIOOptionBoard_None,       48000,  false, false, 'A', false }, // unread
+    };
+    for (const auto &l : ls) {
+        auto s = state(l.t0, l.t1, l.rate, l.sp0, l.sp1, 0, 0);
+        s.prefix = l.prefix;
+        s.boardKnown[0] = s.boardKnown[1] = l.known;
+        dumpOutputs(s);
+    }
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--dump-outputs")) { dumpOutputLayouts(); return 0; }
     // 8x8 Optical: Line 1-8 then ADAT / SMUX / N.A. by rate.
     auto opt48 = state(kSIOOptionBoard_Optical, kSIOOptionBoard_None, 48000);
     NAME(opt48, true, 0, 0, "Line 1");
@@ -158,6 +223,59 @@ int main() {
     assert(!SymphonyIsPrefixLetter('a') && !SymphonyIsPrefixLetter('@') && !SymphonyIsPrefixLetter('['));
     assert(SymphonyPrefixLetter(0) == 'A' && SymphonyPrefixLetter('Q') == 'Q');
 
+    // Host OUTPUTS keep fixed names from their position (SymphonyHostOutputName):
+    // Mac output n is the board output the fixed table sends it to, slot 1
+    // output n for 1-16, slot 2 output n-16 for 17-32, with the prefix.
+    {
+        auto rig = state(kSIOOptionBoard_Optical, kSIOOptionBoard_AnalogAD16, 48000, true);
+        OUTS(rig, 1, 8, "A Line", 1);
+        OUTS(rig, 9, 10, "A SPDIF Opt", 1);
+        OUTS(rig, 11, 16, "A N.A.", 0);
+        OUTS(rig, 17, 32, "A ADAT", 9);
+        rig.prefix = 'D';
+        OUTS(rig, 1, 1, "D Line", 1);
+        OUTS(rig, 11, 11, "D N.A.", 0);
+        // AES position: AES 1-8 on 9-16; slot 2's ADAT numbers from 1.
+        auto aes = state(kSIOOptionBoard_AnalogAES, kSIOOptionBoard_AnalogAD16, 48000);
+        OUTS(aes, 9, 16, "A AES", 1);
+        OUTS(aes, 17, 32, "A ADAT", 1);
+        OUTS(state(kSIOOptionBoard_AnalogAES, kSIOOptionBoard_AnalogAD16, 192000), 9, 16, "A AES", 1);
+        // 96k: SMUX on every optical output of two-port cards; 192k: N.A.
+        auto smux = state(kSIOOptionBoard_Optical, kSIOOptionBoard_AnalogAD16, 96000);
+        OUTS(smux, 9, 16, "A SMUX", 1);
+        OUTS(smux, 17, 32, "A SMUX", 9);
+        auto r192 = state(kSIOOptionBoard_Optical, kSIOOptionBoard_AnalogAD16, 192000, true);
+        OUTS(r192, 1, 8, "A Line", 1);
+        OUTS(r192, 9, 32, "A N.A.", 0);
+        // S/PDIF outputs name only the stream's first pair (A16 IP: of 16).
+        OUTS(state(kSIOOptionBoard_Optical, kSIOOptionBoard_AnalogAD16, 48000, false, true), 17, 18, "A SPDIF Opt", 3);   // numbered on from slot 1
+        OUTS(state(kSIOOptionBoard_Optical, kSIOOptionBoard_AnalogAD16, 48000, false, true), 19, 32, "A N.A.", 0);
+        // Two 8x8s: slot by slot, not every Line first.
+        auto two = state(kSIOOptionBoard_Optical, kSIOOptionBoard_Optical, 48000);
+        OUTS(two, 9, 16, "A ADAT", 1);
+        OUTS(two, 17, 24, "A Line", 9);
+        OUTS(two, 25, 32, "A ADAT", 9);
+        // Empty slot 1: its 16 are bare "N.A."; slot 2 stays on 17-32.
+        auto empty1 = state(kSIOOptionBoard_None, kSIOOptionBoard_Optical, 48000);
+        OUTS(empty1, 1, 16, "N.A.", 0);
+        OUTS(empty1, 17, 24, "A Line", 1);
+        OUTS(state(kSIOOptionBoard_AnalogADDA16, kSIOOptionBoard_MicPre8, 48000), 17, 32, "N.A.", 0);
+        // Coax Replaces never renames an output.
+        OUTS(state(kSIOOptionBoard_AnalogAES, 0, 48000, false, false, 5), 9, 16, "A AES", 1);
+        // An unread slot, and anything past the 32, get no name.
+        auto unreadOut = state(kSIOOptionBoard_Optical, kSIOOptionBoard_Optical, 48000);
+        unreadOut.boardKnown[1] = false;
+        OUTS(unreadOut, 1, 1, "A Line", 1);
+        for (unsigned n = 16; n < 33; n++) {
+            strcpy(buf, "stale");
+            assert(!SymphonyHostOutputName(unreadOut, n, buf, sizeof(buf)) && buf[0] == 0);
+        }
+        // The longest name fits the driver's 20-byte record.
+        char longest[32];
+        assert(SymphonyHostOutputName(state(kSIOOptionBoard_Optical, kSIOOptionBoard_Optical, 48000, true, true),
+                                      16, longest, sizeof(longest)) && strlen(longest) < 20);
+    }
+
     // Session Replaces / Mirrors go back only to the type of card they were
     // chosen for: the same wire value names another pair on another card.
     static_assert(ReplaysCoaxSettings(true, kSIOOptionBoard_Optical, kSIOOptionBoard_Optical), "same card");
@@ -244,8 +362,21 @@ CPP
 clang++ -std=c++17 -Wall -Wextra -Werror -I "$SOURCE_DIR" "$TMP_DIR/test.cpp" -o "$TMP_DIR/test"
 "$TMP_DIR/test"
 
+# The output names, every channel of several layouts, as the app's
+# OutputChannelNameParityTests reads them: the app's ThunderBridge Output
+# Routing rows and output names must be these.
+FIXTURE="$SCRIPT_DIR/golden/output-channel-names.txt"
+"$TMP_DIR/test" --dump-outputs > "$TMP_DIR/outputs.txt"
+if ! diff -u "$FIXTURE" "$TMP_DIR/outputs.txt"; then
+    echo "FAIL: driver output names differ from $FIXTURE (regenerate it only if the change is intended)" >&2
+    exit 1
+fi
+
 # The driver publishes them and republishes on the events that rename channels.
 grep -q 'SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input' "$SOURCE_DIR/SymphonyThunderbridge.cpp"
+grep -q 'SetElementName(n + 1, IOUserAudioObjectPropertyScope::Output' "$SOURCE_DIR/SymphonyThunderbridge.cpp"
+# The app names its ThunderBridge Output Routing rows the same way.
+grep -q 'layout.thunderboltOutputPairName(pair: i' "$SCRIPT_DIR/../../../Apps/Maestro/MaestroApp/RoutingViews.swift"
 for hook in 'hardware now at' 'RequestOpticalFormat: board=%u fmt=%u' 'namesChanged' 'kSIOCmd_SPDIFCoaxReplaceInput && value < 2' 'command == kSymphonyCmdPrefix && payload && payloadLen == 1' 's.prefix = __atomic_load_n(&ivars->namingPrefix'; do
     grep -q "$hook" "$SOURCE_DIR/SymphonyThunderbridge.cpp"
 done
@@ -273,6 +404,9 @@ assert src.count("NoteCoaxBoardType(ivars, value);") == 3   # 0x35 write, 0x36 w
 publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
 assert "s.boardKnown[b] = ivars->optionBoardTypeValid[b];" in publish
 assert publish.index("strncmp(name, ivars->publishedInputName[n]") < publish.index("SetElementName(")
+out = publish[publish.index("SymphonyHostOutputName(s, n"):]
+assert out.index("strncmp(name, ivars->publishedOutputName[n]") < out.index("SetElementName(")
+assert "Scope::Output" in out and "Scope::Input" not in out
 # The capture table is laid out from slot 1's type read in the same link
 # configuration (Start and link recovery both run ConfigureSymphonyLink), all
 # 32 destinations through SymphonyCaptureSource, and the tracked sources

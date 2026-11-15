@@ -39,7 +39,7 @@ Every name starts with the unit's peripheral prefix letter, set in Device Settin
 
 Over ThunderBridge, Mac inputs follow the cards in slot order by default: the inputs of the card in slot 1 first, then those of slot 2. Slot 2 starts at Mac input 17, or at 13 behind a 2x6 card, which has 12 inputs. Each Mac input is named after what feeds it, so a change on Input Routing renames it.
 
-Mac outputs keep fixed names based on their position. This differs from the original, which renamed each output after the hardware it reached: an output that fed the mixer rather than a hardware output read "N.A.".
+Over ThunderBridge, Mac outputs 1-16 play through the card in slot 1 and 17-32 through the card in slot 2, in order, unless you route them elsewhere. Mac outputs keep fixed names based on their position: each is named after the output at the same position ("A Line 1", "A ADAT 9"), or "N.A." where the slot is empty, and the name does not change when you re-route it. This differs from the original, which renamed each output after the hardware it reached: an output that fed the mixer rather than a hardware output read "N.A.".
 
 The optical format, the S/PDIF settings, the prefix letter and your routing choices are kept when the Symphony is turned off and on.
 
