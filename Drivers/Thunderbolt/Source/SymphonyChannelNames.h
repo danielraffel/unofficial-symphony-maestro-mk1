@@ -37,6 +37,7 @@ struct SymphonyNamingState {
     uint8_t  boardType[2];      // SymphonyIOOptionBoardType per slot
     bool     opticalIsSPDIF[2]; // optical format per slot (true = S/PDIF)
     uint8_t  coaxReplace[2];    // S/PDIF Coax Replaces wire value per slot, 0 = Off
+    bool     boardKnown[2];     // the slot's type was read from the unit
     uint32_t sampleRate;        // Hz; 0 = unknown, named as 44.1/48 kHz
 };
 
@@ -119,7 +120,10 @@ static inline bool SymphonyBoardChannelName(const SymphonyNamingState &s, bool i
 // source byte is `source` (the [dest, src] pairs of AudioRouting 0x31 for
 // dest P2P 0xC0 + n). Board sources are IOBoard0 32-47 and IOBoard1 48-63;
 // "None" (236) is "N.A." as the original's unrouted channel. Any other source
-// (a mixer bus, playback) returns false and gets no name of its own.
+// (a mixer bus, playback) returns false and gets no name of its own, and so
+// does a board whose type has not been read: with no Symphony answering (the
+// unit is off, or an older converter is on the cable) nothing is known about
+// the channel, and Core Audio's own default name stays.
 static constexpr uint8_t kSymphonyRoutingSourceIOBoard0 = 32;
 static constexpr uint8_t kSymphonyRoutingSourceIOBoard1 = 48;
 static constexpr uint8_t kSymphonyRoutingSourceNone     = 236;
@@ -135,6 +139,10 @@ static inline bool SymphonyHostInputName(const SymphonyNamingState &s, uint8_t s
     if (source >= kSymphonyRoutingSourceIOBoard0 && source < kSymphonyRoutingSourceIOBoard0 + 32) {
         const unsigned board = (source - kSymphonyRoutingSourceIOBoard0) / 16;
         const unsigned ch = (source - kSymphonyRoutingSourceIOBoard0) % 16;
+        if (!s.boardKnown[board]) {
+            if (len) out[0] = 0;
+            return false;
+        }
         SymphonyBoardChannelName(s, true, board, ch, out, len);
         return true;
     }

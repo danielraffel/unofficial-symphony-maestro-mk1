@@ -327,9 +327,8 @@ struct SymphonyThunderbridge_IVars {
     uint8_t   inputRouteSource[32];
     uint8_t   namingCoaxReplace[2];
     uint8_t   sessionCoaxMirror[2];   // last Mirrors (0x36) sent, 0 = none this session
-    bool      channelNamesPublished;
-    SymphonyNamingState publishedNaming;
-    uint8_t   publishedInputSource[32];
+    uint8_t   sessionCoaxBoardType[2]; // the slot's card type those two belong to, 0 = none
+    char      publishedInputName[32][20]; // what Core Audio has now; "" = no name set
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1799,11 +1798,15 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // app replays the Mac's saved formats after it connects.
         {
             const char* result[2] = { "skipped", "skipped" };
+            uint8_t slotType[2] = { kSIOOptionBoard_None, kSIOOptionBoard_None };
+            bool slotTypeOK[2] = { false, false };
             for (uint32_t b = 0; b < 2; b++) {
                 uint8_t bt = kSIOOptionBoard_None;
                 bool typeOK = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                                 symphonyAddr, kSIOCmd_OptionBoardType,
                                                 b, &bt, 1, txSeq);
+                slotType[b] = bt;
+                slotTypeOK[b] = typeOK;
                 if (!BootSendsOpticalFormat(typeOK, bt)) {
                     STLOG("SymphonyIO: OpticalFormat board%u skipped (AES board, type %u)",
                           b, bt);
@@ -1819,7 +1822,21 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             STLOG("SymphonyIO: OpticalFormat: board0=%s, board1=%s", result[0], result[1]);
             // S/PDIF Coax Replaces and Mirrors written this session, likewise
             // (the firmware starts at Off / Analog 1-2, SymphonyIOStateData.cpp:127-131).
+            // Only to the type of card they were chosen for: after a card
+            // swap the same number names a different pair, so they are
+            // dropped and the new card keeps the firmware's defaults.
             for (uint32_t b = 0; b < 2; b++) {
+                uint8_t setFor = __atomic_load_n(&ivars->sessionCoaxBoardType[b], __ATOMIC_ACQUIRE);
+                if (!ReplaysCoaxSettings(slotTypeOK[b], slotType[b], setFor)) {
+                    if (slotTypeOK[b] && setFor != kSIOOptionBoard_None) {
+                        __atomic_store_n(&ivars->namingCoaxReplace[b], (uint8_t)0, __ATOMIC_RELEASE);
+                        __atomic_store_n(&ivars->sessionCoaxMirror[b], (uint8_t)0, __ATOMIC_RELEASE);
+                        __atomic_store_n(&ivars->sessionCoaxBoardType[b], (uint8_t)0, __ATOMIC_RELEASE);
+                        STLOG("SymphonyIO: S/PDIF Coax board%u not replayed (card type %u, was %u)",
+                              b, slotType[b], setFor);
+                    }
+                    continue;
+                }
                 uint8_t replace = __atomic_load_n(&ivars->namingCoaxReplace[b], __ATOMIC_ACQUIRE);
                 uint8_t mirror = __atomic_load_n(&ivars->sessionCoaxMirror[b], __ATOMIC_ACQUIRE);
                 if (replace >= 1 && replace <= 8)
@@ -2089,38 +2106,37 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
         return;
     SymphonyNamingState s = {};
     for (uint32_t b = 0; b < 2; b++) {
+        // A slot whose type was never read (no Symphony answering) is not
+        // named at all; see SymphonyHostInputName.
+        s.boardKnown[b] = ivars->optionBoardTypeValid[b];
         s.boardType[b] = ivars->optionBoardTypeValid[b] ? ivars->optionBoardType[b] : 0;
         s.opticalIsSPDIF[b] = __atomic_load_n(&ivars->pendingOpticalFmt[b], __ATOMIC_ACQUIRE) != 0;
         s.coaxReplace[b] = __atomic_load_n(&ivars->namingCoaxReplace[b], __ATOMIC_ACQUIRE);
     }
     s.sampleRate = (uint32_t)(ivars->lastSampleRate + 0.5);
-    uint8_t sources[32];
-    for (uint32_t n = 0; n < 32; n++)
-        sources[n] = __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE);
-    if (ivars->channelNamesPublished &&
-        memcmp(&s, &ivars->publishedNaming, sizeof(s)) == 0 &&
-        memcmp(sources, ivars->publishedInputSource, sizeof(sources)) == 0)
-        return;
 
-    uint32_t named = 0;
+    // Only a channel whose name differs from what Core Audio has is set: each
+    // SetElementName notifies every client, and a rate change on a unit with
+    // no optical card renames nothing.
+    uint32_t changed = 0;
     for (uint32_t n = 0; n < 32; n++) {
-        char name[32];
-        OSString *str = nullptr;
-        if (SymphonyHostInputName(s, sources[n], name, sizeof(name))) {
-            str = OSString::withCString(name);
-            named++;
-        }
+        char name[sizeof(ivars->publishedInputName[0])] = {};
+        const uint8_t source = __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE);
+        if (!SymphonyHostInputName(s, source, name, sizeof(name))) name[0] = 0;
+        if (strncmp(name, ivars->publishedInputName[n], sizeof(name)) == 0) continue;
         // A null name removes it, leaving Core Audio's default for that channel.
+        OSString *str = name[0] ? OSString::withCString(name) : nullptr;
         ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, str);
         OSSafeReleaseNULL(str);
+        strlcpy(ivars->publishedInputName[n], name, sizeof(ivars->publishedInputName[n]));
+        changed++;
     }
-    ivars->publishedNaming = s;
-    memcpy(ivars->publishedInputSource, sources, sizeof(sources));
-    ivars->channelNamesPublished = true;
-    STLOG("Channel names: published %u input names (boards %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
-          named, s.boardType[0], s.boardType[1], s.sampleRate,
-          s.opticalIsSPDIF[0] ? 1u : 0u, s.opticalIsSPDIF[1] ? 1u : 0u,
-          s.coaxReplace[0], s.coaxReplace[1]);
+    if (changed)
+        STLOG("Channel names: %u input names changed (boards %u/%u known %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
+              changed, s.boardType[0], s.boardType[1],
+              s.boardKnown[0] ? 1u : 0u, s.boardKnown[1] ? 1u : 0u, s.sampleRate,
+              s.opticalIsSPDIF[0] ? 1u : 0u, s.opticalIsSPDIF[1] ? 1u : 0u,
+              s.coaxReplace[0], s.coaxReplace[1]);
 }
 
 static void ScheduleChannelNames(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self)
@@ -2131,6 +2147,17 @@ static void ScheduleChannelNames(SymphonyThunderbridge_IVars *ivars, SymphonyThu
         PublishChannelNames(ivars);
         self->release();
     });
+}
+
+// The card a slot's S/PDIF Coax Replaces / Mirrors were just written to or
+// read from, so link configuration puts them back only on that type of card
+// (ReplaysCoaxSettings).
+static void NoteCoaxBoardType(SymphonyThunderbridge_IVars *ivars, uint32_t board)
+{
+    if (board > 1) return;
+    const uint8_t type = ivars->optionBoardTypeValid[board] ? ivars->optionBoardType[board]
+                                                            : kSIOOptionBoard_None;
+    __atomic_store_n(&ivars->sessionCoaxBoardType[board], type, __ATOMIC_RELEASE);
 }
 
 // The Symphony's capture routing as ConfigureSymphonyLink leaves it:
@@ -5562,10 +5589,12 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             }
         } else if (command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2 && payload && payloadLen >= 1) {
             __atomic_store_n(&ivars->namingCoaxReplace[value], payload[0], __ATOMIC_RELEASE);
+            NoteCoaxBoardType(ivars, value);
             namesChanged = true;
         } else if (command == kSIOCmd_SPDIFCoaxMirrorOutput && value < 2 && payload && payloadLen >= 1) {
             // Kept so a link recovery can put it back.
             __atomic_store_n(&ivars->sessionCoaxMirror[value], payload[0], __ATOMIC_RELEASE);
+            NoteCoaxBoardType(ivars, value);
         }
         // Legacy SymphonyIO::UpdateMainOutputChannelMode makes Line (mode 0)
         // an HP1 monitor target.  The HAL exposes one volume/mute control, so
@@ -5635,6 +5664,7 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
     if (result == kIOReturnSuccess && command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2) {
         const uint8_t before = __atomic_exchange_n(&ivars->namingCoaxReplace[value], outPayload[0],
                                                    __ATOMIC_ACQ_REL);
+        NoteCoaxBoardType(ivars, value);
         if (before != outPayload[0]) ScheduleChannelNames(ivars, this);
     }
     return result;

@@ -36,6 +36,7 @@ static SymphonyNamingState state(uint8_t t0, uint8_t t1, uint32_t rate = 0,
 {
     SymphonyNamingState s = {};
     s.boardType[0] = t0; s.boardType[1] = t1;
+    s.boardKnown[0] = s.boardKnown[1] = true;   // both slots' types were read
     s.opticalIsSPDIF[0] = spdif0; s.opticalIsSPDIF[1] = spdif1;
     s.coaxReplace[0] = cx0; s.coaxReplace[1] = cx1;
     s.sampleRate = rate;
@@ -120,6 +121,34 @@ int main() {
     assert(SymphonyHostInputName(owner, kSymphonyRoutingSourceNone, buf, sizeof(buf)) && !strcmp(buf, "N.A."));
     assert(!SymphonyHostInputName(owner, 64, buf, sizeof(buf)));   // a mixer bus: no name of its own
 
+    // The original named an unrouted or empty channel "N.A."
+    // (SymphonyCardStream.cpp:219-236): a slot read as empty is that.
+    auto single = state(kSIOOptionBoard_AnalogADDA16, kSIOOptionBoard_None, 48000);
+    assert(SymphonyHostInputName(single, 32 + 15, buf, sizeof(buf)) && !strcmp(buf, "Line 16"));
+    assert(SymphonyHostInputName(single, 48, buf, sizeof(buf)) && !strcmp(buf, "N.A."));
+    // A slot whose type was never read (no Symphony answering: the unit is
+    // off, or an older converter is on the cable) gets no name at all, so
+    // Core Audio keeps its own instead of 32 channels called "N.A.".
+    auto unread = state(0, 0, 48000);
+    unread.boardKnown[0] = unread.boardKnown[1] = false;
+    for (unsigned src = 32; src < 64; src++) {
+        strcpy(buf, "stale");
+        assert(!SymphonyHostInputName(unread, (uint8_t)src, buf, sizeof(buf)) && buf[0] == 0);
+    }
+    // One slot read, the other not: only the read one is named.
+    auto half = state(kSIOOptionBoard_Optical, 0, 48000);
+    half.boardKnown[1] = false;
+    assert(SymphonyHostInputName(half, 32, buf, sizeof(buf)) && !strcmp(buf, "Line 1"));
+    assert(!SymphonyHostInputName(half, 48, buf, sizeof(buf)));
+
+    // Session Replaces / Mirrors go back only to the type of card they were
+    // chosen for: the same wire value names another pair on another card.
+    static_assert(ReplaysCoaxSettings(true, kSIOOptionBoard_Optical, kSIOOptionBoard_Optical), "same card");
+    static_assert(!ReplaysCoaxSettings(true, kSIOOptionBoard_AnalogADDA16, kSIOOptionBoard_Optical), "card swapped");
+    static_assert(!ReplaysCoaxSettings(true, kSIOOptionBoard_AnalogAES, kSIOOptionBoard_Optical), "DIG I/O switch moved");
+    static_assert(!ReplaysCoaxSettings(false, kSIOOptionBoard_Optical, kSIOOptionBoard_Optical), "type not read");
+    static_assert(!ReplaysCoaxSettings(true, kSIOOptionBoard_None, kSIOOptionBoard_None), "nothing set this session");
+
     // AudioRouting payloads: only P2P destinations are noted.
     uint8_t sources[32];
     for (int n = 0; n < 32; n++) sources[n] = (uint8_t)(32 + n);
@@ -154,4 +183,19 @@ grep -q 'sessionCoaxMirror\[value\], payload\[0\]' "$SOURCE_DIR/SymphonyThunderb
 if grep -q 'adatMode' "$SOURCE_DIR/SymphonyThunderbridge.cpp"; then
     echo "FAIL: the link configuration still forces ADAT" >&2; exit 1
 fi
+# ... and Replaces / Mirrors only to the card type they were chosen for.
+python3 - "$SOURCE_DIR/SymphonyThunderbridge.cpp" <<'PY'
+import sys
+from pathlib import Path
+src = Path(sys.argv[1]).read_text()
+boot = src[src.index("19b-0c. Set optical format"):src.index("19b-1. Playback routing")]
+gate = boot.index("ReplaysCoaxSettings(slotTypeOK[b], slotType[b], setFor)")
+assert gate < boot.index("kSIOCmd_SPDIFCoaxReplaceInput, b, &replace")
+assert gate < boot.index("kSIOCmd_SPDIFCoaxMirrorOutput, b, &mirror")
+assert src.count("NoteCoaxBoardType(ivars, value);") == 3   # 0x35 write, 0x36 write, 0x35 read
+# A channel is renamed only when its name changes, and an unread slot is not named.
+publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
+assert "s.boardKnown[b] = ivars->optionBoardTypeValid[b];" in publish
+assert publish.index("strncmp(name, ivars->publishedInputName[n]") < publish.index("SetElementName(")
+PY
 echo "ThunderBridge session digital settings replay: PASS"

@@ -53,3 +53,14 @@ static constexpr bool BootSendsOpticalFormat(bool boardTypeReadOK, uint8_t board
 {
     return !(boardTypeReadOK && boardType == kSIOOptionBoard_AnalogAES);
 }
+
+// Whether link configuration puts this session's S/PDIF Coax Replaces and
+// Mirrors back on a slot. They are pair numbers within one card's channels
+// (Replaces 6 is Optical 3-4 on an 8x8 and Analog 11-12 on a 16x16), so they
+// go back only to the type of card they were chosen for. `typeWhenSet` is the
+// slot's type when the value was written or read, None (0) when there is none.
+static constexpr bool ReplaysCoaxSettings(bool boardTypeReadOK, uint8_t boardType,
+                                          uint8_t typeWhenSet)
+{
+    return boardTypeReadOK && typeWhenSet != kSIOOptionBoard_None && boardType == typeWhenSet;
+}
