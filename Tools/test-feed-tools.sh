@@ -146,7 +146,7 @@ ok "lint: signature, channel names, a beta above stable must not disappear"
 R="$WORK/repo"
 mkdir -p "$R/Tools/lib" "$R/Apps/Maestro/MaestroCore" "$R/Apps/Maestro/MaestroApp/Resources" "$R/Drivers/Thunderbolt"
 cp "$REPO_ROOT/Tools/feed.py" "$REPO_ROOT/Tools/check-versions.py" "$REPO_ROOT/Tools/publish-release.sh" \
-   "$REPO_ROOT/Tools/verify-sparkle-feed.sh" "$R/Tools/"
+   "$REPO_ROOT/Tools/promote-beta.sh" "$REPO_ROOT/Tools/verify-sparkle-feed.sh" "$R/Tools/"
 cp "$REPO_ROOT/Tools/lib/release-common.sh" "$R/Tools/lib/"
 cat > "$R/Apps/Maestro/MaestroApp/Resources/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -302,6 +302,31 @@ git -C "$R" update-ref refs/remotes/origin/main "$COMMIT"
 grep -q "Hotfix rule: beta 0.9.0 is above 0.8.41" "$WORK/hotfix.out" || fail "no hotfix reminder"
 ok "publish refuses an unpushed commit; a stable hotfix below a beta prints the hotfix rule"
 
+# Promote the beta.
+cp "$FEED" "$WORK/before-promote.xml"
+if "$R/Tools/promote-beta.sh" --feed "$FEED" >/dev/null 2>&1; then fail "promoted without notes"; fi
+"$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$FEED" --dry-run > "$WORK/promote-dry.out"
+cmp -s "$FEED" "$WORK/before-promote.xml" || fail "promote dry run changed the feed"
+grep -q 'would run:.*release edit v0.9.0' "$WORK/promote-dry.out" || fail "promote dry run did not show the edit"
+"$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$FEED" > "$WORK/promote.out"
+grep -Fq "gh release edit v0.9.0 --repo danielraffel/unofficial-symphony-maestro-mk1 --prerelease=false --latest --notes-file $F/stable-notes.md" "$S/calls" || fail "release not flipped"
+[ "$(cat "$S/latest")" = v0.9.0 ] || fail "promoted release is not latest"
+[ -z "$(field "$FEED" 0.9.0 channel)" ] || fail "promoted item still tagged"
+[ "$("${FEED_PY[@]}" newest --feed "$FEED" --channel stable)" = 0.9.0 ] || fail "newest stable after promotion"
+cmp -s "$WORK/www/releases/latest/download/UnofficialSymphonyMaestro.pkg" "$WORK/B0.pkg" || fail "latest download is not the tested beta"
+ok "promote-beta: newest beta by default, verified bytes, release flipped to latest, feed promoted"
+
+# A swapped release asset is refused before anything changes.
+cp "$WORK/before-promote.xml" "$FEED"
+echo v0.8.40 > "$S/latest"
+cp "$WORK/S40.pkg" "$WORK/www/releases/download/v0.9.0/UnofficialSymphonyMaestro.pkg"
+: > "$S/calls"
+if "$R/Tools/promote-beta.sh" 0.9.0 --notes "$F/stable-notes.md" --feed "$FEED" >/dev/null 2>&1; then fail "promoted a swapped asset"; fi
+grep -q '^gh ' "$S/calls" && fail "gh called after a failed asset check"
+cmp -s "$FEED" "$WORK/before-promote.xml" || fail "feed changed after a failed asset check"
+cp "$WORK/B0.pkg" "$WORK/www/releases/download/v0.9.0/UnofficialSymphonyMaestro.pkg"
+ok "promote-beta refuses a release asset that is not the tested package"
+
 # Local feed: no GitHub at all.
 git -C "$R" checkout -q -
 L="$WORK/www/rehearsal"
@@ -313,10 +338,12 @@ cp "$F/base.xml" "$L/appcast.xml"
 cmp -s "$L/0.9.0.pkg" "$WORK/B0.pkg" || fail "local package not copied"
 [ -f "$L/0.9.0.notes.md" ] || fail "local notes not copied"
 [ "$(field "$L/appcast.xml" 0.9.0 url)" = "http://127.0.0.1:$PORT/rehearsal/0.9.0.pkg" ] || fail "local enclosure URL"
+"$R/Tools/promote-beta.sh" --notes "$F/stable-notes.md" --feed "$L/appcast.xml" >/dev/null
+[ -z "$(field "$L/appcast.xml" 0.9.0 channel)" ] || fail "local promotion"
 [ ! -s "$S/calls" ] || fail "local mode called GitHub: $(cat "$S/calls")"
 if "$R/Tools/publish-release.sh" --channel beta --pkg "$WORK/B0.pkg" --notes "$F/n-0.9.0.md" --feed "$L/appcast.xml" \
     --local-base-url "http://example.com" >/dev/null 2>&1; then fail "accepted a non-local base URL"; fi
-ok "local feed: publish without GitHub"
+ok "local feed: publish and promote without GitHub"
 
 [ "$(shasum -a 256 "$REPO_ROOT/appcast.xml" | cut -d' ' -f1)" = "$TRACKED_BEFORE" ] || fail "the tracked appcast.xml changed"
 ok "tracked appcast.xml untouched"
