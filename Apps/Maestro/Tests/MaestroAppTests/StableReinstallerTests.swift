@@ -72,6 +72,36 @@ struct StableReinstallerTests {
         #expect(file.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL.path == root.standardizedFileURL.path)
     }
 
+    /// The progress sheet closes itself on idle, so start must leave idle at once.
+    @Test func startIsBusyImmediatelyAndFinishes() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = Recorder()
+        let reinstaller = StableReinstaller(publicKey: publicKey, environment: environment(root: root, recorder: recorder))
+        reinstaller.start(item: try item())
+        #expect(reinstaller.phase != .idle)
+        #expect(reinstaller.isBusy)
+        for _ in 0..<200 where reinstaller.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(reinstaller.phase == .handedOff(version: "0.8.40"))
+        #expect(recorder.opened.count == 1)
+    }
+
+    @Test func cancelReturnsToIdleAndOpensNothing() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = Recorder()
+        var env = environment(root: root, recorder: recorder)
+        env.download = { _, _, _, _ in try await Task.sleep(for: .seconds(5)) }
+        let reinstaller = StableReinstaller(publicKey: publicKey, environment: env)
+        reinstaller.start(item: try item())
+        try await Task.sleep(for: .milliseconds(50))
+        reinstaller.cancel()
+        #expect(reinstaller.phase == .idle)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(reinstaller.phase == .idle)
+        #expect(recorder.opened.isEmpty)
+    }
+
     @Test func changedByteIsRefused() async throws {
         let root = tempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
