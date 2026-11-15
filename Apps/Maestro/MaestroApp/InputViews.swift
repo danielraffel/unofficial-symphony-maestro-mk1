@@ -954,16 +954,21 @@ struct ADATStereoPairView: View {
     var body: some View {
         VStack(spacing: 3) {
             // Label pill — matches analog channel strip style
+            // One line at the strip's size, shrunk to fit a long pair name
+            // ("SPDIF Opt 1/2", "SPDIF Cx 3/4") rather than truncated; the row
+            // keeps its height so the meters stay level with the other strips.
             Text(label)
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+                .minimumScaleFactor(Self.labelMinimumScale)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color.primary.opacity(0.08))
                 )
+                .help(label)
 
             // Spacer fills the gap where analog strips have pills — pushes meters to bottom
             if matchHeight != nil {
@@ -998,12 +1003,23 @@ struct ADATStereoPairView: View {
         .frame(width: 70)
         .padding(.vertical, 4)
         .padding(.horizontal, 5)
+        // An "N.A." pair carries nothing at this rate or format. It stays, as
+        // in the original (Maestro 2.10.5, bug 11832), faded so it reads as
+        // inactive. The strip has no controls, so it sends nothing.
+        .opacity(isNotApplicable ? Self.notApplicableOpacity : 1)
         .frame(height: matchHeight, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color(.controlBackgroundColor).opacity(colorScheme == .light ? 0.6 : 0.3))
         )
     }
+
+    /// Smallest scale for the label: "SPDIF Opt 1/2" at 11 pt bold needs about
+    /// 0.7 of the 60 pt the strip leaves it.
+    static let labelMinimumScale: CGFloat = 0.6
+    static let notApplicableOpacity: Double = 0.45
+
+    var isNotApplicable: Bool { CardLayout.isNotApplicable(label) }
 
     /// Centered dB scale drawn between left and right ADAT meters.
     /// Uses segment-center alignment so labels at extremes don't clip.
