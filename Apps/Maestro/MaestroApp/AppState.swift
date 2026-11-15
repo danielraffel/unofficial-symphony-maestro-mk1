@@ -290,7 +290,7 @@ final class AppState {
     /// The USB auto-switch's wait for "Maestro USB"; cancelled by a newer edge.
     private var usbAutoSwitchTask: Task<Void, Never>?
     /// Re-probes a present ThunderBridge while the app is connected over USB.
-    private var thunderboltWatchTask: Task<Void, Never>?
+    var thunderboltWatchTask: Task<Void, Never>?
     /// Change detection for the persisted probe log (see `logThunderboltProbe`).
     private var thunderboltLastProbeKey = ""
     private var thunderboltProbeCount = 0
@@ -555,6 +555,20 @@ final class AppState {
     /// A read of `servingDextBuild` is under way (`refreshServingDextBuild`).
     @ObservationIgnored
     var servingDextBuildReadInFlight = false
+    /// Maestro's part in moving the card to a newly registered driver
+    /// (DriverHandover.swift). Shown by the banner and Device Info.
+    var driverHandover: DriverHandover = .idle
+    /// "<serving>-><bundled>" pairs Maestro has already asked to retire this
+    /// session. One attempt each: if IOKit puts the old copy straight back on
+    /// the card, asking again would tear the device down every few seconds.
+    @ObservationIgnored
+    var driverHandoverAttempts: Set<String> = []
+    @ObservationIgnored
+    var driverActivationObserver: Task<Void, Never>?
+    /// An activation request completed and has not been looked at with a
+    /// serving build in hand yet (`considerDriverHandover`).
+    @ObservationIgnored
+    var driverActivationCompletedPending = false
 
     /// Board hardware major versions, when read (0xA0). See
     /// `BoardTypeReading.hardwareMajor`.

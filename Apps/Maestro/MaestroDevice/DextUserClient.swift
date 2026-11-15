@@ -266,12 +266,13 @@ public final class DextUserClient: @unchecked Sendable {
     }
 
     // kSelectorReadPort2State — EXPERIMENT (64 channels): what is on XLink port 2.
-    private static let selectorReadPort2State: UInt32 = 7
+    private static let selectorReadPort2State: UInt32 = 8
 
-    /// What the driver found on its second XLink port (selector 7). Exp64
-    /// builds 9001-9003 used 6, now the released driver-build selector; each
-    /// selector checks its exact output size, so a mismatched pair rejects the
-    /// call and both reads come back nil. No PCI
+    /// What the driver found on its second XLink port (selector 8). Exp64
+    /// builds 9001-9003 used 6 and 9004-9005 used 7, now the released
+    /// driver-build and retire selectors; each selector checks its exact input
+    /// and output sizes, so a mismatched pair rejects the call and the read
+    /// comes back nil (no port 2 shown until the driver is updated). No PCI
     /// transaction. `nil` when the driver has no such selector, which is every
     /// released driver: that is the normal case, so it is not logged.
     public func readPort2State() -> SecondPortState? {
@@ -291,6 +292,43 @@ public final class DextUserClient: @unchecked Sendable {
             return nil
         }
         return SecondPortState.decode(out)
+    }
+
+    /// kSelectorRetireForUpgrade (dext 123+): ask the dext serving the card to
+    /// stop so the copy macOS registered to replace it can take the device.
+    /// Input `{magic 'RETI', replacementBuild}` (8 bytes), output `{status,
+    /// retiringBuild}` (8 bytes). The non-empty input is what keeps this from
+    /// ever being mistaken for another selector's call: an experimental dext
+    /// that has a no-input read at 7 rejects it, and so does any dext without
+    /// the selector.
+    public enum RetireReply: Sendable, Equatable {
+        /// The dext called Terminate on itself; it reports its own build.
+        case accepted(retiringBuild: UInt32)
+        /// Not connected, no such selector, wrong shape, or the dext refused.
+        case refused(kern_return_t)
+    }
+
+    static let selectorRetireForUpgrade: UInt32 = 7
+    static let retireMagic: UInt32 = 0x52455449  // 'RETI'
+
+    public func retireForUpgrade(replacementBuild: UInt32) -> RetireReply {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return .refused(kIOReturnNotOpen) }
+        var input: [UInt32] = [Self.retireMagic, replacementBuild]
+        var out = [UInt32](repeating: 0, count: 2)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = input.withUnsafeMutableBytes { inPtr in
+            out.withUnsafeMutableBytes { outPtr in
+                IOConnectCallStructMethod(conn, Self.selectorRetireForUpgrade,
+                                          inPtr.baseAddress, inPtr.count,
+                                          outPtr.baseAddress, &outSize)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return .refused(kr) }
+        guard outSize == 8, out[0] == 0 else { return .refused(kIOReturnError) }
+        return .accepted(retiringBuild: out[1])
     }
 
     /// Read the dext's timing and FPGA health snapshot for latency studies.

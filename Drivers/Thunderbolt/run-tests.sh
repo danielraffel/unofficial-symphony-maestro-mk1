@@ -97,6 +97,7 @@ HOST_TESTS=(
     test-thunderbolt-lifecycle.sh
     test-channel-names.sh
     test-driver-build.sh
+    test-retire-for-upgrade.sh
     test-thunderbolt-meter-map.sh
 )
 if $RUN_HOST_TESTS; then
@@ -130,6 +131,11 @@ build_and_run() {
     fi
     if grep -q 'PerformPortModeChange' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_PORT2_AUDIO)
+    fi
+    # Retire for upgrade (selector 7, release driver 123). It refuses an
+    # unstamped build, so the harness stamps one; nothing else reads it.
+    if grep -q 'RetireForUpgrade' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_RETIRE -DSYMPHONY_DEXT_BUILD=1000)
     fi
     mkdir -p "$out"
     echo "[trace] compiling the driver source ($label) for the host..."

@@ -51,6 +51,7 @@ public:
     kern_return_t ReadBoardTypes(uint8_t *outTypes, uint8_t *outValid);
     kern_return_t ReadTimingHealth(uint32_t *outWords);
     kern_return_t ReadLinkState(uint32_t *outWords);
+    kern_return_t RetireForUpgrade(uint32_t replacementBuild);
     kern_return_t ReadPort2State(uint32_t *outWords);   // experiment/64ch-port2 only
     kern_return_t RequestPortMode(uint32_t selectorValue);   // experiment, stage 2
     kern_return_t PerformPortModeChange();                   // experiment, stage 2

@@ -181,6 +181,8 @@ static constexpr uint32_t kIOServicePowerCapabilityOn  = 0x00000002;
 
 class IOUserClient;
 
+extern int gHostTerminateCalls;
+
 class IOService : public OSObject {
 public:
     kern_return_t Start(IOService *, SuperDispatchTag) { return kIOReturnSuccess; }
@@ -188,6 +190,9 @@ public:
     kern_return_t SetPowerState(uint32_t, SuperDispatchTag) { return kIOReturnSuccess; }
     kern_return_t NewUserClient(uint32_t, IOUserClient **, SuperDispatchTag) { return kIOReturnUnsupported; }
     kern_return_t RegisterService() { return kIOReturnSuccess; }
+    // Termination is asynchronous in DriverKit: it only records the request
+    // here; the test runs Stop() afterwards, as the kernel would.
+    kern_return_t Terminate(uint64_t) { gHostTerminateCalls++; return kIOReturnSuccess; }
     kern_return_t CopyDispatchQueue(const char *, IODispatchQueue **out) {
         *out = new IODispatchQueue;
         return kIOReturnSuccess;

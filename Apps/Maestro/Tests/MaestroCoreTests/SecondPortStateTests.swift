@@ -2,7 +2,7 @@ import Testing
 @testable import MaestroCore
 
 /// EXPERIMENT (64 channels): decoding of the driver's port-2 state (user-client
-/// selector 7, `SymphonyPort2StateOutput`) and what it adds to Device Info and
+/// selector 8, `SymphonyPort2StateOutput`) and what it adds to Device Info and
 /// the copied details. The layout and flag values are those in
 /// `Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h`.
 @Suite("SecondPortState")
@@ -153,7 +153,7 @@ struct SecondPortStateTests {
     }
 
     /// The guarantee for everyone not running the experiment: a released driver
-    /// (no selector 7, so no state at all) and this driver with the experiment
+    /// (no selector 8, so no state at all) and this driver with the experiment
     /// off (portCount 1) both leave the copied text exactly as it was.
     @Test("no port-2 state, or the experiment off, leaves the copied details unchanged")
     func unchangedWhenOff() {

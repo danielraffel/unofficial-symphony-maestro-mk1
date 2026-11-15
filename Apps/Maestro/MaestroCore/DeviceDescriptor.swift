@@ -1179,6 +1179,41 @@ public enum ServingDextBuild: Sendable, Equatable {
     public static let firstReportingBuild = 123
 }
 
+/// Maestro's part in moving the ThunderBridge to a newly registered driver.
+public enum DriverHandover: Sendable, Equatable {
+    /// Nothing asked.
+    case idle
+    /// The serving driver agreed to retire; waiting (about 10 s) for the
+    /// device to come back on the bundled build.
+    case finishing
+    /// It did not come back on the bundled build in time, or the driver
+    /// refused: show the guidance until the serving build matches.
+    case timedOut
+}
+
+/// The header banner's content, decided in one place so the banner and Device
+/// Info cannot drift apart.
+public struct ThunderBridgeBanner: Sendable, Equatable {
+    public enum Action: Sendable, Equatable {
+        case none
+        /// Open System Settings › Login Items & Extensions › Driver Extensions.
+        case openDriverSettings
+        /// Submit an activation request.
+        case activate
+    }
+    public var title: String
+    public var message: String
+    public var action: Action
+    /// False for states only a finished update clears.
+    public var dismissible: Bool
+    public var inProgress: Bool
+
+    public init(title: String, message: String, action: Action, dismissible: Bool, inProgress: Bool) {
+        self.title = title; self.message = message; self.action = action
+        self.dismissible = dismissible; self.inProgress = inProgress
+    }
+}
+
 
 /// The Software Info panel's content, as data.
 ///
@@ -1235,6 +1270,10 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     /// What the driver serving the ThunderBridge says its build is. Nil when
     /// the app has no ThunderBridge connection open and so did not ask.
     public var servingDextBuild: ServingDextBuild?
+    /// Where Maestro is in handing the ThunderBridge to a newly registered
+    /// driver (`DriverHandover`). Kept by the app across the hand-over, when
+    /// the connection is closed and `servingDextBuild` is nil.
+    public var driverHandover: DriverHandover
 
     public init(
         appVersion: String,
@@ -1253,7 +1292,8 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         dextAwaitingReboot: Bool = false,
         thunderBridgePresent: Bool = false,
         pciDeviceIdentifier: String? = nil,
-        servingDextBuild: ServingDextBuild? = nil
+        servingDextBuild: ServingDextBuild? = nil,
+        driverHandover: DriverHandover = .idle
     ) {
         self.appVersion = appVersion
         self.buildNumber = buildNumber
@@ -1272,6 +1312,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         self.thunderBridgePresent = thunderBridgePresent
         self.pciDeviceIdentifier = pciDeviceIdentifier
         self.servingDextBuild = servingDextBuild
+        self.driverHandover = driverHandover
     }
 
     /// The version line, e.g. `0.8.4 (build 585 · 483d8e7)`.
@@ -1281,8 +1322,15 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         return "\(appVersion) (\(suffix))"
     }
 
-    /// The plain instruction for a driver update that only a restart can finish.
-    public static let restartToFinishDriverUpdate = "Restart your Mac to finish the driver update"
+    /// The three ways to finish a driver update that macOS left half done, in
+    /// the order to try them. Used word for word by the banner and Device Info.
+    public static let finishDriverUpdateSteps =
+        "To finish it, reconnect the ThunderBridge cable, or turn the Maestro driver off and on "
+        + "in System Settings › General › Login Items & Extensions › Driver Extensions, "
+        + "or restart your Mac."
+
+    /// What Maestro shows while it asks the old driver to step aside.
+    public static let finishingDriverUpdate = "Finishing the driver update…"
 
     /// The build serving the card, in words: "build 121", or "a build before
     /// 123" from a driver too old to say. Nil when the app did not ask.
@@ -1295,11 +1343,9 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     }
 
     /// The driver serving the ThunderBridge is not the build this app carries.
-    /// sysextd can list the bundled copy as installed and active while macOS
-    /// still runs the old copy for the device; only a restart moves the
-    /// device to the new one. A driver that cannot report its build predates
-    /// every bundled build that can, so it differs too. An unstamped build (0)
-    /// proves nothing and is not treated as a mismatch.
+    /// A driver that cannot report its build predates every bundled build
+    /// that can, so it differs too. An unstamped build (0) proves nothing and
+    /// is not treated as a mismatch; neither is "not asked" (nil).
     public var servingDextDiffersFromBundled: Bool {
         guard let bundledDextBuild, let servingDextBuild else { return false }
         switch servingDextBuild {
@@ -1311,29 +1357,65 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         }
     }
 
-    /// A restart is what finishes the driver update: the serving driver is not
-    /// the bundled build although macOS already lists the bundled build as the
-    /// installed, enabled copy. While the bundled build is not registered yet,
-    /// is disabled or still waits for approval, a restart alone does not bring
-    /// it onto the card, and the lines for those states stand (the serving
-    /// build is still named in the copied details).
-    public var restartFinishesDriverUpdate: Bool {
-        servingDextDiffersFromBundled
+    /// The serving driver is the bundled build (asked and answered).
+    public var servingDextMatchesBundled: Bool {
+        guard let bundledDextBuild, case .build(let build)? = servingDextBuild else { return false }
+        return String(build) == bundledDextBuild
+    }
+
+    /// The driver update is not finished: macOS lists the bundled build as
+    /// installed and enabled (sysextd reported the activation complete), but
+    /// an older or newer copy still serves the ThunderBridge. On 2026-11-14
+    /// kernelmanagerd refused to terminate the old copy while it held the PCI
+    /// device ("is being replaced and cannot be terminated right away") and
+    /// deferred it to the next restart; a replug, turning the driver off and
+    /// on, or a restart moves the device to the new copy. This is never
+    /// "cleanup", however many copies are registered.
+    ///
+    /// Also true when Maestro asked the old copy to step aside and the device
+    /// did not come back on the new build in time (`.timedOut`), when there is
+    /// no connection to ask.
+    public var driverUpdateUnfinished: Bool {
+        if driverHandover == .timedOut { return true }
+        return servingDextDiffersFromBundled
             && bundledDextBuild == installedDextBuild
             && dextEnabled
             && !dextAwaitingApproval
+    }
+
+    /// Kept for callers that ask the older question; same answer.
+    public var restartFinishesDriverUpdate: Bool { driverUpdateUnfinished }
+
+    /// The one explanation of an unfinished update, shown by the banner and
+    /// by Device Info. Nil when the update is not in that state.
+    public var driverUpdateGuidance: String? {
+        guard driverUpdateUnfinished, let bundledDextBuild else { return nil }
+        if let serving = servingDextBuildDescription, servingDextDiffersFromBundled {
+            return "The ThunderBridge is still using the previous Maestro driver (\(serving)); "
+                + "this Maestro carries build \(bundledDextBuild), so the driver update is not finished. "
+                + Self.finishDriverUpdateSteps
+        }
+        return "The ThunderBridge has not come back on the new Maestro driver (build \(bundledDextBuild)), "
+            + "so the driver update is not finished. " + Self.finishDriverUpdateSteps
     }
 
     /// What to show for the driver extension row.
     public var dextLine: String {
         if dextLookupFailed { return "Unknown — could not query the system" }
         guard let installedDextVersion else { return "Not installed" }
-        if restartFinishesDriverUpdate, let serving = servingDextBuildDescription {
-            return "\(installedDextVersion) installed; \(serving) still serves the ThunderBridge — "
-                + Self.restartToFinishDriverUpdate
+        if driverHandover == .finishing {
+            return "\(installedDextVersion) installed — \(Self.finishingDriverUpdate)"
+        }
+        if driverUpdateUnfinished {
+            if let serving = servingDextBuildDescription, servingDextDiffersFromBundled {
+                return "\(installedDextVersion) installed; \(serving) still serves the ThunderBridge — update not finished"
+            }
+            return "\(installedDextVersion) installed — update not finished"
         }
         if dextCleanupPending {
-            return "\(installedDextVersion) — active; older copy finishing cleanup"
+            return servingDextMatchesBundled
+                ? "\(installedDextVersion) — active; older copy finishing cleanup"
+                : "\(installedDextVersion) — active; an older copy is still registered"
         }
         guard registeredDextCount > 1 else { return installedDextVersion }
         return "\(installedDextVersion) — \(registeredDextCount) versions registered"
@@ -1349,11 +1431,16 @@ public struct SoftwareInfoReport: Sendable, Equatable {
                 ? "Not registered — install or approve the driver"
                 : "Ready — no ThunderBridge connected"
         }
-        if restartFinishesDriverUpdate { return Self.restartToFinishDriverUpdate }
+        if driverHandover == .finishing { return Self.finishingDriverUpdate }
+        if driverUpdateUnfinished { return "Driver update not finished" }
         if dextAwaitingReboot { return "Installed — restart required" }
         if dextAwaitingApproval { return "Installed — approval required" }
         if dextUpgradePending { return "Upgrade pending — \(installedDextVersion)" }
-        if dextCleanupPending { return "Enabled — \(installedDextVersion) (cleanup finishing)" }
+        if dextCleanupPending {
+            return servingDextMatchesBundled
+                ? "Enabled — \(installedDextVersion) (cleanup finishing)"
+                : "Enabled — \(installedDextVersion) (older copy still registered)"
+        }
         if !dextEnabled { return "Installed — disabled" }
         return "Enabled — \(installedDextVersion)"
     }
@@ -1365,10 +1452,24 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         // upgrade. The enabled incoming copy can look healthy while the old
         // copy still owns the card, so this remains actionable until the
         // reconnect completes the swap.
-        return dextUpgradePending
+        return driverUpdateUnfinished
+            || dextUpgradePending
             || installedDextVersion == nil
             || !dextEnabled
             || bundledDextBuild != installedDextBuild
+    }
+
+    /// Whether the useful action is the Driver Extensions pane rather than a
+    /// new activation request. Activation requests register or replace an
+    /// extension; they cannot turn a disabled one back on, and while an
+    /// upgrade is half applied another request returns the misleading
+    /// OSSystemExtensionErrorDomain error 4.
+    public var dextActionOpensSettings: Bool {
+        driverUpdateUnfinished
+            || dextUpgradePending
+            || dextAwaitingApproval
+            || dextAwaitingReboot
+            || (installedDextVersion != nil && !dextEnabled)
     }
 
     /// Whether the persistent in-app recovery banner is allowed to be shown.
@@ -1376,15 +1477,47 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     /// Keep this separate from `dextNeedsAction`: the banner is a hardware-context
     /// affordance, not a generic driver-status warning. A USB-only user must never
     /// see it, and a failed status lookup must not be presented as an install prompt.
-    /// The persistent fallback is intentionally limited to missing, approval,
-    /// disabled, and upgrade states. Restart-required is delivered through the
-    /// dedicated activation alert/status row instead of adding another persistent
-    /// banner the user cannot resolve without rebooting.
+    /// Restart-required (macOS deferred the activation itself) is delivered through
+    /// the activation alert and status row instead. An unfinished update is the
+    /// exception: it has three ways out, and its banner stays until the serving
+    /// build matches.
     public var shouldShowThunderBridgeBanner: Bool {
-        thunderBridgePresent
-            && !dextLookupFailed
-            && dextNeedsAction
-            && !dextAwaitingReboot
+        guard thunderBridgePresent, !dextLookupFailed else { return false }
+        if driverHandover == .finishing || driverUpdateUnfinished { return true }
+        return dextNeedsAction && !dextAwaitingReboot
+    }
+
+    /// The header banner, as data: nil when there is none.
+    public var thunderBridgeBanner: ThunderBridgeBanner? {
+        guard shouldShowThunderBridgeBanner else { return nil }
+        if driverHandover == .finishing {
+            return ThunderBridgeBanner(
+                title: Self.finishingDriverUpdate,
+                message: "Maestro is moving the ThunderBridge to the new driver. Its audio stops for a few seconds.",
+                action: .none, dismissible: false, inProgress: true)
+        }
+        if let guidance = driverUpdateGuidance {
+            return ThunderBridgeBanner(
+                title: "Finish the Maestro driver update",
+                message: guidance, action: .openDriverSettings, dismissible: false, inProgress: false)
+        }
+        let message: String
+        if dextUpgradePending {
+            message = "The Maestro ThunderBridge driver extension is updating. Close audio applications, then reconnect the ThunderBridge."
+        } else if installedDextVersion == nil {
+            message = "ThunderBridge is connected, but the Maestro ThunderBridge driver extension still needs to be installed and approved."
+        } else if dextAwaitingApproval {
+            message = "ThunderBridge is connected. Approve the Maestro ThunderBridge driver extension in System Settings."
+        } else if !dextEnabled {
+            message = "ThunderBridge is connected. Enable the Maestro ThunderBridge driver extension in System Settings."
+        } else {
+            message = "The Maestro ThunderBridge driver extension needs attention before Maestro can use it."
+        }
+        return ThunderBridgeBanner(
+            title: "Maestro ThunderBridge driver extension",
+            message: message,
+            action: dextActionOpensSettings ? .openDriverSettings : .activate,
+            dismissible: true, inProgress: false)
     }
 
     /// A registered extension that is not the build carried by this app needs
@@ -1398,20 +1531,22 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         return bundledDextBuild != installedDextBuild
     }
 
-    /// The bundled build is already active and enabled; an older registered
-    /// copy is only finishing sysextd cleanup and no longer blocks audio.
+    /// The bundled build is enabled and an older registered copy remains, but
+    /// nothing says the old copy still serves the card: the serving build
+    /// matches (the old copy is only waiting for sysextd to remove it at the
+    /// next restart), or Maestro could not ask. When the serving build differs
+    /// the update is not finished (`driverUpdateUnfinished`), never cleanup.
     public var dextCleanupPending: Bool {
         registeredDextCount > 1
             && dextEnabled
             && bundledDextBuild != nil
             && bundledDextBuild == installedDextBuild
+            && !driverUpdateUnfinished
     }
 
     /// One honest line about the driver extension, or nil when there is nothing to say.
     ///
-    /// Two situations are worth naming, because both leave the user running code they
-    /// did not think they were running, and both are fixed the same way:
-    ///
+    /// * the update is not finished: the same text as the banner;
     /// * more than one version registered — an upgrade that could not finish, because
     ///   the outgoing dext still holds the PCI device;
     /// * the app carrying a different build than the one registered — the next launch
@@ -1421,11 +1556,8 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         // A USB-only user does not need the ThunderBridge extension activated. Do not
         // instruct them to replug a Thunderbolt cable when the PCI card is absent.
         guard thunderBridgePresent else { return nil }
-        if restartFinishesDriverUpdate, let serving = servingDextBuildDescription,
-           let bundledDextBuild {
-            return "The ThunderBridge is still served by driver \(serving); this app carries build "
-                + "\(bundledDextBuild). \(Self.restartToFinishDriverUpdate)."
-        }
+        if driverHandover == .finishing { return nil }
+        if let guidance = driverUpdateGuidance { return guidance }
         if registeredDextCount > 1 && !dextCleanupPending {
             return "More than one version of the driver extension is registered. "
                 + "An upgrade cannot finish while the old one still holds the card — "
@@ -1437,6 +1569,25 @@ public struct SoftwareInfoReport: Sendable, Equatable {
                 + "ThunderBridge and reconnect it to let the swap finish."
         }
         return nil
+    }
+
+    /// Whether Maestro should ask the serving driver to retire so the bundled
+    /// build can take the device (`kSelectorRetireForUpgrade`). Only right
+    /// after Maestro's own activation request completed, with more than one
+    /// copy registered, the bundled copy installed and enabled, and a
+    /// different build answering on the card. Whether the driver supports the
+    /// request is its own answer; a refusal falls back to the guidance.
+    public func shouldAskServingDriverToRetire(activationCompleted: Bool) -> Bool {
+        // Only a driver that names its build (123+) can have the selector; a
+        // silent one is older, and asking it would only be refused.
+        guard case .build(let serving)? = servingDextBuild, serving != 0 else { return false }
+        return activationCompleted
+            && driverHandover == .idle
+            && registeredDextCount > 1
+            && servingDextDiffersFromBundled
+            && bundledDextBuild == installedDextBuild
+            && dextEnabled
+            && !dextAwaitingApproval
     }
 
     /// The exact text the Software Info Copy button places on the clipboard.

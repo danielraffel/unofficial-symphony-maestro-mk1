@@ -45,17 +45,19 @@ struct OutputRoutingTransportTests {
         #expect(tb.first?.source == 0)
     }
 
-    @Test("Headphone inherit uses the dext boot table on ThunderBridge: XLink n feeds every output n")
+    @Test("Headphone inherit uses the dext boot table on ThunderBridge: slot 1 from XLink 0-15, slot 2 from XLink 16-31")
     func thunderboltBootTable() {
-        // SymphonyThunderbridge.cpp steps 19b-1 / 19b-1b route XLink RX 0-15 to
-        // IOBoard0 ch0-15 and IOBoard1 ch0-15 directly, DAC L/R included.
+        // SymphonyThunderbridge.cpp step 19b-1 routes XLink RX 0-15 to IOBoard0
+        // ch0-15 (DAC L/R included) and step 19b-1b routes XLink RX 16-31 to
+        // IOBoard1 ch0-15. The legacy daemon agrees (SymphonyIOPTHDRoutingController
+        // GetRoutedToHWSource: board 1 → XLinkCh16 + n).
         for destination in UInt8(32)...UInt8(47) {
             #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination, transport: .thunderbolt)
                     == destination - 32)
         }
         for destination in UInt8(48)...UInt8(63) {
             #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination, transport: .thunderbolt)
-                    == destination - 48)
+                    == 16 + (destination - 48))
         }
         for destination: UInt8 in [0, 31, 64, 96, 192, 224, 236] {
             #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination, transport: .thunderbolt) == nil)
@@ -64,7 +66,17 @@ struct OutputRoutingTransportTests {
         // not Mixer0 (USB) and not P2P (silence in Symphony mode).
         #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 32, cachedRoutes: [:], transport: .thunderbolt) == 0)
         #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 33, cachedRoutes: [:], transport: .thunderbolt) == 1)
-        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 50, cachedRoutes: [:], transport: .thunderbolt) == 2)
+        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 50, cachedRoutes: [:], transport: .thunderbolt) == 18)
+        // Slot 2 output 1 (dest 48) is XLink 16, the same channel the card-side
+        // output routing uses for it and the dext's output-name table names
+        // "slot 2 output 1".
+        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 48, cachedRoutes: [:], transport: .thunderbolt) == 16)
+        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 48, cachedRoutes: [:], transport: .thunderbolt)
+                == ThunderboltCardRouting.channel(forDestination: 48))
+        for destination in UInt8(32)...UInt8(63) {
+            #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination, transport: .thunderbolt)
+                    == ThunderboltCardRouting.channel(forDestination: destination))
+        }
         // The USB table is unchanged.
         #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 32, cachedRoutes: [:], transport: .usb) == 64)
         #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 50, cachedRoutes: [:], transport: .usb) == 194)

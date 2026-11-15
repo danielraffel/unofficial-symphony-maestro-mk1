@@ -31,10 +31,11 @@ static_assert(sizeof(SymphonyLinkStateOutput) == 64, "ReadLinkState layout chang
 #ifdef TRACE_HAVE_PORT2
 static_assert(sizeof(SymphonyPort2StateOutput) == 64, "ReadPort2State is 16 words");
 static_assert(offsetof(SymphonyPort2StateOutput, unit) == 7 * sizeof(uint32_t), "unit[] at word 7");
-static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorReadPort2State == 7 && kSelectorCount == 8, "selector numbers");
+static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorRetireForUpgrade == 7 && kSelectorReadPort2State == 8 && kSelectorCount == 9, "selector numbers");
 #endif
 
 HostBackend *gHostBackend = nullptr;
+int gHostTerminateCalls = 0;
 int gHostLocksHeld = 0;
 HostAudioRegistry gHostAudio;
 std::deque<HostBlock> gHostCompletions;
@@ -739,6 +740,110 @@ static std::vector<Options> SinglePortScenarios()
     { Options o; o.name = "p1-legacy-2100"; o.legacy2100 = true; o.shortFlow = true; v.push_back(o); }
     return v;
 }
+
+#ifdef TRACE_HAVE_RETIRE
+// ── Retire for upgrade (kSelectorRetireForUpgrade) ──────────────────────────
+// The serving copy is asked to step aside so the copy macOS registered can take
+// the device. RetireForUpgrade only calls Terminate(0); DriverKit then calls
+// Stop(), which the test does next, as the kernel would. These pin that the
+// request itself touches nothing, is refused for a bad replacement build, calls
+// Terminate once, and that the ordinary Stop() that follows leaves the card
+// muted with DMA and interrupts off, every DMA mapping completed, and nothing
+// reachable afterwards: every user-client entry called after Stop() returns
+// without a single bus access. With IO idle, and with IO running and a volume
+// write still queued on the XLink queue (Stop() drains it before the audio
+// objects are released).
+
+// Bus accesses (BAR and PCI config) recorded since `mark`.
+static size_t BusAccessesSince(const FakeCard &c, size_t mark)
+{
+    size_t n = 0;
+    for (size_t i = mark; i < c.lines.size(); i++) {
+        const std::string &l = c.lines[i];
+        if (l.compare(0, 2, "R ") == 0 || l.compare(0, 2, "W ") == 0 ||
+            l.compare(0, 2, "CR") == 0 || l.compare(0, 2, "CW") == 0) n++;
+    }
+    return n;
+}
+
+static void RunRetire(const char *name, bool streaming, const std::string &outDir, size_t &accesses, bool &ok)
+{
+    Options o; o.name = name; o.shortFlow = true;
+    Run r;
+    RunScenario(o, r);
+    FakeCard &card = r.card;
+    SymphonyThunderbridge *drv = r.drv;
+    if (streaming) {
+        card.phase("streaming, a volume change queued on the XLink queue");
+        Irq(r, 1);
+        Irq(r, 2);
+        if (gHostAudio.volume) gHostAudio.volume->SetDecibelValue(-20.0f);
+        Irq(r, 1);   // queues the volume write; not pumped, so it is in flight at Stop()
+    } else {
+        card.phase("IO stopped");
+        drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        HostPump();
+    }
+    {
+        uint32_t w[16] = {};
+        drv->ReadLinkState(w);
+        CHECK((w[3] != 0) == streaming, "%s: ioRunning %u before retire", name, w[3]);
+    }
+
+    card.phase("retire refused: replacement is this build, or 0");
+    const size_t mark = card.lines.size();
+    const int before = gHostTerminateCalls;
+    CHECK(drv->RetireForUpgrade((uint32_t)SYMPHONY_DEXT_BUILD) == kIOReturnBadArgument, "%s: retire for own build accepted", name);
+    CHECK(drv->RetireForUpgrade(0) == kIOReturnBadArgument, "%s: retire for build 0 accepted", name);
+    CHECK(gHostTerminateCalls == before, "%s: a refused retire called Terminate", name);
+
+    card.phase("retire for the next build, asked twice");
+    CHECK(drv->RetireForUpgrade((uint32_t)SYMPHONY_DEXT_BUILD + 1) == kIOReturnSuccess, "%s: retire refused", name);
+    CHECK(drv->RetireForUpgrade((uint32_t)SYMPHONY_DEXT_BUILD + 1) == kIOReturnSuccess, "%s: second retire failed", name);
+    CHECK(gHostTerminateCalls == before + 1, "%s: Terminate called %d times (want 1)", name, gHostTerminateCalls - before);
+    CHECK(BusAccessesSince(card, mark) == 0, "%s: the retire request touched the card", name);
+
+    card.phase("Stop (from the termination)");
+    drv->Stop(r.pci);
+    HostPump();
+    CHECK((card.reg[kRegGCSR] & kGCSR_DMAEnableMask) == 0 && (card.reg[kRegGCSR2] & kGCSR2_DMAEnableMask) == 0,
+          "%s: DMA still enabled after Stop", name);
+    CHECK(card.reg[kRegIntMask] == 0, "%s: interrupts still unmasked after Stop", name);
+    CHECK((card.reg[kRegClkCtrl] & (kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute)) == 0,
+          "%s: FPGA not muted after Stop", name);
+    CHECK(card.count("H dma-complete") == 3, "%s: %zu DMA mappings completed at Stop (want 3)", name,
+          card.count("H dma-complete"));
+
+    card.phase("user-client calls after Stop");
+    const size_t after = card.lines.size();
+    {
+        uint8_t p = 3;
+        CHECK(drv->SendVendorCommand(0x25, 0, &p, 1) == kIOReturnNotReady, "%s: vendor write after Stop", name);
+        uint8_t out[4] = {};
+        CHECK(drv->ReadVendorCommand(0xA1, 1, out, 1) == kIOReturnNotReady, "%s: vendor read after Stop", name);
+        uint32_t w[16] = {};
+        CHECK(drv->ReadTimingHealth(w) == kIOReturnNotReady, "%s: timing health after Stop", name);
+        drv->ReadLinkState(w);
+        uint8_t types[2], valid[2];
+        drv->ReadBoardTypes(types, valid);
+        uint32_t m[kMeterBufferWords] = {};
+        CHECK(drv->ReadMeterBuffer(m) == kIOReturnNotReady, "%s: meters after Stop", name);
+        CHECK(drv->RetireForUpgrade((uint32_t)SYMPHONY_DEXT_BUILD + 1) == kIOReturnSuccess, "%s: retire after Stop", name);
+        drv->RequestClockSource(2);
+        drv->RequestMicGain(1, 30.0f);
+        HostPump();
+    }
+    CHECK(BusAccessesSince(card, after) == 0, "%s: %zu bus accesses after Stop", name, BusAccessesSince(card, after));
+    CHECK(gHostTerminateCalls == before + 1, "%s: Terminate called again after Stop", name);
+    card.phase("after Stop");
+    r.drv->release();
+    r.pci->release();
+    r.drv = nullptr;
+    gHostBackend = nullptr;
+    accesses += card.lines.size();
+    if (!WriteFile(outDir, name, card.lines)) ok = false;
+}
+#endif
 
 #ifdef TRACE_HAVE_PORT2
 struct Port2State {
@@ -2022,6 +2127,14 @@ int main(int argc, char **argv)
         }
 #endif
     }
+#ifdef TRACE_HAVE_RETIRE
+    {
+        bool ok = true;
+        RunRetire("p1-retire-idle", false, outDir, accesses, ok);
+        RunRetire("p1-retire-streaming", true, outDir, accesses, ok);
+        if (!ok) return 2;
+    }
+#endif
 #ifdef TRACE_HAVE_PORT2
     for (const Options &o : TwoPortScenarios()) {
         Run r;

@@ -40,6 +40,7 @@
 #include "SymphonyChannelNames.h"
 #include "SymphonyCardMixerRouting.h"
 #include "SymphonyOptionBoard.h"
+#include "SymphonyRetire.h"
 
 // ── Logging ─────────────────────────────────────────────────────────────────
 // DriverKit only provides os_log with OS_LOG_TYPE_DEFAULT — no os_log_error.
@@ -151,6 +152,9 @@ struct SymphonyThunderbridge_IVars {
     // (which releases DMA mappings + closes PCI) can never race a DMA restart. All
     // access is via __atomic_* intrinsics.
     bool                       stopping;
+    // Set (CAS) by RetireForUpgrade so a repeated request does not call
+    // Terminate twice. Atomic.
+    bool                       retireRequested;
 
     // Hardware reachability gate (dext 112 — see PCIEndpointPresent/HardwareReachable).
     // providerPowerOff: set by SetPowerState(Off/Low), cleared by SetPowerState(On).
@@ -3957,6 +3961,63 @@ static kern_return_t InstallTwoPortIOHandler(SymphonyThunderbridge_IVars *ivars)
         });
 }
 
+// ── RetireForUpgrade (kSelectorRetireForUpgrade) ─────────────────────────────
+// After an update, sysextd registers the new copy and reports the activation
+// complete, but kernelmanagerd will not terminate the old copy while it holds
+// the PCI device ("is being replaced and cannot be terminated right away"); the
+// device stays on the old binary until a replug, a restart, or the extension is
+// turned off and on in System Settings. Maestro, having seen that state, asks
+// the serving copy to step aside: this calls Terminate(0) on the service, so
+// Stop() runs exactly as for any other teardown (mute, zero the buffers, IRQs
+// masked, DMA off, XLink queue drained, DMA unmapped, PCI closed) and the
+// device is left for the copy macOS has registered.
+//
+// UNDOCUMENTED: IOService::Terminate is documented in DriverKit only for a
+// service made with Create() ("An IOService object created with Create() may be
+// removed by calling Terminate()"). Its behaviour for a service matched from a
+// personality onto a provider, and whether IOKit then matches the replacement
+// copy onto the PCI nub without a replug, is not documented. It needs the
+// hardware test (exp64 9005 → 9006, then release 123 → 124). The app gives the
+// device about 10 s to come back on the new build and falls back to the
+// reconnect / turn off and on / restart guidance if it does not.
+//
+// Called on the user client's queue, never on xlinkQueue (Stop() drains that
+// queue synchronously). Refused unless the replacement build is nonzero and not
+// this binary's own, and this binary's build is stamped. Idempotent: a second
+// request while the first is pending, or once Stop() has begun, does nothing.
+kern_return_t SymphonyThunderbridge::RetireForUpgrade(uint32_t replacementBuild)
+{
+    if (!ivars) return kIOReturnNotReady;
+    const uint32_t ownBuild = (uint32_t)SYMPHONY_DEXT_BUILD;
+    switch (SymphonyDecideRetire(ownBuild, replacementBuild,
+                                 __atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE),
+                                 __atomic_load_n(&ivars->retireRequested, __ATOMIC_ACQUIRE))) {
+    case kSymphonyRetireUnstamped:
+        STLOG("Retire: refused — this build is not stamped");
+        return kIOReturnUnsupported;
+    case kSymphonyRetireBadReplacement:
+        STLOG("Retire: refused — replacement build %u, this is %u", replacementBuild, ownBuild);
+        return kIOReturnBadArgument;
+    case kSymphonyRetireAlreadyGoing:
+        return kIOReturnSuccess;
+    case kSymphonyRetireTerminate:
+        break;
+    }
+    // Two requests racing past the decision: only one calls Terminate.
+    bool expected = false;
+    if (!__atomic_compare_exchange_n(&ivars->retireRequested, &expected, true, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        return kIOReturnSuccess;
+    }
+    STLOG("Retire: build %u stepping aside for build %u — Terminate(0)", ownBuild, replacementBuild);
+    kern_return_t r = Terminate(0);
+    if (r != kIOReturnSuccess) {
+        STERR("Retire: Terminate failed 0x%x — still serving", r);
+        __atomic_store_n(&ivars->retireRequested, false, __ATOMIC_RELEASE);
+    }
+    return r;
+}
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 bool SymphonyThunderbridge::init()
@@ -6546,6 +6607,17 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 OSSafeReleaseNULL(iv->interruptSource);
                 OSSafeReleaseNULL(iv->interruptQueue);
 
+                // ── 8b. Let XLink work already in flight finish BEFORE the audio
+                //    objects go (retire, kSelectorRetireForUpgrade, makes Stop()
+                //    with the hardware present and a client possibly streaming a
+                //    routine path). A rate transaction or volume drain that began
+                //    before 'stopping' was set may still use audioDevice; anything
+                //    that starts after it sees 'stopping' and returns. No register
+                //    access: the drain at step 10 stays where it was.
+                if (iv->xlinkQueue) {
+                    iv->xlinkQueue->DispatchSync(^{});
+                }
+
                 // ── 9. Remove and release AudioDriverKit objects
                 //    Phase 7: EVERY Add* must have its matching Remove* here, BEFORE releasing
                 //    our ivar refs — each child (stream/control/property) was Create()d with
@@ -6695,7 +6767,11 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
             return kIOReturnSuccess;
         }
 
-        // Fallback: no interrupt source — release everything synchronously
+        // Fallback: no interrupt source — release everything synchronously.
+        // Same early drain as step 8b above, before the audio objects go.
+        if (ivars->xlinkQueue) {
+            ivars->xlinkQueue->DispatchSync(^{});
+        }
         if (ivars->audioDevice) {
             // Phase 7: symmetric teardown — every Add* balanced by its Remove* (see cancel-handler
             // path above). Missing Remove* leaves a child alive that retains the driver → orphan.
@@ -7341,6 +7417,11 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
     // existing 200 ms timeout and is outside the realtime audio path.
     __block bool live = false;
     __block uint32_t clkCtrl = 0, intStatus = 0, xlinkStatus = 0, gcsr = 0;
+    // The audio device's values are read inside the block too: Stop() drains
+    // this queue (step 8b) before it releases audioDevice, so inside the block
+    // the pointer is either valid or the block saw 'stopping' and returned.
+    __block double rate = 0.0;
+    __block uint32_t inLatency = 0, outLatency = 0, inSafety = 0, outSafety = 0;
     IODispatchQueue *q = ivars->xlinkQueue;
     if (!q) return kIOReturnNotReady;
     q->DispatchSync(^{
@@ -7360,6 +7441,13 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
         ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegIntStatus, &intStatus);
         ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink1Status, &xlinkStatus);
         ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, &gcsr);
+        if (ivars->audioDevice) {
+            rate       = ivars->audioDevice->GetSampleRate();
+            inLatency  = ivars->audioDevice->GetInputLatency();
+            outLatency = ivars->audioDevice->GetOutputLatency();
+            inSafety   = ivars->audioDevice->GetInputSafetyOffset();
+            outSafety  = ivars->audioDevice->GetOutputSafetyOffset();
+        }
     });
     if (!live) {
         // The Symphony did not answer. If the card can see its clock again
@@ -7378,7 +7466,7 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
         // StartIO → our StartDevice resets the zero-timestamp anchor). Issued
         // here, on the user-client thread, never from the xlinkQueue block.
         ivars->linkRecoveryNeedsIORestart = false;
-        if (ivars->audioDevice) {
+        if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) && ivars->audioDevice) {
             // Requested even when no IO is running: the host re-evaluates the
             // device, and clients that were refused while the link was down
             // (StartDevice → kIOReturnNotReady) see a device configuration
@@ -7401,7 +7489,6 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
         return kIOReturnIOError;
     }
 
-    const double rate = ivars->audioDevice ? ivars->audioDevice->GetSampleRate() : 0.0;
     const TimingProfile profile = TimingProfileForRate(rate);
     const uint32_t frameReadback =
         ((clkCtrl & kClkCtrl_FrameMask) >> kClkCtrl_FrameShift) + 1;
@@ -7414,10 +7501,10 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
     outWords[5] = frameReadback;
     outWords[6] = profile.frameSize;
     outWords[7] = rate > 0.0 ? (uint32_t)(rate + 0.5) : 0;
-    outWords[8] = ivars->audioDevice ? ivars->audioDevice->GetInputLatency() : 0;
-    outWords[9] = ivars->audioDevice ? ivars->audioDevice->GetOutputLatency() : 0;
-    outWords[10] = ivars->audioDevice ? ivars->audioDevice->GetInputSafetyOffset() : 0;
-    outWords[11] = ivars->audioDevice ? ivars->audioDevice->GetOutputSafetyOffset() : 0;
+    outWords[8] = inLatency;
+    outWords[9] = outLatency;
+    outWords[10] = inSafety;
+    outWords[11] = outSafety;
     return kIOReturnSuccess;
 }
 

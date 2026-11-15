@@ -12,12 +12,22 @@
 #define kSelectorReadVendor     4            // ExternalMethod selector: read XLink vendor command
 #define kSelectorReadLinkState  5            // ExternalMethod selector: link watch state (no bus access)
 #define kSelectorReadDriverBuild 6           // ExternalMethod selector: this dext's CFBundleVersion (dext 123+)
-#define kSelectorReadPort2State 7            // EXPERIMENT (64ch): what is on XLink port 2 (no bus access).
-                                             // Was 6 in exp64 builds 9001-9003; 6 is the released
-                                             // driver-build selector. Each selector checks its exact
-                                             // output size, so an old/new app/dext mismatch is rejected
-                                             // and the app treats the answer as absent.
-#define kSelectorCount          8
+#define kSelectorRetireForUpgrade 7          // ExternalMethod selector: stop serving the device so the copy
+                                             // macOS registered to replace this one can take
+                                             // it (dext 123+). Takes a
+                                             // non-empty SymphonyRetireInput, so a call made with
+                                             // another selector's shape (an experimental app
+                                             // polling 7 with no input) is refused.
+#define kSelectorReadPort2State 8            // EXPERIMENT (64ch): what is on XLink port 2 (no bus access).
+                                             // Was 6 in exp64 builds 9001-9003 and 7 in 9004-9005;
+                                             // 6 and 7 are released selectors (driver build, retire).
+                                             // Each selector checks its exact input and output
+                                             // sizes, so an old/new app/dext mismatch is rejected
+                                             // and the app treats the answer as absent: a new app
+                                             // asking 8 of 9004/9005 gets "no such selector", and
+                                             // a retire call (8-byte input) on 9004/9005's no-input
+                                             // 7 is refused.
+#define kSelectorCount          9
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type
 #define kSymphonyMeterWordCount 256          // words in the card meter DMA buffer
 
@@ -115,6 +125,31 @@ typedef struct {
     uint32_t status;
     uint32_t build;           // CFBundleVersion of the serving dext, 0 = not stamped
 } SymphonyDriverBuildOutput; // 8 bytes
+
+// Input/output for kSelectorRetireForUpgrade. After an update sysextd lists the
+// new copy as active, but kernelmanagerd refuses to terminate the old copy while
+// it holds the PCI device ("being replaced"), so the device stays on the old
+// binary until a replug, a restart, or the extension is turned off and on. The
+// app, having seen its own activation request complete with a different build
+// still serving, asks the serving copy to retire: the driver calls Terminate(0)
+// on itself so Stop() runs and the device is free for the copy macOS has
+// already registered.
+//
+// The driver refuses unless magic matches, replacementBuild is nonzero and
+// differs from its own stamped build, and its own build is stamped (a dev build
+// answering 0 never retires). status 0 = termination requested; the reply is
+// sent before Stop() runs. build = the build that is retiring.
+#define kSymphonyRetireMagic 0x52455449u     // 'RETI'
+
+typedef struct {
+    uint32_t magic;            // kSymphonyRetireMagic
+    uint32_t replacementBuild; // CFBundleVersion the app expects to take over
+} SymphonyRetireInput;  // 8 bytes
+
+typedef struct {
+    uint32_t status;
+    uint32_t build;            // CFBundleVersion of the copy that is retiring
+} SymphonyRetireOutput; // 8 bytes
 
 // ── EXPERIMENT (64ch, stage 1): second XLink port ───────────────────────────
 // The driver uses one XLink port unless the matched IOKit personality carries
