@@ -62,6 +62,16 @@ static inline char SymphonyPrefixLetter(uint8_t raw)
     return SymphonyIsPrefixLetter(raw) ? (char)raw : 'A';
 }
 
+// The rate the names follow, in Hz, from Core Audio's nominal rate: the rate
+// clients see and the next stream start programs. The driver keeps it in step
+// with every nominal change (SymphonyAudioDevice::HandleChangeSampleRate), not
+// only with a stream start's rate change, so a rate set while nothing runs IO
+// still renames the optical channels. 0 (named as 44.1/48 kHz) when unknown.
+static inline uint32_t SymphonyNamingRateHz(double nominalRate)
+{
+    return (nominalRate > 0.0 && nominalRate < 1000000.0) ? (uint32_t)(nominalRate + 0.5) : 0;
+}
+
 // Per-board channel layout, matching the app's IOCardType counts.
 struct SymphonyBoardLayout {
     uint8_t analog;   // analog channels
