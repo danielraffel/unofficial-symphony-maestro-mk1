@@ -127,77 +127,119 @@ public enum ClockSourceMenu {
     ///
     /// In the Symphony (PCIe) mode Apogee's daemon listed Internal and Word
     /// Clock, then each fitted board's own clock sources
-    /// (`og_source/maestrolink/Software/SymphonyIO.cpp:1727-1766`). For an
-    /// Analog-AES board those are the S/PDIF coax input followed by AES 1-2,
-    /// 3-4, 5-6 and 7-8 (`SymphonyIO_IOBoard.cpp:79-90`, the board's streams from
-    /// `SymphonyIOBoard_AnalogAES.cpp:36-57`, `AESIn_SymphonyIO_Stream.cpp:40-44`),
-    /// and choosing one sent ClockMode with the board as the source and the
-    /// input in `pData[3]` (`AESIn_SymphonyIO_Stream.cpp:57-93`,
-    /// `SymphonyIO_IOBoard.cpp:57-77`). Names follow the daemon's
-    /// (`AESIn_SymphonyIO_Stream.cpp:198-226`, `SymphonyIO_IOBoard.cpp:1286-1308`):
-    /// slot 2 numbers on from slot 1's AES and coax channels
-    /// (`SymphonyIO_IOBoard.cpp:1533-1541`).
+    /// (`og_source/maestrolink/Software/SymphonyIO.cpp:1727-1766`): the board's
+    /// S/PDIF coax input first, then its input streams' sources in stream order
+    /// (`SymphonyIO_IOBoard.cpp:79-90`, `NonCADeviceObject.cpp:326-370`). Only
+    /// AES and optical input streams have clock sources
+    /// (`AESIn_SymphonyIO_Stream.cpp:40-44, 95-104`,
+    /// `OpticalIn_SymphonyIO_Stream.cpp:82-104`); analog and output streams have
+    /// none (`NonCoreAudioObject.h:91`). So, per card:
     ///
-    /// Only an AES board's row is expanded. The rest of the list is as it was
-    /// and is NOT the original's: in the Symphony mode the original listed
-    /// Loop Sync only for Pro Tools HD (`SymphonyIO.cpp:1750-1766`), listed each
-    /// other board's own inputs rather than an "IO Board" row, and listed
-    /// nothing for an empty or Mic Pre slot (`SymphonyIOBoard_MicPre8ch.h:36`).
-    /// A plain IO Board row sends input 0, which the firmware takes as that
-    /// board's first input.
-    public static func thunderbolt(slot1: IOCardType, slot2: IOCardType) -> [ClockSourceChoice] {
+    /// - 8x8 AES: coax, AES 1-2, 3-4, 5-6, 7-8 (inputs 6, 0-3).
+    /// - 8x8 Optical: coax, optical (inputs 6, 4).
+    /// - A16 OP (DA16): coax, optical; the optical input is 0 in S/PDIF format
+    ///   and 2 in ADAT/SMUX (`DA16OpticalIn_SymphonyIO_Stream.cpp:24-45`).
+    /// - 2x6: coax, AES 1-2, optical (inputs 6, 0, 4; `SymphonyIOBoard_2x6.cpp:40-52`).
+    /// - A16 IP (AD16) and 16x16 (ADDA16): coax only (6).
+    /// - 8MicPre or an empty slot: nothing (`SymphonyIOBoard_MicPre8ch.h:36`).
+    ///
+    /// Choosing one sends ClockMode with the board as the source and the input
+    /// in `pData[3]` (`AESIn_SymphonyIO_Stream.cpp:57-93`,
+    /// `OpticalIn_SymphonyIO_Stream.cpp:106-129`, `SymphonyIO_IOBoard.cpp:57-77`).
+    /// Names follow the daemon's (`SymphonyIO_IOBoard.cpp:1286-1308`,
+    /// `AESIn_SymphonyIO_Stream.cpp:198-226`,
+    /// `OpticalIn_SymphonyIO_Stream.cpp:246-302`); slot 2 numbers on from slot
+    /// 1's channels of the same kind (`SymphonyIO_IOBoard.cpp:1533-1560`). The
+    /// optical row's name depends on the rate and the board's optical format,
+    /// so pass them when known; without them it is named as ADAT, the format
+    /// both drivers set at start.
+    ///
+    /// Loop Sync is NOT the original's: in the Symphony mode it was listed only
+    /// for Pro Tools HD (`SymphonyIO.cpp:1750-1766`). It is kept because the
+    /// driver's own clock control offers it.
+    public static func thunderbolt(slot1: IOCardType, slot2: IOCardType,
+                                   sampleRate: Double? = nil,
+                                   opticalIsSPDIF: [Bool?] = [nil, nil]) -> [ClockSourceChoice] {
         var choices = [
             ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
             ClockSourceChoice(id: wordClock, name: "Word Clock", source: 2, boardInput: nil),
             ClockSourceChoice(id: loopSync, name: "Loop Sync", source: 3, boardInput: nil),
         ]
-        choices += boardChoices(slot: 0, card: slot1, preceding: .none)
-        choices += boardChoices(slot: 1, card: slot2, preceding: slot1)
+        let spdif = { (slot: Int) -> Bool? in slot < opticalIsSPDIF.count ? opticalIsSPDIF[slot] : nil }
+        choices += boardChoices(slot: 0, card: slot1, preceding: .none,
+                                sampleRate: sampleRate, opticalIsSPDIF: spdif(0))
+        choices += boardChoices(slot: 1, card: slot2, preceding: slot1,
+                                sampleRate: sampleRate, opticalIsSPDIF: spdif(1))
         return choices
     }
 
-    private static func boardChoices(slot: Int, card: IOCardType,
-                                     preceding: IOCardType) -> [ClockSourceChoice] {
+    /// The board input byte an optical clock row sends. The DA16's optical
+    /// receiver has its own index table (`SymphonyIOVendorSpecific.h:903-912`).
+    public static func opticalClockInput(card: IOCardType, opticalIsSPDIF: Bool?) -> UInt8 {
+        if card == .analogDA16 { return opticalIsSPDIF == true ? 0 : 2 }
+        return BoardClockSource.optical0.wireIndex
+    }
+
+    /// The daemon's name for a board's optical clock source
+    /// (`OpticalIn_SymphonyIO_Stream.cpp:257-295`): N.A. at 176.4 kHz and up;
+    /// in S/PDIF format "SPDIF Opt n-m"; above 48 kHz "SMUX n-(n+3)"; otherwise
+    /// "ADAT n-(n+7)", numbered on from slot 1's optical inputs.
+    public static func opticalClockName(precedingOpticalInputs: Int,
+                                        sampleRate: Double?,
+                                        opticalIsSPDIF: Bool?) -> String {
+        let rate = sampleRate ?? 48000
+        guard rate < 176400 else { return "N.A." }
+        if opticalIsSPDIF == true {
+            let offset = precedingOpticalInputs / 8
+            return "SPDIF Opt \(offset * 2 + 1)-\(offset * 2 + 2)"
+        }
+        let first = precedingOpticalInputs + 1
+        return rate > 48000 ? "SMUX \(first)-\(first + 3)" : "ADAT \(first)-\(first + 7)"
+    }
+
+    private static func boardChoices(slot: Int, card: IOCardType, preceding: IOCardType,
+                                     sampleRate: Double?,
+                                     opticalIsSPDIF: Bool?) -> [ClockSourceChoice] {
         let source: UInt8 = slot == 0 ? 4 : 5
-        guard card == .analogAES else {
-            return [ClockSourceChoice(id: UInt32(source), name: "IO Board \(slot + 1)",
-                                      source: source, boardInput: nil)]
+        guard card.hasSPDIFCoax else { return [] }
+        func row(_ name: String, _ input: UInt8) -> ClockSourceChoice {
+            ClockSourceChoice(id: key(source: source, boardInput: input),
+                              name: name, source: source, boardInput: input)
         }
         // Channels on slot 1 that slot 2's numbering continues from.
         let coaxBefore = preceding.hasSPDIFCoax ? 2 : 0
-        let aesBefore: Int
-        switch preceding {
-        case .analogAES: aesBefore = 8
-        case .twoBySix: aesBefore = 2
-        default: aesBefore = 0
+        let aesBefore = preceding.digitalChannelCount(label: "AES", isInput: true)
+        let opticalBefore = preceding.digitalChannelCount(label: "ADAT", isInput: true)
+
+        var rows = [row("SPDIF Coax \(coaxBefore + 1)-\(coaxBefore + 2)",
+                        BoardClockSource.spdifCoax.wireIndex)]
+        let aesPairs = card.digitalChannelCount(label: "AES", isInput: true) / 2
+        for pair in 0..<aesPairs {
+            let first = aesBefore + pair * 2 + 1
+            rows.append(row("AES \(first)-\(first + 1)", UInt8(pair)))
         }
-        let coax = BoardClockSource.spdifCoax.wireIndex
-        var rows = [ClockSourceChoice(
-            id: key(source: source, boardInput: coax),
-            name: "S/PDIF Coax \(coaxBefore + 1)-\(coaxBefore + 2)",
-            source: source, boardInput: coax)]
-        for pair in [BoardClockSource.aes12, .aes34, .aes56, .aes78] {
-            let first = aesBefore + Int(pair.wireIndex) * 2 + 1
-            rows.append(ClockSourceChoice(
-                id: key(source: source, boardInput: pair.wireIndex),
-                name: "AES \(first)-\(first + 1)",
-                source: source, boardInput: pair.wireIndex))
+        if card.digitalChannelCount(label: "ADAT", isInput: true) > 0 {
+            rows.append(row(opticalClockName(precedingOpticalInputs: opticalBefore,
+                                             sampleRate: sampleRate,
+                                             opticalIsSPDIF: opticalIsSPDIF),
+                            opticalClockInput(card: card, opticalIsSPDIF: opticalIsSPDIF)))
         }
         return rows
     }
 
-    /// The row to show for a source the hardware or driver reported. A board
-    /// input reported for a board shown as one "IO Board" row selects that row;
-    /// a plain IO Board source on an AES board (input byte 0, which the
-    /// firmware takes as AES 1-2) selects AES 1-2. Nil when nothing matches.
+    /// The row to show for a source the hardware or driver reported. A plain
+    /// IO Board source (what the driver's clock control reports; it always
+    /// sends input byte 0) selects that board's input-0 row when it has one:
+    /// AES 1-2 on an AES or 2x6 board, the S/PDIF optical input on a DA16.
+    /// Nil when nothing matches.
     public static func row(for reported: UInt32, in choices: [ClockSourceChoice]) -> UInt32? {
         if choices.contains(where: { $0.id == reported }) { return reported }
         guard let decoded = decode(reported) else { return nil }
         let plain = UInt32(decoded.source)
         if choices.contains(where: { $0.id == plain }) { return plain }
         if decoded.boardInput == nil, decoded.source == 4 || decoded.source == 5 {
-            let aes12 = key(source: decoded.source, boardInput: BoardClockSource.aes12.wireIndex)
-            if choices.contains(where: { $0.id == aes12 }) { return aes12 }
+            let input0 = key(source: decoded.source, boardInput: 0)
+            if choices.contains(where: { $0.id == input0 }) { return input0 }
         }
         return nil
     }
