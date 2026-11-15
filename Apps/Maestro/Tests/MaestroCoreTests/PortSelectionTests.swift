@@ -246,17 +246,9 @@ struct PortsWordingTests {
         #expect(name64 == "\"\(PortSelection.ports1And2.name)\"")
         let device = try #require(define("kSymphonyDeviceName"))
         #expect(device.hasPrefix("\"\(PortSelection.port1.name)\""))
-        // TEMPORARY naming switch (remove after naming is chosen): Maestro's
-        // idea of each scheme's names is the driver's table.
-        #expect(define("kSymphonyPortSourceSchemeCount")?.hasPrefix("4u") == true)
-        #expect(PortSourceNameScheme.allCases.count == 4)
-        for scheme in PortSourceNameScheme.allCases where scheme != .deviceName {
-            let n = scheme.rawValue
-            #expect(define("kSymphonyPortSourceScheme\(n)Name32") == "\"\(scheme.name(.port1))\"")
-            #expect(define("kSymphonyPortSourceScheme\(n)Name64") == "\"\(scheme.name(.ports1And2))\"")
-        }
-        #expect(PortSourceNameScheme.deviceName.name(.port1) == PortSelection.port1.name)
-        #expect(PortSourceNameScheme.deviceName.name(.ports1And2) == PortSelection.ports1And2.name)
+        // The temporary naming switch is gone: the driver has one pair of names.
+        #expect(define("kSymphonyPortSourceSchemeCount") == nil)
+        #expect(!text.contains("SchemeName"))
         #expect(define("kSymphonyPortSourcePort1")?.hasPrefix("0u") == true)
         #expect(define("kSymphonyPortSourcePorts1And2")?.hasPrefix("1u") == true)
     }
@@ -282,26 +274,6 @@ struct PortsWordingTests {
         #expect(PortSelection.explanationLines == [
             "32 channels: one Symphony I/O on ThunderBridge port 1.",
             "64 channels: adds a second unit on port 2 as channels 33–64.",
-        ])
-    }
-
-    @Test("the temporary naming switch: defaults value to scheme, and each scheme's names")
-    func portSourceNameSchemes() {
-        #expect(PortSourceNameScheme.defaultsKey == "MaestroDebugPortSourceScheme")
-        // Unset, wrong type or out of range: the shipped names.
-        #expect(PortSourceNameScheme(defaultsValue: nil) == .deviceName)
-        #expect(PortSourceNameScheme(defaultsValue: "2") == .deviceName)
-        #expect(PortSourceNameScheme(defaultsValue: NSNumber(value: -1)) == .deviceName)
-        #expect(PortSourceNameScheme(defaultsValue: NSNumber(value: 4)) == .deviceName)
-        for n in 0...3 {
-            #expect(PortSourceNameScheme(defaultsValue: NSNumber(value: n)).rawValue == UInt32(n))
-        }
-        let names = PortSourceNameScheme.allCases.map { [$0.name(.port1), $0.name(.ports1And2)] }
-        #expect(names == [
-            ["Symphony I/O: ThunderBridge", "Symphony I/O: ThunderBridge 64"],
-            ["Symphony I/O: ThunderBridge 32", "Symphony I/O: ThunderBridge 64"],
-            ["Symphony I/O: Port 1: 32ch", "Symphony I/O: Port 1-2: 64ch"],
-            ["Port 1: 32ch", "Port 1-2: 64ch"],
         ])
     }
 

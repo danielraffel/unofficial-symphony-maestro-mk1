@@ -97,16 +97,6 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyRetireOutput),
     },
-    // EXPERIMENT (64ch), TEMPORARY: remove after naming is chosen. Exact input
-    // and output sizes plus a magic word, as for retire.
-    [kSelectorSetPortSourceNames] = {
-        .function                 = nullptr,
-        .checkCompletionExists    = false,
-        .checkScalarInputCount    = 0,
-        .checkStructureInputSize  = sizeof(SymphonyPortSourceNamesInput),
-        .checkScalarOutputCount   = 0,
-        .checkStructureOutputSize = sizeof(SymphonyPortSourceNamesOutput),
-    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -345,25 +335,6 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         SymphonyRetireOutput output = {};
         output.status = 0;
         output.build = (uint32_t)SYMPHONY_DEXT_BUILD;
-        auto outputData = OSData::withBytes(&output, sizeof(output));
-        if (outputData) arguments->structureOutput = outputData;
-        return kIOReturnSuccess;
-    }
-
-    if (selector == kSelectorSetPortSourceNames) {
-        // TEMPORARY, remove after naming is chosen. A refusal (one-port build,
-        // unknown scheme) is an error return, so the app logs it and goes on.
-        if (!ivars->driver || !arguments->structureInput ||
-            arguments->structureInput->getLength() != sizeof(SymphonyPortSourceNamesInput))
-            return kIOReturnBadArgument;
-        auto *input = (const SymphonyPortSourceNamesInput *)arguments->structureInput->getBytesNoCopy();
-        if (!input || input->magic != kSymphonyPortSourceNamesMagic) return kIOReturnBadArgument;
-        kern_return_t r = ivars->driver->SetPortSourceNames(input->scheme);
-        UCLOG("ExternalMethod: port source names scheme %u → 0x%x", input->scheme, r);
-        if (r != kIOReturnSuccess) return r;
-        SymphonyPortSourceNamesOutput output = {};
-        output.status = 0;
-        output.scheme = input->scheme;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;

@@ -331,37 +331,6 @@ public final class DextUserClient: @unchecked Sendable {
         return .accepted(retiringBuild: out[1])
     }
 
-    // kSelectorSetPortSourceNames — EXPERIMENT (64 channels), TEMPORARY:
-    // remove after naming is chosen.
-    static let selectorSetPortSourceNames: UInt32 = 9
-    static let portSourceNamesMagic: UInt32 = 0x50534E4D  // 'PSNM'
-
-    /// Ask a two-port dext to rename its two Source entries (scheme 0-3,
-    /// `PortSourceNameScheme`). Input `{magic 'PSNM', scheme}`, output
-    /// `{status, scheme}`, 8 bytes each. Returns the kern_return_t: a released
-    /// or one-port dext rejects it (no such selector, or unsupported), which
-    /// changes nothing. Blocks behind other user-client calls, so never call it
-    /// on the main thread.
-    @discardableResult
-    public func setPortSourceNames(scheme: UInt32) -> kern_return_t {
-        lock.lock()
-        let conn = connection
-        lock.unlock()
-        guard conn != IO_OBJECT_NULL else { return kIOReturnNotOpen }
-        var input: [UInt32] = [Self.portSourceNamesMagic, scheme]
-        var out = [UInt32](repeating: 0, count: 2)
-        var outSize = out.count * MemoryLayout<UInt32>.size
-        let kr = input.withUnsafeMutableBytes { inPtr in
-            out.withUnsafeMutableBytes { outPtr in
-                IOConnectCallStructMethod(conn, Self.selectorSetPortSourceNames,
-                                          inPtr.baseAddress, inPtr.count,
-                                          outPtr.baseAddress, &outSize)
-            }
-        }
-        guard kr == KERN_SUCCESS else { return kr }
-        return outSize == 8 && out[0] == 0 && out[1] == scheme ? KERN_SUCCESS : kIOReturnError
-    }
-
     /// Read the dext's timing and FPGA health snapshot for latency studies.
     public func readTimingHealth() -> TimingHealth? {
         lock.lock()

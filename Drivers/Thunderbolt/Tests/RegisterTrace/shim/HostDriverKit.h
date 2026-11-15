@@ -457,7 +457,6 @@ public:
     // entries shows up as four.
     kern_return_t AddControlValueDescriptions(const IOUserAudioSelectorValueDescription *d, size_t n) {
         adds++;
-        if (failNextAdd) { failNextAdd = false; return kIOReturnNoMemory; }
         for (size_t i = 0; i < n; i++) {
             values.push_back(d[i].mValue);
             names.push_back(d[i].mName.get()->getCStringNoCopy());
@@ -497,7 +496,6 @@ public:
     IOUserAudioSelectorValue selected = 0;
     uint32_t sets = 0;
     uint32_t adds = 0, removes = 0;   // description add/remove calls (a rename is one of each)
-    bool failNextAdd = false;   // the next add fails (a rename's error path)
     std::vector<IOUserAudioSelectorValue> values;
     std::vector<std::string> names;
 };

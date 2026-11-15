@@ -27,13 +27,7 @@
                                              // asking 8 of 9004 gets "no such selector", and
                                              // a retire call (8-byte input) on 9004's no-input
                                              // 7 is refused.
-#define kSelectorSetPortSourceNames 9        // EXPERIMENT (64ch), TEMPORARY: remove after naming is chosen.
-                                             // Renames the two port-selector entries at runtime
-                                             // (SymphonyPortSourceNamesInput, exact sizes, magic),
-                                             // for an on-screen comparison of the candidate names.
-                                             // Unsupported in a one-port build; a dext without it
-                                             // rejects the selector, and the app ignores that.
-#define kSelectorCount          10
+#define kSelectorCount          9
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type
 #define kSymphonyMeterWordCount 256          // words in the card meter DMA buffer
 
@@ -157,22 +151,6 @@ typedef struct {
     uint32_t build;            // CFBundleVersion of the copy that is retiring
 } SymphonyRetireOutput; // 8 bytes
 
-// ── EXPERIMENT (64ch) — TEMPORARY, remove after naming is chosen ─────────────
-// kSelectorSetPortSourceNames: which naming scheme the two port-selector
-// entries use (kSymphonyPortSourceScheme*, below). Not persisted: every Start()
-// begins with scheme 0, and Maestro sends its debug setting again on connect.
-#define kSymphonyPortSourceNamesMagic 0x50534E4Du   // 'PSNM'
-
-typedef struct {
-    uint32_t magic;            // kSymphonyPortSourceNamesMagic
-    uint32_t scheme;           // 0 .. kSymphonyPortSourceSchemeCount-1
-} SymphonyPortSourceNamesInput;  // 8 bytes
-
-typedef struct {
-    uint32_t status;
-    uint32_t scheme;           // the scheme now published
-} SymphonyPortSourceNamesOutput; // 8 bytes
-
 // ── EXPERIMENT (64ch, stage 1): second XLink port ───────────────────────────
 // The driver uses one XLink port unless the matched IOKit personality carries
 // this key with the integer 2. No released Info.plist has it. With 2 the driver
@@ -235,32 +213,6 @@ typedef struct {
 #define kSymphonyPortSourcePorts1And2 1u  // kSymphonyPortSourceName64
 #define kSymphonyPortSourceName32 "Symphony I/O: ThunderBridge"
 #define kSymphonyPortSourceName64 "Symphony I/O: ThunderBridge 64"
-
-// TEMPORARY (kSelectorSetPortSourceNames), remove after naming is chosen: the
-// candidate names, for a side-by-side look on screen. Scheme 0 is the names
-// above and is what every Start() publishes.
-#define kSymphonyPortSourceSchemeCount 4u
-#define kSymphonyPortSourceScheme1Name32 "Symphony I/O: ThunderBridge 32"
-#define kSymphonyPortSourceScheme1Name64 "Symphony I/O: ThunderBridge 64"
-#define kSymphonyPortSourceScheme2Name32 "Symphony I/O: Port 1: 32ch"
-#define kSymphonyPortSourceScheme2Name64 "Symphony I/O: Port 1-2: 64ch"
-#define kSymphonyPortSourceScheme3Name32 "Port 1: 32ch"
-#define kSymphonyPortSourceScheme3Name64 "Port 1-2: 64ch"
-
-// The name of entry `value` (kSymphonyPortSource*) in `scheme`; nullptr for an
-// unknown scheme or value.
-static inline const char *SymphonyPortSourceSchemeName(uint32_t scheme, uint32_t value)
-{
-    if (value != kSymphonyPortSourcePort1 && value != kSymphonyPortSourcePorts1And2) return nullptr;
-    const bool is64 = value == kSymphonyPortSourcePorts1And2;
-    switch (scheme) {
-    case 0: return is64 ? kSymphonyPortSourceName64 : kSymphonyPortSourceName32;
-    case 1: return is64 ? kSymphonyPortSourceScheme1Name64 : kSymphonyPortSourceScheme1Name32;
-    case 2: return is64 ? kSymphonyPortSourceScheme2Name64 : kSymphonyPortSourceScheme2Name32;
-    case 3: return is64 ? kSymphonyPortSourceScheme3Name64 : kSymphonyPortSourceScheme3Name32;
-    default: return nullptr;
-    }
-}
 
 // SymphonyPort2StateOutput.audio
 #define kSymphonyPort2AudioCapable      0x00000001u  // port-2 DMA buffers exist: 64 can be selected
