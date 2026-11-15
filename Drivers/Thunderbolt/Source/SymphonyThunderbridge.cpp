@@ -7420,6 +7420,10 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
     // The audio device's values are read inside the block too: Stop() drains
     // this queue (step 8b) before it releases audioDevice, so inside the block
     // the pointer is either valid or the block saw 'stopping' and returned.
+    // These getters already run on xlinkQueue elsewhere: the rate-change
+    // transaction's ApplyAudioTimingProfile (Get/Set latency and safety
+    // offsets) and GetSampleRate in ReprogramCardAfterReset and
+    // RunLinkRecoveryOnQueue.
     __block double rate = 0.0;
     __block uint32_t inLatency = 0, outLatency = 0, inSafety = 0, outSafety = 0;
     IODispatchQueue *q = ivars->xlinkQueue;
