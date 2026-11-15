@@ -105,7 +105,10 @@ struct ContentView: View {
                             case .none: break
                             }
                         },
-                        onDismiss: { dismissedThunderBridgeBanner = bannerToken }
+                        onDismiss: { dismissedThunderBridgeBanner = bannerToken },
+                        // Only after the confirmation in the banner; Maestro
+                        // never retires the old driver by itself.
+                        onFinishUpdateNow: { appState.finishDriverUpdateNow() }
                     )
                 }
                 StatusBarView()
@@ -136,7 +139,8 @@ struct ContentView: View {
             HelpView()
         }
         .task {
-            // Finish a driver update macOS leaves half done (DriverHandover.swift).
+            // Keep the driver-update banner current after an activation
+            // (DriverHandover.swift). Never retires the old driver by itself.
             appState.installDriverHandoverObserver()
             // What driver extension is registered. Read before the hardware work below,
             // which can take seconds, so the About box is never asked for a report it
@@ -224,6 +228,9 @@ private struct ThunderBridgeActionBanner: View {
     let banner: ThunderBridgeBanner
     let onAction: () -> Void
     let onDismiss: () -> Void
+    /// Runs the hand-over. Called only from the confirmation's Finish Update button.
+    let onFinishUpdateNow: () -> Void
+    @State private var confirmingFinishUpdate = false
 
     private var actionTitle: String? {
         switch banner.action {
@@ -250,6 +257,11 @@ private struct ThunderBridgeActionBanner: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
+            if banner.offersFinishUpdateNow {
+                Button(ThunderBridgeBanner.finishUpdateNowTitle) { confirmingFinishUpdate = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
             if let actionTitle {
                 Button(actionTitle, action: onAction)
                     .buttonStyle(.borderedProminent)
@@ -268,6 +280,12 @@ private struct ThunderBridgeActionBanner: View {
         .padding(.vertical, 8)
         .background(.yellow.opacity(0.14))
         .overlay(alignment: .bottom) { Rectangle().fill(.yellow.opacity(0.35)).frame(height: 1) }
+        .alert(ThunderBridgeBanner.finishUpdateNowConfirmationTitle, isPresented: $confirmingFinishUpdate) {
+            Button(ThunderBridgeBanner.finishUpdateNowCancelTitle, role: .cancel) {}
+            Button(ThunderBridgeBanner.finishUpdateNowConfirmTitle) { onFinishUpdateNow() }
+        } message: {
+            Text(ThunderBridgeBanner.finishUpdateNowConfirmationMessage)
+        }
     }
 }
 

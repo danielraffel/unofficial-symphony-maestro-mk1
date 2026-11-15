@@ -104,7 +104,7 @@ If your configuration differs, it may work, but it has not been verified.
 
 ## Installation
 
-The installer is Apple signed and notarized, so no security workarounds are needed. Install, launch Maestro, and approve the driver extension when macOS asks (ThunderBridge users). After a driver update, once Maestro has reopened, reconnect the ThunderBridge, or turn the driver off and on in System Settings › General › Login Items & Extensions, or restart. Maestro shows a banner until the new driver is running. The release notes say when a release updates the driver.
+The installer is Apple signed and notarized, so no security workarounds are needed. Install, launch Maestro, and approve the driver extension when macOS asks (ThunderBridge users). After a driver update, once Maestro has reopened, reconnect the ThunderBridge, or turn the driver off and on in System Settings › General › Login Items & Extensions, or restart. Maestro shows a banner until the new driver is running. When the old driver is recent enough, the banner also offers an optional Finish Update Now button, which asks you to confirm first because the Symphony's audio stops for a few seconds. The release notes say when a release updates the driver.
 
 The project source is available under the [MIT license](license.md), without warranty. Third-party components retain their own licenses. Previously published installers retain their original embedded notices.
 
