@@ -592,20 +592,34 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
     /// Diagnostic: the unit's 32 capture routes (0x31 read for P2P 192-223),
     /// logged once per connect, so a hardware run shows which hardware input
-    /// each Mac input really carries. Reads only.
+    /// each Mac input really carries. Reads only. Stops at the first read the
+    /// unit does not answer: each unanswered read holds the driver's command
+    /// path for its 200 ms timeout, and a unit that ignores one ignores all 32.
     public func logInputRoutes() async {
         guard isConnected, dextClient.isConnected else { return }
         let client = dextClient
         let line: String = await Task.detached(priority: .utility) {
-            (0..<32).map { n -> String in
-                let dest = UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(n)
-                guard let data = try? client.readVendorCommand(
-                        command: SymphonyIOCommand.audioRouting.rawValue, value: dest, responseLength: 1),
-                      let src = data.first else { return "\(n + 1)=err" }
-                return "\(n + 1)=\(src)"
-            }.joined(separator: " ")
+            Self.inputRouteLogLine { dest in
+                (try? client.readVendorCommand(
+                    command: SymphonyIOCommand.audioRouting.rawValue, value: dest, responseLength: 1))?.first
+            }
         }.value
         print("[Maestro] TB input routes (Mac input=source byte; 32-47 slot 1, 48-63 slot 2, 236 none): \(line)")
+    }
+
+    /// The log line for `logInputRoutes`: "1=32 2=33 ...", from `read`
+    /// (destination byte → source byte, nil when the unit does not answer).
+    /// The first unanswered read ends it: "... 5=no answer, not read further".
+    static func inputRouteLogLine(read: (UInt32) -> UInt8?) -> String {
+        var parts: [String] = []
+        for n in 0..<32 {
+            guard let src = read(UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(n)) else {
+                parts.append("\(n + 1)=no answer, not read further")
+                break
+            }
+            parts.append("\(n + 1)=\(src)")
+        }
+        return parts.joined(separator: " ")
     }
 
     /// The first few front panel reads of a session are logged in full: whether

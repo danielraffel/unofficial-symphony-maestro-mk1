@@ -21,6 +21,16 @@ grep -q 'IOConnectCallStructMethod(conn, Self.selectorReadDriverBuild, nil, 0, p
 grep -q 'private static let selectorReadPort2State: UInt32 = 7' "$APP_CLIENT"
 grep -q '\[kSelectorReadPort2State\]' "$DIR/Source/SymphonyUserClient.cpp"
 
+# The build read is a user-client call, and those wait behind whatever the
+# driver is doing for another call (seconds during a link recovery). The app
+# refreshes it every two seconds, so it is never made on the main thread.
+APP="$ROOT/Apps/Maestro/MaestroApp"
+if grep -n 'servingDextBuild = (device as? ThunderboltDeviceConnection)?.servingDriverBuild()' "$APP"/*.swift; then
+    echo "FAIL: the serving driver build is read on the main thread again" >&2; exit 1
+fi
+grep -q 'Task.detached(priority: .utility) { tb.servingDriverBuild() }' "$APP/Diagnostics.swift"
+grep -q 'Task.detached(priority: .utility) { tb.servingDriverBuild() }' "$APP/AppState.swift"
+
 BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$DIR/Info.plist")
 cat > "$TMP/t.cpp" <<'CPP'
 #include "SymphonyThunderbridgeShared.h"

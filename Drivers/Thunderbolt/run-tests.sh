@@ -3,9 +3,11 @@
 #
 # Part 1: Scripts/test-*.sh that compile a driver header with clang++ or check
 # driver source text (optical format, mixer route/pan, timing profile,
-# lifecycle, channel names, driver build report). Scripts/test-*.sh that check
-# app sources (meter map, control tab scroll, dext upgrade activation) or a
-# built package are not run here.
+# lifecycle, channel names, driver build report), and
+# test-thunderbolt-meter-map.sh, which checks app source text (the meter and
+# health code in AppState.swift) and runs here so that it runs somewhere. The
+# other Scripts/test-*.sh that check app sources (control tab scroll, dext
+# upgrade activation) or a built package are not run here.
 #
 # Part 2: the register-trace test.
 #
@@ -92,6 +94,7 @@ HOST_TESTS=(
     test-thunderbolt-lifecycle.sh
     test-channel-names.sh
     test-driver-build.sh
+    test-thunderbolt-meter-map.sh
 )
 if $RUN_HOST_TESTS; then
     for t in "${HOST_TESTS[@]}"; do

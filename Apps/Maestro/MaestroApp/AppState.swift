@@ -552,6 +552,9 @@ final class AppState {
     /// when no ThunderBridge connection is open). Differs from what sysextd
     /// lists when macOS keeps an old copy on the card until restart.
     var servingDextBuild: ServingDextBuild?
+    /// A read of `servingDextBuild` is under way (`refreshServingDextBuild`).
+    @ObservationIgnored
+    var servingDextBuildReadInFlight = false
 
     /// Board hardware major versions, when read (0xA0). See
     /// `BoardTypeReading.hardwareMajor`.
@@ -659,7 +662,9 @@ final class AppState {
     @MainActor
     func refreshChannelNaming() async {
         guard let device else { return }
-        if let raw = (try? await device.getProperty(PropertyAddress(selector: .prefix)))?.asString {
+        // The prefix is the Symphony I/O's; a converter is not asked for it.
+        if connectedUnit == nil,
+           let raw = (try? await device.getProperty(PropertyAddress(selector: .prefix)))?.asString {
             peripheralPrefix = CardLayout.peripheralPrefix(raw)
         }
         for slot in 0..<2 {
@@ -1441,7 +1446,15 @@ final class AppState {
         // What the driver found on the cable, if it is not a Symphony I/O.
         connectedUnit = (device as? ThunderboltDeviceConnection)?.linkState()
             .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
-        servingDextBuild = (device as? ThunderboltDeviceConnection)?.servingDriverBuild()
+        // Needed before the input routing is laid out (thunderboltCaptureSlot1),
+        // so it is awaited here; read off the main thread like every other
+        // user-client call that can wait on the driver.
+        if let tb = device as? ThunderboltDeviceConnection {
+            let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
+            if (self.device as? ThunderboltDeviceConnection) === tb { servingDextBuild = build }
+        } else {
+            servingDextBuild = nil
+        }
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
         }
@@ -1572,6 +1585,21 @@ final class AppState {
     @MainActor
     func syncInputRoutingToHardware() async {
         guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
+        // Symphony I/O routing. Nothing is sent to a converter unprompted, the
+        // read-back included (see syncDeviceSettingsToHardware).
+        guard connectedUnit == nil else {
+            print("[Maestro] syncInputRouting: skipped — connected unit is not a Symphony I/O")
+            return
+        }
+        // The driver's recovery count this replay is made against. A recovery
+        // that completes after this read programs the driver's table over
+        // these writes; the health loop then sees the count differ from this
+        // one and replays again. Without it a recovery between this replay
+        // and the loop's next probe went unnoticed.
+        let recoveryCountAtStart = await Task.detached(priority: .utility) {
+            tb.linkState()?.recoveryCount
+        }.value
+        defer { if let recoveryCountAtStart { thunderboltSeenRecoveryCount = recoveryCountAtStart } }
         if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
             print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
         } else {
