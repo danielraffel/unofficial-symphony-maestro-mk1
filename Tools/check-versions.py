@@ -74,6 +74,10 @@ def main():
     if 'dextCDHash' in versions and (not isinstance(versions['dextCDHash'], str)
                                       or not re.fullmatch(r'[0-9a-f]{40}', versions['dextCDHash'])):
         raise SystemExit('dextCDHash must be 40 lowercase hex characters')
+    # How many XLink ports the packaged driver serves (two-port builds only).
+    if 'dextPortCount' in versions and (type(versions['dextPortCount']) is not int
+                                        or versions['dextPortCount'] not in (1, 2)):
+        raise SystemExit('dextPortCount must be 1 or 2')
     source = (root / 'Apps/Maestro/MaestroCore/MaestroCore.swift').read_text()
     match = re.search(r'public static let version\s*=\s*"([^"]+)"', source)
     if not match or match.group(1) != versions['appVersion']:
@@ -85,7 +89,8 @@ def main():
         raise SystemExit(f"Driver source build {dext.get('CFBundleVersion')} disagrees with dextBuild {versions['dextBuild']} in Tools/versions.json")
     cdhash = versions.get('dextCDHash', 'not recorded')
     print(f"Version tuple valid: app {versions['appVersion']}, package {versions['buildNumber']}, "
-          f"driver {versions['dextVersion']}/{versions['dextBuild']} (CDHash {cdhash})")
+          f"driver {versions['dextVersion']}/{versions['dextBuild']} (CDHash {cdhash}"
+          f"{', ports ' + str(versions['dextPortCount']) if 'dextPortCount' in versions else ''})")
     if args.feed:
         check_feed(versions['appVersion'], args.feed, args.channel)
 

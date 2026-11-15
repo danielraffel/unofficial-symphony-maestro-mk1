@@ -87,3 +87,17 @@ check_dext_cdhash() {  # $1 = signed dext bundle, $2 = expected CDHash (may be e
     fi
     echo "    driver $3 CDHash matches $actual"
 }
+
+# Writes SymphonyPortCount into the built dext's personality, or removes it
+# when the count is empty. Only 1 or 2 are valid (Tools/check-versions.py).
+inject_dext_port_count() {  # $1 = built dext Info.plist, $2 = port count or empty
+    local key=":IOKitPersonalities:SymphonyThunderbridge:SymphonyPortCount"
+    /usr/libexec/PlistBuddy -c "Delete $key" "$1" 2>/dev/null || true
+    [ -n "$2" ] || return 0
+    case "$2" in
+        1|2) ;;
+        *) echo "ERROR: dextPortCount must be 1 or 2 (got '$2')" >&2; return 1 ;;
+    esac
+    /usr/libexec/PlistBuddy -c "Add $key integer $2" "$1"
+    echo "    driver personality: SymphonyPortCount=$2"
+}

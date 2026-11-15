@@ -241,17 +241,14 @@ fi
     "$MAESTRO_DEXT_PROFILE" \
     com.danielraffel.maestro.thunderbridge developerid
 
-# Opt-in experiment: inject the two-port personality property into the BUILT dext
-# plist. Must happen before signing so the signature covers it. Unset = no change.
-if [ -n "${MAESTRO_EXPERIMENT_PORT_COUNT:-}" ]; then
-    case "$MAESTRO_EXPERIMENT_PORT_COUNT" in
-        ''|*[!0-9]*) echo "ERROR: MAESTRO_EXPERIMENT_PORT_COUNT must be an integer"; exit 1 ;;
-    esac
-    echo "EXPERIMENT: injecting SymphonyPortCount=$MAESTRO_EXPERIMENT_PORT_COUNT into dext personality"
-    DEXT_PLIST="$DEXT_SRC/Info.plist"
-    /usr/libexec/PlistBuddy -c "Delete :IOKitPersonalities:SymphonyThunderbridge:SymphonyPortCount" "$DEXT_PLIST" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Add :IOKitPersonalities:SymphonyThunderbridge:SymphonyPortCount integer $MAESTRO_EXPERIMENT_PORT_COUNT" "$DEXT_PLIST"
-fi
+# The number of XLink ports the driver serves comes from Tools/versions.json
+# (dextPortCount), never from the environment, so a package can be rebuilt
+# from its tag. It goes into the BUILT dext's personality before signing, so the
+# signature (and the CDHash gate below) covers it. Absent: nothing injected.
+# shellcheck source=../Tools/lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
+DEXT_PORT_COUNT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dextPortCount", ""))' "$REPO_ROOT/Tools/versions.json")"
+inject_dext_port_count "$DEXT_SRC/Info.plist" "$DEXT_PORT_COUNT"
 
 echo "Signing dext (Developer ID, DriverKit entitlements)..."
 codesign --sign "$SIGNING_IDENTITY" --force --options runtime --timestamp \

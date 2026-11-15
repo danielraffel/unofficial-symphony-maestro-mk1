@@ -205,4 +205,38 @@ cv --feed "$V/feed.xml" --channel beta || fail "beta above everything refused"
 python3 "$V/Tools/check-versions.py" --feed "$V/feed.xml" >/dev/null 2>&1 && fail "--feed without --channel accepted"
 ok "check-versions --feed: stable above the newest stable, beta above everything, no duplicates"
 
+# ── Driver port count (dextPortCount) ───────────────────────────────────────
+D="$WORK/portcount"
+mkdir -p "$D"
+cat > "$D/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>IOKitPersonalities</key><dict><key>SymphonyThunderbridge</key><dict>
+<key>IOClass</key><string>IOUserService</string></dict></dict></dict></plist>
+PLIST
+KEY=":IOKitPersonalities:SymphonyThunderbridge:SymphonyPortCount"
+inject_dext_port_count "$D/Info.plist" 2 >/dev/null
+[ "$(/usr/libexec/PlistBuddy -c "Print $KEY" "$D/Info.plist")" = 2 ] || fail "port count 2 not injected"
+inject_dext_port_count "$D/Info.plist" "" >/dev/null
+/usr/libexec/PlistBuddy -c "Print $KEY" "$D/Info.plist" >/dev/null 2>&1 && fail "port count left in place when absent"
+if inject_dext_port_count "$D/Info.plist" 3 2>/dev/null; then fail "port count 3 accepted"; fi
+grep -q 'MAESTRO_EXPERIMENT_PORT_COUNT' "$REPO_ROOT/Installer/build-installer.sh" && fail "the environment switch is still in the build"
+grep -q 'inject_dext_port_count "\$DEXT_SRC/Info.plist" "\$DEXT_PORT_COUNT"' "$REPO_ROOT/Installer/build-installer.sh" || fail "build does not inject from versions.json"
+INJECT_LINE="$(grep -n 'inject_dext_port_count "\$DEXT_SRC' "$REPO_ROOT/Installer/build-installer.sh" | cut -d: -f1)"
+SIGN_LINE="$(grep -n 'Signing dext (Developer ID' "$REPO_ROOT/Installer/build-installer.sh" | cut -d: -f1)"
+[ "$INJECT_LINE" -lt "$SIGN_LINE" ] || fail "port count injected after signing"
+H40=1cb0362e5a8ab718cf839c5ee2a54a3c7c7f21a0
+set_tuple 0.9.0 0.11.0 124 124 "$H40"
+python3 - "$V/Tools/versions.json" <<'PY'
+import json, sys; p = sys.argv[1]; v = json.load(open(p)); v['dextPortCount'] = 2; json.dump(v, open(p, 'w'))
+PY
+cv || fail "dextPortCount 2 refused"
+for bad in 3 '"2"' 0; do
+    python3 - "$V/Tools/versions.json" "$bad" <<'PY'
+import json, sys; p = sys.argv[1]; v = json.load(open(p)); v['dextPortCount'] = json.loads(sys.argv[2]); json.dump(v, open(p, 'w'))
+PY
+    cv && fail "dextPortCount $bad accepted"
+done
+ok "dextPortCount from versions.json: 1 or 2, injected before signing, no environment switch"
+
 echo "Installer tool tests passed ($PASS)"
