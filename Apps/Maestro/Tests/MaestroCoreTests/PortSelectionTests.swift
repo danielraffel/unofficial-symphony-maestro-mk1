@@ -380,4 +380,39 @@ struct PortsWordingTests {
         let back = state(audio: stage2Capable)
         #expect(PortsPresentation(model: model(0, back), state: back).rows == [PortsPresentation.testBuildRow])
     }
+
+    @Test("the picker shows the device's value, not the request: pick 64, refused, stays 32")
+    func pickRefused() {
+        var model = PortSelectionModel()
+        model.deviceReported(dataSourceID: 0, state: state(audio: stage2Capable))
+        #expect(model.canChoose)
+        #expect(model.userChose(.ports1And2) == 1)
+        #expect(model.pending == .ports1And2)
+        #expect(model.displayedSelection == .port1)
+        #expect(!model.canChoose)
+        #expect(model.userChose(.ports1And2) == nil)
+        model.deviceReported(dataSourceID: 0,
+                             state: state(audio: stage2Capable | SecondPortState.audioRefusedFlag))
+        #expect(model.displayedSelection == .port1 && model.pending == nil && model.canChoose)
+    }
+
+    @Test("pick 64, accepted: the display becomes 64 when the device says so")
+    func pickAccepted() {
+        var model = PortSelectionModel()
+        model.deviceReported(dataSourceID: 0, state: state(audio: stage2Capable))
+        _ = model.userChose(.ports1And2)
+        #expect(model.displayedSelection == .port1)
+        model.deviceReported(dataSourceID: 1,
+                             state: state(audio: stage2Capable | SecondPortState.audioActiveFlag))
+        #expect(model.displayedSelection == .ports1And2 && model.pending == nil && model.canChoose)
+    }
+
+    @Test("an unanswered request expires and the picker is usable again")
+    func expiry() {
+        var model = PortSelectionModel()
+        model.deviceReported(dataSourceID: 0, state: state(audio: stage2Capable))
+        _ = model.userChose(.ports1And2)
+        model.requestExpired()
+        #expect(model.displayedSelection == .port1 && model.canChoose)
+    }
 }

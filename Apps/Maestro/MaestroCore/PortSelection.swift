@@ -124,6 +124,19 @@ public struct PortSelectionModel: Sendable, Equatable {
 
     public init() {}
 
+    /// What the picker shows as selected: always the device's current value,
+    /// never the pending request (that is only the "Switching to 64 channels…"
+    /// line). After a refusal or fallback this is 32.
+    public var displayedSelection: PortSelection? { selection }
+
+    /// The picker is disabled while a switch is waiting for the device.
+    public var canChoose: Bool { selection != nil && pending == nil }
+
+    /// The device did not confirm the request in time: stop waiting.
+    public mutating func requestExpired() {
+        pending = nil
+    }
+
     /// True when the picker should be shown at all.
     public var isAvailable: Bool { selection != nil }
 
@@ -131,7 +144,7 @@ public struct PortSelectionModel: Sendable, Equatable {
     /// to the device, or nil when there is nothing to write (no selector, or
     /// the entry is the one already selected).
     public mutating func userChose(_ choice: PortSelection) -> UInt32? {
-        guard let selection, selection != choice else { return nil }
+        guard let selection, pending == nil, selection != choice else { return nil }
         pending = choice
         return choice.rawValue
     }

@@ -1117,7 +1117,7 @@ struct SystemSetupView: View {
                             LabeledContent("Ports") {
                                 HStack(spacing: 6) {
                                     Picker("Ports", selection: Binding(
-                                        get: { appState.portSelection.pending ?? selection },
+                                        get: { appState.portSelection.displayedSelection ?? selection },
                                         set: { appState.choosePortSelection($0) })) {
                                         ForEach(PortSelection.allCases) { choice in
                                             Text(choice.pickerLabel).tag(choice)
@@ -1125,6 +1125,7 @@ struct SystemSetupView: View {
                                     }
                                     .labelsHidden()
                                     .fixedSize()
+                                    .disabled(!appState.portSelection.canChoose)
                                     Button { showPortsInfo.toggle() } label: {
                                         Image(systemName: "info.circle")
                                             .foregroundStyle(.secondary)

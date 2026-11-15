@@ -835,6 +835,18 @@ final class AppState {
             print("[Maestro] Port selection write failed: \(error)")
             model.writeFailed()
             portSelection = model
+            return
+        }
+        // If the device never answers, do not leave the picker disabled.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self else { return }
+            self.applyPortSelection(id: connection.portSelectionID())
+            if self.portSelection.pending != nil {
+                var expired = self.portSelection
+                expired.requestExpired()
+                self.portSelection = expired
+            }
         }
     }
 
