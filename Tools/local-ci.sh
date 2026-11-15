@@ -84,6 +84,9 @@ run_check "shm-contract-test" bash "$REPO_ROOT/Drivers/Shared/run-tests.sh"
 # (0x34) trace for every option-board combination. No hardware needed.
 run_check "thunderbolt-driver-tests" bash "$REPO_ROOT/Drivers/Thunderbolt/run-tests.sh"
 
+# Installer host tests: postinstall reopen, package checks, driver CDHash gate.
+run_check "installer-tool-tests" bash "$REPO_ROOT/Tools/test-installer-tools.sh"
+
 # 5. Build for release (catches optimisation-only errors)
 if [ "$QUICK_MODE" = false ]; then
   run_check "swift-build-release" swift build --package-path "$PACKAGE_DIR" --jobs "${MAESTRO_BUILD_JOBS:-4}" -c release

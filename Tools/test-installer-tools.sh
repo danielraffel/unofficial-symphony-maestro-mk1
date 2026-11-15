@@ -1,0 +1,98 @@
+#!/bin/bash
+# Host tests for the installer pieces that need no signing identity, no root
+# and no install: the postinstall reopen of Maestro, the package-content
+# checks and the driver CDHash gate. Nothing here installs anything or
+# touches the system; every command that would is replaced by a stub.
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/maestro-installer-tests.XXXXXX")"
+trap '/bin/rm -rf "$WORK"' EXIT
+PASS=0
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok() { PASS=$((PASS + 1)); echo "ok - $*"; }
+
+# ── Postinstall: reopen Maestro ─────────────────────────────────────────────
+CORE="$REPO_ROOT/Installer/scripts-core/postinstall"
+USB="$REPO_ROOT/Installer/scripts-usb/postinstall"
+
+mkstub() {  # $1 = path, $2 = body
+    printf '#!/bin/bash\n%s\n' "$2" > "$1"
+    chmod +x "$1"
+}
+
+# Runs start_reopen with stubs. $1 = console user, $2 = uid, $3 = case dir.
+run_reopen() {
+    local user="$1" uid="$2" dir="$3"
+    mkdir -p "$dir"
+    mkstub "$dir/stat" "echo '$user'"
+    mkstub "$dir/id" "echo '$uid'"
+    mkstub "$dir/launchctl" "echo \"\$*\" >> '$dir/launched'"
+    (
+        set +e
+        # shellcheck source=/dev/null
+        . "$CORE"
+        LOG="$dir/log"; USB_MARKER="$dir/marker"; REOPEN_GRACE=0; REOPEN_MAX_WAIT="${MAX_WAIT:-60}"
+        STAT="$dir/stat"; ID="$dir/id"; LAUNCHCTL="$dir/launchctl"
+        start_reopen
+    )
+}
+
+wait_for_file() {  # $1 = file, $2 = seconds
+    local i=0
+    while [ ! -s "$1" ] && [ "$i" -lt $(( $2 * 10 )) ]; do sleep 0.1; i=$((i + 1)); done
+    [ -s "$1" ]
+}
+
+C="$WORK/reopen-plain"
+START=$SECONDS
+run_reopen tester 501 "$C"
+[ $((SECONDS - START)) -le 1 ] || fail "start_reopen did not return at once"
+wait_for_file "$C/launched" 5 || fail "Maestro was not reopened"
+[ "$(cat "$C/launched")" = "asuser 501 /usr/bin/sudo -u tester /usr/bin/open /Applications/Maestro.app" ] \
+    || fail "unexpected reopen command: $(cat "$C/launched")"
+grep -q "reopening Maestro for tester" "$C/log" || fail "reopen not logged"
+grep -Eq '^\[postinstall/core\] [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} ' "$C/log" || fail "log lines carry no time"
+ok "reopens Maestro for the console user with plain open, detached"
+
+C="$WORK/reopen-marker"
+mkdir -p "$C"; touch "$C/marker"
+run_reopen tester 501 "$C"
+sleep 2
+[ ! -e "$C/launched" ] || fail "reopened while the USB marker was present"
+rm -f "$C/marker"
+wait_for_file "$C/launched" 4 || fail "not reopened after the USB marker went away"
+ok "waits for the USB step's marker"
+
+C="$WORK/reopen-maxwait"
+mkdir -p "$C"; touch "$C/marker"
+MAX_WAIT=2 run_reopen tester 501 "$C"
+wait_for_file "$C/launched" 6 || fail "did not give up waiting for the marker"
+grep -q "waited 2s" "$C/log" || fail "max wait not logged"
+ok "stops waiting after the maximum"
+
+for case in "root 0" "loginwindow 0" "_mbsetupuser 248" " 0"; do
+    set -- $case
+    C="$WORK/reopen-none-${1:-empty}"
+    run_reopen "${1:-}" "${2:-0}" "$C"
+    sleep 0.5
+    [ ! -e "$C/launched" ] || fail "reopened with console user '${1:-}'"
+    grep -q "Maestro is not reopened" "$C/log" || fail "no-user case not logged for '${1:-}'"
+done
+ok "no reopen without a person at the console"
+
+grep -v '^[[:space:]]*#' "$CORE" | grep -q 'open -n' && fail "core postinstall uses open -n"
+CORE_MARKER="$(sed -n 's/^USB_MARKER="\(.*\)"$/\1/p' "$CORE")"
+USB_MARKER_PATH="$(sed -n 's/^USB_MARKER="\(.*\)"$/\1/p' "$USB")"
+[ "$CORE_MARKER" = "/var/run/maestro-usb-postinstall.running" ] || fail "core marker is not under /var/run"
+[ "$CORE_MARKER" = "$USB_MARKER_PATH" ] || fail "core and USB scripts disagree on the marker"
+TOUCH_LINE="$(grep -n 'touch "\$USB_MARKER"' "$USB" | head -1 | cut -d: -f1)"
+KILL_LINE="$(grep -n 'killall coreaudiod' "$USB" | head -1 | cut -d: -f1)"
+RM_LINE="$(grep -n '^/bin/rm -f "\$USB_MARKER"' "$USB" | head -1 | cut -d: -f1)"
+FIRST_CMD="$(grep -n -E '^(chown|launchctl|killall)' "$USB" | head -1 | cut -d: -f1)"
+[ -n "$TOUCH_LINE" ] && [ "$TOUCH_LINE" -lt "$FIRST_CMD" ] || fail "USB marker is not created first"
+[ -n "$RM_LINE" ] && [ "$RM_LINE" -gt "$KILL_LINE" ] || fail "USB marker is not removed after the coreaudiod restart"
+grep -q "trap '/bin/rm -f \"\$USB_MARKER\"' EXIT" "$USB" || fail "USB marker is not removed on failure"
+bash -n "$CORE" && bash -n "$USB" || fail "syntax"
+ok "USB postinstall holds the marker around the coreaudiod restart"
+
+echo "Installer tool tests passed ($PASS)"

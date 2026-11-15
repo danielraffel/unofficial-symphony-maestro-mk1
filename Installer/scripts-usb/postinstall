@@ -10,7 +10,14 @@
 # A Thunderbolt-only machine needs none of this.
 set -euo pipefail
 LOG="/tmp/maestro-installer.log"
-echo "[postinstall/usb] $(date)" >> "$LOG"
+echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') start" >> "$LOG"
+
+# The core postinstall reopens Maestro once this script has finished, so that
+# Maestro starts after coreaudiod is back. It waits while this marker exists.
+# /var/run is root-only. Removed on every exit, including a failure.
+USB_MARKER="/var/run/maestro-usb-postinstall.running"
+/usr/bin/touch "$USB_MARKER"
+trap '/bin/rm -f "$USB_MARKER"' EXIT
 
 chown -R root:wheel /Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver 2>/dev/null || true
 chown root:wheel /usr/local/bin/MaestroVolumeProxy 2>/dev/null || true
@@ -40,5 +47,7 @@ echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
 /bin/rm -f /private/tmp/maestro-installer-plugin-cdhash
 killall coreaudiod 2>/dev/null || true
 sleep 3
-echo "[postinstall/usb] coreaudiod restarted" >> "$LOG"
+echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') coreaudiod restarted" >> "$LOG"
+/bin/rm -f "$USB_MARKER"
+echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') done" >> "$LOG"
 exit 0

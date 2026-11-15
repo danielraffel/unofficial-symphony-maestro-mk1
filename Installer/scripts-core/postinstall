@@ -4,28 +4,98 @@
 # Deliberately does NOT bootstrap the volume proxy or restart coreaudiod. Those belong to
 # the optional USB component. The Thunderbolt driver publishes its own audio device via
 # AudioDriverKit and needs neither.
+#
+# Its last step reopens Maestro for the person logged in at the console:
+# `preinstall` quits it, and Installer.app relaunches nothing. A detached waiter
+# lets the install finish first and waits for the USB component's script (which
+# restarts coreaudiod) while that script holds a marker in /var/run.
 set -euo pipefail
 LOG="/tmp/maestro-installer.log"
-echo "[postinstall/core] $(date)" >> "$LOG"
+APP="/Applications/Maestro.app"
+# Root-only directory: a marker under /tmp could be planted by anyone.
+USB_MARKER="/var/run/maestro-usb-postinstall.running"
+REOPEN_GRACE=3
+REOPEN_MAX_WAIT=60
+STAT=/usr/bin/stat
+ID=/usr/bin/id
+LAUNCHCTL=/bin/launchctl
+SUDO=/usr/bin/sudo
+OPEN=/usr/bin/open
+SLEEP=/bin/sleep
 
-chown -R root:wheel /Applications/Maestro.app 2>/dev/null || true
+log() { echo "[postinstall/core] $(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
 
-# Fail the core install if the ThunderBridge system extension was not actually
-# included in the app payload.  The extension is intentionally dormant on
-# USB-only Macs, but it must be present and valid so Maestro can activate it
-# later when a ThunderBridge PCI device appears.
-DEXT="/Applications/Maestro.app/Contents/Library/SystemExtensions/com.danielraffel.maestro.thunderbridge.dext"
-if [ ! -x "$DEXT/com.danielraffel.maestro.thunderbridge" ] || [ ! -f "$DEXT/Info.plist" ]; then
-    echo "[postinstall/core] ERROR: ThunderBridge driver extension is missing from Maestro.app" | tee -a "$LOG" >&2
-    exit 1
+# Prints "<user> <uid>" when a person (uid 501 or higher) is logged in at the console.
+reopen_target() {
+    local user uid
+    user="$("$STAT" -f %Su /dev/console 2>/dev/null || true)"
+    case "$user" in ''|root|loginwindow) return 1 ;; esac
+    uid="$("$ID" -u "$user" 2>/dev/null)" || return 1
+    case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$uid" -ge 501 ] || return 1
+    echo "$user $uid"
+}
+
+# Runs detached. Plain `open`, never `open -n`: if Sparkle has already
+# relaunched Maestro, or it is still running, `open` only brings it forward.
+reopen_waiter() {  # $1 = user, $2 = uid
+    "$SLEEP" "$REOPEN_GRACE"
+    local waited=0
+    while [ -e "$USB_MARKER" ] && [ "$waited" -lt "$REOPEN_MAX_WAIT" ]; do
+        "$SLEEP" 1
+        waited=$((waited + 1))
+    done
+    log "reopening Maestro for $1 (waited ${waited}s for the USB step)"
+    if "$LAUNCHCTL" asuser "$2" "$SUDO" -u "$1" "$OPEN" "$APP" >/dev/null 2>&1; then
+        log "Maestro reopened"
+    else
+        log "could not reopen Maestro"
+    fi
+}
+
+start_reopen() {
+    local target user uid command
+    if ! target="$(reopen_target)"; then
+        log "no user logged in at the console; Maestro is not reopened"
+        return 0
+    fi
+    user="${target% *}"
+    uid="${target#* }"
+    command="$(declare -f log reopen_waiter)"
+    command+=$'\n'"$(printf 'LOG=%q APP=%q USB_MARKER=%q REOPEN_GRACE=%q REOPEN_MAX_WAIT=%q LAUNCHCTL=%q SUDO=%q OPEN=%q SLEEP=%q' \
+        "$LOG" "$APP" "$USB_MARKER" "$REOPEN_GRACE" "$REOPEN_MAX_WAIT" "$LAUNCHCTL" "$SUDO" "$OPEN" "$SLEEP")"
+    command+=$'\n'"$(printf 'reopen_waiter %q %q' "$user" "$uid")"
+    # Detached, all output to /dev/null, so Installer does not wait for it.
+    nohup /bin/bash -c "$command" >/dev/null 2>&1 </dev/null &
+    log "waiting to reopen Maestro for $user"
+}
+
+main() {
+    log "start"
+
+    chown -R root:wheel "$APP" 2>/dev/null || true
+
+    # Fail the core install if the ThunderBridge system extension was not actually
+    # included in the app payload.  The extension is intentionally dormant on
+    # USB-only Macs, but it must be present and valid so Maestro can activate it
+    # later when a ThunderBridge PCI device appears.
+    local dext="$APP/Contents/Library/SystemExtensions/com.danielraffel.maestro.thunderbridge.dext"
+    if [ ! -x "$dext/com.danielraffel.maestro.thunderbridge" ] || [ ! -f "$dext/Info.plist" ]; then
+        echo "[postinstall/core] ERROR: ThunderBridge driver extension is missing from Maestro.app" | tee -a "$LOG" >&2
+        exit 1
+    fi
+    if ! codesign --verify --deep --strict "$dext" >>"$LOG" 2>&1; then
+        echo "[postinstall/core] ERROR: ThunderBridge driver extension failed code-signature validation" | tee -a "$LOG" >&2
+        exit 1
+    fi
+    log "Verified embedded ThunderBridge dext"
+    log "Installed $APP"
+
+    start_reopen
+    exit 0
+}
+
+# Run only when executed (Installer); tests source this file for its functions.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
 fi
-if ! codesign --verify --deep --strict "$DEXT" >>"$LOG" 2>&1; then
-    echo "[postinstall/core] ERROR: ThunderBridge driver extension failed code-signature validation" | tee -a "$LOG" >&2
-    exit 1
-fi
-echo "[postinstall/core] Verified embedded ThunderBridge dext" >> "$LOG"
-
-echo "[postinstall/core] Installed /Applications/Maestro.app" >> "$LOG"
-echo "[postinstall/core] Launch Maestro and approve its driver extension in" >> "$LOG"
-echo "                   System Settings > General > Login Items & Extensions" >> "$LOG"
-exit 0
