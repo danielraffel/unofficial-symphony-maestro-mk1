@@ -35,6 +35,11 @@ fi
 grep -q 'tb.linkState()?.recoveryCount' "$APP_STATE"
 grep -q 'defer { if let recoveryCountAtStart { thunderboltSeenRecoveryCount = recoveryCountAtStart } }' "$APP_STATE"
 
+# Nothing is sent to a converter unprompted: no input routing replay or
+# read-back, and no prefix read.
+grep -A6 'func syncInputRoutingToHardware' "$APP_STATE" | grep -q 'guard connectedUnit == nil else {'
+grep -B1 'device.getProperty(PropertyAddress(selector: .prefix))' "$APP_STATE" | grep -q 'if connectedUnit == nil,'
+
 # A newly published ThunderBridge can need a few seconds before its FPGA/XLink
 # probe is usable. Preserve the startup grace while retaining the shorter loss
 # threshold after the first successful live probe.

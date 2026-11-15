@@ -482,3 +482,38 @@ struct DextUserClientRequestSizeTests {
         #expect(!start.isEmpty)   // 4 + 1 + 3 + 4 + 2 = 14 bytes when packed
     }
 }
+
+// MARK: - Input route read-back log
+
+@Suite("ThunderBridge input route log")
+struct ThunderboltInputRouteLogTests {
+    @Test("All 32 capture routes are read, P2P 192-223 in order")
+    func readsAll() {
+        var asked: [UInt32] = []
+        let line = ThunderboltDeviceConnection.inputRouteLogLine { dest in
+            asked.append(dest)
+            return UInt8(dest - 192 + 32)
+        }
+        #expect(asked == Array(192...223))
+        #expect(line.hasPrefix("1=32 2=33 "))
+        #expect(line.hasSuffix(" 32=63"))
+    }
+
+    /// An unanswered read costs the driver's 200 ms timeout. A unit that does
+    /// not answer one is not asked the other 31.
+    @Test("The first unanswered read ends the read-back")
+    func stopsAtFirstFailure() {
+        var asked = 0
+        let silent = ThunderboltDeviceConnection.inputRouteLogLine { _ in asked += 1; return nil }
+        #expect(asked == 1)
+        #expect(silent == "1=no answer, not read further")
+
+        asked = 0
+        let partial = ThunderboltDeviceConnection.inputRouteLogLine { dest in
+            asked += 1
+            return dest < 194 ? 40 : nil
+        }
+        #expect(asked == 3)
+        #expect(partial == "1=40 2=40 3=no answer, not read further")
+    }
+}

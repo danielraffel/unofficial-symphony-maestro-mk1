@@ -659,7 +659,9 @@ final class AppState {
     @MainActor
     func refreshChannelNaming() async {
         guard let device else { return }
-        if let raw = (try? await device.getProperty(PropertyAddress(selector: .prefix)))?.asString {
+        // The prefix is the Symphony I/O's; a converter is not asked for it.
+        if connectedUnit == nil,
+           let raw = (try? await device.getProperty(PropertyAddress(selector: .prefix)))?.asString {
             peripheralPrefix = CardLayout.peripheralPrefix(raw)
         }
         for slot in 0..<2 {
@@ -1479,6 +1481,12 @@ final class AppState {
     @MainActor
     func syncInputRoutingToHardware() async {
         guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
+        // Symphony I/O routing. Nothing is sent to a converter unprompted, the
+        // read-back included (see syncDeviceSettingsToHardware).
+        guard connectedUnit == nil else {
+            print("[Maestro] syncInputRouting: skipped — connected unit is not a Symphony I/O")
+            return
+        }
         // The driver's recovery count this replay is made against. A recovery
         // that completes after this read programs the driver's table over
         // these writes; the health loop then sees the count differ from this
