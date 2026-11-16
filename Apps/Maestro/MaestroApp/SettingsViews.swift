@@ -1490,6 +1490,9 @@ struct SystemSetupView: View {
             connectedUnitModel: appState.connectedUnit?.modelName
         )
         report.connectedUnitLines = appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
+        if appState.connectedUnit != nil, let raw = ConnectedUnit.rawProbeLine(appState.connectedUnitProbeWord) {
+            report.connectedUnitLines.append(raw)
+        }
         report.port2Lines = appState.secondPortState?.reportLines ?? []
         return report
     }

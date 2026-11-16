@@ -45,6 +45,15 @@ public enum ConnectedUnit: Sendable, Equatable {
         self = units.count == 1 ? first : .chain(units)
     }
 
+    /// The driver's probe word as one line for the copied Device Info, so a
+    /// pasted report shows exactly what the unit answered. Nil when the driver
+    /// did not probe (a Symphony I/O).
+    public static func rawProbeLine(_ probeWord: UInt32) -> String? {
+        guard probeWord & 0x8000_0000 != 0 else { return nil }
+        let hex = String(probeWord, radix: 16)
+        return "Unit Probe Raw: 0x" + String(repeating: "0", count: max(0, 8 - hex.count)) + hex
+    }
+
     /// The channel-bank nibble of an identification reply.
     private init?(bankNibble: UInt8) {
         switch bankNibble {
