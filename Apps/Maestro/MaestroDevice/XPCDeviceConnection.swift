@@ -663,16 +663,25 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         await listenerStorage.notifyListeners(for: address, change: change)
     }
 
-    /// Set the helper's software Software Return gain (neutral, or the per-side
-    /// attenuation of an unlinked pair).
-    public func applySoftwareReturnGain(_ gain: SoftwareReturnHelperGain) {
-        switch gain {
-        case .neutral:
-            transport.setSwReturnLevel(0)
-        case .sides(let left, let right):
-            transport.setSwReturnChannelLevel(channel: 0, dB: left)
-            transport.setSwReturnChannelLevel(channel: 1, dB: right)
+    /// Hold the helper's software stage at 0 dB, unmuted. Send this only after
+    /// the unit's own strips have taken their values.
+    public func setHelperNeutral() {
+        transport.setSwReturnLevel(0)
+        transport.setSwReturnMute(false)
+    }
+
+    /// One write to the unit's mixer, tried again once after a short delay.
+    /// Returns whether it landed.
+    public func setUnitMixerWithRetry(
+        _ address: PropertyAddress, value: PropertyValue,
+        retryDelay: Duration = .milliseconds(150)
+    ) async -> Bool {
+        for attempt in 0..<2 {
+            do { try await setProperty(address, value: value); return true } catch {
+                if attempt == 0 { try? await Task.sleep(for: retryDelay) }
+            }
         }
+        return false
     }
 
     /// Put the unit's Master and Software Return strips, for both mixers, and
@@ -680,23 +689,41 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     ///
     /// Runs when Maestro connects, reconnects, and recovers after the unit was
     /// power-cycled (its mixer then returns to 0 dB, unmuted). The unit's mixer
-    /// owns Software Return level, mute and solo and the Master level; the
-    /// helper is written neutral so nothing is applied twice.
+    /// owns Software Return level, mute and solo and the Master level. The unit
+    /// is written first; only when every unit write has landed (each is tried
+    /// twice) is the helper made neutral, so a level or mute an older Maestro
+    /// left in the helper is never dropped before the unit holds its value.
+    /// Returns whether the restore completed.
+    @discardableResult
     public func restoreReturnAndMaster(
-        helperMixer: Int, defaults: UserDefaults = .standard
-    ) async {
+        helperMixer: Int = 0, defaults: UserDefaults = .standard,
+        retryDelay: Duration = .milliseconds(150)
+    ) async -> Bool {
         let state = USBMixerSavedState.load(defaults: defaults)
+        var unitOK = true
+        var helperSteps: [USBMixerRestorePlan.Step] = []
         for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer) {
-            switch step {
-            case .helperGain(let gain): applySoftwareReturnGain(gain)
-            case .helperMute(let muted): transport.setSwReturnMute(muted)
-            case .helperPan(let pan): transport.setSwReturnPan(pan)
-            case .hardware(let address, let value):
-                do { try await setProperty(address, value: value) } catch {
-                    print("[Maestro] USB mixer restore \(address.selector) failed: \(error)")
+            if case .hardware(let address, let value) = step {
+                if await !setUnitMixerWithRetry(address, value: value, retryDelay: retryDelay) {
+                    unitOK = false
                 }
+            } else {
+                helperSteps.append(step)
             }
         }
+        guard unitOK else {
+            print("[Maestro] USB mixer restore did not complete: a write to the unit failed twice; the helper was left as it was")
+            return false
+        }
+        for step in helperSteps {
+            switch step {
+            case .helperNeutral: setHelperNeutral()
+            case .helperPan(let pan): transport.setSwReturnPan(pan)
+            case .helperProcessing(let on): transport.setSwReturnProcessing(on)
+            case .hardware: break
+            }
+        }
+        return true
     }
 
     /// Write every stored setting to the hardware. Called once per connect, as

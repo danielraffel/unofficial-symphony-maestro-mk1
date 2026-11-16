@@ -884,6 +884,12 @@ final class AppState {
     /// alone before Maestro writes to it.
     static let thunderboltSettleInterval: Duration = .seconds(2)
 
+    /// Whether a USB recovery should restore Software Return and Master now:
+    /// only the 5 s debounce. "autoRecoverMixerState" does not gate it.
+    nonisolated static func usbRecoveryRestoreDue(lastRecovery: Date, now: Date) -> Bool {
+        now.timeIntervalSince(lastRecovery) > 5.0
+    }
+
     /// Seconds still to wait before a unit that appeared at `appearedAt` may be
     /// written to. Zero for a unit that has been up for a while (launch, Rescan).
     nonisolated static func usbSettleRemaining(appearedAt: Date?, now: Date) -> TimeInterval {
@@ -2059,15 +2065,27 @@ final class AppState {
                             self.tdmOutputEchoStreak = 0
                             self.lastMeterPollWantedOutput = nil
                             let autoRecover = UserDefaults.standard.object(forKey: "autoRecoverMixerState") as? Bool ?? true
-                            if autoRecover {
-                                let now = Date()
-                                if now.timeIntervalSince(self.lastRecoveryTime) > 5.0 {
-                                    self.lastRecoveryTime = now
+                            let now = Date()
+                            if Self.usbRecoveryRestoreDue(lastRecovery: self.lastRecoveryTime, now: now) {
+                                self.lastRecoveryTime = now
+                                // The unit comes back at 0 dB, unmuted, and nothing
+                                // else attenuates Software Return or Master now, so
+                                // this runs whatever "autoRecoverMixerState" says.
+                                // Like the reconnect path, leave a unit that has just
+                                // appeared alone until it has settled.
+                                let recoveryMixer = self.lastSelectedMixer
+                                Task { @MainActor [weak self] in
+                                    if let self {
+                                        let wait = Self.usbSettleRemaining(
+                                            appearedAt: self.symphonyAppearedAt, now: Date())
+                                        if wait > 0 {
+                                            try? await Task.sleep(for: .milliseconds(Int(wait * 1000)))
+                                        }
+                                    }
+                                    await xpcDev.restoreReturnAndMaster(helperMixer: recoveryMixer)
+                                }
+                                if autoRecover {
                                     self.deviceRecoveryCount += 1
-                                    // Power-cycled unit: put saved Master and Software
-                                    // Return (both mixers) back, helper stage neutral.
-                                    let recoveryMixer = self.lastSelectedMixer
-                                    Task { await xpcDev.restoreReturnAndMaster(helperMixer: recoveryMixer) }
                                     // Re-sync routing mode to proxy
                                     let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
                                     xpcDev.setRoutingMode(routingMode)

@@ -1167,15 +1167,15 @@ struct MixerView: View {
 
     // USB: the unit's own mixer is the authority for Software Return level, mute
     // and solo (strip 32), for every source. The helper's software stage is kept
-    // neutral (0 dB, unmuted) so nothing is applied twice; it still carries pan,
-    // and the left/right difference of an unlinked pair, for USB playback 1-2.
+    // neutral (0 dB, unmuted) so nothing is applied twice; it still carries pan
+    // for USB playback 1-2.
     // ThunderBridge: the Software Return is a real mixer input (id 1000) driven
     // through setProperty with swReturnElement, like any other strip.
     private func writeSWReturnLevel(_ level: Double) async {
         guard let device = appState.device else { return }
-        if let xpcDev = usbDevice {
-            await writeSWReturnFaders(split: MixerFaderMath.softwareReturn(
-                left: level, right: level, linked: true, linkedLevel: level), xpcDev)
+        if usbDevice != nil {
+            // Linked: this level. Unlinked: the quieter side the page shows.
+            _ = await writeSWReturnUnitLevel(linkedLevel: level)
         } else {
             do {
                 try await device.setProperty(
@@ -1190,8 +1190,8 @@ struct MixerView: View {
 
     private func writeSWReturnSideLevel(side: Int, level: Double) async {
         guard let device = appState.device else { return }
-        if let xpcDev = usbDevice {
-            await writeSWReturnFaders(split: currentSWReturnSplit, xpcDev)
+        if usbDevice != nil {
+            _ = await writeSWReturnUnitLevel(linkedLevel: swReturnLeftLevel)
         } else {
             do {
                 try await device.setProperty(
@@ -1204,24 +1204,24 @@ struct MixerView: View {
         }
     }
 
-    /// The Software Return faders as the page shows them.
-    private var currentSWReturnSplit: SoftwareReturnFaderSplit {
-        MixerFaderMath.softwareReturn(
+    /// USB: the one place the Software Return level reaches the unit. The unit
+    /// has one fader per strip, so unlinked faders send the quieter side. The
+    /// helper's software level is not touched here (it is held neutral by
+    /// `writeSoftwareReturnSource`, after the unit has taken its values).
+    private func writeSWReturnUnitLevel(linkedLevel: Double) async -> Bool {
+        guard let xpcDev = usbDevice else { return false }
+        let level = MixerFaderMath.softwareReturn(
             left: swReturnLeftLevel, right: swReturnRightLevel,
-            linked: swReturnFadersLinked, linkedLevel: swReturnLeftLevel)
-    }
-
-    /// USB: the louder side goes to the unit's fader. The helper holds the
-    /// difference (USB playback 1-2 only) and is otherwise 0 dB.
-    private func writeSWReturnFaders(split: SoftwareReturnFaderSplit, _ xpcDev: XPCDeviceConnection) async {
+            linked: swReturnFadersLinked, linkedLevel: linkedLevel)
         do {
             try await xpcDev.setProperty(
                 PropertyAddress(selector: .mixerChannelLevel, element: swReturnElement),
-                value: .float64(split.hardwareLevel))
+                value: .float64(level))
+            return true
         } catch {
             print("[Maestro] Mixer SW Return level failed: \(error)")
+            return false
         }
-        xpcDev.applySoftwareReturnGain(softwareReturnSource == 0 ? split.helperGain : .neutral)
     }
 
     private func writeSWReturnPan(_ pan: Double) async {
@@ -1282,21 +1282,36 @@ struct MixerView: View {
         } catch {
             print("[Maestro] Mixer SW Return source failed: \(error)")
         }
-        if let xpcDev = device as? XPCDeviceConnection {
+        if let xpcDev = usbDevice {
+            // Unit first, helper second: a helper left holding an attenuation
+            // or mute by an older Maestro must not be neutralised before the
+            // unit holds its values. If a unit write fails twice the helper is
+            // left as it was.
+            let level = MixerFaderMath.softwareReturn(
+                left: swReturnLeftLevel, right: swReturnRightLevel,
+                linked: swReturnFadersLinked, linkedLevel: swReturnLeftLevel)
+            let element = swReturnElement
+            let writes: [(AudioPropertySelector, PropertyValue)] = [
+                (.mixerChannelLevel, .float64(level)),
+                (.mixerChannelMute, .bool(swReturnChannel.isMuted)),
+                (.mixerChannelSolo, .bool(swReturnChannel.isSoloed)),
+            ]
+            var unitOK = true
+            for (selector, value) in writes {
+                if await !xpcDev.setUnitMixerWithRetry(
+                    PropertyAddress(selector: selector, element: element), value: value) {
+                    unitOK = false
+                }
+            }
+            guard unitOK else {
+                print("[Maestro] SW Return write to the unit failed twice; the helper was left as it was")
+                return
+            }
+            xpcDev.setHelperNeutral()
             let otherMixer = selectedMixer == 0 ? 1 : 0
             let otherSource = UInt32(UserDefaults.standard.integer(
                 forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
             xpcDev.setSwReturnProcessing(source == 0 || otherSource == 0)
-        }
-        if let xpcDev = usbDevice {
-            // Every source: the unit's mixer carries the persisted level, mute
-            // and solo. The helper is neutral, plus pan (and the unlinked
-            // left/right difference) for USB playback 1-2.
-            let split = currentSWReturnSplit
-            await writeSWReturnFaders(split: split, xpcDev)
-            xpcDev.setSwReturnMute(false)
-            await writeSWReturnMute(swReturnChannel.isMuted)
-            await writeSWReturnSolo(swReturnChannel.isSoloed)
             if source == 0 { await writeSWReturnPan(swReturnChannel.pan) }
         } else {
             // ThunderBridge: the FPGA mixer processes every source. Mirror the

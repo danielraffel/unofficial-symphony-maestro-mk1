@@ -233,46 +233,27 @@ struct USBMixerWireTests {
 @Suite("Mixer fader arithmetic")
 struct MixerFaderMathTests {
 
-    @Test("linked Software Return: one fader, helper at 0 dB")
+    @Test("Software Return linked: the linked level")
     func linked() {
-        let s = MixerFaderMath.softwareReturn(left: -3, right: -9, linked: true, linkedLevel: -12)
-        #expect(s == SoftwareReturnFaderSplit(hardwareLevel: -12, leftTrim: 0, rightTrim: 0))
+        #expect(MixerFaderMath.softwareReturn(left: -3, right: -9, linked: true, linkedLevel: -12) == -12)
     }
 
-    @Test("unlinked, left louder: fader takes left, right is attenuated by the difference")
-    func leftLouder() {
-        let s = MixerFaderMath.softwareReturn(left: -3, right: -9, linked: false, linkedLevel: 0)
-        #expect(s == SoftwareReturnFaderSplit(hardwareLevel: -3, leftTrim: 0, rightTrim: -6))
+    @Test("Software Return unlinked: the quieter side, never louder than either fader")
+    func unlinked() {
+        #expect(MixerFaderMath.softwareReturn(left: -3, right: -9, linked: false, linkedLevel: 0) == -9)
+        #expect(MixerFaderMath.softwareReturn(left: -20, right: -2.5, linked: false, linkedLevel: 0) == -20)
+        #expect(MixerFaderMath.softwareReturn(left: -6, right: -6, linked: false, linkedLevel: 0) == -6)
     }
 
-    @Test("unlinked, right louder")
-    func rightLouder() {
-        let s = MixerFaderMath.softwareReturn(left: -20, right: -2.5, linked: false, linkedLevel: 0)
-        #expect(s == SoftwareReturnFaderSplit(hardwareLevel: -2.5, leftTrim: -17.5, rightTrim: 0))
-    }
-
-    @Test("unlinked, equal: no trim")
-    func equal() {
-        let s = MixerFaderMath.softwareReturn(left: -6, right: -6, linked: false, linkedLevel: 0)
-        #expect(s == SoftwareReturnFaderSplit(hardwareLevel: -6, leftTrim: 0, rightTrim: 0))
-    }
-
-    @Test("extreme values stay on the fader's range and never boost")
+    @Test("extreme values stay on the fader's range")
     func extremes() {
-        let low = MixerFaderMath.softwareReturn(left: -48, right: 6, linked: false, linkedLevel: 0)
-        #expect(low == SoftwareReturnFaderSplit(hardwareLevel: 6, leftTrim: -54, rightTrim: 0))
-        let out = MixerFaderMath.softwareReturn(left: -500, right: 500, linked: false, linkedLevel: 0)
-        #expect(out.hardwareLevel == 6)
-        #expect(out.leftTrim == -54)
-        #expect(MixerFaderMath.softwareReturn(left: 0, right: 0, linked: true, linkedLevel: 99).hardwareLevel == 6)
-        #expect(MixerFaderMath.softwareReturn(left: 0, right: 0, linked: true, linkedLevel: -99).hardwareLevel == -48)
-        for (l, r) in [(-48.0, -48.0), (6.0, 6.0), (-48.0, 6.0), (6.0, -48.0), (-10.0, -10.5)] {
-            let s = MixerFaderMath.softwareReturn(left: l, right: r, linked: false, linkedLevel: 0)
-            #expect(s.leftTrim <= 0 && s.rightTrim <= 0)
-            #expect(s.leftTrim == 0 || s.rightTrim == 0)
-            // Fader plus trim reproduces each side.
-            #expect(s.hardwareLevel + s.leftTrim == l)
-            #expect(s.hardwareLevel + s.rightTrim == r)
+        #expect(MixerFaderMath.softwareReturn(left: -500, right: 500, linked: false, linkedLevel: 0) == -48)
+        #expect(MixerFaderMath.softwareReturn(left: 12, right: 9, linked: false, linkedLevel: 0) == 6)
+        #expect(MixerFaderMath.softwareReturn(left: 0, right: 0, linked: true, linkedLevel: 99) == 6)
+        #expect(MixerFaderMath.softwareReturn(left: 0, right: 0, linked: true, linkedLevel: -99) == -48)
+        for (l, r) in [(-48.0, 6.0), (6.0, -48.0), (-10.0, -10.5)] {
+            let v = MixerFaderMath.softwareReturn(left: l, right: r, linked: false, linkedLevel: 0)
+            #expect(v <= l && v <= r)
         }
     }
 
@@ -283,7 +264,38 @@ struct MixerFaderMathTests {
         #expect(MixerFaderMath.master(left: -9, right: -3, linked: false, linkedLevel: 0) == -9)
         #expect(MixerFaderMath.master(left: -6, right: -6, linked: false, linkedLevel: 0) == -6)
         #expect(MixerFaderMath.master(left: -60, right: 6, linked: false, linkedLevel: 0) == -48)
-        #expect(MixerFaderMath.master(left: 12, right: 9, linked: false, linkedLevel: 0) == 6)
+    }
+}
+
+@Suite("USBDeviceConnection addressing")
+struct USBDeviceConnectionAddressingTests {
+    @Test("direct USB uses strips 32 and 33 and never a forbidden index")
+    func sameAddressing() async throws {
+        let transport = MockUSBTransport()
+        let id = USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "usb-direct")!
+        let conn = USBDeviceConnection(identifier: id, transport: transport)
+        for (selector, channel, value): (AudioPropertySelector, UInt32, PropertyValue) in [
+            (.mixerChannelLevel, 1000, .float64(-12)), (.mixerChannelMute, 1000, .bool(true)),
+            (.mixerChannelSolo, 1000, .bool(true)), (.mixerChannelLevel, 2000, .float64(-12)),
+        ] {
+            try await conn.setProperty(
+                PropertyAddress(selector: selector, element: (2 << 16) | channel), value: value)
+        }
+        #expect(transport.sentRequests.map { [$0.request, UInt8($0.value), UInt8($0.index)] }
+                == [[0xB0, 2, 32], [0xB3, 2, 32], [0xB2, 2, 32], [0xB0, 2, 33]])
+        for channel: UInt32 in [0x1001, 0x1002, 0x2001, 0x2002] {
+            await #expect(throws: DeviceConnectionError.self) {
+                try await conn.setProperty(
+                    PropertyAddress(selector: .mixerChannelLevel, element: (1 << 16) | channel),
+                    value: .float64(0))
+            }
+        }
+        await #expect(throws: DeviceConnectionError.self) {
+            try await conn.setProperty(
+                PropertyAddress(selector: .mixerChannelPan, element: (1 << 16) | 1000), value: .float64(0))
+        }
+        #expect(transport.sentRequests.count == 4)
     }
 }
 
@@ -300,46 +312,84 @@ struct USBMixerRestoreTests {
         d.set(try! JSONEncoder().encode(swReturn), forKey: "mixerState_swReturn")
     }
 
-    @Test("saved Master and Software Return reach strips 33 and 32 on both mixers, helper neutral")
+    private func makeConn() -> (XPCDeviceConnection, MockXPCTransport) {
+        let transport = MockXPCTransport()
+        return (XPCDeviceConnection(
+            identifier: USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+                productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "restore")!,
+            transport: transport), transport)
+    }
+
+    @Test("saved Master and Software Return reach strips 33 and 32 on both mixers, helper neutral after")
     func restoreWritesBothMixers() async throws {
         let d = defaults("USBMixerRestoreTests.both")
         save(d, swReturn: MixerChannelState(level: -4, pan: 0.5, isMuted: true, isSoloed: true))
-        d.set(-12.0, forKey: "mixerMasterLevel_0")
-        d.set(-6.0, forKey: "mixerMasterLevel_1")
+        d.set(-12.0, forKey: "mixerMasterLevel_0"); d.set(-6.0, forKey: "mixerMasterLevel_1")
         d.set(-12.0, forKey: "mixerMasterLeftLevel_0"); d.set(-12.0, forKey: "mixerMasterRightLevel_0")
         d.set(-6.0, forKey: "mixerMasterLeftLevel_1"); d.set(-6.0, forKey: "mixerMasterRightLevel_1")
         d.set(true, forKey: "mixerMasterFadersLinked")
         d.set(-4.0, forKey: "mixerSWReturnLeftLevel_0"); d.set(-4.0, forKey: "mixerSWReturnRightLevel_0")
         d.set(-20.0, forKey: "mixerSWReturnLeftLevel_1"); d.set(-20.0, forKey: "mixerSWReturnRightLevel_1")
         d.set(true, forKey: "mixerSWReturnFadersLinked")
-        d.set(0, forKey: "mixerSoftwareReturnSource_0")
-        d.set(2, forKey: "mixerSoftwareReturnSource_1")
+        d.set(2, forKey: "mixerSoftwareReturnSource_0")
+        d.set(0, forKey: "mixerSoftwareReturnSource_1")
 
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(
-            identifier: USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
-                productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "restore")!,
-            transport: transport)
-        await conn.restoreReturnAndMaster(helperMixer: 0, defaults: d)
-
+        let (conn, transport) = makeConn()
+        let done = await conn.restoreReturnAndMaster(helperMixer: 0, defaults: d)
+        #expect(done)
         let wire = transport.setPropertyCalls.map { [UInt16($0.bRequest), $0.wValue, $0.wIndex, UInt16($0.data[0])] }
         #expect(wire == [
-            // mixer ID 1: Master -12 dB, Software Return -4 dB, muted, soloed
             [0xB0, 1, 33, 36], [0xB0, 1, 32, 44], [0xB3, 1, 32, 1], [0xB2, 1, 32, 1],
-            // mixer ID 2: Master -6 dB, Software Return -20 dB (a non-default source too)
             [0xB0, 2, 33, 42], [0xB0, 2, 32, 28], [0xB3, 2, 32, 1], [0xB2, 2, 32, 1],
         ])
-        // The helper's level and mute are neutral; pan is as saved.
         #expect(transport.swReturnLevelCalls == [0])
         #expect(transport.swReturnMuteCalls == [false])
         #expect(transport.swReturnPanCalls == [0.5])
+        // On because mixer 2 uses the default pair.
+        #expect(transport.swReturnProcessingCalls == [true])
+        #expect(transport.swReturnChannelLevelCalls.isEmpty)
         for call in transport.setPropertyCalls {
             #expect(![1000, 2000, 0x1001, 0x1002, 0x2001, 0x2002].contains(call.wIndex))
         }
     }
 
-    @Test("unlinked faders: louder side to the unit, difference to the helper; Master takes the quieter")
-    func unlinkedPlan() {
+    @Test("every unit write lands before the helper is made neutral")
+    func unitBeforeHelper() async {
+        let d = defaults("USBMixerRestoreTests.order")
+        let (conn, transport) = makeConn()
+        await conn.restoreReturnAndMaster(defaults: d)
+        let firstHelper = transport.events.firstIndex { $0.hasPrefix("helper") }
+        let lastUnit = transport.events.lastIndex { $0.hasPrefix("unit") }
+        #expect(transport.events.filter { $0.hasPrefix("unit") }.count == 8)
+        #expect(lastUnit != nil && firstHelper != nil && lastUnit! < firstHelper!)
+    }
+
+    @Test("a failed unit write is retried once and then the helper is left alone")
+    func failedUnitWrite() async {
+        let d = defaults("USBMixerRestoreTests.fail")
+        let (conn, transport) = makeConn()
+        transport.failWIndex = 32
+        let done = await conn.restoreReturnAndMaster(defaults: d, retryDelay: .milliseconds(1))
+        #expect(!done)
+        #expect(transport.events.allSatisfy { $0.hasPrefix("unit") })
+        #expect(transport.swReturnLevelCalls.isEmpty && transport.swReturnMuteCalls.isEmpty)
+        #expect(transport.swReturnPanCalls.isEmpty && transport.swReturnProcessingCalls.isEmpty)
+        // Each failing strip-32 write was tried twice (3 writes x 2 mixers x 2).
+        #expect(transport.events.filter { $0.hasSuffix(":32") }.count == 12)
+    }
+
+    @Test("a write that fails once is retried and the restore completes")
+    func retrySucceeds() async {
+        let d = defaults("USBMixerRestoreTests.retry")
+        let (conn, transport) = makeConn()
+        transport.failFirstSets = 1
+        let done = await conn.restoreReturnAndMaster(defaults: d, retryDelay: .milliseconds(1))
+        #expect(done)
+        #expect(transport.swReturnLevelCalls == [0])
+    }
+
+    @Test("unlinked faders: the quieter side goes to the unit, the helper gets no per-side gains")
+    func unlinkedPlan() async {
         let d = defaults("USBMixerRestoreTests.unlinked")
         save(d, swReturn: MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false))
         d.set(false, forKey: "mixerSWReturnFadersLinked")
@@ -347,54 +397,32 @@ struct USBMixerRestoreTests {
         for m in 0..<2 {
             d.set(-3.0, forKey: "mixerSWReturnLeftLevel_\(m)"); d.set(-9.0, forKey: "mixerSWReturnRightLevel_\(m)")
             d.set(-2.0, forKey: "mixerMasterLeftLevel_\(m)"); d.set(-5.0, forKey: "mixerMasterRightLevel_\(m)")
-            d.set(0.0, forKey: "mixerMasterLevel_\(m)")
         }
-        let steps = USBMixerRestorePlan.steps(for: .load(defaults: d), helperMixer: 1)
-        // Only per-side gains: a level message first would let the quieter
-        // side play at 0 dB until the second message arrived.
-        #expect(steps.first == .helperGain(.sides(left: 0, right: -6)))
-        #expect(steps.contains(.helperMute(false)))
+        let steps = USBMixerRestorePlan.steps(for: .load(defaults: d))
         for m: UInt32 in [1, 2] {
             #expect(steps.contains(.hardware(
                 PropertyAddress(selector: .mixerChannelLevel, element: (m << 16) | 33), .float64(-5))))
             #expect(steps.contains(.hardware(
-                PropertyAddress(selector: .mixerChannelLevel, element: (m << 16) | 32), .float64(-3))))
+                PropertyAddress(selector: .mixerChannelLevel, element: (m << 16) | 32), .float64(-9))))
         }
+        let (conn, transport) = makeConn()
+        await conn.restoreReturnAndMaster(defaults: d)
+        #expect(transport.swReturnChannelLevelCalls.isEmpty)
+        #expect(transport.swReturnLevelCalls == [0])
     }
 
-    @Test("unlinked restore sends only per-side gains to the helper, never a level that resets both")
-    func unlinkedHelperMessages() async {
-        let d = defaults("USBMixerRestoreTests.helperMessages")
-        save(d, swReturn: MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false))
-        d.set(false, forKey: "mixerSWReturnFadersLinked")
-        d.set(0, forKey: "mixerSoftwareReturnSource_0")
-        d.set(-3.0, forKey: "mixerSWReturnLeftLevel_0"); d.set(-9.0, forKey: "mixerSWReturnRightLevel_0")
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(
-            identifier: USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
-                productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "restore2")!,
-            transport: transport)
-        await conn.restoreReturnAndMaster(helperMixer: 0, defaults: d)
-        #expect(transport.swReturnLevelCalls.isEmpty)
-        #expect(transport.swReturnChannelLevelCalls.map { [Double($0.channel), $0.dB] } == [[0, 0], [1, -6]])
-        // The unit's Software Return fader gets the louder side (-3 dB).
-        #expect(transport.setPropertyCalls.contains { $0.wValue == 1 && $0.wIndex == 32 && $0.bRequest == 0xB0 && $0.data == Data([45]) })
-    }
-
-    @Test("a split with differing sides yields only side gains; equal sides yield neutral")
-    func helperGainDecision() {
-        #expect(MixerFaderMath.softwareReturn(left: -3, right: -9, linked: false, linkedLevel: 0).helperGain
-                == .sides(left: 0, right: -6))
-        #expect(MixerFaderMath.softwareReturn(left: -3, right: -3, linked: false, linkedLevel: 0).helperGain == .neutral)
-        #expect(MixerFaderMath.softwareReturn(left: -3, right: -9, linked: true, linkedLevel: -3).helperGain == .neutral)
+    @Test("processing is off when neither mixer uses the default pair")
+    func processingRule() {
+        let d = defaults("USBMixerRestoreTests.processing")
+        d.set(1, forKey: "mixerSoftwareReturnSource_0"); d.set(3, forKey: "mixerSoftwareReturnSource_1")
+        #expect(USBMixerRestorePlan.steps(for: .load(defaults: d)).contains(.helperProcessing(false)))
     }
 
     @Test("neutral defaults when nothing is saved")
     func nothingSaved() {
         let d = defaults("USBMixerRestoreTests.empty")
-        let steps = USBMixerRestorePlan.steps(for: .load(defaults: d), helperMixer: 0)
-        #expect(steps.first == .helperGain(.neutral))
-        #expect(steps.contains(.helperMute(false)))
+        let steps = USBMixerRestorePlan.steps(for: .load(defaults: d))
+        #expect(steps.contains(.helperNeutral))
         #expect(steps.contains(.helperPan(0)))
         let hardware = steps.compactMap { step -> (UInt32, PropertyValue)? in
             if case .hardware(let a, let v) = step { return (a.element, v) } else { return nil }

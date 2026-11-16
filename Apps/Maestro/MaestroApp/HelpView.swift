@@ -295,7 +295,7 @@ struct HelpView: View {
             bullet("SW Return fader, mute and solo, and the Master fader, are done by the Symphony's own mixer", "they work whichever device you play through, **Maestro USB** or **USB Audio**.")
             bullet("They change only outputs that are fed from that mixer", "set this in Output Routing. An output fed from somewhere else, such as a headphone output on its own source, does not change.")
             bullet("SW Return pan still needs Maestro USB", "the Symphony's mixer has no pan for SW Return. Maestro applies it to your Mac's audio, and only when that audio plays through **Symphony I/O : Maestro USB**.")
-            bullet("SW Return left and right faders", "the unit has one SW Return fader. With the faders unlinked, the louder side sets it and Maestro lowers the other side. On the Master, the unit has one fader as well, so with the faders unlinked it follows the quieter side.")
+            bullet("Unlinked left and right faders", "the Symphony's mixer has one fader per strip, so when the faders are unlinked the quieter side sets the level for both SW Return and Master.")
             bullet("SW Return meter", "it shows the signal before the fader and before mute.")
             bullet("The headphone knobs control their own outputs", "independently of the mixer.")
             bullet("Hardware input faders affect the live inputs being monitored", "not your Mac's playback.")

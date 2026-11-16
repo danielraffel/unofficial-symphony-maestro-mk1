@@ -22,8 +22,18 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
     /// Error to throw for setProperty calls (simulates a failed USB write).
     var nextSetError: Error?
 
+    /// Unit and helper calls in the order they were made.
+    var events: [String] = []
+    /// Fail the first N setProperty calls (a failed USB write).
+    var failFirstSets = 0
+    /// Fail every setProperty call at this wIndex.
+    var failWIndex: UInt16?
+
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
         setPropertyCalls.append((bRequest, wValue, wIndex, data))
+        events.append("unit:\(String(bRequest, radix: 16)):\(wValue):\(wIndex)")
+        if failFirstSets > 0 { failFirstSets -= 1; throw DeviceConnectionError.transportError("x") }
+        if let f = failWIndex, f == wIndex { throw DeviceConnectionError.transportError("x") }
         if let err = nextSetError { throw err }
     }
 
@@ -40,6 +50,7 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
     var swReturnMuteCalls: [Bool] = []
 
     func setSwReturnMute(_ muted: Bool) {
+        events.append("helperMute:\(muted)")
         swReturnMuteCalls.append(muted)
     }
 
@@ -52,6 +63,7 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
     var swReturnLevelCalls: [Double] = []
 
     func setSwReturnLevel(_ dB: Double) {
+        events.append("helperLevel:\(dB)")
         swReturnLevelCalls.append(dB)
     }
 

@@ -70,34 +70,6 @@ public enum USBMixerAddressing {
 
 // MARK: - Fader arithmetic
 
-/// What one Software Return fader pair becomes: one hardware fader plus the
-/// helper's per-side attenuation.
-public struct SoftwareReturnFaderSplit: Equatable, Sendable {
-    /// The mixer strip's single fader, dB.
-    public let hardwareLevel: Double
-    /// Attenuation relative to `hardwareLevel`, dB. Never above 0; one side of
-    /// an unlinked pair is exactly 0.
-    public let leftTrim: Double
-    public let rightTrim: Double
-}
-
-/// What the helper's software stage should hold for the Software Return.
-public enum SoftwareReturnHelperGain: Equatable, Sendable {
-    /// 0 dB on both sides.
-    case neutral
-    /// Attenuation of each side, dB (at most 0, at least one is 0).
-    case sides(left: Double, right: Double)
-}
-
-extension SoftwareReturnFaderSplit {
-    /// The helper's `setSwReturnLevel` overwrites both sides, so when the sides
-    /// differ only the per-side gains are sent: sending a level first would let
-    /// the quieter side play at 0 dB until the second message arrives.
-    public var helperGain: SoftwareReturnHelperGain {
-        leftTrim == 0 && rightTrim == 0 ? .neutral : .sides(left: leftTrim, right: rightTrim)
-    }
-}
-
 public enum MixerFaderMath {
     /// The mixer's fader range, dB.
     public static let range: ClosedRange<Double> = -48...6
@@ -106,26 +78,17 @@ public enum MixerFaderMath {
         value.isNaN ? 0 : min(max(value, range.lowerBound), range.upperBound)
     }
 
-    /// Software Return. The strip has one fader, so an unlinked pair puts the
-    /// louder side on it and leaves the difference to the helper's per-side
-    /// gains. Linked, the helper stays at 0 dB on both sides and the fader
-    /// takes `linkedLevel`.
+    /// Software Return on USB. The unit has one fader per strip, so an unlinked
+    /// pair sends the quieter side: never louder than either fader shows. The
+    /// helper stays at 0 dB.
     public static func softwareReturn(
         left: Double, right: Double, linked: Bool, linkedLevel: Double
-    ) -> SoftwareReturnFaderSplit {
-        if linked {
-            return SoftwareReturnFaderSplit(
-                hardwareLevel: clamp(linkedLevel), leftTrim: 0, rightTrim: 0)
-        }
-        let l = clamp(left), r = clamp(right)
-        let loud = max(l, r)
-        return SoftwareReturnFaderSplit(
-            hardwareLevel: loud, leftTrim: l - loud, rightTrim: r - loud)
+    ) -> Double {
+        linked ? clamp(linkedLevel) : min(clamp(left), clamp(right))
     }
 
-    /// Master. The unit has one Master fader per mixer and no software stage,
-    /// so an unlinked pair sends the quieter side: never louder than either
-    /// fader shows.
+    /// Master. Same rule: one fader per mixer, no software stage, so an
+    /// unlinked pair sends the quieter side.
     public static func master(
         left: Double, right: Double, linked: Bool, linkedLevel: Double
     ) -> Double {
@@ -183,34 +146,21 @@ public enum USBMixerRestorePlan {
     public enum Step: Equatable, Sendable {
         /// A write to the unit's mixer, addressed with the real strip numbers.
         case hardware(PropertyAddress, PropertyValue)
-        /// The helper's software Software Return stage.
-        case helperGain(SoftwareReturnHelperGain)
-        case helperMute(Bool)
+        /// The helper's software stage to 0 dB, unmuted.
+        case helperNeutral
         case helperPan(Double)
+        case helperProcessing(Bool)
     }
 
-    /// - Parameter helperMixer: the mixer (0 or 1) whose page last drove the
-    ///   helper. The helper has one software stage for both mixers; it only
-    ///   carries pan and the unlinked left/right difference, and only for a
-    ///   mixer whose Software Return source is USB playback 1-2.
-    public static func steps(for state: USBMixerSavedState, helperMixer: Int) -> [Step] {
-        func split(_ mix: USBMixerSavedState.Mix) -> SoftwareReturnFaderSplit {
-            MixerFaderMath.softwareReturn(
-                left: mix.softwareReturnLeft, right: mix.softwareReturnRight,
-                linked: state.softwareReturnLinked, linkedLevel: mix.softwareReturnLeft)
-        }
-        // The unit's mixer is the authority for level and mute. A helper that
-        // still holds an attenuation or mute from an older app must not apply
-        // it a second time, so it is written neutral; only the unlinked
-        // left/right difference of a mixer on USB playback 1-2 stays in it.
-        let order = [helperMixer, 1 - helperMixer].filter { (0..<state.mixes.count).contains($0) }
-        let owner = order.first(where: { state.mixes[$0].softwareReturnSource == 0 })
-        var steps: [Step] = [
-            .helperGain(owner.map { split(state.mixes[$0]).helperGain } ?? .neutral),
-            .helperMute(false),
-        ]
-        steps.append(.helperPan(state.softwareReturn.pan))
-
+    /// The unit's strips come first, for both mixers. The helper may still hold
+    /// an attenuation or mute from an older Maestro while the unit sits at 0 dB,
+    /// so it is only made neutral once the unit has taken its values: no
+    /// sequence is louder than the faders show.
+    ///
+    /// - Parameter helperMixer: kept for the pan rule (the helper has one pan
+    ///   for both mixers, shared state); the level is no longer split.
+    public static func steps(for state: USBMixerSavedState, helperMixer: Int = 0) -> [Step] {
+        var steps: [Step] = []
         for (m, mix) in state.mixes.enumerated() {
             let id = UInt32(m + 1) << 16
             func at(_ selector: AudioPropertySelector, _ strip: UInt16) -> PropertyAddress {
@@ -223,7 +173,9 @@ public enum USBMixerRestorePlan {
                     linked: state.masterLinked, linkedLevel: mix.masterLevel))))
             steps.append(.hardware(
                 at(.mixerChannelLevel, USBMixerStrip.softwareReturn),
-                .float64(split(mix).hardwareLevel)))
+                .float64(MixerFaderMath.softwareReturn(
+                    left: mix.softwareReturnLeft, right: mix.softwareReturnRight,
+                    linked: state.softwareReturnLinked, linkedLevel: mix.softwareReturnLeft))))
             steps.append(.hardware(
                 at(.mixerChannelMute, USBMixerStrip.softwareReturn),
                 .bool(state.softwareReturn.isMuted)))
@@ -231,6 +183,10 @@ public enum USBMixerRestorePlan {
                 at(.mixerChannelSolo, USBMixerStrip.softwareReturn),
                 .bool(state.softwareReturn.isSoloed)))
         }
+        steps.append(.helperNeutral)
+        steps.append(.helperPan(state.softwareReturn.pan))
+        // Same rule as the Mixer page: on when either mixer uses the default pair.
+        steps.append(.helperProcessing(state.mixes.contains { $0.softwareReturnSource == 0 }))
         return steps
     }
 }
