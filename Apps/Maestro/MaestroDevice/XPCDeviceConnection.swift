@@ -50,9 +50,8 @@ public protocol XPCTransport: Sendable {
     /// array.
     func getSoftwareOutputPeaks() async -> [Float]?
 
-    /// Set software mute on the SW Return audio path.
-    /// USB audio routes directly to DAC, bypassing the FPGA mixer — so
-    /// hardware mixer mute has no effect. This zeros the render buffer instead.
+    /// Set the proxy's software mute on the SW Return audio path. Maestro keeps
+    /// this unmuted: the unit's own mixer (strip 32) owns Software Return mute.
     func setSwReturnMute(_ muted: Bool)
 
     /// Send a mixer parameter command directly (bypasses generic setProperty).
@@ -60,21 +59,20 @@ public protocol XPCTransport: Sendable {
     /// nValue = (mixer << 16) | channel, data = 1 byte value.
     func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8)
 
-    /// Set SW Return fader level in dB. USB audio bypasses the FPGA mixer,
-    /// so hardware fader commands have no effect. This scales samples in
-    /// the proxy's render callback. Range: -48 to +6 dB.
+    /// Set the proxy's software SW Return gain in dB (both sides). Maestro keeps
+    /// this at 0 dB: the unit's own mixer (strip 32) owns the Software Return
+    /// fader. Overwrites both per-side gains.
     func setSwReturnLevel(_ dB: Double)
 
     /// Set one side of the software return independently.
     func setSwReturnChannelLevel(channel: Int, dB: Double)
 
-    /// Set SW Return pan position. USB audio bypasses the FPGA mixer,
-    /// so hardware pan commands have no effect. Stereo balance preserves unity
+    /// Set SW Return pan position. The unit's Software Return strip has no pan,
+    /// so this is a balance in the proxy. Stereo balance preserves unity
     /// at center and attenuates the opposite side. Range: -1.0 (left) to +1.0 (right).
     func setSwReturnPan(_ pan: Double)
 
     /// Select whether software gain/pan/mute should process USB channels 1-2.
-    /// Other source pairs use the FPGA mixer controls directly.
     func setSwReturnProcessing(_ enabled: Bool)
 
     /// Set FPGA routing mode: 0 = DAW (null passthrough), 1 = Direct Monitor (1:1 passthrough).
@@ -665,6 +663,18 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         await listenerStorage.notifyListeners(for: address, change: change)
     }
 
+    /// Set the helper's software Software Return gain (neutral, or the per-side
+    /// attenuation of an unlinked pair).
+    public func applySoftwareReturnGain(_ gain: SoftwareReturnHelperGain) {
+        switch gain {
+        case .neutral:
+            transport.setSwReturnLevel(0)
+        case .sides(let left, let right):
+            transport.setSwReturnChannelLevel(channel: 0, dB: left)
+            transport.setSwReturnChannelLevel(channel: 1, dB: right)
+        }
+    }
+
     /// Put the unit's Master and Software Return strips, for both mixers, and
     /// the helper's software stage back to what Maestro has saved.
     ///
@@ -678,10 +688,8 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         let state = USBMixerSavedState.load(defaults: defaults)
         for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer) {
             switch step {
-            case .helperLevel(let dB): transport.setSwReturnLevel(dB)
+            case .helperGain(let gain): applySoftwareReturnGain(gain)
             case .helperMute(let muted): transport.setSwReturnMute(muted)
-            case .helperSideLevel(let side, let dB):
-                transport.setSwReturnChannelLevel(channel: side, dB: dB)
             case .helperPan(let pan): transport.setSwReturnPan(pan)
             case .hardware(let address, let value):
                 do { try await setProperty(address, value: value) } catch {

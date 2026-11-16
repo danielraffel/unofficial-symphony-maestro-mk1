@@ -350,10 +350,10 @@ struct USBMixerRestoreTests {
             d.set(0.0, forKey: "mixerMasterLevel_\(m)")
         }
         let steps = USBMixerRestorePlan.steps(for: .load(defaults: d), helperMixer: 1)
-        #expect(steps.contains(.helperLevel(0)))
+        // Only per-side gains: a level message first would let the quieter
+        // side play at 0 dB until the second message arrived.
+        #expect(steps.first == .helperGain(.sides(left: 0, right: -6)))
         #expect(steps.contains(.helperMute(false)))
-        #expect(steps.contains(.helperSideLevel(side: 0, dB: 0)))
-        #expect(steps.contains(.helperSideLevel(side: 1, dB: -6)))
         for m: UInt32 in [1, 2] {
             #expect(steps.contains(.hardware(
                 PropertyAddress(selector: .mixerChannelLevel, element: (m << 16) | 33), .float64(-5))))
@@ -362,11 +362,38 @@ struct USBMixerRestoreTests {
         }
     }
 
+    @Test("unlinked restore sends only per-side gains to the helper, never a level that resets both")
+    func unlinkedHelperMessages() async {
+        let d = defaults("USBMixerRestoreTests.helperMessages")
+        save(d, swReturn: MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false))
+        d.set(false, forKey: "mixerSWReturnFadersLinked")
+        d.set(0, forKey: "mixerSoftwareReturnSource_0")
+        d.set(-3.0, forKey: "mixerSWReturnLeftLevel_0"); d.set(-9.0, forKey: "mixerSWReturnRightLevel_0")
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(
+            identifier: USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+                productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "restore2")!,
+            transport: transport)
+        await conn.restoreReturnAndMaster(helperMixer: 0, defaults: d)
+        #expect(transport.swReturnLevelCalls.isEmpty)
+        #expect(transport.swReturnChannelLevelCalls.map { [Double($0.channel), $0.dB] } == [[0, 0], [1, -6]])
+        // The unit's Software Return fader gets the louder side (-3 dB).
+        #expect(transport.setPropertyCalls.contains { $0.wValue == 1 && $0.wIndex == 32 && $0.bRequest == 0xB0 && $0.data == Data([45]) })
+    }
+
+    @Test("a split with differing sides yields only side gains; equal sides yield neutral")
+    func helperGainDecision() {
+        #expect(MixerFaderMath.softwareReturn(left: -3, right: -9, linked: false, linkedLevel: 0).helperGain
+                == .sides(left: 0, right: -6))
+        #expect(MixerFaderMath.softwareReturn(left: -3, right: -3, linked: false, linkedLevel: 0).helperGain == .neutral)
+        #expect(MixerFaderMath.softwareReturn(left: -3, right: -9, linked: true, linkedLevel: -3).helperGain == .neutral)
+    }
+
     @Test("neutral defaults when nothing is saved")
     func nothingSaved() {
         let d = defaults("USBMixerRestoreTests.empty")
         let steps = USBMixerRestorePlan.steps(for: .load(defaults: d), helperMixer: 0)
-        #expect(steps.contains(.helperLevel(0)))
+        #expect(steps.first == .helperGain(.neutral))
         #expect(steps.contains(.helperMute(false)))
         #expect(steps.contains(.helperPan(0)))
         let hardware = steps.compactMap { step -> (UInt32, PropertyValue)? in

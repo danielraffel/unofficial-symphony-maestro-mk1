@@ -81,6 +81,23 @@ public struct SoftwareReturnFaderSplit: Equatable, Sendable {
     public let rightTrim: Double
 }
 
+/// What the helper's software stage should hold for the Software Return.
+public enum SoftwareReturnHelperGain: Equatable, Sendable {
+    /// 0 dB on both sides.
+    case neutral
+    /// Attenuation of each side, dB (at most 0, at least one is 0).
+    case sides(left: Double, right: Double)
+}
+
+extension SoftwareReturnFaderSplit {
+    /// The helper's `setSwReturnLevel` overwrites both sides, so when the sides
+    /// differ only the per-side gains are sent: sending a level first would let
+    /// the quieter side play at 0 dB until the second message arrives.
+    public var helperGain: SoftwareReturnHelperGain {
+        leftTrim == 0 && rightTrim == 0 ? .neutral : .sides(left: leftTrim, right: rightTrim)
+    }
+}
+
 public enum MixerFaderMath {
     /// The mixer's fader range, dB.
     public static let range: ClosedRange<Double> = -48...6
@@ -167,9 +184,8 @@ public enum USBMixerRestorePlan {
         /// A write to the unit's mixer, addressed with the real strip numbers.
         case hardware(PropertyAddress, PropertyValue)
         /// The helper's software Software Return stage.
-        case helperLevel(Double)
+        case helperGain(SoftwareReturnHelperGain)
         case helperMute(Bool)
-        case helperSideLevel(side: Int, dB: Double)
         case helperPan(Double)
     }
 
@@ -178,25 +194,21 @@ public enum USBMixerRestorePlan {
     ///   carries pan and the unlinked left/right difference, and only for a
     ///   mixer whose Software Return source is USB playback 1-2.
     public static func steps(for state: USBMixerSavedState, helperMixer: Int) -> [Step] {
-        var steps: [Step] = [
-            // The unit's mixer is the authority for level and mute. A helper
-            // that still holds an attenuation or mute from an older app must
-            // not apply it a second time.
-            .helperLevel(0),
-            .helperMute(false),
-        ]
         func split(_ mix: USBMixerSavedState.Mix) -> SoftwareReturnFaderSplit {
             MixerFaderMath.softwareReturn(
                 left: mix.softwareReturnLeft, right: mix.softwareReturnRight,
                 linked: state.softwareReturnLinked, linkedLevel: mix.softwareReturnLeft)
         }
+        // The unit's mixer is the authority for level and mute. A helper that
+        // still holds an attenuation or mute from an older app must not apply
+        // it a second time, so it is written neutral; only the unlinked
+        // left/right difference of a mixer on USB playback 1-2 stays in it.
         let order = [helperMixer, 1 - helperMixer].filter { (0..<state.mixes.count).contains($0) }
-        if let m = order.first(where: { state.mixes[$0].softwareReturnSource == 0 }),
-           !state.softwareReturnLinked {
-            let s = split(state.mixes[m])
-            steps.append(.helperSideLevel(side: 0, dB: s.leftTrim))
-            steps.append(.helperSideLevel(side: 1, dB: s.rightTrim))
-        }
+        let owner = order.first(where: { state.mixes[$0].softwareReturnSource == 0 })
+        var steps: [Step] = [
+            .helperGain(owner.map { split(state.mixes[$0]).helperGain } ?? .neutral),
+            .helperMute(false),
+        ]
         steps.append(.helperPan(state.softwareReturn.pan))
 
         for (m, mix) in state.mixes.enumerated() {

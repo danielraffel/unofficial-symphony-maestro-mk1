@@ -1221,11 +1221,7 @@ struct MixerView: View {
         } catch {
             print("[Maestro] Mixer SW Return level failed: \(error)")
         }
-        xpcDev.setSwReturnLevel(0)
-        if softwareReturnSource == 0 && (split.leftTrim != 0 || split.rightTrim != 0) {
-            xpcDev.setSwReturnChannelLevel(channel: 0, dB: split.leftTrim)
-            xpcDev.setSwReturnChannelLevel(channel: 1, dB: split.rightTrim)
-        }
+        xpcDev.applySoftwareReturnGain(softwareReturnSource == 0 ? split.helperGain : .neutral)
     }
 
     private func writeSWReturnPan(_ pan: Double) async {

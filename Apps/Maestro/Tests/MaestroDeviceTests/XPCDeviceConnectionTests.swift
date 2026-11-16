@@ -55,6 +55,12 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
         swReturnLevelCalls.append(dB)
     }
 
+    var swReturnChannelLevelCalls: [(channel: Int, dB: Double)] = []
+
+    func setSwReturnChannelLevel(channel: Int, dB: Double) {
+        swReturnChannelLevelCalls.append((channel, dB))
+    }
+
     var swReturnPanCalls: [Double] = []
 
     func setSwReturnPan(_ pan: Double) {
