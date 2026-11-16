@@ -1,8 +1,7 @@
 {
   "appVersion": "0.9.0",
-  "buildNumber": 1039,
-  "dextVersion": "0.11.0",
-  "dextBuild": 124,
-  "dextPortCount": 2,
-  "dextCDHash": "eafab486a30dd120326009e94e6241f6dd5a8996"
+  "buildNumber": 1041,
+  "dextVersion": "0.11.1",
+  "dextBuild": 125,
+  "dextPortCount": 2
 }

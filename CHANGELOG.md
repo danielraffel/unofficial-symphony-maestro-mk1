@@ -2,7 +2,7 @@
 
 ## 0.9.0 (beta)
 
-The first beta, for people helping to test two Symphony I/O units on one ThunderBridge (64 channels). It contains everything in 0.8.40. Betas may have bugs; if you rely on your setup, stay on Stable.
+The first beta, for people helping to test two Symphony I/O units on one ThunderBridge (64 channels), or a Symphony I/O on a Symphony 64 PCIe card. It contains everything in 0.8.40. Betas may have bugs; if you rely on your setup, stay on Stable.
 
 ### Changes that may affect your setup
 
@@ -12,10 +12,12 @@ The first beta, for people helping to test two Symphony I/O units on one Thunder
 ### New
 
 - **64 channels with two Symphony I/O units.** Connect the second unit to ThunderBridge port 2, then choose 64 channels (two units) under Ports in System Setup › Device Info, or pick "Symphony I/O: ThunderBridge 64" as the Source. Channels 33-64 are the unit on port 2. If no second unit is found, the driver stays at 32 channels and Device Info says why. This has not yet been confirmed on real hardware.
+- **A Symphony I/O on a Symphony 64 PCIe card should now be recognised (experimental).** With the PCIe card in a Thunderbolt chassis, Maestro showed the Symphony I/O as an "Apogee DD-16X" and none of Maestro's settings reached it. It should now appear as a Symphony I/O with its option cards. This has not yet been confirmed on real hardware.
 
 ### For testers
 
 - Please report whether 64 channels work with two units, and whether 32 channels still work as before with one.
+- If you use the Symphony 64 PCIe card: please report whether Device Info now lists your option cards, whether Maestro's controls work, and whether audio plays and records. If it still shows a different unit, press Copy next to Device Info and send the text.
 - If you have one of the 64-channel test builds (9004-9006), install this package by hand once. When Maestro next checks for updates it sets the update channel to Beta, and you keep getting betas.
 - To leave the beta, choose Stable under Update channel in Device Settings › Preferences; Maestro offers to reinstall the latest stable version.
 
