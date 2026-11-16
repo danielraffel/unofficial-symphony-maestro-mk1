@@ -818,11 +818,17 @@ struct SystemSetupView: View {
     /// for the virtual device to follow and for a DAW to take the rate back, so the
     /// reconcile loop leaves the picker alone until the write has resolved.
     @State private var rateWriteInFlight = false
-    /// Set from a rate selection until the hardware reports the new rate (and,
-    /// over USB, until "Maestro USB" has followed it). The picker is disabled
-    /// meanwhile: a second selection sent while the device is still switching
-    /// can be dropped, or be judged "already there" against the rate the first
-    /// change is about to leave. The same rule applies over USB and ThunderBridge.
+    /// Set from a rate selection until the Symphony has finished switching. The
+    /// picker is disabled meanwhile: a second selection sent while the device is
+    /// still switching can be dropped, or be judged "already there" against the
+    /// rate the first change is about to leave.
+    ///
+    /// The computer reporting the new rate is not the end of the change: the
+    /// Symphony's clock re-acquires after that (its relays click a moment
+    /// later). Apogee's daemon treated the source as stabilized 5 seconds after
+    /// a rate change (the same window as `AppState.suppressClockLockReporting`),
+    /// so the picker comes back when that window ends. Same rule over USB and
+    /// ThunderBridge.
     @State private var rateSettling = false
     /// The in-flight rate write, cancelled when a new selection supersedes it.
     @State private var rateWriteTask: Task<Void, Never>?
@@ -1685,14 +1691,18 @@ struct SystemSetupView: View {
         }
         // Only the current write may lower the flag; a superseded one leaving would
         // re-open the reconcile loop on top of the write that replaced it.
-        defer { if isCurrent() { rateWriteInFlight = false; rateSettling = false } }
+        // A change the hardware accepted keeps the picker disabled until the
+        // settle window ends; every other way out releases it at once.
+        var holdForSettle = false
+        defer {
+            if isCurrent() {
+                rateWriteInFlight = false
+                if !holdForSettle { rateSettling = false }
+            }
+        }
         do {
             let settled = try await conn.setNominalSampleRateAndWait(rate)
             guard isCurrent() else { return }
-            // ThunderBridge has no virtual device to wait for: the hardware
-            // reporting the rate is the end of the change.
-            let overUSB = appState.device is XPCDeviceConnection
-            if !overUSB { rateSettling = false }
             // Ours, not the user's: without the sentinel this assignment re-enters
             // onChange as though it were a fresh selection. Armed ONLY when it will
             // actually move the picker -- on the ordinary success path `sampleRate`
@@ -1715,10 +1725,15 @@ struct SystemSetupView: View {
             // The PLL re-acquires over the next few seconds; do not let a refresh
             // in that window report the clock as unlocked.
             appState.suppressClockLockReporting()
+            holdForSettle = true
+            let settledUntil = appState.clockLockSuppressedUntil
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(max(0, settledUntil.timeIntervalSinceNow)))
+                if isCurrent() { rateSettling = false }
+            }
             clockLocked = true
             await confirmVirtualDeviceFollowed(rate, isCurrent: isCurrent)
             guard isCurrent() else { return }
-            rateSettling = false
             await reportIfSomethingTookTheRateBack(rate, from: conn, isCurrent: isCurrent)
         } catch {
             guard isCurrent() else { return }
