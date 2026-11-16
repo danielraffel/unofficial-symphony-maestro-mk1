@@ -7,6 +7,42 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.2</title>
+      <pubDate>Mon, 16 Nov 2026 22:41:34 GMT</pubDate>
+      <sparkle:version>0.9.2</sparkle:version>
+      <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.2</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+Over USB, the Mixer's Software Return and Master controls now work the way they did in Apogee's Maestro. It contains everything in 0.9.1.
+
+Thanks to Minnietheandroid, whose [testing and report over USB](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/1#issuecomment-6887494993) showed that these controls had no effect, and led to them being rewired.
+
+### Changes that may affect your setup
+
+The first two apply over USB only. Turn your monitors down before the first playback after updating.
+
+- **The Software Return fader and mute now affect only outputs fed from that mixer.** Before, on the "Maestro USB" device, they turned Mac output 1-2 down everywhere, even on an output that did not go through the mixer. If you had Software Return turned down or muted and you listen on an output that is not fed from the mixer in Output Routing, that output will be louder after updating.
+- **The Master fader now works.** Over USB it was ignored. If a Master fader in the Mixer is not at 0 dB, outputs fed from that mixer change level to match it after updating.
+- **The link buttons on Software Return and Master are gone.** Linking and unlinking was something we added ourselves. We assumed that two fader handles meant left and right could be set separately, and that was wrong: in Apogee's Maestro each of these is one stereo fader whose two handles always move together, and the Symphony's own mixer, used over USB, has no separate left and right level at all. This goes back to the original behaviour, over USB and ThunderBridge. If you had left and right set to different levels, both are set once, on the first launch after updating, to the lower of the two, so nothing gets louder. The faders show that level and move as normal from then on.
+
+### What's fixed
+
+- **Software Return fader, mute and solo, and the Master fader, now work over USB.** They did nothing when your DAW played through "Symphony I/O : USB Audio", and Master and Software Return solo did nothing on either device. They are now done by the Symphony's own mixer, so they work whichever of the two devices your DAW uses.
+- **Your Master and Software Return settings are put back when the Symphony reconnects** or is turned off and on, for both mixers.
+- **A sample rate choice is no longer ignored now and then.** The first time you went back to the rate Maestro started at, the choice showed for a moment and then jumped back without reaching the Symphony. Separately, a choice made while the Symphony was still switching could be dropped, so the Sample Rate menu is now greyed out for about five seconds after a change, until the Symphony has finished switching. Both apply over USB and ThunderBridge.
+
+### Release notes
+
+- The ThunderBridge driver is unchanged from 0.9.1. Over ThunderBridge the only changes are that Software Return and Master can no longer be unlinked, and the Sample Rate menu's short wait.
+- Software Return pan still needs the "Maestro USB" device.
+- If Maestro is not running when the Symphony is turned off and on, the Symphony's mixer stays at its own defaults (0 dB, not muted) until Maestro next connects.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.2/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="ozo3a/YDgqY3gTQXzK4JMdv6bsihmLRFIP1qXX0GBj1eSAlyA3ggFLg2N79AKzSlMZ4PGIlBrylTP+Ami5EGAw==" length="4242768" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.1</title>
       <pubDate>Mon, 16 Nov 2026 05:43:13 GMT</pubDate>
       <sparkle:version>0.9.1</sparkle:version>
@@ -644,6 +680,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: mhjvoNZheQwHGaagIkm7WTGfaPNFzjGfO2v6SD7SXa4zECBTSDzz2PZMXDYLrkKNj53dGx19AqWLg7Wxi9TfDw==
-length: 59974
+edSignature: 3Gy6hS9ZXSAHEp9iWHJF0ErgLBWETO6BjV5SGNOcjzzcZBHjMdv+oYEhy9l1Pd5URkh4vAIOUunaAj6Hi5gOAg==
+length: 64106
 -->
