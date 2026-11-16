@@ -86,10 +86,35 @@ struct PortSelectionTests {
         model.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
         #expect(model.selection == .port1 && model.pending == nil)
         #expect(model.notice == "64 channels needs a second unit on port 2, and none was found.")
-        // The same pick made by accident in Sound settings ends the same way.
+        // The same pick made by accident in Sound settings, while Maestro is
+        // open, ends the same way.
         var other = PortSelectionModel()
+        other.deviceReported(dataSourceID: 0, state: state(audio: stage2Capable))
         other.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
         #expect(other.selection == .port1 && other.notice == model.notice)
+    }
+
+    /// The driver keeps its last refusal until the ThunderBridge is
+    /// reconnected. Maestro 0.9.0 package 1041 showed it again after every
+    /// relaunch, as a warning about a request nobody had just made.
+    @Test("a refusal from an earlier session is not shown again; a new request is answered")
+    func refusalFromAnEarlierSession() {
+        let refusedWord = stage2Capable | SecondPortState.audioRefusedFlag | (1 << 8)
+        var model = PortSelectionModel()
+        // Maestro opens and the driver still carries the old refusal.
+        model.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
+        #expect(model.selection == .port1 && model.notice == nil)
+        // Nothing changed: still nothing to say.
+        model.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
+        #expect(model.notice == nil)
+        #expect(PortsPresentation(model: model, state: state(audio: refusedWord)).statusLine == nil)
+        // Asking again in this session gets the answer, even an identical one.
+        #expect(model.userChose(.ports1And2) == 1)
+        model.deviceReported(dataSourceID: 1, state: state(audio: refusedWord))
+        model.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
+        #expect(model.notice == "64 channels needs a second unit on port 2, and none was found.")
+        // The copied details keep the driver's own words throughout.
+        #expect(state(audio: refusedWord).reportLines.contains { $0.contains("64 channels refused") })
     }
 
     @Test("a fallback the driver made on its own is explained")
@@ -325,7 +350,10 @@ struct PortsWordingTests {
     @Test("after a refusal: the plain reason once, under the picker, and no port-2 rows")
     func layoutAfterRefusal() {
         let s = state(audio: stage2Capable | SecondPortState.audioRefusedFlag | (1 << 8))
-        let shown = PortsPresentation(model: model(0, s), state: s)
+        // Asked for in this session, then refused.
+        var asked = model(0, state(audio: stage2Capable), choose: .ports1And2)
+        asked.deviceReported(dataSourceID: 0, state: s)
+        let shown = PortsPresentation(model: asked, state: s)
         #expect(shown.statusLine == "64 channels needs a second unit on port 2, and none was found.")
         // Drawn as a warning, not as more grey explanation (rehearsal 2026-11-15).
         #expect(shown.statusIsRefusal)

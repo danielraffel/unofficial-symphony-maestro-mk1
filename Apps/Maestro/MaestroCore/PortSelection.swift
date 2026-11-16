@@ -123,6 +123,14 @@ public struct PortSelectionModel: Sendable, Equatable {
     public private(set) var notice: String?
     /// A choice made in Maestro that the device has not confirmed yet.
     public private(set) var pending: PortSelection?
+    /// The driver keeps its last refusal or fallback until the ThunderBridge
+    /// is reconnected, so a Maestro opened later would show a warning about a
+    /// request made in an earlier session. When the first report this model
+    /// receives already carries one, its audio word is kept here and that
+    /// same, unchanged answer is not shown. A new request from Maestro, or
+    /// any change in the driver's answer, clears it.
+    private var inheritedProblemAudio: UInt32?
+    private var hasReport = false
 
     public init() {}
 
@@ -148,6 +156,7 @@ public struct PortSelectionModel: Sendable, Equatable {
     public mutating func userChose(_ choice: PortSelection) -> UInt32? {
         guard let selection, pending == nil, selection != choice else { return nil }
         pending = choice
+        inheritedProblemAudio = nil   // whatever comes back now answers this request
         return choice.rawValue
     }
 
@@ -162,18 +171,27 @@ public struct PortSelectionModel: Sendable, Equatable {
     public mutating func deviceReported(dataSourceID: UInt32?, state: SecondPortState?) {
         selection = PortSelection(dataSourceID: dataSourceID)
         guard let selection else {
+            // No selector: back to a model that has seen nothing.
             pending = nil
             notice = nil
+            inheritedProblemAudio = nil
+            hasReport = false
             return
         }
         if pending == selection { pending = nil }
+        let firstReport = !hasReport
+        hasReport = true
         // The driver's explanation is only worth showing while 32 is what runs,
         // in plain words (the copied details keep the driver's own).
         if selection == .port1, let state, !state.audioActive {
-            notice = state.plainProblemText
+            let problem = state.plainProblemText
+            if firstReport, problem != nil, pending == nil { inheritedProblemAudio = state.audio }
+            if inheritedProblemAudio != state.audio { inheritedProblemAudio = nil }
+            notice = inheritedProblemAudio == nil ? problem : nil
             // A refusal is the answer to the pending request.
             if state.audioRefused || state.audioFellBack { pending = nil }
         } else {
+            inheritedProblemAudio = nil
             notice = nil
         }
     }
