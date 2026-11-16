@@ -58,10 +58,16 @@ source = Path(sys.argv[1]).read_text()
 start = source.index("private func writeSoftwareReturnSource")
 end = source.index("\n    }\n}\n\n/// A single mixer channel strip", start)
 block = source[start:end]
-assert "device is XPCDeviceConnection && source == 0" in block
-assert "ThunderBridge source 0" in block
-assert "await writeSWReturnPan(swReturnChannel.pan)" in block
-assert "await writeSWReturnMute(swReturnChannel.isMuted)" in block
-assert "await writeSWReturnSolo(swReturnChannel.isSoloed)" in block
+# USB has its own branch (the Symphony's mixer strips 32/33, unit first, then
+# the helper). Everything after its `else` is the ThunderBridge path, which
+# must still mirror the persisted pan, mute and solo into the card's
+# software-return input: source 0 there is the card's real host-playback
+# return, so it is restored, never reset.
+assert "if let xpcDev = usbDevice {" in block
+usb_start = block.index("if let xpcDev = usbDevice {")
+thunderbridge = block[block.index("\n        } else {", usb_start):]
+assert "await writeSWReturnPan(swReturnChannel.pan)" in thunderbridge
+assert "await writeSWReturnMute(swReturnChannel.isMuted)" in thunderbridge
+assert "await writeSWReturnSolo(swReturnChannel.isSoloed)" in thunderbridge
 PY
 echo "ThunderBridge mixer pan invariants: PASS"
