@@ -435,6 +435,12 @@ struct USBMixerRestoreTests {
 @Suite("Left/right pair link rule")
 struct MixerPairLinkTests {
 
+    @Test("the locked-link wording is exact")
+    func lockedWording() {
+        #expect(MixerPairLink.usbLockedHelp ==
+            "Over USB, left and right stay linked. The Symphony's mixer has one fader here. Over ThunderBridge you can set them separately.")
+    }
+
     @Test("USB with a saved linked pair: both faders show the linked level")
     func usbSavedLinked() {
         let p = MixerPairLink.shown(left: -3, right: -9, savedLinked: true, isUSB: true, linkedLevel: -5)

@@ -38,6 +38,7 @@ struct MixerView: View {
     /// Over USB the saved left/right values are only replaced once the user moves
     /// that pair's fader; until then saving leaves them as they were.
     @State private var masterPairTouched = false
+    @State private var showMasterLinkInfo = false
     @State private var swPairTouched = false
     @State private var softwareReturnSource: UInt32
     @State private var errorMessage: String?
@@ -559,6 +560,9 @@ struct MixerView: View {
         masterLevel = 0
         masterLeftLevel = 0
         masterRightLevel = 0
+        // Reset is a deliberate change: store it even over USB.
+        masterPairTouched = true
+        swPairTouched = true
         saveMixerState()
         Task {
             await syncMixerToHardware()
@@ -1049,6 +1053,8 @@ struct MixerView: View {
 
     private var masterLinkButton: some View {
                 Button {
+                    // Over USB the pair can never unlink: explain, change nothing.
+                    if usbPairsLocked { showMasterLinkInfo = true; return }
                     masterFadersLinked.toggle()
                     if masterFadersLinked {
                         let level = (masterLeftLevel + masterRightLevel) / 2.0
@@ -1081,7 +1087,10 @@ struct MixerView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: mixerControlRowHeight)
                 .contentShape(Rectangle())
-                .disabled(usbPairsLocked)
+                .opacity(usbPairsLocked ? 0.6 : 1)
+                .popover(isPresented: $showMasterLinkInfo, arrowEdge: .bottom) {
+                    USBLinkLockedInfo()
+                }
                 .accessibilityLabel(masterLinkLabel)
                 .accessibilityHint(usbPairsLocked ? MixerPairLink.usbLockedHelp : "")
                 .help(usbPairsLocked ? MixerPairLink.usbLockedHelp : masterLinkLabel)
@@ -1489,6 +1498,7 @@ struct MixerChannelStripView: View {
     var onStereoLinkChange: ((Bool) -> Void)? = nil
     /// Over USB the unit has one fader here: the link button stays on, greyed out.
     var stereoLinkLocked: Bool = false
+    @State private var showLinkInfo = false
     @Environment(\.colorScheme) private var colorScheme
 
     /// Height for the fader+meter area (matches Input/Output strip meter height).
@@ -1684,6 +1694,8 @@ struct MixerChannelStripView: View {
             // below the neighboring channels.
             if let linked = stereoFadersLinked {
                     Button {
+                        // Over USB the pair can never unlink: explain, change nothing.
+                        if stereoLinkLocked { showLinkInfo = true; return }
                         onStereoLinkChange?(!linked.wrappedValue)
                     } label: {
                         ZStack {
@@ -1703,7 +1715,10 @@ struct MixerChannelStripView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: mixerControlRowHeight)
                     .contentShape(Rectangle())
-                    .disabled(stereoLinkLocked)
+                    .opacity(stereoLinkLocked ? 0.6 : 1)
+                    .popover(isPresented: $showLinkInfo, arrowEdge: .bottom) {
+                        USBLinkLockedInfo()
+                    }
                     .accessibilityLabel(linked.wrappedValue ? "Unlink left and right faders" : "Link left and right faders")
                     .accessibilityHint(stereoLinkLocked ? MixerPairLink.usbLockedHelp : "")
                     .help(stereoLinkLocked ? MixerPairLink.usbLockedHelp
@@ -1916,5 +1931,17 @@ private struct EditableLevelReadout: View {
         .frame(maxWidth: .infinity)
         .frame(height: 22)
         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+    }
+}
+
+/// The popover a locked (USB) left/right link button opens.
+struct USBLinkLockedInfo: View {
+    var body: some View {
+        Text(MixerPairLink.usbLockedHelp)
+            .font(.callout)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: 300, alignment: .leading)
+            .padding(14)
     }
 }

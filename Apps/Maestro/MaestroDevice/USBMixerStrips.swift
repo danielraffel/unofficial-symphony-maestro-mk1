@@ -111,8 +111,8 @@ public enum MixerPairLink {
     }
 
     public static let usbLockedHelp =
-        "Over USB the Symphony has one fader here, so left and right stay linked. "
-        + "They can be set separately over ThunderBridge."
+        "Over USB, left and right stay linked. The Symphony's mixer has one fader here. "
+        + "Over ThunderBridge you can set them separately."
 
     public static func effectiveLinked(savedLinked: Bool, isUSB: Bool) -> Bool {
         isUSB || savedLinked
