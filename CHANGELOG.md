@@ -19,7 +19,7 @@ The first beta, for people helping to test two Symphony I/O units on one Thunder
 - If you have one of the 64-channel test builds (9004-9006), install this package by hand once. When Maestro next checks for updates it sets the update channel to Beta, and you keep getting betas.
 - To leave the beta, choose Stable under Update channel in Device Settings › Preferences; Maestro offers to reinstall the latest stable version.
 
-## 0.8.40 (candidate, not released)
+## 0.8.40
 
 Every option card now behaves the way it did in Apogee's original Maestro: the optical format, the S/PDIF coax settings, the clock choices and the channel names.
 
