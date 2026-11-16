@@ -24,6 +24,18 @@ struct UpdateChannelCopyTests {
         #expect(UpdateChannelCopy.testFeed("http://127.0.0.1:8765/appcast.xml") == "Updates are being read from a test feed: http://127.0.0.1:8765/appcast.xml")
     }
 
+    /// Rehearsal 2026-11-15: the offline message named a button ("Install
+    /// stable") that does not exist, and a feed refused before any download
+    /// was reported as a download that could not be verified.
+    @Test func failureWordingMatchesWhatHappened() {
+        #expect(!UpdateChannelCopy.feedUnreachable.contains("Install stable"))
+        #expect(UpdateChannelCopy.feedUnreachable.contains("choose Check for Updates, then press the Install button under Update channel"))
+        #expect(UpdateChannelCopy.feedRefused == "Maestro couldn't get the stable version from the update feed, so nothing was installed.")
+        #expect(!UpdateChannelCopy.feedRefused.contains("download"))
+        #expect(UpdateChannelCopy.verifyFailed == "Maestro couldn't verify the download, so nothing was installed.")
+        #expect(UpdateChannelCopy.noBetaNow == "There's no beta available right now. You'll get the next one when it is released.")
+    }
+
     /// Preferences promises no connection without a user action when
     /// scheduled checks are off; changing channel is such an action.
     @Test func automaticCheckHelpMentionsTheChannel() {

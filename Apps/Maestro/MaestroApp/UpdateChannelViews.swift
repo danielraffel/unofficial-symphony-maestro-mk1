@@ -31,8 +31,14 @@ enum UpdateChannelCopy {
     static let betaBody = "Beta versions are for testing. They arrive before they are finished, have had less testing, and may have bugs. A beta can replace the ThunderBridge driver."
     static let betaBack = "You can switch back to Stable at any time; Maestro then offers to reinstall the latest stable version."
     static let goBackTitle = "Go back to the stable version?"
-    static let feedUnreachable = "Maestro couldn't read the update feed. The channel is now Stable. To reinstall the stable version, press Install stable in Preferences when you're online."
+    static let noBetaNow = "There's no beta available right now. You'll get the next one when it is released."
+    /// Names no button label: "Install X…" carries a version and is only
+    /// shown once a feed has been read, which Check for Updates does.
+    static let feedUnreachable = "Maestro couldn't read the update feed. The channel is now Stable. To reinstall the stable version when you're online, choose Check for Updates, then press the Install button under Update channel in Preferences."
+    /// A package was downloaded and failed a check.
     static let verifyFailed = "Maestro couldn't verify the download, so nothing was installed."
+    /// The feed itself was unusable; nothing was downloaded.
+    static let feedRefused = "Maestro couldn't get the stable version from the update feed, so nothing was installed."
     static let checking = "Checking the download…"
 
     static func testFeed(_ url: String) -> String { "Updates are being read from a test feed: \(url)" }
@@ -193,11 +199,20 @@ struct UpdateChannelSheet: View {
             Text(UpdateChannelCopy.betaTitle).font(.headline)
             Text(UpdateChannelCopy.betaBody).fixedSize(horizontal: false, vertical: true)
             Text(UpdateChannelCopy.betaBack).fixedSize(horizontal: false, vertical: true)
+            // With no beta in the feed there are no notes to link to; the
+            // general releases page would only show stable versions.
+            if updates.feedHasNoCurrentBeta {
+                Text(UpdateChannelCopy.noBetaNow)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
-                Button(updates.hasCurrentBeta ? "What's in the current beta" : "Release notes") {
-                    NSWorkspace.shared.open(updates.currentBetaNotesURL)
+                if !updates.feedHasNoCurrentBeta {
+                    Button(updates.hasCurrentBeta ? "What's in the current beta" : "Release notes") {
+                        NSWorkspace.shared.open(updates.currentBetaNotesURL)
+                    }
+                    .buttonStyle(.link)
                 }
-                .buttonStyle(.link)
                 Spacer()
                 // Cancel is the default button: Return and Escape both cancel.
                 Button("Cancel", action: close)
@@ -238,17 +253,18 @@ struct UpdateChannelSheet: View {
                 Button("OK", action: close).keyboardShortcut(.defaultAction)
             }
         case .refused(let reason):
-            FailureView(reason: reason, close: close)
+            FailureView(headline: UpdateChannelCopy.feedRefused, reason: reason, close: close)
         }
     }
 }
 
 private struct FailureView: View {
+    var headline = UpdateChannelCopy.verifyFailed
     let reason: String
     let close: () -> Void
 
     var body: some View {
-        Text(UpdateChannelCopy.verifyFailed).fixedSize(horizontal: false, vertical: true)
+        Text(headline).fixedSize(horizontal: false, vertical: true)
         Text("(\(reason))")
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

@@ -45,11 +45,14 @@ final class UpdateController: ObservableObject {
     private var lastFeedRead: Date?
     private var subscriptions = Set<AnyCancellable>()
 
-    init(store: ChannelStore = ChannelStore(), bundle: Bundle = .main) {
+    /// `reinstaller` and `startsUpdater` are for tests: a test passes its own
+    /// reinstaller and leaves Sparkle unstarted.
+    init(store: ChannelStore = ChannelStore(), bundle: Bundle = .main,
+         reinstaller: StableReinstaller? = nil, startsUpdater: Bool = true) {
         self.store = store
         installedVersion = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0.0.0"
         publicKey = bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
-        reinstaller = StableReinstaller(publicKey: publicKey)
+        self.reinstaller = reinstaller ?? StableReinstaller(publicKey: publicKey)
         channelDelegate = UpdateChannelDelegate(store: store, installedVersion: installedVersion)
         controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: channelDelegate, userDriverDelegate: nil)
         automaticallyChecksForUpdates = false
@@ -83,8 +86,15 @@ final class UpdateController: ObservableObject {
         }
         automaticallyChecksForUpdates = controller.updater.automaticallyChecksForUpdates
         feedOverride = UserDefaults.standard.string(forKey: "SUFeedURL")
+        // Preferences reads `reinstaller.isBusy` through this object, and
+        // SwiftUI only redraws for the object a view holds. Without this the
+        // channel picker and "Install X…" stayed disabled after a refused
+        // go-back, until something else changed (rehearsal row B11(b)).
+        self.reinstaller.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &subscriptions)
         refreshChannelState()
-        controller.startUpdater()
+        if startsUpdater { controller.startUpdater() }
     }
 
     func checkForUpdates() {
@@ -122,6 +132,9 @@ final class UpdateController: ObservableObject {
     /// The link of "What's in the current beta".
     var currentBetaNotesURL: URL { snapshot?.currentBetaNotesURL ?? UpdateLinks.releasesPage }
     var hasCurrentBeta: Bool { snapshot?.hasCurrentBeta ?? false }
+    /// True only when a feed was read and verified in this run and it has no
+    /// beta above the newest stable. An unread feed says nothing either way.
+    var feedHasNoCurrentBeta: Bool { snapshot.map { !$0.hasCurrentBeta } ?? false }
 
     // MARK: Maestro's own feed read
 
