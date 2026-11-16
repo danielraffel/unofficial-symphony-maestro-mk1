@@ -277,37 +277,28 @@ struct HelpView: View {
     /// The mixer behaves differently over USB than the page implies, and the
     /// difference is not obvious from looking at it. Worth stating plainly
     /// rather than letting people conclude a fader is broken.
-    /// What the mixer controls actually do on the USB path.
+    /// What the mixer controls do on the USB path.
     ///
-    /// Measured on hardware 2026-09-11, after two earlier versions of this
-    /// section got it wrong in opposite directions. Three separate observations:
-    /// the Master fader does NOT change the headphones, the SW Return fader
-    /// DOES, and the headphone knob does. Those pin the topology, and the code
-    /// explains each one:
-    ///
-    /// - SW Return is applied in SOFTWARE, by the proxy, to the USB stream
-    ///   before it reaches the hardware at all (`MixerViews.swift:763-764`
-    ///   takes the `XPCDeviceConnection.setSwReturnLevel` branch on USB rather
-    ///   than writing a mixer property). So it lands upstream of every hardware
-    ///   tap and changes everything.
-    /// - Master writes the hardware Mixer0 output level, and Mixer0's output is
-    ///   routed only to the DAC (`MaestroVolumeProxy.c:1224-1225`). The
-    ///   headphones are fed from their own crosspoint, so Master cannot reach
-    ///   them.
-    /// - Only USB channels 1-2 pass through the mixer. Step 4a of the same
-    ///   routing block sends USB ch2-15 straight to the I/O board, "bypassing
-    ///   mixer" in its own words.
-    ///
-    /// NOT measured: whether Master changes the main analog outputs. The routing
-    /// says it should. That is stated as an expectation, not a fact.
+    /// Software Return level, mute and solo and the Master level are written to
+    /// the Symphony's own mixer (strips 32 and 33), so they work whichever USB
+    /// device plays the audio and reach only the outputs fed from that mixer in
+    /// Output Routing. Earlier versions sent them to IDs the unit ignores and
+    /// applied the Software Return fader in the proxy instead, which is why this
+    /// section used to say the fader did nothing on "USB Audio". Software
+    /// Return pan has no hardware control; it is a balance in the proxy and only
+    /// sees "Maestro USB". Only USB channels 1-2 pass through the mixer (Step 4a
+    /// of the routing block in `MaestroVolumeProxy.c` sends USB ch2-15 straight
+    /// to the I/O board).
     private var mixerOverUSB: some View {
         Section("The Mixer over USB") {
-            Text("Over USB, **channels 1-2 of your Mac's playback pass through Symphony's hardware mixer** on the way to the main analog outputs. Channels 3 and up go straight to the outputs and do not touch the mixer at all.")
-            bullet("SW Return changes everything you hear", "its fader, pan and mute are applied in software before the audio reaches the hardware, so they affect the speakers and the headphones alike.")
+            Text("Over USB, **channels 1-2 of your Mac's playback pass through Symphony's hardware mixer.** Channels 3 and up go straight to the outputs and do not touch the mixer.")
+            bullet("SW Return fader, mute and solo, and the Master fader, are done by the Symphony's own mixer", "they work whichever device you play through, **Maestro USB** or **USB Audio**.")
+            bullet("They change only outputs that are fed from that mixer", "set this in Output Routing. An output fed from somewhere else, such as a headphone output on its own source, does not change.")
+            bullet("SW Return pan still needs Maestro USB", "the Symphony's mixer has no pan for SW Return. Maestro applies it to your Mac's audio, and only when that audio plays through **Symphony I/O : Maestro USB**.")
+            bullet("SW Return left and right faders", "the unit has one SW Return fader. With the faders unlinked, the louder side sets it and Maestro lowers the other side. On the Master, the unit has one fader as well, so with the faders unlinked it follows the quieter side.")
+            bullet("SW Return meter", "it shows the signal before the fader and before mute.")
             bullet("The headphone knobs control their own outputs", "independently of the mixer.")
-            bullet("The Master fader does not affect the headphones", "it sets the level of the mixer's own output, and the headphones are fed from a separate point. This is measured, not theory — if you are reaching for a headphone level, use SW Return or the headphone knob.")
             bullet("Hardware input faders affect the live inputs being monitored", "not your Mac's playback.")
-            Text("**Which output device you pick matters.** All of this applies when macOS output is set to **Symphony I/O : Maestro USB**. On the standard **Symphony I/O : USB Audio** device your audio bypasses Maestro entirely, so the SW Return meter sits silent and its fader does nothing — that is expected, not a fault.")
         }
     }
 

@@ -560,8 +560,8 @@ struct XPCDeviceConnectionTests {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
 
-        conn.sendMixerParam(usbCmd: 0xB0, mixer: 1, channel: 1000, value: 42)
-        conn.sendMixerParam(usbCmd: 0xB1, mixer: 1, channel: 1000, value: 50)
+        conn.sendMixerParam(usbCmd: 0xB0, mixer: 1, channel: 5, value: 42)
+        conn.sendMixerParam(usbCmd: 0xB1, mixer: 1, channel: 5, value: 50)
 
         #expect(transport.mixerParamCalls.count == 2)
         #expect(transport.mixerParamCalls[0].usbCmd == 0xB0)

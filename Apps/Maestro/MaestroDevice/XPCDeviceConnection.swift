@@ -587,7 +587,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     private func readFromUnit(_ address: PropertyAddress) async throws -> PropertyValue {
 
-        let usbRequest = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+        // The mapper is shared with ThunderBridge, so USB's own strip numbers
+        // (Software Return 32, Master 33) are applied here, not there.
+        let usbRequest = try SymphonyIOPropertyMapper.buildReadRequest(
+            for: try USBMixerAddressing.usbAddress(for: address))
 
         let reply = try await transport.sendGetProperty(
             bRequest: usbRequest.request,
@@ -626,7 +629,9 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             updateCacheForWriteOnly(address, value: value)
         } else {
             do {
-                let usbRequest = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: value)
+                // USB strip numbers (Software Return 32, Master 33); see readFromUnit.
+                let usbRequest = try SymphonyIOPropertyMapper.buildWriteRequest(
+                    for: try USBMixerAddressing.usbAddress(for: address), value: value)
                 // S5: await the reply — a failed USB write throws instead of
                 // silently reporting success and updating caches.
                 try await transport.sendSetProperty(
@@ -658,6 +663,32 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         // Notify listeners
         let change = PropertyChange(address: address, value: value)
         await listenerStorage.notifyListeners(for: address, change: change)
+    }
+
+    /// Put the unit's Master and Software Return strips, for both mixers, and
+    /// the helper's software stage back to what Maestro has saved.
+    ///
+    /// Runs when Maestro connects, reconnects, and recovers after the unit was
+    /// power-cycled (its mixer then returns to 0 dB, unmuted). The unit's mixer
+    /// owns Software Return level, mute and solo and the Master level; the
+    /// helper is written neutral so nothing is applied twice.
+    public func restoreReturnAndMaster(
+        helperMixer: Int, defaults: UserDefaults = .standard
+    ) async {
+        let state = USBMixerSavedState.load(defaults: defaults)
+        for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer) {
+            switch step {
+            case .helperLevel(let dB): transport.setSwReturnLevel(dB)
+            case .helperMute(let muted): transport.setSwReturnMute(muted)
+            case .helperSideLevel(let side, let dB):
+                transport.setSwReturnChannelLevel(channel: side, dB: dB)
+            case .helperPan(let pan): transport.setSwReturnPan(pan)
+            case .hardware(let address, let value):
+                do { try await setProperty(address, value: value) } catch {
+                    print("[Maestro] USB mixer restore \(address.selector) failed: \(error)")
+                }
+            }
+        }
     }
 
     /// Write every stored setting to the hardware. Called once per connect, as
@@ -708,6 +739,18 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// Send a mixer parameter directly via dedicated XPC command.
     /// Bypasses the generic setProperty path which has delivery issues.
     public func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {
+        // Never put the CoreAudio-level IDs (1000/2000, stereo sides) on the USB
+        // wire: the unit numbers Software Return 32 and Master 33.
+        var channel = channel
+        if USBMixerStrip.neverOnUSBWire.contains(channel) {
+            switch channel {
+            case USBMixerStrip.softwareReturnLogicalID: channel = USBMixerStrip.softwareReturn
+            case USBMixerStrip.masterLogicalID: channel = USBMixerStrip.master
+            default: return
+            }
+            // Neither strip has a pan.
+            if usbCmd == SymphonyIOCommand.mixerInputPan.rawValue { return }
+        }
         transport.sendMixerParam(usbCmd: usbCmd, mixer: mixer, channel: channel, value: value)
     }
 

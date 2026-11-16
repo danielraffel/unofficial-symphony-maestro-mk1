@@ -1271,20 +1271,14 @@ final class AppState {
                 self.activeAudioDeviceID = audioDeviceID
                 print("[Maestro] AppState.init: Connected to hardware via XPC proxy (USB)")
 
-                // Sync SW Return state with proxy — the proxy persists across app restarts
-                // so its mute/gain/pan may be stale from a previous session.
-                if let data = UserDefaults.standard.data(forKey: "mixerState_swReturn"),
-                   let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-                    xpcDevice.setSwReturnMute(saved.isMuted)
-                    xpcDevice.setSwReturnLevel(saved.level)
-                    xpcDevice.setSwReturnPan(saved.pan)
-                    print("[Maestro] AppState.init: Synced persisted SW Return to proxy")
-                } else {
-                    xpcDevice.setSwReturnMute(false)
-                    xpcDevice.setSwReturnLevel(0)
-                    xpcDevice.setSwReturnPan(0)
-                    print("[Maestro] AppState.init: Synced SW Return defaults to proxy")
-                }
+                // The proxy persists across app restarts and may hold a level or
+                // mute from an older Maestro; the unit's mixer returns to defaults
+                // after a power cycle. Put Master and Software Return (both
+                // mixers) back on the unit and the proxy's software stage to
+                // neutral, from the saved values.
+                let restoreMixer = self.lastSelectedMixer
+                Task { await xpcDevice.restoreReturnAndMaster(helperMixer: restoreMixer) }
+                print("[Maestro] AppState.init: Restoring saved Master/SW Return to the unit")
 
                 // Sync routing mode with proxy
                 let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
@@ -1824,17 +1818,9 @@ final class AppState {
                     self.applyPendingAutoSwitch()
                     self.startThunderboltWatchWhileOnUSB(discovered)
 
-                    // Sync persisted SW Return state on reconnect
-                    if let data = UserDefaults.standard.data(forKey: "mixerState_swReturn"),
-                       let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-                        xpcDevice.setSwReturnMute(saved.isMuted)
-                        xpcDevice.setSwReturnLevel(saved.level)
-                        xpcDevice.setSwReturnPan(saved.pan)
-                    } else {
-                        xpcDevice.setSwReturnMute(false)
-                        xpcDevice.setSwReturnLevel(0)
-                        xpcDevice.setSwReturnPan(0)
-                    }
+                    // Put saved Master and Software Return (both mixers) back on
+                    // the unit, and the proxy's software stage to neutral.
+                    await xpcDevice.restoreReturnAndMaster(helperMixer: self.lastSelectedMixer)
 
                     // Sync routing mode on reconnect
                     let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
@@ -2078,13 +2064,10 @@ final class AppState {
                                 if now.timeIntervalSince(self.lastRecoveryTime) > 5.0 {
                                     self.lastRecoveryTime = now
                                     self.deviceRecoveryCount += 1
-                                    // Re-sync SW Return state to proxy from persisted state
-                                    if let data = UserDefaults.standard.data(forKey: "mixerState_swReturn"),
-                                       let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-                                        xpcDev.setSwReturnMute(saved.isMuted)
-                                        xpcDev.setSwReturnLevel(saved.level)
-                                        xpcDev.setSwReturnPan(saved.pan)
-                                    }
+                                    // Power-cycled unit: put saved Master and Software
+                                    // Return (both mixers) back, helper stage neutral.
+                                    let recoveryMixer = self.lastSelectedMixer
+                                    Task { await xpcDev.restoreReturnAndMaster(helperMixer: recoveryMixer) }
                                     // Re-sync routing mode to proxy
                                     let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
                                     xpcDev.setRoutingMode(routingMode)

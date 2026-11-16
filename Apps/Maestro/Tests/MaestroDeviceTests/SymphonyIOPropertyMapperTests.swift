@@ -212,6 +212,10 @@ struct SymphonyIOPropertyMapperTests {
         #expect(request.data == Data([1]))
     }
 
+    // The mapper is shared with ThunderBridge, whose driver wants the CoreAudio
+    // IDs 1000/2000 as given. USB's own numbers (32/33) are applied by the USB
+    // connections (see USBMixerWireTests), so these pin the mapper's
+    // pass-through, not the USB wire.
     @Test func mixerChannelLevelWriteMixer1() throws {
         // mixer 1, SW Return (channel 1000) — verify compound element split
         let element: UInt32 = (1 << 16) | 1000
@@ -248,7 +252,7 @@ struct SymphonyIOPropertyMapperTests {
     }
 
     @Test func mixerChannelLevelWriteMaster() throws {
-        // mixer 0, Master (channel 2000)
+        // mixer 0, Master (channel 2000): passed through for ThunderBridge
         let element: UInt32 = (0 << 16) | 2000
         let address = PropertyAddress(selector: .mixerChannelLevel, element: element)
         let request = try SymphonyIOPropertyMapper.buildWriteRequest(

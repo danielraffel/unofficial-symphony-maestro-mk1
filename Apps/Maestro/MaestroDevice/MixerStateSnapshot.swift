@@ -27,13 +27,21 @@ public struct MixerStateSnapshot: Sendable {
         }
 
         // Software return is shared by both mixers because it is one USB path.
+        swReturnChannel = Self.savedSoftwareReturn(defaults: defaults)
+        softwareReturnSource = UInt32(clamping: defaults.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))
+        masterLevel = Self.savedMasterLevel(mixer: mixer, defaults: defaults)
+    }
+
+    /// The saved Software Return strip (shared by both mixers), or a neutral one.
+    public static func savedSoftwareReturn(defaults: UserDefaults = .standard) -> MixerChannelState {
         if let data = defaults.data(forKey: "mixerState_swReturn"),
            let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-            swReturnChannel = saved
-        } else {
-            swReturnChannel = empty
+            return saved
         }
-        softwareReturnSource = UInt32(clamping: defaults.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))
-        masterLevel = defaults.object(forKey: "mixerMasterLevel_\(mixer)") as? Double ?? 0
+        return MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
+    }
+
+    public static func savedMasterLevel(mixer: Int, defaults: UserDefaults = .standard) -> Double {
+        defaults.object(forKey: "mixerMasterLevel_\(mixer)") as? Double ?? 0
     }
 }
