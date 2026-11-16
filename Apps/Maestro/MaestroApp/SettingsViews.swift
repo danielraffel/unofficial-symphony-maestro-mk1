@@ -921,11 +921,17 @@ struct SystemSetupView: View {
                 }
                 .disabled(isLoading || isProToolsMode || rateSettling)
                 .onChange(of: sampleRate) { _, newRate in
+                    // Our own assignment, not the user's. This is checked BEFORE
+                    // the loading guard and the marker is always consumed: the
+                    // first load sets the rate while `isLoading` is true, and
+                    // returning at that guard first left the marker armed at the
+                    // launch rate, where it swallowed the user's first deliberate
+                    // return to that rate (the pick showed, nothing was sent, and
+                    // the picker snapped back two seconds later).
+                    let mine = programmaticRate
+                    programmaticRate = nil
+                    if let mine, abs(mine - newRate) < 1.0 { return }
                     guard !isLoading else { return }
-                    if let mine = programmaticRate, abs(mine - newRate) < 1.0 {
-                        programmaticRate = nil
-                        return
-                    }
                     // One writer at a time, and the flag goes up HERE rather than
                     // inside the task: between this closure and the task's first
                     // line the reconcile loop could otherwise get a turn, read the
