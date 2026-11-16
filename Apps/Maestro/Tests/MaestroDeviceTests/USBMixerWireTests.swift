@@ -435,36 +435,62 @@ struct USBMixerRestoreTests {
 @Suite("Left/right pair link rule")
 struct MixerPairLinkTests {
 
-    @Test("the locked-link wording is exact")
-    func lockedWording() {
-        #expect(MixerPairLink.usbLockedHelp ==
-            "Over USB, left and right stay linked. The Symphony's mixer has one fader here. Over ThunderBridge you can set them separately.")
-    }
-
-    @Test("USB with a saved linked pair: both faders show the linked level")
+    @Test("a saved linked pair: both faders show the linked level")
     func usbSavedLinked() {
-        let p = MixerPairLink.shown(left: -3, right: -9, savedLinked: true, isUSB: true, linkedLevel: -5)
+        let p = MixerPairLink.shown(left: -3, right: -9, savedLinked: true, linkedLevel: -5)
         #expect(p == MixerPairLink.Pair(left: -5, right: -5, linked: true))
     }
 
-    @Test("USB with a saved unlinked pair: the quieter side, for both faders")
+    @Test("a pair saved unlinked by an earlier version: the quieter side, for both faders")
     func usbSavedUnlinked() {
-        let leftQuieter = MixerPairLink.shown(left: -9, right: -3, savedLinked: false, isUSB: true, linkedLevel: 0)
+        let leftQuieter = MixerPairLink.shown(left: -9, right: -3, savedLinked: false, linkedLevel: 0)
         #expect(leftQuieter == MixerPairLink.Pair(left: -9, right: -9, linked: true))
-        let rightQuieter = MixerPairLink.shown(left: -3, right: -9, savedLinked: false, isUSB: true, linkedLevel: 0)
+        let rightQuieter = MixerPairLink.shown(left: -3, right: -9, savedLinked: false, linkedLevel: 0)
         #expect(rightQuieter == MixerPairLink.Pair(left: -9, right: -9, linked: true))
-        let equal = MixerPairLink.shown(left: -6, right: -6, savedLinked: false, isUSB: true, linkedLevel: 0)
+        let equal = MixerPairLink.shown(left: -6, right: -6, savedLinked: false, linkedLevel: 0)
         #expect(equal == MixerPairLink.Pair(left: -6, right: -6, linked: true))
     }
 
-    @Test("ThunderBridge and other devices keep a saved unlinked pair unlinked, with both values")
-    func thunderBridgeUnchanged() {
-        let p = MixerPairLink.shown(left: -3, right: -9, savedLinked: false, isUSB: false, linkedLevel: 0)
-        #expect(p == MixerPairLink.Pair(left: -3, right: -9, linked: false))
-        let linked = MixerPairLink.shown(left: -3, right: -3, savedLinked: true, isUSB: false, linkedLevel: -3)
-        #expect(linked.linked)
-        #expect(!MixerPairLink.effectiveLinked(savedLinked: false, isUSB: false))
-        #expect(MixerPairLink.effectiveLinked(savedLinked: false, isUSB: true))
+    @Test("migration: a pair saved unlinked becomes a linked pair at its quieter side")
+    func migratesUnlinked() {
+        let name = "MixerPairLinkTests.migrate"
+        let d = UserDefaults(suiteName: name)!
+        d.removePersistentDomain(forName: name)
+        d.set(false, forKey: "mixerMasterFadersLinked")
+        d.set(false, forKey: "mixerSWReturnFadersLinked")
+        d.set(-1.0, forKey: "mixerMasterLevel_0")
+        d.set(-3.0, forKey: "mixerMasterLeftLevel_0"); d.set(-9.0, forKey: "mixerMasterRightLevel_0")
+        d.set(-8.0, forKey: "mixerSWReturnLeftLevel_1"); d.set(-4.0, forKey: "mixerSWReturnRightLevel_1")
+        MixerPairLink.migrateSavedPairs(defaults: d)
+        #expect(d.object(forKey: "mixerMasterFadersLinked") as? Bool == true)
+        #expect(d.object(forKey: "mixerSWReturnFadersLinked") as? Bool == true)
+        for key in ["mixerMasterLevel_0", "mixerMasterLeftLevel_0", "mixerMasterRightLevel_0"] {
+            #expect(d.double(forKey: key) == -9)
+        }
+        #expect(d.double(forKey: "mixerSWReturnLeftLevel_1") == -8)
+        #expect(d.double(forKey: "mixerSWReturnRightLevel_1") == -8)
+        // Mixer 2's Master was never set apart: it stays at its saved level.
+        #expect(d.double(forKey: "mixerMasterLeftLevel_1") == 0)
+        // The restore plan now sends the same level the page shows.
+        let state = USBMixerSavedState.load(defaults: d)
+        #expect(state.masterLinked && state.softwareReturnLinked)
+        #expect(state.mixes[0].masterLevel == -9)
+    }
+
+    @Test("migration: linked or never-saved pairs are left exactly as they were")
+    func migrationLeavesLinkedAlone() {
+        let name = "MixerPairLinkTests.migrateNoop"
+        let d = UserDefaults(suiteName: name)!
+        d.removePersistentDomain(forName: name)
+        d.set(true, forKey: "mixerMasterFadersLinked")
+        d.set(-5.0, forKey: "mixerMasterLevel_0")
+        d.set(-3.0, forKey: "mixerMasterLeftLevel_0"); d.set(-9.0, forKey: "mixerMasterRightLevel_0")
+        MixerPairLink.migrateSavedPairs(defaults: d)
+        #expect(d.double(forKey: "mixerMasterLevel_0") == -5)
+        #expect(d.double(forKey: "mixerMasterLeftLevel_0") == -3)
+        #expect(d.double(forKey: "mixerMasterRightLevel_0") == -9)
+        #expect(d.object(forKey: "mixerSWReturnFadersLinked") == nil)
+        #expect(d.object(forKey: "mixerSWReturnLeftLevel_0") == nil)
     }
 
     @Test("reading the saved state never changes the saved flags or values")
@@ -487,7 +513,7 @@ struct MixerPairLinkTests {
     @Test("the unit's level is what the pair shows, so page and restore agree")
     func unitLevelMatchesShown() {
         for (l, r, linked): (Double, Double, Bool) in [(-3, -9, false), (-9, -3, false), (-6, -6, false), (-3, -9, true)] {
-            let shown = MixerPairLink.shown(left: l, right: r, savedLinked: linked, isUSB: true, linkedLevel: l)
+            let shown = MixerPairLink.shown(left: l, right: r, savedLinked: linked, linkedLevel: l)
             #expect(MixerPairLink.usbUnitLevel(left: l, right: r, savedLinked: linked, linkedLevel: l) == shown.left)
         }
     }

@@ -98,11 +98,17 @@ public enum MixerFaderMath {
 
 // MARK: - Left/right pairs
 
-/// Whether a Master or Software Return left/right pair acts as linked, and what
-/// it shows. Over USB the unit has one fader per strip
-/// (`kSymphonyIOMixer_FaderCount = 34`: 32 inputs, Software Return, Master), so
-/// the pair is always linked there. The saved link flag is never changed by
-/// this: ThunderBridge reads the same saved flag and values.
+/// The Master and Software Return left/right fader pairs. Each pair is one
+/// stereo fader drawn with two handles that always move together, as in
+/// Apogee's Maestro (user guide, July 2018: "Software Return: Stereo fader",
+/// "Mixer Master: Stereo Master fader"; its mixer code writes one level into
+/// both sides on every transport). The Symphony's own mixer, used over USB,
+/// has one fader per strip (`kSymphonyIOMixer_FaderCount = 34`: 32 inputs,
+/// Software Return, Master).
+///
+/// Earlier versions of this app had a link button that could unlink a pair
+/// over ThunderBridge. `savedLinked` is that old saved flag: a pair saved
+/// unlinked is shown, and sent, at its quieter side.
 public enum MixerPairLink {
     public struct Pair: Equatable, Sendable {
         public let left: Double
@@ -110,30 +116,50 @@ public enum MixerPairLink {
         public let linked: Bool
     }
 
-    public static let usbLockedHelp =
-        "Over USB, left and right stay linked. The Symphony's mixer has one fader here. "
-        + "Over ThunderBridge you can set them separately."
-
-    public static func effectiveLinked(savedLinked: Bool, isUSB: Bool) -> Bool {
-        isUSB || savedLinked
-    }
-
-    /// What the pair shows. ThunderBridge and other devices: the saved values
-    /// and flag, unchanged. USB: both faders at `linkedLevel` if the saved flag
-    /// is linked, else at the quieter side.
+    /// What the pair shows: both faders at `linkedLevel`, or at the quieter
+    /// side if an earlier version saved the pair unlinked.
     public static func shown(
-        left: Double, right: Double, savedLinked: Bool, isUSB: Bool, linkedLevel: Double
+        left: Double, right: Double, savedLinked: Bool, linkedLevel: Double
     ) -> Pair {
-        guard isUSB else { return Pair(left: left, right: right, linked: savedLinked) }
         let level = savedLinked ? linkedLevel : min(left, right)
         return Pair(left: level, right: level, linked: true)
+    }
+
+    /// Rewrite pairs that an earlier version saved unlinked as linked pairs at
+    /// their quieter side, so nothing gets louder. Run once at launch, before
+    /// anything reads the saved mixer state. Does nothing when both flags are
+    /// already linked (or were never saved).
+    public static func migrateSavedPairs(defaults: UserDefaults = .standard) {
+        if defaults.object(forKey: "mixerMasterFadersLinked") as? Bool == false {
+            for m in 0..<2 {
+                let saved = MixerStateSnapshot.savedMasterLevel(mixer: m, defaults: defaults)
+                let left = defaults.object(forKey: "mixerMasterLeftLevel_\(m)") as? Double ?? saved
+                let right = defaults.object(forKey: "mixerMasterRightLevel_\(m)") as? Double ?? saved
+                let level = min(left, right)
+                defaults.set(level, forKey: "mixerMasterLevel_\(m)")
+                defaults.set(level, forKey: "mixerMasterLeftLevel_\(m)")
+                defaults.set(level, forKey: "mixerMasterRightLevel_\(m)")
+            }
+            defaults.set(true, forKey: "mixerMasterFadersLinked")
+        }
+        if defaults.object(forKey: "mixerSWReturnFadersLinked") as? Bool == false {
+            let saved = MixerStateSnapshot.savedSoftwareReturn(defaults: defaults).level
+            for m in 0..<2 {
+                let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(m)") as? Double ?? saved
+                let right = defaults.object(forKey: "mixerSWReturnRightLevel_\(m)") as? Double ?? saved
+                let level = min(left, right)
+                defaults.set(level, forKey: "mixerSWReturnLeftLevel_\(m)")
+                defaults.set(level, forKey: "mixerSWReturnRightLevel_\(m)")
+            }
+            defaults.set(true, forKey: "mixerSWReturnFadersLinked")
+        }
     }
 
     /// The level the unit's single fader gets over USB: what the pair shows.
     public static func usbUnitLevel(
         left: Double, right: Double, savedLinked: Bool, linkedLevel: Double
     ) -> Double {
-        let pair = shown(left: left, right: right, savedLinked: savedLinked, isUSB: true,
+        let pair = shown(left: left, right: right, savedLinked: savedLinked,
                          linkedLevel: linkedLevel)
         return MixerFaderMath.master(left: pair.left, right: pair.right, linked: true,
                                      linkedLevel: pair.left)
