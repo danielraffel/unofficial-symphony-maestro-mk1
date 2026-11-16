@@ -20,7 +20,7 @@ The first two apply over USB only. Turn your monitors down before the first play
 
 ### Release notes
 
-- The ThunderBridge driver is unchanged from 0.9.1. Over ThunderBridge the only change is that Software Return and Master can no longer be unlinked.
+- The ThunderBridge driver is unchanged from 0.9.1. Over ThunderBridge the only changes are that Software Return and Master can no longer be unlinked, and the Sample Rate menu's short wait.
 - Software Return pan still needs the "Maestro USB" device.
 - If Maestro is not running when the Symphony is turned off and on, the Symphony's mixer stays at its own defaults (0 dB, not muted) until Maestro next connects.
 
