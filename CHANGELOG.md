@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.2 (beta)
+
+Over USB, the Mixer's Software Return and Master controls now work the way they did in Apogee's Maestro. It contains everything in 0.9.1.
+
+### Changes that may affect your setup
+
+These apply over USB only. Turn your monitors down before the first playback after updating.
+
+- **The Software Return fader and mute now affect only outputs fed from that mixer.** Before, on the "Maestro USB" device, they turned Mac output 1-2 down everywhere, even on an output that did not go through the mixer. If you had Software Return turned down or muted and you listen on an output that is not fed from the mixer in Output Routing, that output will be louder after updating.
+- **The Master fader now works.** Over USB it was ignored. If a Master fader in the Mixer is not at 0 dB, outputs fed from that mixer change level to match it after updating.
+- **With the left and right faders unlinked, the quieter side sets the level** for both Software Return and Master. The Symphony's mixer has one fader for each of them.
+
+### What's fixed
+
+- **Software Return fader, mute and solo, and the Master fader, now work over USB.** They did nothing when your DAW played through "Symphony I/O : USB Audio", and Master and Software Return solo did nothing on either device. They are now done by the Symphony's own mixer, so they work whichever of the two devices your DAW uses.
+- **Your Master and Software Return settings are put back when the Symphony reconnects** or is turned off and on, for both mixers.
+
+### Release notes
+
+- The ThunderBridge driver is unchanged from 0.9.1, and nothing changes over ThunderBridge.
+- Software Return pan still needs the "Maestro USB" device.
+- If Maestro is not running when the Symphony is turned off and on, the Symphony's mixer stays at its own defaults (0 dB, not muted) until Maestro next connects.
+
 ## 0.9.1 (beta)
 
 The first beta, for people helping to test two Symphony I/O units on one ThunderBridge (64 channels), or a Symphony I/O on a Symphony 64 PCIe card. It contains everything in 0.8.40. Betas may have bugs; if you rely on your setup, stay on Stable.
