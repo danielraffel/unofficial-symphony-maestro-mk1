@@ -418,12 +418,17 @@ public final class DextUserClient: @unchecked Sendable {
         return output.subdata(in: 8..<(8 + responseLength))
     }
 
+    /// The driver's logical nValue for a request: mixer ID in the high word,
+    /// channel in the low word.
+    static func nValue(for request: USBControlRequest) -> UInt32 {
+        (UInt32(request.value) << 16) | UInt32(request.index)
+    }
+
     /// Convenience: send a command from a USBControlRequest.
     public func sendFromUSBRequest(_ request: USBControlRequest) throws {
-        let nValue = (UInt32(request.value) << 16) | UInt32(request.index)
         try sendVendorCommand(
             command: request.request,
-            value: nValue,
+            value: Self.nValue(for: request),
             payload: request.data
         )
     }

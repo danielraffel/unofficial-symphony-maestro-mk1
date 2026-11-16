@@ -93,7 +93,8 @@ public final class USBDeviceConnection: DeviceConnection, @unchecked Sendable {
             return .uint32(getCachedClockSource())
         }
 
-        let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+        let request = try SymphonyIOPropertyMapper.buildReadRequest(
+            for: try USBMixerAddressing.usbAddress(for: address))
         let response = try await sendWithRetry(request)
         return try SymphonyIOPropertyMapper.decodeResponse(
             response, for: address,
@@ -111,7 +112,8 @@ public final class USBDeviceConnection: DeviceConnection, @unchecked Sendable {
         }
 
         do {
-            let request = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: value)
+            let request = try SymphonyIOPropertyMapper.buildWriteRequest(
+                for: try USBMixerAddressing.usbAddress(for: address), value: value)
             _ = try await sendWithRetry(request)
         } catch DeviceConnectionError.cacheOnly {
             // No hardware opcode (or an unsafe one) — skip the send entirely.

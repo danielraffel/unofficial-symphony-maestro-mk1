@@ -641,12 +641,15 @@ struct MixerView: View {
             // Reload persisted mixer state and re-sync to hardware.
             initializeChannels()
             Task {
+                // On USB this also puts Software Return and Master back, for
+                // the shown mixer, and the helper's stage to neutral.
                 await syncMixerToHardware()
-                // Re-sync SW Return to proxy
-                await writeSWReturnMute(swReturnChannel.isMuted)
-                await writeSWReturnLevel(swReturnChannel.level)
-                await writeSWReturnPan(swReturnChannel.pan)
-                await writeSoftwareReturnSource(softwareReturnSource)
+                if usbDevice == nil {
+                    await writeSWReturnMute(swReturnChannel.isMuted)
+                    await writeSWReturnLevel(swReturnChannel.level)
+                    await writeSWReturnPan(swReturnChannel.pan)
+                    await writeSoftwareReturnSource(softwareReturnSource)
+                }
             }
             print("[Maestro] MixerView: Re-synced mixer state after USB recovery")
         }
@@ -980,34 +983,27 @@ struct MixerView: View {
                 // Non-critical — channel may not exist on this board config
             }
         }
-        // Master level
-        do {
-            let masterElem = (UInt32(selectedMixer + 1) << 16) | 2000
-            try await device.setProperty(
-                PropertyAddress(selector: .mixerChannelLevel, element: masterElem),
-                value: .float64(masterLevel))
-        } catch {}
-        if !masterFadersLinked {
-            await writeMasterSideLevel(side: 0, level: masterLeftLevel)
-            await writeMasterSideLevel(side: 1, level: masterRightLevel)
-        }
-        await writeSoftwareReturnSource(softwareReturnSource)
-        // USB 1–2 is processed in the proxy rather than by the FPGA mixer.
-        // Restore its persisted controls on normal startup and mixer switches,
-        // not only after USB recovery.
-        if device is XPCDeviceConnection, softwareReturnSource == 0 {
-            await writeSWReturnMute(swReturnChannel.isMuted)
-            if swReturnFadersLinked {
-                await writeSWReturnLevel(swReturnLeftLevel)
-            } else {
+        if usbDevice != nil {
+            // USB: the unit's mixer owns Master and Software Return for every
+            // source. The helper is written neutral inside writeSoftwareReturnSource.
+            await writeMasterFader()
+            await writeSoftwareReturnSource(softwareReturnSource)
+        } else {
+            // Master level
+            do {
+                try await device.setProperty(
+                    PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
+                    value: .float64(masterLevel))
+            } catch {}
+            if !masterFadersLinked {
+                await writeMasterSideLevel(side: 0, level: masterLeftLevel)
+                await writeMasterSideLevel(side: 1, level: masterRightLevel)
+            }
+            await writeSoftwareReturnSource(softwareReturnSource)
+            if !swReturnFadersLinked {
                 await writeSWReturnSideLevel(side: 0, level: swReturnLeftLevel)
                 await writeSWReturnSideLevel(side: 1, level: swReturnRightLevel)
             }
-            await writeSWReturnPan(swReturnChannel.pan)
-            await writeSWReturnSolo(swReturnChannel.isSoloed)
-        } else if !swReturnFadersLinked {
-            await writeSWReturnSideLevel(side: 0, level: swReturnLeftLevel)
-            await writeSWReturnSideLevel(side: 1, level: swReturnRightLevel)
         }
         print("[Maestro] syncMixerToHardware: sent \(channels.count) channels + master to mixer \(selectedMixer + 1) (\(routingMode == 0 ? "DAW" : "Direct Monitor"))")
     }
@@ -1026,16 +1022,25 @@ struct MixerView: View {
 
     /// Master fader element: (mixerID << 16) | 2000.
     /// Evidence: SymphonyIOVendorSpecific.h — kSymphonyIOMixerChannelID_MasterOutput = 2000.
+    ///
+    /// USB addresses the strip as 33 instead; ThunderBridge keeps 2000.
     private var masterElement: UInt32 {
-        (UInt32(selectedMixer + 1) << 16) | 2000
+        (UInt32(selectedMixer + 1) << 16)
+            | UInt32(usbDevice != nil ? USBMixerStrip.master : USBMixerStrip.masterLogicalID)
     }
 
     /// Software return element: (mixerID << 16) | 1000.
     /// Evidence: SymphonyIOVendorSpecific.h — kSymphonyIOMixerChannelID_SoftwareReturnInput = 1000.
     /// USB protocol mixer IDs are 1-based.
+    ///
+    /// USB addresses the strip as 32 instead; ThunderBridge keeps 1000.
     private var swReturnElement: UInt32 {
-        (UInt32(selectedMixer + 1) << 16) | 1000
+        (UInt32(selectedMixer + 1) << 16)
+            | UInt32(usbDevice != nil ? USBMixerStrip.softwareReturn : USBMixerStrip.softwareReturnLogicalID)
     }
+
+    /// The USB connection, or nil on ThunderBridge and in simulation.
+    private var usbDevice: XPCDeviceConnection? { appState.device as? XPCDeviceConnection }
 
     /// Legacy CoreAudio mixer descriptors identify stereo sides with the
     /// SoftwareReturn/Master bit plus side number (1 = L, 2 = R).  The
@@ -1097,6 +1102,10 @@ struct MixerView: View {
 
     private func writeMasterLevel(_ level: Double) async {
         guard let device = appState.device else { return }
+        if usbDevice != nil {
+            await writeMasterFader()
+            return
+        }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
@@ -1107,8 +1116,29 @@ struct MixerView: View {
         }
     }
 
+    /// USB: write the Master strip from the faders as shown.
+    private func writeMasterFader() async {
+        guard let device = appState.device else { return }
+        // The unit has one Master fader per mixer, so an unlinked pair sends
+        // the quieter side: never louder than either fader shows.
+        let level = MixerFaderMath.master(
+            left: masterLeftLevel, right: masterRightLevel,
+            linked: masterFadersLinked, linkedLevel: masterLevel)
+        do {
+            try await device.setProperty(
+                PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
+                value: .float64(level))
+        } catch {
+            print("[Maestro] Mixer master level failed: \(error)")
+        }
+    }
+
     private func writeMasterSideLevel(side: Int, level: Double) async {
         guard let device = appState.device else { return }
+        if usbDevice != nil {
+            await writeMasterFader()
+            return
+        }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelLevel,
@@ -1135,16 +1165,17 @@ struct MixerView: View {
 
     // MARK: - Software Return writes (P3F-38)
 
-    // On USB the software return is a software gain/pan in the proxy render callback
-    // (the USB audio path bypasses the FPGA mixer). On Thunderbolt audio flows through
-    // the FPGA, so the SW return is a real FPGA mixer input channel (id 1000) driven by
-    // the same 0xB0-0xB3 vendor commands as normal strips — route it through setProperty
-    // with swReturnElement, exactly like writeLevel/Pan/Mute/Solo. (Entitlement landed
-    // 2026-07-14 → the dext IOUserClient path now works.)
+    // USB: the unit's own mixer is the authority for Software Return level, mute
+    // and solo (strip 32), for every source. The helper's software stage is kept
+    // neutral (0 dB, unmuted) so nothing is applied twice; it still carries pan
+    // for USB playback 1-2.
+    // ThunderBridge: the Software Return is a real mixer input (id 1000) driven
+    // through setProperty with swReturnElement, like any other strip.
     private func writeSWReturnLevel(_ level: Double) async {
         guard let device = appState.device else { return }
-        if let xpcDev = device as? XPCDeviceConnection, softwareReturnSource == 0 {
-            xpcDev.setSwReturnLevel(level)
+        if usbDevice != nil {
+            // Linked: this level. Unlinked: the quieter side the page shows.
+            _ = await writeSWReturnUnitLevel(linkedLevel: level)
         } else {
             do {
                 try await device.setProperty(
@@ -1159,8 +1190,8 @@ struct MixerView: View {
 
     private func writeSWReturnSideLevel(side: Int, level: Double) async {
         guard let device = appState.device else { return }
-        if let xpcDev = device as? XPCDeviceConnection, softwareReturnSource == 0 {
-            xpcDev.setSwReturnChannelLevel(channel: side, dB: level)
+        if usbDevice != nil {
+            _ = await writeSWReturnUnitLevel(linkedLevel: swReturnLeftLevel)
         } else {
             do {
                 try await device.setProperty(
@@ -1173,10 +1204,32 @@ struct MixerView: View {
         }
     }
 
+    /// USB: the one place the Software Return level reaches the unit. The unit
+    /// has one fader per strip, so unlinked faders send the quieter side. The
+    /// helper's software level is not touched here (it is held neutral by
+    /// `writeSoftwareReturnSource`, after the unit has taken its values).
+    private func writeSWReturnUnitLevel(linkedLevel: Double) async -> Bool {
+        guard let xpcDev = usbDevice else { return false }
+        let level = MixerFaderMath.softwareReturn(
+            left: swReturnLeftLevel, right: swReturnRightLevel,
+            linked: swReturnFadersLinked, linkedLevel: linkedLevel)
+        do {
+            try await xpcDev.setProperty(
+                PropertyAddress(selector: .mixerChannelLevel, element: swReturnElement),
+                value: .float64(level))
+            return true
+        } catch {
+            print("[Maestro] Mixer SW Return level failed: \(error)")
+            return false
+        }
+    }
+
     private func writeSWReturnPan(_ pan: Double) async {
         guard let device = appState.device else { return }
-        if let xpcDev = device as? XPCDeviceConnection, softwareReturnSource == 0 {
-            xpcDev.setSwReturnPan(pan)
+        if let xpcDev = usbDevice {
+            // The unit's Software Return strip has no pan. Over USB the pan is a
+            // balance in the helper, which only sees USB playback 1-2.
+            if softwareReturnSource == 0 { xpcDev.setSwReturnPan(pan) }
         } else {
             do {
                 try await device.setProperty(
@@ -1191,34 +1244,25 @@ struct MixerView: View {
 
     private func writeSWReturnMute(_ muted: Bool) async {
         guard let device = appState.device else { return }
-        if let xpcDev = device as? XPCDeviceConnection, softwareReturnSource == 0 {
-            xpcDev.setSwReturnMute(muted)
-        } else {
-            do {
-                try await device.setProperty(
-                    PropertyAddress(selector: .mixerChannelMute, element: swReturnElement),
-                    value: .bool(muted)
-                )
-            } catch {
-                print("[Maestro] Mixer SW Return mute failed: \(error)")
-            }
+        do {
+            try await device.setProperty(
+                PropertyAddress(selector: .mixerChannelMute, element: swReturnElement),
+                value: .bool(muted)
+            )
+        } catch {
+            print("[Maestro] Mixer SW Return mute failed: \(error)")
         }
     }
 
     private func writeSWReturnSolo(_ solo: Bool) async {
         guard let device = appState.device else { return }
-        if let xpcDev = device as? XPCDeviceConnection, softwareReturnSource == 0 {
-            let mixer = UInt16(selectedMixer + 1)
-            xpcDev.sendMixerParam(usbCmd: 0xB2, mixer: mixer, channel: 1000, value: solo ? 1 : 0)
-        } else {
-            do {
-                try await device.setProperty(
-                    PropertyAddress(selector: .mixerChannelSolo, element: swReturnElement),
-                    value: .bool(solo)
-                )
+        do {
+            try await device.setProperty(
+                PropertyAddress(selector: .mixerChannelSolo, element: swReturnElement),
+                value: .bool(solo)
+            )
         } catch {
             print("[Maestro] Mixer SW Return solo failed: \(error)")
-        }
         }
     }
 
@@ -1238,34 +1282,40 @@ struct MixerView: View {
         } catch {
             print("[Maestro] Mixer SW Return source failed: \(error)")
         }
-        if let xpcDev = device as? XPCDeviceConnection {
+        if let xpcDev = usbDevice {
+            // Unit first, helper second: a helper left holding an attenuation
+            // or mute by an older Maestro must not be neutralised before the
+            // unit holds its values. If a unit write fails twice the helper is
+            // left as it was.
+            let level = MixerFaderMath.softwareReturn(
+                left: swReturnLeftLevel, right: swReturnRightLevel,
+                linked: swReturnFadersLinked, linkedLevel: swReturnLeftLevel)
+            let element = swReturnElement
+            let writes: [(AudioPropertySelector, PropertyValue)] = [
+                (.mixerChannelLevel, .float64(level)),
+                (.mixerChannelMute, .bool(swReturnChannel.isMuted)),
+                (.mixerChannelSolo, .bool(swReturnChannel.isSoloed)),
+            ]
+            var unitOK = true
+            for (selector, value) in writes {
+                if await !xpcDev.setUnitMixerWithRetry(
+                    PropertyAddress(selector: selector, element: element), value: value) {
+                    unitOK = false
+                }
+            }
+            guard unitOK else {
+                print("[Maestro] SW Return write to the unit failed twice; the helper was left as it was")
+                return
+            }
+            xpcDev.setHelperNeutral()
             let otherMixer = selectedMixer == 0 ? 1 : 0
             let otherSource = UInt32(UserDefaults.standard.integer(
                 forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
             xpcDev.setSwReturnProcessing(source == 0 || otherSource == 0)
-        }
-        if device is XPCDeviceConnection && source == 0 {
-            // The USB proxy owns the default pair's fader/pan/mute. Clear any
-            // stale FPGA controls left behind by a previously selected pair.
-            // ThunderBridge source 0 is different: it is the card FPGA's
-            // actual host-playback return, so it must restore the persisted
-            // mixer state instead of being reset when Maestro opens.
-            try? await device.setProperty(
-                PropertyAddress(selector: .mixerChannelLevel, element: swReturnElement),
-                value: .float64(0))
-            try? await device.setProperty(
-                PropertyAddress(selector: .mixerChannelPan, element: swReturnElement),
-                value: .float64(0))
-            try? await device.setProperty(
-                PropertyAddress(selector: .mixerChannelMute, element: swReturnElement),
-                value: .bool(false))
-            try? await device.setProperty(
-                PropertyAddress(selector: .mixerChannelSolo, element: swReturnElement),
-                value: .bool(false))
+            if source == 0 { await writeSWReturnPan(swReturnChannel.pan) }
         } else {
-            // Non-default pairs, and the ThunderBridge default pair, are
-            // processed by the FPGA mixer. Mirror the current persisted state
-            // into its software-return input controls.
+            // ThunderBridge: the FPGA mixer processes every source. Mirror the
+            // current persisted state into its software-return input controls.
             if swReturnFadersLinked {
                 await writeSWReturnLevel(swReturnChannel.level)
             } else {

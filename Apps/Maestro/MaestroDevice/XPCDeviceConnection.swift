@@ -50,9 +50,8 @@ public protocol XPCTransport: Sendable {
     /// array.
     func getSoftwareOutputPeaks() async -> [Float]?
 
-    /// Set software mute on the SW Return audio path.
-    /// USB audio routes directly to DAC, bypassing the FPGA mixer — so
-    /// hardware mixer mute has no effect. This zeros the render buffer instead.
+    /// Set the proxy's software mute on the SW Return audio path. Maestro keeps
+    /// this unmuted: the unit's own mixer (strip 32) owns Software Return mute.
     func setSwReturnMute(_ muted: Bool)
 
     /// Send a mixer parameter command directly (bypasses generic setProperty).
@@ -60,21 +59,20 @@ public protocol XPCTransport: Sendable {
     /// nValue = (mixer << 16) | channel, data = 1 byte value.
     func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8)
 
-    /// Set SW Return fader level in dB. USB audio bypasses the FPGA mixer,
-    /// so hardware fader commands have no effect. This scales samples in
-    /// the proxy's render callback. Range: -48 to +6 dB.
+    /// Set the proxy's software SW Return gain in dB (both sides). Maestro keeps
+    /// this at 0 dB: the unit's own mixer (strip 32) owns the Software Return
+    /// fader. Overwrites both per-side gains.
     func setSwReturnLevel(_ dB: Double)
 
     /// Set one side of the software return independently.
     func setSwReturnChannelLevel(channel: Int, dB: Double)
 
-    /// Set SW Return pan position. USB audio bypasses the FPGA mixer,
-    /// so hardware pan commands have no effect. Stereo balance preserves unity
+    /// Set SW Return pan position. The unit's Software Return strip has no pan,
+    /// so this is a balance in the proxy. Stereo balance preserves unity
     /// at center and attenuates the opposite side. Range: -1.0 (left) to +1.0 (right).
     func setSwReturnPan(_ pan: Double)
 
     /// Select whether software gain/pan/mute should process USB channels 1-2.
-    /// Other source pairs use the FPGA mixer controls directly.
     func setSwReturnProcessing(_ enabled: Bool)
 
     /// Set FPGA routing mode: 0 = DAW (null passthrough), 1 = Direct Monitor (1:1 passthrough).
@@ -587,7 +585,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     private func readFromUnit(_ address: PropertyAddress) async throws -> PropertyValue {
 
-        let usbRequest = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+        // The mapper is shared with ThunderBridge, so USB's own strip numbers
+        // (Software Return 32, Master 33) are applied here, not there.
+        let usbRequest = try SymphonyIOPropertyMapper.buildReadRequest(
+            for: try USBMixerAddressing.usbAddress(for: address))
 
         let reply = try await transport.sendGetProperty(
             bRequest: usbRequest.request,
@@ -626,7 +627,9 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             updateCacheForWriteOnly(address, value: value)
         } else {
             do {
-                let usbRequest = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: value)
+                // USB strip numbers (Software Return 32, Master 33); see readFromUnit.
+                let usbRequest = try SymphonyIOPropertyMapper.buildWriteRequest(
+                    for: try USBMixerAddressing.usbAddress(for: address), value: value)
                 // S5: await the reply — a failed USB write throws instead of
                 // silently reporting success and updating caches.
                 try await transport.sendSetProperty(
@@ -658,6 +661,69 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         // Notify listeners
         let change = PropertyChange(address: address, value: value)
         await listenerStorage.notifyListeners(for: address, change: change)
+    }
+
+    /// Hold the helper's software stage at 0 dB, unmuted. Send this only after
+    /// the unit's own strips have taken their values.
+    public func setHelperNeutral() {
+        transport.setSwReturnLevel(0)
+        transport.setSwReturnMute(false)
+    }
+
+    /// One write to the unit's mixer, tried again once after a short delay.
+    /// Returns whether it landed.
+    public func setUnitMixerWithRetry(
+        _ address: PropertyAddress, value: PropertyValue,
+        retryDelay: Duration = .milliseconds(150)
+    ) async -> Bool {
+        for attempt in 0..<2 {
+            do { try await setProperty(address, value: value); return true } catch {
+                if attempt == 0 { try? await Task.sleep(for: retryDelay) }
+            }
+        }
+        return false
+    }
+
+    /// Put the unit's Master and Software Return strips, for both mixers, and
+    /// the helper's software stage back to what Maestro has saved.
+    ///
+    /// Runs when Maestro connects, reconnects, and recovers after the unit was
+    /// power-cycled (its mixer then returns to 0 dB, unmuted). The unit's mixer
+    /// owns Software Return level, mute and solo and the Master level. The unit
+    /// is written first; only when every unit write has landed (each is tried
+    /// twice) is the helper made neutral, so a level or mute an older Maestro
+    /// left in the helper is never dropped before the unit holds its value.
+    /// Returns whether the restore completed.
+    @discardableResult
+    public func restoreReturnAndMaster(
+        helperMixer: Int = 0, defaults: UserDefaults = .standard,
+        retryDelay: Duration = .milliseconds(150)
+    ) async -> Bool {
+        let state = USBMixerSavedState.load(defaults: defaults)
+        var unitOK = true
+        var helperSteps: [USBMixerRestorePlan.Step] = []
+        for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer) {
+            if case .hardware(let address, let value) = step {
+                if await !setUnitMixerWithRetry(address, value: value, retryDelay: retryDelay) {
+                    unitOK = false
+                }
+            } else {
+                helperSteps.append(step)
+            }
+        }
+        guard unitOK else {
+            print("[Maestro] USB mixer restore did not complete: a write to the unit failed twice; the helper was left as it was")
+            return false
+        }
+        for step in helperSteps {
+            switch step {
+            case .helperNeutral: setHelperNeutral()
+            case .helperPan(let pan): transport.setSwReturnPan(pan)
+            case .helperProcessing(let on): transport.setSwReturnProcessing(on)
+            case .hardware: break
+            }
+        }
+        return true
     }
 
     /// Write every stored setting to the hardware. Called once per connect, as
@@ -708,6 +774,18 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// Send a mixer parameter directly via dedicated XPC command.
     /// Bypasses the generic setProperty path which has delivery issues.
     public func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {
+        // Never put the CoreAudio-level IDs (1000/2000, stereo sides) on the USB
+        // wire: the unit numbers Software Return 32 and Master 33.
+        var channel = channel
+        if USBMixerStrip.neverOnUSBWire.contains(channel) {
+            switch channel {
+            case USBMixerStrip.softwareReturnLogicalID: channel = USBMixerStrip.softwareReturn
+            case USBMixerStrip.masterLogicalID: channel = USBMixerStrip.master
+            default: return
+            }
+            // Neither strip has a pan.
+            if usbCmd == SymphonyIOCommand.mixerInputPan.rawValue { return }
+        }
         transport.sendMixerParam(usbCmd: usbCmd, mixer: mixer, channel: channel, value: value)
     }
 
