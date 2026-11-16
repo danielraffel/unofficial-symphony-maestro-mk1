@@ -819,6 +819,12 @@ struct SystemSetupView: View {
     /// for the virtual device to follow and for a DAW to take the rate back, so the
     /// reconcile loop leaves the picker alone until the write has resolved.
     @State private var rateWriteInFlight = false
+    /// Set from a rate selection until the hardware reports the new rate (and,
+    /// over USB, until "Maestro USB" has followed it). The picker is disabled
+    /// meanwhile: a second selection sent while the device is still switching
+    /// can be dropped, or be judged "already there" against the rate the first
+    /// change is about to leave. The same rule applies over USB and ThunderBridge.
+    @State private var rateSettling = false
     /// The in-flight rate write, cancelled when a new selection supersedes it.
     @State private var rateWriteTask: Task<Void, Never>?
     /// Which write is the current one.
@@ -907,7 +913,7 @@ struct SystemSetupView: View {
                         }
                     }
                 }
-                .disabled(isLoading || isProToolsMode)
+                .disabled(isLoading || isProToolsMode || rateSettling)
                 .onChange(of: sampleRate) { _, newRate in
                     guard !isLoading else { return }
                     if let mine = programmaticRate, abs(mine - newRate) < 1.0 {
@@ -920,6 +926,7 @@ struct SystemSetupView: View {
                     // not-yet-changed hardware, and snap the picker back.
                     rateWriteTask?.cancel()
                     rateWriteInFlight = true
+                    rateSettling = true
                     rateWriteGeneration += 1
                     let generation = rateWriteGeneration
                     rateWriteTask = Task {
@@ -1747,14 +1754,19 @@ struct SystemSetupView: View {
         guard let conn = (appState.device as? CoreAudioDeviceConnection) ?? appState.meterDevice else {
             errorMessage = "Cannot set the sample rate: no CoreAudio connection to the hardware."
             rateWriteInFlight = false
+            rateSettling = false
             return
         }
         // Only the current write may lower the flag; a superseded one leaving would
         // re-open the reconcile loop on top of the write that replaced it.
-        defer { if isCurrent() { rateWriteInFlight = false } }
+        defer { if isCurrent() { rateWriteInFlight = false; rateSettling = false } }
         do {
             let settled = try await conn.setNominalSampleRateAndWait(rate)
             guard isCurrent() else { return }
+            // ThunderBridge has no virtual device to wait for: the hardware
+            // reporting the rate is the end of the change.
+            let overUSB = appState.device is XPCDeviceConnection
+            if !overUSB { rateSettling = false }
             // Ours, not the user's: without the sentinel this assignment re-enters
             // onChange as though it were a fresh selection. Armed ONLY when it will
             // actually move the picker -- on the ordinary success path `sampleRate`
@@ -1780,6 +1792,7 @@ struct SystemSetupView: View {
             clockLocked = true
             await confirmVirtualDeviceFollowed(rate, isCurrent: isCurrent)
             guard isCurrent() else { return }
+            rateSettling = false
             await reportIfSomethingTookTheRateBack(rate, from: conn, isCurrent: isCurrent)
         } catch {
             guard isCurrent() else { return }
