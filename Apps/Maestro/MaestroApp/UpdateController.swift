@@ -88,7 +88,7 @@ final class UpdateController: ObservableObject {
         feedOverride = UserDefaults.standard.string(forKey: "SUFeedURL")
         // Preferences reads `reinstaller.isBusy` through this object, and
         // SwiftUI only redraws for the object a view holds. Without this the
-        // channel picker and "Install X…" stayed disabled after a refused
+        // channel picker and "Install X" stayed disabled after a refused
         // go-back, until something else changed (rehearsal row B11(b)).
         self.reinstaller.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -212,7 +212,7 @@ final class UpdateController: ObservableObject {
         return plan
     }
 
-    /// "Install X…" in Preferences: re-read and verify the feed, never trust
+    /// "Install X" in Preferences: re-read and verify the feed, never trust
     /// the stored number.
     func stableTargetForInstall() async throws -> StableTarget {
         let feed = try await loadFeed()

@@ -16,7 +16,7 @@ struct UpdateChannelCopyTests {
 
     @Test func versionsAreFilledIn() {
         #expect(UpdateChannelCopy.runningBeta("0.9.0", stable: "0.8.40") == "You're running beta 0.9.0. The latest stable version is 0.8.40.")
-        #expect(UpdateChannelCopy.installButton("0.8.40") == "Install 0.8.40…")
+        #expect(UpdateChannelCopy.installButton("0.8.40") == "Install 0.8.40")
         #expect(UpdateChannelCopy.switchAndInstall("0.8.40") == "Switch and Install 0.8.40")
         #expect(UpdateChannelCopy.downloading("0.8.40") == "Downloading Maestro 0.8.40…")
         #expect(UpdateChannelCopy.stillOnBeta("0.9.0") == "You're still running beta 0.9.0. You'll get the next stable version when it is newer than this one.")

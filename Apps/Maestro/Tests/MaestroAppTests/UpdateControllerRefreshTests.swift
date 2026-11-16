@@ -11,7 +11,7 @@ import MaestroCore
 /// changes as its own.
 ///
 /// Rehearsal row B11(b), 2026-11-15: after a refused go-back closed with OK,
-/// the picker and "Install 0.8.40…" stayed disabled until Check for Updates
+/// the picker and "Install 0.8.40" stayed disabled until Check for Updates
 /// happened to redraw the page.
 @MainActor
 @Suite("Update controller refresh")

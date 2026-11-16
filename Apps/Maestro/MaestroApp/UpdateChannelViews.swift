@@ -7,7 +7,7 @@ import SwiftUI
 enum UpdateChannelDialog: Identifiable, Equatable {
     case confirmBeta
     /// `offerSwitchOnly` is false when the copy is already on Stable (the
-    /// "Install X…" button), so "Switch Without Installing" means nothing.
+    /// "Install X" button), so "Switch Without Installing" means nothing.
     case goBack(FeedItem, offerSwitchOnly: Bool)
     case feedUnreachable
     case refused(String)
@@ -32,7 +32,7 @@ enum UpdateChannelCopy {
     static let betaBack = "You can switch back to Stable at any time; Maestro then offers to reinstall the latest stable version."
     static let goBackTitle = "Go back to the stable version?"
     static let noBetaNow = "There's no beta available right now. You'll get the next one when it is released."
-    /// Names no button label: "Install X…" carries a version and is only
+    /// Names no button label: "Install X" carries a version and is only
     /// shown once a feed has been read, which Check for Updates does.
     static let feedUnreachable = "Maestro couldn't read the update feed. The channel is now Stable. To reinstall the stable version when you're online, choose Check for Updates, then press the Install button under Update channel in Preferences."
     /// A package was downloaded and failed a check.
@@ -56,7 +56,8 @@ enum UpdateChannelCopy {
         ]
     }
     static func downloading(_ version: String) -> String { "Downloading Maestro \(version)…" }
-    static func installButton(_ version: String) -> String { "Install \(version)…" }
+    /// No ellipsis: after a version number it read as a cut-off number.
+    static func installButton(_ version: String) -> String { "Install \(version)" }
     static func switchAndInstall(_ version: String) -> String { "Switch and Install \(version)" }
 }
 
@@ -150,7 +151,7 @@ struct UpdateChannelSettings: View {
         }
     }
 
-    /// "Install X…": never trusts the stored number; reads and verifies the feed first.
+    /// "Install X": never trusts the stored number; reads and verifies the feed first.
     private func installStable() {
         guard !updates.isSessionInProgress else { return }
         busy = true
