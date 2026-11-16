@@ -297,7 +297,7 @@ struct HelpView: View {
             bullet("SW Return fader, mute and solo, and the Master fader, are done by the Symphony's own mixer", "they work whichever device you play through, **Maestro USB** or **USB Audio**.")
             bullet("They change only outputs that are fed from that mixer", "set this in Output Routing. An output fed from somewhere else, such as a headphone output on its own source, does not change.")
             bullet("SW Return pan still needs Maestro USB", "the Symphony's mixer has no pan for SW Return. Maestro applies it to your Mac's audio, and only when that audio plays through **Symphony I/O : Maestro USB**.")
-            bullet("Left and right faders stay linked", "over USB, SW Return and Master each have one fader in the Symphony. Over ThunderBridge they can be unlinked.")
+            bullet("SW Return and Master are each one stereo fader", "it is drawn with a left and a right handle, and the two always move together, as in Apogee's Maestro. This is the same over ThunderBridge.")
             bullet("SW Return meter", "it shows the signal before the fader and before mute.")
             bullet("The headphone knobs control their own outputs", "independently of the mixer.")
             bullet("Hardware input faders affect the live inputs being monitored", "not your Mac's playback.")

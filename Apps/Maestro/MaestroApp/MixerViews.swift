@@ -30,15 +30,9 @@ struct MixerView: View {
     @State private var masterLevel: Double
     @State private var masterLeftLevel: Double
     @State private var masterRightLevel: Double
-    @State private var masterFadersLinked: Bool
     @State private var swReturnChannel: MixerChannelState
     @State private var swReturnLeftLevel: Double
     @State private var swReturnRightLevel: Double
-    @State private var swReturnFadersLinked: Bool
-    /// Over USB the saved left/right values are only replaced once the user moves
-    /// that pair's fader; until then saving leaves them as they were.
-    @State private var masterPairTouched = false
-    @State private var swPairTouched = false
     @State private var softwareReturnSource: UInt32
     @State private var errorMessage: String?
     @State private var showMixerResetAlert = false
@@ -64,28 +58,20 @@ struct MixerView: View {
             mixer: mixer,
             store: appState.channelStateStore)
         _channels = State(initialValue: snapshot.channels)
-        _swReturnChannel = State(initialValue: snapshot.swReturnChannel)
-        let swLevel = snapshot.swReturnChannel.level
-        let isUSB = appState.device is XPCDeviceConnection
-        let swSavedLinked = UserDefaults.standard.object(forKey: "mixerSWReturnFadersLinked") as? Bool ?? true
-        let swPair = MixerPairLink.shown(
-            left: UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? swLevel,
-            right: UserDefaults.standard.object(forKey: "mixerSWReturnRightLevel_\(mixer)") as? Double ?? swLevel,
-            savedLinked: swSavedLinked, isUSB: isUSB,
-            linkedLevel: UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? swLevel)
-        _swReturnLeftLevel = State(initialValue: swPair.left)
-        _swReturnRightLevel = State(initialValue: swPair.right)
-        _swReturnFadersLinked = State(initialValue: swSavedLinked)
+        // Software Return and Master are each one stereo fader drawn with two
+        // handles that always move together (see MixerPairLink). The saved
+        // left value is that mixer's level for the pair.
+        let swLevel = UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double
+            ?? snapshot.swReturnChannel.level
+        var swReturn = snapshot.swReturnChannel
+        swReturn.level = swLevel
+        _swReturnChannel = State(initialValue: swReturn)
+        _swReturnLeftLevel = State(initialValue: swLevel)
+        _swReturnRightLevel = State(initialValue: swLevel)
         _softwareReturnSource = State(initialValue: snapshot.softwareReturnSource)
-        let masterSavedLinked = UserDefaults.standard.object(forKey: "mixerMasterFadersLinked") as? Bool ?? true
-        let masterPair = MixerPairLink.shown(
-            left: UserDefaults.standard.object(forKey: "mixerMasterLeftLevel_\(mixer)") as? Double ?? snapshot.masterLevel,
-            right: UserDefaults.standard.object(forKey: "mixerMasterRightLevel_\(mixer)") as? Double ?? snapshot.masterLevel,
-            savedLinked: masterSavedLinked, isUSB: isUSB, linkedLevel: snapshot.masterLevel)
-        _masterLevel = State(initialValue: isUSB ? masterPair.left : snapshot.masterLevel)
-        _masterLeftLevel = State(initialValue: masterPair.left)
-        _masterRightLevel = State(initialValue: masterPair.right)
-        _masterFadersLinked = State(initialValue: masterSavedLinked)
+        _masterLevel = State(initialValue: snapshot.masterLevel)
+        _masterLeftLevel = State(initialValue: snapshot.masterLevel)
+        _masterRightLevel = State(initialValue: snapshot.masterLevel)
         let offset = ControlTabScrollPreferences.remembers
             ? appState.controlTabScrollOffset(for: .mixer) : 0
         _scrollPosition = State(initialValue: ScrollPosition(x: offset))
@@ -333,7 +319,7 @@ struct MixerView: View {
                                 height: 200,
                                 showScale: false,
                                 externalReadout: true,
-                                onUserChange: { newLevel in masterSideChanged(0, newLevel) },
+                                onUserChange: { newLevel in masterSideChanged(newLevel) },
                                 thumbWidth: 22
                             )
 
@@ -345,7 +331,7 @@ struct MixerView: View {
                                 height: 200,
                                 showScale: false,
                                 externalReadout: true,
-                                onUserChange: { newLevel in masterSideChanged(1, newLevel) },
+                                onUserChange: { newLevel in masterSideChanged(newLevel) },
                                 thumbWidth: 22
                             )
 
@@ -357,12 +343,9 @@ struct MixerView: View {
                             )
                         }
 
-                        // Reserve the same link row used by channel strips. The
-                        // link button sits above Unity instead of overlapping the
-                        // meter, so every Unity/Mute/Solo/Output row aligns.
                         // Master needs a small final optical adjustment to align
-                        // its Link/Unity group with the other strips.
-                        masterLinkRow
+                        // its readout with the other strips.
+                        masterReadoutRow
 
                     }
                     // Stereo master needs room for two faders, the scale, and
@@ -459,7 +442,6 @@ struct MixerView: View {
             // Local state is already complete; only hardware synchronization
             // waits for this task. No partial strip layout is exposed meanwhile.
             ensureNamesAndVisibility()
-            showUSBPairs()
             await syncMixerToHardware()
             restoreSessionScrollPosition()
         }
@@ -630,12 +612,9 @@ struct MixerView: View {
             if i == -1 {
                 // SW Return (sentinel key)
                 swReturnChannel.level = newLevel
-                if usbDevice != nil {
-                    // One fader over USB: both sides follow.
-                    swReturnLeftLevel = newLevel
-                    swReturnRightLevel = newLevel
-                    swPairTouched = true
-                }
+                // One stereo fader: both handles follow.
+                swReturnLeftLevel = newLevel
+                swReturnRightLevel = newLevel
                 Task { await writeSWReturnLevel(newLevel) }
             } else {
                 guard i < channels.count else { continue }
@@ -779,17 +758,17 @@ struct MixerView: View {
             mixer: selectedMixer,
             store: appState.channelStateStore)
         channels = snapshot.channels
-        swReturnChannel = snapshot.swReturnChannel
         softwareReturnSource = snapshot.softwareReturnSource
         masterLevel = snapshot.masterLevel
-        let swLevel = snapshot.swReturnChannel.level
-        swReturnLeftLevel = UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") as? Double ?? swLevel
-        swReturnRightLevel = UserDefaults.standard.object(forKey: "mixerSWReturnRightLevel_\(selectedMixer)") as? Double ?? swLevel
-        masterLeftLevel = UserDefaults.standard.object(forKey: "mixerMasterLeftLevel_\(selectedMixer)") as? Double ?? snapshot.masterLevel
-        masterRightLevel = UserDefaults.standard.object(forKey: "mixerMasterRightLevel_\(selectedMixer)") as? Double ?? snapshot.masterLevel
-        masterPairTouched = false
-        swPairTouched = false
-        showUSBPairs()
+        masterLeftLevel = snapshot.masterLevel
+        masterRightLevel = snapshot.masterLevel
+        let swLevel = UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") as? Double
+            ?? snapshot.swReturnChannel.level
+        var swReturn = snapshot.swReturnChannel
+        swReturn.level = swLevel
+        swReturnChannel = swReturn
+        swReturnLeftLevel = swLevel
+        swReturnRightLevel = swLevel
     }
 
     /// Persist current mixer channel states to UserDefaults.
@@ -798,20 +777,14 @@ struct MixerView: View {
         if let data = try? JSONEncoder().encode(swReturnChannel) {
             UserDefaults.standard.set(data, forKey: "mixerState_swReturn")
         }
-        // Over USB the pairs show the quieter side; the saved sides are kept
-        // for ThunderBridge until the user moves that pair's fader.
-        let onUSB = usbDevice != nil
-        if !onUSB || masterPairTouched {
-            UserDefaults.standard.set(masterLevel, forKey: "mixerMasterLevel_\(selectedMixer)")
-            UserDefaults.standard.set(masterLeftLevel, forKey: "mixerMasterLeftLevel_\(selectedMixer)")
-            UserDefaults.standard.set(masterRightLevel, forKey: "mixerMasterRightLevel_\(selectedMixer)")
-        }
-        if !onUSB || swPairTouched {
-            UserDefaults.standard.set(swReturnLeftLevel, forKey: "mixerSWReturnLeftLevel_\(selectedMixer)")
-            UserDefaults.standard.set(swReturnRightLevel, forKey: "mixerSWReturnRightLevel_\(selectedMixer)")
-        }
-        UserDefaults.standard.set(swReturnFadersLinked, forKey: "mixerSWReturnFadersLinked")
-        UserDefaults.standard.set(masterFadersLinked, forKey: "mixerMasterFadersLinked")
+        UserDefaults.standard.set(masterLevel, forKey: "mixerMasterLevel_\(selectedMixer)")
+        UserDefaults.standard.set(masterLeftLevel, forKey: "mixerMasterLeftLevel_\(selectedMixer)")
+        UserDefaults.standard.set(masterRightLevel, forKey: "mixerMasterRightLevel_\(selectedMixer)")
+        UserDefaults.standard.set(swReturnLeftLevel, forKey: "mixerSWReturnLeftLevel_\(selectedMixer)")
+        UserDefaults.standard.set(swReturnRightLevel, forKey: "mixerSWReturnRightLevel_\(selectedMixer)")
+        // The pairs can no longer be unlinked. Older versions read these flags.
+        UserDefaults.standard.set(true, forKey: "mixerSWReturnFadersLinked")
+        UserDefaults.standard.set(true, forKey: "mixerMasterFadersLinked")
         UserDefaults.standard.set(softwareReturnSource, forKey: "mixerSoftwareReturnSource_\(selectedMixer)")
         // Keep the ThunderBridge SW Return meters in step with the faders/pan/mute.
         appState.refreshSoftwareReturnMeterGains()
@@ -850,15 +823,7 @@ struct MixerView: View {
                     PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
                     value: .float64(masterLevel))
             } catch {}
-            if !masterFadersLinked {
-                await writeMasterSideLevel(side: 0, level: masterLeftLevel)
-                await writeMasterSideLevel(side: 1, level: masterRightLevel)
-            }
             await writeSoftwareReturnSource(softwareReturnSource)
-            if !swReturnFadersLinked {
-                await writeSWReturnSideLevel(side: 0, level: swReturnLeftLevel)
-                await writeSWReturnSideLevel(side: 1, level: swReturnRightLevel)
-            }
         }
         print("[Maestro] syncMixerToHardware: sent \(channels.count) channels + master to mixer \(selectedMixer + 1) (\(routingMode == 0 ? "DAW" : "Direct Monitor"))")
     }
@@ -894,35 +859,21 @@ struct MixerView: View {
             | UInt32(usbDevice != nil ? USBMixerStrip.softwareReturn : USBMixerStrip.softwareReturnLogicalID)
     }
 
-    /// Over USB both pairs are linked whatever the saved flags say (the unit has
-    /// one fader per strip). The saved flags are not changed.
-    private var masterLinked: Bool {
-        MixerPairLink.effectiveLinked(savedLinked: masterFadersLinked, isUSB: usbDevice != nil)
-    }
-    /// A Software Return side fader moved. Linked (always over USB): both sides follow.
-    private func swSideChanged(_ side: Int, _ level: Double) {
-        swPairTouched = true
-        if side == 0 { swReturnLeftLevel = level } else { swReturnRightLevel = level }
-        if swLinked {
-            swReturnLeftLevel = level
-            swReturnRightLevel = level
-            swReturnChannel.level = level
-            Task { await writeSWReturnLevel(level) }
-        } else {
-            Task { await writeSWReturnSideLevel(side: side, level: level) }
-        }
+    /// A Software Return fader handle moved: both sides follow.
+    private func swSideChanged(_ level: Double) {
+        swReturnLeftLevel = level
+        swReturnRightLevel = level
+        swReturnChannel.level = level
+        Task { await writeSWReturnLevel(level) }
         saveMixerState()
     }
 
-    /// A Master fader moved. Linked (always over USB): both sides follow.
-    private func masterSideChanged(_ side: Int, _ newLevel: Double) {
-        if side == 0 { masterLeftLevel = newLevel } else { masterRightLevel = newLevel }
-        if masterLinked {
-            masterLeftLevel = newLevel
-            masterRightLevel = newLevel
-            masterLevel = newLevel
-        }
-        scheduleMasterSideWrite(side: side, level: newLevel)
+    /// A Master fader handle moved: both sides follow.
+    private func masterSideChanged(_ newLevel: Double) {
+        masterLeftLevel = newLevel
+        masterRightLevel = newLevel
+        masterLevel = newLevel
+        scheduleMasterWrite(level: newLevel)
     }
 
     private var swReturnStrip: some View {
@@ -973,154 +924,40 @@ struct MixerView: View {
         },
         showZoneColoring: appState.showMeterZoneColoring,
         stereoFader: true,
-        // Keep SW Return pan available alongside the linked or
-        // independent stereo faders. The mixer model and
-        // ThunderBridge write path both support this control.
+        // Keep SW Return pan available alongside the stereo fader. The
+        // mixer model and ThunderBridge write path both support it.
         showPan: true,
         stereoLeftLevel: $swReturnLeftLevel,
         stereoRightLevel: $swReturnRightLevel,
-        stereoFadersLinked: swLinkedBinding,
-        onStereoLeftLevelChange: { level in swSideChanged(0, level) },
-        onStereoRightLevelChange: { level in swSideChanged(1, level) },
-        onStereoLinkChange: { linked in
-            swReturnFadersLinked = linked
-            if linked {
-                let level = (swReturnLeftLevel + swReturnRightLevel) / 2.0
-                swReturnLeftLevel = level
-                swReturnRightLevel = level
-                swReturnChannel.level = level
-                Task { await writeSWReturnLevel(level) }
-            } else {
-                Task {
-                    await writeSWReturnSideLevel(side: 0, level: swReturnLeftLevel)
-                    await writeSWReturnSideLevel(side: 1, level: swReturnRightLevel)
-                }
-            }
-            saveMixerState()
-        },
-        stereoLinkLocked: usbPairsLocked
+        onStereoLevelChange: { level in swSideChanged(level) }
     )
     }
 
-    private var masterLinkRow: some View {
+    private var masterReadoutRow: some View {
         VStack(spacing: 3) {
-            masterLinkButton
+            // The empty control row every strip reserves above its readout, so
+            // Unity, Mute, Solo and Output share one baseline.
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: mixerControlRowHeight)
 
-            if masterLinked {
-                // The original Master value field edits the
-                // linked stereo pair. Preserve that behavior
-                // while keeping the readout display-only until
-                // double-clicked.
-                EditableLevelReadout(
-                    value: Binding(
-                        get: { masterLevel },
-                        set: { newLevel in
-                            masterLevel = newLevel
-                            masterLeftLevel = newLevel
-                            masterRightLevel = newLevel
-                            scheduleMasterSideWrite(side: 0, level: newLevel)
-                        }),
-                    range: -48...6,
-                    step: 0.5)
-                .help("Master fader level: double-click to edit")
-        } else {
-            HStack(spacing: 3) {
-                EditableLevelReadout(value: Binding(
-                    get: { masterLeftLevel },
-                    set: { newValue in
-                        masterLeftLevel = newValue
-                        scheduleMasterSideWrite(side: 0, level: newValue)
-                    }), range: -48...6, step: 0.5)
-                    .help("Left master fader level: double-click to edit")
-                EditableLevelReadout(value: Binding(
-                    get: { masterRightLevel },
-                    set: { newValue in
-                        masterRightLevel = newValue
-                        scheduleMasterSideWrite(side: 1, level: newValue)
-                    }), range: -48...6, step: 0.5)
-                    .help("Right master fader level: double-click to edit")
-            }
-            }
+            // The original Master value field edits the stereo fader. Preserve
+            // that while keeping the readout display-only until double-clicked.
+            EditableLevelReadout(
+                value: Binding(
+                    get: { masterLevel },
+                    set: { newLevel in masterSideChanged(newLevel) }),
+                range: -48...6,
+                step: 0.5)
+            .help("Master fader level: double-click to edit")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
         .offset(y: -2)
     }
 
-    private var masterLinkButton: some View {
-                Button {
-                    masterFadersLinked.toggle()
-                    if masterFadersLinked {
-                        let level = (masterLeftLevel + masterRightLevel) / 2.0
-                        masterLeftLevel = level
-                        masterRightLevel = level
-                        masterLevel = level
-                        Task { await writeMasterLevel(level); saveMixerState() }
-                    } else {
-                        Task {
-                            await writeMasterSideLevel(side: 0, level: masterLeftLevel)
-                            await writeMasterSideLevel(side: 1, level: masterRightLevel)
-                        }
-                        saveMixerState()
-                    }
-                    } label: {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(masterLinked ? Color.accentColor : Color(.controlBackgroundColor))
-                        RoundedRectangle(cornerRadius: 4)
-                            .strokeBorder(Color.primary.opacity(0.18), lineWidth: 1)
-                        Image(systemName: "link")
-                            .foregroundStyle(masterLinked ? Color.white : Color.secondary)
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: mixerControlRowHeight)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
-                .frame(height: mixerControlRowHeight)
-                .contentShape(Rectangle())
-                .disabled(usbPairsLocked)
-                .accessibilityLabel(masterLinkLabel)
-                .accessibilityHint(usbPairsLocked ? MixerPairLink.usbLockedHelp : "")
-                .help(usbPairsLocked ? MixerPairLink.usbLockedHelp : masterLinkLabel)
-    }
-
-    private var masterLinkLabel: String {
-        masterLinked ? "Unlink left and right master faders" : "Link left and right master faders"
-    }
-    private var usbPairsLocked: Bool { usbDevice != nil }
-    private var swLinkedBinding: Binding<Bool> {
-        Binding(get: { swLinked },
-                set: { if usbDevice == nil { swReturnFadersLinked = $0 } })
-    }
-    private var swLinked: Bool {
-        MixerPairLink.effectiveLinked(savedLinked: swReturnFadersLinked, isUSB: usbDevice != nil)
-    }
-
-    /// USB: show the saved pairs as the unit holds them (the quieter side when
-    /// saved unlinked). Saved values are untouched until the user moves a fader.
-    private func showUSBPairs() {
-        guard usbDevice != nil else { return }
-        let m = MixerPairLink.shown(left: masterLeftLevel, right: masterRightLevel,
-            savedLinked: masterFadersLinked, isUSB: true, linkedLevel: masterLevel)
-        masterLeftLevel = m.left; masterRightLevel = m.right; masterLevel = m.left
-        let s = MixerPairLink.shown(left: swReturnLeftLevel, right: swReturnRightLevel,
-            savedLinked: swReturnFadersLinked, isUSB: true, linkedLevel: swReturnLeftLevel)
-        swReturnLeftLevel = s.left; swReturnRightLevel = s.right
-    }
-
     /// The USB connection, or nil on ThunderBridge and in simulation.
     private var usbDevice: XPCDeviceConnection? { appState.device as? XPCDeviceConnection }
-
-    /// Legacy CoreAudio mixer descriptors identify stereo sides with the
-    /// SoftwareReturn/Master bit plus side number (1 = L, 2 = R).  The
-    /// reserved 1000/2000 IDs remain the linked-pair form.
-    private func stereoMixerElement(base: UInt32, side: Int) -> UInt32 {
-        let bit = base == 1000 ? 0x1000 : 0x2000
-        return (UInt32(selectedMixer + 1) << 16) | UInt32(bit | (side == 0 ? 1 : 2))
-    }
 
     private func writeLevel(channel: Int, level: Double) async {
         guard let device = appState.device else { return }
@@ -1191,11 +1028,9 @@ struct MixerView: View {
     /// USB: write the Master strip from the faders as shown.
     private func writeMasterFader() async {
         guard let device = appState.device else { return }
-        // The unit has one Master fader per mixer, so an unlinked pair sends
-        // the quieter side: never louder than either fader shows.
         let level = MixerPairLink.usbUnitLevel(
             left: masterLeftLevel, right: masterRightLevel,
-            savedLinked: masterFadersLinked, linkedLevel: masterLevel)
+            savedLinked: true, linkedLevel: masterLevel)
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
@@ -1205,33 +1040,12 @@ struct MixerView: View {
         }
     }
 
-    private func writeMasterSideLevel(side: Int, level: Double) async {
-        guard let device = appState.device else { return }
-        if usbDevice != nil {
-            await writeMasterFader()
-            return
-        }
-        do {
-            try await device.setProperty(
-                PropertyAddress(selector: .mixerChannelLevel,
-                                element: stereoMixerElement(base: 2000, side: side)),
-                value: .float64(level))
-        } catch {
-            print("[Maestro] Mixer master side \(side + 1) failed: \(error)")
-        }
-    }
-
-    private func scheduleMasterSideWrite(side: Int, level: Double) {
-        masterPairTouched = true
+    private func scheduleMasterWrite(level: Double) {
         masterDebounce?.cancel()
         masterDebounce = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(25))
             guard !Task.isCancelled else { return }
-            if masterLinked {
-                await writeMasterLevel(level)
-            } else {
-                await writeMasterSideLevel(side: side, level: level)
-            }
+            await writeMasterLevel(level)
             saveMixerState()
         }
     }
@@ -1247,7 +1061,6 @@ struct MixerView: View {
     private func writeSWReturnLevel(_ level: Double) async {
         guard let device = appState.device else { return }
         if usbDevice != nil {
-            // Linked: this level. Unlinked: the quieter side the page shows.
             _ = await writeSWReturnUnitLevel(linkedLevel: level)
         } else {
             do {
@@ -1261,31 +1074,15 @@ struct MixerView: View {
         }
     }
 
-    private func writeSWReturnSideLevel(side: Int, level: Double) async {
-        guard let device = appState.device else { return }
-        if usbDevice != nil {
-            _ = await writeSWReturnUnitLevel(linkedLevel: swReturnLeftLevel)
-        } else {
-            do {
-                try await device.setProperty(
-                    PropertyAddress(selector: .mixerChannelLevel,
-                                    element: stereoMixerElement(base: 1000, side: side)),
-                    value: .float64(level))
-            } catch {
-                print("[Maestro] Mixer SW Return side \(side + 1) failed: \(error)")
-            }
-        }
-    }
-
     /// USB: the one place the Software Return level reaches the unit. The unit
-    /// has one fader per strip, so unlinked faders send the quieter side. The
+    /// has one fader per strip. The
     /// helper's software level is not touched here (it is held neutral by
     /// `writeSoftwareReturnSource`, after the unit has taken its values).
     private func writeSWReturnUnitLevel(linkedLevel: Double) async -> Bool {
         guard let xpcDev = usbDevice else { return false }
         let level = MixerPairLink.usbUnitLevel(
             left: swReturnLeftLevel, right: swReturnRightLevel,
-            savedLinked: swReturnFadersLinked, linkedLevel: linkedLevel)
+            savedLinked: true, linkedLevel: linkedLevel)
         do {
             try await xpcDev.setProperty(
                 PropertyAddress(selector: .mixerChannelLevel, element: swReturnElement),
@@ -1362,7 +1159,7 @@ struct MixerView: View {
             // left as it was.
             let level = MixerPairLink.usbUnitLevel(
                 left: swReturnLeftLevel, right: swReturnRightLevel,
-                savedLinked: swReturnFadersLinked, linkedLevel: swReturnLeftLevel)
+                savedLinked: true, linkedLevel: swReturnLeftLevel)
             let element = swReturnElement
             let writes: [(AudioPropertySelector, PropertyValue)] = [
                 (.mixerChannelLevel, .float64(level)),
@@ -1389,12 +1186,7 @@ struct MixerView: View {
         } else {
             // ThunderBridge: the FPGA mixer processes every source. Mirror the
             // current persisted state into its software-return input controls.
-            if swReturnFadersLinked {
-                await writeSWReturnLevel(swReturnChannel.level)
-            } else {
-                await writeSWReturnSideLevel(side: 0, level: swReturnLeftLevel)
-                await writeSWReturnSideLevel(side: 1, level: swReturnRightLevel)
-            }
+            await writeSWReturnLevel(swReturnChannel.level)
             await writeSWReturnPan(swReturnChannel.pan)
             await writeSWReturnMute(swReturnChannel.isMuted)
             await writeSWReturnSolo(swReturnChannel.isSoloed)
@@ -1473,9 +1265,8 @@ struct MixerChannelStripView: View {
     var softwareReturnSource: Binding<UInt32>? = nil
     var onSoftwareReturnSourceChange: ((UInt32) -> Void)? = nil
     var showZoneColoring: Bool = false
-    /// Legacy Maestro draws independent L/R faders for stereo returns. They are
-    /// linked by default, but the link control below can now address each side
-    /// independently using the side-specific mixer element.
+    /// Legacy Maestro draws a stereo return as one fader with a left and a
+    /// right handle. The two always move together.
     var stereoFader: Bool = false
     /// Whether this strip exposes its pan control. SW Return enables this for
     /// the ThunderBridge mixer path; strips that use fixed stereo routing can
@@ -1483,12 +1274,8 @@ struct MixerChannelStripView: View {
     var showPan: Bool = true
     var stereoLeftLevel: Binding<Double>? = nil
     var stereoRightLevel: Binding<Double>? = nil
-    var stereoFadersLinked: Binding<Bool>? = nil
-    var onStereoLeftLevelChange: ((Double) -> Void)? = nil
-    var onStereoRightLevelChange: ((Double) -> Void)? = nil
-    var onStereoLinkChange: ((Bool) -> Void)? = nil
-    /// Over USB the unit has one fader here: the link button stays on, greyed out.
-    var stereoLinkLocked: Bool = false
+    /// A stereo fader handle or its readout moved: the new level for both sides.
+    var onStereoLevelChange: ((Double) -> Void)? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     /// Height for the fader+meter area (matches Input/Output strip meter height).
@@ -1610,7 +1397,7 @@ struct MixerChannelStripView: View {
                         onBatchDrag: onBatchLevelChange,
                         onBatchDragStart: onBatchLevelDragStart,
                         onUserChange: { newLevel in
-                            if stereoLeftLevel != nil { onStereoLeftLevelChange?(newLevel) }
+                            if stereoLeftLevel != nil { onStereoLevelChange?(newLevel) }
                         },
                         thumbWidth: stereoFader ? 22 : 28
                     )
@@ -1626,7 +1413,7 @@ struct MixerChannelStripView: View {
                         onBatchDrag: onBatchLevelChange,
                         onBatchDragStart: onBatchLevelDragStart,
                         onUserChange: { newLevel in
-                            if stereoRightLevel != nil { onStereoRightLevelChange?(newLevel) }
+                            if stereoRightLevel != nil { onStereoLevelChange?(newLevel) }
                         },
                         thumbWidth: 22
                     )
@@ -1677,81 +1464,22 @@ struct MixerChannelStripView: View {
                 onLevelChange(newLevel)
             }
 
-            // Reserve the same link row in every strip. Stereo strips use it for
-            // the link control; mono strips leave it empty. This keeps Unity,
-            // Mute, Solo, and Output on one shared horizontal baseline instead
-            // of floating the stereo controls over the meter or pushing them
-            // below the neighboring channels.
-            if let linked = stereoFadersLinked {
-                    Button {
-                        onStereoLinkChange?(!linked.wrappedValue)
-                    } label: {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(linked.wrappedValue ? Color.accentColor : Color(.controlBackgroundColor))
-                            RoundedRectangle(cornerRadius: 4)
-                                .strokeBorder(Color.primary.opacity(0.18), lineWidth: 1)
-                            Image(systemName: "link")
-                                .foregroundStyle(linked.wrappedValue ? Color.white : Color.secondary)
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: mixerControlRowHeight)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: mixerControlRowHeight)
-                    .contentShape(Rectangle())
-                    .disabled(stereoLinkLocked)
-                    .accessibilityLabel(linked.wrappedValue ? "Unlink left and right faders" : "Link left and right faders")
-                    .accessibilityHint(stereoLinkLocked ? MixerPairLink.usbLockedHelp : "")
-                    .help(stereoLinkLocked ? MixerPairLink.usbLockedHelp
-                          : (linked.wrappedValue ? "Unlink left and right faders" : "Link left and right faders"))
-            } else {
-                // Keep mono strips on the same control-row grid without
-                // showing a meaningless link affordance.
-                Color.clear
-                    .frame(maxWidth: .infinity)
-                    .frame(height: mixerControlRowHeight)
-            }
+            // Every strip keeps one empty control row above its readout, so
+            // Unity, Mute, Solo and Output share one horizontal baseline.
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: mixerControlRowHeight)
 
-            if let left = stereoLeftLevel, let right = stereoRightLevel,
-               let linked = stereoFadersLinked {
-                if linked.wrappedValue {
-                        // The legacy Software Return value field is editable and
-                        // controls the linked stereo pair. Keep that behavior
-                        // when the two faders are linked.
-                        EditableLevelReadout(
-                            value: Binding(
-                                get: { left.wrappedValue },
-                                set: { newValue in
-                                    left.wrappedValue = newValue
-                                    right.wrappedValue = newValue
-                                    channel.level = newValue
-                                    onStereoLeftLevelChange?(newValue)
-                                }),
-                            range: -48...6,
-                            step: 0.5)
-                        .help("Software Return fader level: double-click to edit")
-                } else {
-                    HStack(spacing: 3) {
-                        EditableLevelReadout(value: Binding(
-                            get: { left.wrappedValue },
-                            set: { newValue in
-                                left.wrappedValue = newValue
-                                onStereoLeftLevelChange?(newValue)
-                            }), range: -48...6, step: 0.5)
-                            .help("Left Software Return fader level: double-click to edit")
-                        EditableLevelReadout(value: Binding(
-                            get: { right.wrappedValue },
-                            set: { newValue in
-                                right.wrappedValue = newValue
-                                onStereoRightLevelChange?(newValue)
-                            }), range: -48...6, step: 0.5)
-                            .help("Right Software Return fader level: double-click to edit")
-                    }
-                }
+            if stereoLeftLevel != nil, stereoRightLevel != nil {
+                // The legacy Software Return value field is editable and
+                // controls the stereo fader.
+                EditableLevelReadout(
+                    value: Binding(
+                        get: { stereoLeftLevel?.wrappedValue ?? channel.level },
+                        set: { newValue in onStereoLevelChange?(newValue) }),
+                    range: -48...6,
+                    step: 0.5)
+                .help("Software Return fader level: double-click to edit")
             } else {
                 // dB readout (level) — single readout, no duplicate
                 EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5)

@@ -271,13 +271,11 @@ final class AppState {
             muted = saved.isMuted
             level = saved.level
         }
-        let linked = defaults.object(forKey: "mixerSWReturnFadersLinked") as? Bool ?? true
-        // Pan/mute are shared; the per-side fader levels are stored per mixer.
+        // Pan/mute are shared; the stereo fader's level is stored per mixer
+        // (both sides hold the same value).
         softwareReturnMeterGains = (0..<2).map { mixer in
-            let left = linked ? level
-                : (defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? level)
-            let right = linked ? level
-                : (defaults.object(forKey: "mixerSWReturnRightLevel_\(mixer)") as? Double ?? level)
+            let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? level
+            let right = left
             return SoftwareReturnMeterGain.gains(
                 leftLevelDB: left, rightLevelDB: right, pan: pan, isMuted: muted)
         }
@@ -1266,6 +1264,9 @@ final class AppState {
     }
 
     init() {
+        // Before anything reads the saved mixer state: pairs an earlier version
+        // saved unlinked become linked pairs at their quieter side.
+        MixerPairLink.migrateSavedPairs()
         // Load cached board types so routing labels are correct before USB reads complete.
         // Card simulation (debug only). Lets us run the app as hardware we do not
         // physically own -- chiefly a MicPre8, so the mic preamp UI can be seen
