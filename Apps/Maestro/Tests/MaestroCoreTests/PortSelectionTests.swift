@@ -316,6 +316,7 @@ struct PortsWordingTests {
         let shown = PortsPresentation(model: model(0, s), state: s)
         #expect(shown.rows.isEmpty)
         #expect(shown.statusLine == nil)
+        #expect(!shown.statusIsRefusal)
         // The copied details still carry everything.
         #expect(s.reportLines.contains { $0.hasPrefix("Port 2 Link: ") })
         #expect(s.reportLines.contains { $0.hasPrefix("Port 2 Raw: ") })
@@ -326,6 +327,8 @@ struct PortsWordingTests {
         let s = state(audio: stage2Capable | SecondPortState.audioRefusedFlag | (1 << 8))
         let shown = PortsPresentation(model: model(0, s), state: s)
         #expect(shown.statusLine == "64 channels needs a second unit on port 2, and none was found.")
+        // Drawn as a warning, not as more grey explanation (rehearsal 2026-11-15).
+        #expect(shown.statusIsRefusal)
         #expect(shown.rows.isEmpty)
         #expect(!shown.rows.contains { $0.value.contains("refused") })
         #expect(s.reportLines.contains { $0.contains("64 channels refused") })
@@ -337,6 +340,7 @@ struct PortsWordingTests {
         // Chosen in Maestro, not confirmed yet.
         let chosen = PortsPresentation(model: model(0, s, choose: .ports1And2), state: s)
         #expect(chosen.statusLine == "Switching to 64 channels…")
+        #expect(!chosen.statusIsRefusal)
         #expect(chosen.rows.isEmpty)
         // Chosen elsewhere: the device says 64, the card is not running it yet.
         let elsewhere = PortsPresentation(model: model(1, s), state: s)

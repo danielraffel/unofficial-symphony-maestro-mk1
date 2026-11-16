@@ -1148,7 +1148,17 @@ struct SystemSetupView: View {
                             }
                             VStack(alignment: .leading, spacing: 2) {
                                 ForEach(PortSelection.explanationLines, id: \.self) { Text($0) }
-                                if let status = shown.statusLine { Text(status).padding(.top, 2) }
+                                if let status = shown.statusLine {
+                                    if shown.statusIsRefusal {
+                                        // A refused request: stands apart from the
+                                        // grey explanation lines above it.
+                                        Label(status, systemImage: "exclamationmark.triangle.fill")
+                                            .foregroundStyle(.orange)
+                                            .padding(.top, 4)
+                                    } else {
+                                        Text(status).padding(.top, 2)
+                                    }
+                                }
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)

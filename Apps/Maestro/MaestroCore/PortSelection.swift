@@ -193,8 +193,12 @@ public struct PortsPresentation: Sendable, Equatable {
 
     public static let switchingText = "Switching to 64 channels…"
 
-    /// The grey line under the picker: switching, or why 64 is not running.
+    /// The line under the picker: switching, or why 64 is not running.
     public var statusLine: String?
+    /// True when `statusLine` is the reason a request was refused. The view
+    /// then draws it as a warning; as grey caption text it read like part of
+    /// the explanation above it.
+    public var statusIsRefusal: Bool
     /// The rows after the picker.
     public var rows: [Row]
 
@@ -205,10 +209,13 @@ public struct PortsPresentation: Sendable, Equatable {
         let running = selection == .ports1And2 && model.pending == nil && state.audioActive
         if switching {
             statusLine = Self.switchingText
+            statusIsRefusal = false
         } else if selection == .port1 {
             statusLine = model.notice
+            statusIsRefusal = model.notice != nil
         } else {
             statusLine = nil
+            statusIsRefusal = false
         }
         rows = running ? state.port2DetailRows.map { Row(label: $0.label, value: $0.value) } : []
     }
