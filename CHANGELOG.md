@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (beta)
+## 0.9.1 (beta)
 
 The first beta, for people helping to test two Symphony I/O units on one ThunderBridge (64 channels), or a Symphony I/O on a Symphony 64 PCIe card. It contains everything in 0.8.40. Betas may have bugs; if you rely on your setup, stay on Stable.
 
