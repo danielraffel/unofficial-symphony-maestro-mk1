@@ -72,22 +72,16 @@ struct ContentView: View {
 
     private var thunderBridgeReport: SoftwareInfoReport { appState.softwareInfoReport }
 
-    private var thunderBridgeBannerToken: String? {
+    /// The banner to show, or nil. A dismissible banner stays hidden after the
+    /// user closes it until its content changes; one that only a finished
+    /// update clears (dismissible == false) cannot be closed.
+    private var visibleThunderBridgeBanner: (banner: ThunderBridgeBanner, token: String)? {
+        guard let banner = thunderBridgeReport.thunderBridgeBanner else { return nil }
         let report = thunderBridgeReport
-        guard report.shouldShowThunderBridgeBanner else { return nil }
-        return [report.dextStatusLine, report.dextNotice ?? "", report.bundledDextBuild ?? "", report.installedDextBuild ?? ""].joined(separator: "|")
-    }
-
-    /// Activation requests register/replace an extension; they cannot turn an
-    /// already-registered extension back on after the user disabled it in
-    /// Login Items & Extensions. In those states the useful action is the
-    /// system settings panel, not another request (which commonly returns the
-    /// misleading OSSystemExtension error 4).
-    private func thunderBridgeNeedsSettings(_ report: SoftwareInfoReport) -> Bool {
-        report.dextUpgradePending
-            || report.dextAwaitingApproval
-            || report.dextAwaitingReboot
-            || (report.installedDextVersion != nil && !report.dextEnabled)
+        let token = [banner.title, banner.message, report.bundledDextBuild ?? "", report.installedDextBuild ?? ""]
+            .joined(separator: "|")
+        if banner.dismissible && dismissedThunderBridgeBanner == token { return nil }
+        return (banner, token)
     }
 
     var body: some View {
@@ -96,21 +90,19 @@ struct ContentView: View {
             SidebarView()
         } detail: {
             VStack(spacing: 0) {
-                if let bannerToken = thunderBridgeBannerToken,
-                   dismissedThunderBridgeBanner != bannerToken {
+                if let (banner, bannerToken) = visibleThunderBridgeBanner {
                     ThunderBridgeActionBanner(
-                        report: thunderBridgeReport,
-                        onActivate: {
-                            // A second registered copy is an in-progress swap;
-                            // submitting another activation request produces
-                            // OSSystemExtensionErrorDomain code 4. The safe
-                            // action there is to show the reconnect/settings
-                            // guidance, while approval/missing/disabled states
-                            // still submit a fresh activation request.
-                            if thunderBridgeNeedsSettings(thunderBridgeReport) {
-                                openDriverExtensions()
-                            } else {
-                                SystemExtensionInstaller.shared.activate()
+                        banner: banner,
+                        onAction: {
+                            // While an upgrade is half applied another
+                            // activation request produces OSSystemExtension
+                            // error 4, and a request cannot re-enable a
+                            // disabled extension: those states open the
+                            // Driver Extensions pane instead.
+                            switch banner.action {
+                            case .openDriverSettings: openDriverExtensions()
+                            case .activate: SystemExtensionInstaller.shared.activate()
+                            case .none: break
                             }
                         },
                         onDismiss: { dismissedThunderBridgeBanner = bannerToken }
@@ -144,6 +136,9 @@ struct ContentView: View {
             HelpView()
         }
         .task {
+            // Keep the driver-update banner current after an activation
+            // (DriverHandover.swift). Maestro never retires the old driver.
+            appState.installDriverHandoverObserver()
             // What driver extension is registered. Read before the hardware work below,
             // which can take seconds, so the About box is never asked for a report it
             // cannot give. Refreshed on appear by the panels that show it.
@@ -158,8 +153,11 @@ struct ContentView: View {
                 // Sync persisted output routing to hardware after card types are known.
                 // This overwrites proxy boot defaults with any user-customized routes.
                 await appState.syncOutputRoutingToHardware()
+                await appState.syncInputRoutingToHardware()
                 // Then the settings this Mac owns (peak hold, monitor mode, ...).
                 await appState.syncDeviceSettingsToHardware()
+                // And the names that follow them (prefix, optical format, Replaces).
+                await appState.refreshChannelNaming()
             }
             // Follow the unit's front panel encoder (USB). Idles without a unit.
             appState.startFrontPanelSync()
@@ -223,59 +221,66 @@ struct ContentView: View {
     }
 }
 
-private struct ThunderBridgeActionBanner: View {
-    let report: SoftwareInfoReport
-    let onActivate: () -> Void
+/// Internal, not private, so MaestroAppTests can lay it out.
+struct ThunderBridgeActionBanner: View {
+    let banner: ThunderBridgeBanner
+    let onAction: () -> Void
     let onDismiss: () -> Void
 
-    private var message: String {
-        if report.dextUpgradePending {
-            return "The Maestro ThunderBridge driver extension is updating. Close audio applications, then reconnect the ThunderBridge."
+    private var actionTitle: String? {
+        switch banner.action {
+        case .openDriverSettings: return "Open Driver Settings…"
+        case .activate: return "Set Up Driver…"
+        case .none: return nil
         }
-        if let notice = report.dextNotice, notice.contains("build") {
-            return "A newer Maestro ThunderBridge driver extension is ready. Close audio applications, then reconnect the ThunderBridge to finish the update."
-        }
-        switch report.dextStatusLine {
-        case "Installed — approval required":
-            return "ThunderBridge is connected. Approve the Maestro ThunderBridge driver extension in System Settings."
-        case "Installed — disabled":
-            return "ThunderBridge is connected. Enable the Maestro ThunderBridge driver extension in System Settings."
-        case "Installed — restart required":
-            return "Restart your Mac to finish enabling the Maestro ThunderBridge driver extension."
-        case "Not registered — install or approve the driver":
-            return "ThunderBridge is connected, but the Maestro ThunderBridge driver extension still needs to be installed and approved."
-        default:
-            return "The Maestro ThunderBridge driver extension needs attention before Maestro can use it."
-        }
-    }
-
-    private var actionTitle: String {
-        (report.dextUpgradePending || report.dextAwaitingApproval
-         || report.dextAwaitingReboot || (report.installedDextVersion != nil && !report.dextEnabled))
-            ? "Open Driver Settings…" : "Set Up Driver…"
     }
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.yellow)
+            if banner.inProgress {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+            }
             VStack(alignment: .leading, spacing: 2) {
-                Text("Maestro ThunderBridge driver extension")
+                Text(banner.title)
                     .font(.headline)
-                Text(message)
+                Text(banner.message)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let secondary = banner.secondaryMessage {
+                    Text(secondary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                // No .fixedSize(vertical: true) here: the split view measures
+                // its minimum at a near-zero width, the message then wraps a
+                // word per line, and the window's content became taller than
+                // the window, which then drew blank (MaestroAppTests).
             }
             Spacer(minLength: 8)
-            Button(actionTitle, action: onActivate)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .accessibilityLabel("Dismiss ThunderBridge driver notice")
+            if let actionTitle {
+                // The unfinished-update banner's one instruction is the
+                // cable; the Settings route is a small link beside it.
+                if banner.secondaryMessage != nil {
+                    Button(actionTitle, action: onAction)
+                        .buttonStyle(.link)
+                        .controlSize(.small)
+                } else {
+                    Button(actionTitle, action: onAction)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            if banner.dismissible {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .accessibilityLabel("Dismiss ThunderBridge driver notice")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)

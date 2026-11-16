@@ -20,11 +20,32 @@ grep -q 'thunderboltHardwareResponsive = false' "$APP_STATE"
 grep -q 'self.mixerMeterLevels = \[Double\](repeating: -60.0' "$APP_STATE"
 grep -q 'self.digitalInputPeakHold = \[Double\](repeating: -60.0' "$APP_STATE"
 
+# Input meter words are host inputs (the capture table), not device-wide
+# channels: each strip goes through ThunderboltInputMeterMap, for the FPGA
+# words and the Core Audio fallback alike (tests: ThunderboltInputMeterMapTests).
+grep -q 'ThunderboltInputMeterMap.stripLevels(' "$APP_STATE"
+grep -q 'ThunderboltInputMeterMap.digitalLevels(host: hostInputs' "$APP_STATE"
+if grep -q 'for i in 0..<inp.count { inp\[i\] = dbW(i) }' "$APP_STATE"; then
+    echo "FAIL: ThunderBridge input strips read meter word i again" >&2; exit 1
+fi
+
+# The connect-time input routing replay records the driver's recovery count it
+# was made against, read off the main thread, so a recovery that follows it is
+# seen by the health loop as a change and replayed over.
+grep -q 'tb.linkState()?.recoveryCount' "$APP_STATE"
+grep -q 'defer { if let recoveryCountAtStart { thunderboltSeenRecoveryCount = recoveryCountAtStart } }' "$APP_STATE"
+
+# Nothing is sent to a converter unprompted: no input routing replay or
+# read-back, and no prefix read.
+grep -A6 'func syncInputRoutingToHardware' "$APP_STATE" | grep -q 'guard connectedUnit == nil else {'
+grep -B1 'device.getProperty(PropertyAddress(selector: .prefix))' "$APP_STATE" | grep -q 'if connectedUnit == nil,'
+
 # A newly published ThunderBridge can need a few seconds before its FPGA/XLink
 # probe is usable. Preserve the startup grace while retaining the shorter loss
 # threshold after the first successful live probe.
 grep -q 'thunderboltHealthFailureThreshold = 4' "$APP_STATE"
 grep -q 'thunderboltHasHealthyProbe' "$APP_STATE"
-grep -q '? 2' "$APP_STATE"
+# Three failed samples at the 2 s cadence once a healthy probe has been seen.
+grep -A1 'let threshold = self.thunderboltHasHealthyProbe' "$APP_STATE" | grep -q '? 3$'
 
 echo "ThunderBridge meter mapping and stopped-I/O gate: PASS"

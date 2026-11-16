@@ -240,6 +240,9 @@ final class AppState {
     /// proven healthy. Once a live probe has succeeded, use the shorter loss
     /// threshold so power-off is reflected promptly.
     private var thunderboltHasHealthyProbe = false
+    /// The driver's link-recovery count when last seen, nil until the first
+    /// probe. A recovery re-sends the board-order capture table.
+    private var thunderboltSeenRecoveryCount: UInt32?
     /// Avoid reopening the private dext client on every one-second failed probe.
     private var thunderboltControlReconnectAttempted = false
     /// Bounded tolerance for a DriverKit upgrade handoff, owned by the health
@@ -287,7 +290,7 @@ final class AppState {
     /// The USB auto-switch's wait for "Maestro USB"; cancelled by a newer edge.
     private var usbAutoSwitchTask: Task<Void, Never>?
     /// Re-probes a present ThunderBridge while the app is connected over USB.
-    private var thunderboltWatchTask: Task<Void, Never>?
+    var thunderboltWatchTask: Task<Void, Never>?
     /// Change detection for the persisted probe log (see `logThunderboltProbe`).
     private var thunderboltLastProbeKey = ""
     private var thunderboltProbeCount = 0
@@ -394,6 +397,24 @@ final class AppState {
                 if healthy {
                     self.thunderboltHasHealthyProbe = true
                     self.thunderboltControlReconnectAttempted = false
+                    // A link recovery in place (no disconnect, so no connect
+                    // replay) puts the driver's board-order capture table back
+                    // on the unit: put the saved input routing back over it.
+                    // Every ConfigureSymphonyLink after Start is a recovery and
+                    // bumps this count; != also covers a driver restart.
+                    if let count = tb.lastLinkState?.recoveryCount {
+                        if let seen = self.thunderboltSeenRecoveryCount, count != seen,
+                           self.connectionMode == .hardware {
+                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying input routing")
+                            // The driver lays its capture table out from the
+                            // cards it read during the recovery (a Symphony off
+                            // at Start, or a card swapped while off): read them
+                            // too, so the grid and the replay use the same table.
+                            await self.readCardTypes()
+                            await self.syncInputRoutingToHardware()
+                        }
+                        self.thunderboltSeenRecoveryCount = count
+                    }
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
                         Self.tbLog.notice("probe recovered after \(failures) failures")
@@ -524,6 +545,16 @@ final class AppState {
     /// which is a different claim and is reported as such.
     var installedDexts: [InstalledDextInfo]?
 
+    /// The build the driver serving the ThunderBridge reports for itself (nil
+    /// when no ThunderBridge connection is open). Differs from what sysextd
+    /// lists when macOS keeps an old copy on the card until restart.
+    var servingDextBuild: ServingDextBuild?
+    /// A read of `servingDextBuild` is under way (`refreshServingDextBuild`).
+    @ObservationIgnored
+    var servingDextBuildReadInFlight = false
+    @ObservationIgnored
+    var driverActivationObserver: Task<Void, Never>?
+
     /// Board hardware major versions, when read (0xA0). See
     /// `BoardTypeReading.hardwareMajor`.
     var primaryBoardHardwareMajor: UInt8?
@@ -533,6 +564,14 @@ final class AppState {
     var primaryBoardReading: BoardTypeReading {
         BoardTypeReading(card: primaryBoardType, source: primaryBoardSource,
                          hardwareMajor: primaryBoardHardwareMajor)
+    }
+    /// Slot 1's card as the ThunderBridge driver lays its capture table out
+    /// from it (`SymphonyIODefaultRouting.thunderboltInputRoutes(slot1:)`):
+    /// nil until the type has been read from the unit this session by a
+    /// driver that packs.
+    var thunderboltCaptureSlot1: IOCardType? {
+        SymphonyIODefaultRouting.thunderboltCaptureSlot1(
+            card: primaryBoardType, source: primaryBoardSource, serving: servingDextBuild)
     }
     /// Slot 1 board type WITH provenance.
     var secondaryBoardReading: BoardTypeReading {
@@ -557,7 +596,94 @@ final class AppState {
             isKnown: CardLayout.readingsDescribeAUnit(
                 slot1: primaryBoardType, slot2: secondaryBoardType),
             fallbackChannelCount: device?.identifier.mode.channelCount ?? 16,
-            converter: connectedUnit)
+            converter: connectedUnit,
+            naming: channelNaming)
+    }
+
+    /// What channel names follow besides the cards: the sample rate (the status
+    /// bar's), each slot's optical format and S/PDIF Coax Replaces setting. The
+    /// views that read or write those settings keep this current, so routing,
+    /// mixer and strip labels re-label as soon as one changes, the way Apogee's
+    /// daemon re-named its channels (`OpticalIn_SymphonyIO_Stream.cpp:70-80, 141-153`).
+    var channelNaming = CardLayout.ChannelNaming()
+
+    /// The unit's Peripheral Prefix letter, which software channel names start
+    /// with ("A Line 1/2"). Read at connect (`refreshChannelNaming`) and set by
+    /// Device Settings, so routing labels follow it without opening that tab.
+    var peripheralPrefix = CardLayout.defaultPeripheralPrefix
+
+    // MARK: Per-slot digital settings the Mac owns
+
+    /// UserDefaults key for this card pair's remembered optical format,
+    /// Replaces and Mirrors (see `SlotDigitalSettings`). Per card pair, as the
+    /// daemon kept them per board.
+    private var digitalSettingsKey: String? {
+        cardLayout.savedStateScope.map { "slotDigitalSettings.\($0)" }
+    }
+
+    private var rememberedDigitalSettings: SlotDigitalSettings {
+        guard let key = digitalSettingsKey,
+              let data = UserDefaults.standard.data(forKey: key),
+              let settings = try? PropertyListDecoder().decode(SlotDigitalSettings.self, from: data)
+        else { return SlotDigitalSettings() }
+        return settings
+    }
+
+    /// Remember a value written to (or confirmed by) the unit, so it is put back
+    /// at the next connect.
+    @MainActor
+    func rememberDigitalSetting(_ selector: AudioPropertySelector, slot: Int, value: UInt32) {
+        guard let key = digitalSettingsKey else { return }
+        var settings = rememberedDigitalSettings
+        settings.record(selector, slot: slot, value: value)
+        if let data = try? PropertyListEncoder().encode(settings) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    /// Put the remembered optical formats, Replaces and Mirrors back on the
+    /// unit, as the daemon did at connect. Both drivers start the optical ports
+    /// at ADAT/SMUX and the firmware starts Replaces Off, Mirrors Analog 1-2.
+    @MainActor
+    func reapplyDigitalSettings() async {
+        guard let device else { return }
+        for write in rememberedDigitalSettings.writes(layout: cardLayout) {
+            do {
+                try await device.setProperty(write.address, value: .uint32(write.value))
+            } catch {
+                print("[Maestro] reapplyDigitalSettings \(write.address.selector) slot \(write.address.element): \(error)")
+            }
+        }
+    }
+
+    /// Read each slot's optical format and S/PDIF Coax Replaces from the unit
+    /// for `channelNaming`. A read that fails leaves the value as it was.
+    @MainActor
+    func refreshChannelNaming() async {
+        guard let device else { return }
+        // The prefix is the Symphony I/O's; a converter is not asked for it.
+        if connectedUnit == nil,
+           let raw = (try? await device.getProperty(PropertyAddress(selector: .prefix)))?.asString {
+            peripheralPrefix = CardLayout.peripheralPrefix(raw)
+        }
+        for slot in 0..<2 {
+            let card = cardLayout.card(atSlot: slot)
+            if card.hasOpticalPorts {
+                let selector: AudioPropertySelector = card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat
+                if let raw = (try? await device.getProperty(
+                        PropertyAddress(selector: selector, element: UInt32(slot))))?.asUInt32, raw <= 1 {
+                    channelNaming.opticalIsSPDIF[slot] = raw == 1
+                }
+            } else {
+                channelNaming.opticalIsSPDIF[slot] = nil
+            }
+            if card.hasSPDIFCoax,
+               let raw = (try? await device.getProperty(
+                    PropertyAddress(selector: .spdifReplaceID, scope: .input, element: UInt32(slot))))?.asUInt32,
+               raw <= 8 {
+                channelNaming.spdifReplace[slot] = raw
+            }
+        }
     }
 
     /// "Connection" as shown in Device Info and the copied details: names the
@@ -664,6 +790,12 @@ final class AppState {
     /// output meter model; re-read from RoutingStateCache every ~2 s.
     private var softwareOutputRoutes: [UInt8: UInt8] = [:]
     private var softwareOutputRoutesPollStamp: Int = -1
+    /// ThunderBridge: the meter word (host input) each input strip reads,
+    /// from the unit's capture table (`ThunderboltInputMeterMap`); re-derived
+    /// every ~2 s so card detection and Input Routing changes are followed.
+    private var thunderboltInputMeterWords = ThunderboltInputMeterMap.Words(channels: [], digital: [])
+    private var thunderboltInputMeterWordsPollStamp: Int = -1
+    private var thunderboltInputMeterLayout: CardLayout?
     /// Count of consecutive all-zero TDM reads. Used to detect when signal stops
     /// and begin decaying held meter values (firmware returns zeros when idle too).
     private var tdmZeroReadCount: Int = 0
@@ -1217,6 +1349,15 @@ final class AppState {
         // What the driver found on the cable, if it is not a Symphony I/O.
         connectedUnit = (device as? ThunderboltDeviceConnection)?.linkState()
             .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
+        // Needed before the input routing is laid out (thunderboltCaptureSlot1),
+        // so it is awaited here; read off the main thread like every other
+        // user-client call that can wait on the driver.
+        if let tb = device as? ThunderboltDeviceConnection {
+            let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
+            if (self.device as? ThunderboltDeviceConnection) === tb { servingDextBuild = build }
+        } else {
+            servingDextBuild = nil
+        }
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
         }
@@ -1328,6 +1469,59 @@ final class AppState {
             }
         }
         print("[Maestro] syncOutputRouting: wrote \(written) cached routes to hardware")
+    }
+
+    /// Put the input routing choices saved on this Mac back on a ThunderBridge
+    /// unit. The driver programs its board-order capture table every time it
+    /// starts, and the Input Routing grid lays saved choices over that same
+    /// table, so without this the grid showed choices the unit no longer had.
+    /// Only rows the user picked are written; the rest stay at the driver's
+    /// table. Card types must have been read this session (Reset Routing's
+    /// provenance rule), since a column means a different routing byte on
+    /// other cards. Then the unit's 32 capture routes are read back and logged
+    /// once, as evidence of what it really carries.
+    @MainActor
+    func syncInputRoutingToHardware() async {
+        guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
+        // Symphony I/O routing. Nothing is sent to a converter unprompted, the
+        // read-back included (see syncDeviceSettingsToHardware).
+        guard connectedUnit == nil else {
+            print("[Maestro] syncInputRouting: skipped — connected unit is not a Symphony I/O")
+            return
+        }
+        // The driver's recovery count this replay is made against. A recovery
+        // that completes after this read programs the driver's table over
+        // these writes; the health loop then sees the count differ from this
+        // one and replays again. Without it a recovery between this replay
+        // and the loop's next probe went unnoticed.
+        let recoveryCountAtStart = await Task.detached(priority: .utility) {
+            tb.linkState()?.recoveryCount
+        }.value
+        defer { if let recoveryCountAtStart { thunderboltSeenRecoveryCount = recoveryCountAtStart } }
+        if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
+            print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
+        } else {
+            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            if ThunderboltInputRoutingMigration.run(routingKey: cache.key) {
+                print("[Maestro] syncInputRouting: cleared input routing saved before 0.8.40 (made on the old grid); the driver's default stands")
+            }
+            let writes = InputRoutingReplay.writes(
+                saved: cache.load() ?? [:], columns: cardLayout.inputRoutingColumns,
+                pairCount: tb.identifier.mode.channelCount / 2)
+            var written = 0
+            for write in writes {
+                do {
+                    try await tb.setProperty(
+                        PropertyAddress(selector: .routing, scope: .input, element: UInt32(write.destination)),
+                        value: .uint32(UInt32(write.source)))
+                    written += 1
+                } catch {
+                    print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
+                }
+            }
+            print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) saved input routes")
+        }
+        await tb.logInputRoutes()
     }
 
     static let mainPairMixerMigrationKey = "thunderboltMainPairMixerMigration_v1"
@@ -1657,7 +1851,10 @@ final class AppState {
 
                 // Read card types and sync routing (USB-specific but harmless for TB)
                 await self.readCardTypes()
+                await self.reapplyDigitalSettings()
+                await self.refreshChannelNaming()
                 await self.syncOutputRoutingToHardware()
+                await self.syncInputRoutingToHardware()
                 await self.syncDeviceSettingsToHardware()
 
                 let meterCA = CoreAudioDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
@@ -2076,23 +2273,34 @@ final class AppState {
                             let peak = Double((words[i] >> 24) & 0xFF)
                             return peak <= 0 ? -60 : max(-60, 20 * log10(peak / 256.0))
                         }
-                        var inp = self.inputMeterLevels
-                        for i in 0..<inp.count { inp[i] = dbW(i) }            // inputs 0-31
+                        // Words 0-31 meter host inputs 1-32: what the unit's
+                        // capture table sends over XLink, not the device-wide
+                        // input order the strips use. Each strip reads the word
+                        // of the host input its hardware channel is routed to
+                        // (ThunderboltInputMeterMap).
+                        self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                        let meterWords = self.thunderboltInputMeterWords
+                        var hostInputs = (0..<ThunderboltInputMeterMap.hostInputCount).map { dbW($0) }
                         var outp = self.outputMeterLevels
                         for i in 0..<outp.count { outp[i] = dbW(64 + i) }     // host playback 64-95
-                        newInput = inp
                         newOutput = outp
 
                         // If the FPGA input snapshot is unavailable or silent,
                         // use the active Core Audio capture stream. This keeps
                         // Input and Mixer hardware strips useful on cards whose
                         // meter DMA is absent, while preserving real FPGA peaks.
-                        if (newInput.max() ?? -60.0) <= -60.0,
+                        // Its channel n is host input n too.
+                        if (hostInputs.max() ?? -60.0) <= -60.0,
                            let softwareInputs = self.meterDevice?.softwareInputPeaks(),
                            !softwareInputs.isEmpty {
-                            newInput = self.linearMeterLevels(
-                                from: softwareInputs, count: self.inputMeterLevels.count)
+                            hostInputs = self.linearMeterLevels(
+                                from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount)
                         }
+                        newInput = ThunderboltInputMeterMap.stripLevels(
+                            host: hostInputs, words: meterWords, count: self.inputMeterLevels.count)
+                        self.digitalInputMeterLevels = self.smoothMeterLevels(
+                            self.digitalInputMeterLevels,
+                            raw: ThunderboltInputMeterMap.digitalLevels(host: hostInputs, words: meterWords))
 
                         // The FPGA meter DMA is not available on every
                         // ThunderBridge FPGA revision and may be temporarily
@@ -2226,8 +2434,14 @@ final class AppState {
                            softwarePeaks.count >= 2 {
                             if let softwareInputs = self.meterDevice?.softwareInputPeaks(),
                                !softwareInputs.isEmpty {
-                                newInput = self.linearMeterLevels(
-                                    from: softwareInputs, count: self.inputMeterLevels.count)
+                                // Core Audio channel n is host input n: map it
+                                // to the strips as the FPGA words are.
+                                self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                                newInput = ThunderboltInputMeterMap.stripLevels(
+                                    host: self.linearMeterLevels(
+                                        from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount),
+                                    words: self.thunderboltInputMeterWords,
+                                    count: self.inputMeterLevels.count)
                             } else {
                                 newInput = [Double](repeating: -60.0, count: self.inputMeterLevels.count)
                             }
@@ -2771,6 +2985,28 @@ final class AppState {
         softwareOutputRoutes = cachedOutputRouteMap()
     }
 
+    /// Re-derive `thunderboltInputMeterWords` every ~2 s, and at once when the
+    /// card layout changes. The table is the driver's board-order table with
+    /// the saved Input Routing choices that `syncInputRoutingToHardware`
+    /// writes over it (only when the cards were read this session, as there).
+    private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
+        let layout = cardLayout
+        guard thunderboltInputMeterWordsPollStamp < 0
+                || pollCount - thunderboltInputMeterWordsPollStamp >= 40
+                || thunderboltInputMeterLayout != layout else { return }
+        thunderboltInputMeterWordsPollStamp = pollCount
+        thunderboltInputMeterLayout = layout
+        var replayed: [SymphonyIODefaultRouting.Route] = []
+        if RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil {
+            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            replayed = InputRoutingReplay.writes(
+                saved: cache.load() ?? [:], columns: layout.inputRoutingColumns,
+                pairCount: tb.identifier.mode.channelCount / 2)
+        }
+        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: thunderboltCaptureSlot1, replayed: replayed)
+        thunderboltInputMeterWords = ThunderboltInputMeterMap.words(layout: layout, routes: routes)
+    }
+
     /// The output routes the app has persisted, as destination byte -> source
     /// byte. Mirrors the encoding in `syncOutputRoutingToHardware` exactly, but
     /// READS ONLY -- nothing here touches the device.
@@ -2951,14 +3187,33 @@ final class AppState {
                 preset.hp2RoutingID = rid
             }
             // Device settings
-            if let fmt = (try? await dev.getProperty(PropertyAddress(selector: .opticalInFormat)))?.asUInt32 {
-                preset.opticalInFormat = fmt
-            }
-            if let rep = (try? await dev.getProperty(PropertyAddress(selector: .spdifReplaceID)))?.asUInt32 {
-                preset.spdifReplaceID = rep
-            }
-            if let mir = (try? await dev.getProperty(PropertyAddress(selector: .spdifMirrorID)))?.asUInt32 {
-                preset.spdifMirrorID = mir
+            // Per slot, as the daemon saved them. The optical format is read
+            // through the direction the card has (an A16 IP has optical outputs
+            // only), and only for a card with optical ports or coax jacks.
+            for slot in 0..<2 {
+                let card = cardLayout.card(atSlot: slot)
+                let element = UInt32(slot)
+                var fmt: UInt32?
+                if card.hasOpticalPorts {
+                    let selector: AudioPropertySelector = card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat
+                    fmt = (try? await dev.getProperty(PropertyAddress(selector: selector, element: element)))?.asUInt32
+                }
+                var rep: UInt32?, mir: UInt32?
+                if card.hasSPDIFCoax {
+                    rep = (try? await dev.getProperty(
+                        PropertyAddress(selector: .spdifReplaceID, scope: .input, element: element)))?.asUInt32
+                    mir = (try? await dev.getProperty(
+                        PropertyAddress(selector: .spdifMirrorID, scope: .output, element: element)))?.asUInt32
+                }
+                if slot == 0 {
+                    if let fmt { preset.opticalInFormat = fmt }
+                    if let rep { preset.spdifReplaceID = rep }
+                    if let mir { preset.spdifMirrorID = mir }
+                } else {
+                    preset.slot2OpticalFormat = fmt
+                    preset.slot2SPDIFReplaceID = rep
+                    preset.slot2SPDIFMirrorID = mir
+                }
             }
             if let pk = (try? await dev.getProperty(PropertyAddress(selector: .peakHoldMode)))?.asUInt32 {
                 preset.peakHoldMode = pk
@@ -3157,9 +3412,12 @@ final class AppState {
             await write(PropertyAddress(selector: .headphone2Mute), .bool(preset.hp2Muted))
             await write(PropertyAddress(selector: .headphone2RoutingID), .uint32(preset.hp2RoutingID))
             // Device settings
-            await write(PropertyAddress(selector: .opticalInFormat), .uint32(preset.opticalInFormat))
-            await write(PropertyAddress(selector: .spdifReplaceID), .uint32(preset.spdifReplaceID))
-            await write(PropertyAddress(selector: .spdifMirrorID), .uint32(preset.spdifMirrorID))
+            for digital in PresetDigitalWrites.writes(for: preset, layout: cardLayout) {
+                await write(digital.address, .uint32(digital.value))
+                rememberDigitalSetting(digital.address.selector, slot: Int(digital.address.element),
+                                       value: digital.value)
+            }
+            await refreshChannelNaming()
             await write(PropertyAddress(selector: .peakHoldMode), .uint32(preset.peakHoldMode))
             await write(PropertyAddress(selector: .oversHoldMode), .uint32(preset.overHoldMode))
             await write(PropertyAddress(selector: .metersShowInput, element: 1), .uint32(preset.meterBank1Source))

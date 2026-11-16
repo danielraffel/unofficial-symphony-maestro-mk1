@@ -123,6 +123,8 @@ struct InputControlsView: View {
     /// Evidence: `SymphonyIOBoard_MicPre8ch.cpp:914-961`, `SymphonyIO_Stream.cpp:653-655`.
     private var inputChannelLabels: [String] {
         (1...max(analogInputStripCount, 1)).map { number in
+            // A pair the S/PDIF coax replaces carries the coax, and is named so.
+            if let coax = layout.coaxNameForAnalogInputStrip(number - 1) { return coax }
             let raw = number - 1 < channels.count ? channels[number - 1].inputType : 1
             return InputChannelLogic.channelLabel(number: number, rawLevel: raw)
         }
@@ -306,7 +308,7 @@ struct InputControlsView: View {
                             // and lists only the pairs that module supplies.
                             if layout.hasSPDIF(slot: 0) {
                                 spdifReplaceDropdown(
-                                    label: "SPDIF Coax\n1-2 Replace",
+                                    label: "SPDIF Coax\n1-2 Replaces",
                                     value: $spdifReplace1,
                                     selector: .spdifReplaceID
                                 )
@@ -314,7 +316,7 @@ struct InputControlsView: View {
 
                             if layout.hasSPDIF(slot: 1) {
                                 spdifReplaceDropdown(
-                                    label: "SPDIF Coax\n3-4 Replace",
+                                    label: "SPDIF Coax\n3-4 Replaces",
                                     value: $spdifReplace2,
                                     selector: .spdifReplaceID,
                                     element: 1
@@ -895,6 +897,12 @@ struct InputControlsView: View {
                                     PropertyAddress(selector: selector, scope: .input, element: element),
                                     value: .uint32(optVal)
                                 )
+                                // The replaced pair is renamed "SPDIF Cx" in routing
+                                // and mixer labels, as the daemon renamed it.
+                                if element < 2 {
+                                    appState.channelNaming.spdifReplace[Int(element)] = optVal
+                                    appState.rememberDigitalSetting(.spdifReplaceID, slot: Int(element), value: optVal)
+                                }
                             } catch {
                                 print("[Maestro] SPDIF Replace write failed: \(error)")
                             }
@@ -910,13 +918,19 @@ struct InputControlsView: View {
         guard let device = appState.device else { return }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input))
-            if let u = val.asUInt32 { spdifReplace1 = u }
+            if let u = val.asUInt32 {
+                spdifReplace1 = u
+                if u <= 8 { appState.channelNaming.spdifReplace[0] = u }
+            }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace1: \(error)")
         }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input, element: 1))
-            if let u = val.asUInt32 { spdifReplace2 = u }
+            if let u = val.asUInt32 {
+                spdifReplace2 = u
+                if u <= 8 { appState.channelNaming.spdifReplace[1] = u }
+            }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace2: \(error)")
         }
@@ -940,16 +954,21 @@ struct ADATStereoPairView: View {
     var body: some View {
         VStack(spacing: 3) {
             // Label pill — matches analog channel strip style
+            // One line at the strip's size, shrunk to fit a long pair name
+            // ("SPDIF Opt 1/2", "SPDIF Cx 3/4") rather than truncated; the row
+            // keeps its height so the meters stay level with the other strips.
             Text(label)
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+                .minimumScaleFactor(Self.labelMinimumScale)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color.primary.opacity(0.08))
                 )
+                .help(label)
 
             // Spacer fills the gap where analog strips have pills — pushes meters to bottom
             if matchHeight != nil {
@@ -984,12 +1003,23 @@ struct ADATStereoPairView: View {
         .frame(width: 70)
         .padding(.vertical, 4)
         .padding(.horizontal, 5)
+        // An "N.A." pair carries nothing at this rate or format. It stays, as
+        // in the original (Maestro 2.10.5, bug 11832), faded so it reads as
+        // inactive. The strip has no controls, so it sends nothing.
+        .opacity(isNotApplicable ? Self.notApplicableOpacity : 1)
         .frame(height: matchHeight, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color(.controlBackgroundColor).opacity(colorScheme == .light ? 0.6 : 0.3))
         )
     }
+
+    /// Smallest scale for the label: "SPDIF Opt 1/2" at 11 pt bold needs about
+    /// 0.7 of the 60 pt the strip leaves it.
+    static let labelMinimumScale: CGFloat = 0.6
+    static let notApplicableOpacity: Double = 0.45
+
+    var isNotApplicable: Bool { CardLayout.isNotApplicable(label) }
 
     /// Centered dB scale drawn between left and right ADAT meters.
     /// Uses segment-center alignment so labels at extremes don't clip.

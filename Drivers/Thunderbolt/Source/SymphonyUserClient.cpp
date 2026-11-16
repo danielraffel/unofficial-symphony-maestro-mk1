@@ -70,6 +70,25 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyVendorReadOutput),
     },
+    [kSelectorReadDriverBuild] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = 0,
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = sizeof(SymphonyDriverBuildOutput),
+    },
+    // A non-empty input: a caller using another selector's shape on 7 (an
+    // experimental app's no-input port-2 read) fails this check and never
+    // reaches the handler.
+    [kSelectorRetireForUpgrade] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = sizeof(SymphonyRetireInput),
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = sizeof(SymphonyRetireOutput),
+    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -262,6 +281,39 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         kern_return_t r = ivars->driver->ReadVendorCommand(
             input->command, input->value, output.payload, input->responseLen);
         output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadDriverBuild) {
+        // The build of the binary running this user client, i.e. the copy that
+        // serves the device, whatever sysextd lists as installed.
+        SymphonyDriverBuildOutput output = {};
+        output.status = 0;
+        output.build = (uint32_t)SYMPHONY_DEXT_BUILD;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorRetireForUpgrade) {
+        // Thin: the checks and the Terminate live in RetireForUpgrade so the
+        // host tests exercise them. A refusal is reported as an error return
+        // (not a status word) so an app that cannot tell a refusal from an
+        // acceptance treats it as "not supported" and shows its guidance.
+        if (!ivars->driver || !arguments->structureInput ||
+            arguments->structureInput->getLength() != sizeof(SymphonyRetireInput))
+            return kIOReturnBadArgument;
+        auto *input = (const SymphonyRetireInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyRetireMagic) return kIOReturnBadArgument;
+        kern_return_t r = ivars->driver->RetireForUpgrade(input->replacementBuild);
+        UCLOG("ExternalMethod: retire for build %u (this is %u) → 0x%x",
+              input->replacementBuild, (unsigned)SYMPHONY_DEXT_BUILD, r);
+        if (r != kIOReturnSuccess) return r;
+        SymphonyRetireOutput output = {};
+        output.status = 0;
+        output.build = (uint32_t)SYMPHONY_DEXT_BUILD;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;

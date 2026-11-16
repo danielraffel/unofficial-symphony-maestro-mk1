@@ -163,8 +163,18 @@ echo "[TB] iig generated SymphonyOpticalControl.h and SymphonyOpticalControl.iig
 
 # ── Step 2: Compile ──────────────────────────────────────────────────────────
 
+# The dext reports its own CFBundleVersion to the app (kSelectorReadDriverBuild),
+# so Device Info can name the build that actually serves the ThunderBridge.
+DEXT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$DRIVER_DIR/Info.plist")
+if ! [[ "$DEXT_BUILD" =~ ^[0-9]+$ ]]; then
+    echo "[TB] ERROR: CFBundleVersion '$DEXT_BUILD' in Info.plist is not a whole number" >&2
+    exit 1
+fi
+echo "[TB] Driver build (CFBundleVersion): $DEXT_BUILD"
+
 COMMON_FLAGS=(
     -target "$ARCH_TARGET"
+    -DSYMPHONY_DEXT_BUILD="$DEXT_BUILD"
     -isysroot "$SDK"
     -std=c++17
     -iframework "$FRAMEWORK_DIR"

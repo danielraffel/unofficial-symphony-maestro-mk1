@@ -481,6 +481,28 @@ struct RequestBuilderTests {
         #expect(req.request == 0x36)
     }
 
+    /// The board index is the whole nValue (`SymphonyIOControl.cpp:1384-1458`
+    /// sends `BoardIdx & 0xFF`), so it travels in wIndex. In wValue it became
+    /// nValue 0x10000 for slot 2, which the firmware ignores (it acts only when
+    /// nValue < 2), so slot 2's Replaces and Mirrors never took effect.
+    @Test(arguments: [UInt16(0), 1])
+    func spdifCoaxBoardIndexIsWIndex(board: UInt16) {
+        let requests = [
+            SymphonyIORequestBuilder.getSPDIFCoaxReplaceInput(board: board),
+            SymphonyIORequestBuilder.setSPDIFCoaxReplaceInput(board: board, replacement: 3),
+            SymphonyIORequestBuilder.getSPDIFCoaxMirrorOutput(board: board),
+            SymphonyIORequestBuilder.setSPDIFCoaxMirrorOutput(board: board, mirror: 5),
+        ]
+        for req in requests {
+            #expect(req.value == 0)
+            #expect(req.index == board)
+            // The logical nValue the dext rebuilds (`DextUserClient.sendFromUSBRequest`).
+            #expect((UInt32(req.value) << 16) | UInt32(req.index) == UInt32(board))
+        }
+        #expect(requests[1].data == Data([3]))
+        #expect(requests[3].data == Data([5]))
+    }
+
     @Test func setDigitalReferenceLevelOutputRequest() {
         // Output channel 0: bit 31 clear → wValue=0, wIndex=0
         let req = SymphonyIORequestBuilder.setDigitalReferenceLevel(

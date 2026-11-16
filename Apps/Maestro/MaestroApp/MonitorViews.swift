@@ -115,6 +115,10 @@ struct StatusBarView: View {
         .task(id: statusSourceID) {
             await observeStatus()
         }
+        // Optical channel names follow the rate (`CardLayout.ChannelNaming`).
+        .onChange(of: sampleRate) { _, rate in
+            if let rate, rate > 0 { appState.channelNaming.sampleRate = rate }
+        }
     }
 
     private var hasConnectionIssue: Bool {

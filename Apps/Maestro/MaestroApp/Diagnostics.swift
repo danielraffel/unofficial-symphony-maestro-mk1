@@ -7,6 +7,7 @@
 
 import Foundation
 import MaestroCore
+import MaestroDevice
 
 extension AppState {
 
@@ -14,8 +15,34 @@ extension AppState {
     ///
     /// Cheap — a 3 KB plist — so the panels that show it refresh on appear rather than
     /// trusting a launch-time snapshot taken before an activation had finished.
+    @MainActor
     func refreshInstalledDexts() {
         installedDexts = SystemExtensionInstaller.shared.installedDexts()
+        refreshServingDextBuild()
+    }
+
+    /// Ask the driver on the card for its build, off the main thread. This
+    /// runs every two seconds while the window is open, and a user-client call
+    /// waits behind whatever the driver is doing for another call (a vendor
+    /// read during a link recovery takes seconds), so it must not be made on
+    /// the main thread. One request at a time; an answer for a connection
+    /// that has been replaced meanwhile is dropped.
+    @MainActor
+    func refreshServingDextBuild() {
+        guard let tb = device as? ThunderboltDeviceConnection else {
+            servingDextBuild = nil
+            return
+        }
+        guard !servingDextBuildReadInFlight else { return }
+        servingDextBuildReadInFlight = true
+        Task { @MainActor [weak self] in
+            let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
+            guard let self else { return }
+            self.servingDextBuildReadInFlight = false
+            if (self.device as? ThunderboltDeviceConnection) === tb, self.servingDextBuild != build {
+                self.servingDextBuild = build
+            }
+        }
     }
 
     /// Everything the Software Info panel shows, assembled from what the process can see
@@ -58,7 +85,8 @@ extension AppState {
             dextAwaitingApproval: primary?.isAwaitingUserApproval ?? false,
             dextAwaitingReboot: primary?.isAwaitingReboot ?? false,
             thunderBridgePresent: SystemExtensionInstaller.shared.isThunderBridgePresent(),
-            pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier()
+            pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier(),
+            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil
         )
     }
 

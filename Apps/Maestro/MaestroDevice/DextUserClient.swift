@@ -242,6 +242,62 @@ public final class DextUserClient: @unchecked Sendable {
         return nil
     }
 
+    /// The CFBundleVersion of the dext binary serving this user client
+    /// (selector 6, dext 123+). This is the copy macOS actually runs for the
+    /// card, which after an update can still be the old one even though
+    /// sysextd lists the new copy as active. `nil` = no answer: no connection,
+    /// or a dext older than 123, which rejects the selector.
+    public func readDriverBuild() -> UInt32? {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        var out = [UInt32](repeating: 0, count: 2)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, 6, nil, 0, p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == 8, out[0] == 0 else { return nil }
+        return out[1]
+    }
+
+    /// kSelectorRetireForUpgrade (dext 123+): ask the dext serving the card to
+    /// stop so the copy macOS registered to replace it can take the device.
+    /// Input `{magic 'RETI', replacementBuild}` (8 bytes), output `{status,
+    /// retiringBuild}` (8 bytes). The non-empty input is what keeps this from
+    /// ever being mistaken for another selector's call: an experimental dext
+    /// that has a no-input read at 7 rejects it, and so does any dext without
+    /// the selector.
+    public enum RetireReply: Sendable, Equatable {
+        /// The dext called Terminate on itself; it reports its own build.
+        case accepted(retiringBuild: UInt32)
+        /// Not connected, no such selector, wrong shape, or the dext refused.
+        case refused(kern_return_t)
+    }
+
+    static let selectorRetireForUpgrade: UInt32 = 7
+    static let retireMagic: UInt32 = 0x52455449  // 'RETI'
+
+    public func retireForUpgrade(replacementBuild: UInt32) -> RetireReply {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return .refused(kIOReturnNotOpen) }
+        var input: [UInt32] = [Self.retireMagic, replacementBuild]
+        var out = [UInt32](repeating: 0, count: 2)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = input.withUnsafeMutableBytes { inPtr in
+            out.withUnsafeMutableBytes { outPtr in
+                IOConnectCallStructMethod(conn, Self.selectorRetireForUpgrade,
+                                          inPtr.baseAddress, inPtr.count,
+                                          outPtr.baseAddress, &outSize)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return .refused(kr) }
+        guard outSize == 8, out[0] == 0 else { return .refused(kIOReturnError) }
+        return .accepted(retiringBuild: out[1])
+    }
+
     /// Read the dext's timing and FPGA health snapshot for latency studies.
     public func readTimingHealth() -> TimingHealth? {
         lock.lock()

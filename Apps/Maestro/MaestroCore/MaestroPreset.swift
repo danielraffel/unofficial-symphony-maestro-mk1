@@ -104,6 +104,21 @@ public struct MaestroPreset: Codable, Sendable, Equatable {
     /// S/PDIF mirror assignment ID. Maps to 'AEs7' (spdifMirrorID).
     public var spdifMirrorID: UInt32 = 0
 
+    // Slot 2 (module 2). The daemon saved the optical format, Replaces and
+    // Mirrors per board (`SymphonyIO_IOBoard.cpp:327-340`,
+    // `OpticalIn_SymphonyIO_Stream.cpp:431-437`); the three fields above are
+    // slot 1's. Optional so presets saved before these existed still load;
+    // nil means "not saved", and nothing is written for it.
+
+    /// Slot 2 optical format: 0 = ADAT/SMUX, 1 = S/PDIF.
+    public var slot2OpticalFormat: UInt32?
+
+    /// Slot 2 S/PDIF Coax Replaces wire value (0 Off, 1-8).
+    public var slot2SPDIFReplaceID: UInt32?
+
+    /// Slot 2 S/PDIF Coax Mirrors wire value (1-8).
+    public var slot2SPDIFMirrorID: UInt32?
+
     /// Peak hold mode. Maps to 'AEs6' (peakHoldMode).
     /// Wire values are `eSymphonyIOMeteringLEDPeakHold`
     /// (`SymphonyIOVendorSpecific.h:698-703`): 0=Off, 1=2 Seconds, 2=Infinite.

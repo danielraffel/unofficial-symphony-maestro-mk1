@@ -23,9 +23,31 @@ The Symphony front-panel mode selects the active transport: Symphony mode for Th
 
 Controls depend on installed modules and the selected transport. The app's built-in Help provides contextual guidance. A **Simulated** or **no hardware** indicator means the view represents a simulated configuration, not confirmation of connected hardware operation.
 
+## Channel names
+
+Optical channels are named after the card's optical format and the sample rate:
+
+- **ADAT** at 44.1 and 48 kHz.
+- **SMUX** at 88.2 and 96 kHz.
+- **SPDIF Opt** when the optical format is set to S/PDIF.
+- **N.A.** when a channel carries nothing at the current setting, for example optical channels at 176.4 and 192 kHz, or past the first pair in S/PDIF format.
+- **SPDIF Cx** for an input pair that SPDIF Coax Replaces has handed to the coax input.
+
+N.A. channels stay in place but are faded, as in Apogee's original Maestro.
+
+Every name starts with the unit's peripheral prefix letter, set in Device Settings ("A Line 1"). The letter is stored in the Symphony.
+
+Over ThunderBridge, Mac inputs follow the cards in slot order by default: the inputs of the card in slot 1 first, then those of slot 2. Slot 2 starts at Mac input 17, or at 13 behind a 2x6 card, which has 12 inputs. Each Mac input is named after what feeds it, so a change on Input Routing renames it.
+
+Over ThunderBridge, Mac outputs 1-16 play through the card in slot 1 and 17-32 through the card in slot 2, in order, unless you route them elsewhere. Mac outputs keep fixed names based on their position: each is named after the output at the same position ("A Line 1", "A ADAT 9"), or "N.A." where the slot is empty, and the name does not change when you re-route it. This differs from the original, which renamed each output after the hardware it reached: an output that fed the mixer rather than a hardware output read "N.A.".
+
+The optical format, the S/PDIF settings, the prefix letter and your routing choices are kept when the Symphony is turned off and on.
+
 ## Appearance and updates
 
 Choose Auto, Light or Dark appearance in Device Settings. Software updates use Sparkle and the configured project update feed. An available update is not installed merely by opening this guide; follow the updater's prompts and save audio work before installing.
+
+**Update channels.** Maestro normally offers stable versions only. In **Device Settings › Preferences** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.
 
 ## Remove the software
 
