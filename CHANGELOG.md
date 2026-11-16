@@ -4,13 +4,15 @@
 
 Over USB, the Mixer's Software Return and Master controls now work the way they did in Apogee's Maestro. It contains everything in 0.9.1.
 
+Thanks to Minnietheandroid, whose [testing and report over USB](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/1#issuecomment-6887494993) showed that these controls had no effect, and led to them being rewired.
+
 ### Changes that may affect your setup
 
 The first two apply over USB only. Turn your monitors down before the first playback after updating.
 
 - **The Software Return fader and mute now affect only outputs fed from that mixer.** Before, on the "Maestro USB" device, they turned Mac output 1-2 down everywhere, even on an output that did not go through the mixer. If you had Software Return turned down or muted and you listen on an output that is not fed from the mixer in Output Routing, that output will be louder after updating.
 - **The Master fader now works.** Over USB it was ignored. If a Master fader in the Mixer is not at 0 dB, outputs fed from that mixer change level to match it after updating.
-- **The link buttons on Software Return and Master are gone.** Each of them is one stereo fader, drawn with a left and a right handle that always move together, as in Apogee's Maestro. This applies over ThunderBridge too. If you had a pair unlinked, the quieter side's level is used for both.
+- **The link buttons on Software Return and Master are gone.** Linking and unlinking was something we added ourselves. We assumed that two fader handles meant left and right could be set separately, and that was wrong: in Apogee's Maestro each of these is one stereo fader whose two handles always move together, and the Symphony's own mixer, used over USB, has no separate left and right level at all. This goes back to the original behaviour, over USB and ThunderBridge. If you had a pair unlinked, the quieter side's level is used for both.
 
 ### What's fixed
 
