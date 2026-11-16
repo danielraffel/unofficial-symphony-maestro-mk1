@@ -10,7 +10,7 @@ These apply over USB only. Turn your monitors down before the first playback aft
 
 - **The Software Return fader and mute now affect only outputs fed from that mixer.** Before, on the "Maestro USB" device, they turned Mac output 1-2 down everywhere, even on an output that did not go through the mixer. If you had Software Return turned down or muted and you listen on an output that is not fed from the mixer in Output Routing, that output will be louder after updating.
 - **The Master fader now works.** Over USB it was ignored. If a Master fader in the Mixer is not at 0 dB, outputs fed from that mixer change level to match it after updating.
-- **With the left and right faders unlinked, the quieter side sets the level** for both Software Return and Master. The Symphony's mixer has one fader for each of them.
+- **The left and right faders of Software Return and Master stay linked.** Over USB the Symphony has one fader for each of them, so the link button is switched on and greyed out. If you had them unlinked, the quieter side's level is used for both. Over ThunderBridge they can still be unlinked.
 
 ### What's fixed
 
