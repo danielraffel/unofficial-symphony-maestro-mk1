@@ -96,6 +96,50 @@ public enum MixerFaderMath {
     }
 }
 
+// MARK: - Left/right pairs
+
+/// Whether a Master or Software Return left/right pair acts as linked, and what
+/// it shows. Over USB the unit has one fader per strip
+/// (`kSymphonyIOMixer_FaderCount = 34`: 32 inputs, Software Return, Master), so
+/// the pair is always linked there. The saved link flag is never changed by
+/// this: ThunderBridge reads the same saved flag and values.
+public enum MixerPairLink {
+    public struct Pair: Equatable, Sendable {
+        public let left: Double
+        public let right: Double
+        public let linked: Bool
+    }
+
+    public static let usbLockedHelp =
+        "Over USB the Symphony has one fader here, so left and right stay linked. "
+        + "They can be set separately over ThunderBridge."
+
+    public static func effectiveLinked(savedLinked: Bool, isUSB: Bool) -> Bool {
+        isUSB || savedLinked
+    }
+
+    /// What the pair shows. ThunderBridge and other devices: the saved values
+    /// and flag, unchanged. USB: both faders at `linkedLevel` if the saved flag
+    /// is linked, else at the quieter side.
+    public static func shown(
+        left: Double, right: Double, savedLinked: Bool, isUSB: Bool, linkedLevel: Double
+    ) -> Pair {
+        guard isUSB else { return Pair(left: left, right: right, linked: savedLinked) }
+        let level = savedLinked ? linkedLevel : min(left, right)
+        return Pair(left: level, right: level, linked: true)
+    }
+
+    /// The level the unit's single fader gets over USB: what the pair shows.
+    public static func usbUnitLevel(
+        left: Double, right: Double, savedLinked: Bool, linkedLevel: Double
+    ) -> Double {
+        let pair = shown(left: left, right: right, savedLinked: savedLinked, isUSB: true,
+                         linkedLevel: linkedLevel)
+        return MixerFaderMath.master(left: pair.left, right: pair.right, linked: true,
+                                     linkedLevel: pair.left)
+    }
+}
+
 // MARK: - Connect-time restore
 
 /// The saved Master and Software Return state for both mixers, as the Mixer
@@ -168,14 +212,14 @@ public enum USBMixerRestorePlan {
             }
             steps.append(.hardware(
                 at(.mixerChannelLevel, USBMixerStrip.master),
-                .float64(MixerFaderMath.master(
+                .float64(MixerPairLink.usbUnitLevel(
                     left: mix.masterLeft, right: mix.masterRight,
-                    linked: state.masterLinked, linkedLevel: mix.masterLevel))))
+                    savedLinked: state.masterLinked, linkedLevel: mix.masterLevel))))
             steps.append(.hardware(
                 at(.mixerChannelLevel, USBMixerStrip.softwareReturn),
-                .float64(MixerFaderMath.softwareReturn(
+                .float64(MixerPairLink.usbUnitLevel(
                     left: mix.softwareReturnLeft, right: mix.softwareReturnRight,
-                    linked: state.softwareReturnLinked, linkedLevel: mix.softwareReturnLeft))))
+                    savedLinked: state.softwareReturnLinked, linkedLevel: mix.softwareReturnLeft))))
             steps.append(.hardware(
                 at(.mixerChannelMute, USBMixerStrip.softwareReturn),
                 .bool(state.softwareReturn.isMuted)))
