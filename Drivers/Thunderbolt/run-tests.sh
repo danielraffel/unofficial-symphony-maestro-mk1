@@ -134,6 +134,11 @@ build_and_run() {
     fi
     # Retire for upgrade (selector 7, release driver 123). It refuses an
     # unstamped build, so the harness stamps one; nothing else reads it.
+    # The Symphony 64 PCIe card's own receive order. The check that
+    # a Symphony I/O is recognised on that card only holds for a driver with it.
+    if grep -q 'pcieOrder' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_PCIE_RX)
+    fi
     if grep -q 'RetireForUpgrade' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_RETIRE -DSYMPHONY_DEXT_BUILD=1000)
     fi
@@ -213,6 +218,19 @@ if $USE_REF; then
         git -C "$REPO_ROOT" archive "$BASE_REF" Drivers/Thunderbolt/Source | tar -x -C "$TMP/ref-src"
         build_and_run "$TMP/ref-src/Drivers/Thunderbolt/Source" "$TMP/ref" \
             "$BASE_REF @ $(git -C "$REPO_ROOT" rev-parse --short "$BASE_REF")"
+        # p1-legacy-2100 is the one single-port trace that is meant to differ
+        # from a base without the PCIe card's receive order: there the driver
+        # reads that card the ThunderBridge way and never gets a vendor reply.
+        # Every ThunderBridge trace must still be identical.
+        if ! grep -q 'pcieOrder' "$TMP/ref-src/Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp"; then
+            if cmp -s "$TMP/ref/p1-legacy-2100.trace" "$TMP/work/p1-legacy-2100.trace"; then
+                echo "[trace] FAIL p1-legacy-2100.trace is the same as the base, which lacks the PCIe receive order"
+                status=1
+            else
+                echo "[trace] ok   p1-legacy-2100.trace differs from $BASE_REF as intended (PCIe receive order)"
+            fi
+            rm -f "$TMP/ref/p1-legacy-2100.trace"
+        fi
         compare_dir 'p1-*.trace' "$TMP/ref" "$TMP/work" "driver source at $BASE_REF" || status=1
     else
         echo "[trace] note: base ref '$BASE_REF' not available; compared with golden files only"

@@ -17,6 +17,9 @@ struct ConnectedUnitTests {
         #expect(ConnectedUnit(probeWord: ran | answered | 0x3A) == .ad16x)
         #expect(ConnectedUnit(probeWord: ran | answered | 0xC1) == .da16x)
         #expect(ConnectedUnit(probeWord: ran | answered | 0xF0) == .dd16x)
+        // The copied Device Info carries the raw word; nothing for a Symphony I/O.
+        #expect(ConnectedUnit.rawProbeLine(ran | answered | 0xF0) == "Unit Probe Raw: 0xc00000f0")
+        #expect(ConnectedUnit.rawProbeLine(0) == nil)
         #expect(ConnectedUnit(probeWord: ran | answered | 0x52) == .rosetta800)
         // The extended reply in bits 8-15 does not change the type.
         #expect(ConnectedUnit(probeWord: ran | answered | 0x2000_0000 | 0xAB00 | 0xC1) == .da16x)

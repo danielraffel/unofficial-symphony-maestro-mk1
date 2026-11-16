@@ -126,6 +126,9 @@ extension AppState {
                 report.connectedUnitLines.append("Inputs: \(channels.inputs)")
                 report.connectedUnitLines.append("Outputs: \(channels.outputs)")
             }
+            if let raw = ConnectedUnit.rawProbeLine(connectedUnitProbeWord) {
+                report.connectedUnitLines.append(raw)
+            }
         }
         // EXPERIMENT (64 channels): read now, not from the snapshot, so the copy
         // carries what the driver knows at this moment. Empty unless the driver

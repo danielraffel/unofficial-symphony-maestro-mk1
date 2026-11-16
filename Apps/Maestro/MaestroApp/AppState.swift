@@ -700,6 +700,9 @@ final class AppState {
     /// Set when the ThunderBridge driver found something other than a Symphony
     /// I/O on the cable (an older Apogee converter). Nil for a Symphony I/O.
     var connectedUnit: ConnectedUnit?
+    /// The driver's raw probe word behind `connectedUnit`, for the copied
+    /// Device Info. Zero when the driver did not probe.
+    var connectedUnitProbeWord: UInt32 = 0
 
     /// EXPERIMENT (64 channels): the driver's port-2 findings, and only when the
     /// driver reports the two-port experiment on. Nil with every released
@@ -1458,8 +1461,9 @@ final class AppState {
     func readCardTypes() async {
         guard let device = self.device else { return }
         // What the driver found on the cable, if it is not a Symphony I/O.
-        connectedUnit = (device as? ThunderboltDeviceConnection)?.linkState()
-            .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
+        let probeWord = (device as? ThunderboltDeviceConnection)?.linkState()?.unitProbe ?? 0
+        connectedUnitProbeWord = probeWord
+        connectedUnit = ConnectedUnit(probeWord: probeWord)
         // Needed before the input routing is laid out (thunderboltCaptureSlot1),
         // so it is awaited here; read off the main thread like every other
         // user-client call that can wait on the driver.

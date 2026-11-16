@@ -864,16 +864,35 @@ static bool SendVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
 
 // Pop one 24-bit word from a port's RX FIFO (rxRegister is kRegXLink1RX or, in
 // the two-port experiment only, kRegXLink2RX).
-// ThunderBridge 3-access sequence (legacy XLink::RX_FIFO_ReadHW, XLink.cpp:2143-2191):
-//   read #1 (probe) → if RX_EMPTY, done → write 0 (pop/advance) → read #2 (the word).
+//
+// The original driver has two versions of this routine, chosen at build time
+// (legacy XLink::RX_FIFO_ReadHW, XLink.cpp:2142-2226):
+//
+//   ThunderBridge (2200):  read (probe) -> if RX_EMPTY, done -> write 0 ->
+//                          read again: that second read is the word.
+//   Symphony 64 PCIe card (2100, pcieOrder):  read: that IS the word -> if
+//                          RX_EMPTY, done -> write 0 ("Older PCIe cards needed
+//                          a write after the FIFO read").
+//
+// Before this the ThunderBridge order was used on both. On the PCIe card a
+// Symphony I/O then never answered a vendor read, so it was taken for one of
+// the older converters (field report 2026-11-15: a 16x16 Symphony I/O shown as
+// "DD-16X"). pcieOrder is the card this driver instance attached to
+// (ivars->isLegacyPCIe2100), passed per call: two cards of different kinds can
+// be attached at once.
 // Returns true and *outWord when a word was popped; false when the FIFO is empty.
 static bool ReadXLinkRXWordOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t rxRegister,
-                              uint32_t *outWord)
+                              bool pcieOrder, uint32_t *outWord)
 {
     uint32_t data = 0;
-    dev->MemoryRead32(memIndex, rxRegister, &data);       // read #1: probe
+    dev->MemoryRead32(memIndex, rxRegister, &data);       // read #1
     if (data & kXLinkCmdRxEmpty)
         return false;                                     // FIFO empty
+    if (pcieOrder) {
+        dev->MemoryWrite32(memIndex, rxRegister, 0);      // advance the FIFO
+        *outWord = data;                                  // read #1 was the word
+        return true;
+    }
     dev->MemoryWrite32(memIndex, rxRegister, 0);          // pop / advance FIFO
     dev->MemoryRead32(memIndex, rxRegister, &data);       // read #2: the actual word
     data &= ~kXLinkCmdRxEmpty;
@@ -882,9 +901,10 @@ static bool ReadXLinkRXWordOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t rxReg
 }
 
 // Port 1.
-static bool ReadXLinkRXWord(IOPCIDevice *dev, uint8_t memIndex, uint32_t *outWord)
+static bool ReadXLinkRXWord(IOPCIDevice *dev, uint8_t memIndex, bool pcieOrder,
+                            uint32_t *outWord)
 {
-    return ReadXLinkRXWordOn(dev, memIndex, kRegXLink1RX, outWord);
+    return ReadXLinkRXWordOn(dev, memIndex, kRegXLink1RX, pcieOrder, outWord);
 }
 
 // Send one identification command to a unit and wait briefly for its one-byte
@@ -897,13 +917,14 @@ static bool ReadXLinkRXWord(IOPCIDevice *dev, uint8_t memIndex, uint32_t *outWor
 // more patient and still bounded.
 static bool XLinkInquireOn(IOPCIDevice *dev, uint8_t memIndex,
                            uint64_t txRegister, uint64_t rxRegister,
-                           uint8_t addr, uint8_t cmd, uint8_t *outReply)
+                           uint8_t addr, uint8_t cmd, uint8_t *outReply,
+                           bool pcieOrder)
 {
     if (!SendXLinkCommandOn(dev, memIndex, txRegister, addr, cmd, 0))
         return false;
     for (int ms = 0; ms < 20; ms++) {
         uint32_t word = 0;
-        while (ReadXLinkRXWordOn(dev, memIndex, rxRegister, &word)) {
+        while (ReadXLinkRXWordOn(dev, memIndex, rxRegister, pcieOrder, &word)) {
             const uint8_t slot    = (uint8_t)((word & 0x0F000000u) >> 24);
             const uint8_t rxAddr  = (uint8_t)((word & 0x007E0000u) >> 17);
             const uint8_t rxCmd   = (uint8_t)((word & 0x0001FE00u) >> 9);
@@ -919,9 +940,10 @@ static bool XLinkInquireOn(IOPCIDevice *dev, uint8_t memIndex,
 
 // Port 1.
 static bool XLinkInquire(IOPCIDevice *dev, uint8_t memIndex, uint8_t addr,
-                         uint8_t cmd, uint8_t *outReply)
+                         uint8_t cmd, uint8_t *outReply, bool pcieOrder)
 {
-    return XLinkInquireOn(dev, memIndex, kRegXLink1TX, kRegXLink1RX, addr, cmd, outReply);
+    return XLinkInquireOn(dev, memIndex, kRegXLink1TX, kRegXLink1RX, addr, cmd, outReply,
+                          pcieOrder);
 }
 
 // Byte-at-a-time reassembler for a SimpleMessageProtocol Response frame.
@@ -976,7 +998,7 @@ struct SmpResponseParser {
 static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
                               uint8_t xlinkAddr, uint8_t command,
                               uint32_t value, uint8_t *outData, uint16_t outLen,
-                              uint8_t &txSequence)
+                              uint8_t &txSequence, bool pcieOrder)
 {
     // ── Layer 3: control request, bmRequestType = 0xC0 (vendor IN / read) ──
     // The legacy SerializeOut tests bit 0 (ReadMask 0x01), not the direction bit 7,
@@ -1009,7 +1031,7 @@ static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
     // Drain any stale RX words before issuing the request.
     {
         uint32_t junk = 0;
-        while (ReadXLinkRXWord(dev, memIndex, &junk)) { /* discard */ }
+        while (ReadXLinkRXWord(dev, memIndex, pcieOrder, &junk)) { /* discard */ }
     }
 
     // ── Layer 1: send each byte via MSG_BYTE ──
@@ -1028,7 +1050,7 @@ static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
     SmpResponseParser parser;
     for (int ms = 0; ms < 200; ms++) {
         uint32_t word = 0;
-        while (ReadXLinkRXWord(dev, memIndex, &word)) {
+        while (ReadXLinkRXWord(dev, memIndex, pcieOrder, &word)) {
             uint8_t cmdField = (uint8_t)((word >> 9) & 0xFF);   // XLINK_DATA_CMD
             if (cmdField != kXLinkCmdMsgByte)
                 continue;                                        // ignore non-message words
@@ -1792,7 +1814,8 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         uint8_t readback = 0;
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerMode, 0,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupMode = readback;
             // A Symphony I/O. Cleared here and not before the read, so the app
             // never sees the answer vanish for the length of a re-init.
@@ -1808,10 +1831,12 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             uint8_t inquire = 0, xtd = 0;
             uint32_t probe = kUnitProbeRan;
             if (XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
-                             symphonyAddr, kXLinkCmdInquire, &inquire))
+                             symphonyAddr, kXLinkCmdInquire, &inquire,
+        ivars->isLegacyPCIe2100))
                 probe |= kUnitProbeInquireOK | inquire;
             if (XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
-                             symphonyAddr, kXLinkCmdXtdInquire, &xtd))
+                             symphonyAddr, kXLinkCmdXtdInquire, &xtd,
+        ivars->isLegacyPCIe2100))
                 probe |= kUnitProbeXtdOK | ((uint32_t)xtd << 8);
             STLOG("Unit probe: no Symphony I/O answer; INQUIRE %s 0x%02x, XTD_INQUIRE %s 0x%02x",
                   (probe & kUnitProbeInquireOK) ? "replied" : "no reply", inquire,
@@ -1831,7 +1856,8 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                 for (uint8_t addr = 2; addr <= kXLinkMaxDevices; addr++) {
                     uint8_t next = 0;
                     if (!XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
-                                      kXLinkCmdAddrAll, kXLinkCmdInquire, &next)
+                                      kXLinkCmdAddrAll, kXLinkCmdInquire, &next,
+        ivars->isLegacyPCIe2100)
                         || (next >> 4) == 0) {
                         STLOG("Unit probe: no further unit after address %u", addr - 1);
                         break;
@@ -1872,38 +1898,45 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerVolume, 0,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupVolume = (readback > 64) ? 64 : readback;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerMute, 0,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupMute = readback ? 1 : 0;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_ActiveSpeakerSet, 0,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupActiveSet = readback & 0x07;
             if (startupActiveSet == 0) startupActiveSet = 1;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_HeadphoneVolume, 0,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupHP1Volume = (readback > 64) ? 64 : readback;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_HeadphoneMute, 0,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupHP1Mute = readback ? 1 : 0;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_HeadphoneVolume, 1,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupHP2Volume = (readback > 64) ? 64 : readback;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_HeadphoneMute, 1,
-                              &readback, 1, txSeq)) {
+                              &readback, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
             startupHP2Mute = readback ? 1 : 0;
         }
         STLOG("SymphonyIO: restored monitor state mode=%u speakerVolume=%u speakerMute=%u "
@@ -2061,7 +2094,8 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                 uint8_t bt = kSIOOptionBoard_None;
                 bool typeOK = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                                 symphonyAddr, kSIOCmd_OptionBoardType,
-                                                b, &bt, 1, txSeq);
+                                                b, &bt, 1, txSeq,
+        ivars->isLegacyPCIe2100);
                 slotType[b] = bt;
                 slotTypeOK[b] = typeOK;
                 if (!BootSendsOpticalFormat(typeOK, bt)) {
@@ -2430,10 +2464,12 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                 uint8_t inquire = 0, xtd = 0;
                 uint32_t word = 0;
                 if (XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX,
-                                   kXLinkCmdAddrAll, kXLinkCmdInquire, &inquire))
+                                   kXLinkCmdAddrAll, kXLinkCmdInquire, &inquire,
+        ivars->isLegacyPCIe2100))
                     word |= kSymphonyPort2UnitInquireOK | inquire;
                 if (XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX,
-                                   kXLinkCmdAddrAll, kXLinkCmdXtdInquire, &xtd))
+                                   kXLinkCmdAddrAll, kXLinkCmdXtdInquire, &xtd,
+        ivars->isLegacyPCIe2100))
                     word |= kSymphonyPort2UnitXtdOK | ((uint32_t)xtd << 8);
                 // The original's test for "a unit is here": any channel-group bit
                 // in either reply (CONVERT_ROUTING_COMMANDS_TO_NEW_FORMAT,
@@ -2904,7 +2940,8 @@ static void AlignXLinkPhase(SymphonyThunderbridge_IVars *ivars)
                 if (groups == 0xFF) continue;   // DEVICE_ROUTING_SYM2SYM: a Symphony I/O
             }
             uint8_t phase = 0;
-            if (!XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhase, &phase)) {
+            if (!XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhase, &phase,
+        ivars->isLegacyPCIe2100)) {
                 STERR("Phase alignment: port %d unit %u did not answer the phase query", port, addr);
                 failed = true;
                 break;
@@ -3327,7 +3364,8 @@ static bool ReadNamingPrefix(SymphonyThunderbridge_IVars *ivars, uint8_t &txSeq)
 {
     uint8_t raw = 0;
     if (!ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                           kSymphonyCmdPrefix, 0, &raw, 1, txSeq)) {
+                           kSymphonyCmdPrefix, 0, &raw, 1, txSeq,
+        ivars->isLegacyPCIe2100)) {
         STLOG("SymphonyIO: Prefix (0x37) read failed; names keep '%c'",
               SymphonyPrefixLetter(__atomic_load_n(&ivars->namingPrefix, __ATOMIC_ACQUIRE)));
         return false;
@@ -3555,7 +3593,8 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
             uint8_t bt = 0;
             bool okb = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          ivars->symphonyAddr, kSIOCmd_OptionBoardType,
-                                         b, &bt, 1, ivars->runtimeTxSeq);
+                                         b, &bt, 1, ivars->runtimeTxSeq,
+        ivars->isLegacyPCIe2100);
             ivars->optionBoardType[b]     = okb ? bt : 0;
             ivars->optionBoardTypeValid[b] = okb;
         }
@@ -5493,7 +5532,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             bool ok = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                         ivars->symphonyAddr, kSIOCmd_OptionBoardType,
                                         /*nValue=board*/ b, &bt, /*wLength*/1,
-                                        ivars->runtimeTxSeq);
+                                        ivars->runtimeTxSeq,
+        ivars->isLegacyPCIe2100);
             ivars->optionBoardType[b]      = ok ? bt : 0;
             ivars->optionBoardTypeValid[b]  = ok;
             if (!ok || !BoardHasOpticalFormat(bt)) {
@@ -5557,7 +5597,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             bool ok = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                         ivars->symphonyAddr, kSIOCmd_OptionBoardType,
                                         /*nValue=primary*/0, &boardType, /*wLength*/1,
-                                        ivars->runtimeTxSeq);
+                                        ivars->runtimeTxSeq,
+        ivars->isLegacyPCIe2100);
             if (ok) {
                 ivars->numMicChannels =
                     (boardType == kSIOOptionBoard_MicPre8) ? kMicPre8NumChannels : 0;
@@ -5580,7 +5621,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             bool ok = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                         ivars->symphonyAddr, kSIOCmd_ClockRateAndLock,
                                         /*nValue*/0, clk, /*wLength*/5,
-                                        ivars->runtimeTxSeq);
+                                        ivars->runtimeTxSeq,
+        ivars->isLegacyPCIe2100);
             if (ok) {
                 bool     clkLocked = (clk[0] != 0);
                 // BIG-endian: legacy getExternalClockStatus builds the rate as
@@ -7419,7 +7461,8 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               ivars->symphonyAddr, command, value,
-                              response, responseLen, ivars->runtimeTxSeq)) {
+                              response, responseLen, ivars->runtimeTxSeq,
+        ivars->isLegacyPCIe2100)) {
             result = kIOReturnSuccess;
         } else {
             result = kIOReturnIOError;
@@ -7540,7 +7583,8 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
         live = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                  ivars->symphonyAddr, kSIOCmd_ClockRateAndLock,
                                  0, clockData, sizeof(clockData),
-                                 ivars->runtimeTxSeq);
+                                 ivars->runtimeTxSeq,
+        ivars->isLegacyPCIe2100);
         if (!live) return;
         // dext 112 (review item 3): the register snapshot is BAR loads too. Take
         // it HERE, on the queue the SetPowerState(Off) barrier drains, never on

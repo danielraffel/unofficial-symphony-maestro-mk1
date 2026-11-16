@@ -124,6 +124,7 @@ struct Port {
     std::deque<uint32_t> rx;
     bool     hasLatch = false;
     uint32_t latch = 0;
+    uint32_t lastPopped = 0;          // PCIe card only: see readRX
     bool     dupArmed = false;
     uint32_t lastTx = 0;
     std::vector<uint8_t> frame;       // Symphony: request frame being received
@@ -151,13 +152,27 @@ struct Port {
         return sticky | slip | (present() ? 0u : kXLinkDataDownCurrent);
     }
 
-    uint32_t readRX() {
+    // ThunderBridge (2200): a read shows whether a word is waiting, a write
+    // takes it, and the next read returns it (the original's THUNDERBRIDGE
+    // XLink::RX_FIFO_ReadHW).
+    //
+    // PCIe card (2100): a read returns the waiting word itself and a write
+    // moves on to the next one (the original's other RX_FIFO_ReadHW: "Older
+    // PCIe cards needed a write after the FIFO read"). When nothing is waiting
+    // the register is modelled as still holding the last word, with the empty
+    // bit set. That part is an inference, not from the source: it is what
+    // makes the ThunderBridge order lose the first byte of a vendor reply yet
+    // still see a one-word INQUIRE reply, which is the field report of
+    // 2026-11-15 (a 16x16 Symphony I/O on this card shown as "DD-16X").
+    uint32_t readRX(bool pcieOrder) {
+        if (pcieOrder) return rx.empty() ? (0x80000000u | lastPopped) : rx.front();
         if (hasLatch) { hasLatch = false; return latch; }
         if (rx.empty()) return 0x80000000u;
         return rx.front();
     }
-    void writeRX() {
+    void writeRX(bool pcieOrder) {
         if (rx.empty()) return;
+        if (pcieOrder) { lastPopped = rx.front(); rx.pop_front(); return; }
         latch = rx.front();
         rx.pop_front();
         hasLatch = true;
@@ -284,6 +299,9 @@ struct FakeCard : HostBackend {
     std::map<uint64_t, uint32_t> reg;
     Port     port[2];
     uint16_t pciDeviceID = kThunderBridgeDeviceID;
+    // The Symphony 64 PCIe card reads its receive registers in a different
+    // order from the ThunderBridge (Port::readRX).
+    bool pcieOrder() const { return pciDeviceID == kSymphonyPCIeDeviceID; }
     uint16_t pciCommand = 0;
     uint32_t idReg = 0x11000021;       // FPGA v17, hardware rev 1, master
     uint32_t intPending = 0;
@@ -356,8 +374,8 @@ struct FakeCard : HostBackend {
         case kRegIntStatus:     *v = intPending; break;
         case kRegXLink1TX:      *v = port[0].txBusy ? 0x80000000u : 0; break;   // busy only when a test says so
         case kRegXLink2TX:      *v = port[1].txBusy ? 0x80000000u : 0; break;
-        case kRegXLink1RX:      *v = port[0].readRX(); break;
-        case kRegXLink2RX:      *v = port[1].readRX(); break;
+        case kRegXLink1RX:      *v = port[0].readRX(pcieOrder()); break;
+        case kRegXLink2RX:      *v = port[1].readRX(pcieOrder()); break;
         case kRegXLink1Status:  *v = port[0].status(); break;
         case kRegXLink2Status:  *v = port[1].status(); break;
         case kRegXLinkClocking: *v = clocking(); break;
@@ -382,8 +400,8 @@ struct FakeCard : HostBackend {
             if (gatePort2 && !port2Enabled()) port2TxWhileDisabled++;
             port[1].writeTX(v);
             break;
-        case kRegXLink1RX:      port[0].writeRX(); break;
-        case kRegXLink2RX:      port[1].writeRX(); break;
+        case kRegXLink1RX:      port[0].writeRX(pcieOrder()); break;
+        case kRegXLink2RX:      port[1].writeRX(pcieOrder()); break;
         case kRegXLink1Status:  port[0].sticky &= ~v; break;
         case kRegXLink2Status:  port[1].sticky &= ~v; break;
         case kRegA2H2HBA:
@@ -2223,6 +2241,45 @@ int main(int argc, char **argv)
         }
 #endif
     }
+#ifdef TRACE_HAVE_PCIE_RX
+    // The Symphony 64 PCIe card (2100) reads its receive register in the
+    // original's order for that card: read (that is the word), then write 0.
+    // The ThunderBridge order (read, write 0, read again) on this card lost
+    // the start of every vendor reply, so a Symphony I/O was never recognised
+    // and was shown as one of the older converters (field report 2026-11-15).
+    {
+        Options o; o.name = "p1-legacy-2100 (receive order)"; o.legacy2100 = true; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        uint32_t w[16] = {};
+        r.drv->ReadLinkState(w);
+        CHECK(w[15] == 0, "%s: the Symphony I/O was not recognised (unit probe word 0x%08x)", o.name, w[15]);
+        size_t words = 0;
+        const std::vector<std::string> &l = r.card.lines;
+        for (size_t i = 0; i < l.size(); i++) {
+            unsigned reg = 0, val = 0;
+            const bool read  = sscanf(l[i].c_str(), "R 0x%x 0x%x", &reg, &val) == 2;
+            const bool write = !read && sscanf(l[i].c_str(), "W 0x%x 0x%x", &reg, &val) == 2;
+            if (reg != kRegXLink1RX && reg != kRegXLink2RX) continue;
+            if (read && !(val & 0x80000000u)) {
+                words++;
+                unsigned nreg = 0, nval = 1;
+                const bool popped = i + 1 < l.size()
+                    && sscanf(l[i + 1].c_str(), "W 0x%x 0x%x", &nreg, &nval) == 2 && nreg == reg && nval == 0;
+                CHECK(popped, "%s: a received word was not followed by the write that moves on (line %zu: %s)",
+                      o.name, i, l[i].c_str());
+            }
+            if (write) {
+                unsigned preg = 0, pval = 0x80000000u;
+                const bool afterWord = i > 0
+                    && sscanf(l[i - 1].c_str(), "R 0x%x 0x%x", &preg, &pval) == 2 && preg == reg && !(pval & 0x80000000u);
+                CHECK(afterWord, "%s: a write to the receive register did not follow a received word (line %zu)", o.name, i);
+            }
+        }
+        CHECK(words > 0, "%s: nothing was received (the test proves nothing)", o.name);
+        Finish(o, r);
+    }
+#endif
 #ifdef TRACE_HAVE_RETIRE
     {
         bool ok = true;
