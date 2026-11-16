@@ -16,7 +16,7 @@ The first two apply over USB only. Turn your monitors down before the first play
 
 - **Software Return fader, mute and solo, and the Master fader, now work over USB.** They did nothing when your DAW played through "Symphony I/O : USB Audio", and Master and Software Return solo did nothing on either device. They are now done by the Symphony's own mixer, so they work whichever of the two devices your DAW uses.
 - **Your Master and Software Return settings are put back when the Symphony reconnects** or is turned off and on, for both mixers.
-- **Changing the sample rate twice in quick succession now takes.** A second choice made while the Symphony was still switching was sometimes ignored. The Sample Rate menu is now greyed out for about five seconds after a change, until the Symphony has finished switching, over USB and ThunderBridge.
+- **A sample rate choice is no longer ignored now and then.** The first time you went back to the rate Maestro started at, the choice showed for a moment and then jumped back without reaching the Symphony. Separately, a choice made while the Symphony was still switching could be dropped, so the Sample Rate menu is now greyed out for about five seconds after a change, until the Symphony has finished switching. Both apply over USB and ThunderBridge.
 
 ### Release notes
 
