@@ -7,6 +7,37 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.3</title>
+      <pubDate>Tue, 17 Nov 2026 00:19:47 GMT</pubDate>
+      <sparkle:version>0.9.3</sparkle:version>
+      <sparkle:shortVersionString>0.9.3</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.3</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+For people using Apogee's older converters (AD-16X, DA-16X, DD-16X or Rosetta 800) on a ThunderBridge or Symphony 64 PCIe card without a Symphony I/O. It contains everything in 0.9.2. If you have a Symphony I/O, nothing changes for you.
+
+Thanks to the tester with a DA-16X on a ThunderBridge whose report showed that the Mac's volume keys did nothing on their setup.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge driver.** After installing, unplug the ThunderBridge cable and plug it back in (or turn the Maestro driver off and on in System Settings, or restart).
+- **On converters, the Mac's volume and mute keys now work.** They turn Mixer 1 up and down, from full level to -64 dB, and the mute key silences it. Mixer 1 feeds outputs 1-2 unless you have changed Output Routing; outputs that are routed directly do not follow the keys. The Master fader in the Mixer still works as before and is separate. Apogee's own software did nothing with the volume keys on converters, so this is new. Nothing gets louder: the keys start from the level macOS already shows for the ThunderBridge.
+
+### What's new
+
+- **On converters, the speaker knob now works, in the toolbar and on the Output page.** On the Output page it is now called Volume. The knob, its mute button and the Mac's volume and mute keys are the same control and move together. The headphone controls and the speaker-only controls (Dim, Sum to mono, Analog Out Format and Speaker Select) are greyed out, because these converters have no speaker or headphone outputs; hold the pointer over them to see why.
+
+### Release notes
+
+- A DD-16X gets the new volume keys only if it answers the driver's extended identity question. If it does not, it keeps today's behaviour, because without that answer it cannot be told apart from a Symphony I/O.
+- This has not been tried on a real converter yet. If you have one, please tell us whether the keys change the level and whether macOS remembers the level after a restart.
+- With a Symphony I/O connected, the speaker knob, headphone knobs and volume keys work exactly as before.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.3/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="aQrB+Irs/g1IUAVgKD5mQRBjAgRhqirYf+7r8ngQHLBlkVHvPAc2nbZxipvbt1lyCNKRe1ztIfUAS6Y5HHS1BA==" length="4255008" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.2</title>
       <pubDate>Mon, 16 Nov 2026 22:41:34 GMT</pubDate>
       <sparkle:version>0.9.2</sparkle:version>
@@ -680,6 +711,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 3Gy6hS9ZXSAHEp9iWHJF0ErgLBWETO6BjV5SGNOcjzzcZBHjMdv+oYEhy9l1Pd5URkh4vAIOUunaAj6Hi5gOAg==
-length: 64106
+edSignature: bhrnWcUBxISmqQqV5p/Ck7kzWfG/dePUK1gl9sUzoJQR5TzMR9S9zA4iOUQkeOJYLxBFiv4/SJBO0zsMhN6VBA==
+length: 67217
 -->
