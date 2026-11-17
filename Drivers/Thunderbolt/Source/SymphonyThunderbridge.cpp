@@ -589,6 +589,9 @@ static constexpr uint8_t  kXLinkMaxDevices         = 4;     // XLINK_MAX_DEVICES
 static constexpr uint32_t kUnitProbeRan            = 0x80000000;
 static constexpr uint32_t kUnitProbeInquireOK      = 0x40000000;
 static constexpr uint32_t kUnitProbeXtdOK          = 0x20000000;
+// Bit 28 (dext 126+): the volume keys trim card mixer 1 because the cable has
+// converters only (ClassifyVolumeTarget). Set only in ReadLinkState's copy.
+static constexpr uint32_t kUnitProbeConverterVolumeKeys = 0x10000000;
 
 // The four bank nibbles the original named (XLink.cpp DeviceName :1419-1435):
 // 0x3 AD-16X, 0x5 Rosetta 800, 0xC DA-16X, 0xF DD-16X.
@@ -3968,7 +3971,9 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     outWords[12] = ivars->lastWatchGcsr;          // dext 117
     outWords[13] = ivars->lastWatchXlinkStatus;
     outWords[14] = ivars->cardReinitCount;
-    outWords[15] = ivars->unitProbeWord;          // dext 121: see kUnitProbe*
+    outWords[15] = ivars->unitProbeWord |
+        (__atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)
+             ? kUnitProbeConverterVolumeKeys : 0u);          // dext 121: see kUnitProbe*
     return kIOReturnSuccess;
 }
 

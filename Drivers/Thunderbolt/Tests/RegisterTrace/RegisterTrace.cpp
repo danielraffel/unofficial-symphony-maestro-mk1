@@ -774,6 +774,13 @@ static void PressMute(Run &r, bool muted)
     HostPump();
 }
 
+static bool LinkSaysConverterKeys(Run &r)
+{
+    uint32_t w[16] = {};
+    r.drv->ReadLinkState(w);
+    return (w[15] & 0x10000000u) != 0;
+}
+
 static uint8_t StoredVendor(Run &r, uint8_t cmd)
 {
     auto it = r.card.port[0].stored.find((uint64_t)cmd << 32);
@@ -796,6 +803,7 @@ static void RunVolumeKeyChecks()
         CHECK(StoredVendor(r, 0x26) == 31, "%s: SpeakerVolume %u (want 31)", o.name, StoredVendor(r, 0x26));
         CHECK(StoredVendor(r, 0x27) == 1, "%s: SpeakerMute %u (want 1)", o.name, StoredVendor(r, 0x27));
         CHECK(Mixer1Return(r) == before, "%s: mixer 1 changed 0x%08x -> 0x%08x", o.name, before, Mixer1Return(r));
+        CHECK(!LinkSaysConverterKeys(r), "%s: link state reports converter volume keys", o.name);
         Finish(o, r);
     }
     // 2. Converters only: the control starts at 0 dB, every 4 dB key step is a
@@ -808,6 +816,7 @@ static void RunVolumeKeyChecks()
               "%s: control starts at %.1f dB (want 0)", o.name,
               gHostAudio.volume ? gHostAudio.volume->GetDecibelValue() : 99.0f);
         CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: mixer 1 return 0x%08x before any key", o.name, Mixer1Return(r));
+        CHECK(LinkSaysConverterKeys(r), "%s: link state does not report converter volume keys", o.name);
         uint32_t last = Mixer1Return(r);
         for (int db = -4; db >= -64; db -= 4) {
             PressVolume(r, (float)db);
@@ -841,6 +850,7 @@ static void RunVolumeKeyChecks()
         r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
         r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
         CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: trim left on a Symphony (0x%08x)", o.name, Mixer1Return(r));
+        CHECK(!LinkSaysConverterKeys(r), "%s: link state still reports converter keys after the swap", o.name);
         PressVolume(r, -20.0f);
         CHECK(StoredVendor(r, 0x26) == 20, "%s: Symphony SpeakerVolume %u after the swap (want 20)",
               o.name, StoredVendor(r, 0x26));
