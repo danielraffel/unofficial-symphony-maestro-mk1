@@ -63,6 +63,7 @@ struct MaestroApp: App {
             ContentView()
                 .environment(appState)
                 .environmentObject(updates)
+                .onReceive(updates.$effectiveChannel) { appState.updateChannel = $0 }
                 .frame(minWidth: 800, minHeight: 500)
         }
         .defaultSize(width: 1440, height: 700)

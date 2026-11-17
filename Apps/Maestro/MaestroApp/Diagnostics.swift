@@ -86,7 +86,8 @@ extension AppState {
             dextAwaitingReboot: primary?.isAwaitingReboot ?? false,
             thunderBridgePresent: SystemExtensionInstaller.shared.isThunderBridgePresent(),
             pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier(),
-            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil
+            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil,
+            updateChannel: updateChannel
         )
     }
 

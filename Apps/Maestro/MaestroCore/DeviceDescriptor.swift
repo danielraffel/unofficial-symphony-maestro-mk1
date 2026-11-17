@@ -1273,6 +1273,10 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     /// What the driver serving the ThunderBridge says its build is. Nil when
     /// the app has no ThunderBridge connection open and so did not ask.
     public var servingDextBuild: ServingDextBuild?
+    /// The update channel the app follows (Device Settings › Preferences), so a
+    /// pasted report says whether the person is on Stable or Beta. Nil when not
+    /// known yet; the line is then left out.
+    public var updateChannel: UpdateChannel?
     public init(
         appVersion: String,
         buildNumber: Int = 0,
@@ -1290,7 +1294,8 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         dextAwaitingReboot: Bool = false,
         thunderBridgePresent: Bool = false,
         pciDeviceIdentifier: String? = nil,
-        servingDextBuild: ServingDextBuild? = nil
+        servingDextBuild: ServingDextBuild? = nil,
+        updateChannel: UpdateChannel? = nil
     ) {
         self.appVersion = appVersion
         self.buildNumber = buildNumber
@@ -1308,6 +1313,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         self.dextAwaitingReboot = dextAwaitingReboot
         self.thunderBridgePresent = thunderBridgePresent
         self.pciDeviceIdentifier = pciDeviceIdentifier
+        self.updateChannel = updateChannel
         self.servingDextBuild = servingDextBuild
     }
 
@@ -1554,6 +1560,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     public var clipboardText: String {
         var lines: [String] = []
         lines.append("Maestro: \(versionLine)")
+        if let updateChannel { lines.append("Update channel: \(updateChannel == .beta ? "Beta" : "Stable")") }
         lines.append("macOS: \(osVersion)")
         lines.append("App path: \(appPath)")
         lines.append("Audio path: \(audioPath)")

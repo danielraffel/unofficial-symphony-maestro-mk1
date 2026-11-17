@@ -47,6 +47,16 @@ struct SoftwareInfoReportTests {
 
     // MARK: - Version line
 
+    @Test func clipboardNamesTheUpdateChannelWhenKnown() {
+        let base = SoftwareInfoReport(appVersion: "0.9.3", appPath: "/Applications/Maestro.app",
+                                      osVersion: "27.2", audioPath: "USB")
+        #expect(!base.clipboardText.contains("Update channel"))
+        var beta = base; beta.updateChannel = .beta
+        var stable = base; stable.updateChannel = .stable
+        #expect(beta.clipboardText.split(separator: "\n").dropFirst().first == "Update channel: Beta")
+        #expect(stable.clipboardText.contains("Update channel: Stable"))
+    }
+
     @Test func versionLineCarriesBuildAndCommit() {
         #expect(report().versionLine == "0.8.4 (build 585 · 483d8e7)")
     }

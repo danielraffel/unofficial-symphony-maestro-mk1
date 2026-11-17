@@ -701,6 +701,9 @@ final class AppState {
     /// The driver's raw probe word behind `connectedUnit`, for the copied
     /// Device Info. Zero when the driver did not probe.
     var connectedUnitProbeWord: UInt32 = 0
+    /// The update channel in effect (mirrored from UpdateController), for the
+    /// copied software report.
+    var updateChannel: UpdateChannel?
     /// Converters only on the cable (no Symphony I/O): the driver sends the
     /// volume and mute keys to mixer 1, and the speaker and headphone controls
     /// have nothing to control. Also true in the converter simulation.
