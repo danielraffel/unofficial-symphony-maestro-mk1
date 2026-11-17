@@ -7,7 +7,8 @@ Download the latest Unofficial Symphony Maestro Installer (.pkg)</a></h1>
 
 The download link above is always the latest stable version.
 
-_Note: If you find this useful and you’re motivated to support, please make a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org)._
+> [!TIP]
+> **If you find this useful and you’re motivated to support it, please make a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org).** We’d really appreciate it.
 
 For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
 
