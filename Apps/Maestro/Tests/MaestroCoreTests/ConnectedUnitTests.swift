@@ -12,6 +12,22 @@ struct ConnectedUnitTests {
         #expect(ConnectedUnit(probeWord: 0x0000_00C3) == nil)
     }
 
+    @Test("volume keys follow the driver's converter flag, never the identity alone")
+    func volumeKeysFlag() {
+        let flag = ConnectedUnit.converterVolumeKeysBit
+        // Symphony I/O, or a driver that did not probe: never.
+        #expect(!ConnectedUnit.driverRoutesVolumeKeysToMixer(0))
+        #expect(!ConnectedUnit.driverRoutesVolumeKeysToMixer(flag))
+        // A DA-16X identified by an older driver (no flag): Symphony controls stay.
+        #expect(!ConnectedUnit.driverRoutesVolumeKeysToMixer(ran | answered | 0xC0))
+        // The driver set the flag: converter controls.
+        #expect(ConnectedUnit.driverRoutesVolumeKeysToMixer(ran | answered | flag | 0xC0))
+        // The flag bit does not disturb the identity or a chain's units.
+        #expect(ConnectedUnit(probeWord: ran | answered | flag | 0xC0) == .da16x)
+        #expect(ConnectedUnit(probeWord: ran | answered | flag | 0x30 | (0xC << 16))
+                == .chain([.ad16x, .da16x]))
+    }
+
     @Test("each converter is recognised by its channel banks")
     func converters() {
         #expect(ConnectedUnit(probeWord: ran | answered | 0x3A) == .ad16x)

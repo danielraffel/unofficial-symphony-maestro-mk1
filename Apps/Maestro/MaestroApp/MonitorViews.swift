@@ -247,7 +247,8 @@ struct MonitorToolbarView: View {
         let prevSpeakerLevel = undoSpeakerLevel
         let prevHP1Level = undoHP1Level
         let prevHP2Level = undoHP2Level
-        let speakerControlsEnabled = SpeakerOutputLogic.speakerControlsEnabled(
+        let convertersOnly = appState.converterVolumeKeys
+        let speakerControlsEnabled = convertersOnly || SpeakerOutputLogic.speakerControlsEnabled(
             mode: appState.speakerOutputMode,
             analogOutputChannels: appState.cardLayout.analogOutputStripCount)
         HStack(spacing: 12) {
@@ -272,7 +273,8 @@ struct MonitorToolbarView: View {
                     Task { await writeProperty(.outputMute, value: .bool(muted)) }
                     appState.writeASPMute(muted)
                 }
-                .help(appState.speakerMuted ? "Speaker: Unmute" : "Speaker: Mute")
+                .help(convertersOnly ? ConverterMonitorText.mute
+                      : appState.speakerMuted ? "Speaker: Unmute" : "Speaker: Mute")
                 .disabled(!speakerControlsEnabled)
                 .opacity(speakerControlsEnabled ? 1 : 0.4)
 
@@ -302,7 +304,8 @@ struct MonitorToolbarView: View {
                         appState.writeASPVolume(level)
                     }
                 )
-                .help("Speaker level — drag to adjust, double-tap to reset")
+                .help(convertersOnly ? ConverterMonitorText.volume
+                      : "Speaker level — drag to adjust, double-tap to reset")
                 .disabled(!speakerControlsEnabled)
                 .opacity(speakerControlsEnabled ? 1 : 0.4)
             }
@@ -357,6 +360,7 @@ struct MonitorToolbarView: View {
                 )
                 .help("Headphone 1 level — drag to adjust, double-tap to reset")
             }
+            .symphonyOnly(convertersOnly)
 
             Divider().frame(height: 20)
 
@@ -408,6 +412,7 @@ struct MonitorToolbarView: View {
                 )
                 .help("Headphone 2 level — drag to adjust, double-tap to reset")
             }
+            .symphonyOnly(convertersOnly)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
@@ -507,6 +512,36 @@ struct MonitorToolbarView: View {
         } catch DeviceConnectionError.unsupportedProperty(_) {
         } catch {
             print("[Maestro] ERROR: loadMonitorState headphone2Mute failed: \(error)")
+        }
+    }
+}
+
+// MARK: - Converters only (no Symphony I/O)
+
+/// Text for the monitor controls when the cable has converters only. The
+/// AD-16X, DA-16X, DD-16X and Rosetta 800 have no speaker or headphone outputs
+/// (their user guides; Apogee's software had no monitor controls for them).
+enum ConverterMonitorText {
+    static let unsupported = "Not supported on converters. Speaker and headphone "
+        + "controls need a Symphony I/O; these converters have no speaker or headphone outputs."
+    static let volume = "Volume — what the Mac's volume keys control on converters: "
+        + "the level of Mixer 1, which feeds outputs 1-2 unless you change the routing. "
+        + "Outputs routed directly are not affected. Master in the Mixer is separate."
+    static let mute = "Mute — silences Mixer 1 (the Mac's mute key does the same)."
+}
+
+extension View {
+    /// Greys out a Symphony I/O-only control when the cable has converters
+    /// only. The tooltip sits on an overlay because macOS does not show the
+    /// tooltip of a disabled control. Unchanged on a Symphony I/O.
+    @ViewBuilder
+    func symphonyOnly(_ convertersOnly: Bool) -> some View {
+        if convertersOnly {
+            self.disabled(true)
+                .opacity(0.4)
+                .overlay(Color.clear.contentShape(Rectangle()).help(ConverterMonitorText.unsupported))
+        } else {
+            self
         }
     }
 }

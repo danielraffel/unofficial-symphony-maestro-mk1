@@ -45,6 +45,18 @@ public enum ConnectedUnit: Sendable, Equatable {
         self = units.count == 1 ? first : .chain(units)
     }
 
+    /// Bit 28 of the probe word (dext 126+): the driver found converters only
+    /// on the cable and sends the Mac's volume and mute keys to card mixer 1,
+    /// because these units have no speaker or headphone outputs. Older drivers
+    /// never set it, so the app keeps its Symphony I/O controls for them.
+    public static let converterVolumeKeysBit: UInt32 = 0x1000_0000
+
+    /// Whether the driver says the volume keys drive mixer 1 (see
+    /// `converterVolumeKeysBit`). The driver decides; the app only follows.
+    public static func driverRoutesVolumeKeysToMixer(_ probeWord: UInt32) -> Bool {
+        probeWord & 0x8000_0000 != 0 && probeWord & converterVolumeKeysBit != 0
+    }
+
     /// The driver's probe word as one line for the copied Device Info, so a
     /// pasted report shows exactly what the unit answered. Nil when the driver
     /// did not probe (a Symphony I/O).

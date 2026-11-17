@@ -136,7 +136,7 @@ struct OutputControlsView: View {
     /// outputs 1/2 into plain line outputs and takes the monitor functions with
     /// it (`SymphonyIO.cpp:7327-7333`; User's Guide p. 60).
     private var speakerControlsEnabled: Bool {
-        SpeakerOutputLogic.speakerControlsEnabled(
+        appState.converterVolumeKeys || SpeakerOutputLogic.speakerControlsEnabled(
             mode: speakerConfig, analogOutputChannels: analogOutputStripCount)
     }
 
@@ -503,7 +503,7 @@ struct OutputControlsView: View {
                         value: $state.speakerLevel,
                         range: -64...0,
                         step: 1,
-                        label: "Speaker",
+                        label: appState.converterVolumeKeys ? "Volume" : "Speaker",
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
@@ -514,7 +514,8 @@ struct OutputControlsView: View {
                             appState.writeASPVolume(level)
                         }
                     )
-                    .help("Speaker Level — controls the speaker output level. In 2 or 3 "
+                    .help(appState.converterVolumeKeys ? ConverterMonitorText.volume
+                          : "Speaker Level — controls the speaker output level. In 2 or 3 "
                           + "Speaker Sets mode every active set is adjusted together. "
                           + "Drag to adjust, double-tap to reset.")
                     .disabled(!speakerControlsEnabled)
@@ -526,7 +527,8 @@ struct OutputControlsView: View {
                     // bug report called out. Art: `Mute_Medium_On.png` renders
                     // "M", `Dim_Medium_On.png` "D", `Sum_Medium_On.png` "Σ".
                     outputToggle("M", isOn: $state.speakerMuted, tint: .red,
-                                 tooltip: "Mute — silences the speaker output.",
+                                 tooltip: appState.converterVolumeKeys ? ConverterMonitorText.mute
+                                     : "Mute — silences the speaker output.",
                                  enabled: speakerControlsEnabled) {
                         Task { await writeMonitorProperty(.outputMute, value: .bool(appState.speakerMuted)) }
                         appState.writeASPMute(appState.speakerMuted)
@@ -536,11 +538,13 @@ struct OutputControlsView: View {
                                  enabled: speakerControlsEnabled) {
                         Task { await writeMonitorProperty(.outputDim, value: .bool(speakerDim)) }
                     }
+                    .symphonyOnly(appState.converterVolumeKeys)
                     outputToggle("Σ", isOn: $speakerMono, tint: .purple,
                                  tooltip: Self.sumTooltip("speaker"),
                                  enabled: speakerSumEnabled) {
                         Task { await writeMonitorProperty(.outputSumToMono, value: .bool(speakerMono)) }
                     }
+                    .symphonyOnly(appState.converterVolumeKeys)
                 }
 
                 // Analog Out Format below the knob, Speaker Select pills inline
@@ -586,6 +590,7 @@ struct OutputControlsView: View {
                         speakerSelectButton(index)
                     }
                 }
+                .symphonyOnly(appState.converterVolumeKeys)
             }
 
             Divider().opacity(0.3)
@@ -640,6 +645,7 @@ struct OutputControlsView: View {
                 )
                 .frame(maxWidth: .infinity)
             }
+            .symphonyOnly(appState.converterVolumeKeys)
 
             Divider().opacity(0.3)
 
@@ -693,6 +699,7 @@ struct OutputControlsView: View {
                 )
                 .frame(maxWidth: .infinity)
             }
+            .symphonyOnly(appState.converterVolumeKeys)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)

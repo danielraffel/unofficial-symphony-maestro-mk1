@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.3 (beta)
+
+For people using Apogee's older converters (AD-16X, DA-16X, DD-16X or Rosetta 800) on a ThunderBridge or Symphony 64 PCIe card without a Symphony I/O. It contains everything in 0.9.2. If you have a Symphony I/O, nothing changes for you.
+
+Thanks to the tester with a DA-16X on a ThunderBridge whose report showed that the Mac's volume keys did nothing on their setup.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge driver.** After installing, unplug the ThunderBridge cable and plug it back in (or turn the Maestro driver off and on in System Settings, or restart).
+- **On converters, the Mac's volume and mute keys now work.** They turn Mixer 1 up and down, from full level to silent, and the mute key silences it. Mixer 1 feeds outputs 1-2 unless you have changed Output Routing; outputs that are routed directly do not follow the keys. The Master fader in the Mixer still works as before and is separate. Apogee's own software did nothing with the volume keys on converters, so this is new. Nothing gets louder: the keys start from full level, which is what you hear today.
+
+### What's new
+
+- **On converters, the Speaker knob is now called Volume and works.** It is the same control as the volume keys. The headphone controls and the speaker-only controls (Dim, Sum to mono, Analog Out Format and Speaker Select) are greyed out, because these converters have no speaker or headphone outputs; hold the pointer over them to see why.
+
+### Release notes
+
+- This has not been tried on a real converter yet. If you have one, please tell us whether the keys change the level and whether macOS remembers the level after a restart.
+- A Symphony I/O always keeps the volume keys, including a Symphony I/O on the same cable as converters.
+
 ## 0.9.2 (beta)
 
 Over USB, the Mixer's Software Return and Master controls now work the way they did in Apogee's Maestro. It contains everything in 0.9.1.
