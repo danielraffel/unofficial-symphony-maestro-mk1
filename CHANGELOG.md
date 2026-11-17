@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.4 (beta)
+
+Small changes that make it easier to tell which version you are on. It contains everything in 0.9.3.
+
+### What's new
+
+- **About Maestro says whether you are on Stable or Beta.** The version reads, for example, "Version 0.9.4 (Beta)".
+- **The copied details include your update channel.** The copy button in About Maestro and in Device Info now adds a line such as "Update channel: Beta", so a pasted report shows which channel you follow.
+
+### What's better
+
+- **Over USB, Maestro no longer sends an optical setting to an 8x8 card set to AES.** Apogee's software never sent it to an AES card, and the Symphony ignored it, so nothing you hear changes.
+
+### Release notes
+
+- The ThunderBridge driver is unchanged from 0.9.3, so there is no need to unplug and reconnect the ThunderBridge after updating.
+
 ## 0.9.3 (beta)
 
 For people using Apogee's older converters (AD-16X, DA-16X, DD-16X or Rosetta 800) on a ThunderBridge or Symphony 64 PCIe card without a Symphony I/O. It contains everything in 0.9.2. If you have a Symphony I/O, nothing changes for you.
