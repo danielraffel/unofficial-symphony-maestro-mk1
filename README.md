@@ -133,7 +133,7 @@ The source is available for community maintenance, learning and further developm
 
 ## Acknowledgments
 
-Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony” and "Maestro" are trademarks of their respective owners, used here only for identification and compatibility.
+Many thanks to Apogee for their cooperation during development, for trusting me and for making it possible to explore restoring support for this hardware on modern versions of macOS. “Apogee”, “Symphony”, “Maestro”, “AD-16X”, “DA-16X” and “Rosetta 800” are trademarks of their respective owners, used here only for identification and compatibility.
 
 Thanks also to the testers who have filed detailed reports on GitHub and in the Gearspace thread; most of the fixes since the first beta came directly from them.
 
