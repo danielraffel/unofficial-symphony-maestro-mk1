@@ -13,12 +13,12 @@ Thanks to the tester with a DA-16X on a ThunderBridge whose report showed that t
 
 ### What's new
 
-- **On converters, the Speaker knob is now called Volume and works.** It is the same control as the volume keys. The headphone controls and the speaker-only controls (Dim, Sum to mono, Analog Out Format and Speaker Select) are greyed out, because these converters have no speaker or headphone outputs; hold the pointer over them to see why.
+- **On converters, the speaker knob now works, in the toolbar and on the Output page.** On the Output page it is now called Volume. The knob, its mute button and the Mac's volume and mute keys are the same control and move together. The headphone controls and the speaker-only controls (Dim, Sum to mono, Analog Out Format and Speaker Select) are greyed out, because these converters have no speaker or headphone outputs; hold the pointer over them to see why.
 
 ### Release notes
 
 - This has not been tried on a real converter yet. If you have one, please tell us whether the keys change the level and whether macOS remembers the level after a restart.
-- A Symphony I/O always keeps the volume keys, including a Symphony I/O on the same cable as converters.
+- With a Symphony I/O connected, the speaker knob, headphone knobs and volume keys work exactly as before.
 
 ## 0.9.2 (beta)
 
