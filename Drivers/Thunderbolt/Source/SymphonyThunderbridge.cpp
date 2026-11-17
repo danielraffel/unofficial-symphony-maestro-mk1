@@ -310,6 +310,15 @@ struct SymphonyThunderbridge_IVars {
     bool      linkClockPresent;        // watch-local: last decided XLink RX1 clock state
     uint32_t  linkState;               // atomic; kLinkState* for ReadLinkState
     uint32_t  unitProbeWord;           // dext 121: identification of a non-Symphony unit, 0 if not probed
+    // Volume keys on a cable of converters only (no Symphony I/O). The converters
+    // have no monitor outputs, so the single Core Audio volume/mute control trims
+    // card mixer 1 instead of sending Symphony speaker commands. See
+    // ClassifyVolumeTarget. All four are touched only in Start() before the
+    // controls exist or on xlinkQueue; converterVolumeKeys is atomic.
+    bool      symphonyAnsweredSinceStart; // latch: a Symphony vendor read succeeded once
+    bool      converterVolumeKeys;        // keys drive the mixer-1 trim, not 0x26/0x27
+    uint8_t   converterTrimAtten;         // 0..64 dB, from the volume control
+    bool      converterTrimMuted;         // from the mute control
     uint32_t  lastWatchClockReg;       // watch-local: last kRegXLinkClocking sample
     uint64_t  linkWatchTicks;          // watch-local
     bool      linkNeedsRevalidation;   // atomic; set by SetPowerState(On), consumed by the watch
@@ -580,6 +589,30 @@ static constexpr uint8_t  kXLinkMaxDevices         = 4;     // XLINK_MAX_DEVICES
 static constexpr uint32_t kUnitProbeRan            = 0x80000000;
 static constexpr uint32_t kUnitProbeInquireOK      = 0x40000000;
 static constexpr uint32_t kUnitProbeXtdOK          = 0x20000000;
+
+// The four bank nibbles the original named (XLink.cpp DeviceName :1419-1435):
+// 0x3 AD-16X, 0x5 Rosetta 800, 0xC DA-16X, 0xF DD-16X.
+static constexpr bool IsKnownConverterNibble(uint32_t nibble)
+{
+    return nibble == 0x3 || nibble == 0x5 || nibble == 0xC || nibble == 0xF;
+}
+
+// Whether a probe word describes a cable of known converters and nothing else:
+// unit 1 replied to INQUIRE with a known converter nibble, and every further
+// unit found (bits 16-27, zero = none) is a known converter too. Anything
+// unrecognised on the chain, a Symphony I/O in second place for example, keeps
+// the Symphony behaviour. Mirrors ConnectedUnit.isConverterOnly in the app.
+static constexpr bool UnitProbeIsConvertersOnly(uint32_t probe)
+{
+    if (!(probe & kUnitProbeInquireOK)) return false;
+    if (!IsKnownConverterNibble((probe >> 4) & 0xF)) return false;
+    for (uint32_t i = 0; i < 3; i++) {
+        const uint32_t n = (probe >> (16 + 4 * i)) & 0xF;
+        if (n == 0) break;
+        if (!IsKnownConverterNibble(n)) return false;
+    }
+    return true;
+}
 static constexpr uint8_t  kXLinkCmdMsgByte         = 0x10;  // Multi-byte message transport
 
 // Sample rate codes (XLinkRegisters.h:220-225)
@@ -1565,6 +1598,41 @@ struct SymphonyLinkInitResult {
 static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
                                    uint8_t slot1Type, bool slot1Known);
 
+static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv,
+                               IOPCIDevice *dev, uint8_t mi,
+                               uint16_t mixerID);
+static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars);
+
+// Decide, once per bus init, whether the volume keys drive the converter trim.
+// All three must hold, so a Symphony I/O can never take this path:
+//   1. unit 1 and every unit after it named themselves as a known converter
+//      (UnitProbeIsConvertersOnly; the probe only runs when 0x25 got no answer);
+//   2. no Symphony vendor read answered during this bus init;
+//   3. no Symphony vendor read has answered since Start() (a latch, so a unit
+//      that once answered is never reclassified by a later missed read).
+// Leaving converter mode puts the trim back to 0 dB, unmuted, on the card.
+// Runs in Start() or on xlinkQueue. Returns the new mode.
+static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendorAnswered)
+{
+    if (vendorAnswered)
+        ivars->symphonyAnsweredSinceStart = true;
+    const bool converters = !ivars->symphonyAnsweredSinceStart &&
+                            UnitProbeIsConvertersOnly(ivars->unitProbeWord);
+    const bool was = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
+    if (was && !converters) {
+        __atomic_store_n(&ivars->converterVolumeKeys, false, __ATOMIC_RELEASE);
+        ivars->converterTrimAtten = 0;
+        ivars->converterTrimMuted = false;
+        ApplyConverterTrim(ivars);
+        STLOG("Volume keys: Symphony I/O behaviour (converter trim cleared)");
+    } else if (!was && converters) {
+        __atomic_store_n(&ivars->converterVolumeKeys, true, __ATOMIC_RELEASE);
+        STLOG("Volume keys: converters only, keys trim card mixer 1 (atten=%u mute=%u)",
+              ivars->converterTrimAtten, ivars->converterTrimMuted ? 1 : 0);
+    }
+    return converters;
+}
+
 static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rate,
                                   SymphonyLinkInitResult *out)
 {
@@ -1812,10 +1880,12 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         uint8_t startupHP2Volume = 20; // 20 dB attenuation fallback
         uint8_t startupHP2Mute = 0;    // unmuted fallback
         uint8_t readback = 0;
+        bool vendorAnswered = false;   // any Symphony vendor read below answered
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerMode, 0,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupMode = readback;
             // A Symphony I/O. Cleared here and not before the read, so the app
             // never sees the answer vanish for the length of a re-init.
@@ -1900,18 +1970,21 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                               symphonyAddr, kSIOCmd_SpeakerVolume, 0,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupVolume = (readback > 64) ? 64 : readback;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerMute, 0,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupMute = readback ? 1 : 0;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_ActiveSpeakerSet, 0,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupActiveSet = readback & 0x07;
             if (startupActiveSet == 0) startupActiveSet = 1;
         }
@@ -1919,24 +1992,28 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                               symphonyAddr, kSIOCmd_HeadphoneVolume, 0,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupHP1Volume = (readback > 64) ? 64 : readback;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_HeadphoneMute, 0,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupHP1Mute = readback ? 1 : 0;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_HeadphoneVolume, 1,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupHP2Volume = (readback > 64) ? 64 : readback;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_HeadphoneMute, 1,
                               &readback, 1, txSeq,
         ivars->isLegacyPCIe2100)) {
+            vendorAnswered = true;
             startupHP2Mute = readback ? 1 : 0;
         }
         STLOG("SymphonyIO: restored monitor state mode=%u speakerVolume=%u speakerMute=%u "
@@ -1954,6 +2031,16 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         out->monitorMute = out->lineMonitor
             ? (startupHP1Mute != 0 || startupHP1Volume >= 64)
             : (startupMute != 0 || startupVolume >= 64);
+
+        // Where the volume keys go. On a cable of converters only, the single
+        // Core Audio volume/mute control becomes a trim on card mixer 1 and
+        // starts from that trim (0 dB the first time), not from the -20 dB
+        // fallback above. Anything else keeps the Symphony I/O behaviour.
+        if (ClassifyVolumeTarget(ivars, vendorAnswered)) {
+            out->lineMonitor = false;
+            out->monitorAttenuation = ivars->converterTrimAtten;
+            out->monitorMute = ivars->converterTrimMuted;
+        }
 
         // ── 19b-0a. PreferenceLoadLock(true) — mute XMOS while configuring ──
         // Legacy: ApplySettingsToHardware() locks before any routing changes.
@@ -3480,6 +3567,9 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
                           ThunderboltSoftwareReturnSlot(source, side) | kRoutingEnable);
         if (ivars->mixerStateValid[mixerID - 1]) {
             RecomputeCardMixer(ivars, dev, mi, mixerID);
+        } else if (mixerID == 1 &&
+                   __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
+            ApplyConverterTrim(ivars);   // unity defaults with the key trim
         } else {
             const uint32_t bank = (mixerID == 1) ? 0 : 2;
             WriteRegister(dev, mi, MixerCoefOffset(bank,     128), kMixerUnityCoeff);
@@ -3570,7 +3660,18 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         // values. The HAL controls and the dext's cached session state
         // still hold what the user set, so push those to the hardware;
         // otherwise the slider and the unit disagree until the next change.
-        {
+        if (__atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
+            // Converters only: the keys are the mixer-1 trim. Bring the HAL
+            // controls to it (a unit that was off at Start() left them at the
+            // -20 dB fallback) and put it on the card.
+            if (ivars->outputVolumeControl)
+                ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(ivars->converterTrimAtten));
+            if (ivars->outputMuteControl)
+                ivars->outputMuteControl->SetControlValue(ivars->converterTrimMuted);
+            ApplyConverterTrim(ivars);
+            STLOG("Link recovery: converter volume trim atten=%u mute=%u",
+                  ivars->converterTrimAtten, ivars->converterTrimMuted ? 1 : 0);
+        } else {
             uint8_t spkAtten = __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);
             uint8_t spkMute  = __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE) ? 1 : 0;
             uint8_t hpAtten  = __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE);
@@ -6103,7 +6204,13 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                     for (;;) {
                         uint32_t gen = __atomic_load_n(&ivars->pendingVolumeGen, __ATOMIC_ACQUIRE);
                         uint8_t b = __atomic_load_n(&ivars->pendingAtten, __ATOMIC_RELAXED);
-                        if (XLinkTxAdmissible(ivars)) {
+                        const bool admissible = XLinkTxAdmissible(ivars);
+                        if (admissible &&
+                            __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
+                            // Converters only: no monitor outputs to send to.
+                            ivars->converterTrimAtten = b;
+                            ApplyConverterTrim(ivars);
+                        } else if (admissible) {
                             const uint8_t target = __atomic_load_n(&ivars->monitorOutputTarget,
                                                                     __ATOMIC_ACQUIRE);
                             const uint8_t command = target == 1 ? kSIOCmd_HeadphoneVolume
@@ -6147,7 +6254,12 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                     for (;;) {
                         uint32_t gen = __atomic_load_n(&ivars->pendingMuteGen, __ATOMIC_ACQUIRE);
                         uint8_t b = __atomic_load_n(&ivars->pendingMuteState, __ATOMIC_RELAXED) ? 1 : 0;
-                        if (XLinkTxAdmissible(ivars)) {
+                        const bool admissible = XLinkTxAdmissible(ivars);
+                        if (admissible &&
+                            __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
+                            ivars->converterTrimMuted = b != 0;
+                            ApplyConverterTrim(ivars);
+                        } else if (admissible) {
                             const uint8_t target = __atomic_load_n(&ivars->monitorOutputTarget,
                                                                     __ATOMIC_ACQUIRE);
                             const uint8_t command = target == 1 ? kSIOCmd_HeadphoneMute
@@ -7140,9 +7252,24 @@ static const uint32_t kMixerGainTable[49] = {
 
 // Write one card-mixer stereo coefficient pair (L/R) for a level+pan+play state.
 // lvl is a dB+48 byte (0..48); pan (pan+1)*64; play=false → muted (coeff 0).
+// A gain-table index after the converter volume-key trim (dB below the
+// clamped fader index). At or above 0 it is the table entry itself, so a zero
+// trim writes exactly what the faders alone write. Below the table's -48 dB
+// floor each 6 dB is one right shift of the entry 6 steps up (6.02 dB per
+// shift, within 0.1 dB per step), kept to the top 16 bits the card uses, so the
+// lowest key steps stay distinct instead of clamping together.
+static uint32_t TrimmedMixerCoef(int index)
+{
+    if (index >= 0) return kMixerGainTable[index > 48 ? 48 : index];
+    const int shift = (-index + 5) / 6;
+    if (shift >= 16) return kMixerMuteCoeff;
+    const uint32_t v = (kMixerGainTable[index + 6 * shift] >> shift) & 0xFFFF0000u;
+    return v ? v : kMixerMuteCoeff;
+}
+
 static void WriteMixerCoefPair(IOPCIDevice *dev, uint8_t mi,
                                uint64_t offL, uint64_t offR,
-                               int lvl, uint8_t pan, bool play)
+                               int lvl, uint8_t pan, bool play, int trim = 0)
 {
     uint32_t cL, cR;
     if (!play) {
@@ -7152,8 +7279,8 @@ static void WriteMixerCoefPair(IOPCIDevice *dev, uint8_t mi,
         int rB = lvl + SymphonyMixerPanAttenuation(pan);
         if (lB < 0) lB = 0; else if (lB > 48) lB = 48;
         if (rB < 0) rB = 0; else if (rB > 48) rB = 48;
-        cL = kMixerGainTable[lB];
-        cR = kMixerGainTable[rB];
+        cL = TrimmedMixerCoef(lB - trim);
+        cR = TrimmedMixerCoef(rB - trim);
     }
     WriteRegister(dev, mi, offL, cL);
     WriteRegister(dev, mi, offR, cR);
@@ -7177,7 +7304,13 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv,
     for (int c = 0; c < 32 && !anySolo; c++)
         if (state.inputSoloed[c]) anySolo = true;
 
-    bool rplay = !state.swReturnMuted && !state.masterMuted &&
+    // Converter volume keys: mixer 1 only, every source it carries, so the
+    // mute key silences live inputs too. Zero and unmuted on a Symphony I/O.
+    const bool keyTrim = mixerID == 1 &&
+                         __atomic_load_n(&iv->converterVolumeKeys, __ATOMIC_ACQUIRE);
+    const int trim = keyTrim ? (int)iv->converterTrimAtten : 0;
+    const bool trimMuted = keyTrim && iv->converterTrimMuted;
+    bool rplay = !state.swReturnMuted && !state.masterMuted && !trimMuted &&
                  (!anySolo || state.swReturnSoloed);
     // Return = SW-Return + Master (dB add), with independent stereo levels.
     // SW Return is a stereo route with separate left/right faders. Apply the
@@ -7196,20 +7329,39 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv,
     if (rplay) {
         if (returnLeft < 0) returnLeft = 0; else if (returnLeft > 48) returnLeft = 48;
         if (returnRight < 0) returnRight = 0; else if (returnRight > 48) returnRight = 48;
-        returnCoefL = kMixerGainTable[returnLeft];
-        returnCoefR = kMixerGainTable[returnRight];
+        returnCoefL = TrimmedMixerCoef(returnLeft - trim);
+        returnCoefR = TrimmedMixerCoef(returnRight - trim);
     }
     WriteRegister(dev, mi, MixerCoefOffset(physicalBase, 128), returnCoefL);
     WriteRegister(dev, mi, MixerCoefOffset(physicalBase + 1, 129), returnCoefR);
 
     // Fixed hardware inputs 0..31.
     for (int c = 0; c < 32; c++) {
-        bool play = !state.inputMuted[c] &&
+        bool play = !state.inputMuted[c] && !trimMuted &&
                     (!anySolo || state.inputSoloed[c]);
         WriteMixerCoefPair(dev, mi, MixerCoefOffset(physicalBase, c),
                            MixerCoefOffset(physicalBase + 1, c),
-                           (int)state.inputByte[c], state.inputPanByte[c], play);
+                           (int)state.inputByte[c], state.inputPanByte[c], play, trim);
     }
+}
+
+// Put the converter volume-key trim on card mixer 1. When the app has sent
+// mixer state, recompute from it; otherwise only the return slots carry audio
+// (Start()'s unity defaults; the input coefficients are zero), so trim those.
+// Start() before audio runs, or xlinkQueue.
+static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars)
+{
+    if (!ivars->pciDevice) return;
+    if (ivars->mixerStateValid[0]) {
+        RecomputeCardMixer(ivars, ivars->pciDevice, ivars->barMemoryIndex, 1);
+        return;
+    }
+    const bool on = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
+    const uint32_t coef = (on && ivars->converterTrimMuted)
+        ? kMixerMuteCoeff
+        : TrimmedMixerCoef(48 - (on ? (int)ivars->converterTrimAtten : 0));
+    WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(0, 128), coef);
+    WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(1, 129), coef);
 }
 
 // ── SendVendorCommand ───────────────────────────────────────────────────────

@@ -139,6 +139,9 @@ build_and_run() {
     if grep -q 'pcieOrder' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_PCIE_RX)
     fi
+    if grep -q 'ClassifyVolumeTarget' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_CONVERTER_VOLUME)
+    fi
     if grep -q 'RetireForUpgrade' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_RETIRE -DSYMPHONY_DEXT_BUILD=1000)
     fi
@@ -230,6 +233,28 @@ if $USE_REF; then
                 echo "[trace] ok   p1-legacy-2100.trace differs from $BASE_REF as intended (PCIe receive order)"
             fi
             rm -f "$TMP/ref/p1-legacy-2100.trace"
+        fi
+        # p1-converters is meant to differ from a base without the converter
+        # volume keys: a key press on a cable of converters only trims card
+        # mixer 1 (coefficient slots at 0x4400/0x4c08) instead of sending the
+        # Symphony a SpeakerVolume/SpeakerMute message (XLink TX 0x38), so the
+        # later messages carry lower sequence numbers. Any other changed line
+        # fails. Every Symphony trace must still be identical.
+        if ! grep -q 'ClassifyVolumeTarget' "$TMP/ref-src/Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp"; then
+            if cmp -s "$TMP/ref/p1-converters.trace" "$TMP/work/p1-converters.trace"; then
+                echo "[trace] FAIL p1-converters.trace is the same as the base, which lacks the converter volume keys"
+                status=1
+            elif diff "$TMP/ref/p1-converters.trace" "$TMP/work/p1-converters.trace" \
+                    | grep -E '^[<>]' \
+                    | grep -v -E '^[<>] (W 0x004400 |W 0x004c08 |R 0x000038 0x00000000 \| W 0x000038 each of n=)' \
+                    > "$TMP/conv-extra.txt"; then
+                echo "[trace] FAIL p1-converters.trace differs from $BASE_REF beyond the volume-key writes:"
+                head -20 "$TMP/conv-extra.txt"
+                status=1
+            else
+                echo "[trace] ok   p1-converters.trace differs from $BASE_REF as intended (converter volume keys)"
+            fi
+            rm -f "$TMP/ref/p1-converters.trace"
         fi
         compare_dir 'p1-*.trace' "$TMP/ref" "$TMP/work" "driver source at $BASE_REF" || status=1
     else

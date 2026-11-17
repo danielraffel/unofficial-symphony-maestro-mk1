@@ -116,6 +116,8 @@ struct Port {
     enum Kind { Empty, Symphony, Converters } kind = Empty;
     std::vector<Unit> units;          // Converters: the chain, nearest first
     bool     answersVendor = true;    // Symphony: replies to vendor reads
+    uint32_t dropVendorReads = 0;     // Symphony: the next N vendor reads get no reply
+    uint8_t  symphonyInquire = 0;     // Symphony: INQUIRE reply byte (0 = none)
     bool     ignoreRate = false;      // units do not follow SET_SAMPLE_RATE
     bool     txBusy = false;          // TX register reports busy (commands time out)
     uint32_t slipReads = 0;           // the next N status reads report a data slip
@@ -236,6 +238,7 @@ struct Port {
             return;
         }
         if (c[0] != 0xC0) return;
+        if (dropVendorReads) { dropVendorReads--; return; }
         std::vector<uint8_t> out = { 0xC3, (uint8_t)(8 + len), devSeq++, f[2] };
         out.insert(out.end(), c, c + 8);
         auto v = vendorValue(cmd, nValue, len);
@@ -277,6 +280,10 @@ struct Port {
             break;
         case 0x05:
         case 0x0B: {
+            if (kind == Symphony) {
+                if (symphonyInquire && cmd == 0x05 && addr <= 1) reply(addr, cmd, symphonyInquire);
+                break;
+            }
             Unit *u = addr ? reachable(addr) : firstNotPassing();
             if (u) reply(addr, cmd, cmd == 0x05 ? u->inquire : u->xtd);
             break;
@@ -744,6 +751,103 @@ static bool WriteFile(const std::string &dir, const char *name, const std::vecto
     fclose(f);
     return true;
 }
+
+// ── Volume keys on a cable of converters only ──────────────────────────────
+// Not traces: explicit checks of where the Core Audio volume and mute go.
+// A Symphony I/O must always get SpeakerVolume/SpeakerMute; converters get a
+// trim on card mixer 1 (return slots 128/129 while the app has sent no mixer
+// state), and nothing else may change.
+#ifdef TRACE_HAVE_CONVERTER_VOLUME
+static uint32_t Mixer1Return(Run &r) { return r.card.reg[MixerCoefOffset(0, 128)]; }
+
+static void PressVolume(Run &r, float db)
+{
+    gHostAudio.volume->SetDecibelValue(db);
+    Irq(r, 1);
+    HostPump();
+}
+
+static void PressMute(Run &r, bool muted)
+{
+    gHostAudio.mute->SetControlValue(muted);
+    Irq(r, 1);
+    HostPump();
+}
+
+static uint8_t StoredVendor(Run &r, uint8_t cmd)
+{
+    auto it = r.card.port[0].stored.find((uint64_t)cmd << 32);
+    return (it == r.card.port[0].stored.end() || it->second.empty()) ? 0xFF : it->second[0];
+}
+
+static void RunVolumeKeyChecks()
+{
+    // 1. A Symphony I/O that misses its first answer and replies to INQUIRE
+    //    like a DA-16X: the later reads answer, so it stays a Symphony.
+    {
+        Options o; o.name = "volume keys: Symphony, first read lost"; o.shortFlow = true;
+        Run r;
+        r.card.port[0].dropVendorReads = 1;
+        r.card.port[0].symphonyInquire = 0xC0;
+        RunScenario(o, r);
+        const uint32_t before = Mixer1Return(r);
+        PressVolume(r, -31.0f);
+        PressMute(r, true);
+        CHECK(StoredVendor(r, 0x26) == 31, "%s: SpeakerVolume %u (want 31)", o.name, StoredVendor(r, 0x26));
+        CHECK(StoredVendor(r, 0x27) == 1, "%s: SpeakerMute %u (want 1)", o.name, StoredVendor(r, 0x27));
+        CHECK(Mixer1Return(r) == before, "%s: mixer 1 changed 0x%08x -> 0x%08x", o.name, before, Mixer1Return(r));
+        Finish(o, r);
+    }
+    // 2. Converters only: the control starts at 0 dB, every 4 dB key step is a
+    //    distinct, lower level down to -64 dB, and mute silences mixer 1.
+    {
+        Options o; o.name = "volume keys: converters"; o.port1 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        CHECK(gHostAudio.volume && gHostAudio.volume->GetDecibelValue() == 0.0f,
+              "%s: control starts at %.1f dB (want 0)", o.name,
+              gHostAudio.volume ? gHostAudio.volume->GetDecibelValue() : 99.0f);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: mixer 1 return 0x%08x before any key", o.name, Mixer1Return(r));
+        uint32_t last = Mixer1Return(r);
+        for (int db = -4; db >= -64; db -= 4) {
+            PressVolume(r, (float)db);
+            const uint32_t c = Mixer1Return(r);
+            CHECK(c != kMixerMuteCoeff && c < last, "%s: %d dB gives 0x%08x (previous 0x%08x)", o.name, db, c, last);
+            last = c;
+        }
+        PressVolume(r, -31.0f);
+        CHECK(Mixer1Return(r) == 0x00e70000, "%s: -31 dB gives 0x%08x", o.name, Mixer1Return(r));
+        PressMute(r, true);
+        CHECK(Mixer1Return(r) == kMixerMuteCoeff, "%s: mute gives 0x%08x", o.name, Mixer1Return(r));
+        PressMute(r, false);
+        CHECK(Mixer1Return(r) == 0x00e70000, "%s: unmute gives 0x%08x", o.name, Mixer1Return(r));
+        CHECK(StoredVendor(r, 0x26) == 0xFF, "%s: a converter was sent SpeakerVolume", o.name);
+
+        // 3. A card reset keeps the trim.
+        r.card.phase("FPGA reset");
+        r.drv->SetPowerState(kIOServicePowerCapabilityOff);
+        r.card.powerCycleFPGA();
+        r.drv->SetPowerState(kIOServicePowerCapabilityOn);
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(Mixer1Return(r) == 0x00e70000, "%s: after a card reset 0x%08x", o.name, Mixer1Return(r));
+
+        // 4. The converters are replaced by a Symphony I/O: the trim goes and
+        //    the keys reach the Symphony again.
+        r.card.phase("converters replaced by a Symphony");
+        r.card.port[0] = Port();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        Attach(r.card.port[0], Port::Symphony);
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: trim left on a Symphony (0x%08x)", o.name, Mixer1Return(r));
+        PressVolume(r, -20.0f);
+        CHECK(StoredVendor(r, 0x26) == 20, "%s: Symphony SpeakerVolume %u after the swap (want 20)",
+              o.name, StoredVendor(r, 0x26));
+        Finish(o, r);
+    }
+}
+#endif
 
 // The single-port scenarios. Their traces are the contract: they must not
 // change while the port-2 experiment is off.
@@ -2181,6 +2285,9 @@ int main(int argc, char **argv)
     if (outDir.empty()) { fprintf(stderr, "--out <dir> is required\n"); return 2; }
 
     RunNominalRateNames();
+#ifdef TRACE_HAVE_CONVERTER_VOLUME
+    RunVolumeKeyChecks();
+#endif
 
     size_t accesses = 0;
     for (const Options &o : SinglePortScenarios()) {
