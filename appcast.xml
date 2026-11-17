@@ -7,6 +7,33 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.4</title>
+      <pubDate>Tue, 17 Nov 2026 03:10:56 GMT</pubDate>
+      <sparkle:version>0.9.4</sparkle:version>
+      <sparkle:shortVersionString>0.9.4</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.4</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+Small changes that make it easier to tell which version you are on. It contains everything in 0.9.3.
+
+### What's new
+
+- **About Maestro says whether you are on Stable or Beta.** The version reads, for example, "Version 0.9.4 (Beta)".
+- **The copied details include your update channel.** The copy button in About Maestro and in Device Info now adds a line such as "Update channel: Beta", so a pasted report shows which channel you follow.
+
+### What's better
+
+- **Over USB, Maestro no longer sends an optical setting to an 8x8 card set to AES.** Apogee's software never sent it to an AES card, and the Symphony ignored it, so nothing you hear changes.
+
+### Release notes
+
+- The ThunderBridge driver is unchanged from 0.9.3, so there is no need to unplug and reconnect the ThunderBridge after updating.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.4/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="bqOOk4fFWD2j7l/eABOR8VbL56iWK8XmoGV/jDDxNLj0cmGim9P8ER+/appMqazfitAbsU4VlQ23jA+nNcARCw==" length="4256043" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.3</title>
       <pubDate>Tue, 17 Nov 2026 00:19:47 GMT</pubDate>
       <sparkle:version>0.9.3</sparkle:version>
@@ -711,6 +738,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: bhrnWcUBxISmqQqV5p/Ck7kzWfG/dePUK1gl9sUzoJQR5TzMR9S9zA4iOUQkeOJYLxBFiv4/SJBO0zsMhN6VBA==
-length: 67217
+edSignature: ecBWsxvC5ZW6vQIV8kPr9j1oswolew5+h80SgTDwYRkOnh1WeLOvaJ9nOFl8ByTnxp+Rr9hCgRJFZc2DyohUBg==
+length: 69018
 -->
