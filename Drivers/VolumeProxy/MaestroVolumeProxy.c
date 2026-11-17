@@ -1747,6 +1747,14 @@ static void close_usb_device(void)
      5. PreferenceLoadLock(false) — unlock XMOS, audio can flow
    The PreferenceLoadLock handshake is CRITICAL — without step 5 the XMOS
    stays muted and no audio reaches the DAC even though USB frames arrive. */
+/* Whether bring-up sends the default OpticalFormat (0x34) to a slot, given its
+   OptionBoardType (0xA1) or -1 when the read failed. Only a slot that reads as
+   AnalogAES (2) is skipped. Mirrors the dext's BootSendsOpticalFormat. */
+static bool proxy_boot_sends_optical_format(int boardType)
+{
+    return boardType != 2;
+}
+
 /* The option board fitted on a slot (OptionBoardType 0xA1, board in wIndex),
    -1 when the read fails. */
 static int current_board_type(uint32_t board)
@@ -1816,17 +1824,29 @@ static int configure_fpga_routing(void)
             /* Remembered values go back only on the type of card they were
                written to; see "Per-board digital settings". */
             bool replay = false;
+            /* Read once: the type decides both the replay and whether the
+               optical format goes out at all. */
+            int type = current_board_type(b);
             if (digital_has_replay(b)) {
-                int type = current_board_type(b);
                 replay = digital_replay_allowed(gSavedDigitalBoardType[b], type);
                 if (!replay)
                     LOG("Digital settings board%u not replayed: card type %d, remembered for %d",
                         b, type, gSavedDigitalBoardType[b]);
             }
             uint8_t format = (replay && gSavedDigital[0][b] == 1) ? 1 : 0;
-            int e = usb_vendor_write(VCMD_OPTICAL_FORMAT, b, &format, 1);
-            LOG("OpticalFormat board%u = %s: %s", b, format ? "SPDIF" : "ADAT/SMUX",
-                e ? "FAILED" : "OK");
+            /* An AES card (8x8 AES, type 2) has no optical format: Apogee's
+               software never sent one (SymphonyIO_IOBoard.cpp:940-981) and the
+               firmware ignores it (SymphonyIOAudioManager.cpp:257-290). Same
+               rule as the ThunderBridge driver's BootSendsOpticalFormat: skip
+               only a slot that positively reads as AES; a failed read keeps
+               the old behaviour. */
+            if (proxy_boot_sends_optical_format(type)) {
+                int e = usb_vendor_write(VCMD_OPTICAL_FORMAT, b, &format, 1);
+                LOG("OpticalFormat board%u = %s: %s", b, format ? "SPDIF" : "ADAT/SMUX",
+                    e ? "FAILED" : "OK");
+            } else {
+                LOG("OpticalFormat board%u: not sent (AES card has no optical port)", b);
+            }
             for (int idx = 1; replay && idx <= 2; idx++) {
                 if (gSavedDigital[idx][b] < 0) continue;
                 uint8_t value = (uint8_t)gSavedDigital[idx][b];

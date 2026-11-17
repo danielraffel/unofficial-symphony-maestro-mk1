@@ -174,8 +174,19 @@ static void check_digital_settings(void)
     unlink(path);
 }
 
+static void check_optical_format_gate(void)
+{
+    /* SymphonyIOOptionBoardType: 0 none, 1 MicPre8, 2 AnalogAES, 3 Optical,
+       4 AD16, 5 DA16, 6 ADDA16, 7 2x6; -1 = the read failed. */
+    CHECK(!proxy_boot_sends_optical_format(2), "AES card: no optical format");
+    for (int t = -1; t <= 7; t++)
+        if (t != 2)
+            CHECK(proxy_boot_sends_optical_format(t), "every other card, and a failed read, unchanged");
+}
+
 int main(void)
 {
+    check_optical_format_gate();
     check_digital_settings();
     check_reconfigure_holdoff();
     check_transport_filter();
