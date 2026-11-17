@@ -7,7 +7,8 @@ Download the latest Unofficial Symphony Maestro Installer (.pkg)</a></h1>
 
 The download link above is always the latest stable version.
 
-_Note: If you find this useful and you’re motivated to support, please make a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org)._
+> [!TIP]
+> **If you find this useful and you’re motivated to support it, please make a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org).** We’d really appreciate it.
 
 For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
 
@@ -52,7 +53,8 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 - A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
 - Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
 - Appearance controls with **Auto**, **Light**, and **Dark** modes
-- Optional in-app updates through Sparkle
+- Optional in-app updates through Sparkle, with **Stable** and **Beta** channels: stay on a stable build, or choose Beta to try experimental updates (see [Beta versions](#beta-versions))
+- **In beta, not yet confirmed on real hardware:** Apogee [AD-16X](https://www.apogeedigital.com/pdf/ad16x_usersguide.pdf), [DA-16X](https://apogeedigital.com/pdf/da16x_usersguide.pdf) and [Rosetta 800](https://apogeedigital.com/pdf/rosetta800_usersguide.pdf) converters, and two Symphony I/O units (64 channels), over [ThunderBridge or the Symphony 64 PCIe card](https://knowledge.apogeedigital.com/symphony64-pcie-thundebridge-users-guide-documentation-and-downloads). Reports are welcome.
 
 ### Connecting over USB and ThunderBridge
 
@@ -79,9 +81,9 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 ## Known Issues
 _Intel Macs and earlier versions of macOS are not supported._
 
-_The original Symphony 64 PCIe card (in a Thunderbolt chassis) is experimental: the driver attaches to it as of 0.8.36, but it has not been verified on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified._
+_The original Symphony 64 PCIe card (in a Thunderbolt chassis) is experimental: the driver attaches to it as of 0.8.36, but it has not been verified on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified; beta 0.9.3 adds the Mac's volume keys for them._
 
-_This version of Maestro works with only one Symphony I/O at a time._
+_Stable versions work with one Symphony I/O at a time. The 0.9 betas add two units (64 channels) over ThunderBridge, not yet verified on hardware._
 
 _As of 0.8.40, option-card features (optical format, S/PDIF coax, AES, per-card clock choices) follow Apogee's original software. They are verified on an 8x8 AES/OPT and an A16 IP; the AES-only 8x8, 2x6, 16x16 and A16 OP are unverified, and reports are welcome._
 
