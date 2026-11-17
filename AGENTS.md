@@ -83,6 +83,20 @@ Tools (each explains itself with `--help` or in its header):
   with `--github` (a real release) or `--local-base-url` (a rehearsal). There is
   no default destination.
 - `Tools/promote-beta.sh [VERSION] --notes … --feed … [--github]`.
+- `Tools/stable-notes.py [--out notes.md] [--apply]`: drafts the stable notes
+  for a promotion from every `## X.Y.Z (beta)` section in CHANGELOG.md since
+  the last stable one, merged under one heading each, and lists commits on
+  `main` since the last stable tag that no beta describes.
+
+Promoting ("merge dev/beta to main/stable"): run `Tools/stable-notes.py --out
+<notes.md>` on `dev`; edit the draft into one release (remove duplicates such
+as repeated driver-update lines, drop tester-only requests, write a short
+introduction, cover any `main`-only commits it lists); run
+`Tools/promote-beta.sh --notes <notes.md> --feed <main>/appcast.xml --github`;
+add the same text to CHANGELOG.md as `## X.Y.Z` above the beta sections
+(`--apply` does this; the beta sections stay as history); land the feed on
+`main`, merge `dev` into `main`, verify with `stable`, and open the next minor
+line on `dev`.
 - `Tools/verify-sparkle-feed.sh <version> <feed> stable|beta`.
 - `Tools/test-feed-tools.sh` and `Tools/test-installer-tools.sh` test the tools.
 
