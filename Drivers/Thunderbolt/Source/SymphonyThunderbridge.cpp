@@ -593,26 +593,35 @@ static constexpr uint32_t kUnitProbeXtdOK          = 0x20000000;
 // converters only (ClassifyVolumeTarget). Set only in ReadLinkState's copy.
 static constexpr uint32_t kUnitProbeConverterVolumeKeys = 0x10000000;
 
-// The four bank nibbles the original named (XLink.cpp DeviceName :1419-1435):
-// 0x3 AD-16X, 0x5 Rosetta 800, 0xC DA-16X, 0xF DD-16X.
-static constexpr bool IsKnownConverterNibble(uint32_t nibble)
-{
-    return nibble == 0x3 || nibble == 0x5 || nibble == 0xC || nibble == 0xF;
-}
-
-// Whether a probe word describes a cable of known converters and nothing else:
-// unit 1 replied to INQUIRE with a known converter nibble, and every further
-// unit found (bits 16-27, zero = none) is a known converter too. Anything
-// unrecognised on the chain, a Symphony I/O in second place for example, keeps
-// the Symphony behaviour. Mirrors ConnectedUnit.isConverterOnly in the app.
+// Whether a probe word describes a cable of converters only, for the volume
+// keys. The original's device routing is (XTD_INQUIRE & 0xF0) | (INQUIRE >> 4)
+// (XLinkRegisters.h CONVERT_ROUTING_COMMANDS_TO_NEW_FORMAT): 0x03 AD-16X,
+// 0x05 Rosetta 800, 0x0C DA-16X, 0x0F DD-16X, and 0xFF for a Symphony I/O.
+// Older converters do not answer XTD_INQUIRE (XLink.cpp DeviceRoutingInquire:
+// "Failing here is normal"). So:
+//   - INQUIRE nibble 0x3, 0x5 or 0xC cannot be a Symphony I/O, provided an XTD
+//     reply, if any, has a zero high nibble;
+//   - 0xF is a DD-16X only when XTD answered with a zero high nibble; with no
+//     XTD reply it could be a Symphony I/O whose reply was lost, so it is not
+//     counted (a DD-16X that does not answer XTD keeps today's behaviour);
+//   - chained units (bits 16-27, zero = none) carry only the INQUIRE nibble, so
+//     each must be 0x3, 0x5 or 0xC; anything else keeps the Symphony behaviour.
 static constexpr bool UnitProbeIsConvertersOnly(uint32_t probe)
 {
     if (!(probe & kUnitProbeInquireOK)) return false;
-    if (!IsKnownConverterNibble((probe >> 4) & 0xF)) return false;
+    const uint32_t first = (probe >> 4) & 0xF;
+    const bool xtdOK = (probe & kUnitProbeXtdOK) != 0;
+    const uint32_t xtdHigh = (probe >> 12) & 0xF;
+    if (xtdOK && xtdHigh != 0) return false;
+    if (first == 0xF) {
+        if (!xtdOK) return false;
+    } else if (first != 0x3 && first != 0x5 && first != 0xC) {
+        return false;
+    }
     for (uint32_t i = 0; i < 3; i++) {
         const uint32_t n = (probe >> (16 + 4 * i)) & 0xF;
         if (n == 0) break;
-        if (!IsKnownConverterNibble(n)) return false;
+        if (n != 0x3 && n != 0x5 && n != 0xC) return false;
     }
     return true;
 }
@@ -1615,7 +1624,8 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars);
 //      that once answered is never reclassified by a later missed read).
 // Leaving converter mode puts the trim back to 0 dB, unmuted, on the card.
 // Runs in Start() or on xlinkQueue. Returns the new mode.
-static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendorAnswered)
+static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendorAnswered,
+                                 const SymphonyLinkInitResult *symphony)
 {
     if (vendorAnswered)
         ivars->symphonyAnsweredSinceStart = true;
@@ -1627,8 +1637,33 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
         ivars->converterTrimAtten = 0;
         ivars->converterTrimMuted = false;
         ApplyConverterTrim(ivars);
-        STLOG("Volume keys: Symphony I/O behaviour (converter trim cleared)");
+        // While the keys trimmed the mixer, the session monitor values and the
+        // HAL control followed the trim. Take the Symphony's own stored values
+        // (just read back) so link recovery's replay and the next key press do
+        // not send it the trim level (0 dB attenuation would be full volume).
+        __atomic_store_n(&ivars->speakerAttenuation, symphony->speakerAttenuation, __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->speakerMute, symphony->speakerMute, __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->hp1Attenuation, symphony->hp1Attenuation, __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->hp1Mute, symphony->hp1Mute, __ATOMIC_RELEASE);
+        if (ivars->outputVolumeControl)
+            ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(symphony->monitorAttenuation));
+        if (ivars->outputMuteControl)
+            ivars->outputMuteControl->SetControlValue(symphony->monitorMute);
+        STLOG("Volume keys: Symphony I/O behaviour (converter trim cleared; monitor atten=%u mute=%u)",
+              symphony->monitorAttenuation, symphony->monitorMute ? 1 : 0);
     } else if (!was && converters) {
+        // Converters found after the controls exist (powered on after Start(),
+        // or a recovery): keep the level macOS already shows rather than
+        // jumping to 0 dB. In Start() the controls do not exist yet and the
+        // trim starts at 0 dB, where the control is then created.
+        if (ivars->outputVolumeControl) {
+            float db = ivars->outputVolumeControl->GetDecibelValue();
+            if (db > 0.0f) db = 0.0f;
+            if (db < -64.0f) db = -64.0f;
+            ivars->converterTrimAtten = (uint8_t)(-db);
+        }
+        if (ivars->outputMuteControl)
+            ivars->converterTrimMuted = ivars->outputMuteControl->GetControlValue();
         __atomic_store_n(&ivars->converterVolumeKeys, true, __ATOMIC_RELEASE);
         STLOG("Volume keys: converters only, keys trim card mixer 1 (atten=%u mute=%u)",
               ivars->converterTrimAtten, ivars->converterTrimMuted ? 1 : 0);
@@ -2039,7 +2074,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // Core Audio volume/mute control becomes a trim on card mixer 1 and
         // starts from that trim (0 dB the first time), not from the -20 dB
         // fallback above. Anything else keeps the Symphony I/O behaviour.
-        if (ClassifyVolumeTarget(ivars, vendorAnswered)) {
+        if (ClassifyVolumeTarget(ivars, vendorAnswered, out)) {
             out->lineMonitor = false;
             out->monitorAttenuation = ivars->converterTrimAtten;
             out->monitorMute = ivars->converterTrimMuted;
@@ -7567,7 +7602,8 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         // an HP1 monitor target.  The HAL exposes one volume/mute control, so
         // remember that target only after the hardware mode write succeeds;
         // subsequent coalesced HAL writes then use 0x23/0x24 for HP1.
-        if (command == kSIOCmd_SpeakerMode && payload && payloadLen >= 1) {
+        if (command == kSIOCmd_SpeakerMode && payload && payloadLen >= 1 &&
+            !__atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
             const uint8_t target = payload[0] == 0 ? static_cast<uint8_t>(1)
                                                    : static_cast<uint8_t>(0);
             __atomic_store_n(&ivars->monitorOutputTarget, target, __ATOMIC_RELEASE);

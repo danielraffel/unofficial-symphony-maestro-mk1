@@ -533,6 +533,8 @@ struct Options {
     bool        lateSymphony = false;     // port 1 unit appears after Start
     bool        latePort2 = false;        // port 2 chain appears after Start
     bool        shortFlow = false;        // Start, StartDevice, link watch, Stop only
+    uint32_t    dropVendorReads = 0;      // port 1 Symphony: first N vendor reads unanswered
+    uint8_t     symphonyInquire = 0;      // port 1 Symphony: INQUIRE reply (0 = none)
 };
 
 static void Attach(Port &p, Port::Kind kind)
@@ -576,6 +578,8 @@ static void RunScenario(const Options &o, Run &r)
     if (o.legacy2100) card.pciDeviceID = kSymphonyPCIeDeviceID;
     card.gatePort2 = o.portCountProperty == 2;
     if (!o.lateSymphony) Attach(card.port[0], o.port1);
+    card.port[0].dropVendorReads = o.dropVendorReads;
+    card.port[0].symphonyInquire = o.symphonyInquire;
     if (!o.latePort2) Attach(card.port[1], o.port2);
     if (o.dirtyRegisters) {
         card.reg[kRegGCSR]  = 0x2db8011b;
@@ -794,8 +798,8 @@ static void RunVolumeKeyChecks()
     {
         Options o; o.name = "volume keys: Symphony, first read lost"; o.shortFlow = true;
         Run r;
-        r.card.port[0].dropVendorReads = 1;
-        r.card.port[0].symphonyInquire = 0xC0;
+        o.dropVendorReads = 1;
+        o.symphonyInquire = 0xC0;
         RunScenario(o, r);
         const uint32_t before = Mixer1Return(r);
         PressVolume(r, -31.0f);
@@ -804,6 +808,41 @@ static void RunVolumeKeyChecks()
         CHECK(StoredVendor(r, 0x27) == 1, "%s: SpeakerMute %u (want 1)", o.name, StoredVendor(r, 0x27));
         CHECK(Mixer1Return(r) == before, "%s: mixer 1 changed 0x%08x -> 0x%08x", o.name, before, Mixer1Return(r));
         CHECK(!LinkSaysConverterKeys(r), "%s: link state reports converter volume keys", o.name);
+        Finish(o, r);
+    }
+    // 1b. A Symphony I/O that answers no vendor read at all during bring-up
+    //     but answers INQUIRE with 0xF (what the original's routing 0xFF looks
+    //     like without its XTD half, the same nibble as a DD-16X): never a
+    //     converter, the keys still reach it.
+    {
+        Options o; o.name = "volume keys: Symphony, every read lost, INQUIRE 0xF"; o.shortFlow = true;
+        Run r;
+        o.dropVendorReads = 8;
+        o.symphonyInquire = 0xF0;
+        RunScenario(o, r);
+        CHECK(!LinkSaysConverterKeys(r), "%s: link state reports converter volume keys", o.name);
+        PressVolume(r, -31.0f);
+        CHECK(StoredVendor(r, 0x26) == 31, "%s: SpeakerVolume %u (want 31)", o.name, StoredVendor(r, 0x26));
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: mixer 1 trimmed (0x%08x)", o.name, Mixer1Return(r));
+        Finish(o, r);
+    }
+    // 1c. Converters powered on after Start(): the control is at the -20 dB
+    //     fallback, and the trim takes that level rather than jumping to 0 dB.
+    {
+        Options o; o.name = "volume keys: converters powered on late"; o.port1 = Port::Converters;
+        o.lateSymphony = true; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        CHECK(LinkSaysConverterKeys(r), "%s: link state does not report converter volume keys", o.name);
+        CHECK(gHostAudio.volume && gHostAudio.volume->GetDecibelValue() == -20.0f,
+              "%s: control at %.1f dB (want -20, unchanged)", o.name,
+              gHostAudio.volume ? gHostAudio.volume->GetDecibelValue() : 99.0f);
+        CHECK(Mixer1Return(r) == 0x03330000, "%s: mixer 1 return 0x%08x (want -20 dB, 0x03330000)", o.name, Mixer1Return(r));
+        // The app's speaker-mode command (Reset Defaults, presets) must not move it.
+        { uint8_t m = 2; r.drv->SendVendorCommand(0x25, 0, &m, 1); }
+        HostPump();
+        CHECK(gHostAudio.volume->GetDecibelValue() == -20.0f, "%s: speaker mode moved the control to %.1f dB",
+              o.name, gHostAudio.volume->GetDecibelValue());
         Finish(o, r);
     }
     // 2. Converters only: the control starts at 0 dB, every 4 dB key step is a
@@ -851,6 +890,11 @@ static void RunVolumeKeyChecks()
         r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
         CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: trim left on a Symphony (0x%08x)", o.name, Mixer1Return(r));
         CHECK(!LinkSaysConverterKeys(r), "%s: link state still reports converter keys after the swap", o.name);
+        // The control and the replay take the Symphony's stored level (12 dB
+        // in the fake), not the converter trim, so its speakers do not jump.
+        CHECK(gHostAudio.volume->GetDecibelValue() == -12.0f, "%s: control at %.1f dB after the swap (want -12)",
+              o.name, gHostAudio.volume->GetDecibelValue());
+        CHECK(StoredVendor(r, 0x26) == 12, "%s: recovery sent SpeakerVolume %u (want 12)", o.name, StoredVendor(r, 0x26));
         PressVolume(r, -20.0f);
         CHECK(StoredVendor(r, 0x26) == 20, "%s: Symphony SpeakerVolume %u after the swap (want 20)",
               o.name, StoredVendor(r, 0x26));

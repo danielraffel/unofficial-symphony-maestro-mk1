@@ -9,7 +9,7 @@ Thanks to the tester with a DA-16X on a ThunderBridge whose report showed that t
 ### Changes that may affect your setup
 
 - **This beta updates the ThunderBridge driver.** After installing, unplug the ThunderBridge cable and plug it back in (or turn the Maestro driver off and on in System Settings, or restart).
-- **On converters, the Mac's volume and mute keys now work.** They turn Mixer 1 up and down, from full level to silent, and the mute key silences it. Mixer 1 feeds outputs 1-2 unless you have changed Output Routing; outputs that are routed directly do not follow the keys. The Master fader in the Mixer still works as before and is separate. Apogee's own software did nothing with the volume keys on converters, so this is new. Nothing gets louder: the keys start from full level, which is what you hear today.
+- **On converters, the Mac's volume and mute keys now work.** They turn Mixer 1 up and down, from full level to -64 dB, and the mute key silences it. Mixer 1 feeds outputs 1-2 unless you have changed Output Routing; outputs that are routed directly do not follow the keys. The Master fader in the Mixer still works as before and is separate. Apogee's own software did nothing with the volume keys on converters, so this is new. Nothing gets louder: the keys start from the level macOS already shows for the ThunderBridge.
 
 ### What's new
 
@@ -17,6 +17,7 @@ Thanks to the tester with a DA-16X on a ThunderBridge whose report showed that t
 
 ### Release notes
 
+- A DD-16X gets the new volume keys only if it answers the driver's extended identity question. If it does not, it keeps today's behaviour, because without that answer it cannot be told apart from a Symphony I/O.
 - This has not been tried on a real converter yet. If you have one, please tell us whether the keys change the level and whether macOS remembers the level after a restart.
 - With a Symphony I/O connected, the speaker knob, headphone knobs and volume keys work exactly as before.
 
