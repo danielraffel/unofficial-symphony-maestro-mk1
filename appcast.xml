@@ -7,6 +7,28 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.8</title>
+      <pubDate>Wed, 18 Nov 2026 22:38:19 GMT</pubDate>
+      <sparkle:version>0.9.8</sparkle:version>
+      <sparkle:shortVersionString>0.9.8</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.8</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+Maestro opens straight away, even when macOS audio is slow. It contains everything in 0.9.7.
+
+### Changes that may affect your setup
+
+- **Maestro's window opens immediately at launch and then connects to your Symphony.** Before, Maestro asked macOS for its audio devices before showing anything, so when macOS audio was slow, as it is for a minute or two after installing any update, Maestro bounced in the Dock and looked stuck. Now the window appears at once, the status reads "Looking for your Symphony…" for a moment, and if macOS audio takes longer than a few seconds it reads "Waiting for macOS audio to respond…" until it connects. Your settings, routing and presets are restored as before.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.6 (0.11.4, build 130), so there is no need to reconnect anything after updating.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.8/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="FL+VQUbpTS6OACYHGwgSKYVobj8agw9EtBJ+4JNiqBqJv/eyFfhKwbq1BkgrwxOou8QWHNrziFkUlmhN/k8VDA==" length="4445528" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.7</title>
       <pubDate>Wed, 18 Nov 2026 20:42:52 GMT</pubDate>
       <sparkle:version>0.9.7</sparkle:version>
@@ -826,6 +848,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 7DLVhdhuzsnIxB6Ja89JqvHvjNy7YTQ76dc1vpuRx4eB8T3lP9ohml3n6pHsIHwIZD+IzuybtR2I6/+rXWsQDg==
-length: 77337
+edSignature: 8rdKPT1EbBCX1PlMB+SHqbrEPYY1BcDLeXMrkA5XX0g2m9sw06+BTVPlaiRGQiGULYXFuv2qHs32keMWrw0IAw==
+length: 79198
 -->
