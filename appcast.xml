@@ -7,6 +7,34 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.7</title>
+      <pubDate>Wed, 18 Nov 2026 20:42:52 GMT</pubDate>
+      <sparkle:version>0.9.7</sparkle:version>
+      <sparkle:shortVersionString>0.9.7</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.7</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+Reset Routing now matches Apogee's software over ThunderBridge and PCIe. It contains everything in 0.9.6. Over USB nothing changes.
+
+Thanks to the PCIe tester who confirmed audio now works on the Symphony 64 PCIe card, and who asked for this.
+
+### Changes that may affect your setup
+
+- **Over ThunderBridge and PCIe, Reset Routing on the Output Routing page now does what Apogee's software did.** Every software output goes to the matching hardware output, so Line 1/2 plays Software 1/2 directly, and no mixer is routed to an output. Before, Reset put Line 1/2 on Mixer 1. After a reset, the Mixer's Master, Software Return and input monitoring no longer change Line 1/2 until you route a mixer there. Easy to change back: choose Mixer 1 for Line 1/2 in Output Routing (Maestro remembers it), or save your layout as a routing preset and load it after a reset. Maestro's start-up default is unchanged: if you never press Reset, Line 1/2 stays on Mixer 1.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.6 (0.11.4, build 130), so there is no need to reconnect anything after updating.
+
+### Known issue
+
+- **Right after installing an update, Maestro can bounce in the Dock for a minute or two before its window opens.** The installer restarts macOS's audio system, and Maestro waits for it at launch. Give it a moment; if it is still bouncing after about five minutes, restart the Mac. A coming beta opens the window straight away and connects once macOS audio is ready.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.7/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="Eruhm6xnVX+HRCAaBu+jhsMNy2Slo3jaWQRfkdk0GsMhCwlHE7uuifmn0Qq0Kzsm6H+X6svF6fcYqjpIfyh/Cg==" length="4444040" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.6</title>
       <pubDate>Wed, 18 Nov 2026 18:40:40 GMT</pubDate>
       <sparkle:version>0.9.6</sparkle:version>
@@ -798,6 +826,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: FXMfAPu4hAx4HAae4ooNYWYHXgcLEH0bbvZ+SI8cWtZZfk9cmKC4rmBeXxuzl9YmSWmebZv/no1AM5C/WN1WCQ==
-length: 74838
+edSignature: 7DLVhdhuzsnIxB6Ja89JqvHvjNy7YTQ76dc1vpuRx4eB8T3lP9ohml3n6pHsIHwIZD+IzuybtR2I6/+rXWsQDg==
+length: 77337
 -->
