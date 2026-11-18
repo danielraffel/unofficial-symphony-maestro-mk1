@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.7 (beta)
+
+Reset Routing now matches Apogee's software over ThunderBridge and PCIe. It contains everything in 0.9.6. Over USB nothing changes.
+
+Thanks to the PCIe tester who confirmed audio now works on the Symphony 64 PCIe card, and who asked for this.
+
+### Changes that may affect your setup
+
+- **Over ThunderBridge and PCIe, Reset Routing on the Output Routing page now does what Apogee's software did.** Every software output goes to the matching hardware output, so Line 1/2 plays Software 1/2 directly, and no mixer is routed to an output. Before, Reset put Line 1/2 on Mixer 1. After a reset, the Mixer's Master, Software Return and input monitoring no longer change Line 1/2 until you route a mixer there. Easy to change back: choose Mixer 1 for Line 1/2 in Output Routing (Maestro remembers it), or save your layout as a routing preset and load it after a reset. Maestro's start-up default is unchanged: if you never press Reset, Line 1/2 stays on Mixer 1.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.6 (0.11.4, build 130), so there is no need to reconnect anything after updating.
+
 ## 0.9.6 (beta)
 
 The next step for the Symphony 64 PCIe card, and a clearer diagnostics report. It contains everything in 0.9.5. If you use USB or a ThunderBridge, nothing changes for you.
