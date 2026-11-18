@@ -1196,9 +1196,15 @@ static uint32_t SampleRateToDDS(double rate)
 // Set the FPGA DDS rate in GCSR bits[15:13].
 // Legacy: XLink::SetDDSSampleRate() — called before every SetSampleRate().
 // Uses explicit read-modify-write to also preserve write-only DMA channel bits[5:0].
-static void SetDDSSampleRate(IOPCIDevice *dev, uint8_t memIndex, double rate)
+// dext 130: on the Symphony 64 PCIe card the DDS is turned off, as the
+// original's SetDDSSampleRate does whenever it is not clocking the bus itself
+// (m_afClockingInSym2Sym, set only when no XLink clock arrives: XLink.cpp:919-947,
+// 2977-2988). A Symphony I/O clocks the bus, so the original runs with DDS off.
+// On the ThunderBridge these bits do not hold (GCSR reads back without them), so
+// it keeps this driver's behaviour; on the PCIe card they hold.
+static void SetDDSSampleRate(IOPCIDevice *dev, uint8_t memIndex, double rate, bool legacyPCIe = false)
 {
-    uint32_t ddsValue = SampleRateToDDS(rate);
+    uint32_t ddsValue = legacyPCIe ? kGCSR_DDS_Off : SampleRateToDDS(rate);
     // Must use explicit RMW to re-assert write-only DMA channel count bits
     uint32_t gcsr = 0;
     ReadRegister(dev, memIndex, kRegGCSR, &gcsr);
@@ -1206,7 +1212,25 @@ static void SetDDSSampleRate(IOPCIDevice *dev, uint8_t memIndex, double rate)
     gcsr |= ddsValue;                            // Set new DDS rate
     gcsr |= (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);  // Re-assert DMA ch count
     WriteRegister(dev, memIndex, kRegGCSR, gcsr);
-    STLOG("DDS rate set to %.0f Hz (GCSR DDS=0x%04x, GCSR=0x%08x)", rate, ddsValue, gcsr);
+    STLOG("DDS rate set to %.0f Hz (GCSR DDS=0x%04x%{public}s, GCSR=0x%08x)", rate, ddsValue,
+          legacyPCIe ? ", off on the PCIe card" : "", gcsr);
+}
+
+// dext 130: the frame-sync pulse the original sends every card after each rate
+// set (syncComponents -> CMD_SYNC -> SampleClock::Synchronise: set
+// SAMPLE_FRAME_USE_EXTERNAL in CLKCTRL, 2 ms, clear; SampleClock.cpp:46-55,
+// SymphonyBaseAudioEngine.cpp:2007-2031 and 2088, "align the slave frame
+// interrupts to the master"). Symphony 64 PCIe card only.
+static void PulseFrameSyncLegacyPCIe(IOPCIDevice *dev, uint8_t memIndex, const char *where)
+{
+    uint32_t before = 0, after = 0;
+    ReadRegister(dev, memIndex, kRegClkCtrl, &before);
+    ModifyRegister(dev, memIndex, kRegClkCtrl, kClkCtrl_UseExternal, 0);
+    IOSleep(2);
+    ModifyRegister(dev, memIndex, kRegClkCtrl, 0, kClkCtrl_UseExternal);
+    ReadRegister(dev, memIndex, kRegClkCtrl, &after);
+    STLOG("PCIe card: frame sync pulse (CLKCTRL bit 31, 2 ms) after %{public}s; CLKCTRL 0x%08x -> 0x%08x",
+          where, before, after);
 }
 
 // WaitForLock: checks DataSlipSticky for stability.
@@ -1420,7 +1444,8 @@ static void Port2RateAfter(IOPCIDevice *dev, uint8_t mi, double newRate, uint8_t
 // caller uses this to decide whether to roll DDS back to the old rate on failure.
 // port2 (EXPERIMENT): null with one port, and then nothing below touches port 2.
 static bool ChangeSampleRate(IOPCIDevice *dev, uint8_t memIndex, double newRate,
-                             bool *outCommandIssued, Port2RateChange *port2 = nullptr)
+                             bool *outCommandIssued, Port2RateChange *port2 = nullptr,
+                             bool legacyPCIe = false)
 {
     if (outCommandIssued) *outCommandIssued = false;
 
@@ -1435,7 +1460,7 @@ static bool ChangeSampleRate(IOPCIDevice *dev, uint8_t memIndex, double newRate,
     // 0. Set DDS rate FIRST (legacy: SetDDSSampleRate before SetSampleRate)
     // The DDS provides the FPGA's internal clock reference and must match the
     // sample rate for the FPGA's TDM timing to align with the XLink data.
-    SetDDSSampleRate(dev, memIndex, newRate);
+    SetDDSSampleRate(dev, memIndex, newRate, legacyPCIe);
 
     // EXPERIMENT: the original told port 2 first (XLink.cpp:991-1012).
     if (port2) Port2RateBefore(dev, memIndex, newRate, rateCode, port2);
@@ -1519,6 +1544,7 @@ static bool ChangeSampleRate(IOPCIDevice *dev, uint8_t memIndex, double newRate,
     if (port2 && port2->clock) Port2RateAfter(dev, memIndex, newRate, rateCode, port2);
 
     STLOG("ChangeSampleRate: complete — %.0f Hz (locked + rate-verified + stable)", newRate);
+    if (legacyPCIe) PulseFrameSyncLegacyPCIe(dev, memIndex, "rate change");
     return true;
 }
 
@@ -1868,7 +1894,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
 
     // Set DDS first (legacy: SetDDSSampleRate before SetSampleRate). Start()
     // passes 44100; in-place recovery passes the rate the units last ran at.
-    SetDDSSampleRate(ivars->pciDevice, ivars->barMemoryIndex, rate);
+    SetDDSSampleRate(ivars->pciDevice, ivars->barMemoryIndex, rate, ivars->isLegacyPCIe2100);
 
     if (!SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
                            kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, rateCode)) {
@@ -1903,6 +1929,8 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         STLOG("XLink: WaitForLock pass %d (post-srate): data slip, retrying", pass);
     }
     STLOG("XLink: WaitForLock (post-srate): %{public}s", locked ? "LOCKED" : "TIMEOUT");
+    if (ivars->isLegacyPCIe2100 && locked)
+        PulseFrameSyncLegacyPCIe(ivars->pciDevice, ivars->barMemoryIndex, "link sample-rate set");
 
     // ── 19. Unmute ──────────────────────────────────────────────────
     // Legacy: SetDeviceMute(bus, addr, false) → UNMUTE, data=0x80
@@ -3553,14 +3581,20 @@ static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
 // on wake and after firmware load, always before StartDMA; the arm64e build of
 // Symphony64.kext in Symphony 5.5 contains the same write. On this FPGA a card's
 // DMA start waits for the multi-card synchronisation signal
-// (Symphony64AudioEngine.cpp:324-325), and its release notes fixed "DMA not
-// starting when only one card used" (v0.5.7). This driver never wrote it, and the
+// (Symphony64AudioEngine.cpp:324-325). This driver never wrote it, and the
 // PCIe card's DMA never started (2026-11-18 report: CHA stayed at HBA, no
 // HBO/ABU). The ThunderBridge has no expansion bus and is master by design, so
 // this runs for the 0x2100 card only: one card, board 0, value 1.
 static void ConfigureLegacyPCIeExpansion(SymphonyThunderbridge_IVars *ivars, const char *where)
 {
     if (!ivars || !ivars->isLegacyPCIe2100) return;
+    if (!ivars->isMaster) {
+        // The original disables a card jumpered as a slave (Symphony64Card.cpp:144-152)
+        // and needs a master; it would not tell a lone slave it is board 0.
+        STERR("PCIe card is jumpered as SLAVE (Board ID bit 0x20 clear): Apogee's driver would not use it as "
+              "the only card; expansion register left unwritten (%{public}s)", where);
+        return;
+    }
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     uint32_t before = 0, after = 0, clk = 0;
@@ -5404,7 +5438,31 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
               (intStatus & kInt_AudioBufUnderflow) ? 1 : 0);
     }
 
-    // dext 130, Symphony 64 PCIe card only: look again after a second, and record
+    // ── 30b. Unmute AFTER DMA is running ────────────────────────────────
+    // Legacy: performAudioEngineStart() unmutes AFTER StartDMA() + delay.
+    // Sequence: start DMA → wait for buffers to fill → unmute.
+    // Without DMA running, unmuting can cause the FPGA to output stale/garbage
+    // data to the XLink bus, confusing the Symphony IO.
+
+    IOSleep(10);  // Legacy: IOSleep(10) between StartDMA and unmute
+    ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
+                   kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute,
+                   0);
+    STLOG("ClkCtrl: unmuted AFTER DMA start (global + input + output = 0x70000000)");
+
+    // Verify ClkCtrl readback
+    {
+        uint32_t clkVerify = 0;
+        ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl, &clkVerify);
+        STLOG("ClkCtrl verify: 0x%08x (unmute=%u, inUnmute=%u, outUnmute=%u)",
+              clkVerify,
+              (clkVerify & kClkCtrl_Unmute) ? 1 : 0,
+              (clkVerify & kClkCtrl_InputUnmute) ? 1 : 0,
+              (clkVerify & kClkCtrl_OutputUnmute) ? 1 : 0);
+    }
+
+    // dext 130, Symphony 64 PCIe card only: look again a second after DMA start, after the unmute (the original starts
+    // DMA with the global unmute already on: XLink.cpp:747-792), and record
     // what decides the next step. Reads only (plus clearing the meter pattern).
     if (ivars->isLegacyPCIe2100) {
         IOSleep(900);
@@ -5461,29 +5519,6 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
               "status=0x%04x (masterAbort=%u targetAbort=%u); PCIe %{public}s devCtl=0x%04x devSta=0x%04x lnkSta=0x%04x",
               gcsr, gcsr2, clk, pciCmd, pciStatus, (pciStatus & 0x2000) ? 1 : 0, (pciStatus & 0x1000) ? 1 : 0,
               havePCIe ? "capability" : "capability not found", devCtl, devSta, lnkSta);
-    }
-
-    // ── 30b. Unmute AFTER DMA is running ────────────────────────────────
-    // Legacy: performAudioEngineStart() unmutes AFTER StartDMA() + delay.
-    // Sequence: start DMA → wait for buffers to fill → unmute.
-    // Without DMA running, unmuting can cause the FPGA to output stale/garbage
-    // data to the XLink bus, confusing the Symphony IO.
-
-    IOSleep(10);  // Legacy: IOSleep(10) between StartDMA and unmute
-    ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                   kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute,
-                   0);
-    STLOG("ClkCtrl: unmuted AFTER DMA start (global + input + output = 0x70000000)");
-
-    // Verify ClkCtrl readback
-    {
-        uint32_t clkVerify = 0;
-        ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl, &clkVerify);
-        STLOG("ClkCtrl verify: 0x%08x (unmute=%u, inUnmute=%u, outUnmute=%u)",
-              clkVerify,
-              (clkVerify & kClkCtrl_Unmute) ? 1 : 0,
-              (clkVerify & kClkCtrl_InputUnmute) ? 1 : 0,
-              (clkVerify & kClkCtrl_OutputUnmute) ? 1 : 0);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -6715,7 +6750,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 Port2RateChange *port2 = Port2TakesRateChanges(ivars) ? &port2Rate : nullptr;
                 rateOk = ChangeSampleRate(ivars->pciDevice,
                                           ivars->barMemoryIndex, requestedRate, &cmdIssued,
-                                          port2);
+                                          port2, ivars->isLegacyPCIe2100);
                 if (port2)
                     FinishPort2RateChange(ivars, requestedRate, oldXlinkRate, cmdIssued, port2Rate);
                 // Stage 2: port 1 changed rate but port 2 did not follow while it
@@ -6760,7 +6795,8 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 // performs a full clean reconfiguration.
                 if (!rateOk) {
                     if (!cmdIssued) {
-                        SetDDSSampleRate(ivars->pciDevice, ivars->barMemoryIndex, oldXlinkRate);
+                        SetDDSSampleRate(ivars->pciDevice, ivars->barMemoryIndex, oldXlinkRate,
+                                         ivars->isLegacyPCIe2100);
                     }
                     STERR("StartDevice: rate change FAILED (cmdIssued=%d) — DMA stopped, outputs "
                           "muted, DDS+XLink consistent (offline pending reinit)", cmdIssued);
