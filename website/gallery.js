@@ -15,6 +15,11 @@ const screenshots = [
   ['input-micpre', '8MicPre controls — simulated card'],
   ['update-available', 'Sparkle update available'],
   ['update-current', 'Sparkle up to date'],
+  ['diagnostics-toggle', 'Update channel and Diagnostics (Beta channel)'],
+  ['diagnostics-confirm', 'Diagnostics asks first; nothing is sent unless you agree'],
+  ['diagnostics-on', 'Diagnostics recording, with a Stop Diagnostics button'],
+  ['diagnostics-form', 'Send diagnostics privately, with optional details'],
+  ['diagnostics-sent', 'Diagnostics sent, with a reference to quote'],
 ].map(([name, caption]) => ({src: `screenshots/${name}.png`, caption}));
 const hero = document.getElementById('heroShot');
 const box = document.getElementById('lightbox');
@@ -88,5 +93,5 @@ preview.alt = screenshots[0].caption;
 preview.onerror = () => { hero.textContent = 'View Maestro screenshots'; };
 const hint = document.createElement('span');
 hint.className = 'hint';
-hint.textContent = 'View all 14 screenshots ↗';
+hint.textContent = `View all ${screenshots.length} screenshots ↗`;
 hero.replaceChildren(preview, hint);

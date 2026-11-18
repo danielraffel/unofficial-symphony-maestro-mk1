@@ -43,6 +43,18 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 <td width="50%"><a href="docs/screenshots/usb-connection.png"><img src="docs/screenshots/usb-connection.png" alt="USB connection"></a><br><sub><b>USB connection</b> — USB supports up to 96 kHz; ThunderBridge supports up to 192 kHz where the hardware supports it.</sub></td>
 <td width="50%"><a href="docs/screenshots/maestro-help.png"><img src="docs/screenshots/maestro-help.png" alt="Maestro Help"></a><br><sub><b>Built-in Help</b> — contextual explanations are available throughout Maestro.</sub></td>
 </tr>
+<tr>
+<td width="50%"><a href="docs/screenshots/diagnostics-toggle.png"><img src="docs/screenshots/diagnostics-toggle.png" alt="Update channel and Diagnostics settings"></a><br><sub><b>Update channel and Diagnostics</b> — choose Stable or Beta updates; on Beta, turn on Diagnostics to record what Maestro and the driver do while you reproduce a problem.</sub></td>
+<td width="50%"><a href="docs/screenshots/diagnostics-confirm.png"><img src="docs/screenshots/diagnostics-confirm.png" alt="Turn on diagnostics"></a><br><sub><b>You stay in control</b> — Maestro asks first, saves the report to your Desktop, and sends nothing unless you agree.</sub></td>
+</tr>
+<tr>
+<td width="50%"><a href="docs/screenshots/diagnostics-on.png"><img src="docs/screenshots/diagnostics-on.png" alt="Diagnostics running"></a><br><sub><b>While it records</b> — a bar shows the time and a Stop Diagnostics button, and suggests switching the unit off and on for connection problems.</sub></td>
+<td width="50%"><a href="docs/screenshots/diagnostics-form.png"><img src="docs/screenshots/diagnostics-form.png" alt="Send diagnostics"></a><br><sub><b>Send it privately</b> — tick your setup, describe the problem, link a GitHub issue if you have one, and email the report to the developer. Everything is optional.</sub></td>
+</tr>
+<tr>
+<td width="50%"><a href="docs/screenshots/diagnostics-sent.png"><img src="docs/screenshots/diagnostics-sent.png" alt="Diagnostics sent"></a><br><sub><b>Sent</b> — you get a reference to quote; a copy stays on your Desktop.</sub></td>
+<td width="50%"></td>
+</tr>
 </table>
 
 
@@ -116,6 +128,10 @@ The project source is available under the [MIT license](license.md), without war
 
 If you have a Symphony I/O MK I and an Apple Silicon Mac, I’d appreciate hearing how it goes.
 
+**The best way to report a problem is Diagnostics** (Beta channel). Turn it on in **Device Settings › Preferences**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
+
+**Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and experiments (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **Device Settings › Preferences** at any time.
+
 If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">file an issue</a> and include:
 
 * The Maestro version (**Maestro › About**) and macOS version
@@ -153,7 +169,7 @@ Updates are downloaded from this repository; the updater collects no telemetry.
 
 ### Beta versions
 
-From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in Device Settings › Preferences; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page.
+From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in Device Settings › Preferences; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page. Bug fixes and new hardware support land on Beta first and move to Stable once they have been tested; Beta also adds Diagnostics, for sending the developer a private report (see Feedback).
 
 <table>
 <tr>
