@@ -231,6 +231,17 @@ int main(void)
     check_render(0, 0.5f, 0.25f);
     check_render(1, 0.5f, 0.25f);
     gSwReturnGainL = gSwReturnGainR = 1.0f;
+    /* After an unplug the old handle answers "no device" while the unit that
+       came back is published: that handle must be replaced, not the unit
+       declared wedged or off the bus (2026-11-17 23:44). */
+    CHECK(handle_is_from_before_replug(kIOReturnNoDevice, true),
+          "a no-device answer with the unit published is a leftover handle");
+    CHECK(!handle_is_from_before_replug(kIOReturnNoDevice, false),
+          "a no-device answer with the unit gone is a unit off the bus");
+    CHECK(!handle_is_from_before_replug(kIOReturnNotResponding, true),
+          "a unit that does not answer on a live handle is still treated as wedged");
+    CHECK(!handle_is_from_before_replug(kIOReturnSuccess, true),
+          "a live handle is kept");
     printf("Proxy stereo render tests: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
     return failures != 0;
 }

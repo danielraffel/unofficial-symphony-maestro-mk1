@@ -1426,9 +1426,9 @@ static int gRecoveryDisarmed  = 0;   /* set after MAX_RECOVERY_FAILURES; stops t
    when healthy — 5 successful `getProperty cmd=0x26` reads in the reference log —
    while both wedges failed it. One probe read is strictly less EP0 traffic than
    the dozen blind writes it gates. */
-static int ep0_is_live(void)
+static IOReturn ep0_probe(void)
 {
-    if (!gUSBDev) return 0;
+    if (!gUSBDev) return kIOReturnNotOpen;
     uint8_t test = 0;
     IOUSBDevRequest req = {
         .bmRequestType = USBmakebmRequestType(kUSBIn, kUSBVendor, kUSBDevice),
@@ -1438,7 +1438,24 @@ static int ep0_is_live(void)
     IOReturn kr = (*gUSBDev)->DeviceRequest(gUSBDev, &req);
     if (kr != kIOReturnSuccess)
         LOG("EP0 liveness probe (0x%02X) failed: 0x%08X", VCMD_SPEAKER_VOL, kr);
-    return kr == kIOReturnSuccess;
+    return kr;
+}
+
+static int ep0_is_live(void) { return ep0_probe() == kIOReturnSuccess; }
+
+/* Whether the open handle is left over from before an unplug or power cycle.
+   open_usb_device() keeps an existing handle, so after a replug the handle can
+   still point at the device instance that was destroyed. Asking it anything
+   then answers "no device" (0xE00002C0) while the unit that came back is on
+   the bus and published. That is not a wedged unit and not a unit that is off
+   the bus: close the handle and open the device that is there.
+   Seen 2026-11-17 23:44 (diagnostics capture): the replugged unit was treated
+   as wedged, hardware init was skipped (no routing, XMOS left locked: meters
+   but no sound), and recovery then waited for an arrival that had already
+   happened. */
+static bool handle_is_from_before_replug(IOReturn kr, bool unitPublished)
+{
+    return kr == kIOReturnNoDevice && unitPublished;
 }
 
 /* Try to recover a stale USB handle by closing and reopening the device.
@@ -1542,8 +1559,23 @@ static int try_recover_usb(void)
         LOG("ResetDevice: 0x%08X (%s)", kr, kr == kIOReturnSuccess ? "OK" : "failed");
         /* CoreAudio can lag the bus by a moment; the port saying "no device" is
            the same fact from the other side. */
-        if (kr == kIOReturnNoDevice)
+        if (kr == kIOReturnNoDevice) {
+            /* Checked just above: Core Audio publishes the unit. Then the handle is
+               from before a replug and the listener will not fire again; one
+               reopen tells that apart from Core Audio lagging an unplug. */
+            if (handle_is_from_before_replug(kr, find_usb_device() != kAudioObjectUnknown)) {
+                close_usb_device();
+                if (open_usb_device() == 0 && ep0_is_live()) {
+                    LOG("USB recovery: the handle was from before a replug — reopened the unit that is here");
+                    configure_fpga_routing();
+                    restore_cached_volume();
+                    gRecoveryFailures  = 0;
+                    gRecoveryInProgress = 0;
+                    return 0;
+                }
+            }
             return defer_to_device_listener("the unit is off the bus");
+        }
         if (kr == kIOReturnSuccess) {
             usleep(500000);  /* 500ms for device to stabilize after reset */
             if (ep0_is_live()) {
@@ -2025,6 +2057,14 @@ static void init_usb_hardware(void)
 {
     if (open_usb_device() != 0) return;
 
+    IOReturn probe = ep0_probe();
+    if (handle_is_from_before_replug(probe, find_usb_device() != kAudioObjectUnknown)) {
+        LOG("EP0 probe went to the device from before the replug — reopening the one that appeared");
+        close_usb_device();
+        if (open_usb_device() != 0) return;
+        probe = ep0_probe();
+    }
+
     /* open_usb_device() SUCCEEDS against a wedged unit -- it only does
        IOServiceGetMatchingService on VID/PID plus USBDeviceOpen, and a
        device-side EP0 wedge leaves the IOService and the port perfectly alive.
@@ -2034,7 +2074,7 @@ static void init_usb_hardware(void)
        on open alone pinned gRecoveryFailures at 1/3 forever, because this
        function runs on every reconcile, so the disarm could never fire and the
        proxy retried a dead unit every ~15s indefinitely. */
-    if (!ep0_is_live()) {
+    if (probe != kIOReturnSuccess) {
         LOG_ERR("USB device opened but EP0 does not answer — skipping hardware init.");
         LOG_ERR("  Not re-arming recovery and not sending 30 doomed EP0 writes.");
         LOG_ERR("  The unit is wedged device-side. Unplug and replug its USB cable");

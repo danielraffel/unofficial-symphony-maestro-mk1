@@ -491,7 +491,7 @@ final class DiagnosticsRecorder {
     /// chatter), the driver's "SymphonyTB" lines, and what the kernel, system
     /// extension daemon and Core Audio say about our hardware. The helper's
     /// once-a-second meter dump is left out (its own log keeps the changes).
-    nonisolated static let logPredicate = #"(eventMessage CONTAINS "SymphonyTB" OR subsystem BEGINSWITH[c] "com.danielraffel." OR ((process == "kernel" OR process == "sysextd" OR process == "coreaudiod") AND (eventMessage CONTAINS[c] "symphony" OR eventMessage CONTAINS[c] "thunderbridge" OR eventMessage CONTAINS[c] "maestro" OR eventMessage CONTAINS[c] "apogee"))) AND NOT eventMessage BEGINSWITH "METERDUMP""#
+    nonisolated static let logPredicate = #"(eventMessage CONTAINS "SymphonyTB" OR subsystem BEGINSWITH[c] "com.danielraffel." OR ((process == "kernel" OR process == "sysextd" OR process == "coreaudiod") AND (eventMessage CONTAINS[c] "symphony" OR eventMessage CONTAINS[c] "thunderbridge" OR eventMessage CONTAINS[c] "maestro" OR eventMessage CONTAINS[c] "apogee"))) AND NOT eventMessage BEGINSWITH "METERDUMP" AND NOT eventMessage BEGINSWITH "Sandbox:""#
 
     private func startLogStream(since: Date) {
         // Through a small shell that ends `log stream` when Maestro goes away
