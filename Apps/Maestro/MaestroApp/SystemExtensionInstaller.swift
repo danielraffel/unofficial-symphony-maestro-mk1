@@ -35,6 +35,12 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     /// in flight and let its delegate callback drive the next state.
     private var activationRequestInFlight = false
 
+    /// The last registered-driver list written to the log. installedDexts() is
+    /// polled every couple of seconds; logging only changes keeps diagnostics
+    /// files readable (it was ~1,800 identical lines an hour).
+    private var lastLoggedDexts: String?
+    private let lastLoggedDextsLock = NSLock()
+
     /// Called when activation finishes, fails, or needs approval. Always on the main queue.
     public var onStatusChange: ((Status) -> Void)?
     /// Posted on the main queue when an activation request this process
@@ -375,7 +381,14 @@ extension SystemExtensionInstaller {
         let found = extensions
             .filter { $0["identifier"] as? String == dextBundleID }
             .map { Self.parseEntry($0) }
-        log.notice("Registered driver extensions: \(found.map(\.displayVersion).joined(separator: ", "), privacy: .public)")
+        let summary = found.map(\.displayVersion).joined(separator: ", ")
+        let changed: Bool = lastLoggedDextsLock.withLock {
+            defer { lastLoggedDexts = summary }
+            return lastLoggedDexts != summary
+        }
+        if changed {
+            log.notice("Registered driver extensions: \(summary, privacy: .public)")
+        }
         return found
     }
 
