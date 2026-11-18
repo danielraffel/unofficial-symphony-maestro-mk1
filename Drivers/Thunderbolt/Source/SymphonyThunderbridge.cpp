@@ -335,6 +335,15 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  lastWatchGcsr;
     uint32_t  lastWatchXlinkStatus;
     uint32_t  cardReinitCount;
+    // dext 127: diagnostics only (logged, never acted on). What macOS reported
+    // for interrupt indexes 0-3 at Start() (kIOInterruptType*, ~0 = the call
+    // failed), and the counters at the moment IO started, so the link watch can
+    // say once per start whether audio wraps arrived. No register access.
+    uint64_t  irqTypeAtStart[4];
+    uint64_t  ioStartIrq;              // set in StartDevice before ioRunning=true
+    uint64_t  ioStartWraps;
+    uint64_t  ioStartWatchTick;
+    uint32_t  ioStartReported;         // atomic; 0 = the watch has not reported this start yet
     // Per-channel Core Audio names (SymphonyChannelNames.h). inputRouteSource[n]
     // is the Symphony routing source feeding host input n (P2P n), tracked from
     // the AudioRouting (0x31) writes this driver sends; coaxReplace from the
@@ -3540,8 +3549,14 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     ivars->cardReinitCount++;
-    STLOG("Card re-init #%u: GCSR=0x%08x lost its programmed state — re-programming IRQ, DMA, "
-          "routing, mixer", ivars->cardReinitCount, gcsrSeen);
+    // dext 127, diagnostics: which of CardLostConfiguration's checks failed.
+    const bool swapLost = (gcsrSeen & kGCSR_SwapToLE) != kGCSR_SwapToLE;
+    const bool chLost   = (gcsrSeen & kGCSR_DMAMask) != (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
+    const uint32_t dmaBits = kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
+    const bool dmaLost  = ivars->dmaRunning && (gcsrSeen & dmaBits) != dmaBits;
+    STLOG("Card re-init #%u: GCSR=0x%08x lost its programmed state (%s%s%s) — re-programming IRQ, DMA, "
+          "routing, mixer", ivars->cardReinitCount, gcsrSeen,
+          swapLost ? "byte order " : "", chLost ? "channel count " : "", dmaLost ? "DMA enables" : "");
     // Quiet first: no interrupts, no DMA, clear latched status.
     WriteRegister(dev, mi, kRegIntMask, 0);
     WriteRegister(dev, mi, kRegIntStatus, 0xFFFFFFFF);
@@ -3863,6 +3878,23 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
         const uint64_t wraps  = __atomic_load_n(&ivars->audioWrapCount, __ATOMIC_ACQUIRE);
         const bool wrapsFlowing = ioRunning && wraps != ivars->lastWrapCountSeen;
         ivars->lastWrapCountSeen = wraps;
+        // dext 127, diagnostics: once per IO start, say whether audio wraps
+        // arrived. Logging only; the decisions below are unchanged.
+        if (ioRunning && __atomic_load_n(&ivars->ioStartReported, __ATOMIC_ACQUIRE) == 0) {
+            const uint64_t irqNow = __atomic_load_n(&ivars->interruptCount, __ATOMIC_RELAXED);
+            const uint64_t dWraps = wraps - ivars->ioStartWraps;
+            const uint64_t dIrq   = irqNow - ivars->ioStartIrq;
+            const uint64_t ticks  = ivars->linkWatchTicks - ivars->ioStartWatchTick;
+            if (dWraps > 0) {
+                STLOG("Audio start: wraps arriving (irq +%llu, wraps +%llu, %llu watch ticks after StartDevice)",
+                      dIrq, dWraps, ticks);
+                __atomic_store_n(&ivars->ioStartReported, 1u, __ATOMIC_RELEASE);
+            } else if (ticks >= 3) {
+                STLOG("Audio start: IO running but NO audio wraps — irq +%llu wraps +0 over %llu watch ticks "
+                      "(GCSR=0x%08x, cardReinits=%u)", dIrq, ticks, ivars->lastWatchGcsr, ivars->cardReinitCount);
+                __atomic_store_n(&ivars->ioStartReported, 1u, __ATOMIC_RELEASE);
+            }
+        }
         // dext 114: audio wraps prove the IRQ/DMA path, NOT the Symphony. Bench
         // 2026-10-27: with the Symphony switched off the card kept delivering A2H
         // wraps (it free-runs on its DDS) and the UI stayed Connected. Wraps only
@@ -5194,6 +5226,20 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         }
 
         STLOG("DMA: Interrupt handler installed (MSI index 0)");
+
+        // dext 127, diagnostics: what macOS set up for each interrupt index.
+        // The original driver picked the PCI-messaged index; this one uses 0.
+        // Logged only, to tell the PCIe card and the ThunderBridge apart.
+        for (uint32_t i = 0; i < 4; i++) {
+            uint64_t type = 0;
+            ivars->irqTypeAtStart[i] =
+                (IOInterruptDispatchSource::GetInterruptType(ivars->pciDevice, i, &type) == kIOReturnSuccess)
+                    ? type : ~0ull;
+        }
+        STLOG("DMA: interrupt types idx0=0x%llx idx1=0x%llx idx2=0x%llx idx3=0x%llx "
+              "(0x10000 = PCI messaged, 0xffffffffffffffff = none)",
+              ivars->irqTypeAtStart[0], ivars->irqTypeAtStart[1],
+              ivars->irqTypeAtStart[2], ivars->irqTypeAtStart[3]);
     }
 
     // ── 28. Enable FPGA interrupt mask ──────────────────────────────────
@@ -6754,6 +6800,17 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     // written just above (zeroTimestampSampleTime, firstTimestampAfterStart) is
     // guaranteed visible to any IRQ callback that observes ioRunning==true via its
     // ACQUIRE load — the handler can never pair "running" with a stale anchor.
+    // dext 127, diagnostics: counters at IO start, for the link watch's one
+    // report on whether audio wraps follow (LinkWatchTimerOccurred).
+    ivars->ioStartIrq       = __atomic_load_n(&ivars->interruptCount, __ATOMIC_RELAXED);
+    ivars->ioStartWraps     = __atomic_load_n(&ivars->audioWrapCount, __ATOMIC_RELAXED);
+    ivars->ioStartWatchTick = __atomic_load_n(&ivars->linkWatchTicks, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->ioStartReported, 0u, __ATOMIC_RELEASE);
+    STLOG("StartDevice: IO starting — irq=%llu wraps=%llu cardReinits=%u GCSR(last watch)=0x%08x "
+          "irqTypes=0x%llx/0x%llx/0x%llx/0x%llx",
+          ivars->ioStartIrq, ivars->ioStartWraps, ivars->cardReinitCount, ivars->lastWatchGcsr,
+          ivars->irqTypeAtStart[0], ivars->irqTypeAtStart[1],
+          ivars->irqTypeAtStart[2], ivars->irqTypeAtStart[3]);
     __atomic_store_n(&ivars->ioRunning, true, __ATOMIC_RELEASE);
 
     // Call super to update IO state — enables IOOperationHandler dispatch pipeline.

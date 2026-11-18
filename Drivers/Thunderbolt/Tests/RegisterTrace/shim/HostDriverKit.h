@@ -329,6 +329,14 @@ public:
         *out = new IOInterruptDispatchSource;
         return kIOReturnSuccess;
     }
+    // A query of the provider's interrupt description (dext 127 logs it). It
+    // touches no card register and records no event, so traces are unchanged.
+    // Index 0 answers PCI messaged, as on the hardware; others are absent.
+    static kern_return_t GetInterruptType(IOService *, uint32_t index, uint64_t *type) {
+        if (index != 0) return kIOReturnNoInterrupt;
+        *type = 0x00010000;  // kIOInterruptTypePCIMessaged
+        return kIOReturnSuccess;
+    }
     kern_return_t SetHandler(OSAction *) { return kIOReturnSuccess; }
     kern_return_t SetEnableWithCompletion(bool on, HostBlock) {
         gHostBackend->HostEvent(on ? "interrupt-enable" : "interrupt-disable");
