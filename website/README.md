@@ -1,7 +1,7 @@
 # Landing page
 
 This preserves the supplied landing-page design and uses an explicit gallery of
-all fourteen repository screenshots. The 8MicPre image is explicitly labeled
+all nineteen repository screenshots. The 8MicPre image is explicitly labeled
 as a simulated card; the other captures are presented without simulator labels.
 Update dialogs document Sparkle. Screenshot approval is separate from gallery
 implementation.
