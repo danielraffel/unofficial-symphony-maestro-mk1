@@ -298,8 +298,9 @@ struct DeviceSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                // Testers only: hidden on Stable unless a recording is running.
-                if updates.effectiveChannel == .beta || diagnostics.isRecording {
+                // Beta only for now (DiagnosticsAvailability.showOnStable).
+                if DiagnosticsAvailability.showsSwitch(betaChannel: updates.effectiveChannel == .beta,
+                                                       recording: diagnostics.isRecording) {
                     DiagnosticsSettingsRow()
                         .unredacted()
                 }

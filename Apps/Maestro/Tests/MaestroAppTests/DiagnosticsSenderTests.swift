@@ -128,3 +128,14 @@ struct DiagnosticsSenderTests {
         #expect(DiagnosticsSender.userMessage(for: DiagnosticsSender.Failure.rejected(401, "")).contains("update Maestro"))
     }
 }
+
+@Suite("Diagnostics availability")
+struct DiagnosticsAvailabilityTests {
+    @Test("Beta only for now; always shown while recording")
+    func betaOnly() {
+        #expect(DiagnosticsAvailability.showOnStable == false)
+        #expect(DiagnosticsAvailability.showsSwitch(betaChannel: true, recording: false))
+        #expect(!DiagnosticsAvailability.showsSwitch(betaChannel: false, recording: false))
+        #expect(DiagnosticsAvailability.showsSwitch(betaChannel: false, recording: true))
+    }
+}
