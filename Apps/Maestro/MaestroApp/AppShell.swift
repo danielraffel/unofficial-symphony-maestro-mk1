@@ -69,6 +69,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme  // P3F-44
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .auto
     @AppStorage("maestro.thunderbridge.bannerDismissedToken") private var dismissedThunderBridgeBanner = ""
+    @Environment(DiagnosticsRecorder.self) private var diagnostics
 
     private var thunderBridgeReport: SoftwareInfoReport { appState.softwareInfoReport }
 
@@ -90,6 +91,9 @@ struct ContentView: View {
             SidebarView()
         } detail: {
             VStack(spacing: 0) {
+                if diagnostics.isRecording || diagnostics.isSaving {
+                    DiagnosticsBar()
+                }
                 if let (banner, bannerToken) = visibleThunderBridgeBanner {
                     ThunderBridgeActionBanner(
                         banner: banner,
@@ -118,6 +122,7 @@ struct ContentView: View {
                     ? Color(red: 1.0, green: 0.97, blue: 0.94).opacity(0.05)
                     : Color.black.opacity(0.02)
             ))
+            .modifier(DiagnosticsAlerts())
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     MonitorToolbarView()

@@ -21,6 +21,7 @@ import MaestroDevice
 struct MaestroApp: App {
     @StateObject private var updates = UpdateController()
     @State private var appState = AppState()
+    @State private var diagnostics = DiagnosticsRecorder()
     @State private var presetLibrary = PresetLibrary.shared
 
     init() {
@@ -64,6 +65,38 @@ struct MaestroApp: App {
                 .environment(appState)
                 .environmentObject(updates)
                 .onReceive(updates.$effectiveChannel) { appState.updateChannel = $0 }
+                .environment(diagnostics)
+                .onAppear {
+                    diagnostics.appState = appState
+                    // Testing only: `-MaestroDiagnosticsSelfTest 20` turns
+                    // diagnostics on, adds a note, runs the checks again and
+                    // saves after that many seconds. It never sends unless
+                    // `-MaestroDiagnosticsSelfTestSend "<note>"` is also given,
+                    // which sends one report (an email to the developer).
+                    let seconds = UserDefaults.standard.integer(forKey: "MaestroDiagnosticsSelfTest")
+                    guard seconds > 0, !diagnostics.isRecording else { return }
+                    diagnostics.start()
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(min(5, seconds / 2)))
+                        diagnostics.addNote("self-test note")
+                        diagnostics.runChecksNow()
+                        try? await Task.sleep(for: .seconds(max(1, seconds - min(5, seconds / 2))))
+                        await diagnostics.stopAndSave()
+                        guard let note = UserDefaults.standard.string(forKey: "MaestroDiagnosticsSelfTestSend"),
+                              let file = diagnostics.lastSaved else { return }
+                        guard let sender = DiagnosticsSender.configured else {
+                            print("[Maestro] Diagnostics self-test send: not configured"); return
+                        }
+                        do {
+                            let ref = try await sender.send(report: file, message: .init(
+                                note: note, issue: "", contact: "",
+                                version: MaestroCore.version, channel: appState.updateChannel?.rawValue.capitalized ?? ""))
+                            print("[Maestro] Diagnostics self-test send: ok reference=\(ref)")
+                        } catch {
+                            print("[Maestro] Diagnostics self-test send: failed \(DiagnosticsSender.userMessage(for: error)) (\(error))")
+                        }
+                    }
+                }
                 .frame(minWidth: 800, minHeight: 500)
         }
         .defaultSize(width: 1440, height: 700)

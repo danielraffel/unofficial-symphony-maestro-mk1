@@ -11,6 +11,7 @@ import MaestroDevice
 /// Evidence: `og_source/maestro2/App/Controllers/APDeviceSettingsTabRowViewController.m`
 struct DeviceSettingsView: View {
     @Environment(AppState.self) private var appState
+    @Environment(DiagnosticsRecorder.self) private var diagnostics
     @State private var opticalFormatCard1: UInt32? // 0=ADAT/SMUX, 1=S/PDIF; nil=unavailable
     @State private var opticalFormatCard2: UInt32?
     @State private var isWritingOpticalFormat = false
@@ -296,6 +297,12 @@ struct DeviceSettingsView: View {
                 Text("Updates download from the [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1). Installing an update may briefly interrupt audio and require an administrator password. Updates are never installed automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                // Testers only: hidden on Stable unless a recording is running.
+                if updates.effectiveChannel == .beta || diagnostics.isRecording {
+                    DiagnosticsSettingsRow()
+                        .unredacted()
+                }
 
                 Toggle("Remember Input, Output, and Mixer scroll positions", isOn: $rememberControlTabScrollPositions)
                     .help("Keep each wide control tab at its current horizontal position until Maestro quits")
