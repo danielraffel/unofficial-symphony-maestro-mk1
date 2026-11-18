@@ -343,6 +343,7 @@ struct SymphonyThunderbridge_IVars {
     // failed), and the counters at the moment IO started, so the link watch can
     // say once per start whether audio wraps arrived. No register access.
     uint64_t  irqTypeAtStart[4];
+    uint32_t  irqIndexUsed;            // dext 128: the interrupt index the source was created on
     uint64_t  ioStartIrq;              // set in StartDevice before ioRunning=true
     uint64_t  ioStartWraps;
     uint64_t  ioStartWatchTick;
@@ -5197,9 +5198,41 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             goto start_failure;
         }
 
-        // Create interrupt dispatch source on MSI index 0
+        // dext 128: use the first PCI-messaged (MSI) interrupt index, as
+        // Apogee's driver does: findMSIInterruptTypeIndex
+        // (SymphonyAPI/SymphonyBaseAudioEngine.cpp:645-680), shared by its
+        // PCIe and ThunderBridge drivers and present in the arm64e build of
+        // its PCIe driver in Symphony 5.5. Query up to 10 indexes, stop at the
+        // first the provider does not have, fall back to 0. Apple Silicon
+        // delivers only messaged interrupts; on the ThunderBridge index 0 is
+        // messaged (measured 2026-11-17), so it gets the same index as before.
+        // Assumed, until a PCIe report says otherwise: the Symphony 64 PCIe
+        // card's messaged interrupt is not at index 0, so a source on 0 never
+        // fires there (detected, rate changes work, no audio).
+        static constexpr uint64_t kTypePCIMessaged = 0x00010000;  // kIOInterruptTypePCIMessaged
+        for (uint32_t i = 0; i < 4; i++) {
+            uint64_t type = 0;
+            ivars->irqTypeAtStart[i] =
+                (IOInterruptDispatchSource::GetInterruptType(ivars->pciDevice, i, &type) == kIOReturnSuccess)
+                    ? type : ~0ull;
+        }
+        uint32_t irqIndex = 0;
+        bool irqIndexIsMSI = false;
+        for (uint32_t i = 0; i < 10; i++) {
+            uint64_t type = 0;
+            if (IOInterruptDispatchSource::GetInterruptType(ivars->pciDevice, i, &type) != kIOReturnSuccess)
+                break;
+            if (type & kTypePCIMessaged) { irqIndex = i; irqIndexIsMSI = true; break; }
+        }
+        ivars->irqIndexUsed = irqIndex;
+        STLOG("DMA: interrupt types idx0=0x%llx idx1=0x%llx idx2=0x%llx idx3=0x%llx "
+              "(0x10000 = PCI messaged, 0xffffffffffffffff = none) — using index %u (%{public}s)",
+              ivars->irqTypeAtStart[0], ivars->irqTypeAtStart[1],
+              ivars->irqTypeAtStart[2], ivars->irqTypeAtStart[3], irqIndex,
+              irqIndexIsMSI ? "first PCI-messaged" : "no PCI-messaged index found, falling back to 0");
+
         ret = IOInterruptDispatchSource::Create(
-            ivars->pciDevice, 0, ivars->interruptQueue,
+            ivars->pciDevice, irqIndex, ivars->interruptQueue,
             &ivars->interruptSource);
         if (ret != kIOReturnSuccess) {
             STERR("DMA: IOInterruptDispatchSource::Create failed: 0x%x (MSI not available?)", ret);
@@ -5228,21 +5261,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             goto start_failure;
         }
 
-        STLOG("DMA: Interrupt handler installed (MSI index 0)");
-
-        // dext 127, diagnostics: what macOS set up for each interrupt index.
-        // The original driver picked the PCI-messaged index; this one uses 0.
-        // Logged only, to tell the PCIe card and the ThunderBridge apart.
-        for (uint32_t i = 0; i < 4; i++) {
-            uint64_t type = 0;
-            ivars->irqTypeAtStart[i] =
-                (IOInterruptDispatchSource::GetInterruptType(ivars->pciDevice, i, &type) == kIOReturnSuccess)
-                    ? type : ~0ull;
-        }
-        STLOG("DMA: interrupt types idx0=0x%llx idx1=0x%llx idx2=0x%llx idx3=0x%llx "
-              "(0x10000 = PCI messaged, 0xffffffffffffffff = none)",
-              ivars->irqTypeAtStart[0], ivars->irqTypeAtStart[1],
-              ivars->irqTypeAtStart[2], ivars->irqTypeAtStart[3]);
+        STLOG("DMA: Interrupt handler installed (index %u)", ivars->irqIndexUsed);
     }
 
     // ── 28. Enable FPGA interrupt mask ──────────────────────────────────
@@ -6810,8 +6829,9 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     ivars->ioStartWatchTick = __atomic_load_n(&ivars->linkWatchTicks, __ATOMIC_RELAXED);
     __atomic_store_n(&ivars->ioStartReported, 0u, __ATOMIC_RELEASE);
     STLOG("StartDevice: IO starting — irq=%llu wraps=%llu cardReinits=%u GCSR(last watch)=0x%08x "
-          "irqTypes=0x%llx/0x%llx/0x%llx/0x%llx",
+          "irqIndex=%u irqTypes=0x%llx/0x%llx/0x%llx/0x%llx",
           ivars->ioStartIrq, ivars->ioStartWraps, ivars->cardReinitCount, ivars->lastWatchGcsr,
+          ivars->irqIndexUsed,
           ivars->irqTypeAtStart[0], ivars->irqTypeAtStart[1],
           ivars->irqTypeAtStart[2], ivars->irqTypeAtStart[3]);
     __atomic_store_n(&ivars->ioRunning, true, __ATOMIC_RELEASE);

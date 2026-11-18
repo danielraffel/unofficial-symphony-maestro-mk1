@@ -23,7 +23,7 @@
 		<string>DriverKit</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>128</string>
+	<string>129</string>
 	<key>DTPlatformName</key>
 	<string>driverkit</string>
 	<key>DTPlatformVersion</key>
