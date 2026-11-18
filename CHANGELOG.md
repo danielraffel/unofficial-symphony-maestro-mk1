@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.8 (beta)
+
+Maestro opens straight away, even when macOS audio is slow. It contains everything in 0.9.7.
+
+### Changes that may affect your setup
+
+- **Maestro's window opens immediately at launch and then connects to your Symphony.** Before, Maestro asked macOS for its audio devices before showing anything, so when macOS audio was slow, as it is for a minute or two after installing any update, Maestro bounced in the Dock and looked stuck. Now the window appears at once, the status reads "Looking for your Symphony…" for a moment, and if macOS audio takes longer than a few seconds it reads "Waiting for macOS audio to respond…" until it connects. Your settings, routing and presets are restored as before.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.6 (0.11.4, build 130), so there is no need to reconnect anything after updating.
+
 ## 0.9.7 (beta)
 
 Reset Routing now matches Apogee's software over ThunderBridge and PCIe. It contains everything in 0.9.6. Over USB nothing changes.
@@ -13,6 +25,10 @@ Thanks to the PCIe tester who confirmed audio now works on the Symphony 64 PCIe 
 ### Release notes
 
 - The ThunderBridge and PCIe driver is unchanged from 0.9.6 (0.11.4, build 130), so there is no need to reconnect anything after updating.
+
+### Known issue
+
+- **Right after installing an update, Maestro can bounce in the Dock for a minute or two before its window opens.** The installer restarts macOS's audio system, and Maestro waits for it at launch. Give it a moment; if it is still bouncing after about five minutes, restart the Mac. A coming beta opens the window straight away and connects once macOS audio is ready.
 
 ## 0.9.6 (beta)
 

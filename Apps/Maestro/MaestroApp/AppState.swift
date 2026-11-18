@@ -979,7 +979,8 @@ final class AppState {
         deviceListenerInstalled = true
         // Seed the known set so the currently-present device isn't treated as "newly appeared"
         // at launch — we only hijack the default output on an actual plug-in event.
-        knownSymphonyDeviceIDs = Set(CoreAudioDeviceConnection.discoverAllSymphonyIO().map { $0.audioDeviceID })
+        knownSymphonyDeviceIDs = Set((lastLaunchDiscovered ?? CoreAudioDeviceConnection.discoverAllSymphonyIO())
+                                         .map { $0.audioDeviceID })
         knownDefaultOutputDeviceID = CoreAudioDeviceConnection.currentDefaultOutputDevice()
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -1343,14 +1344,80 @@ final class AppState {
         // win, `readCardTypes()` would overwrite the forced board types with the
         // detected ones (and cache them), and the harness would push mixer and
         // routing writes at hardware it was never meant to touch.
-        let discovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]
+        // 0.9.8: Core Audio is not asked for its devices here. Asking it on the
+        // main thread before the window exists made Maestro bounce in the Dock
+        // whenever Core Audio was slow, as it is for a minute or two after every
+        // install (the installer restarts it). The window opens now, in the "no
+        // device" state below, and completeLaunchDiscovery() asks from a
+        // background thread and connects exactly as this did.
         if simulationRequest == nil {
-            print("[Maestro] AppState.init: Discovering Symphony IO via CoreAudio...")
-            discovered = CoreAudioDeviceConnection.discoverAllSymphonyIO()
+            launchDiscoveryPending = true
+            print("[Maestro] AppState.init: Symphony discovery deferred until the window is up")
         } else {
             print("[Maestro] CARD SIMULATION: hardware discovery skipped — session pinned to the simulated unit")
-            discovered = []
         }
+
+
+        // Fall back to simulated device. Under card simulation this must be the
+        // device that PRESENTS those cards -- its identifier.mode channel count
+        // and per-channel property scoping follow the simulated modules -- or the
+        // pages render a 16ch unit's counts over a simulated 32ch card pair and
+        // the screenshots prove nothing.
+        let simDevice = AppState.makeSimulatedDevice(configuration: simulationRequest)
+        self.device = simDevice
+        self.connectionMode = cardSimulation != nil ? .simulated : .disconnected
+        self.statusMessage = launchDiscoveryPending
+            ? "Looking for your Symphony…"
+            : AppState.simulatedStatusMessage(configuration: simulationRequest)
+        self.isHardwareInitialized = true
+    }
+
+    /// Set by init when Core Audio still has to be asked for the Symphony.
+    private var launchDiscoveryPending = false
+    /// What the launch discovery found, reused by the device-list listener and the
+    /// ThunderBridge watch so they do not ask Core Audio again straight away.
+    private(set) var lastLaunchDiscovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]?
+
+    /// Testing only: `-MaestroDebugDiscoveryDelay 20` makes the launch discovery
+    /// wait that many seconds first, as a slow Core Audio would.
+    private static var launchDiscoveryTestDelay: Double {
+        UserDefaults.standard.double(forKey: "MaestroDebugDiscoveryDelay")
+    }
+
+    /// Ask Core Audio for the Symphony from a background thread and connect to it,
+    /// as init used to. Called first by the main window's launch task.
+    @MainActor
+    func completeLaunchDiscovery() async {
+        guard launchDiscoveryPending else { return }
+        launchDiscoveryPending = false
+        print("[Maestro] Launch: discovering Symphony IO via CoreAudio (background)...")
+        let slowNotice = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, !Task.isCancelled, self.connectionMode != .hardware else { return }
+            self.statusMessage = "Waiting for macOS audio to respond…"
+            print("[Maestro] Launch: Core Audio slow to answer — still waiting")
+        }
+        let delay = Self.launchDiscoveryTestDelay
+        let started = Date()
+        let discovered = await Task.detached(priority: .userInitiated) { () -> [CoreAudioDeviceConnection.DiscoveredSymphonyIO] in
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            return CoreAudioDeviceConnection.discoverAllSymphonyIO()
+        }.value
+        slowNotice.cancel()
+        lastLaunchDiscovered = discovered
+        print(String(format: "[Maestro] Launch: discovery took %.2f s", Date().timeIntervalSince(started)))
+        if connectAtLaunch(discovered) {
+            viewReloadToken = UUID()
+        } else {
+            print("[Maestro] AppState.init: No Symphony IO device found via CoreAudio")
+            statusMessage = AppState.simulatedStatusMessage(configuration: nil)
+        }
+    }
+
+    /// Connect to the preferred device the launch discovery found: the code that
+    /// was the second half of init, unchanged. Returns whether a Symphony was found.
+    @MainActor
+    private func connectAtLaunch(_ discovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]) -> Bool {
         if let pref = Self.preferredDevice(in: discovered) {
         let best = pref.device
             let audioDeviceID = best.audioDeviceID
@@ -1387,7 +1454,7 @@ final class AppState {
                     self.isHardwareInitialized = false
                     self.thunderboltHardwareResponsive = false
                     self.viewReloadToken = UUID()
-                    return
+                    return true
                 }
             } else {
                 // ── USB path: XPC proxy → USB vendor EP0 commands
@@ -1437,24 +1504,9 @@ final class AppState {
 
             // Sync volume/mute UI with the ASP device (media keys → app knob).
             startASPVolumeSync()
-
-            return
+            return true
         }
-
-        if simulationRequest == nil {
-            print("[Maestro] AppState.init: No Symphony IO device found via CoreAudio")
-        }
-
-        // Fall back to simulated device. Under card simulation this must be the
-        // device that PRESENTS those cards -- its identifier.mode channel count
-        // and per-channel property scoping follow the simulated modules -- or the
-        // pages render a 16ch unit's counts over a simulated 32ch card pair and
-        // the screenshots prove nothing.
-        let simDevice = AppState.makeSimulatedDevice(configuration: simulationRequest)
-        self.device = simDevice
-        self.connectionMode = cardSimulation != nil ? .simulated : .disconnected
-        self.statusMessage = AppState.simulatedStatusMessage(configuration: simulationRequest)
-        self.isHardwareInitialized = true
+        return false
     }
 
     /// Status-bar text for a session on the in-memory device. Under card
@@ -1886,7 +1938,10 @@ final class AppState {
 
         // Retry discovery with delays — XMOS firmware needs time to re-enumerate
         for attempt in 1...5 {
-            let discovered = CoreAudioDeviceConnection.discoverAllSymphonyIO()
+            // Off the main thread (0.9.8): a slow Core Audio must not freeze the window.
+            let discovered = await Task.detached(priority: .userInitiated) {
+                CoreAudioDeviceConnection.discoverAllSymphonyIO()
+            }.value
             if let pref = Self.preferredDevice(in: discovered) {
         let best = pref.device
                 let audioDeviceID = best.audioDeviceID

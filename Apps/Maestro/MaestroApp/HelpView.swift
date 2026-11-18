@@ -81,6 +81,9 @@ struct HelpView: View {
                 Text("Use **Rescan** (in the View menu, or ⌘R). It re-establishes the link between Maestro and the hardware, re-resolves which audio device the unit is, and rebuilds the audio path — which is what actually matters after the unit has been unplugged and replugged, or has re-enumerated on a different port. It does not change any of your settings.")
                 Text("If Rescan does not find it, check the front panel for an exclamation mark (!) — that means the unit is not talking to the Mac at all, and the cable is the place to start rather than Maestro.")
             }
+            HelpQuestion("Maestro says \"Waiting for macOS audio to respond\" after an update.") {
+                Text("Installing an update restarts macOS's audio system, which can be busy for a minute or two. Maestro opens straight away and connects to your Symphony as soon as macOS audio answers; you don't need to do anything. If it is still waiting after about five minutes, restart the Mac.")
+            }
             HelpQuestion("Can I choose a light or dark appearance?") {
                 Text("In **Device Settings › Preferences**, set **Appearance** to **Auto**, **Light**, or **Dark**. Auto is the default and follows your Mac’s appearance. Light and Dark apply only to Maestro. Your choice is saved and takes effect immediately.")
             }
