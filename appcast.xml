@@ -7,6 +7,32 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.6</title>
+      <pubDate>Wed, 18 Nov 2026 18:40:40 GMT</pubDate>
+      <sparkle:version>0.9.6</sparkle:version>
+      <sparkle:shortVersionString>0.9.6</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.6</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+The next step for the Symphony 64 PCIe card, and a clearer diagnostics report. It contains everything in 0.9.5. If you use USB or a ThunderBridge, nothing changes for you.
+
+Thanks to the PCIe tester whose diagnostics report showed exactly where audio stopped: 0.9.5 picked the right interrupt on the card, but the card's audio engine never started.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.4, build 130).** After installing, restart the Mac (or reconnect the ThunderBridge or PCIe chassis) so the new driver takes over.
+- **On the Symphony 64 PCIe card, the driver now starts the card the way Apogee's driver did.** It tells the card it is the only card in the system, turns off the card's internal clock while the Symphony I/O provides the clock, aligns the card with the Symphony after each sample rate change, and starts the card's audio engine again when an app starts playing if it is not already running. Each of these is a step Apogee's driver takes that this driver skipped. On a ThunderBridge nothing changes.
+- **On the PCIe card, the Speaker knob should follow the front panel again once audio runs.** The Mac's speaker volume reaches the Symphony with the audio, so it could not while the card's audio engine was stopped. Headphones were not affected.
+
+### What's better
+
+- **Diagnostics reports say more about the PCIe card and the volume controls.** The driver now records whether the card's audio engine started, whether the card reaches the Mac's memory, and the card's error state, and repeats this summary in every report even when the driver started long before. Each snapshot also shows the speaker and headphone levels in Maestro and in macOS, so a volume problem can be checked against both.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.6/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="uldHdMI3BLJNas77I5ir59l85a+ilPPxGcC8NWvMLwLrD8ARB5BHpmlO4+gp7WLzYtpzrZe+fLDY1JaPmhvhDQ==" length="4442480" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.5</title>
       <pubDate>Wed, 18 Nov 2026 09:19:52 GMT</pubDate>
       <sparkle:version>0.9.5</sparkle:version>
@@ -772,6 +798,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: /TjtQN7rZMo63GyTAXXdnKsN/AvYjCHcomgnKNqIzUoQfAwSdiNe04d8SEDJ21VWEXzx88XfNS23lS+ug3byAg==
-length: 72062
+edSignature: FXMfAPu4hAx4HAae4ooNYWYHXgcLEH0bbvZ+SI8cWtZZfk9cmKC4rmBeXxuzl9YmSWmebZv/no1AM5C/WN1WCQ==
+length: 74838
 -->
