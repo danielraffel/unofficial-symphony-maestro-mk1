@@ -1282,6 +1282,11 @@ struct MixerChannelStripView: View {
     private let faderHeight: CGFloat = 200
 
     private var resolvedMeterLevels: (left: Double, right: Double?) {
+        // An "N.A." channel carries no audio at this rate or format, only
+        // leftover data that reads as full scale (see ADATStereoPairView.silent).
+        if CardLayout.isNotApplicable(label) {
+            return (ADATStereoPairView.silent, meterLevelR == nil ? nil : ADATStereoPairView.silent)
+        }
         if let appState, let index = inputMeterIndex {
             let rawInput = index < appState.inputMeterLevels.count
                 ? appState.inputMeterLevels[index] : -60.0

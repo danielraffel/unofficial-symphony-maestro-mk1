@@ -978,8 +978,8 @@ struct ADATStereoPairView: View {
             HStack(alignment: .top, spacing: 1) {
                 // Left LED meter (no scale)
                 LEDMeterView(
-                    level: leftLevel,
-                    peak: leftPeak,
+                    level: isNotApplicable ? Self.silent : leftLevel,
+                    peak: isNotApplicable ? Self.silent : leftPeak,
                     label: "",
                     height: 200,
                     width: 10,
@@ -990,8 +990,8 @@ struct ADATStereoPairView: View {
                 adatCenterScale
                 // Right LED meter (no scale)
                 LEDMeterView(
-                    level: rightLevel,
-                    peak: rightPeak,
+                    level: isNotApplicable ? Self.silent : rightLevel,
+                    peak: isNotApplicable ? Self.silent : rightPeak,
                     label: "",
                     height: 200,
                     width: 10,
@@ -1018,6 +1018,11 @@ struct ADATStereoPairView: View {
     /// 0.7 of the 60 pt the strip leaves it.
     static let labelMinimumScale: CGFloat = 0.6
     static let notApplicableOpacity: Double = 0.45
+    /// What an "N.A." pair's meters show: nothing. At this rate or format the
+    /// slot carries no audio (optical at 176.4/192 kHz, the original's
+    /// OpticalIn_SymphonyIO_Stream.cpp:202-226), only leftover data that read as
+    /// full scale on every meter (2026-11-18, ThunderBridge at 192 kHz, inputs 9-24).
+    static let silent: Double = -60
 
     var isNotApplicable: Bool { CardLayout.isNotApplicable(label) }
 

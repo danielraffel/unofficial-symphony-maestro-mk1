@@ -128,3 +128,15 @@ struct DiagnosticsSenderTests {
         #expect(DiagnosticsSender.userMessage(for: DiagnosticsSender.Failure.rejected(401, "")).contains("update Maestro"))
     }
 }
+
+/// At 176.4/192 kHz optical slots carry no audio, only data that read as full
+/// scale on every meter (2026-11-18). An "N.A." pair shows silence.
+@Suite("Not-applicable meters")
+struct NotApplicableMeterTests {
+    @Test("an N.A. pair is silent; a named pair is not")
+    func naPairIsSilent() {
+        #expect(ADATStereoPairView(label: "N.A.", leftLevel: 0, rightLevel: 0).isNotApplicable)
+        #expect(!ADATStereoPairView(label: "ADAT 1/2", leftLevel: 0, rightLevel: 0).isNotApplicable)
+        #expect(ADATStereoPairView.silent == -60)
+    }
+}
