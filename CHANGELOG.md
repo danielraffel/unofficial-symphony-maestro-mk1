@@ -14,6 +14,10 @@ Thanks to the PCIe tester who confirmed audio now works on the Symphony 64 PCIe 
 
 - The ThunderBridge and PCIe driver is unchanged from 0.9.6 (0.11.4, build 130), so there is no need to reconnect anything after updating.
 
+### Known issue
+
+- **Right after installing an update, Maestro can bounce in the Dock for a minute or two before its window opens.** The installer restarts macOS's audio system, and Maestro waits for it at launch. Give it a moment; if it is still bouncing after about five minutes, restart the Mac. A coming beta opens the window straight away and connects once macOS audio is ready.
+
 ## 0.9.6 (beta)
 
 The next step for the Symphony 64 PCIe card, and a clearer diagnostics report. It contains everything in 0.9.5. If you use USB or a ThunderBridge, nothing changes for you.
