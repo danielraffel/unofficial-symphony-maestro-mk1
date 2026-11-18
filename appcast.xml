@@ -7,6 +7,40 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.5</title>
+      <pubDate>Wed, 18 Nov 2026 09:19:52 GMT</pubDate>
+      <sparkle:version>0.9.5</sparkle:version>
+      <sparkle:shortVersionString>0.9.5</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.5</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+A likely fix for the Symphony 64 PCIe card, a USB reconnect fix, and a new Diagnostics option for sending the developer a report. It contains everything in 0.9.4.
+
+Thanks to the testers with Symphony 64 PCIe cards whose careful reports, and whose check on an Intel Mac with Apogee's software, pointed to the cause.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.3, build 129).** After installing, unplug the ThunderBridge or PCIe chassis cable and plug it back in (or restart) so the new driver takes over.
+- **On the Symphony 64 PCIe card, the driver now picks the card's interrupt the way Apogee's driver did.** On Apple Silicon a card can only signal the Mac in one particular way, and Apogee's driver looked for it rather than assuming. This is the likely reason the PCIe card was detected and could change sample rate but gave no audio. On a ThunderBridge nothing changes: it picks the same one as before.
+- **Over USB, unplugging, replugging or power-cycling the Symphony no longer leaves it silent.** Maestro could reconnect to the old connection, show meters and play nothing until a second replug. It now sets the Symphony up again every time it comes back.
+
+### What's new
+
+- **Diagnostics, for testers on the Beta channel.** Turn it on in Device Settings › Preferences, do what causes the problem, then press Stop Diagnostics. Maestro saves a file to your Desktop and offers to email it privately to the developer, with optional details about your setup and the problem. Nothing is sent until you press Agree and Send, and it is never posted publicly. Help › "When and how should I use diagnostics?" explains when it is useful.
+
+### What's better
+
+- **The Privacy Policy and Terms describe what Maestro sends and when:** update checks, and diagnostics only if you choose to send them.
+
+### Release notes
+
+- The driver's own log is easier to read in a diagnostics report, and it records which interrupt the card uses and whether audio starts. This changes nothing you hear.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.5/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="fP9Deyyuu9cVbkAsXun9+KIgEJTqzgB/2JqxgGqtXectMRNyiGsL100Wq+6GsEEublAx9DAVPBDpZj1F36ufCQ==" length="4437817" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.4</title>
       <pubDate>Tue, 17 Nov 2026 03:10:56 GMT</pubDate>
       <sparkle:version>0.9.4</sparkle:version>
@@ -738,6 +772,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: ecBWsxvC5ZW6vQIV8kPr9j1oswolew5+h80SgTDwYRkOnh1WeLOvaJ9nOFl8ByTnxp+Rr9hCgRJFZc2DyohUBg==
-length: 69018
+edSignature: /TjtQN7rZMo63GyTAXXdnKsN/AvYjCHcomgnKNqIzUoQfAwSdiNe04d8SEDJ21VWEXzx88XfNS23lS+ug3byAg==
+length: 72062
 -->
