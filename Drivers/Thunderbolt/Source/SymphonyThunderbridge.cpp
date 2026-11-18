@@ -1216,6 +1216,8 @@ static void SetDDSSampleRate(IOPCIDevice *dev, uint8_t memIndex, double rate, bo
           legacyPCIe ? ", off on the PCIe card" : "", gcsr);
 }
 
+static void AlignXLinkPhase(SymphonyThunderbridge_IVars *ivars);  // below
+
 // dext 130: the frame-sync pulse the original sends every card after each rate
 // set (syncComponents -> CMD_SYNC -> SampleClock::Synchronise: set
 // SAMPLE_FRAME_USE_EXTERNAL in CLKCTRL, 2 ms, clear; SampleClock.cpp:46-55,
@@ -1544,7 +1546,6 @@ static bool ChangeSampleRate(IOPCIDevice *dev, uint8_t memIndex, double newRate,
     if (port2 && port2->clock) Port2RateAfter(dev, memIndex, newRate, rateCode, port2);
 
     STLOG("ChangeSampleRate: complete — %.0f Hz (locked + rate-verified + stable)", newRate);
-    if (legacyPCIe) PulseFrameSyncLegacyPCIe(dev, memIndex, "rate change");
     return true;
 }
 
@@ -1929,8 +1930,13 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         STLOG("XLink: WaitForLock pass %d (post-srate): data slip, retrying", pass);
     }
     STLOG("XLink: WaitForLock (post-srate): %{public}s", locked ? "LOCKED" : "TIMEOUT");
-    if (ivars->isLegacyPCIe2100 && locked)
+    if (ivars->isLegacyPCIe2100 && locked) {
+        // Original order after a rate set: phase jam, then frame sync. The jam is
+        // written only while DMA is stopped and the card muted (Start()), as
+        // AlignXLinkPhase requires; recovery with DMA running only pulses.
+        if (!ivars->dmaRunning) AlignXLinkPhase(ivars);
         PulseFrameSyncLegacyPCIe(ivars->pciDevice, ivars->barMemoryIndex, "link sample-rate set");
+    }
 
     // ── 19. Unmute ──────────────────────────────────────────────────
     // Legacy: SetDeviceMute(bus, addr, false) → UNMUTE, data=0x80
@@ -6890,6 +6896,21 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                     return;
                 }
 
+                // dext 130, Symphony 64 PCIe card: after a rate change the original
+                // jams the sample-count phase (XLink::SetSampleRate :1074-1150) and
+                // then pulses frame sync on every card (syncComponents), before the
+                // engine starts DMA. Card muted, DMA stopped here.
+                if (ivars->isLegacyPCIe2100) {
+                    AlignXLinkPhase(ivars);
+                    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) || !ivars->pciDevice) {
+                        aborted = true;
+                        STERR("StartDevice: stop began during the phase alignment — leaving DMA "
+                              "stopped + muted for teardown");
+                        return;
+                    }
+                    PulseFrameSyncLegacyPCIe(ivars->pciDevice, ivars->barMemoryIndex, "rate change");
+                }
+
                 // 6. Restart DMA (same sequence as Start() step 29)
                 {
                     uint32_t gcsr = 0;
@@ -6952,6 +6973,57 @@ kern_return_t SymphonyThunderbridge::StartDevice(
         const uint32_t hz = SymphonyNamingRateHz(ivars->audioDevice->GetSampleRate());
         if (__atomic_exchange_n(&ivars->namingSampleRate, hz, __ATOMIC_ACQ_REL) != hz)
             ScheduleChannelNames(ivars, this);
+    }
+
+    // dext 130, Symphony 64 PCIe card: the original starts audio DMA at every IO
+    // start, not once at load (performAudioEngineStart: INTMASK 0 then AHI, the
+    // StartDMA disable / trigger-select / enable edge, 10 ms, unmute;
+    // SymphonyBaseAudioEngine.cpp:798-844, Symphony64Card.cpp:1517-1580). This
+    // driver starts it in Start(). If the card's DMA is not moving now, run the
+    // original's start sequence once, on the serial XLink queue, and log the result.
+    if (ivars->isLegacyPCIe2100 && ivars->dmaRunning && ivars->xlinkQueue &&
+        !__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE)) {
+        ivars->xlinkQueue->DispatchSync(^{
+            IOPCIDevice *dev = ivars->pciDevice;
+            if (!dev || __atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE)) return;
+            const uint8_t mi = ivars->barMemoryIndex;
+            uint32_t cha1 = 0, cha2 = 0;
+            ReadRegister(dev, mi, kRegA2HCHA, &cha1);
+            IOSleep(20);
+            ReadRegister(dev, mi, kRegA2HCHA, &cha2);
+            if (cha1 != cha2) {
+                STLOG("StartDevice (PCIe card): DMA moving (A2H_CHA 0x%08x -> 0x%08x), no restart needed", cha1, cha2);
+                return;
+            }
+            STLOG("StartDevice (PCIe card): DMA not moving (A2H_CHA=0x%08x) — running the original's DMA start", cha1);
+            ModifyRegister(dev, mi, kRegClkCtrl, 0, kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute);
+            WriteRegister(dev, mi, kRegIntStatus, 0xFFFFFFFF);
+            WriteRegister(dev, mi, kRegIntMask, 0);
+            WriteRegister(dev, mi, kRegIntMask, kInt_A2HWrap);
+            uint32_t gcsr = 0;
+            ReadRegister(dev, mi, kRegGCSR, &gcsr);
+            gcsr = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
+            gcsr |= kGCSR_OnlyMasterDMA;
+            WriteRegister(dev, mi, kRegGCSR, gcsr);
+            gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
+                      kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
+                      kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
+            WriteRegister(dev, mi, kRegGCSR, gcsr);
+            gcsr |= kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect;
+            if (ivars->meterDMAActive) gcsr |= kGCSR_MeterTrigSelect;
+            WriteRegister(dev, mi, kRegGCSR, gcsr);
+            gcsr |= kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
+            if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
+            WriteRegister(dev, mi, kRegGCSR, gcsr);
+            IOSleep(10);
+            ModifyRegister(dev, mi, kRegClkCtrl, kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+            IOSleep(90);
+            uint32_t cha3 = 0, intStatus = 0;
+            ReadRegister(dev, mi, kRegA2HCHA, &cha3);
+            ReadRegister(dev, mi, kRegIntStatus, &intStatus);
+            STLOG("StartDevice (PCIe card): after the DMA start A2H_CHA=0x%08x (%{public}s), IntStatus=0x%08x, GCSR=0x%08x",
+                  cha3, cha3 != cha1 ? "moving" : "still not moving", intStatus, gcsr);
+        });
     }
 
     // Clear stale zero timestamp — HAL needs a fresh anchor pair.

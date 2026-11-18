@@ -227,6 +227,15 @@ final class DiagnosticsRecorder {
         guard let appState else { return }
         var lines: [String] = []
         lines.append("connection=\(appState.connectionMode) transport=\(appState.transportType.map { "\($0)" } ?? "none") present=\(appState.transportPresent) status=\"\(appState.statusMessage)\"")
+        // The monitor controls as the app holds them, and whether it treats the
+        // cable as converters only (which greys out speaker and headphones), with
+        // the driver's probe word behind that, so a speaker or headphone report
+        // can be checked against what the unit and Core Audio say.
+        lines.append(String(format: "monitor (app): speaker=%.1f dB muted=%@ mode=%u, HP1=%.1f dB muted=%@, HP2=%.1f dB muted=%@; converter mode=%@ (probe 0x%08x)",
+                            appState.speakerLevel, appState.speakerMuted ? "yes" : "no", appState.speakerOutputMode,
+                            appState.hp1Level, appState.hp1Muted ? "yes" : "no",
+                            appState.hp2Level, appState.hp2Muted ? "yes" : "no",
+                            appState.converterVolumeKeys ? "yes" : "no", appState.connectedUnitProbeWord))
         if let tb = appState.device as? ThunderboltDeviceConnection {
             let ls = await Self.withTimeout(2) { tb.linkState() } ?? nil
             if let ls {
@@ -464,7 +473,17 @@ final class DiagnosticsRecorder {
             let buffer = u32(id, kAudioDevicePropertyBufferFrameSize).map(String.init) ?? "?"
             let running = u32(id, kAudioDevicePropertyDeviceIsRunningSomewhere).map { $0 != 0 ? "yes" : "no" } ?? "?"
             let alive = u32(id, kAudioDevicePropertyDeviceIsAlive).map { $0 != 0 ? "yes" : "no" } ?? "?"
-            lines.append("  \"\(name)\" rate=\(rate) buffer=\(buffer) in=\(channels(id, kAudioObjectPropertyScopeInput)) out=\(channels(id, kAudioObjectPropertyScopeOutput)) runningSomewhere=\(running) alive=\(alive)")
+            // The device's own output volume and mute (over ThunderBridge/PCIe the
+            // driver's control, which it forwards to the Symphony's speaker output).
+            var va = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeDecibels,
+                                                mScope: kAudioObjectPropertyScopeOutput,
+                                                mElement: kAudioObjectPropertyElementMain)
+            var vdb: Float32 = 0; var vs = UInt32(4)
+            let volume = AudioObjectGetPropertyData(id, &va, 0, nil, &vs, &vdb) == noErr
+                ? String(format: "%.1f dB", vdb) : "none"
+            let muted = u32(id, kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput)
+                .map { $0 != 0 ? "yes" : "no" } ?? "none"
+            lines.append("  \"\(name)\" rate=\(rate) buffer=\(buffer) in=\(channels(id, kAudioObjectPropertyScopeInput)) out=\(channels(id, kAudioObjectPropertyScopeOutput)) runningSomewhere=\(running) alive=\(alive) volume=\(volume) muted=\(muted)")
         }
         func defaultIs(_ sel: AudioObjectPropertySelector) -> String {
             var a = AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
