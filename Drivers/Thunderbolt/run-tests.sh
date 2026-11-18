@@ -202,6 +202,21 @@ if $RECORD_P2; then
 fi
 
 compare_dir 'p1-*.trace' "$GOLDEN" "$TMP/work" "golden (release driver)" || status=1
+# dext 130: the expansion register (0x2214) is written for the Symphony 64 PCIe
+# card only, as Apogee's CMD_CONFIGURE does. A write in any ThunderBridge
+# scenario would be a change to the ThunderBridge path.
+for f in "$TMP"/work/*.trace; do
+    name="$(basename "$f")"
+    if grep -q '^W 0x002214 ' "$f"; then
+        [[ "$name" == p1-legacy-2100*.trace ]] || { echo "[trace] FAIL $name writes the PCIe expansion register 0x2214"; status=1; }
+    elif [[ "$name" == p1-legacy-2100*.trace ]]; then
+        echo "[trace] FAIL $name does not write the expansion register 0x2214"; status=1
+    fi
+done
+# The full PCIe flow resets the FPGA once: Start's write and the re-init's.
+if [[ -f "$TMP/work/p1-legacy-2100-full.trace" ]] && (( $(grep -c '^W 0x002214 ' "$TMP/work/p1-legacy-2100-full.trace") < 2 )); then
+    echo "[trace] FAIL p1-legacy-2100-full.trace: the card re-init does not write the expansion register"; status=1
+fi
 
 # A single-port trace the harness produced but nobody recorded is a hole.
 for f in "$TMP/work"/p1-*.trace; do
@@ -226,13 +241,16 @@ if $USE_REF; then
         # reads that card the ThunderBridge way and never gets a vendor reply.
         # Every ThunderBridge trace must still be identical.
         if ! grep -q 'pcieOrder' "$TMP/ref-src/Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp"; then
-            if cmp -s "$TMP/ref/p1-legacy-2100.trace" "$TMP/work/p1-legacy-2100.trace"; then
-                echo "[trace] FAIL p1-legacy-2100.trace is the same as the base, which lacks the PCIe receive order"
-                status=1
-            else
-                echo "[trace] ok   p1-legacy-2100.trace differs from $BASE_REF as intended (PCIe receive order)"
-            fi
-            rm -f "$TMP/ref/p1-legacy-2100.trace"
+            for t in p1-legacy-2100 p1-legacy-2100-full; do
+                [[ -f "$TMP/work/$t.trace" ]] || continue
+                if [[ -f "$TMP/ref/$t.trace" ]] && cmp -s "$TMP/ref/$t.trace" "$TMP/work/$t.trace"; then
+                    echo "[trace] FAIL $t.trace is the same as the base, which lacks the PCIe receive order"
+                    status=1
+                else
+                    echo "[trace] ok   $t.trace differs from $BASE_REF as intended (PCIe receive order)"
+                fi
+                rm -f "$TMP/ref/$t.trace"
+            done
         fi
         # p1-converters is meant to differ from a base without the converter
         # volume keys: a key press on a cable of converters only trims card

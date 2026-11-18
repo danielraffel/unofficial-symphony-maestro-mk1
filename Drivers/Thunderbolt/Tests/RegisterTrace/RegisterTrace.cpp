@@ -914,6 +914,9 @@ static std::vector<Options> SinglePortScenarios()
     { Options o; o.name = "p1-nothing-attached"; o.port1 = Port::Empty; o.unplugBeforeStop = true; v.push_back(o); }
     { Options o; o.name = "p1-converters"; o.port1 = Port::Converters; o.port2 = Port::Converters; v.push_back(o); }
     { Options o; o.name = "p1-legacy-2100"; o.legacy2100 = true; o.shortFlow = true; v.push_back(o); }
+    // dext 130: the PCIe card through the full flow, so the expansion write in
+    // the card re-init after an FPGA reset is pinned too.
+    { Options o; o.name = "p1-legacy-2100-full"; o.legacy2100 = true; v.push_back(o); }
     return v;
 }
 

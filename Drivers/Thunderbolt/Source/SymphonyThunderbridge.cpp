@@ -344,6 +344,18 @@ struct SymphonyThunderbridge_IVars {
     // say once per start whether audio wraps arrived. No register access.
     uint64_t  irqTypeAtStart[4];
     uint32_t  irqIndexUsed;            // dext 128: the interrupt index the source was created on
+    // dext 130, Symphony 64 PCIe card: the expansion register as read before and
+    // after Start() writes it, the expansion clock register, and what the DMA
+    // check found (logged, and repeated by the start-up summary).
+    uint32_t  expansionBefore;
+    uint32_t  expansionAfter;
+    uint32_t  expansionClk;
+    bool      dmaVerifiedRunning;      // CHA moved within Start()'s check (any card)
+    uint32_t  dmaCheckA2HOffset1s;     // PCIe card: A2H offset 1 s after DMA start
+    uint32_t  dmaCheckIntStatus1s;     // PCIe card: IntStatus 1 s after DMA start
+    uint32_t  dmaCheckMeterWritten;    // PCIe card: meter words the card overwrote (of 256)
+    uint16_t  pciStatusAtStart;        // PCI config Status (0x06) after the DMA check
+    uint64_t  startSummaryLoggedNs;    // CLOCK_MONOTONIC_RAW of the last start-up summary
     uint64_t  ioStartIrq;              // set in StartDevice before ioRunning=true
     uint64_t  ioStartWraps;
     uint64_t  ioStartWatchTick;
@@ -3533,6 +3545,36 @@ static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
 // Core Audio waits forever for wrap interrupts (silence, no meters, "Connected").
 // Fingerprint the control register and re-program everything Start() programs,
 // from the retained host state (the DMA buffers still exist in host memory).
+// ── dext 130: tell the Symphony 64 PCIe card its place in the card arrangement ──
+// Apogee's driver sends every card CMD_CONFIGURE, which writes SM_REG_EXPANSION
+// (0x2214) = 1 << boardID: "Set the board id to ensure correct routing of
+// expansion signals" (Driver/Symphony64Card.cpp:951-959). configureComponents
+// (SymphonyAPI/SymphonyBaseAudioEngine.cpp:1964-1990) sends it at engine init,
+// on wake and after firmware load, always before StartDMA; the arm64e build of
+// Symphony64.kext in Symphony 5.5 contains the same write. On this FPGA a card's
+// DMA start waits for the multi-card synchronisation signal
+// (Symphony64AudioEngine.cpp:324-325), and its release notes fixed "DMA not
+// starting when only one card used" (v0.5.7). This driver never wrote it, and the
+// PCIe card's DMA never started (2026-11-18 report: CHA stayed at HBA, no
+// HBO/ABU). The ThunderBridge has no expansion bus and is master by design, so
+// this runs for the 0x2100 card only: one card, board 0, value 1.
+static void ConfigureLegacyPCIeExpansion(SymphonyThunderbridge_IVars *ivars, const char *where)
+{
+    if (!ivars || !ivars->isLegacyPCIe2100) return;
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    uint32_t before = 0, after = 0, clk = 0;
+    ReadRegister(dev, mi, kRegExpansion, &before);
+    WriteRegister(dev, mi, kRegExpansion, 1u << 0);
+    ReadRegister(dev, mi, kRegExpansion, &after);
+    ReadRegister(dev, mi, kRegExpansionClk, &clk);
+    ivars->expansionBefore = before;
+    ivars->expansionAfter  = after;
+    ivars->expansionClk    = clk;
+    STLOG("PCIe card: expansion register 0x2214 read 0x%08x, wrote 0x1 (board 0 of 1), reads 0x%08x; "
+          "expansion clock 0x94=0x%08x (%{public}s)", before, after, clk, where);
+}
+
 static bool CardLostConfiguration(SymphonyThunderbridge_IVars *ivars, uint32_t *outGcsr)
 {
     uint32_t gcsr = 0;
@@ -3566,6 +3608,7 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
     WriteRegister(dev, mi, kRegIntStatus, 0xFFFFFFFF);
     WriteRegister(dev, mi, kRegRxStatusErr, 0xFFFFFFFF);
     WriteRegister(dev, mi, kRegGCSR, kGCSR_SwapToLE);
+    ConfigureLegacyPCIeExpansion(ivars, "card re-init");
     ModifyRegister(dev, mi, kRegXLinkClocking, XLinkClockEnableBits(ivars), 0);
     // Two-port experiment only: the state Start() left, port 1 enabled and
     // port 2 disabled until "Port 1-2: 64ch" is selected (the re-programming
@@ -4639,6 +4682,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, kGCSR_SwapToLE);
     STLOG("GCSR configured: SInt32 DMA, byte-swap to LE (AHND|HAND), no float conv (0x%08x)",
           kGCSR_SwapToLE);
+    ConfigureLegacyPCIeExpansion(ivars, "Start");
 
     // ── 11. Enable XLink port 1 ─────────────────────────────────────────
     // Legacy: setCardEnabled() at Symphony64Card.cpp:2258 enables XLink clocking.
@@ -5273,6 +5317,14 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegIntMask, kInt_A2HWrap);
     STLOG("DMA: Interrupt mask set to A2H wrap (0x%08x)", kInt_A2HWrap);
 
+    // dext 130, Symphony 64 PCIe card only: a known pattern in the meter buffer,
+    // so the check after DMA start can tell "the card writes to host memory but
+    // audio is held off" from "nothing reaches host memory". Cleared again below
+    // if the card never overwrites it, so the meters never show it.
+    if (ivars->isLegacyPCIe2100 && ivars->meterWords && ivars->meterDMAActive) {
+        for (uint32_t i = 0; i < kSymphonyMeterWordCount; i++) ivars->meterWords[i] = 0xFFFFFFFFu;
+    }
+
     // ── 29. Start DMA ───────────────────────────────────────────────────
     // Legacy: Symphony64Card::StartDMA(fInput=true, fOutput=true, fMeters=false)
     // Sequence: clear enable bits (rising edge required), set trigger-select,
@@ -5335,8 +5387,10 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
 
         if (a2hCHA == (uint32_t)ivars->a2hPhysAddr && h2aCHA == (uint32_t)ivars->h2aPhysAddr) {
             STLOG("DMA: CHA not advancing — DMA may not be running (check GCSR bits)");
+            ivars->dmaVerifiedRunning = false;
         } else {
             STLOG("DMA: CHA advancing — DMA is RUNNING!");
+            ivars->dmaVerifiedRunning = true;
         }
 
         // Read interrupt status to see if any DMA events fired
@@ -5348,6 +5402,65 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
               (intStatus & kInt_H2AWrap) ? 1 : 0,
               (intStatus & kInt_HostBufOverflow) ? 1 : 0,
               (intStatus & kInt_AudioBufUnderflow) ? 1 : 0);
+    }
+
+    // dext 130, Symphony 64 PCIe card only: look again after a second, and record
+    // what decides the next step. Reads only (plus clearing the meter pattern).
+    if (ivars->isLegacyPCIe2100) {
+        IOSleep(900);
+        IOPCIDevice *dev = ivars->pciDevice;
+        const uint8_t mi = ivars->barMemoryIndex;
+        uint32_t a2hCHA = 0, h2aCHA = 0, intStatus = 0, gcsr = 0, gcsr2 = 0, clk = 0;
+        ReadRegister(dev, mi, kRegA2HCHA, &a2hCHA);
+        ReadRegister(dev, mi, kRegH2ACHA, &h2aCHA);
+        ReadRegister(dev, mi, kRegIntStatus, &intStatus);
+        ReadRegister(dev, mi, kRegGCSR, &gcsr);
+        ReadRegister(dev, mi, kRegGCSR2, &gcsr2);
+        ReadRegister(dev, mi, kRegClkCtrl, &clk);
+        uint32_t written = 0;
+        if (ivars->meterWords && ivars->meterDMAActive) {
+            for (uint32_t i = 0; i < kSymphonyMeterWordCount; i++)
+                if (ivars->meterWords[i] != 0xFFFFFFFFu) written++;
+            if (written == 0)
+                for (uint32_t i = 0; i < kSymphonyMeterWordCount; i++) ivars->meterWords[i] = 0;
+        }
+        uint16_t pciCmd = 0, pciStatus = 0;
+        dev->ConfigurationRead16(0x04, &pciCmd);
+        dev->ConfigurationRead16(0x06, &pciStatus);
+        // PCI Express capability (ID 0x10): Device Control/Status and Link Status.
+        uint16_t devCtl = 0, devSta = 0, lnkSta = 0, ptrWord = 0;
+        bool havePCIe = false;
+        dev->ConfigurationRead16(0x34, &ptrWord);
+        uint16_t cap = ptrWord & 0xFC;
+        for (int hops = 0; cap >= 0x40 && hops < 48; hops++) {
+            uint16_t hdr = 0;
+            dev->ConfigurationRead16(cap, &hdr);
+            if ((hdr & 0xFF) == 0x10) {
+                dev->ConfigurationRead16(cap + 0x08, &devCtl);
+                dev->ConfigurationRead16(cap + 0x0A, &devSta);
+                dev->ConfigurationRead16(cap + 0x12, &lnkSta);
+                havePCIe = true;
+                break;
+            }
+            cap = (hdr >> 8) & 0xFC;
+        }
+        const uint32_t a2hOff = a2hCHA - (uint32_t)ivars->a2hPhysAddr;
+        ivars->dmaCheckA2HOffset1s = a2hOff;
+        ivars->dmaCheckIntStatus1s = intStatus;
+        ivars->dmaCheckMeterWritten = written;
+        ivars->pciStatusAtStart = pciStatus;
+        if (a2hOff != 0 || h2aCHA != (uint32_t)ivars->h2aPhysAddr) ivars->dmaVerifiedRunning = true;
+        STLOG("PCIe card, 1 s after DMA start: A2H offset=%u H2A offset=%u (%{public}s); IntStatus=0x%08x "
+              "(wrap=%u overflow=%u underflow=%u meterTimer=%u); meter words written by the card=%u of %u",
+              a2hOff, h2aCHA - (uint32_t)ivars->h2aPhysAddr,
+              ivars->dmaVerifiedRunning ? "DMA running" : "DMA NOT running",
+              intStatus, (intStatus & kInt_A2HWrap) ? 1 : 0, (intStatus & kInt_HostBufOverflow) ? 1 : 0,
+              (intStatus & kInt_AudioBufUnderflow) ? 1 : 0, (intStatus & kInt_MeterTrigger) ? 1 : 0,
+              written, (uint32_t)kSymphonyMeterWordCount);
+        STLOG("PCIe card, 1 s after DMA start: GCSR=0x%08x GCSR2=0x%08x ClkCtrl=0x%08x; PCI command=0x%04x "
+              "status=0x%04x (masterAbort=%u targetAbort=%u); PCIe %{public}s devCtl=0x%04x devSta=0x%04x lnkSta=0x%04x",
+              gcsr, gcsr2, clk, pciCmd, pciStatus, (pciStatus & 0x2000) ? 1 : 0, (pciStatus & 0x1000) ? 1 : 0,
+              havePCIe ? "capability" : "capability not found", devCtl, devSta, lnkSta);
     }
 
     // ── 30b. Unmute AFTER DMA is running ────────────────────────────────
@@ -6168,7 +6281,9 @@ start_success:
     STLOG("Start() complete — ThunderBridge FPGA communication validated");
     STLOG("  Gate T1 PASSED: FPGA ID read OK, scratch round-trip OK");
     if (ivars->dmaRunning) {
-        STLOG("  PT-06 DMA: RUNNING (A2H + H2A, 32ch, 44100Hz, 1MB buffers)");
+        // dext 130: say what the DMA check found, not just that DMA was enabled.
+        STLOG("  PT-06 DMA: enabled, %{public}s (A2H + H2A, 32ch, 1MB buffers)",
+              ivars->dmaVerifiedRunning ? "running (CHA advanced)" : "NOT running (CHA did not advance)");
     }
     if (ivars->audioDevice) {
         STLOG("  PT-07 Audio: IOUserAudioDevice published (32ch in/out, Thunderbolt)");
@@ -7827,6 +7942,32 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
     // Prove the endpoint is there in config space before any BAR access
     // (this probe is what panicked a sleeping Mac whose unit lost power).
     if (!HardwareReachable(ivars)) return kIOReturnNotReady;
+
+    // dext 130: repeat what Start() found, at most every 10 minutes. The driver
+    // usually starts at boot, long before anyone turns diagnostics on, and a
+    // diagnostics capture reads timing health at its start: either this logs
+    // now, or it did within the last 10 minutes, inside the capture's 30-minute
+    // look-back. Logging only.
+    {
+        const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        const uint64_t last = __atomic_load_n(&ivars->startSummaryLoggedNs, __ATOMIC_RELAXED);
+        if (last == 0 || now - last >= 600ull * 1000000000ull) {
+            __atomic_store_n(&ivars->startSummaryLoggedNs, now, __ATOMIC_RELAXED);
+            STLOG("Start-up summary: card=%{public}s FPGA=%u role=%{public}s irqIndex=%u "
+                  "irqTypes=0x%llx/0x%llx/0x%llx/0x%llx DMA at start=%{public}s cardReinits=%u",
+                  ivars->isLegacyPCIe2100 ? "Symphony 64 PCIe (0x2100)" : "ThunderBridge",
+                  ivars->fpgaVersion, ivars->isMaster ? "MASTER" : "SLAVE", ivars->irqIndexUsed,
+                  ivars->irqTypeAtStart[0], ivars->irqTypeAtStart[1],
+                  ivars->irqTypeAtStart[2], ivars->irqTypeAtStart[3],
+                  ivars->dmaVerifiedRunning ? "running" : "NOT running", ivars->cardReinitCount);
+            if (ivars->isLegacyPCIe2100)
+                STLOG("Start-up summary (PCIe card): expansion 0x2214 0x%08x -> 0x%08x, clock 0x94=0x%08x; "
+                      "1 s after DMA start A2H offset=%u IntStatus=0x%08x meter words written=%u PCI status=0x%04x",
+                      ivars->expansionBefore, ivars->expansionAfter, ivars->expansionClk,
+                      ivars->dmaCheckA2HOffset1s, ivars->dmaCheckIntStatus1s,
+                      ivars->dmaCheckMeterWritten, ivars->pciStatusAtStart);
+        }
+    }
 
     // A PCI service and its DMA/register window can remain alive after the
     // downstream Symphony loses power. Make this selector a real endpoint
