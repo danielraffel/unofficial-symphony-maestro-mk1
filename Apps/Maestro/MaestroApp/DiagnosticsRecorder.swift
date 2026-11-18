@@ -232,7 +232,11 @@ final class DiagnosticsRecorder {
             if let ls {
                 var delta = ""
                 if let last = lastLink {
-                    delta = " irq+\(ls.irqCount &- last.irq) wraps+\(ls.audioWraps &- last.wraps)"
+                    // A replug or driver upgrade starts a new driver instance whose
+                    // counters begin at 0: say so instead of printing a wrapped delta.
+                    delta = (ls.irqCount < last.irq || ls.audioWraps < last.wraps)
+                        ? " counters reset (driver restarted) irq=\(ls.irqCount) wraps=\(ls.audioWraps)"
+                        : " irq+\(ls.irqCount - last.irq) wraps+\(ls.audioWraps - last.wraps)"
                 }
                 lastLink = (ls.irqCount, ls.audioWraps)
                 lines.append("link state=\(ls.state) clock=\(ls.clockPresent) ioRunning=\(ls.ioRunning) configured=\(ls.linkConfigured) suspended=\(ls.hwSuspended) recoveries=\(ls.recoveryCount) cardReinits=\(ls.cardReinitCount)\(delta) gcsr=0x\(String(ls.lastGcsr, radix: 16)) xlink=0x\(String(ls.lastXlinkStatus, radix: 16))")
