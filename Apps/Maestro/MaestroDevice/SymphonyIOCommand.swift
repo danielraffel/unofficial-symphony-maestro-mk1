@@ -1894,7 +1894,13 @@ public enum SymphonyIODefaultRouting {
     /// It is NOT the USB table above, which puts every analog output first:
     /// with two cards that have analog outputs, that table drew Mac 9-10 on
     /// slot 2's Line 1/2 while the unit played it on slot 1's digital outputs.
-    public static func thunderboltOutputRoutes(board0Outputs: Int, board1Outputs: Int) -> [Route] {
+    ///
+    /// `mainPairOnMixer: false` is Reset Routing's layout, as Apogee's software
+    /// reset it (`SymphonyPCIeRoutingController::ResetRouting`, output branch:
+    /// the mixers' destinations cleared and every software output routed to the
+    /// matching hardware output): the main pair plays Software 1-2 directly.
+    public static func thunderboltOutputRoutes(board0Outputs: Int, board1Outputs: Int,
+                                               mainPairOnMixer: Bool = true) -> [Route] {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         let bases = [SymphonyIORoutingAddress.ioBoard0Base, SymphonyIORoutingAddress.ioBoard1Base]
         let outputs = [board0Outputs, board1Outputs]
@@ -1905,9 +1911,9 @@ public enum SymphonyIODefaultRouting {
                 let source = index < outputs[board]
                     ? SymphonyIORoutingAddress.xlinkPlaybackBase + UInt8(board * perBoard + index)
                     : SymphonyIORoutingAddress.none
-                routes.append((destination: destination,
-                               source: ThunderboltCardRouting.mainPairDefaultSource(forDestination: destination)
-                                   ?? source))
+                let mixer = mainPairOnMixer
+                    ? ThunderboltCardRouting.mainPairDefaultSource(forDestination: destination) : nil
+                routes.append((destination: destination, source: mixer ?? source))
             }
         }
         return routes
@@ -2240,7 +2246,8 @@ public enum RoutingResetGuard {
                                        transport: TransportType = .usb) -> [String] {
         let routes = transport == .thunderbolt
             ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
-                board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
+                board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels,
+                mainPairOnMixer: false)
             : SymphonyIODefaultRouting.outputRoutes(
                 board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
                 board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),

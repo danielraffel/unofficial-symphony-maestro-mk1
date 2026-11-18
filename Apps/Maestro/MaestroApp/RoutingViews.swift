@@ -972,7 +972,15 @@ struct OutputRoutingView: View {
         // `SymphonyIODefaultRouting.usbChannelCount`. In 8-ch mode the mode count
         // wrapped ADAT 1-8 back onto DAW 1-8; in 32-ch mode it assigned USB 16-31,
         // which the proxy never renders. ThunderBridge renders all 32.
-        let routeList = defaultOutputRouteList(board1: b1.card, board2: b2.card)
+        // On ThunderBridge/PCIe, Reset writes Apogee's reset layout (every software
+        // output on the matching output, the main pair on Software 1-2, no mixer
+        // routed), not the start-up default with the main pair on Mixer 1.
+        let thunderbolt = appState.transportType == .thunderbolt
+        let routeList = thunderbolt
+            ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
+                board0Outputs: b1.card.totalOutputChannels, board1Outputs: b2.card.totalOutputChannels,
+                mainPairOnMixer: false)
+            : defaultOutputRouteList(board1: b1.card, board2: b2.card)
 
         var newRoutes: [Int: Set<Int>] = [:]
         var failures = 0
@@ -994,8 +1002,16 @@ struct OutputRoutingView: View {
         }
 
         routes = newRoutes
-        // The defaults are now on the hardware; there are no overrides left.
-        userChosenRows.removeAll()
+        if thunderbolt {
+            // The driver puts the main pair back on Mixer 1 at every start, and the
+            // app replays only chosen rows: keep the rows where the reset layout
+            // differs from that start-up default as chosen, so it survives a restart.
+            let startup = defaultRouteGrid()
+            userChosenRows = Set(newRoutes.keys.filter { $0 < swOutputPairCount && newRoutes[$0] != startup[$0] })
+        } else {
+            // The defaults are now on the hardware; there are no overrides left.
+            userChosenRows.removeAll()
+        }
         persistChosenRows()
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] OutputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")

@@ -116,11 +116,32 @@ struct OutputRoutingTransportTests {
         #expect(empty.first { $0.destination == 48 }?.source == 16)
     }
 
+    @Test("ThunderBridge Reset Routing layout is Apogee's: every software output on its output, no mixer")
+    func thunderboltResetLayout() {
+        // SymphonyPCIeRoutingController::ResetRouting (output): mixer destinations
+        // cleared, software output n routed to hardware output n.
+        let routes = SymphonyIODefaultRouting.thunderboltOutputRoutes(
+            board0Outputs: 16, board1Outputs: 16, mainPairOnMixer: false)
+        var byDestination: [UInt8: UInt8] = [:]
+        for route in routes { byDestination[route.destination] = route.source }
+        #expect(byDestination[32] == 0)
+        #expect(byDestination[33] == 1)
+        for channel in UInt8(0)...UInt8(15) { #expect(byDestination[32 + channel] == channel) }
+        for channel in UInt8(0)...UInt8(15) { #expect(byDestination[48 + channel] == 16 + channel) }
+        #expect(!routes.contains { $0.source >= SymphonyIORoutingAddress.mixer0Base &&
+                                   $0.source != SymphonyIORoutingAddress.none })
+        // The start-up default is unchanged: main pair on Mixer 1.
+        let startup = SymphonyIODefaultRouting.thunderboltOutputRoutes(board0Outputs: 16, board1Outputs: 16)
+        #expect(startup.first { $0.destination == 32 }?.source == SymphonyIORoutingAddress.mixer0Base)
+    }
+
     @Test("The ThunderBridge reset confirmation describes the position table")
     func thunderboltPlanLines() {
         let text = RoutingResetGuard.outputPlanLines(board1: .optical, board2: .optical, transport: .thunderbolt)
             .joined(separator: "\n")
-        #expect(text.contains("Slot 1 (8x8 OPT) analog out 1-8 ← Mixer 1, DAW 3-8"), "\(text)")
+        // Reset writes Apogee's reset layout: the main pair plays DAW 1-2 directly.
+        #expect(text.contains("Slot 1 (8x8 OPT) analog out 1-8 ← DAW 1-8"), "\(text)")
+        #expect(!text.contains("Mixer 1"), "\(text)")
         #expect(text.contains("Slot 1 (8x8 OPT) ADAT out 1-8 ← DAW 9-16"), "\(text)")
         #expect(text.contains("Slot 2 (8x8 OPT) analog out 1-8 ← DAW 17-24"), "\(text)")
         #expect(text.contains("Slot 2 (8x8 OPT) ADAT out 1-8 ← DAW 25-32"), "\(text)")
