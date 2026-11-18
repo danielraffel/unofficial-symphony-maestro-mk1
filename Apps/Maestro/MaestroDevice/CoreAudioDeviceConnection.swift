@@ -615,7 +615,7 @@ public final class CoreAudioDeviceConnection: DeviceConnection, @unchecked Senda
     // MARK: - Device Discovery
 
     /// Result of discovering a Symphony IO device.
-    public struct DiscoveredSymphonyIO {
+    public struct DiscoveredSymphonyIO: Sendable {
         public let audioDeviceID: AudioDeviceID
         public let identifier: USBDeviceIdentifier
         public let transportType: TransportType

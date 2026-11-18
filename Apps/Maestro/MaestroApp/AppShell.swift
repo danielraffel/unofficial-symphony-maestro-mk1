@@ -148,6 +148,9 @@ struct ContentView: View {
             // which can take seconds, so the About box is never asked for a report it
             // cannot give. Refreshed on appear by the panels that show it.
             appState.refreshInstalledDexts()
+            // Find the Symphony from a background thread now that the window is
+            // up, and connect to it (0.9.8; see AppState.completeLaunchDiscovery).
+            await appState.completeLaunchDiscovery()
             // Auto-switch to Symphony when it's plugged in (device-list listener).
             appState.installHardwareDeviceListener()
             // Initialize hardware on launch (speaker mode, routing, unmute)
@@ -181,7 +184,8 @@ struct ContentView: View {
             // it so a dext that comes back (same Core Audio ID, no device-list
             // change) still wins, as the front-panel rule says it should.
             if appState.transportType == .usb {
-                appState.startThunderboltWatchWhileOnUSB(CoreAudioDeviceConnection.discoverAllSymphonyIO())
+                appState.startThunderboltWatchWhileOnUSB(
+                    appState.lastLaunchDiscovered ?? CoreAudioDeviceConnection.discoverAllSymphonyIO())
             }
             // Start USB health check if user previously enabled it
             if UserDefaults.standard.bool(forKey: "usbHealthCheckEnabled") {
