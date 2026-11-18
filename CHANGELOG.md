@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.6 (beta)
+
+The next step for the Symphony 64 PCIe card, and a clearer diagnostics report. It contains everything in 0.9.5. If you use USB or a ThunderBridge, nothing changes for you.
+
+Thanks to the PCIe tester whose diagnostics report showed exactly where audio stopped: 0.9.5 picked the right interrupt on the card, but the card's audio engine never started.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.4, build 130).** After installing, restart the Mac (or reconnect the ThunderBridge or PCIe chassis) so the new driver takes over.
+- **On the Symphony 64 PCIe card, the driver now starts the card the way Apogee's driver did.** It tells the card it is the only card in the system, turns off the card's internal clock while the Symphony I/O provides the clock, aligns the card with the Symphony after each sample rate change, and starts the card's audio engine again when an app starts playing if it is not already running. Each of these is a step Apogee's driver takes that this driver skipped. On a ThunderBridge nothing changes.
+- **On the PCIe card, the Speaker knob should follow the front panel again once audio runs.** The Mac's speaker volume reaches the Symphony with the audio, so it could not while the card's audio engine was stopped. Headphones were not affected.
+
+### What's better
+
+- **Diagnostics reports say more about the PCIe card and the volume controls.** The driver now records whether the card's audio engine started, whether the card reaches the Mac's memory, and the card's error state, and repeats this summary in every report even when the driver started long before. Each snapshot also shows the speaker and headphone levels in Maestro and in macOS, so a volume problem can be checked against both.
+
 ## 0.9.5 (beta)
 
 A likely fix for the Symphony 64 PCIe card, a USB reconnect fix, and a new Diagnostics option for sending the developer a report. It contains everything in 0.9.4.
