@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.5 (beta)
+
+A likely fix for the Symphony 64 PCIe card, a USB reconnect fix, and a new Diagnostics option for sending the developer a report. It contains everything in 0.9.4.
+
+Thanks to the testers with Symphony 64 PCIe cards whose careful reports, and whose check on an Intel Mac with Apogee's software, pointed to the cause.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.3, build 129).** After installing, unplug the ThunderBridge or PCIe chassis cable and plug it back in (or restart) so the new driver takes over.
+- **On the Symphony 64 PCIe card, the driver now picks the card's interrupt the way Apogee's driver did.** On Apple Silicon a card can only signal the Mac in one particular way, and Apogee's driver looked for it rather than assuming. This is the likely reason the PCIe card was detected and could change sample rate but gave no audio. On a ThunderBridge nothing changes: it picks the same one as before.
+- **Over USB, unplugging, replugging or power-cycling the Symphony no longer leaves it silent.** Maestro could reconnect to the old connection, show meters and play nothing until a second replug. It now sets the Symphony up again every time it comes back.
+
+### What's new
+
+- **Diagnostics, for testers on the Beta channel.** Turn it on in Device Settings › Preferences, do what causes the problem, then press Stop Diagnostics. Maestro saves a file to your Desktop and offers to email it privately to the developer, with optional details about your setup and the problem. Nothing is sent until you press Agree and Send, and it is never posted publicly. Help › "When and how should I use diagnostics?" explains when it is useful.
+
+### What's better
+
+- **The Privacy Policy and Terms describe what Maestro sends and when:** update checks, and diagnostics only if you choose to send them.
+
+### Release notes
+
+- The driver's own log is easier to read in a diagnostics report, and it records which interrupt the card uses and whether audio starts. This changes nothing you hear.
+
 ## 0.9.4 (beta)
 
 Small changes that make it easier to tell which version you are on. It contains everything in 0.9.3.
