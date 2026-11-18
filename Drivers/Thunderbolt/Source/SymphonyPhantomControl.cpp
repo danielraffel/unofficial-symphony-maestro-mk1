@@ -77,7 +77,7 @@ kern_return_t SymphonyPhantomControl::HandleChangeControlValue(bool in_control_v
     }
 
     // 2. Push to hardware (non-blocking; driver coalesces + async-sends 0xC6).
-    PHLOG("HandleChangeControlValue ch=%u → %s",
+    PHLOG("HandleChangeControlValue ch=%u → %{public}s",
           ivars->channel, in_control_value ? "on" : "off");
     if (ivars->driver)
         ivars->driver->RequestPhantom(ivars->channel, in_control_value);

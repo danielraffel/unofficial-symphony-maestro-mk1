@@ -46,6 +46,9 @@
 // DriverKit only provides os_log with OS_LOG_TYPE_DEFAULT — no os_log_error.
 
 #define LOG_PREFIX "SymphonyTB"
+// Text arguments are %{public}s: os_log hides plain %s as <private>, which made
+// every command result ("OK"/"FAILED") unreadable in a tester's diagnostics.
+// Anything derived from a serial number stays %{private}s.
 #define STLOG(fmt, ...) os_log(OS_LOG_DEFAULT, LOG_PREFIX ": " fmt, ##__VA_ARGS__)
 #define STERR(fmt, ...) os_log(OS_LOG_DEFAULT, LOG_PREFIX " ERROR: " fmt, ##__VA_ARGS__)
 
@@ -1585,7 +1588,7 @@ static kern_return_t AllocateDMABuffer(
     *outDMA = dmaCmd;
     *outPhysAddr = segments[0].address;
 
-    STLOG("DMA: Allocated %llu bytes, physAddr=0x%llx, dir=%s",
+    STLOG("DMA: Allocated %llu bytes, physAddr=0x%llx, dir=%{public}s",
           size, segments[0].address,
           (direction == kIOMemoryDirectionIn) ? "A2H(capture)" : "H2A(playback)");
 
@@ -1787,7 +1790,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         }
         STLOG("XLink: WaitForLock pass %d: data slip, retrying", pass);
     }
-    STLOG("XLink: WaitForLock (pre-enum): %s", locked ? "LOCKED" : "TIMEOUT");
+    STLOG("XLink: WaitForLock (pre-enum): %{public}s", locked ? "LOCKED" : "TIMEOUT");
 
     // ── 16. Enumerate: assign address, pass commands ──────────────────
     // Legacy BusInit:601-654. Assign addr 1, enable pass-through.
@@ -1845,7 +1848,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         }
         STLOG("XLink: WaitForLock pass %d (post-enum): data slip, retrying", pass);
     }
-    STLOG("XLink: WaitForLock (post-enum): %s", locked ? "LOCKED" : "TIMEOUT");
+    STLOG("XLink: WaitForLock (post-enum): %{public}s", locked ? "LOCKED" : "TIMEOUT");
 
     // ── 18. Set sample rate ──────────────────────────────────────────
     // Legacy: SetDDSSampleRate() first, then SetSampleRate() sends to ADDR_ALL.
@@ -1886,7 +1889,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         }
         STLOG("XLink: WaitForLock pass %d (post-srate): data slip, retrying", pass);
     }
-    STLOG("XLink: WaitForLock (post-srate): %s", locked ? "LOCKED" : "TIMEOUT");
+    STLOG("XLink: WaitForLock (post-srate): %{public}s", locked ? "LOCKED" : "TIMEOUT");
 
     // ── 19. Unmute ──────────────────────────────────────────────────
     // Legacy: SetDeviceMute(bus, addr, false) → UNMUTE, data=0x80
@@ -1955,7 +1958,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                              symphonyAddr, kXLinkCmdXtdInquire, &xtd,
         ivars->isLegacyPCIe2100))
                 probe |= kUnitProbeXtdOK | ((uint32_t)xtd << 8);
-            STLOG("Unit probe: no Symphony I/O answer; INQUIRE %s 0x%02x, XTD_INQUIRE %s 0x%02x",
+            STLOG("Unit probe: no Symphony I/O answer; INQUIRE %{public}s 0x%02x, XTD_INQUIRE %{public}s 0x%02x",
                   (probe & kUnitProbeInquireOK) ? "replied" : "no reply", inquire,
                   (probe & kUnitProbeXtdOK) ? "replied" : "no reply", xtd);
 
@@ -2099,7 +2102,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_PreferenceLoadLock,
                                          0, &lock, 1, txSeq);
-            STLOG("SymphonyIO: PreferenceLoadLock(LOCK): %s", ok ? "OK" : "FAILED");
+            STLOG("SymphonyIO: PreferenceLoadLock(LOCK): %{public}s", ok ? "OK" : "FAILED");
             IOSleep(10);
         }
 
@@ -2111,7 +2114,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_SpeakerMode,
                                          0, &mode, 1, txSeq);
-            STLOG("SymphonyIO: SpeakerMode(mode=%u): %s", mode, ok ? "OK" : "FAILED");
+            STLOG("SymphonyIO: SpeakerMode(mode=%u): %{public}s", mode, ok ? "OK" : "FAILED");
             if (ok) {
                 __atomic_store_n(&ivars->monitorOutputTarget,
                                  mode == 0 ? static_cast<uint8_t>(1)
@@ -2124,14 +2127,14 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                     symphonyAddr, kSIOCmd_SpeakerVolume,
                                     0, &vol, 1, txSeq);
-            STLOG("SymphonyIO: SpeakerVolume(atten=%u dB): %s", vol, ok ? "OK" : "FAILED");
+            STLOG("SymphonyIO: SpeakerVolume(atten=%u dB): %{public}s", vol, ok ? "OK" : "FAILED");
             IOSleep(10);
 
             uint8_t mute = startupMute;
             ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                     symphonyAddr, kSIOCmd_SpeakerMute,
                                     0, &mute, 1, txSeq);
-            STLOG("SymphonyIO: SpeakerMute(unmuted): %s", ok ? "OK" : "FAILED");
+            STLOG("SymphonyIO: SpeakerMute(unmuted): %{public}s", ok ? "OK" : "FAILED");
             IOSleep(10);
 
             // Legacy ApplySettingsToHardware replays the active speaker-set
@@ -2142,7 +2145,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                    symphonyAddr, kSIOCmd_ActiveSpeakerSet,
                                    0, &activeSet, 1, txSeq);
-            STLOG("SymphonyIO: ActiveSpeakerSet(mask=0x%02x): %s",
+            STLOG("SymphonyIO: ActiveSpeakerSet(mask=0x%02x): %{public}s",
                   activeSet, ok ? "OK" : "FAILED");
             IOSleep(10);
 
@@ -2153,7 +2156,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                    symphonyAddr, kSIOCmd_HeadphoneVolume,
                                    0, &hp1Volume, 1, txSeq);
-            STLOG("SymphonyIO: HeadphoneVolume(HP1 atten=%u): %s",
+            STLOG("SymphonyIO: HeadphoneVolume(HP1 atten=%u): %{public}s",
                   hp1Volume, ok ? "OK" : "FAILED");
             IOSleep(10);
 
@@ -2161,7 +2164,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                    symphonyAddr, kSIOCmd_HeadphoneMute,
                                    0, &hp1Mute, 1, txSeq);
-            STLOG("SymphonyIO: HeadphoneMute(HP1=%u): %s",
+            STLOG("SymphonyIO: HeadphoneMute(HP1=%u): %{public}s",
                   hp1Mute, ok ? "OK" : "FAILED");
             IOSleep(10);
 
@@ -2169,7 +2172,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                    symphonyAddr, kSIOCmd_HeadphoneVolume,
                                    1, &hp2Volume, 1, txSeq);
-            STLOG("SymphonyIO: HeadphoneVolume(HP2 atten=%u): %s",
+            STLOG("SymphonyIO: HeadphoneVolume(HP2 atten=%u): %{public}s",
                   hp2Volume, ok ? "OK" : "FAILED");
             IOSleep(10);
 
@@ -2177,7 +2180,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                    symphonyAddr, kSIOCmd_HeadphoneMute,
                                    1, &hp2Mute, 1, txSeq);
-            STLOG("SymphonyIO: HeadphoneMute(HP2=%u): %s",
+            STLOG("SymphonyIO: HeadphoneMute(HP2=%u): %{public}s",
                   hp2Mute, ok ? "OK" : "FAILED");
             IOSleep(10);
         }
@@ -2198,7 +2201,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_ClockMode,
                                          0, clockData, sizeof(clockData), txSeq);
-            STLOG("SymphonyIO: ClockMode(Internal, Master): %s", ok ? "OK" : "FAILED");
+            STLOG("SymphonyIO: ClockMode(Internal, Master): %{public}s", ok ? "OK" : "FAILED");
             IOSleep(10);
         }
 
@@ -2244,7 +2247,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                 result[b] = ok ? (format ? "OK (SPDIF)" : "OK (ADAT/SMUX)") : "FAILED";
                 IOSleep(10);
             }
-            STLOG("SymphonyIO: OpticalFormat: board0=%s, board1=%s", result[0], result[1]);
+            STLOG("SymphonyIO: OpticalFormat: board0=%{public}s, board1=%{public}s", result[0], result[1]);
             // S/PDIF Coax Replaces and Mirrors written this session, likewise
             // (the firmware starts at Off / Analog 1-2, SymphonyIOStateData.cpp:127-131).
             // Only to the type of card they were chosen for: after a card
@@ -2289,7 +2292,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_AudioRouting,
                                          0, playbackRoutes, sizeof(playbackRoutes), txSeq);
-            STLOG("SymphonyIO: Playback routing (XLink 0-15 → IOBoard0 ch0-15): %s",
+            STLOG("SymphonyIO: Playback routing (XLink 0-15 → IOBoard0 ch0-15): %{public}s",
                   ok ? "OK" : "FAILED");
             IOSleep(20);
         }
@@ -2313,7 +2316,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_AudioRouting,
                                          0, io1Routes, sizeof(io1Routes), txSeq);
-            STLOG("SymphonyIO: Playback routing (XLink 16-31 → IOBoard1 ch0-15): %s",
+            STLOG("SymphonyIO: Playback routing (XLink 16-31 → IOBoard1 ch0-15): %{public}s",
                   ok ? "OK" : "FAILED");
             IOSleep(20);
         }
@@ -2349,7 +2352,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                 bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                              symphonyAddr, kSIOCmd_AudioRouting,
                                              0, captureRoutes, sizeof(captureRoutes), txSeq);
-                STLOG("SymphonyIO: Capture routing (P2P %d-%d, slot 2 from host input %u): %s",
+                STLOG("SymphonyIO: Capture routing (P2P %d-%d, slot 2 from host input %u): %{public}s",
                       half * 16, half * 16 + 15,
                       SymphonySlot2InputBase(slot1Type, slot1Known) + 1, ok ? "OK" : "FAILED");
                 IOSleep(20);
@@ -2388,7 +2391,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_PreferenceLoadLock,
                                          0, &unlock, 1, txSeq);
-            STLOG("SymphonyIO: PreferenceLoadLock(UNLOCK): %s — %s",
+            STLOG("SymphonyIO: PreferenceLoadLock(UNLOCK): %{public}s — %{public}s",
                   ok ? "OK" : "FAILED",
                   ok ? "audio should flow" : "XMOS STILL MUTED!");
             IOSleep(10);
@@ -2503,7 +2506,7 @@ static void SetPort2Enabled(SymphonyThunderbridge_IVars *ivars, bool on)
     } else {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2, kGCSR2_DisablePort2, 0);
     }
-    STLOG("Port 2: %s (GCSR2 DisablePort2 %s)", on ? "enabled" : "disabled", on ? "cleared" : "set");
+    STLOG("Port 2: %{public}s (GCSR2 DisablePort2 %{public}s)", on ? "enabled" : "disabled", on ? "cleared" : "set");
 }
 
 // Wait for port 2's data link to stop slipping: the same three passes of
@@ -2557,8 +2560,8 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
     }
     ReadRegister(dev, mi, kRegXLink2Status, &status);
     const bool dataUp = (status & kXLinkDataDownCurrent) == 0;
-    STLOG("Port 2 probe (%s): XLinkClocking=0x%08x RX2_clock=%u SR2_bits=0x%02x, "
-          "XLink2Status=0x%08x data_link=%s slip=%u slave_mode=%u, GCSR2=0x%08x port2_disabled=%u",
+    STLOG("Port 2 probe (%{public}s): XLinkClocking=0x%08x RX2_clock=%u SR2_bits=0x%02x, "
+          "XLink2Status=0x%08x data_link=%{public}s slip=%u slave_mode=%u, GCSR2=0x%08x port2_disabled=%u",
           why, clk, (clk & kXLinkRX2ClockDetect) ? 1 : 0, (clk & kXLinkSR2Mask) >> 16,
           status, dataUp ? "up" : "DOWN", (status & kXLinkDataSlipSticky) ? 1 : 0,
           (status & kXLinkSlaveMode) ? 1 : 0, gcsr2, (gcsr2 & kGCSR2_DisablePort2) ? 1 : 0);
@@ -2591,7 +2594,7 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
         } else {
             const bool locked = WaitForPort2Lock(dev, mi);
             if (locked) flags |= kSymphonyPort2FlagLocked;
-            STLOG("Port 2 probe: bus reset, rate %u Hz, external word clock; data link %s",
+            STLOG("Port 2 probe: bus reset, rate %u Hz, external word clock; data link %{public}s",
                   (uint32_t)(rate + 0.5), locked ? "LOCKED" : "still slipping (continuing)");
 
             for (uint8_t addr = 1; addr <= kXLinkMaxDevices; addr++) {
@@ -2610,7 +2613,7 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                 // XLinkRegisters.h:444; the low nibbles are not channel bits).
                 const uint8_t channels = (uint8_t)((xtd & 0xF0) | ((inquire & 0xF0) >> 4));
                 if (channels == 0) {
-                    STLOG("Port 2 probe: no %sunit at position %u (INQUIRE %s 0x%02x, XTD_INQUIRE %s 0x%02x)",
+                    STLOG("Port 2 probe: no %{public}sunit at position %u (INQUIRE %{public}s 0x%02x, XTD_INQUIRE %{public}s 0x%02x)",
                           addr > 1 ? "further " : "", addr,
                           (word & kSymphonyPort2UnitInquireOK) ? "replied" : "no reply", inquire,
                           (word & kSymphonyPort2UnitXtdOK) ? "replied" : "no reply", xtd);
@@ -2628,7 +2631,7 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                 }
                 IOSleep(5);
                 units[unitCount++] = word | kSymphonyPort2UnitAddressed;
-                STLOG("Port 2 probe: unit %u INQUIRE 0x%02x XTD_INQUIRE %s 0x%02x → channel groups 0x%02x, addressed",
+                STLOG("Port 2 probe: unit %u INQUIRE 0x%02x XTD_INQUIRE %{public}s 0x%02x → channel groups 0x%02x, addressed",
                       addr, inquire, (word & kSymphonyPort2UnitXtdOK) ? "replied" : "no reply", xtd, channels);
             }
             // The rate went out before these units had an address; send it again
@@ -2750,7 +2753,7 @@ static void FinishPort2RateChange(SymphonyThunderbridge_IVars *ivars, double new
     flags &= ~(kSymphonyPort2FlagRateFailed);
     if (!p2.ok) flags |= kSymphonyPort2FlagRateFailed;
     __atomic_store_n(&ivars->port2Flags, flags, __ATOMIC_RELEASE);
-    STLOG("Port 2 rate change to %.0f Hz: %s (port 2 reports %u Hz, change #%u)", newRate,
+    STLOG("Port 2 rate change to %.0f Hz: %{public}s (port 2 reports %u Hz, change #%u)", newRate,
           p2.ok ? "locked and verified"
                 : !p2.clock ? "not sent (no unit clock on port 2)"
                 : !port1CommandIssued ? "abandoned (port 1 was not told)"
@@ -2833,7 +2836,7 @@ static void RequestIORestartFromDefaultQueue(SymphonyThunderbridge_IVars *ivars,
             const bool ioRunning = __atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE);
             kern_return_t rc = ivars->audioDevice->RequestDeviceConfigurationChange(
                 kSymphonyConfigChangeLinkRecovered, nullptr);
-            STLOG("Link watch: requested Core Audio configuration change (%s, ioRunning=%u, 0x%x)",
+            STLOG("Link watch: requested Core Audio configuration change (%{public}s, ioRunning=%u, 0x%x)",
                   why, ioRunning ? 1u : 0u, rc);
         }
         self->release();
@@ -3259,7 +3262,7 @@ static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outco
     if (wasRunning) Port2StartPort1Engine(ivars);   // else: stopped and muted stays stopped and muted
     Port2SetCardMode(ivars, 32);
     Port2AudioNote(ivars, outcome, reason);
-    STLOG("Port 2 audio: OFF (reason %u) — port 1 %s", reason,
+    STLOG("Port 2 audio: OFF (reason %u) — port 1 %{public}s", reason,
           wasRunning ? "running alone" : "left stopped (it was stopped)");
 }
 
@@ -3275,7 +3278,7 @@ static void RequestPortModeConfigChange(SymphonyThunderbridge_IVars *ivars,
         if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) && ivars->audioDevice) {
             kern_return_t rc = ivars->audioDevice->RequestDeviceConfigurationChange(
                 kSymphonyConfigChangePortMode, nullptr);
-            STLOG("Port selection: requested Core Audio configuration change (%s, 0x%x)", why, rc);
+            STLOG("Port selection: requested Core Audio configuration change (%{public}s, 0x%x)", why, rc);
         }
         self->release();
     });
@@ -3554,7 +3557,7 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
     const bool chLost   = (gcsrSeen & kGCSR_DMAMask) != (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
     const uint32_t dmaBits = kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
     const bool dmaLost  = ivars->dmaRunning && (gcsrSeen & dmaBits) != dmaBits;
-    STLOG("Card re-init #%u: GCSR=0x%08x lost its programmed state (%s%s%s) — re-programming IRQ, DMA, "
+    STLOG("Card re-init #%u: GCSR=0x%08x lost its programmed state (%{public}s%{public}s%{public}s) — re-programming IRQ, DMA, "
           "routing, mixer", ivars->cardReinitCount, gcsrSeen,
           swapLost ? "byte order " : "", chLost ? "channel count " : "", dmaLost ? "DMA enables" : "");
     // Quiet first: no interrupts, no DMA, clear latched status.
@@ -3629,7 +3632,7 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
             WriteRegister(dev, mi, MixerCoefOffset(bank + 1, 129), kMixerUnityCoeff);
         }
     }
-    STLOG("Card re-init: mixer 1 %s, mixer 2 %s (SW Return sources %u/%u)",
+    STLOG("Card re-init: mixer 1 %{public}s, mixer 2 %{public}s (SW Return sources %u/%u)",
           ivars->mixerStateValid[0] ? "replayed from app state" : "unity defaults",
           ivars->mixerStateValid[1] ? "replayed from app state" : "unity defaults",
           ivars->mixerSwReturnSource[0], ivars->mixerSwReturnSource[1]);
@@ -3756,7 +3759,7 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         ScheduleChannelNames(ivars, self);
         if (!LinkRecoveryAborted(ivars)) IndicateLinkOK(ivars);
         STLOG("Link recovery: Symphony re-enumerated and configured at %u Hz "
-              "(recovery #%u, monitor=%s atten=%u)",
+              "(recovery #%u, monitor=%{public}s atten=%u)",
               (uint32_t)(rate + 0.5), ivars->linkRecoveryCount,
               restored.lineMonitor ? "HP1" : "speakers", restored.monitorAttenuation);
         ivars->linkClockPresent = true;
@@ -3987,7 +3990,7 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
             ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink1Status, &xs);
             const uint32_t faultMask = kXLinkDataDownCurrent | kXLinkDataSlipCurrent | kXLinkDataSlipSticky;
             if (xs == 0xFFFFFFFFu || (xs & faultMask) != 0 || tunnelWasAbsent) needRecovery = true;
-            STLOG("Link watch: wake revalidation XLink1Status=0x%08x clocking=0x%08x tunnelWasAbsent=%u → %s",
+            STLOG("Link watch: wake revalidation XLink1Status=0x%08x clocking=0x%08x tunnelWasAbsent=%u → %{public}s",
                   xs, clk, tunnelWasAbsent ? 1u : 0u, needRecovery ? "re-lock + IO restart" : "clean");
         }
         if (needRecovery) {
@@ -4121,7 +4124,7 @@ kern_return_t SymphonyThunderbridge::RequestPortMode(uint32_t selectorValue)
         !__atomic_load_n(&ivars->portSelectorsStale, __ATOMIC_ACQUIRE))
         return kIOReturnSuccess;
     __atomic_store_n(&ivars->portSelectorsStale, true, __ATOMIC_RELEASE);
-    STLOG("Port selection: \"%s\" requested", want == 64 ? kSymphonyPortSourceName64 : kSymphonyPortSourceName32);
+    STLOG("Port selection: \"%{public}s\" requested", want == 64 ? kSymphonyPortSourceName64 : kSymphonyPortSourceName32);
     RequestPortModeConfigChange(ivars, this, "selector");
     return kIOReturnSuccess;
 }
@@ -4431,7 +4434,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         return kIOReturnUnsupported;
     }
     ivars->isLegacyPCIe2100 = (pciVendor == kApogeeVendorID && pciDevice == kSymphonyPCIeDeviceID);
-    STLOG("PCI identity: vendor=0x%04x device=0x%04x (%s)", pciVendor, pciDevice,
+    STLOG("PCI identity: vendor=0x%04x device=0x%04x (%{public}s)", pciVendor, pciDevice,
           ivars->isLegacyPCIe2100 ? "legacy PCIe 2100" : "ThunderBridge 2200");
 
     // ── 2a. Explicitly enable Memory Space + Bus Master in PCI Command reg ──
@@ -4580,7 +4583,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     STLOG("Board ID: 0x%08x", idReg);
     STLOG("  FPGA version:     %u (0x%02x)", ivars->fpgaVersion, ivars->fpgaVersion);
     STLOG("  Hardware version:  %u", ivars->hardwareVersion);
-    STLOG("  Board role:        %s", ivars->isMaster ? "MASTER" : "SLAVE");
+    STLOG("  Board role:        %{public}s", ivars->isMaster ? "MASTER" : "SLAVE");
 
     if (ivars->fpgaVersion < kMinimumFPGAVersion) {
         STERR("FPGA version %u < minimum %u — hardware too old",
@@ -4614,7 +4617,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     uint32_t flashStatus = 0;
     ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegFlash, &flashStatus);
     bool isGoldenImage = (flashStatus & kFlashUpdateGolden) != 0;
-    STLOG("  Flash status:      0x%08x (%s image)", flashStatus,
+    STLOG("  Flash status:      0x%08x (%{public}s image)", flashStatus,
           isGoldenImage ? "GOLDEN" : "user");
 
     // ── 9. Clear RX status errors ──────────────────────────────────────────
@@ -5108,7 +5111,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     {
         uint32_t gcsrCheck = 0;
         ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, &gcsrCheck);
-        STLOG("DMA: Channel count set to 32 in/out (GCSR=0x%08x, bits[5:0]=0x%02x%s)",
+        STLOG("DMA: Channel count set to 32 in/out (GCSR=0x%08x, bits[5:0]=0x%02x%{public}s)",
               gcsrCheck, gcsrCheck & 0x3F,
               (gcsrCheck & 0x3F) == 0x1B ? " OK" : " *** MISSING — bits may be write-only ***");
     }
@@ -5121,7 +5124,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                    ((initialFrameSize - 1) << kClkCtrl_FrameShift) & kClkCtrl_FrameMask,
                    kClkCtrl_FrameMask);
-    STLOG("DMA: Frame size set to %u samples (%s profile)", initialFrameSize,
+    STLOG("DMA: Frame size set to %u samples (%{public}s profile)", initialFrameSize,
           kUseHighPerformanceProfile ? "High Performance" : "Standard");
 
     // Do not publish the initial 44.1 kHz timing tuple against an FPGA period
@@ -5291,7 +5294,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
 
         ivars->dmaRunning = true;
-        STLOG("DMA: Started (A2H + H2A%s). GCSR=0x%08x",
+        STLOG("DMA: Started (A2H + H2A%{public}s). GCSR=0x%08x",
               ivars->meterDMAActive ? " + Meters" : "", gcsr);
     }
 
@@ -5405,7 +5408,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // Nominal-rate changes rename the optical channels (SymphonyNoteNominalSampleRate).
         RegisterNominalRateObserver(ivars->audioDevice, this, ivars);
 
-        STLOG("Audio: Device created (UID=%s, ZTS period=%u)", uidStr, kNumSampleFrames);
+        STLOG("Audio: Device created (UID=%{private}s, ZTS period=%u)", uidStr, kNumSampleFrames);  // from the card serial: stays private
     }
 
     // ── 32. Configure device properties ──────────────────────────────────
@@ -5459,7 +5462,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // Preferred stereo pair (channels 1-2)
         ivars->audioDevice->SetPreferredChannelsForStereo(1, 2);
 
-        STLOG("Audio: Device configured (44.1-192kHz, Thunderbolt, 32ch, %s profile)",
+        STLOG("Audio: Device configured (44.1-192kHz, Thunderbolt, 32ch, %{public}s profile)",
               kUseHighPerformanceProfile ? "High Performance" : "Standard");
     }
 
@@ -5578,7 +5581,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                 if (ret != kIOReturnSuccess) {
                     STERR("Audio: AddControl(volume) failed: 0x%x", ret);
                 } else {
-                    STLOG("Audio: Output volume control added (-64..0 dB, init=%.1f, target=%s)",
+                    STLOG("Audio: Output volume control added (-64..0 dB, init=%.1f, target=%{public}s)",
                           initialMonitorDb, initialLineMonitor ? "HP1" : "speakers");
                 }
             } else {
@@ -5757,7 +5760,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             OSSafeReleaseNULL(oc);   // drop the OSTypeAlloc +1; ivar ref keeps it alive
         }
         if (ivars->numOpticalBoards > 0)
-            STLOG("Audio: Optical format controls added (%u board%s)",
+            STLOG("Audio: Optical format controls added (%u board%{public}s)",
                   ivars->numOpticalBoards, ivars->numOpticalBoards == 1 ? "" : "s");
 
         // ── 36d. Phantom power ('phan') + mic gain ('vlme'/Input) — board-gated ──
@@ -5789,7 +5792,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             if (ok) {
                 ivars->numMicChannels =
                     (boardType == kSIOOptionBoard_MicPre8) ? kMicPre8NumChannels : 0;
-                STLOG("SymphonyIO: OptionBoardType(primary) = %u (%s) → numMicChannels=%u",
+                STLOG("SymphonyIO: OptionBoardType(primary) = %u (%{public}s) → numMicChannels=%u",
                       boardType,
                       boardType == kSIOOptionBoard_MicPre8 ? "MicPre8" : "other/none",
                       ivars->numMicChannels);
@@ -5820,7 +5823,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                                 | ((uint32_t)clk[2] << 16)
                                 | ((uint32_t)clk[3] << 8)
                                 |  (uint32_t)clk[4];
-                STLOG("SymphonyIO: ClockRateAndLock — %s, measured %u Hz (register-based=%u Hz)",
+                STLOG("SymphonyIO: ClockRateAndLock — %{public}s, measured %u Hz (register-based=%u Hz)",
                       clkLocked ? "LOCKED" : "no-lock", rateHz,
                       GetActualClockRate(ivars->pciDevice, ivars->barMemoryIndex));
             } else {
@@ -6018,7 +6021,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                             for (int i = 0; i < 8 && !hasData; i++)
                                 hasData = (a2hDmaSamples[i] != 0);
                             STLOG("IOOpHandler CAPTURE: op=%u #%llu frameSize=%u sampleTime=%llu "
-                                  "dma[0..3]=0x%08x,0x%08x,0x%08x,0x%08x %s",
+                                  "dma[0..3]=0x%08x,0x%08x,0x%08x,0x%08x %{public}s",
                                   (uint32_t)in_io_operation, ivars->ioOpCount,
                                   in_io_buffer_frame_size, in_sample_time,
                                   (uint32_t)a2hDmaSamples[0], (uint32_t)a2hDmaSamples[1],
@@ -6365,7 +6368,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                 });
             }
 #if SYMPHONY_RT_DEBUG
-            STLOG("Mute changed: %s [coalesced]", muted ? "MUTED" : "UNMUTED");
+            STLOG("Mute changed: %{public}s [coalesced]", muted ? "MUTED" : "UNMUTED");
 #endif
         }
     }
@@ -6409,7 +6412,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                      kRegSampleOut1Base + 0, &sampleOut0);
         ReadRegister(ivars->pciDevice, ivars->barMemoryIndex,
                      kRegSampleOut1Base + 4, &sampleOut1);
-        STLOG("  SampleOut[0]=0x%08x SampleOut[1]=0x%08x%s",
+        STLOG("  SampleOut[0]=0x%08x SampleOut[1]=0x%08x%{public}s",
               sampleOut0, sampleOut1,
               (sampleOut0 == 0 && sampleOut1 == 0) ? " *** ALL ZEROS ***" : "");
 
@@ -6424,7 +6427,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                      kRegSampleIn1Base + 8, &sampleIn2);
         ReadRegister(ivars->pciDevice, ivars->barMemoryIndex,
                      kRegSampleIn1Base + 12, &sampleIn3);
-        STLOG("  SampleIn[0..3]=0x%08x,0x%08x,0x%08x,0x%08x%s",
+        STLOG("  SampleIn[0..3]=0x%08x,0x%08x,0x%08x,0x%08x%{public}s",
               sampleIn0, sampleIn1, sampleIn2, sampleIn3,
               (sampleIn0 == 0 && sampleIn1 == 0 && sampleIn2 == 0 && sampleIn3 == 0)
                   ? " *** NO INPUT DATA ***" : " HAS INPUT");
@@ -6437,7 +6440,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
             // Read samples from a position slightly behind the DMA write pointer
             uint32_t checkFrame = (framePos > 64) ? (framePos - 64) : 0;
             uint32_t checkIdx = checkFrame * kMaxChannelsPerPort;
-            STLOG("  A2H DMA buf @frame %u: [0..3]=0x%08x,0x%08x,0x%08x,0x%08x%s",
+            STLOG("  A2H DMA buf @frame %u: [0..3]=0x%08x,0x%08x,0x%08x,0x%08x%{public}s",
                   checkFrame,
                   (uint32_t)a2hBuf[checkIdx], (uint32_t)a2hBuf[checkIdx+1],
                   (uint32_t)a2hBuf[checkIdx+2], (uint32_t)a2hBuf[checkIdx+3],
@@ -6653,7 +6656,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                              kRegClkCtrl, &clkCtrlReadback);
                 const uint32_t frameReadback =
                     ((clkCtrlReadback & kClkCtrl_FrameMask) >> kClkCtrl_FrameShift) + 1;
-                STLOG("StartDevice: FPGA frame size set to %u samples (%s profile)",
+                STLOG("StartDevice: FPGA frame size set to %u samples (%{public}s profile)",
                       profile.frameSize, kUseHighPerformanceProfile ? "High Performance" : "Standard");
                 STLOG("StartDevice: FPGA ClkCtrl readback=0x%08x frame=%u expected=%u",
                       clkCtrlReadback, frameReadback, profile.frameSize);
@@ -6737,7 +6740,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                     gcsr |= kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
                     if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
                     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
-                    STLOG("StartDevice: DMA restarted (GCSR=0x%08x%s)", gcsr,
+                    STLOG("StartDevice: DMA restarted (GCSR=0x%08x%{public}s)", gcsr,
                           ivars->meterDMAActive ? " +Meters" : "");
                 }
 
@@ -7252,7 +7255,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
 kern_return_t IMPL(SymphonyThunderbridge, SetPowerState)
 {
     const bool on = (powerFlags & kIOServicePowerCapabilityOn) != 0;
-    STLOG("SetPowerState: flags=0x%08x → %s", powerFlags, on ? "ON" : "OFF/LOW");
+    STLOG("SetPowerState: flags=0x%08x → %{public}s", powerFlags, on ? "ON" : "OFF/LOW");
     if (ivars) {
         if (!on) {
             // SEQ_CST pairs with the Dekker re-check in HardwareReachable().
@@ -7555,7 +7558,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                           ThunderboltCardOutputRouteWord(slot, enabled));
             ivars->cardOutputRoute[channel]    = ThunderboltCardOutputRouteWord(slot, enabled);
             ivars->cardOutputRouteSet[channel] = true;
-            STLOG("Card output route: XLink TX %u ← TDM slot %u (%s)",
+            STLOG("Card output route: XLink TX %u ← TDM slot %u (%{public}s)",
                   channel, slot, enabled ? "enabled" : "disabled");
             result = kIOReturnSuccess;
             return;
@@ -7680,7 +7683,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(attenuation));
             if (ivars->outputMuteControl)
                 ivars->outputMuteControl->SetControlValue(muted);
-            STLOG("Monitor target: mode=%u target=%s", payload[0],
+            STLOG("Monitor target: mode=%u target=%{public}s", payload[0],
                   payload[0] == 0 ? "HP1" : "speakers");
         }
         result = kIOReturnSuccess;

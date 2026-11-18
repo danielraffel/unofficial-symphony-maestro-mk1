@@ -205,7 +205,7 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             arguments->structureOutput = outputData;
         }
 
-        UCLOG("ExternalMethod: cmd=0x%02x value=0x%08x payload=%u → %s",
+        UCLOG("ExternalMethod: cmd=0x%02x value=0x%08x payload=%u → %{public}s",
               input->command, input->value, input->payloadLen,
               cmdRet == kIOReturnSuccess ? "OK" : "FAIL");
 
