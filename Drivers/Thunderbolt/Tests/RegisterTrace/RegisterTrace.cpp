@@ -3153,7 +3153,8 @@ int main(int argc, char **argv)
         RunScenario(o, r);
         auto *drv = r.drv;
         auto &a = r.card.port[0].stored;
-        CHECK(drv->RequestMicGain(2, 40.0f) == kIOReturnNotReady, "unknown input type must not guess a gain stage");
+        // Unknown type -> Mic, as drivers before 132 did (the gain never goes dead).
+        CHECK(drv->RequestMicGain(2, 40.0f) == kIOReturnSuccess, "unknown input type is treated as Mic");
         auto *control = gHostAudio.micGains.at(1);
         CHECK(control->range_.mMaximum == 85, "fixed SDK range must allow a later Mic 85");
         control->HandleChangeDecibelValue(80);
@@ -3181,8 +3182,8 @@ int main(int argc, char **argv)
         halType[0] = 4;
         drv->SendVendorCommand(0x20, 0x80000001u, halType, 2);
         CHECK(control->GetDecibelValue() == 20, "Mic-Instrument-Mic round trip preserves both stages");
-        CHECK(gHostAudio.micGains.at(2)->HandleChangeDecibelValue(40) == kIOReturnNotReady,
-              "HAL unknown type reports refusal");
+        CHECK(gHostAudio.micGains.at(2)->HandleChangeDecibelValue(40) == kIOReturnSuccess,
+              "HAL unknown type is treated as Mic");
         CHECK(gHostAudio.micGains.at(2)->GetDecibelValue() == 0, "refused gain does not change HAL value");
         const auto beforeFailure = control->valuePublications;
         r.card.port[0].txBusy = true;

@@ -10149,9 +10149,11 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
         return kIOReturnNotReady;
     }
     const uint32_t ch = channel;
-    if (ivars->numMicChannels > 0 &&
-        !__atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE)) return kIOReturnNotReady;
-    const bool instrument = __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE);
+    // An unknown type (the start-up 0x60 read failed and no type write has
+    // been seen) is treated as Mic, as every driver before build 132 did, so
+    // the DAW's gain control never goes dead (review 2026-11-19 finding 9).
+    const bool instrument = __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE) &&
+                            __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE);
     const uint32_t lane = instrument ? 1 : 0;
     const uint8_t command = instrument ? kSIOCmd_InstrumentGain : kSIOCmd_MicGain;
     const float maxDb = instrument ? 65.0f : kMicGainMaxDb;
