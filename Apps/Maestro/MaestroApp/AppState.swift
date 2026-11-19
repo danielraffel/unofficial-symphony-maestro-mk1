@@ -1100,6 +1100,9 @@ final class AppState {
     }
     /// The unit the per-unit pages show. Only `.b` while the picker is shown.
     var selectedUnit: DeviceUnit = .a
+    /// The unit whose monitor receives Mac volume keys. Unit A is the default;
+    /// the picker is only shown for two configured Symphony I/Os at 64 channels.
+    var monitorDevice: DeviceUnit = .a
     /// Unit B's naming state (its optical formats and Replaces).
     var unitBChannelNaming = CardLayout.ChannelNaming()
     /// Unit B's prefix letter, as its channels are named.
@@ -1123,6 +1126,17 @@ final class AppState {
         let shown = currentSecondPortState()
         if shown != secondPortState { secondPortState = shown }
         refreshUnitB()
+        if let tb = device as? ThunderboltDeviceConnection,
+           let selection = portSelection.selection,
+           selection == .ports1And2,
+           unitB?.setupComplete == true {
+            let saved = MonitorDeviceSelectionStore.load(productID: tb.identifier.productID)
+            if monitorDevice != saved { monitorDevice = saved }
+            _ = tb.setMonitorDevice(monitorDevice)
+        } else if monitorDevice != .a {
+            monitorDevice = .a
+            if let tb = device as? ThunderboltDeviceConnection { _ = tb.setMonitorDevice(.a) }
+        }
         // The converter report follows 32/64 channels too (port 2 counts only
         // while 64 run), and costs no bus access either.
         refreshConverterSystem()
@@ -1217,6 +1231,16 @@ final class AppState {
                 self.portSelection = expired
             }
         }
+    }
+
+    @MainActor
+    func chooseMonitorDevice(_ unit: DeviceUnit) {
+        guard unit == .a || (unit == .b && unitB?.setupComplete == true &&
+                             portSelection.selection == .ports1And2),
+              let tb = device as? ThunderboltDeviceConnection else { return }
+        guard tb.setMonitorDevice(unit) else { return }
+        monitorDevice = unit
+        MonitorDeviceSelectionStore.save(unit, productID: tb.identifier.productID)
     }
 
     /// The driver's answer right now, without storing it. Nil unless the

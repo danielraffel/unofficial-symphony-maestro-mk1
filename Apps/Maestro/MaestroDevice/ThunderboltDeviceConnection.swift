@@ -782,6 +782,13 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         }.value
     }
 
+    /// Select which Symphony I/O owns the card's single Core Audio volume/mute
+    /// control. The dext refuses unit B unless it is configured at 64 channels.
+    @discardableResult
+    public func setMonitorDevice(_ unit: DeviceUnit) -> Bool {
+        dextClient.setMonitorDevice(unit)
+    }
+
     /// A connection to unit B through this connection's driver client: the
     /// same calls with port byte 1. Unit A's bytes are not affected.
     public func makeUnitBConnection(settingsStore: DeviceSettingsStore = DeviceSettingsStore()) -> ThunderboltUnitBConnection {

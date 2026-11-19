@@ -817,8 +817,14 @@ struct SystemSetupView: View {
     @State private var dextAlertMessage = ""
     @State private var deviceMode: UInt32 = 1  // 1=Symphony
     @State private var wordClockOut: UInt32 = 0 // P3D-03: 0=normal, 1=divide-by-2
-    // Keyboard Volume Control removed — legacy daemon-only pref, no USB opcode.
-    // Volume keys are now handled by ASP/proxy directly.
+    /// The original exposed this popup in System Setup only when more than one
+    /// monitor device existed (`og_source/maestro2/App/Controllers/
+    /// APSystemKeyboardVolumeControlViewController.m:48-83`).
+    private var hasTwoMonitorDevices: Bool {
+        appState.transportType == .thunderbolt
+            && appState.portSelection.selection == .ports1And2
+            && appState.unitB?.setupComplete == true
+    }
     @State private var peakHoldMode: UInt32 = 0   // 0=Off, 1=2sec, 2=Infinite
     @State private var overHoldMode: UInt32 = 0   // 0=Off, 1=2sec, 2=Infinite
     @State private var errorMessage: String?
@@ -1040,6 +1046,19 @@ struct SystemSetupView: View {
                 }
             }
             .disabled(isLoading)
+            }
+
+            if hasTwoMonitorDevices {
+                Section("Keyboard Volume Control") {
+                    Picker("Monitor Device", selection: Binding(
+                        get: { appState.monitorDevice },
+                        set: { appState.chooseMonitorDevice($0) }
+                    )) {
+                        Text("Unit A").tag(DeviceUnit.a)
+                        Text("Unit B").tag(DeviceUnit.b)
+                    }
+                    .pickerStyle(.menu)
+                }
             }
 
             // The second Symphony I/O, whichever unit is shown.

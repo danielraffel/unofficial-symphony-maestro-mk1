@@ -32,7 +32,8 @@
 #define kSelectorSetConverterConfig 10       // The user's converter choices: word clock source and
                                              // Device Type (dext 131+). See SymphonyConverterConfigInput.
 #define kSelectorReadUnitB      11           // 64ch unit-B state (no bus access)
-// Selector 12 is reserved for B6 device information. Existing ABIs are unchanged.
+// Selector 12: monitor device (B5c); 13: Loop Sync (B9). Existing ABIs are unchanged.
+#define kSelectorSetMonitorDevice 12         // input: SymphonyMonitorDeviceInput
 #define kSelectorLoopSync       13
 #define kSelectorCount          14
 
@@ -70,6 +71,11 @@ typedef struct {
 typedef struct {
     uint32_t status;        // 0 = success, nonzero = IOReturn error code
 } SymphonyVendorCommandOutput; // 4 bytes
+
+typedef struct {
+    uint32_t magic; // kSymphonyUCMagic
+    uint32_t unit;  // 0 = unit A, 1 = unit B
+} SymphonyMonitorDeviceInput; // 8 bytes
 
 // Output of kSelectorReadMeters — a snapshot of the card FPGA meter DMA buffer.
 // Per word: peak magnitude in bits[31:24] (dB = 20*log10(peak/256)); over = bit1.

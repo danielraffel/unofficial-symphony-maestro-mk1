@@ -193,6 +193,14 @@ struct SymphonyThunderbridge_IVars {
     bool      speakerMute;
     uint8_t   hp1Attenuation;
     bool      hp1Mute;
+    // Which configured Symphony I/O owns the single HAL volume/mute control.
+    // Unit A is the default and is the only possible target at 32 channels.
+    bool      monitorDeviceB;
+    uint8_t   unitBMonitorOutputTarget;
+    uint8_t   unitBSpeakerAttenuation;
+    bool      unitBSpeakerMute;
+    uint8_t   unitBHP1Attenuation;
+    bool      unitBHP1Mute;
 
     // Clock source selector control ('clck') — entitlement-free AudioDriverKit control.
     // coreaudiod drives it through the normal audio-HAL property path (the SAME channel
@@ -3894,6 +3902,8 @@ static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
     const bool was = ivars->unitBConfigured;
     ivars->unitBConfigured = false;
     ivars->loopSyncValid = false;
+    if (__atomic_exchange_n(&ivars->monitorDeviceB, false, __ATOMIC_ACQ_REL))
+        STLOG("Monitor target fallback: unit B left 64-channel mode; volume keys now target unit A");
     if (!was) return;
     const bool reachable = touchHardware && ivars->pciDevice && XLinkTxAdmissible(ivars);
     if (reachable) SendUnitAClock(ivars, false);
@@ -4057,7 +4067,10 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     require(unlocked, kUnitBFailUnlock, "preference unlock/read-back");
     ivars->unitBSetupFlags = unlocked && mandatoryOK ? kUnitBSetupOK : failures;
     ivars->unitBConfigured = unlocked && mandatoryOK;
-    if (!ivars->unitBConfigured) ivars->loopSyncValid = false;
+    if (!ivars->unitBConfigured) {
+        ivars->loopSyncValid = false;
+        __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
+    }
     if (!ivars->unitBConfigured) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
     STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, %u message error(s))",
           unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
@@ -7785,12 +7798,23 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
             if (atten < 0.0f) atten = 0.0f;
             if (atten > 64.0f) atten = 64.0f;
             uint8_t attenuation = (uint8_t)atten;
-            uint8_t activeTarget = __atomic_load_n(&ivars->monitorOutputTarget,
-                                                   __ATOMIC_ACQUIRE);
-            if (activeTarget == 1)
+            bool targetB = __atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE);
+            if (targetB && (!ivars->unitBConfigured || ivars->portMode != 64)) {
+                __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
+                targetB = false;
+                STLOG("Monitor target fallback: unit B unavailable; volume keys now target unit A");
+            }
+            uint8_t activeTarget = targetB
+                ? __atomic_load_n(&ivars->unitBMonitorOutputTarget, __ATOMIC_ACQUIRE)
+                : __atomic_load_n(&ivars->monitorOutputTarget, __ATOMIC_ACQUIRE);
+            if (targetB) {
+                if (activeTarget == 1) __atomic_store_n(&ivars->unitBHP1Attenuation, attenuation, __ATOMIC_RELEASE);
+                else __atomic_store_n(&ivars->unitBSpeakerAttenuation, attenuation, __ATOMIC_RELEASE);
+            } else if (activeTarget == 1) {
                 __atomic_store_n(&ivars->hp1Attenuation, attenuation, __ATOMIC_RELEASE);
-            else
+            } else {
                 __atomic_store_n(&ivars->speakerAttenuation, attenuation, __ATOMIC_RELEASE);
+            }
             __atomic_store_n(&ivars->pendingAtten, attenuation, __ATOMIC_RELAXED);
             __atomic_fetch_add(&ivars->pendingVolumeGen, 1, __ATOMIC_RELEASE);
             bool expected = false;
@@ -7807,13 +7831,21 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                             ivars->converterTrimAtten = b;
                             ApplyConverterTrim(ivars);
                         } else if (admissible) {
-                            const uint8_t target = __atomic_load_n(&ivars->monitorOutputTarget,
-                                                                    __ATOMIC_ACQUIRE);
+                            bool targetBForSend = __atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE);
+                            if (targetBForSend && (!ivars->unitBConfigured || ivars->portMode != 64)) {
+                                __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
+                                targetBForSend = false;
+                                STLOG("Monitor target fallback: unit B disappeared before volume send");
+                            }
+                            const uint8_t target = targetBForSend
+                                ? __atomic_load_n(&ivars->unitBMonitorOutputTarget, __ATOMIC_ACQUIRE)
+                                : __atomic_load_n(&ivars->monitorOutputTarget, __ATOMIC_ACQUIRE);
                             const uint8_t command = target == 1 ? kSIOCmd_HeadphoneVolume
                                                                  : kSIOCmd_SpeakerVolume;
-                            SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                              ivars->symphonyAddr, command, 0,
-                                              &b, 1, ivars->runtimeTxSeq);
+                            SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                                targetBForSend ? kRegXLink2TX : kRegXLink1TX,
+                                                targetBForSend ? 1 : ivars->symphonyAddr, command, 0,
+                                                &b, 1, targetBForSend ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
                         }
                         __atomic_store_n(&ivars->volumeTxScheduled, false, __ATOMIC_RELEASE);
                         // Re-arm only if a newer value arrived AND no producer beat us to it.
@@ -7835,12 +7867,23 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
         bool muted = ivars->outputMuteControl->GetControlValue();
         if (muted != ivars->lastMuteState) {
             ivars->lastMuteState = muted;   // IRQ-queue-only scalar (single writer)
-            uint8_t activeTarget = __atomic_load_n(&ivars->monitorOutputTarget,
-                                                   __ATOMIC_ACQUIRE);
-            if (activeTarget == 1)
+            bool targetB = __atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE);
+            if (targetB && (!ivars->unitBConfigured || ivars->portMode != 64)) {
+                __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
+                targetB = false;
+                STLOG("Monitor target fallback: unit B unavailable; mute now targets unit A");
+            }
+            uint8_t activeTarget = targetB
+                ? __atomic_load_n(&ivars->unitBMonitorOutputTarget, __ATOMIC_ACQUIRE)
+                : __atomic_load_n(&ivars->monitorOutputTarget, __ATOMIC_ACQUIRE);
+            if (targetB) {
+                if (activeTarget == 1) __atomic_store_n(&ivars->unitBHP1Mute, muted, __ATOMIC_RELEASE);
+                else __atomic_store_n(&ivars->unitBSpeakerMute, muted, __ATOMIC_RELEASE);
+            } else if (activeTarget == 1) {
                 __atomic_store_n(&ivars->hp1Mute, muted, __ATOMIC_RELEASE);
-            else
+            } else {
                 __atomic_store_n(&ivars->speakerMute, muted, __ATOMIC_RELEASE);
+            }
             __atomic_store_n(&ivars->pendingMuteState, muted, __ATOMIC_RELAXED);
             __atomic_fetch_add(&ivars->pendingMuteGen, 1, __ATOMIC_RELEASE);
             bool expected = false;
@@ -7856,13 +7899,21 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                             ivars->converterTrimMuted = b != 0;
                             ApplyConverterTrim(ivars);
                         } else if (admissible) {
-                            const uint8_t target = __atomic_load_n(&ivars->monitorOutputTarget,
-                                                                    __ATOMIC_ACQUIRE);
+                            bool targetBForSend = __atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE);
+                            if (targetBForSend && (!ivars->unitBConfigured || ivars->portMode != 64)) {
+                                __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
+                                targetBForSend = false;
+                                STLOG("Monitor target fallback: unit B disappeared before mute send");
+                            }
+                            const uint8_t target = targetBForSend
+                                ? __atomic_load_n(&ivars->unitBMonitorOutputTarget, __ATOMIC_ACQUIRE)
+                                : __atomic_load_n(&ivars->monitorOutputTarget, __ATOMIC_ACQUIRE);
                             const uint8_t command = target == 1 ? kSIOCmd_HeadphoneMute
                                                                  : kSIOCmd_SpeakerMute;
-                            SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                              ivars->symphonyAddr, command, 0,
-                                              &b, 1, ivars->runtimeTxSeq);
+                            SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                                targetBForSend ? kRegXLink2TX : kRegXLink1TX,
+                                                targetBForSend ? 1 : ivars->symphonyAddr, command, 0,
+                                                &b, 1, targetBForSend ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
                         }
                         __atomic_store_n(&ivars->muteTxScheduled, false, __ATOMIC_RELEASE);
                         if (__atomic_load_n(&ivars->pendingMuteGen, __ATOMIC_ACQUIRE) == gen)
@@ -9437,6 +9488,23 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             if (lane == (__atomic_load_n(&ivars->micPreInstrument[value], __ATOMIC_ACQUIRE) ? 1u : 0u))
                 PublishMicGain(ivars, value);
         }
+        if (port == 1 && payload && payloadLen >= 1) {
+            if (command == kSIOCmd_SpeakerVolume) ivars->unitBSpeakerAttenuation = payload[0];
+            else if (command == kSIOCmd_SpeakerMute) ivars->unitBSpeakerMute = payload[0] != 0;
+            else if (command == kSIOCmd_HeadphoneVolume && (value & 0xFFFFu) == 0)
+                ivars->unitBHP1Attenuation = payload[0];
+            else if (command == kSIOCmd_HeadphoneMute && (value & 0xFFFFu) == 0)
+                ivars->unitBHP1Mute = payload[0] != 0;
+            if (__atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE) &&
+                ((command == kSIOCmd_SpeakerVolume) || (command == kSIOCmd_SpeakerMute) ||
+                 (command == kSIOCmd_HeadphoneVolume) || (command == kSIOCmd_HeadphoneMute))) {
+                const uint8_t selected = __atomic_load_n(&ivars->unitBMonitorOutputTarget, __ATOMIC_ACQUIRE);
+                const uint8_t attenuation = selected == 1 ? ivars->unitBHP1Attenuation : ivars->unitBSpeakerAttenuation;
+                const bool muted = selected == 1 ? ivars->unitBHP1Mute : ivars->unitBSpeakerMute;
+                if (ivars->outputVolumeControl) ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(attenuation));
+                if (ivars->outputMuteControl) ivars->outputMuteControl->SetControlValue(muted);
+            }
+        }
         // Host input names follow the capture routes and S/PDIF Coax Replaces.
         // Each unit owns its own P2P table and naming state. The card route
         // decides which host inputs carry that unit, including duplicates.
@@ -9488,34 +9556,117 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         // an HP1 monitor target.  The HAL exposes one volume/mute control, so
         // remember that target only after the hardware mode write succeeds;
         // subsequent coalesced HAL writes then use 0x23/0x24 for HP1.
-        if (port == 0 && command == kSIOCmd_SpeakerMode && payload && payloadLen >= 1 &&
+        if ((port == 0 || port == 1) && command == kSIOCmd_SpeakerMode && payload && payloadLen >= 1 &&
             !__atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
             const uint8_t target = payload[0] == 0 ? static_cast<uint8_t>(1)
                                                    : static_cast<uint8_t>(0);
-            __atomic_store_n(&ivars->monitorOutputTarget, target, __ATOMIC_RELEASE);
+            if (port == 1) {
+                __atomic_store_n(&ivars->unitBMonitorOutputTarget, target, __ATOMIC_RELEASE);
+            } else {
+                __atomic_store_n(&ivars->monitorOutputTarget, target, __ATOMIC_RELEASE);
+            }
 
             // The legacy driver publishes the newly selected monitor's
             // volume/mute immediately when Line/Stereo changes.  Keep the
             // single HAL control aligned with that target so the UI and the
             // next keyboard-volume event cannot carry the previous output's
             // value into the new destination.
-            const uint8_t attenuation = target == 1
-                ? __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE)
-                : __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);
-            const bool muted = target == 1
-                ? __atomic_load_n(&ivars->hp1Mute, __ATOMIC_ACQUIRE)
-                : __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE);
-            if (ivars->outputVolumeControl)
-                ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(attenuation));
-            if (ivars->outputMuteControl)
-                ivars->outputMuteControl->SetControlValue(muted);
-            STLOG("Monitor target: mode=%u target=%{public}s", payload[0],
-                  payload[0] == 0 ? "HP1" : "speakers");
+            if (port == 0) {
+                const uint8_t attenuation = target == 1
+                    ? __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE)
+                    : __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);
+                const bool muted = target == 1
+                    ? __atomic_load_n(&ivars->hp1Mute, __ATOMIC_ACQUIRE)
+                    : __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE);
+                if (ivars->outputVolumeControl)
+                    ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(attenuation));
+                if (ivars->outputMuteControl)
+                    ivars->outputMuteControl->SetControlValue(muted);
+            } else if (__atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE)) {
+                const uint8_t attenuation = target == 1
+                    ? __atomic_load_n(&ivars->unitBHP1Attenuation, __ATOMIC_ACQUIRE)
+                    : __atomic_load_n(&ivars->unitBSpeakerAttenuation, __ATOMIC_ACQUIRE);
+                const bool muted = target == 1
+                    ? __atomic_load_n(&ivars->unitBHP1Mute, __ATOMIC_ACQUIRE)
+                    : __atomic_load_n(&ivars->unitBSpeakerMute, __ATOMIC_ACQUIRE);
+                if (ivars->outputVolumeControl)
+                    ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(attenuation));
+                if (ivars->outputMuteControl)
+                    ivars->outputMuteControl->SetControlValue(muted);
+            }
+            STLOG("Monitor target: unit=%{public}s mode=%u target=%{public}s", port ? "B" : "A",
+                  payload[0], payload[0] == 0 ? "HP1" : "speakers");
         }
         result = kIOReturnSuccess;
     });
     if (namesChanged) ScheduleChannelNames(ivars, this);
     return result;
+}
+
+// Select which configured Symphony I/O owns the single Core Audio volume/mute
+// control. The original exposed this in System Setup as the monitor device.
+kern_return_t SymphonyThunderbridge::SetMonitorDevice(uint32_t unit)
+{
+    if (!ivars || unit > 1) return kIOReturnBadArgument;
+    if (unit == 1 && (!ivars->unitBConfigured || ivars->portMode != 64)) {
+        STLOG("Monitor device: unit B refused (not configured at 64 channels)");
+        return kIOReturnNotReady;
+    }
+    const bool selectingB = unit == 1;
+    const bool oldB = __atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE);
+    if (oldB == selectingB) return kIOReturnSuccess;
+    if (unit == 1) {
+        // Refresh B's own monitor selection and values at the moment it is
+        // selected; setup/recovery traces stay byte-identical until then.
+        IODispatchQueue *q = ivars->xlinkQueue;
+        if (!q) return kIOReturnNotReady;
+        __block bool readOK = true;
+        q->DispatchSync(^{
+            uint8_t value = 0;
+            auto read = ^(uint8_t command, uint8_t *out) {
+                if (!ReadVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink2TX,
+                                         kRegXLink2RX, 1, command, 0, out, 1,
+                                         ivars->runtimeTxSeq2, ivars->isLegacyPCIe2100))
+                    readOK = false;
+            };
+            read(kSIOCmd_SpeakerMode, &value);
+            if (readOK) ivars->unitBMonitorOutputTarget = value == 0 ? 1 : 0;
+            read(kSIOCmd_SpeakerVolume, &value);
+            if (readOK) ivars->unitBSpeakerAttenuation = value;
+            read(kSIOCmd_SpeakerMute, &value);
+            if (readOK) ivars->unitBSpeakerMute = value != 0;
+            read(kSIOCmd_HeadphoneVolume, &value);
+            if (readOK) ivars->unitBHP1Attenuation = value;
+            read(kSIOCmd_HeadphoneMute, &value);
+            if (readOK) ivars->unitBHP1Mute = value != 0;
+        });
+        if (!readOK) {
+            STLOG("Monitor device: unit B monitor read failed; retaining prior target state");
+            __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
+            return kIOReturnIOError;
+        }
+    }
+    __atomic_store_n(&ivars->monitorDeviceB, selectingB, __ATOMIC_RELEASE);
+    const uint8_t target = unit == 1
+        ? __atomic_load_n(&ivars->unitBMonitorOutputTarget, __ATOMIC_ACQUIRE)
+        : __atomic_load_n(&ivars->monitorOutputTarget, __ATOMIC_ACQUIRE);
+    const uint8_t attenuation = unit == 1
+        ? (target == 1 ? __atomic_load_n(&ivars->unitBHP1Attenuation, __ATOMIC_ACQUIRE)
+                       : __atomic_load_n(&ivars->unitBSpeakerAttenuation, __ATOMIC_ACQUIRE))
+        : (target == 1 ? __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE)
+                       : __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE));
+    const bool muted = unit == 1
+        ? (target == 1 ? __atomic_load_n(&ivars->unitBHP1Mute, __ATOMIC_ACQUIRE)
+                       : __atomic_load_n(&ivars->unitBSpeakerMute, __ATOMIC_ACQUIRE))
+        : (target == 1 ? __atomic_load_n(&ivars->hp1Mute, __ATOMIC_ACQUIRE)
+                       : __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE));
+    if (ivars->outputVolumeControl)
+        ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(attenuation));
+    if (ivars->outputMuteControl)
+        ivars->outputMuteControl->SetControlValue(muted);
+    STLOG("Monitor device: selected unit %{public}s target=%{public}s atten=%u mute=%u",
+          unit ? "B" : "A", target == 1 ? "HP1" : "speakers", attenuation, muted ? 1 : 0);
+    return kIOReturnSuccess;
 }
 
 // ── ReadVendorCommand ────────────────────────────────────────────────────────
