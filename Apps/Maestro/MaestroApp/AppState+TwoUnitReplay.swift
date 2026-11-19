@@ -61,6 +61,7 @@ extension AppState {
         let link = await Task.detached(priority: .utility) { tb.linkState() }.value
         let bGeneration = await Task.detached(priority: .utility) { tb.readUnitBState()?.generation }.value
         guard device === tb, unitBDevice === b, let link, let bGeneration else { return }
+        applyPhantomObservations(link)
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
         let replayDeferral = self.replayDeferral
         twoUnitReplayNeeded = false

@@ -455,6 +455,13 @@ struct InputControlsView: View {
             initializeChannels()
             restoreSessionScrollPosition()
         }
+        .onChange(of: appState.phantomObservationRevision) { _, _ in
+            let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey) ?? []
+            for index in channels.indices where index < saved.count {
+                channels[index].phantom = saved[index].phantom
+                channels[index].phantomProvenance = saved[index].phantomProvenance
+            }
+        }
         .onChange(of: appState.frontPanelMicPreUpdate) { _, update in
             applyFrontPanelGain(update)
         }

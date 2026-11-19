@@ -236,6 +236,7 @@ struct SymphonyThunderbridge_IVars {
     // lane's drain block serializes on the shared xlinkQueue (MSG_BYTE frames
     // never interleave; the invariant at the top of this struct holds per lane).
     uint32_t  numMicChannels;                       // 0 unless MicPre8 detected
+    uint64_t halPhantomOff[16]; // physical A0..7, B0..7; host-only OFF receipts
     SymphonyPhantomControl *phantomControl[8];      // per-channel phantom ('phan')
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
     uint8_t   pendingPhantom[2][8];   uint32_t pendingPhantomGen[2][8]; bool phantomTxScheduled[2][8];
@@ -5370,6 +5371,18 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     return kIOReturnSuccess;
 }
 
+// Optional tail of the existing host-only link-state read.
+kern_return_t SymphonyThunderbridge::ReadPhantomObservations(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    for (uint32_t i = 0; i < 16; ++i) {
+        const uint64_t stamp = __atomic_load_n(&ivars->halPhantomOff[i], __ATOMIC_ACQUIRE);
+        outWords[i * 2] = static_cast<uint32_t>(stamp);
+        outWords[i * 2 + 1] = static_cast<uint32_t>(stamp >> 32);
+    }
+    return kIOReturnSuccess;
+}
+
 // ── ReadPort2State (EXPERIMENT, 64ch stage 1) ────────────────────────────────
 // What the last port-2 probe found (SymphonyPort2StateOutput). Reads ivars
 // only, like ReadLinkState, whose 16 words are left exactly as they were. In a
@@ -10112,6 +10125,19 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
     if (__atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE)) {
         STERR("RequestPhantom: TX shut down — not sending");
         return kIOReturnNotReady;
+    }
+    // Record the resolved physical target at admission, even if the asynchronous
+    // hardware send later fails. OFF must revoke host restore authority. ON has
+    // no receipt and cannot authorize a future automatic ON. Never infer the
+    // target later from a mutable HAL element. No hardware access here.
+    if (!on) {
+        uint64_t previous = __atomic_load_n(&ivars->halPhantomOff[port * 8 + ch], __ATOMIC_ACQUIRE);
+        uint64_t next;
+        do {
+            const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+            next = now > previous ? now : previous + 1;
+        } while (!__atomic_compare_exchange_n(&ivars->halPhantomOff[port * 8 + ch], &previous,
+                                             next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
     }
     __atomic_store_n(&ivars->pendingPhantom[port][ch], on ? 1 : 0, __ATOMIC_RELAXED);
     __atomic_fetch_add(&ivars->pendingPhantomGen[port][ch], 1, __ATOMIC_RELEASE);
