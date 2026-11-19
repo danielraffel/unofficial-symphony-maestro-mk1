@@ -151,6 +151,9 @@ build_and_run() {
     if grep -q 'ReadConverterState' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_CONVERTER_PARITY)
     fi
+    if grep -q 'ConfigureUnitB' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_UNITB_CONFIG)
+    fi
     if grep -q 'RetireForUpgrade' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_RETIRE -DSYMPHONY_DEXT_BUILD=1000)
     fi

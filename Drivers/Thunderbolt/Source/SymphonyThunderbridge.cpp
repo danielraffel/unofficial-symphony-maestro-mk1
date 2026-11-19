@@ -3251,6 +3251,7 @@ static void ClearPort2Units(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
 {
     __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
     ConvSetPort(ivars, 1, false, 0, nullptr);
+    ivars->unitBConfigured = false;   // unit B is set up again when 64 starts
     ivars->port2Clocking  = clk;
     ivars->port2UnitCount = 0;
     ivars->port2RateHz    = 0;
@@ -3782,6 +3783,84 @@ static void AlignXLinkPhase(SymphonyThunderbridge_IVars *ivars)
 // 32 -> 64. The caller has passed XLinkTxAdmissible; Core Audio has stopped IO.
 // Returns true with both ports running, false with port 1 running alone as
 // before and the reason recorded.
+// Two units at 64 channels: configure the Symphony I/O on port 2 ("unit B").
+// The original created a full SymphonyIO peripheral for (card, bus 1, device 0)
+// and sent it everything unit A got, over XLink 2 to address 1, with its own
+// message sequence (SymphonyIOSymphonyPeripheralDevice.cpp:52-70,
+// SymphonyDriverInterface.cpp:982-1016); not being the master, it was set to
+// Word Clock (SymphonyIO.cpp:4752-4767; Loop Sync is not offered on this
+// card). This mirrors what ConfigureSymphonyLink sends unit A (19b): lock,
+// clock, optical format, playback and capture routing, the unit's mixer
+// inputs muted (DAW mode), unlock. Unit B's monitor settings stay its own;
+// Maestro sets the rest through the port byte. On xlinkQueue, port 2 enabled
+// and its unit addressed; nothing is sent unless the unit answers a vendor read.
+static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    const bool pcie = ivars->isLegacyPCIe2100;
+    uint8_t &seq = ivars->runtimeTxSeq2;
+    auto send = [&](uint8_t cmd, uint32_t value, const uint8_t *data, uint16_t len) {
+        const bool ok = SendVendorRequestOn(dev, mi, kRegXLink2TX, 1, cmd, value, data, len, seq);
+        if (!ok) ivars->unitBTxErrors++;
+        return ok;
+    };
+    ivars->unitBConfigured = false;
+    ivars->unitBSetupFlags = 0;
+    for (uint32_t b = 0; b < 2; b++) {
+        uint8_t bt = kSIOOptionBoard_None;
+        ivars->unitBBoardValid[b] = ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1,
+                                                        kSIOCmd_OptionBoardType, b, &bt, 1, seq, pcie);
+        ivars->unitBBoardType[b] = ivars->unitBBoardValid[b] ? bt : 0;
+    }
+    if (!ivars->unitBBoardValid[0] && !ivars->unitBBoardValid[1]) {
+        STERR("Unit B: the Symphony I/O on port 2 does not answer — not configured");
+        return;
+    }
+    uint8_t prefix = 0;
+    if (ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1, kSymphonyCmdPrefix, 0, &prefix, 1, seq, pcie))
+        ivars->unitBPrefix = prefix;
+    uint8_t lock = 1;
+    send(kSIOCmd_PreferenceLoadLock, 0, &lock, 1);
+    IOSleep(10);
+    const uint8_t clockData[4] = { 0x02, 0x00, 0x00, 0x00 };   // Word Clock, slave
+    if (send(kSIOCmd_ClockMode, 0, clockData, sizeof(clockData))) ivars->unitBClockSource = 2;
+    IOSleep(10);
+    for (uint32_t b = 0; b < 2; b++) {
+        if (!BootSendsOpticalFormat(ivars->unitBBoardValid[b], ivars->unitBBoardType[b])) continue;
+        const uint8_t format = 0;   // ADAT/SMUX until Maestro sets unit B's
+        send(kSIOCmd_OpticalFormat, b, &format, 1);
+        IOSleep(10);
+    }
+    uint8_t routes[32];
+    for (int n = 0; n < 16; n++) { routes[n * 2] = (uint8_t)(kSIODest_IOBoard0Ch0 + n); routes[n * 2 + 1] = (uint8_t)(kSIOSrc_XLinkCh0 + n); }
+    send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+    IOSleep(20);
+    for (int n = 0; n < 16; n++) { routes[n * 2] = (uint8_t)(kSIODest_IOBoard1Ch0 + n); routes[n * 2 + 1] = (uint8_t)(kSIOSrc_XLinkCh0 + 16 + n); }
+    send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+    IOSleep(20);
+    for (int half = 0; half < 2; half++) {
+        for (int n = 0; n < 16; n++) {
+            const unsigned host = (unsigned)(half * 16 + n);
+            routes[n * 2] = (uint8_t)(kSIODest_P2PCh0 + host);
+            routes[n * 2 + 1] = SymphonyCaptureSource(ivars->unitBBoardType[0], ivars->unitBBoardValid[0], host);
+        }
+        send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+        IOSleep(20);
+    }
+    for (uint16_t ch = 0; ch < 32; ch++) {
+        const uint8_t muted = 1;
+        send(kSIOCmd_MixerInputMute, (uint32_t)ch, &muted, 1);
+    }
+    uint8_t unlock = 0;
+    const bool unlocked = send(kSIOCmd_PreferenceLoadLock, 0, &unlock, 1);
+    ivars->unitBSetupFlags = unlocked ? 1u : 0u;
+    ivars->unitBConfigured = unlocked;
+    STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, Word Clock slave, %u message error(s))",
+          unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
+          ivars->unitBPrefix, ivars->unitBTxErrors);
+}
+
 static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
 {
     IOPCIDevice *dev = ivars->pciDevice;
@@ -3900,6 +3979,10 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
             __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
         }
     }
+    // A Symphony I/O on port 2 is unit B: set it up as the original did.
+    if (ivars->port2UnitCount > 0 && (ivars->port2Unit[0] & kSymphonyPort2UnitAddressed) &&
+        ConverterUnitRouting(ivars->port2Unit[0]) == kConverterRoutingSymphony)
+        ConfigureUnitB(ivars);
 
     // Last check before DMA is enabled (the phase queries and unmutes above
     // take time too). Stop() re-clears the DMA bits after draining this queue
@@ -3930,6 +4013,7 @@ static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outco
     // disabled with the rest of port 2's below).
     __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
     ConvSetPort(ivars, 1, false, 0, nullptr);
+    ivars->unitBConfigured = false;   // unit B is set up again when 64 starts
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     const bool wasRunning = Port2StopBothEngines(dev, mi);

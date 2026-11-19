@@ -2689,6 +2689,32 @@ static void RunConverterParityChecks()
         Finish(o, r);
     }
 #endif
+#ifdef TRACE_HAVE_UNITB_CONFIG
+    // 3i. Two Symphony I/Os: selecting 64 configures unit B over XLink 2
+    //     (Word Clock slave, routing, unlock), and nothing goes to it at 32.
+    {
+        Options o; o.name = "unit B: configured at 64"; o.port2 = Port::Symphony;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        CHECK(Commands(c, 0, kRegXLink2TX, 0x10).empty(), "%s: a vendor message went to unit B at 32 channels", o.name);
+        SymphonyUnitBStateOutput st = {};
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 0, "%s: unit B present at 32 channels", o.name);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        const size_t mark = c.lines.size();
+        Select(r, 1, "unit B: select 64");
+        CHECK(!Commands(c, mark, kRegXLink2TX, 0x10).empty(), "%s: no vendor message to unit B at 64", o.name);
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 1 && st.clockSource == 2, "%s: unit B present=%u clock=%u (want 1, Word Clock)",
+              o.name, st.present, st.clockSource);
+        Select(r, 0, "unit B: back to 32");
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 0, "%s: unit B still marked present at 32", o.name);
+        Finish(o, r);
+    }
+#endif
     // 4. A unit whose authentication does not verify is reported and kept.
     {
         Options o; o.name = "converters: failed authentication is reported"; o.port1 = Port::Converters; o.shortFlow = true;
