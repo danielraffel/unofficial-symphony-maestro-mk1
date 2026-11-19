@@ -148,7 +148,7 @@ struct MixerView: View {
                         Task { await syncMixerToHardware(recalling: true) }
                     }
                     .controlSize(.small)
-                    .help(selectedMixer == index
+                    .maestroHelp(selectedMixer == index
                           ? "Showing Mix \(index + 1)" : "Show Mix \(index + 1)")
                     .accessibilityAddTraits(selectedMixer == index ? .isSelected : [])
                     if selectedMixer == index {
@@ -197,17 +197,17 @@ struct MixerView: View {
                     Button("Reset Mixer Defaults") {
                         showMixerResetAlert = true
                     }
-                    .help("Reset this mixer's faders, pans, mute/solo states, and software return to factory defaults")
+                    .maestroHelp("Reset this mixer's faders, pans, mute/solo states, and software return to factory defaults")
                     Divider()
                     Toggle("Pre-Mute Metering", isOn: $preMuteMetering)
-                        .help("When on, mixer meters show input signal even when a channel is muted — useful for seeing signal before unmuting. When off, meters drop to silence on mute (legacy behavior).")
+                        .maestroHelp("When on, mixer meters show input signal even when a channel is muted — useful for seeing signal before unmuting. When off, meters drop to silence on mute (legacy behavior).")
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease")
                         .font(.system(size: 11))
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 24)
-                .help("Channel Visibility")
+                .maestroHelp("Channel Visibility")
 
                 Spacer()
             }
@@ -956,7 +956,7 @@ struct MixerView: View {
                     set: { newLevel in masterSideChanged(newLevel) }),
                 range: -48...6,
                 step: 0.5)
-            .help("Master fader level: double-click to edit")
+            .maestroHelp("Master fader level: double-click to edit")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
@@ -1387,7 +1387,7 @@ struct MixerChannelStripView: View {
                     onBatchDragStart: onBatchPanDragStart,
                     onOptionClick: onPanOptionClick
                 )
-                .help("Pan: \(panText) — double-click to center, Option+click center all, Option+drag all")
+                .maestroHelp("Pan: \(panText) — double-click to center, Option+click center all, Option+drag all")
                 .onChange(of: channel.pan) { _, newPan in
                     onPanChange?(newPan)
                 }
@@ -1506,11 +1506,11 @@ struct MixerChannelStripView: View {
                         set: { newValue in onStereoLevelChange?(newValue) }),
                     range: -48...6,
                     step: 0.5)
-                .help("Software Return fader level: double-click to edit")
+                .maestroHelp("Software Return fader level: double-click to edit")
             } else {
                 // dB readout (level) — single readout, no duplicate
                 EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5)
-                    .help("Fader Level: \(String(format: "%.1f", channel.level)) dB — double-click to edit")
+                    .maestroHelp("Fader Level: \(String(format: "%.1f", channel.level)) dB — double-click to edit")
             }
 
             // Mute / Solo buttons — at the very bottom
@@ -1530,7 +1530,7 @@ struct MixerChannelStripView: View {
                         .foregroundStyle(channel.isMuted ? .white : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Mute (Option+Click: all channels)")
+                .maestroHelp("Mute (Option+Click: all channels)")
 
                 Button(action: {
                     channel.isSoloed.toggle()
@@ -1545,7 +1545,7 @@ struct MixerChannelStripView: View {
                         .foregroundStyle(channel.isSoloed ? .black : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Solo (Option+Click: clear all solos)")
+                .maestroHelp("Solo (Option+Click: clear all solos)")
             }
 
             // Mixer Custom Label — a user-editable label distinct from the
@@ -1589,7 +1589,7 @@ struct MixerChannelStripView: View {
                     NSApp.keyWindow?.endEditing(for: nil)
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
-                .help("Mixer Custom Label — names this input channel in both mixers")
+                .maestroHelp("Mixer Custom Label — names this input channel in both mixers")
             }
 
         }

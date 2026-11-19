@@ -61,7 +61,7 @@ enum UpdateChannelCopy {
     static func switchAndInstall(_ version: String) -> String { "Switch and Install \(version)" }
 }
 
-/// The channel rows in Device Settings › Preferences.
+/// The channel rows in Device Settings › Updates.
 struct UpdateChannelSettings: View {
     @EnvironmentObject private var updates: UpdateController
     @State private var dialog: UpdateChannelDialog?
@@ -79,7 +79,7 @@ struct UpdateChannelSettings: View {
         }
         .pickerStyle(.segmented)
         .disabled(pickerDisabled)
-        .help(UpdateChannelCopy.pickerHelp)
+        .maestroHelp(UpdateChannelCopy.pickerHelp)
         .unredacted()
         .onAppear { updates.refreshForPreferencesIfAllowed() }
         .sheet(item: $dialog) { dialog in

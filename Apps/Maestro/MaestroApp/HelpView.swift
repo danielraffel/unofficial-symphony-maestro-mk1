@@ -77,6 +77,15 @@ struct HelpView: View {
                 Text("The full hardware reset is done on the unit itself, not from here. Start with Symphony turned off, hold down the **left** front-panel encoder knob, and turn the unit on. When the display reads \"Reset All But Cal No\", turn the **right** encoder to select **Yes** and push it in. That resets everything except the converter calibration. To clear calibration as well, first turn the **left** encoder to change \"Reset All But Cal\" to \"Reset All\", then use the right encoder to select Yes.")
                 Text("Maestro also has smaller resets that do not need a power cycle: **Reset Defaults** on the Input and Output tabs, **Reset Trims** on either tab, and **Reset Routing** on each routing tab. The Input and Output resets offer the same choice the front panel does — one that keeps your trims, because trims are calibration data, and one that clears them too.")
             }
+            HelpQuestion("Where do I find a setting?") {
+                Text("**Device Settings** is about this Symphony I/O and the app: **Optical Format**, the **Front Panel** meter banks, **Naming** (the channel prefix), **Insert Labels**, the unit's **Audio Interface Mode**, **Monitoring** (DAW or Direct Monitor), **Updates** (automatic checks and the Stable or Beta channel), **Diagnostics & Feedback**, **Connection** (what happens when a unit is plugged in, and the USB options) and **Preferences** (appearance, tooltips, scroll positions, pop-ups).")
+                Text("**System Setup** is about the whole system: **Clock** (sample rate and clock source), **Keyboard Volume Control** with two units, **Word Clock Output**, the **Meters** hold times, **Device Info** (connection, firmware, cards and the 32 or 64 channel choice) and the software versions.")
+                Text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**.")
+            }
+            HelpQuestion("What do Reset Routing and Identify do?") {
+                Text("**Reset Routing** is on the Input Routing and Output Routing pages. It puts that page back to its default: on Input Routing each software input records the matching hardware input, and on Output Routing each software output goes to the matching hardware output. Maestro asks before it changes anything, and only the page you are on is reset.")
+                Text("**Identify** is on the Output Routing page. It lights every light on the Symphony I/O's front panel so you can tell which unit is which, for example in a rack. Click it again to turn the lights off; quitting Maestro also turns them off. With two Symphony I/Os at 64 channels there is one button for each unit, **Identify A** and **Identify B**.")
+            }
             HelpQuestion("Symphony is powered on and connected, but Maestro can't see it.") {
                 Text("Use **Rescan** (in the View menu, or ⌘R). It re-establishes the link between Maestro and the hardware, re-resolves which audio device the unit is, and rebuilds the audio path — which is what actually matters after the unit has been unplugged and replugged, or has re-enumerated on a different port. It does not change any of your settings.")
                 Text("If Rescan does not find it, check the front panel for an exclamation mark (!) — that means the unit is not talking to the Mac at all, and the cable is the place to start rather than Maestro.")
@@ -86,15 +95,16 @@ struct HelpView: View {
             }
             HelpQuestion("Can I choose a light or dark appearance?") {
                 Text("In **Device Settings › Preferences**, set **Appearance** to **Auto**, **Light**, or **Dark**. Auto is the default and follows your Mac’s appearance. Light and Dark apply only to Maestro. Your choice is saved and takes effect immediately.")
+                Text("You can turn Maestro’s short control explanations on or off with **Show tooltips** in **Device Settings › Preferences**; they are on by default.")
             }
             HelpQuestion("When and how should I use diagnostics?") {
                 Text("Use it when something doesn't work and you can make it happen again: your Symphony or converter isn't found, there's no sound, your DAW freezes or goes silent when it selects the device, audio drops out or crackles, or a control or the volume keys do nothing. Also use it when the developer asks you to.")
-                Text("**1.** Update Maestro to the latest version (**Maestro › Check for Updates**). **2.** In **Device Settings › Preferences**, set the update channel to **Beta** and turn on **Diagnostics**. **3.** Do what causes the problem, for example open your DAW and press play, then wait until it goes wrong. A minute or two is usually enough; it stops by itself after an hour. If Maestro doesn't find your Symphony or converter, or it shows as connected but nothing works, turn the unit off and on again while diagnostics is on. **4.** Press **Stop Diagnostics** in the red bar at the top of the window. Maestro saves a text file to your Desktop.")
+                Text("**1.** Update Maestro to the latest version (**Maestro › Check for Updates**). **2.** In **Device Settings › Updates**, set the update channel to **Beta**, then turn on **Diagnostics** in **Device Settings › Diagnostics & Feedback**. **3.** Do what causes the problem, for example open your DAW and press play, then wait until it goes wrong. A minute or two is usually enough; it stops by itself after an hour. If Maestro doesn't find your Symphony or converter, or it shows as connected but nothing works, turn the unit off and on again while diagnostics is on. **4.** Press **Stop Diagnostics** in the red bar at the top of the window. Maestro saves a text file to your Desktop.")
                 Text("Maestro then asks whether to email it, attached, to the developer to help diagnose the problem. You can tick what hardware you have and how it is connected, describe what is and isn't working, link an existing GitHub issue, and leave your email so we can reply; all are optional. Nothing is sent until you press **Agree and Send**. Diagnostics are never posted publicly, so please don't attach the file to a GitHub issue. If sending doesn't work, email the file to \(DiagnosticsRecorder.sendTo).")
                 Text("It records what Maestro, the USB helper and the driver are doing, and checks what is installed, including leftover Apogee software. It includes details about this Mac. We remove names, serial numbers and network addresses as best we can. It cannot see inside your DAW.")
             }
             HelpQuestion("What are the Stable and Beta update channels?") {
-                Text("Maestro normally offers stable versions only. In **Device Settings › Preferences** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.")
+                Text("Maestro normally offers stable versions only. In **Device Settings › Updates** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.")
             }
             HelpQuestion("Why doesn't the D/A meter move when I change a Trim?") {
                 Text("The D/A meter shows the level **before** conversion, so the trim is applied after the point being measured. This is expected. To calibrate against a trim you need to measure the analog output itself with an external voltmeter — send a 1 kHz sine at the digital reference level and adjust the trim until the meter reads the analog reference you chose (1.228 V AC for +4 dBu).")
@@ -389,7 +399,7 @@ struct HelpView: View {
                     CopyGlyph(copied: showCommandCopied)
                 }
                 .buttonStyle(.borderless)
-                .help("Copy command")
+                .maestroHelp("Copy command")
                 .accessibilityLabel("Copy uninstall command")
             }
         }
@@ -404,7 +414,7 @@ struct HelpView: View {
 
     /// Feedback line with an inline, clickable mailto link (markdown-rendered).
     private var feedbackText: AttributedString {
-        let md = "Found a bug or have a request? Email [\(feedbackEmail)](mailto:\(feedbackEmail)) — feedback is genuinely welcome."
+        let md = "Found a bug or have a request? [Report a bug on GitHub](\(FeedbackLinks.reportBug.absoluteString)) or ask on [the Gearspace thread](\(FeedbackLinks.discussion.absoluteString)); both are also in **Device Settings › Diagnostics & Feedback**. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail)) — feedback is genuinely welcome."
         return (try? AttributedString(markdown: md)) ?? AttributedString(md)
     }
 

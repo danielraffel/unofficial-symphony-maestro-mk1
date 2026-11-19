@@ -138,6 +138,7 @@ struct MaestroApp: App {
                     appState.clearMeters()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
+                .maestroHelp("Clear all peak hold and over indicators (Cmd+K).")
 
                 Divider()
 
@@ -159,7 +160,7 @@ struct MaestroApp: App {
                     Task { await appState.reconnectHardware() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
-                .help("Re-establish the link to Symphony. Use this when the unit "
+                .maestroHelp("Re-establish the link to Symphony. Use this when the unit "
                       + "is connected and powered on but Maestro has not found it.")
             }
 

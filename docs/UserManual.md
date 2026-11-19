@@ -18,6 +18,8 @@ The Symphony front-panel mode selects the active transport: Symphony mode for Th
 - **Output:** output reference levels, trims and monitor controls.
 - **Mixer:** hardware monitoring mixes, with channel levels, pan, mute and solo.
 - **Input Routing and Output Routing:** map available hardware and software channels. Verify routing at a low monitoring level before use.
+  - **Reset Routing** puts the page you are on back to its default, after asking: each software input records the matching hardware input, and each software output goes to the matching hardware output.
+  - **Identify** (Output Routing) lights every front-panel light on the Symphony I/O so you can find it; click again to turn them off. Quitting Maestro also turns them off. With two units there is one button for each.
 - **Device Settings:** device preferences and available hardware options.
 - **System Setup:** clock and sample-rate configuration and system information.
 
@@ -53,9 +55,9 @@ In Maestro the same setting is **Ports** in System Setup › Device Info, with t
 
 ## Appearance and updates
 
-Choose Auto, Light or Dark appearance in Device Settings. Software updates use Sparkle and the configured project update feed. An available update is not installed merely by opening this guide; follow the updater's prompts and save audio work before installing.
+Choose Auto, Light or Dark appearance in Device Settings. In **Device Settings › Preferences**, **Show tooltips** controls the short explanations shown when you hold the pointer over a control; it is on by default. Software updates use Sparkle and the configured project update feed. An available update is not installed merely by opening this guide; follow the updater's prompts and save audio work before installing.
 
-**Update channels.** Maestro normally offers stable versions only. In **Device Settings › Preferences** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.
+**Update channels.** Maestro normally offers stable versions only. In **Device Settings › Updates** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.
 
 ## Remove the software
 

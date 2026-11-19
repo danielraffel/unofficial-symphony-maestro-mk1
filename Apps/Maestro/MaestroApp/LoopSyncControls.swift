@@ -22,6 +22,7 @@ struct LoopSyncControls: View {
     var body: some View {
         Group {
             Toggle("Use Loop Sync", isOn: $enabled)
+                .maestroHelp("Keep two Symphony I/Os locked to the same clock over their Loop Sync connection.")
                 .onChange(of: enabled) { _, value in
                     guard let state = appState.loopSyncState, value != state.settings.enabled else { return }
                     Task { await appState.setLoopSync(.init(enabled: value, master: state.settings.master)) }
@@ -31,6 +32,7 @@ struct LoopSyncControls: View {
                     Text("Unit A").tag(DeviceUnit.a)
                     Text("Unit B").tag(DeviceUnit.b)
                 }
+                .maestroHelp("Choose which Symphony I/O is the Loop Sync clock master.")
                 .onChange(of: master) { _, value in
                     guard let state = appState.loopSyncState, value != state.settings.master else { return }
                     Task { await appState.setLoopSync(.init(enabled: state.settings.enabled, master: value)) }
