@@ -1,14 +1,12 @@
-# Unofficial Symphony Maestro for Apogee Symphony I/O MKI
+# Unofficial Symphony Maestro<br>for Apogee Symphony I/O MKI
 
-Apple Silicon support for the Apogee Symphony I/O MK I over **USB and ThunderBridge**, on **macOS 26 (Tahoe) or later**.
+Apple Silicon support for the Apogee Symphony I/O MKI. Works over **USB and ThunderBridge**, on **macOS 26 (Tahoe) or later**.
 
 <h1><a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg">
 Download the latest Installer (.pkg)</a></h1>
 
-The download link above is always the latest stable version.
-
 > [!TIP]
-> **If you find this useful and you’re motivated to support it, please consider making a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org).**
+> **If you find this useful please consider making a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org).**
 
 For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
 
