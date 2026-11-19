@@ -511,7 +511,7 @@ struct InputControlsView: View {
     /// (`og_source/maestrolink/Software/SymphonyIO.cpp:6688-6718`).
     private func applyFrontPanelGain(_ update: AppState.FrontPanelMicPreUpdate?) {
         guard let update, update.revision > lastFrontPanelGainRevision,
-              appState.activeUnit == .a, update.channel < channels.count else { return }
+              appState.activeUnit == update.unit, update.channel < channels.count else { return }
         // While the user drags a gain knob here, their value wins: the reading
         // is dropped, not replayed when the drag ends.
         if gainDragActive { lastFrontPanelGainRevision = update.revision; return }

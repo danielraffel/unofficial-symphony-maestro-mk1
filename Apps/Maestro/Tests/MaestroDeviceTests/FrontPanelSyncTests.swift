@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import MaestroCore
 @testable import MaestroDevice
 
 /// Readings below are bytes captured from a Symphony I/O MK I over USB on
@@ -43,8 +44,40 @@ struct FrontPanelSyncTests {
         var sync = FrontPanelSync()
         let turning = try #require(reading("00 00 bb 80 01 01 00 00 05 2a 01 00"))
         let stopped = try #require(reading("00 00 bb 80 01 01 00 00 05 2a 00 00"))
-        #expect(sync.changes(for: turning) == [.micPreGain(channel: 2, 42, settled: false)])
-        #expect(sync.changes(for: stopped) == [.micPreGain(channel: 2, 42, settled: true)])
+        let moving = sync.changes(for: turning)
+        let settled = sync.changes(for: stopped)
+        #expect(moving == [.micPreGain(channel: 2, 42, settled: false)])
+        #expect(settled == [.micPreGain(channel: 2, 42, settled: true)])
+    }
+
+    @Test("per-unit gain observations preserve group offsets and publish each affected lane")
+    func unitGroupObservation() {
+        let a = [InputChannelState(gain: 10, inputType: AnalogInputLevel.mic.rawValue, group: 1)]
+        var b = [InputChannelState(gain: 20, inputType: AnalogInputLevel.mic.rawValue, group: 1),
+                 InputChannelState(gain: 60, inputType: AnalogInputLevel.instrument.rawValue, group: 1),
+                 InputChannelState(gain: 30, inputType: AnalogInputLevel.mic.rawValue)]
+        let changes = FrontPanelSync.applyGain(40, channel: 0, to: &b)
+        #expect(a[0].gain == 10)
+        #expect(b.map(\.gain) == [25, 65, 30])
+        #expect(changes.map(\.channel) == [0, 1])
+        #expect(changes.map(\.lane) == [0, 1])
+        #expect(changes.map(\.gain) == [25, 65])
+        let invalid = FrontPanelSync.applyGain(42, channel: 8, to: &b)
+        #expect(invalid.isEmpty)
+    }
+
+    @Test("separate A and B change trackers do not share settling state")
+    func unitTrackers() throws {
+        var a = FrontPanelSync(), b = FrontPanelSync()
+        let turning = try #require(reading("00 00 bb 80 01 01 00 00 03 2a 01 00"))
+        let idle = try #require(reading("00 00 bb 80 01 01 00 00 03 2a 00 00"))
+        let aMoving = a.changes(for: turning)
+        let bIdle = b.changes(for: idle)
+        #expect(aMoving.count == 1)
+        #expect(bIdle.isEmpty)
+        b.reset()
+        let bAfterReset = b.changes(for: idle)
+        #expect(bAfterReset.isEmpty)
     }
 
     @Test("a dead or short reply is not a reading")
@@ -63,9 +96,11 @@ struct FrontPanelSyncTests {
     func ranges() throws {
         var sync = FrontPanelSync()
         let hpBottom = try #require(reading("00 00 bb 80 01 01 00 00 00 40 01 00"))
-        #expect(sync.changes(for: hpBottom) == [.level(.headphone1, -64, settled: false)])
+        let bottomChanges = sync.changes(for: hpBottom)
+        #expect(bottomChanges == [.level(.headphone1, -64, settled: false)])
         let hpBeyond = try #require(reading("00 00 bb 80 01 01 00 00 01 7f 01 00"))
-        #expect(sync.changes(for: hpBeyond) == [.level(.headphone2, -64, settled: false)])
+        let beyondChanges = sync.changes(for: hpBeyond)
+        #expect(beyondChanges == [.level(.headphone2, -64, settled: false)])
         #expect(reading("00 00 bb 80 01 01 00 00 02 40 01 00")?.selectionAttenuation == 64)
         #expect(reading("00 00 bb 80 01 01 00 00 00 80 01 00") == nil)   // headphone 128
     }
@@ -106,7 +141,8 @@ struct FrontPanelSyncTests {
     func idleChangesNothing() throws {
         var sync = FrontPanelSync()
         for _ in 0..<5 {
-            #expect(sync.changes(for: try #require(reading("00 00 bb 80 01 01 00 00 00 14 00 00"))).isEmpty)
+            let changes = sync.changes(for: try #require(reading("00 00 bb 80 01 01 00 00 00 14 00 00")))
+            #expect(changes.isEmpty)
         }
     }
 
@@ -142,6 +178,7 @@ struct FrontPanelSyncTests {
         var sync = FrontPanelSync()
         _ = sync.changes(for: try #require(reading("00 00 bb 80 01 01 00 00 02 05 01 00")))
         sync.reset()
-        #expect(sync.changes(for: try #require(reading("00 00 bb 80 01 01 00 00 02 0b 00 00"))).isEmpty)
+        let changes = sync.changes(for: try #require(reading("00 00 bb 80 01 01 00 00 02 0b 00 00")))
+        #expect(changes.isEmpty)
     }
 }

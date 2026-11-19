@@ -9133,6 +9133,38 @@ static void PublishMicGain(SymphonyThunderbridge_IVars *iv, uint32_t ch, uint32_
     }
 }
 
+// Host-only observation entry. No vendor command fallback on older drivers.
+kern_return_t SymphonyThunderbridge::PublishObservedMicGain(
+    uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain)
+{
+    if (port > 1 || channel >= 8 || lane > 1 || gain > (lane ? 65u : 85u))
+        return kIOReturnBadArgument;
+    if (!ivars || !ivars->xlinkQueue) return kIOReturnNotReady;
+    __block kern_return_t result = kIOReturnNotReady;
+    ivars->xlinkQueue->DispatchSync(^{
+        // This entry never touches PCI: use lifecycle state without the
+        // HardwareReachable config-space probe used before real XLink IO.
+        if (__atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&ivars->providerPowerOff, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&ivars->hwSuspended, __ATOMIC_ACQUIRE) ||
+            !ivars->pciDevice || ivars->convPort1 ||
+            (port && (!ivars->unitBConfigured || !CardMixerUnitBActive(ivars)))) return;
+        if (port ? (!ivars->unitBBoardValid[1] || ivars->unitBBoardType[1] != kSIOOptionBoard_MicPre8)
+                 : channel >= ivars->numMicChannels) return;
+        const bool known = port ? ivars->unitBMicPreTypeKnown[channel] : ivars->micPreTypeKnown[channel];
+        const bool instrument = port ? ivars->unitBMicPreInstrument[channel] : ivars->micPreInstrument[channel];
+        if (!known || lane != (instrument ? 1u : 0u)) return;
+        (port ? ivars->unitBMicPreGain[lane][channel] : ivars->micPreGain[lane][channel]) = gain;
+        (port ? ivars->unitBMicPreGainKnown[lane][channel] : ivars->micPreGainKnown[lane][channel]) = true;
+        // Routed aliases receive SetDecibelValue only, never HandleChange or TX.
+        // og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:246,323.
+        PublishMicGain(ivars, channel, port);
+        result = kIOReturnSuccess;
+    });
+    return result;
+}
+
 kern_return_t SymphonyThunderbridge::SendVendorCommand(
     uint8_t         command,
     uint32_t        value,

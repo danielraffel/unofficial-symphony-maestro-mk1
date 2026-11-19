@@ -78,6 +78,7 @@ public:
     virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
     virtual kern_return_t LoopSyncConfig(uint32_t operation, uint32_t config, uint32_t *outWords) LOCALONLY;
     virtual kern_return_t ReadUnitBState(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t PublishObservedMicGain(uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain) LOCALONLY;
     virtual kern_return_t SetMonitorDevice(uint32_t unit) LOCALONLY;
     // dext 131: the older XLink converters (SymphonyConverterStateOutput, 28
     // words; no bus access) and the user's choices for them

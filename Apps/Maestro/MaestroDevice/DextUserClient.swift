@@ -503,6 +503,20 @@ public final class DextUserClient: @unchecked Sendable {
         return UnitBState.decode(out)
     }
 
+    /// Selector 14 v1 updates host controls only. Unsupported drivers fail closed:
+    /// never substitute a vendor write or AudioObjectSetPropertyData gain write.
+    public func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool {
+        guard port < 2, (0..<8).contains(channel), lane < 2, gain.isFinite,
+              gain >= 0, gain <= (lane == 1 ? 65 : 85) else { return false }
+        lock.lock(); let conn = connection; lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        let input: [UInt32] = [Self.magic, 1, UInt32(port), UInt32(channel), lane, UInt32(gain.rounded())]
+        var size = 0
+        return input.withUnsafeBytes {
+            IOConnectCallStructMethod(conn, 14, $0.baseAddress, $0.count, nil, &size)
+        } == KERN_SUCCESS
+    }
+
     /// Versioned selector 13; old drivers return unsupported (never emulate writes).
     public func loopSync(_ settings: LoopSyncSettings? = nil) throws -> LoopSyncState {
         lock.lock(); let conn = connection; lock.unlock()

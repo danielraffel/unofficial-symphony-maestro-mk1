@@ -99,6 +99,30 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
 /// - Mute-all, unmute-all and a meter clear are one-shot pulses, applied on
 ///   their rising edge.
 public struct FrontPanelSync: Sendable {
+    public struct ObservedGain: Sendable, Equatable {
+        public let channel: Int
+        public let lane: UInt32
+        public let gain: Double
+    }
+
+    /// Per-unit saved strips, using the original's common limited group offset.
+    /// Return host notifications only; never consume GainChangeResult.hardwareWrites.
+    /// Evidence: og_source/maestrolink/Software/SymphonyIO.cpp:6688-6718;
+    /// SymphonyIOBoard_MicPre8ch.cpp:186-330.
+    public static func applyGain(_ gain: Double, channel: Int,
+                                 to saved: inout [InputChannelState]) -> [ObservedGain] {
+        guard (0..<InputChannelLogic.micPreChannelCount).contains(channel), saved.indices.contains(channel),
+              let level = AnalogInputLevel(rawValue: saved[channel].inputType),
+              level == .mic || level == .instrument else { return [] }
+        let result = InputChannelLogic.applyGainChange(&saved, channel: channel, to: gain)
+        // Include the selected channel even if saved state already matches: HAL
+        // may not yet know that value (e.g. the first observation after opening).
+        return Set(result.changed + [channel]).sorted().filter { $0 < 8 }.map {
+            ObservedGain(channel: $0, lane: saved[$0].inputType == AnalogInputLevel.instrument.rawValue ? 1 : 0,
+                         gain: saved[$0].gain)
+        }
+    }
+
     public enum Change: Sendable, Equatable {
         /// Level in dB for one output, 0 down to -64. `settled` is true for
         /// the value the encoder stopped on, false while it is still turning.

@@ -91,6 +91,7 @@ enum ConnectionMode: Equatable {
 @Observable
 final class AppState {
     struct FrontPanelMicPreUpdate: Equatable {
+        let unit: DeviceUnit
         let channel: Int
         let gain: Double
         let revision: Int
@@ -3459,13 +3460,20 @@ final class AppState {
         guard Self.frontPanelSyncEnabled, frontPanelSyncTask == nil else { return }
         frontPanelSyncTask = Task { @MainActor [weak self] in
             var sync = FrontPanelSync()
+            var syncB = FrontPanelSync()
+            var ownerA: ObjectIdentifier?
+            var ownerB: ObjectIdentifier?
             while !Task.isCancelled {
                 guard let self else { return }
                 guard self.connectionMode == .hardware, self.isHardwareInitialized,
                       let device = self.device else {
-                    sync.reset()
+                    sync.reset(); syncB.reset()
                     try? await Task.sleep(for: .seconds(1))
                     continue
+                }
+                if ownerA != ObjectIdentifier(device) {
+                    sync.reset(); syncB.reset()
+                    ownerA = ObjectIdentifier(device); ownerB = nil
                 }
                 let update: SymphonyIOParameterUpdates?
                 let interval: Duration
@@ -3481,19 +3489,40 @@ final class AppState {
                     update = await thunderbolt.readParameterUpdates()
                     interval = Self.thunderboltFrontPanelSyncInterval
                 } else {
-                    sync.reset()
+                    sync.reset(); syncB.reset()
                     try? await Task.sleep(for: .seconds(1))
                     continue
                 }
                 guard let update else {
-                    sync.reset()
+                    sync.reset(); syncB.reset()
                     try? await Task.sleep(for: .seconds(5))
                     continue
                 }
                 // The connection may have been replaced while the read was out.
                 if device === self.device {
                     (device as? XPCDeviceConnection)?.seedClockSource(reported: update.clockSource)
-                    for change in sync.changes(for: update) { self.applyFrontPanelChange(change) }
+                    for change in sync.changes(for: update) {
+                        guard device === self.device, !Task.isCancelled else { break }
+                        await self.applyFrontPanelChange(change)
+                    }
+                }
+                // B shares this bounded owner/cadence; never spawn another timer.
+                if !Task.isCancelled, self.connectionMode == .hardware, self.isHardwareInitialized,
+                   self.thunderboltHardwareResponsive,
+                   device === self.device, device is ThunderboltDeviceConnection,
+                   self.portSelection.selection == .ports1And2, self.unitB?.setupComplete == true,
+                   let b = self.unitBDevice as? ThunderboltUnitBConnection {
+                    if ownerB != ObjectIdentifier(b) { syncB.reset(); ownerB = ObjectIdentifier(b) }
+                    let bUpdate = await b.readParameterUpdates()
+                    if device === self.device, b === self.unitBDevice,
+                       self.portSelection.selection == .ports1And2, self.unitB?.setupComplete == true,
+                       let bUpdate {
+                        for change in syncB.changes(for: bUpdate) {
+                            if case .micPreGain = change { await self.applyFrontPanelChange(change, unit: .b) }
+                        }
+                    } else { syncB.reset() }
+                } else {
+                    syncB.reset(); ownerB = nil
                 }
                 try? await Task.sleep(for: interval)
             }
@@ -3503,25 +3532,22 @@ final class AppState {
     static let thunderboltFrontPanelSyncInterval: Duration = .milliseconds(500)
 
     @MainActor
-    private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
+    private func applyFrontPanelChange(_ change: FrontPanelSync.Change, unit: DeviceUnit = .a) async {
         switch change {
         case .micPreGain(let channel, let gain, _):
             guard channel >= 0, channel < InputChannelLogic.micPreChannelCount else { return }
-            // The poll reads unit A, so unit A's saved strips take the reading
-            // whatever page or unit is on screen, with the original's group
-            // offset (one common offset limited across the group). State only:
-            // the firmware applies group changes itself and peers are never
-            // sent (SymphonyIOBoard_MicPre8ch.cpp:249-320; SymphonyIO.cpp:6688-6718).
-            var saved = channelStateStore.load(ChannelStateStore.inputKey, as: [InputChannelState].self) ?? []
-            if channel < saved.count,
-               let level = AnalogInputLevel(rawValue: saved[channel].inputType),
-               level == .mic || level == .instrument {
-                InputChannelLogic.applyGainChange(&saved, channel: channel, to: gain)
-                channelStateStore.save(saved, for: ChannelStateStore.inputKey)
-            }
+            // Each physical unit owns its saved group offsets, regardless of the
+            // visible page. Firmware already applied the hardware change.
+            let store = unit == .b ? unitBChannelStateStore : channelStateStore
+            var saved = store.load(ChannelStateStore.inputKey, as: [InputChannelState].self) ?? []
+            let gains = FrontPanelSync.applyGain(gain, channel: channel, to: &saved)
+            if !gains.isEmpty { store.save(saved, for: ChannelStateStore.inputKey) }
             frontPanelMicPreRevision += 1
             frontPanelMicPreUpdate = FrontPanelMicPreUpdate(
-                channel: channel, gain: gain, revision: frontPanelMicPreRevision)
+                unit: unit, channel: channel, gain: gain, revision: frontPanelMicPreRevision)
+            if let tb = device as? ThunderboltDeviceConnection {
+                await tb.publishObservedMicGains(gains, port: unit.portByte)
+            }
         case .level(.speaker, let dB, _):
             if speakerLevel != dB { speakerLevel = dB }
             if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB) }
