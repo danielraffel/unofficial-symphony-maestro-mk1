@@ -27,7 +27,11 @@
                                              // asking 8 of 9004 gets "no such selector", and
                                              // a retire call (8-byte input) on 9004's no-input
                                              // 7 is refused.
-#define kSelectorCount          9
+#define kSelectorReadConverters 9            // The older XLink converters on ports 1 and 2 (dext 131+;
+                                             // no bus access). See SymphonyConverterStateOutput.
+#define kSelectorSetConverterConfig 10       // The user's converter choices: word clock source and
+                                             // Device Type (dext 131+). See SymphonyConverterConfigInput.
+#define kSelectorCount          11
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type
 #define kSymphonyMeterWordCount 256          // words in the card meter DMA buffer
 
@@ -263,5 +267,61 @@ typedef struct {
     uint8_t  reserved[2];
     uint8_t  payload[64];
 } SymphonyVendorReadOutput; // 72 bytes
+
+
+// ── The older XLink converters (dext 131+) ──────────────────────────────────
+// AD-16X, DA-16X, DD-16X, Rosetta 800/200 on port 1 and, while 64 channels run,
+// port 2. Rules and evidence: SymphonyConverters.h. Both selectors check exact
+// sizes; an app that gets "no such selector" uses the older probe word
+// (SymphonyLinkStateOutput word 15) and SymphonyPort2StateOutput.
+
+// SymphonyConverterStateOutput.flags
+#define kSymphonyConvPort1Converters   0x00000001u  // port 1 positively identified as converters
+#define kSymphonyConvPort2Converters   0x00000002u  // port 2 carries converters (64 channels running)
+#define kSymphonyConvClockExternal     0x00000004u  // unit 1 of port 1 takes external word clock
+#define kSymphonyConvHealthy           0x00000008u  // last health check found every unit locked and in phase
+#define kSymphonyConvRecoveryPending   0x00000010u  // a recovery is waiting for a controlled restart
+#define kSymphonyConvRoutingApplied    0x00000020u  // the card routing follows the converter placement
+
+// SymphonyConverterStateOutput.unit[port][n], nearest unit first
+#define kSymphonyConvUnitInquireMask   0x000000FFu  // INQUIRE reply
+#define kSymphonyConvUnitXtdShift      8            // bits 15:8: XTD_INQUIRE reply
+#define kSymphonyConvUnitInquireOK     0x00010000u
+#define kSymphonyConvUnitXtdOK         0x00020000u
+#define kSymphonyConvUnitAddressed     0x00040000u  // given its address and told to pass commands on
+#define kSymphonyConvUnitAuthRan       0x00080000u  // the authentication exchange ran
+#define kSymphonyConvUnitAuthOK        0x00100000u  // and the unit's answer verified (the original
+                                                    // refused a unit that failed; this driver reports it)
+#define kSymphonyConvUnitTypeIsDA      0x00200000u  // routing 0x0F used as DA (Device Type), else AD
+#define kSymphonyConvUnitIsR200        0x00400000u  // routing 0x05 named Rosetta 200 (Device Type)
+
+typedef struct {
+    uint32_t status;
+    uint32_t version;         // 1
+    uint32_t flags;           // kSymphonyConv*
+    uint32_t unitCount[2];    // per port, 0-4
+    uint32_t unit[2][4];      // kSymphonyConvUnit*
+    uint32_t phase[2];        // last WCLK_PHASE reading, byte n = unit n+1 of that port
+    uint32_t healthTicks;     // health checks since Start()
+    uint32_t phaseErrors;     // a unit outside 0x01-0x2F
+    uint32_t unlocks;         // two readings more than 2 apart
+    uint32_t recoveries;      // rate re-sent + realigned, or the port re-initialised
+    uint32_t latencyIn;       // converter latency reported to Core Audio (samples, before the frame)
+    uint32_t latencyOut;
+    uint32_t hostInputs;      // host channels carrying a converter channel
+    uint32_t hostOutputs;
+    uint32_t config;          // the last SymphonyConverterConfigInput.config applied
+    uint32_t reserved[4];
+} SymphonyConverterStateOutput; // 112 bytes
+
+// SymphonyConverterConfigInput.config. Mask bit n = port*4 + (unit address - 1).
+#define kSymphonyConvConfigClockExternal  0x00000001u
+#define kSymphonyConvConfigDDAsDAShift    8          // bits 15:8: routing-0x0F units used as DA-16X
+#define kSymphonyConvConfigR200Shift      16         // bits 23:16: routing-0x05 units that are Rosetta 200s
+
+typedef struct {
+    uint32_t magic;           // kSymphonyUCMagic
+    uint32_t config;
+} SymphonyConverterConfigInput; // 8 bytes
 
 #pragma pack(pop)
