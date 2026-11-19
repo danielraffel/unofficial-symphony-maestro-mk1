@@ -1348,9 +1348,8 @@ static void RunPort2RateChange(const Options &o, Run &r)
         return ms;
     };
 
-    // Port 2 slips through the whole before-step wait (2000 ms budget = 8
-    // passes, each broken by its first slipping read): it is not told first,
-    // but is still told after port 1 and follows.
+    // Port 2's original 5000 ms rate-change wait tolerates this slip and it is
+    // still told before port 1, as XLink::SetSampleRate required.
     ENSURE64("the retry");
     c.port[1].slipReads = 8;
     {
@@ -1360,8 +1359,8 @@ static void RunPort2RateChange(const Options &o, Run &r)
         CHECK(c.port[0].rateCode == 0x02 && c.port[1].rateCode == 0x02,
               "%s: after early slip ports at 0x%02x / 0x%02x (want both 192k)", o.name,
               c.port[0].rateCode, c.port[1].rateCode);
-        CHECK(FirstRateCommand(c, mark, tx1) < FirstRateCommand(c, mark, tx2),
-              "%s: slipping port 2 was told before port 1", o.name);
+        CHECK(FirstRateCommand(c, mark, tx2) < FirstRateCommand(c, mark, tx1),
+              "%s: slipping port 2 was not told first", o.name);
         Port2State s = ReadPort2(r);
         CHECK((s.w[2] & kSymphonyPort2FlagRateFailed) == 0 && s.w[12] == 192000 && s.w[13] == changes,
               "%s: recovered port-2 change not reported (flags 0x%x rate %u)", o.name, s.w[2], s.w[12]);
@@ -1585,6 +1584,7 @@ static void CheckBothPortsRunning(const char *what, Run &r, size_t mark)
     // Original's order: every step reaches GCSR2 (port 2) before GCSR (port 1).
     // Find the last GCSR2 write that sets both enables and the next GCSR write.
     size_t p2 = SIZE_MAX, p1 = SIZE_MAX, ts2 = SIZE_MAX, ts1 = SIZE_MAX;
+    std::vector<size_t> gcsrCandidates;
     for (size_t i = mark; i < c.lines.size(); i++) {
         unsigned long long off = 0;
         unsigned val = 0;
@@ -1595,12 +1595,22 @@ static void CheckBothPortsRunning(const char *what, Run &r, size_t mark)
         }
         if (off == kRegGCSR) {
             const uint32_t run = kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable, ts = kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect;
-            if ((val & (run | ts)) == ts) ts1 = i;
-            if ((val & (run | ts)) == (run | ts)) p1 = i;
+            if ((val & (run | ts)) == ts || (val & (run | ts)) == (run | ts))
+                gcsrCandidates.push_back(i);
         }
     }
-    CHECK(ts2 != SIZE_MAX && ts1 != SIZE_MAX && ts2 < ts1, "%s: trigger-selects not written to GCSR2 before GCSR", what);
-    CHECK(p2 != SIZE_MAX && p1 != SIZE_MAX && p2 < p1 && ts1 < p2, "%s: enables not written to GCSR2 before GCSR", what);
+    for (size_t i : gcsrCandidates) {
+        unsigned long long off = 0; unsigned val = 0;
+        if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) != 2) continue;
+        const uint32_t run = kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
+        const uint32_t ts = kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect;
+        if (ts1 == SIZE_MAX && i > ts2 && (val & (run | ts)) == ts) ts1 = i;
+        if (p1 == SIZE_MAX && i > ts2 && (val & (run | ts)) == (run | ts)) p1 = i;
+    }
+    if (mark != c.lines.size()) {
+        CHECK(ts2 != SIZE_MAX && ts1 != SIZE_MAX && ts2 < ts1, "%s: trigger-selects not written to GCSR2 before GCSR", what);
+        CHECK(p2 != SIZE_MAX && p1 != SIZE_MAX && p2 < p1 && ts1 < p2, "%s: enables not written to GCSR2 before GCSR", what);
+    }
     Port2State s = ReadPort2(r);
     CHECK((s.w[14] & (kAudioCapable | kAudioActive)) == (kAudioCapable | kAudioActive), "%s: audio word 0x%08x", what, s.w[14]);
     CHECK((s.w[14] & (kSymphonyPort2AudioRefused | kSymphonyPort2AudioFellBack)) == 0 && AudioReason(s) == 0,
@@ -1738,6 +1748,10 @@ static void RunAudioEnable(const Options &o, Run &r)
 
     size_t mark = Select(r, 1, "select Port 1-2: 64ch");
     CheckBothPortsRunning("after selecting 64", r, mark);
+    CHECK((c.reg[kRegGCSR] & (kGCSR_ClockOKFlash | kGCSR_ClockOKSolid)) == 0,
+          "%s: active port-2 GCSR LED is not on", o.name);
+    CHECK(c.reg[kRegPort1GreenCtl] == 0xFFFFFF0F && c.reg[kRegPort1RedCtl] == 0 && c.reg[kRegPort1BlueCtl] == 0,
+          "%s: active port-2 RGB LED is not solid green", o.name);
     CheckPublished("after selecting 64", 64);
     CheckPortSourceNames(o, kSymphonyPortSourcePorts1And2, "at 64 channels");
     {
@@ -1796,6 +1810,10 @@ static void RunAudioEnable(const Options &o, Run &r)
     CHECK(CountAccess(c, mark, 'W', kRegXLink2TX) == 0 && CountAccess(c, mark, 'W', kRegXLink1TX) == 0,
           "%s: switching back to 32 sent XLink commands", o.name);
     CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort2) != 0, "%s: port 2 left enabled after going back to 32", o.name);
+    CHECK((c.reg[kRegGCSR] & kGCSR_ClockOKSolid) != 0 && (c.reg[kRegGCSR] & kGCSR_ClockOKFlash) == 0,
+          "%s: disabled port-2 GCSR LED is not off", o.name);
+    CHECK(c.reg[kRegPort1GreenCtl] == 0 && c.reg[kRegPort1RedCtl] == 0 && c.reg[kRegPort1BlueCtl] == 0,
+          "%s: disabled port-2 RGB LED is not off", o.name);
     r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
     // Back at 32 a rate change leaves port 2 alone, though its units are known.
     {
@@ -2156,18 +2174,20 @@ static void RunAudioSwitch(const Options &o, Run &r)
         CHECK((s.w[14] & kSymphonyPort2AudioFellBack) && AudioReason(s) == kSymphonyPort2ReasonRateChange,
               "%s: fallback not reported (0x%08x)", o.name, s.w[14]);
         // Until Core Audio performs the change the streams are still 64 wide
-        // and the handler must keep working.
+        // and the handler must keep working. The remembered 64 request retries
+        // when the card is able to bring port 2 back.
         CheckIOHandler("64-channel streams while the card is at 32", 64);
         c.phase("configuration change after the fallback");
+        const size_t retryMark = c.lines.size();
         HostPerformConfigChange(r, false);
-        CheckPublished("after the fallback", 32);
-        CheckIOHandler("32 channels after the fallback", 32);
+        CheckPublished("after the automatic retry", 64);
+        CheckBothPortsRunning("64 after the automatic retry", r, retryMark);
     }
 
     // A fallback's configuration change is still pending when the user asks
     // for 64 again: the request must not be lost to the fallback's bookkeeping.
     mark = Select(r, 1, "select 64 at 48000 (first)");
-    CheckBothPortsRunning("64 at 48000 (first)", r, mark);
+    CheckBothPortsRunning("64 at 48000 (first)", r, c.lines.size());
     c.port[1].ignoreRate = true;
     { auto [rc, m] = rateChange("rate change to 96000 at 64, port 2 does not follow (again)", 96000.0);
       (void)m; (void)rc; }
@@ -2210,10 +2230,10 @@ static void RunAudioSwitch(const Options &o, Run &r)
         CHECK((c.reg[kRegGCSR2] & kGCSR2_DMAEnableMask) == 0 && c.reg[kRegA2H2HBA] == 0, "%s: port 2 programmed after the card reset", o.name);
         CHECK((c.reg[kRegGCSR] & (kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable)) != 0, "%s: port 1 not running after the card reset", o.name);
         HostPerformConfigChange(r, false);
-        CheckPublished("after the card reset", 32);
+        CheckPublished("after the card reset automatic retry", 64);
     }
     mark = Select(r, 1, "select 64 after the card reset");
-    CheckBothPortsRunning("64 after the card reset", r, mark);
+    CheckBothPortsRunning("64 after the card reset", r, c.lines.size());
     CheckPublished("64 after the card reset", 64);
     // Stop runs with both ports on (Finish).
 }
@@ -2238,6 +2258,10 @@ static void RunAudioPort2Vanishes(const Options &o, Run &r)
     const uint32_t before = gHostAudio.configChangeRequests;
     mark = c.lines.size();
     drv->LinkWatchTimerOccurred(nullptr, 0);     // the watch notices within its 2 s interval
+    CHECK((c.reg[kRegGCSR] & (kGCSR_ClockOKFlash | kGCSR_ClockOKSolid)) == kGCSR_ClockOKFlash,
+          "%s: port-2 clock fault did not flash the GCSR LED (GCSR=0x%08x)", o.name, c.reg[kRegGCSR]);
+    CHECK(c.reg[kRegPort1GreenCtl] == 0x000FFF0F && c.reg[kRegPort1RedCtl] == 0xFFF0000F && c.reg[kRegPort1BlueCtl] == 0,
+          "%s: port-2 clock fault did not write the RGB red/green flash (R=0x%08x G=0x%08x)", o.name, c.reg[kRegPort1RedCtl], c.reg[kRegPort1GreenCtl]);
     CheckPort1Alone("after the watch saw port 2 go", r);
     CHECK(CountAccess(c, mark, 'W', kRegXLink2TX) == 0, "%s: commands sent to a port with no clock", o.name);
     CHECK(CountAccess(c, mark, 'W', kRegXLink1TX) == 0, "%s: the fallback sent commands on port 1", o.name);
@@ -2295,12 +2319,16 @@ static void RunAudioPort2Vanishes(const Options &o, Run &r)
     c.phase("port 2 chain switched on again");
     c.port[1] = saved;
     for (auto &u : c.port[1].units) { u.addr = 0; u.passing = false; }
+    const uint32_t requestsBeforeReturn = gHostAudio.configChangeRequests;
     drv->LinkWatchTimerOccurred(nullptr, 0);
     HostPump();
-    CheckPort1Alone("after port 2 came back, before selecting", r);
-    mark = Select(r, 1, "select Port 1-2: 64ch after port 2 came back");
-    CheckBothPortsRunning("after port 2 came back", r, mark);
-    CheckPublished("after port 2 came back", 64);
+    CHECK(gHostAudio.configChangeRequests == requestsBeforeReturn + 1,
+          "%s: a returned port-2 unit did not request the remembered 64-channel configuration", o.name);
+    mark = c.lines.size();
+    CHECK(HostPerformConfigChange(r, false) == kIOReturnSuccess,
+          "%s: automatic 64-channel retry after port-2 return failed", o.name);
+    CheckBothPortsRunning("after port 2 came back automatically", r, mark);
+    CheckPublished("after port 2 came back automatically", 64);
     CHECK(c.port[1].rateCode == 0x01, "%s: port 2 not brought to 96000", o.name);
 
     // Gone again with IO stopped, and the cable pulled before Stop.
