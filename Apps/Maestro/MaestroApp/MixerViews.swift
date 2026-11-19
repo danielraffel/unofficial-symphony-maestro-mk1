@@ -782,6 +782,7 @@ struct MixerView: View {
                 unitBChannelNamesJSON = String(data: data, encoding: .utf8) ?? "[]"
             }
         }
+        let count = channelCount
         var vis = channelVisibility
         if vis.count < count {
             vis.append(contentsOf: Array(repeating: true, count: count - vis.count))
