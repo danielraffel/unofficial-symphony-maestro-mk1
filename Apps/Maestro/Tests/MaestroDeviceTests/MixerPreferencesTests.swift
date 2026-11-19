@@ -7,6 +7,36 @@ import MaestroDevice
 struct MixerPreferencesTests {
     let layout = CardLayout(slot1: .optical, slot2: .analogAD16)
 
+    @Test func unidentifiedUsesReceiptForReadsAndWrites() throws {
+        let name = "IdentityFallback.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(-12.0, forKey: "mixerMasterLevel_0")
+        let known = ChannelStateStore(defaults: defaults, layout: layout,
+            isSimulatingCards: false, identity: 42)
+        let scoped = known.mixerPreferences
+        scoped.set(-31.0, forKey: "mixerMasterLevel_0")
+        let failed = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
+        let fallback = failed.mixerPreferences
+        #expect(fallback.storageKey == scoped.storageKey)
+        #expect(fallback.object(forKey: "mixerMasterLevel_0") as? Double == -31)
+        fallback.set(-27.0, forKey: "mixerMasterLevel_0")
+        #expect(scoped.object(forKey: "mixerMasterLevel_0") as? Double == -27)
+        #expect(defaults.double(forKey: "mixerMasterLevel_0") == -12)
+    }
+
+    @Test func unidentifiedBeforeMigrationUsesLegacy() throws {
+        let name = "IdentityLegacy.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(-19.0, forKey: "mixerMasterLevel_0")
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
+        let preferences = store.mixerPreferences
+        #expect(preferences.object(forKey: "mixerMasterLevel_0") as? Double == -19)
+        preferences.set(-25.0, forKey: "mixerMasterLevel_0")
+        #expect(defaults.double(forKey: "mixerMasterLevel_0") == -25)
+    }
+
     @Test func upgradePreservesEveryLegacyValueAndFreezesTheSource() throws {
         let name = "MixerPreferencesTests.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: name))

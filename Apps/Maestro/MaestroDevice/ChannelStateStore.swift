@@ -97,7 +97,13 @@ public struct ChannelStateStore {
     }
 
     public var mixerPreferences: MixerPreferences {
-        MixerPreferences(defaults: defaults,
+        if !awaitingIdentity, identity == nil, !isSimulating, permitsLegacyInheritance, unit == .a {
+            if let owner = defaults.string(forKey: "mixerWideState.migratedTo"), !owner.isEmpty {
+                return MixerPreferences(defaults: defaults, scope: owner, migrate: false)
+            }
+            return MixerPreferences(legacyDefaults: defaults)
+        }
+        return MixerPreferences(defaults: defaults,
             scope: awaitingIdentity ? "pending" : (scope ?? (isSimulating ? "sim:unidentified" : "unidentified")),
             migrate: identity != nil && !isSimulating && !awaitingIdentity
                 && permitsLegacyInheritance && unit == .a && allowLegacyMigration)

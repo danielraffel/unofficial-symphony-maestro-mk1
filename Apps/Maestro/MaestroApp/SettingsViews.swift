@@ -104,7 +104,7 @@ struct DeviceSettingsView: View {
     }
 
     private func setRoutingMode(_ newMode: Int) {
-        guard !isLoading else { return }
+        guard !isLoading, appState.preferenceViewScope(for: .a).isWritable else { return }
         appState.mixerPreferences.set(newMode, forKey: "routingMode")
         if let xpcDev = appState.device as? XPCDeviceConnection {
             xpcDev.setRoutingMode(newMode)
@@ -381,7 +381,7 @@ struct DeviceSettingsView: View {
                 .pickerStyle(.segmented)
                 // Hardware-backed, unlike the rest of this section, so it carries
                 // the load gate itself rather than inheriting one from the Section.
-                .disabled(isLoading)
+                .disabled(isLoading || !appState.preferenceViewScope(for: .a).isWritable)
                 .help("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
             }
 

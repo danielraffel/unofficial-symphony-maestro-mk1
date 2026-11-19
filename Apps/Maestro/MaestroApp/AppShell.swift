@@ -476,8 +476,11 @@ struct DetailView: View {
     private var page: some View {
         switch area {
         case .input:          InputControlsView(appState: appState)
+            .id(appState.preferenceViewScope(for: appState.activeUnit))
         case .output:         OutputControlsView(appState: appState)
+            .id(appState.preferenceViewScope(for: appState.activeUnit))
         case .mixer:          MixerView(appState: appState)
+            .id(appState.mixerViewScopes)
         case .inputRouting:   InputRoutingView(appState: appState)
         case .outputRouting:  OutputRoutingView(appState: appState)
         case .deviceSettings: DeviceSettingsView()

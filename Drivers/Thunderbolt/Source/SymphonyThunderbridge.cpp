@@ -251,6 +251,8 @@ struct SymphonyThunderbridge_IVars {
     bool      micPreGainKnown[2][8];
     bool      micPreInstrument[8];    // atomic type for unit A's HAL controls
     bool      micPreTypeKnown[8];     // a failed read must not guess Mic
+    bool      micPreMic[8];           // known type is Mic (3): HAL phantom ON needs it
+    bool      unitBMicPreMic[8];
     // Separate pending lanes bind each value to its stage across a type switch.
     // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
 
@@ -7422,6 +7424,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                                   ivars->symphonyAddr, kSIOCmd_CurrentAnalogInputType,
                                   0x80000000u | ch, &type, 1, ivars->runtimeTxSeq, ivars->isLegacyPCIe2100) && type <= 4) {
                 __atomic_store_n(&ivars->micPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
+                __atomic_store_n(&ivars->micPreMic[ch], type == 3, __ATOMIC_RELEASE);
                 __atomic_store_n(&ivars->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
             }
             // AudioDriverKit has no public range setter after init. Keep the
@@ -9500,6 +9503,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         if (port == 1 && command == kSIOCmd_AnalogReferenceLevel && payload &&
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->unitBMicPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
+            __atomic_store_n(&ivars->unitBMicPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->unitBMicPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             PublishMicGain(ivars, value & 7u, 1);
         }
@@ -9516,6 +9520,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         if (port == 0 && command == kSIOCmd_AnalogReferenceLevel && payload &&
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->micPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
+            __atomic_store_n(&ivars->micPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             PublishMicGain(ivars, value & 7u);
         }
@@ -10108,6 +10113,12 @@ kern_return_t SymphonyThunderbridge::RequestOpticalFormat(uint32_t board, uint32
 // and all XLink TX still serializes (MSG_BYTE frames never interleave). Never
 // call SendVendorRequest from the control/IRQ queue — only from the drain block.
 
+static bool MicPreIsMic(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    return port ? __atomic_load_n(&iv->unitBMicPreMic[ch], __ATOMIC_ACQUIRE) :
+                  __atomic_load_n(&iv->micPreMic[ch], __ATOMIC_ACQUIRE);
+}
+
 kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
 {
     if (!ivars || channel >= 64) return kIOReturnBadArgument;
@@ -10118,6 +10129,14 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
         __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE);
     const bool admittedInstrument = port ? __atomic_load_n(&ivars->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
         __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE);
+    // Phantom ON only for a channel known to be in Mic mode; the original
+    // ignores phantom on any other input type
+    // (og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:683-691).
+    // OFF is always allowed.
+    if (on && !(admittedTypeKnown && MicPreIsMic(ivars, port, ch))) {
+        STERR("RequestPhantom: ON refused, ch%u is not known to be in Mic mode", ch);
+        return kIOReturnNotPermitted;
+    }
     IODispatchQueue *txq = ivars->xlinkQueue;
     if (!txq) {
         STERR("RequestPhantom: no XLink queue (setup incomplete)");
@@ -10152,7 +10171,8 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
                 // ON needs the route it was admitted for. OFF is the safe direction:
                 // it still reaches the channel the request was made for, so a route
                 // change can never leave +48 V on a channel the user just switched off.
-                if (XLinkTxAdmissible(ivars) && (routeUnchanged || val == 0) &&
+                if (XLinkTxAdmissible(ivars) &&
+                    (val == 0 || (routeUnchanged && pendingTypeKnown && MicPreIsMic(ivars, port, ch))) &&
                     (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // 1=on, 0=off
                     SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
