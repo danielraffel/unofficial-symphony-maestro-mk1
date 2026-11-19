@@ -13,6 +13,8 @@ public struct MixerPreferences: @unchecked Sendable {
     private let readOnly: Bool
     public let storageKey: String?
 
+    public var isWritable: Bool { enabled && !readOnly }
+
     public static let legacyKeys = ["mixerState_swReturn", "routingMode",
         "mixerMasterFadersLinked", "mixerSWReturnFadersLinked"] + (0..<2).flatMap { mixer in
         ["mixerMasterLevel", "mixerMasterLeftLevel", "mixerMasterRightLevel",

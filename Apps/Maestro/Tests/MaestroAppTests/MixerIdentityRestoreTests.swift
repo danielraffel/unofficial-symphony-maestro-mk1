@@ -32,6 +32,7 @@ private final class MixerRestoreTransport: XPCTransport, @unchecked Sendable {
     }
 }
 
+extension StandardDefaultsSuites {
 @Suite("Mixer identity completion", .serialized)
 @MainActor
 struct MixerIdentityRestoreTests {
@@ -94,11 +95,17 @@ struct MixerIdentityRestoreTests {
                 let tbSnapshot = MixerStateSnapshot(channelCount: 32, mixer: 0,
                     store: state.channelStateStore, preferences: state.mixerPreferences)
                 #expect(tbSnapshot.masterLevel == -12)
-                #expect(state.mixerPreferences.integer(forKey: "routingMode") == mode)
+                // Unidentified unit: the legacy keys are read and written, as
+                // before per-unit scoping, so the pages stay editable.
+                #expect(state.mixerPreferences.isWritable)
+                let written = state.mixerPreferences.integer(forKey: "routingMode")
+                #expect(written == 1 - mode)
+                state.mixerPreferences.set(mode, forKey: "routingMode")
                 #expect(defaults.object(forKey: "mixerWideState.migratedTo") as? NSObject == ownerBefore)
             }
         }
         let legacyAfter = MixerPreferences.legacyKeys.map { defaults.object(forKey: $0) as? NSObject }
         #expect(legacyBefore == legacyAfter)
     }
+}
 }

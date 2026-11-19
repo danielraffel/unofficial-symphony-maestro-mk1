@@ -31,6 +31,10 @@ import MaestroDevice
 /// Evidence: `og_source/generic/CoreAudio/mAEstro.h` — output properties
 struct OutputControlsView: View {
     private let appState: AppState
+    @State private var loadedScope: PreferenceViewScope
+    private var canEditPreferences: Bool {
+        loadedScope.isWritable && loadedScope == appState.preferenceViewScope(for: appState.activeUnit)
+    }
     // Fixed for this page's lifetime (.id(activeUnit) in AppShell). Queued
     // monitor operations must never follow a later picker selection.
     private let monitorTarget: AppState.UnitWriteTarget
@@ -106,6 +110,7 @@ struct OutputControlsView: View {
 
     init(appState: AppState) {
         self.appState = appState
+        _loadedScope = State(initialValue: appState.preferenceViewScope(for: appState.activeUnit))
         monitorTarget = appState.unitWriteTarget
         bMonitor = appState.unitBMonitor
         let count = max(appState.unitCardLayout.analogOutputStripCount, 1)
@@ -451,6 +456,8 @@ struct OutputControlsView: View {
                 .padding(.bottom, 8)
             }
         }
+        .disabled(!canEditPreferences)
+        .allowsHitTesting(canEditPreferences)
         .navigationTitle("Output")
         .onAppear {
             scrollRestorationPending = true
@@ -1092,6 +1099,7 @@ struct OutputControlsView: View {
     // MARK: - Data Loading
 
     private func initializeOutputChannels() {
+        guard canEditPreferences else { return }
         let n = max(analogOutputStripCount, 1)
         // Keyed by the installed card pair — see `ChannelStateStore`.
         if let saved: [OutputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.outputKey),
@@ -1109,6 +1117,7 @@ struct OutputControlsView: View {
     }
 
     private func saveChannelStates() {
+        guard canEditPreferences else { return }
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.outputKey)
     }
 
@@ -1252,6 +1261,7 @@ struct OutputControlsView: View {
     /// The trim byte rides in byte[1] of the packed analog-IO-type command, so
     /// every affected channel re-sends that one command and nothing else.
     private func applyAnalogRefChange(_ index: Int, level: UInt32) {
+        guard canEditPreferences else { return }
         guard channels.indices.contains(index),
               OutputChannelLogic.offersAnalogRef(level) else { return }
         let before = channels[index]
@@ -1286,6 +1296,7 @@ struct OutputControlsView: View {
     /// step 6), so a positive trim is clamped and its packed analog-IO-type
     /// command re-sent alongside the digital-reference command.
     private func applyDigitalRefChange(_ index: Int, level: UInt32) {
+        guard canEditPreferences else { return }
         let trimClamped = OutputChannelLogic.applyDigitalRefChange(
             &channels, channel: index, to: level)
         Task { await writeOutputProperty(index, .digitalRefLevel, value: .uint32(level)) }
@@ -1322,6 +1333,7 @@ struct OutputControlsView: View {
     @discardableResult
     private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
                                      on device: (any DeviceConnection)?) async -> Bool {
+        guard canEditPreferences else { return false }
         guard let device else { return false }
         do {
             let element = UInt32(index)
@@ -1405,6 +1417,7 @@ struct OutputControlsView: View {
     /// controller (`SymphonyIO.cpp:1626-1634`); on this unit that would rewrite
     /// the ADAT output crosspoints. Reset Routing lives on the routing pages.
     private func resetMonitorDefaults(scope: SymphonyIOResetScope) async {
+        guard canEditPreferences else { return }
         // The trims below are saved after several awaits: keep them to this unit.
         let target = appState.unitWriteTarget
         let attenuation = UInt32(SymphonyIOMonitorDefaults.levelAttenuationDB)

@@ -133,7 +133,9 @@ extension AppState {
     var mixerPreferences: MixerPreferences {
         if unitAIdentityState == .failed, connectionMode == .hardware, cardSimulation == nil,
            cardLayout.converter == nil, cardLayout.converterLayout == nil {
-            return MixerPreferences(legacyDefaults: .standard, readOnly: true)
+            // Identity unreadable: behave exactly as before per-unit scoping (the legacy
+            // global keys, read and written) so the Mixer, Inputs and Outputs stay usable.
+            return MixerPreferences(legacyDefaults: .standard)
         }
         return channelStateStore.mixerPreferences
     }
