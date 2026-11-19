@@ -20,7 +20,7 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 - With two Symphony I/Os at 64 channels, System Setup now offers Use Loop Sync and a choice of Loop Sync Master. Turning Loop Sync off puts unit B on Word Clock. Clock roles and measured lock are shown separately.
 - **With two Symphony I/Os at 64 channels, System Setup lets you choose which unit receives the Mac's volume keys and Core Audio mute control.** It remembers the choice and returns to unit A if unit B is disconnected.
 - **With two Symphony I/Os at 64 channels, Mixer and Output Routing use each unit's own prefix and board names, including optical format and `N.A.` channels; custom mixer labels stay with their unit.**
-- **Input Routing on ThunderBridge and PCIe can map either Symphony I/O’s input streams to any software input.** Card input choices are remembered on reconnect, included in single-unit preset bundles, and cleared by Reset Routing.
+- **With two Symphony I/Os at 64 channels, Input Routing on ThunderBridge and PCIe can map either unit’s input streams to any software input.** With one unit, Input Routing shows a single grid, as before. Card input choices are remembered on reconnect, included in single-unit preset bundles, and cleared by Reset Routing.
 - **With two Symphony I/Os at 64 channels, choosing Unit B on the Outputs page shows unit B's own speaker and headphone controls,** as Apogee's software did. The Mac's volume keys still control unit A.
 - **Identify, on the Output Routing page, lights up all of the Symphony I/O's front-panel lights** so you can find the unit, as Apogee's software did; press it again to turn them off. With two units there is one for each.
 

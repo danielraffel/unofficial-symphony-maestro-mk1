@@ -59,6 +59,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         // MicPre module — the Input page never offers the controls, so nothing
         // is ever written for them.
         .groupID, .insertID, .insertReturnEnable,
+        // Front-panel identify lights (0x33), as unit B already allows.
+        .identify,
         // Analog / digital input
         .analogIOType, .digitalRefLevel,
         // Physical unit A output monitoring
