@@ -970,6 +970,39 @@ static std::vector<Options> SinglePortScenarios()
     return v;
 }
 
+// The shipped two-port personality at 32 channels must never use unit B.
+// Evidence: og_source/symphonymk1/ext/Symphony64/Driver/Symphony64Card.cpp:2258
+// and og_source/symphonymk1/ext/Symphony64/Driver/XLink.cpp:888.
+// Check raw accesses, including teardown, rather than just the final state.
+static void CheckTwoPort32(const Options &o, const FakeCard &c)
+{
+    CHECK(c.count("H dma-prepare") == 5, "%s: expected both port DMA pairs plus meters", o.name);
+    CHECK(c.reg.at(kRegGCSR2) & kGCSR2_DisablePort2, "%s: port 2 not disabled at end", o.name);
+    CHECK(c.port[1].commandsSeen == 0 && c.port[1].stored.empty(),
+          "%s: unit-B traffic at 32 channels", o.name);
+    bool firstGCSR2Write = true;
+    for (const auto &l : c.lines) {
+        unsigned long long off = 0;
+        unsigned val = 0;
+        char kind = 0;
+        if (sscanf(l.c_str(), "%c 0x%llx 0x%x", &kind, &off, &val) != 3) continue;
+        if (kind == 'W' && off == kRegGCSR2) {
+            // Initial DMA quiesce preserves the reset value (zero on a clean
+            // card). Every later write must keep the configured port disabled.
+            CHECK((firstGCSR2Write && val == 0) || (val & kGCSR2_DisablePort2),
+                  "%s: DisablePort2 cleared: %s", o.name, l.c_str());
+            firstGCSR2Write = false;
+        }
+        if (kind == 'W' && off == kRegXLink2TX)
+            CHECK(false, "%s: XLink2 TX traffic: %s", o.name, l.c_str());
+        // Start/re-init explicitly clear these registers today. No DMA address
+        // or buffer size may be programmed; zero clears are baseline behaviour.
+        if (kind == 'W' && (off == kRegA2H2HBA || off == kRegH2A2HBA ||
+                            off == kRegA2H2BUFSIZE || off == kRegH2A2BUFSIZE))
+            CHECK(val == 0, "%s: port-2 DMA programmed: %s", o.name, l.c_str());
+    }
+}
+
 #ifdef TRACE_HAVE_RETIRE
 // ── Retire for upgrade (kSelectorRetireForUpgrade) ──────────────────────────
 // The serving copy is asked to step aside so the copy macOS registered can take
@@ -995,9 +1028,10 @@ static size_t BusAccessesSince(const FakeCard &c, size_t mark)
     return n;
 }
 
-static void RunRetire(const char *name, bool streaming, const std::string &outDir, size_t &accesses, bool &ok)
+static void RunRetire(const char *name, bool streaming, const std::string &outDir, size_t &accesses, bool &ok, bool twoPort = false)
 {
     Options o; o.name = name; o.shortFlow = true;
+    if (twoPort) o.portCountProperty = 2;
     Run r;
     RunScenario(o, r);
     FakeCard &card = r.card;
@@ -1043,7 +1077,7 @@ static void RunRetire(const char *name, bool streaming, const std::string &outDi
     CHECK(card.reg[kRegIntMask] == 0, "%s: interrupts still unmasked after Stop", name);
     CHECK((card.reg[kRegClkCtrl] & (kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute)) == 0,
           "%s: FPGA not muted after Stop", name);
-    CHECK(card.count("H dma-complete") == 3, "%s: %zu DMA mappings completed at Stop (want 3)", name,
+    CHECK(card.count("H dma-complete") == (twoPort ? 5 : 3), "%s: %zu DMA mappings completed at Stop", name,
           card.count("H dma-complete"));
 
     card.phase("user-client calls after Stop");
@@ -1072,6 +1106,7 @@ static void RunRetire(const char *name, bool streaming, const std::string &outDi
     r.pci->release();
     r.drv = nullptr;
     gHostBackend = nullptr;
+    if (twoPort) CheckTwoPort32(o, card);
     accesses += card.lines.size();
     if (!WriteFile(outDir, name, card.lines)) ok = false;
 }
@@ -2906,6 +2941,23 @@ int main(int argc, char **argv)
 #endif
 
     size_t accesses = 0;
+#ifdef TRACE_HAVE_PORT2_AUDIO
+    // Reuse p1's exact full lifecycle; only the personality key differs.
+    // p2-32 goldens: dev source db23f3929fb99847b7e2476fb5b65b23b1fa78aa.
+    // No intended driver/register changes relative to that source.
+    {
+        Options o = SinglePortScenarios().front();
+        o.name = "p2-32-symphony";
+        o.portCountProperty = 2;
+        Run r;
+        RunScenario(o, r);
+        CheckAt32(o, r);
+        Finish(o, r);
+        CheckTwoPort32(o, r.card);
+        accesses += r.card.lines.size();
+        if (!WriteFile(outDir, o.name, r.card.lines)) return 2;
+    }
+#endif
     for (const Options &o : SinglePortScenarios()) {
         std::vector<std::string> base = Trace(o);
         accesses += base.size();
@@ -3008,6 +3060,10 @@ int main(int argc, char **argv)
         bool ok = true;
         RunRetire("p1-retire-idle", false, outDir, accesses, ok);
         RunRetire("p1-retire-streaming", true, outDir, accesses, ok);
+#ifdef TRACE_HAVE_PORT2_AUDIO
+        RunRetire("p2-32-retire-idle", false, outDir, accesses, ok, true);
+        RunRetire("p2-32-retire-streaming", true, outDir, accesses, ok, true);
+#endif
         if (!ok) return 2;
     }
 #endif
