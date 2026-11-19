@@ -82,6 +82,9 @@ struct HelpView: View {
                 Text("**System Setup** is about the whole system: **Clock** (sample rate and clock source), **Keyboard Volume Control** with two units, **Word Clock Output**, the **Meters** hold times, **Device Info** (connection, firmware, cards and the 32 or 64 channel choice) and the software versions.")
                 Text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**.")
             }
+            HelpQuestion("Why doesn't muting Software Return or moving Master change what I hear?") {
+                Text("The **Mixer** page only affects outputs that are fed by a mixer. In **Output Routing**, an output fed straight from a software output pair (for example **1-2 → Line 1/2**) plays your Mac's audio directly, so Software Return, Master and the input strips do nothing to it. Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **Software Return**, together with the hardware inputs, and **Master** sets the level.")
+            }
             HelpQuestion("What do Reset Routing and Identify do?") {
                 Text("**Reset Routing** is on the Input Routing and Output Routing pages. It puts that page back to its default: on Input Routing each software input records the matching hardware input, and on Output Routing each software output goes to the matching hardware output. Maestro asks before it changes anything, and only the page you are on is reset.")
                 Text("**Identify** is on the Output Routing page. It lights every light on the Symphony I/O's front panel so you can tell which unit is which, for example in a rack. Click it again to turn the lights off; quitting Maestro also turns them off. With two Symphony I/Os at 64 channels there is one button for each unit, **Identify A** and **Identify B**.")

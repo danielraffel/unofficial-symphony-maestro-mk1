@@ -1787,8 +1787,14 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars);
 static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendorAnswered,
                                  const SymphonyLinkInitResult *symphony)
 {
-    if (vendorAnswered)
+    if (vendorAnswered) {
         ivars->symphonyAnsweredSinceStart = true;
+        // A successful Symphony read is authoritative even when the initial
+        // probe timed out and produced a converter-looking INQUIRE word.
+        // Clear that provisional word on every recovery path, not only the
+        // startup branch that explicitly found convCandidate.
+        ivars->unitProbeWord = 0;
+    }
     const bool converters = !ivars->symphonyAnsweredSinceStart &&
                             (UnitProbeIsConvertersOnly(ivars->unitProbeWord) || __atomic_load_n(&ivars->convPort1, __ATOMIC_ACQUIRE));
     const bool was = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
@@ -2636,6 +2642,11 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             return true;
         } else if (convCandidate || ivars->convPort1) {
             STLOG("Converter: a Symphony I/O read answered after the probe — Symphony I/O behaviour");
+            // The probe is only provisional.  Once any Symphony vendor read
+            // answers, never publish the converter word from the earlier
+            // timeout/INQUIRE race (the app decodes this word independently
+            // of the converter-state selector).
+            ivars->unitProbeWord = 0;
             ConvSetPort(ivars, 0, false, 0, nullptr);
             __atomic_and_fetch(&ivars->convFlags, ~(kSymphonyConvPort1Converters | kSymphonyConvRoutingApplied), __ATOMIC_RELEASE);
         }

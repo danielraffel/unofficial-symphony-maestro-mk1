@@ -2715,6 +2715,10 @@ static void RunConverterParityChecks()
         RunScenario(o, r);
         CHECK(!(ConvState(r).flags & kSymphonyConvPort1Converters), "%s: identified as converters (flags 0x%x)",
               o.name, ConvState(r).flags);
+        uint32_t link[16] = {};
+        r.drv->ReadLinkState(link);
+        CHECK(link[15] == 0, "%s: provisional converter probe word leaked after a Symphony read (0x%08x)",
+              o.name, link[15]);
         // Never configured as converters at any point: unit 1 is never
         // authenticated (that happens only once it is taken for a converter).
         CHECK(AfterIdentification(r.card) == r.card.lines.size(), "%s: unit 1 was configured as a converter", o.name);
