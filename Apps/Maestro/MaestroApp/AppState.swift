@@ -778,6 +778,10 @@ final class AppState {
         didSet { if converterSystem != oldValue { converterSystemChanged() } }
     }
 
+    var symphonyCardInputNamingRevision = 0
+    var symphonyCardInputEdits: [Int: Int] = [:]
+    @ObservationIgnored var symphonyCardInputTail: Task<Bool, Never>?
+
     // MARK: Converter routing
 
     /// The chain the converter routes on screen belong to
@@ -2118,6 +2122,7 @@ final class AppState {
             }
             print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) saved input routes")
         }
+        await replaySymphonyCardInputs()
         await tb.logInputRoutes()
     }
 

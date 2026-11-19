@@ -11,6 +11,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public var metadata: MaestroPreset
     public var globals: [UInt32: UInt32] = [:]
     public var inputRoutes: [UInt8] = []
+    /// Optional for older B4a bundles: absence leaves card inputs alone.
+    public var cardInputRoutes: [Int]?
     public var outputRoutes: [UInt8] = []
     public var mixers: [Mixer] = []
     public var routingMode: Int = 1
@@ -61,6 +63,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public enum Write: Sendable, Equatable {
         case property(PropertyAddress, PropertyValue)
         case output(ThunderboltCardRouting.Route)
+        case cardInput(ConverterRouting.Command)
         case frontPanel(UInt8)
     }
 
@@ -157,6 +160,17 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         }
         // Card routing precedes peripheral recall: og_source/maestrolink/Software/
         // SymphonyController.cpp:696-704; SymphonyCard.cpp:412-415.
+        if let cardInputRoutes {
+            try require(cardInputRoutes.count == 32, "incomplete card input routes.")
+            let routing = SymphonyCardInputRouting(model: .init(topology: .symphonyOnly, hostChannels: 32))
+            for (host, source) in cardInputRoutes.enumerated() {
+                try require(source >= -1, "invalid card input source.")
+                guard let command = routing.command(host: host, source: source == -1 ? nil : source) else {
+                    throw RecallError.unsupported("unsupported card input route.")
+                }
+                result.append(.cardInput(command))
+            }
+        }
         for (index, source) in inputRoutes.enumerated() {
             try require((32...63).contains(source) || source == SymphonyIORoutingAddress.none,
                         "unsupported input route.")

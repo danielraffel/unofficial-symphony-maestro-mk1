@@ -111,8 +111,8 @@ public struct SymphonyRoutingModel: Sendable {
     }
 
     /// Current app/driver contract, not a new dispatch gate. Card commands
-    /// never acquire a peripheral port byte. B6/B7 remain converter-only
-    /// until B1 changes that ABI (SymphonyCardMixerRouting.h:60-73).
+    /// never acquire a peripheral port byte. B1b permits B6/B7 for Symphony
+    /// endpoints too (SymphonyCardMixerRouting.h:77-82).
     public func allows(_ command: CommandFamily, at endpoint: Endpoint) -> Bool {
         guard hostChannels > 0 else { return false }
         switch endpoint {
@@ -127,7 +127,7 @@ public struct SymphonyRoutingModel: Sendable {
                 if case .unknown = topology { return false }; return true
             case .cardInput, .cardReset:
                 switch topology {
-                case .converterOnly: return true
+                case .symphonyOnly, .converterOnly: return true
                 case .symphonyAndConverters: return hostChannels == 64
                 default: return false
                 }

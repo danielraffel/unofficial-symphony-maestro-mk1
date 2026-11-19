@@ -163,7 +163,13 @@ struct InputRoutingView: View {
                     driverTooOld: appState.converterSystem?.driverSupportsConverterControls == false)
             }
         } else {
-            routingGrid
+            VStack(spacing: 0) {
+                if appState.symphonyCardInputs.channelCount > 0 {
+                    SymphonyCardInputRoutingView(appState: appState)
+                    Divider()
+                }
+                routingGrid
+            }
         }
     }
 
@@ -338,6 +344,7 @@ struct InputRoutingView: View {
     /// still unknown would outlive the cards themselves. See ``RoutingStateCache``.
     private func persistChosenRows() {
         routingCache?.save(routes.filter { userChosenRows.contains($0.key) })
+        appState.symphonyCardInputNamingRevision += 1
     }
 
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:714-792`
@@ -440,6 +447,7 @@ struct InputRoutingView: View {
                 Every software input will be re-pointed to the default:
 
                 \(plan.joined(separator: "\n"))
+                \(appState.symphonyCardInputs.channelCount > 0 ? "The card’s software-input mapping for all connected units will also return to its default." : "")
                 """,
             isRefusal: false)
     }
@@ -475,6 +483,11 @@ struct InputRoutingView: View {
         // would hand ADAT inputs to USB record channels 9-16, which that mode does
         // not stream. Every destination written is a P2P byte (192+), so this can
         // never touch a hardware output.
+        if appState.symphonyCardInputs.channelCount > 0,
+           !(await appState.applySymphonyCardInputs([:], reset: true)) {
+            errorMessage = "The card refused Reset Routing."
+            return
+        }
         let usbChannels = device.identifier.mode.channelCount
 
         // Preserve unit A's ThunderBridge startup table; B uses the original reset order.
@@ -1143,6 +1156,7 @@ struct OutputRoutingView: View {
                 Every hardware output will be re-pointed to the default:
 
                 \(plan.joined(separator: "\n"))
+                \(appState.symphonyCardInputs.channelCount > 0 ? "The card’s software-input mapping for all connected units will also return to its default." : "")
                 """,
             isRefusal: false)
     }
@@ -1169,6 +1183,11 @@ struct OutputRoutingView: View {
         guard RoutingResetGuard.refusalReason(board1: b1, board2: b2) == nil else {
             errorMessage = "I/O cards were not detected this session — routing reset is unavailable."
             print("[Maestro] OutputRouting: reset refused at write time, provenance not .detected")
+            return
+        }
+        if appState.symphonyCardInputs.channelCount > 0,
+           !(await appState.applySymphonyCardInputs([:], reset: true)) {
+            errorMessage = "The card refused Reset Routing."
             return
         }
         // Over USB: 16, not the device mode's channel count — see

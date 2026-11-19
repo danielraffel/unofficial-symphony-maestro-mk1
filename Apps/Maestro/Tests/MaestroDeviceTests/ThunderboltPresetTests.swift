@@ -71,6 +71,7 @@ struct ThunderboltPresetTests {
     final class SimulatedThunderBridge {
         var properties: [PropertyAddress: PropertyValue] = [:]
         var routes: [UInt8: ThunderboltCardRouting.Route] = [:]
+        var cardInputs: [Int: Int] = [:]
         var frontPanel: UInt8 = 0
         var trace: [String] = []
         var failedStep: Int?
@@ -84,6 +85,7 @@ struct ThunderboltPresetTests {
             switch write {
             case .property(let address, let value): properties[address] = value
             case .output(let route): routes[route.channel] = route
+            case .cardInput(let command): cardInputs = SymphonyCardInputRouting.applying([command], to: cardInputs)
             case .frontPanel(let value): frontPanel = value
             }
         }
@@ -123,6 +125,41 @@ struct ThunderboltPresetTests {
         #expect(simulated.properties[PropertyAddress(selector: .mixerChannelPan, element: (1 << 16) | 1000)] == .float64(0.25))
         #expect(simulated.routes[2]?.enabled == false)
         #expect(simulated.trace.suffix(2) == ["0xDD 0", "read 0xDD"])
+    }
+
+    @Test func cardInputsBundleRoundTripAndRefusal() throws {
+        var preset = try fixture()
+        preset.cardInputRoutes = Array(0..<32)
+        preset.cardInputRoutes?[0] = 12
+        preset.cardInputRoutes?[1] = 12
+        preset.cardInputRoutes?[2] = -1
+        let data = try PropertyListEncoder().encode(preset)
+        let loaded = try PropertyListDecoder().decode(ThunderboltPreset.self, from: data)
+        let hardware = SimulatedThunderBridge()
+        try hardware.recall(loaded, layout: layout)
+        #expect(hardware.cardInputs[0] == 12)
+        #expect(hardware.cardInputs[1] == 12)
+        #expect(hardware.cardInputs[2] == -1)
+        #expect(try loaded.writes(layout: layout).first == .cardInput(.init(command: 0xB6, payload: [0, 12, 1])))
+        // Older B4a bundles leave this independently owned table alone.
+        let old = try fixture()
+        let decodedOld = try PropertyListDecoder().decode(ThunderboltPreset.self, from: PropertyListEncoder().encode(old))
+        #expect(decodedOld.cardInputRoutes == nil)
+        #expect(!(try decodedOld.writes(layout: layout)).contains { if case .cardInput = $0 { return true }; return false })
+        for invalid in [[Int](), Array(repeating: 32, count: 32), Array(repeating: -2, count: 32)] {
+            preset.cardInputRoutes = invalid
+            let untouched = SimulatedThunderBridge()
+            #expect(throws: (any Error).self) { try untouched.recall(preset, layout: layout) }
+            #expect(untouched.trace.isEmpty)
+        }
+        // Every card write refusal still executes the original unlock tail.
+        for index in 0..<32 {
+            let refused = SimulatedThunderBridge()
+            refused.failedStep = index
+            #expect(throws: (any Error).self) { try refused.recall(loaded, layout: layout) }
+            #expect(refused.cardInputs.count == index)
+            #expect(refused.trace.suffix(2) == ["0xDD 0", "read 0xDD"])
+        }
     }
 
     @Test func recallOrderAndNoMuteFirst() throws {

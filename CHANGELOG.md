@@ -11,12 +11,14 @@
 
 ### New
 
+- **Input Routing on ThunderBridge and PCIe can map either Symphony I/O’s input streams to any software input.** Card input choices are remembered on reconnect, included in single-unit preset bundles, and cleared by Reset Routing.
+
 - **With two Symphony I/Os at 64 channels, choosing Unit B on the Outputs page shows unit B's own speaker and headphone controls,** as Apogee's software did. The Mac's volume keys still control unit A.
 - **Identify, on the Output Routing page, lights up all of the Symphony I/O's front-panel lights** so you can find the unit, as Apogee's software did; press it again to turn them off. With two units there is one for each.
 
 ### Fixes
 
-- **Input Routing now follows the Unit A / Unit B picker with two Symphony I/Os at 64 channels.** Unit B shows its own inputs and saves its routing choices separately; Reset Routing affects only the chosen unit.
+- **Input Routing now follows the Unit A / Unit B picker with two Symphony I/Os at 64 channels.** Unit B shows its own inputs and saves its routing choices separately; Reset Routing restores the chosen unit’s input table and the card’s software-input mapping.
 - **Saving and loading a preset on ThunderBridge or PCIe now restores the Symphony I/O’s routing, mixer, monitor and channel settings.** Previously, loading a bundle restored only its channel names. Presets for a different card layout are refused before any settings change.
 - **With two Symphony I/Os at 64 channels, Output Routing lets any of the 64 DAW channels and both mixers feed any output on either unit,** as Apogee's software did. Before, unit A's outputs could not play DAW channels 33-64.
 - **The 8MicPre gain control in your DAW follows the channel's Mic or Instrument setting.** On an Instrument channel it stops at 65 dB (the slider still shows 0-85 dB).
