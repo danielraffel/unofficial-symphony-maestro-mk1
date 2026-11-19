@@ -22,12 +22,12 @@ public enum ThunderboltCardRouting {
     /// Payload: `[xlinkChannel, tdmSlot, enabled]`.
     public static let outputRouteCommand: UInt8 = 0xB5
     /// TDM slot of host playback channel 0 (`SYMPHONY64_PCI_OUT0`).
-    public static let pciOutBase: UInt8 = 64
+    public static let pciOutBase = UInt8(SymphonyRoutingModel.pciOutBase)
     /// TDM slot of card mixer 0 output left (`SYMPHONY64_MIXER0_OUT`); mixer m
     /// occupies `128 + 2m` and `+1`.
-    public static let mixerOutBase: UInt8 = 128
+    public static let mixerOutBase = UInt8(SymphonyRoutingModel.mixerOutBase)
     /// XLink TX channels on the port (`MAX_SYMPHONY_CHANNELS_ON_BUS`).
-    public static let channelCount: UInt8 = 32
+    public static let channelCount = UInt8(SymphonyRoutingModel.channelsPerPort)
 
     /// The source the main output pair uses until the user picks another: card
     /// mixer 1, which is what the driver programs at start-up. Software Return,
@@ -110,18 +110,16 @@ public enum ThunderboltCardRouting {
     /// XLink TX channel of unit B's first output: its outputs are TX 32-63,
     /// which the driver accepts only while 64 channels run with unit B
     /// (`kPort2FirstChannel`, `CardMixerUnitBActive`).
-    public static let unitBChannelBase: UInt8 = 32
+    public static let unitBChannelBase = UInt8(SymphonyRoutingModel.Port.two.cardBase)
 
     /// TDM slot of host playback channel `channel` (0-63): `PCI_OUT n`.
     public static func playbackSlot(channel: Int) -> UInt8? {
-        guard channel >= 0, channel < 64 else { return nil }
-        return pciOutBase &+ UInt8(channel)
+        SymphonyRoutingModel.playbackSlot(channel: channel)
     }
 
     /// TDM slot of card mixer `mixer` (0 or 1), `side` 0 = left, 1 = right.
     public static func mixerSlot(mixer: Int, side: Int) -> UInt8? {
-        guard (0...1).contains(mixer), (0...1).contains(side) else { return nil }
-        return mixerOutBase &+ UInt8(mixer * 2 + side)
+        SymphonyRoutingModel.mixerSlot(mixer: mixer, side: side)
     }
 
     /// The card route for one of unit B's outputs: `destination` is the output
