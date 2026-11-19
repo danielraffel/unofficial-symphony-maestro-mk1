@@ -118,6 +118,15 @@ public enum ClockSourceMenu {
         return (source, UInt8(high - 1))
     }
 
+    /// The older converters (AD-16X, DA-16X, DD-16X, Rosetta) on a
+    /// ThunderBridge: their own clock or word clock, nothing else, as the
+    /// original offered for them. Sent to the driver as the converter config's
+    /// clock bit, never as a Symphony I/O ClockMode.
+    public static let converters: [ClockSourceChoice] = [
+        ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
+        ClockSourceChoice(id: wordClock, name: "External (Word Clock)", source: 2, boardInput: nil),
+    ]
+
     /// Over USB: Internal only (see `SystemSetupView.clockSourceChoices`).
     public static let usb: [ClockSourceChoice] = [
         ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),

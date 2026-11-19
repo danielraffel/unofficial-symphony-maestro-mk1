@@ -294,6 +294,64 @@ public final class DextUserClient: @unchecked Sendable {
         return SecondPortState.decode(out)
     }
 
+    private static let selectorReadConverters: UInt32 = 9
+    private static let selectorSetConverterConfig: UInt32 = 10
+    /// sizeof(SymphonyConverterConfigInput): {magic, config}.
+    static let converterConfigInputSize = 8
+
+    /// The older XLink converters on ports 1 and 2 (selector 9, dext 131+):
+    /// identity, addressing, authentication, Device Type, phase, health,
+    /// latency and host channel counts. No bus access. `nil` when the driver
+    /// has no such selector (every driver before 131): use the link state's
+    /// probe word and `readPort2State` instead.
+    public func readConverterState() -> ConverterState? {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        // SymphonyConverterStateOutput is exactly 28 words (112 bytes); the
+        // driver rejects any other output size.
+        var out = [UInt32](repeating: 0, count: ConverterState.wordCount)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorReadConverters, nil, 0,
+                                      p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == ConverterState.wordCount * MemoryLayout<UInt32>.size else {
+            return nil
+        }
+        return ConverterState.decode(out)
+    }
+
+    /// The input of selector 10: `{magic 'SYMP', config}`, 8 bytes.
+    static func converterConfigInput(_ config: UInt32) -> Data {
+        var input = Data(count: converterConfigInputSize)
+        input.withUnsafeMutableBytes { p in
+            p.storeBytes(of: Self.magic, as: UInt32.self)
+            p.storeBytes(of: config, toByteOffset: 4, as: UInt32.self)
+        }
+        return input
+    }
+
+    /// The user's converter choices (selector 10, dext 131+): word clock
+    /// source and Device Type, as `SymphonyConverterConfigInput.config`
+    /// (`ConverterConfig.word`). No output. False when not connected or the
+    /// driver has no such selector.
+    @discardableResult
+    public func setConverterConfig(_ config: UInt32) -> Bool {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        let input = Self.converterConfigInput(config)
+        var outSize = 0
+        let kr = input.withUnsafeBytes { inPtr in
+            IOConnectCallStructMethod(conn, Self.selectorSetConverterConfig, inPtr.baseAddress, input.count,
+                                      nil, &outSize)
+        }
+        return kr == KERN_SUCCESS
+    }
+
     /// kSelectorRetireForUpgrade (dext 123+): ask the dext serving the card to
     /// stop so the copy macOS registered to replace it can take the device.
     /// Input `{magic 'RETI', replacementBuild}` (8 bytes), output `{status,

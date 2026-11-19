@@ -52,6 +52,11 @@ public struct CardLayout: Sendable, Equatable {
     /// taken from it; everything else stays on the unknown-layout behaviour.
     public let converter: ConnectedUnit?
 
+    /// Every converter unit on both ports, when the driver identified them
+    /// (or the older probe word did). Takes over from `converter` for the
+    /// strip counts and gives the channels their names and bus slots.
+    public let converters: ConverterSystem?
+
     /// What the channel names depend on besides the cards: the sample rate,
     /// each slot's optical format and each slot's S/PDIF Coax Replaces setting.
     /// See ``digitalChannelName(board:channelOnCard:isInput:)``.
@@ -63,6 +68,7 @@ public struct CardLayout: Sendable, Equatable {
         isKnown: Bool = true,
         fallbackChannelCount: Int = 16,
         converter: ConnectedUnit? = nil,
+        converters: ConverterSystem? = nil,
         naming: ChannelNaming = ChannelNaming()
     ) {
         self.slot1 = slot1
@@ -70,7 +76,23 @@ public struct CardLayout: Sendable, Equatable {
         self.isKnown = isKnown
         self.fallbackChannelCount = fallbackChannelCount
         self.converter = converter
+        self.converters = converters
         self.naming = naming
+    }
+
+    /// The converter system the layout follows: only when no Symphony I/O
+    /// cards are known and every unit that carries audio is one we know.
+    public var converterLayout: ConverterSystem? {
+        guard !isKnown, let converters, converters.layoutKnown else { return nil }
+        return converters
+    }
+
+    /// A converter host channel's name (0-based), "A Line 1" or "N.A.". Nil
+    /// unless the layout follows converters.
+    public func converterChannelName(host: Int, isInput: Bool) -> String? {
+        guard let system = converterLayout else { return nil }
+        let names = system.hostChannelNames(input: isInput)
+        return host >= 0 && host < names.count ? names[host] : nil
     }
 
     /// The live state Apogee's daemon named channels from. Unknown values name
@@ -341,6 +363,7 @@ public struct CardLayout: Sendable, Equatable {
     /// Analog INPUT strips to draw. An 8MicPre adds none — its preamps sit in
     /// front of the *host* board's analog inputs and are already counted there.
     public var analogInputStripCount: Int {
+        if let system = converterLayout { return system.hostInputCount }
         if !isKnown, let channels = converter?.channels { return channels.inputs }
         guard isKnown else { return fallbackChannelCount }
         return slot1.analogInputChannels + slot2.analogInputChannels
@@ -348,6 +371,7 @@ public struct CardLayout: Sendable, Equatable {
 
     /// Analog OUTPUT strips to draw.
     public var analogOutputStripCount: Int {
+        if let system = converterLayout { return system.hostOutputCount }
         if !isKnown, let channels = converter?.channels { return channels.outputs }
         guard isKnown else { return fallbackChannelCount }
         return slot1.analogOutputChannels + slot2.analogOutputChannels
@@ -612,6 +636,7 @@ public struct CardLayout: Sendable, Equatable {
     /// bus slice, a flat 16 per installed board, so a 16x16 + 8MicPre drew 32
     /// strips for 16 real channels.
     public var mixerChannels: [MixerChannel] {
+        if let system = converterLayout { return Self.converterMixerChannels(system) }
         guard isKnown else {
             return (0..<min(fallbackChannelCount, 16)).map {
                 MixerChannel(label: "Line \($0 + 1)", hardwareIndex: $0)
@@ -688,6 +713,9 @@ public struct CardLayout: Sendable, Equatable {
         ioBoard1Base: UInt8 = 48
     ) -> [RoutingColumn] {
         let bases = [ioBoard0Base, ioBoard1Base]
+        if let system = converterLayout {
+            return Self.converterRoutingColumns(system, isInput: isInput, bases: bases)
+        }
 
         // Per-board analog/digital pair counts. An unknown layout keeps the old
         // "assume a full bus slice" guess so the grid is populated while the
@@ -843,5 +871,57 @@ public struct CardLayout: Sendable, Equatable {
             }
         }
         return sources
+    }
+}
+
+// MARK: - Converters
+
+extension CardLayout {
+    /// The card mixer's input strips for converters: port 1's host inputs, in
+    /// host order, each sent to the card as its bus slot (the driver's mixer
+    /// takes the 32 port-1 input slots, `RecomputeCardMixer`). Port 2's
+    /// channels are not in the card mixer, as on a Symphony I/O at 64 channels.
+    static func converterMixerChannels(_ system: ConverterSystem) -> [MixerChannel] {
+        let names = system.hostChannelNames(input: true)
+        let map = system.inputMap
+        return (0..<system.hostInputCount).compactMap { host -> MixerChannel? in
+            guard let channel = map[host], channel.port == 0 else { return nil }
+            return MixerChannel(label: names[host], hardwareIndex: channel.slot,
+                                boardIndex: channel.slot / 16, channelOnBoard: channel.slot % 16)
+        }
+    }
+
+    /// Routing grid columns for converters: one per pair of port-1 host
+    /// channels that carry a unit channel, named from the units ("A Line"
+    /// over "1/2"), with the same slot-to-byte scheme as the generic grid
+    /// (board base + slot within the board's 16).
+    static func converterRoutingColumns(_ system: ConverterSystem, isInput: Bool, bases: [UInt8]) -> [RoutingColumn] {
+        let names = system.hostChannelNames(input: isInput)
+        let map = isInput ? system.inputMap : system.outputMap
+        var columns: [RoutingColumn] = []
+        var host = 0
+        while host < names.count {
+            defer { host += 2 }
+            guard let left = map[host], left.port == 0 else { continue }
+            let right = host + 1 < names.count ? names[host + 1] : notApplicable
+            let header = headerLines(stereoName(left: names[host], right: right))
+            let pairSlot = left.slot - left.slot % 2
+            columns.append(RoutingColumn(type: header.type, channels: header.channels,
+                                         boardIndex: pairSlot / 16, isDigital: false,
+                                         routingByte: bases[pairSlot / 16] + UInt8(pairSlot % 16)))
+        }
+        return columns
+    }
+
+    /// Converter host channel pair names for a routing grid's software rows
+    /// ("A Line 1/2"), nil unless the layout follows converters.
+    public func converterPairNames(isInput: Bool, pairCount: Int) -> [String]? {
+        guard let system = converterLayout else { return nil }
+        let names = system.hostChannelNames(input: isInput)
+        return (0..<max(0, pairCount)).map { pair in
+            let l = pair * 2 < names.count ? names[pair * 2] : Self.notApplicable
+            let r = pair * 2 + 1 < names.count ? names[pair * 2 + 1] : Self.notApplicable
+            return Self.stereoName(left: l, right: r)
+        }
     }
 }
