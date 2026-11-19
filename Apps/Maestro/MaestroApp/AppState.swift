@@ -3938,6 +3938,10 @@ final class AppState {
     ///           kmAEstroPropertyStorePreferenceFile = 'AESP' (mAEstro.h:1197)
     @MainActor
     func savePresetBundle(to url: URL) async throws {
+        if let connection = device as? ThunderboltDeviceConnection {
+            try await saveThunderboltPresetBundle(to: url, connection: connection)
+            return
+        }
         let fm = FileManager.default
         // Remove existing item at this URL (NSSavePanel may reuse the name)
         if fm.fileExists(atPath: url.path) {
@@ -3991,6 +3995,13 @@ final class AppState {
     ///           ONEv2DeviceController.cpp:3239–3331 — daemon recall implementation
     @MainActor
     func loadPresetBundle(from url: URL) async throws {
+        if let connection = device as? ThunderboltDeviceConnection {
+            try await loadThunderboltPresetBundle(from: url, connection: connection)
+            return
+        }
+        if FileManager.default.fileExists(atPath: url.appendingPathComponent(ThunderboltPreset.fileName).path) {
+            throw ThunderboltPreset.RecallError.unsupported("this hardware preset requires a ThunderBridge connection.")
+        }
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
 

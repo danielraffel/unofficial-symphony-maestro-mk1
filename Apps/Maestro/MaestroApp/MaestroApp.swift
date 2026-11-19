@@ -192,6 +192,7 @@ struct MaestroApp: App {
                             print("[Maestro] Preset bundle saved to \(url.lastPathComponent)")
                         } catch {
                             print("[Maestro] ERROR: Save preset failed: \(error)")
+                            NSAlert(error: error).runModal()
                         }
                     }
                 }
@@ -215,6 +216,7 @@ struct MaestroApp: App {
                             print("[Maestro] Preset loaded from \(url.lastPathComponent)")
                         } catch {
                             print("[Maestro] ERROR: Open preset failed: \(error)")
+                            NSAlert(error: error).runModal()
                         }
                     }
                 }
@@ -265,6 +267,7 @@ struct MaestroApp: App {
                                     try await appState.loadPresetBundle(from: presetLibrary.url(for: name))
                                 } catch {
                                     print("[Maestro] Load preset '\(name)' failed: \(error)")
+                                    NSAlert(error: error).runModal()
                                 }
                             }
                         }
