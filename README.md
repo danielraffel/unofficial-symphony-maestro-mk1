@@ -1,9 +1,9 @@
-# Unofficial Symphony Maestro for Apogee Symphony I/O MK I
+# Unofficial Symphony Maestro for Apogee Symphony I/O MKI
 
-Modern Apple Silicon support for the Apogee Symphony I/O MK I over **USB and ThunderBridge**, on **macOS 26 (Tahoe) or later**.
+Apple Silicon support for the Apogee Symphony I/O MK I over **USB and ThunderBridge**, on **macOS 26 (Tahoe) or later**.
 
 <h1><a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg">
-Download the latest Unofficial Symphony Maestro Installer (.pkg)</a></h1>
+Download the latest Installer (.pkg)</a></h1>
 
 The download link above is always the latest stable version.
 
