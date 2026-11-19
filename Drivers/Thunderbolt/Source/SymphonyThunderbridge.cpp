@@ -6726,32 +6726,20 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // property path as volume/mute/clock, no IOUserClient). It is dormant until a
         // MicPre8 is POSITIVELY detected.
         //
-        // Board-detect via OptionBoardType (0xA1), a request/RESPONSE transaction
-        // over XLink (legacy SymphonyIOControl.cpp:1214-1236 getPrimaryBoardType,
-        // nValue=0/primary, wLength=1). ReadVendorRequest issues the 0xC0 read and
-        // reassembles the SimpleMessageProtocol Response frame. The returned byte is a
-        // SymphonyIOOptionBoardType; MicPre8 (==1) is the ONLY value with mic preamps.
-        // On read failure/timeout → 0 (fail-safe: publish nothing). This runs on the
-        // XLink init path (not the IRQ queue), so ReadVendorRequest's bounded IOSleep
-        // polling is safe here (same pattern as WaitForLock earlier in Start()).
+        // The MicPre8 board can only be fitted in the secondary slot (wire
+        // board index 1; see CardLayout.swift slot2). Reuse the option-board
+        // result already captured above instead of sending another 0xA1 read.
+        // An unread/failed slot, converter port, or other board type is fail-safe.
         {
-            uint8_t boardType = kSIOOptionBoard_None;
-            bool ok = !ivars->convPort1 && ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                        ivars->symphonyAddr, kSIOCmd_OptionBoardType,
-                                        /*nValue=primary*/0, &boardType, /*wLength*/1,
-                                        ivars->runtimeTxSeq,
-        ivars->isLegacyPCIe2100);
-            if (ok) {
-                ivars->numMicChannels =
-                    (boardType == kSIOOptionBoard_MicPre8) ? kMicPre8NumChannels : 0;
-                STLOG("SymphonyIO: OptionBoardType(primary) = %u (%{public}s) → numMicChannels=%u",
-                      boardType,
-                      boardType == kSIOOptionBoard_MicPre8 ? "MicPre8" : "other/none",
-                      ivars->numMicChannels);
-            } else {
-                ivars->numMicChannels = 0;   // fail-safe on read failure/timeout
-                STLOG("SymphonyIO: OptionBoardType read failed/timeout → numMicChannels=0 (no mic controls)");
-            }
+            const uint8_t boardType = ivars->optionBoardType[1];
+            const bool boardTypeValid = ivars->optionBoardTypeValid[1];
+            ivars->numMicChannels = MicPreChannelsForSlots(
+                ivars->optionBoardTypeValid[0], ivars->optionBoardType[0],
+                boardTypeValid, boardType, ivars->convPort1);
+            STLOG("SymphonyIO: OptionBoardType(secondary slot, board 1) = %u (%{public}s) → numMicChannels=%u",
+                  boardType,
+                  boardTypeValid && boardType == kSIOOptionBoard_MicPre8 ? "MicPre8" : "other/none",
+                  ivars->numMicChannels);
         }
 
         // Best-effort clock lock/rate readback (ClockRateAndLock, 0x51 — read-only,
