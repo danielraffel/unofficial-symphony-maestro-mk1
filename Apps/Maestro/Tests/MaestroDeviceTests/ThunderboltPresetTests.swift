@@ -162,6 +162,23 @@ struct ThunderboltPresetTests {
         }
     }
 
+    @Test func cardInputTableFollowsServingDriverCapability() throws {
+        var preset = try fixture()
+        preset.cardInputRoutes = Array(0..<32)
+        for (build, supported) in [(131, false), (132, true)] {
+            var skipped: [String] = []
+            let writes = try preset.writes(layout: layout, cardInputSupported: supported,
+                                           onSkipped: { skipped.append($0) })
+            #expect(writes.contains { if case .cardInput = $0 { return true }; return false } == supported)
+            #expect(skipped.isEmpty == supported)
+            _ = build
+        }
+        var unavailableWarnings: [String] = []
+        _ = try preset.writes(layout: layout, cardInputSupported: false,
+                              onSkipped: { unavailableWarnings.append($0) })
+        #expect(unavailableWarnings == ["card input routing not restored: serving driver does not support it"])
+    }
+
     @Test func recallOrderAndNoMuteFirst() throws {
         let writes = try fixture().writes(layout: layout)
         #expect(writes[32] == .property(PropertyAddress(selector: .routing, scope: .input, element: 192), .uint32(63)))
@@ -277,13 +294,16 @@ struct ThunderboltPresetTests {
         p.frontPanelSelection = 3
         p.unitID = Data([1, 2, 3, 4, 5, 6, 7, 8])
         for index in p.mixers.indices { p.mixers[index].channels = Array(p.mixers[index].channels.prefix(preampLayout.mixerChannelCount)) }
-        #expect(throws: (any Error).self) { try p.writes(layout: preampLayout) }
-        #expect(throws: (any Error).self) { try p.writes(layout: preampLayout, currentUnitID: Data(repeating: 9, count: 8)) }
-        let writes = try p.writes(layout: preampLayout, currentUnitID: p.unitID)
-        #expect(writes.contains(.property(PropertyAddress(selector: .phantom), .bool(true))))
-        #expect(throws: (any Error).self) { try ThunderboltPreset.legacy(meta, layout: preampLayout) }
+        var skipped: [String] = []
+        let writes = try p.writes(layout: preampLayout, currentUnitID: p.unitID, onSkipped: { skipped.append($0) })
+        // Bundles never switch phantom on (safety departure until C2), even with
+        // a matching unit ID; the skip is reported.
+        #expect(!writes.contains(.property(PropertyAddress(selector: .phantom), .bool(true))))
+        #expect(skipped == ["phantom power not restored from a bundle"])
+        // An Instrument channel never gets phantom ON either.
         p.metadata.inputChannelStates[0].inputType = AnalogInputLevel.instrument.rawValue
-        #expect(throws: (any Error).self) { try p.writes(layout: preampLayout, currentUnitID: p.unitID) }
+        let instrumentWrites = (try? p.writes(layout: preampLayout, currentUnitID: p.unitID)) ?? []
+        #expect(!instrumentWrites.contains(.property(PropertyAddress(selector: .phantom), .bool(true))))
     }
 
     @Test func replacingAnExistingBundleAndRefusingAdditionalHardwareContent() throws {

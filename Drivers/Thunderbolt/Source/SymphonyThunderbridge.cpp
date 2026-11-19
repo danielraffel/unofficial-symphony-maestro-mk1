@@ -9549,6 +9549,33 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             if (lane == (__atomic_load_n(&ivars->micPreInstrument[value], __ATOMIC_ACQUIRE) ? 1u : 0u))
                 PublishMicGain(ivars, value);
         }
+        if (port == 0 && payload && payloadLen >= 1) {
+            if (command == kSIOCmd_SpeakerVolume) {
+                __atomic_store_n(&ivars->speakerAttenuation, payload[0], __ATOMIC_RELEASE);
+            } else if (command == kSIOCmd_SpeakerMute) {
+                __atomic_store_n(&ivars->speakerMute, payload[0] != 0, __ATOMIC_RELEASE);
+            } else if (command == kSIOCmd_HeadphoneVolume && (value & 0xFFFFu) == 0) {
+                __atomic_store_n(&ivars->hp1Attenuation, payload[0], __ATOMIC_RELEASE);
+            } else if (command == kSIOCmd_HeadphoneMute && (value & 0xFFFFu) == 0) {
+                __atomic_store_n(&ivars->hp1Mute, payload[0] != 0, __ATOMIC_RELEASE);
+            }
+            if (!__atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE) &&
+                ((command == kSIOCmd_SpeakerVolume) || (command == kSIOCmd_SpeakerMute) ||
+                 (command == kSIOCmd_HeadphoneVolume && (value & 0xFFFFu) == 0) ||
+                 (command == kSIOCmd_HeadphoneMute && (value & 0xFFFFu) == 0))) {
+                const uint8_t selected = __atomic_load_n(&ivars->monitorOutputTarget, __ATOMIC_ACQUIRE);
+                const uint8_t attenuation = selected == 1
+                    ? __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE)
+                    : __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);
+                const bool muted = selected == 1
+                    ? __atomic_load_n(&ivars->hp1Mute, __ATOMIC_ACQUIRE)
+                    : __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE);
+                if (ivars->outputVolumeControl)
+                    ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(attenuation));
+                if (ivars->outputMuteControl)
+                    ivars->outputMuteControl->SetControlValue(muted);
+            }
+        }
         if (port == 1 && payload && payloadLen >= 1) {
             if (command == kSIOCmd_SpeakerVolume) ivars->unitBSpeakerAttenuation = payload[0];
             else if (command == kSIOCmd_SpeakerMute) ivars->unitBSpeakerMute = payload[0] != 0;
@@ -9634,7 +9661,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             // single HAL control aligned with that target so the UI and the
             // next keyboard-volume event cannot carry the previous output's
             // value into the new destination.
-            if (port == 0) {
+            if (port == 0 && !__atomic_load_n(&ivars->monitorDeviceB, __ATOMIC_ACQUIRE)) {
                 const uint8_t attenuation = target == 1
                     ? __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE)
                     : __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);

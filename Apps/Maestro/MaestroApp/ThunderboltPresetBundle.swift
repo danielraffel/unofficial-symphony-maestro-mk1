@@ -34,8 +34,10 @@ extension AppState {
             metadata.channelNames = (try? JSONDecoder().decode([String].self, from: Data(names.utf8))) ?? []
         }
         var seed = ThunderboltPreset(layout: layout, metadata: metadata)
-        let cardInputs = symphonyCardInputStore?.load() ?? [:]
-        seed.cardInputRoutes = (0..<(unitBOnCard ? 64 : 32)).map { cardInputs[$0] ?? $0 }
+        if symphonyCardInputs.channelCount > 0 {
+            let cardInputs = symphonyCardInputStore?.load() ?? [:]
+            seed.cardInputRoutes = (0..<(unitBOnCard ? 64 : 32)).map { cardInputs[$0] ?? $0 }
+        }
         seed.routingMode = UserDefaults.standard.integer(forKey: "routingMode")
         seed.mixers = (0..<2).map {
             ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount,
@@ -99,16 +101,20 @@ extension AppState {
         let bLayout = unitBLayout
         let bStore = unitBChannelStateStore
         let bDigitalKey = unitBDigitalSettingsKey
+        let recallWarnings = PresetCaptureWarnings()
+        let cardInputSupported = if case .build(let build) = servingDextBuild { build >= 132 } else { false }
         let skip = preset.unitBSkipReason(layout: bLayout, configured: b != nil && unitBInputRoutingAllowed
             && unitBBoardSource(slot: 0) == .detected && unitBBoardSource(slot: 1) == .detected)
         let recallB = preset.unitB != nil && skip == nil
         let cardChannels = unitBOnCard && unitBInputRoutingAllowed && skip == nil ? 64 : 32
         try await Task.detached {
             try connection.withPresetLock {
-                let aWrites = try connection.presetWrites(preset, layout: layout, legacy: legacy, channels: cardChannels)
+                let aWrites = try connection.presetWrites(preset, layout: layout, legacy: legacy, channels: cardChannels,
+                                                          onSkipped: recallWarnings.add)
                 if recallB, let b, let bLayout, let saved = preset.unitB {
                     try b.withPresetLock {
-                        let bWrites = try b.presetWrites(saved, layout: bLayout)
+                        let bWrites = try b.presetWrites(saved, layout: bLayout, cardInputSupported: cardInputSupported,
+                                                         onSkipped: recallWarnings.add)
                         do { try connection.applyPresetWrites(aWrites, layout: layout) }
                         catch {
                             // Card routing may already have changed B's feed.
@@ -141,7 +147,9 @@ extension AppState {
                 saved.inputRoutes.enumerated().map { (destination: UInt8(192 + $0.offset), source: $0.element) },
                 columns: bLayout.inputRoutingColumns))
         }
-        statusMessage = skip.map { "Unit A loaded. " + $0 } ?? "Settings loaded."
+        let warningText = recallWarnings.all
+        statusMessage = (skip.map { "Unit A loaded. " + $0 } ?? "Settings loaded.")
+            + (warningText.isEmpty ? "" : " " + warningText.joined(separator: " "))
         // Commit the app's copy only after hardware recall and ready read-back.
         // No view needs to be open for any of the writes above.
         let meta = preset.metadata
