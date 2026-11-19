@@ -2653,7 +2653,7 @@ static void RunConverterParityChecks()
     // 3e. Routing edited in Maestro (the original's routing pages): a host input
     //     from any converter input, a converter output from any source; kept
     //     across a card reset; Reset Routing goes back to the placement. A
-    //     Symphony I/O refuses input routes and the reset.
+    //     Symphony I/O card input routes are checked separately below.
     {
         Options o; o.name = "converters: routing edits"; o.port1 = Port::Converters; o.shortFlow = true;
         o.port1Units = { U(0x37, 0x02), U(0x37, 0x02), U(0xC7, 0x02), U(0xC7, 0x02) };
@@ -2677,15 +2677,6 @@ static void RunConverterParityChecks()
         CHECK(c.reg[kRegInputRouting] == (0 | 0x100) && c.reg[kRegOutputRouting + 16 * 4] == (64 + 16 | 0x100),
               "%s: Reset Routing left 0x%03x / 0x%03x", o.name, c.reg[kRegInputRouting], c.reg[kRegOutputRouting + 16 * 4]);
         { uint8_t pl[3] = { 40, 3, 1 }; CHECK(r.drv->SendVendorCommand(0xB6, 0, pl, 3) == kIOReturnBadArgument, "%s: a port-2 entry accepted at 32 channels", o.name); }
-        Finish(o, r);
-    }
-    {
-        Options o; o.name = "converters: a Symphony refuses converter routing"; o.shortFlow = true;
-        Run r;
-        RunScenario(o, r);
-        uint8_t pl[3] = { 0, 20, 1 };
-        CHECK(r.drv->SendVendorCommand(0xB6, 0, pl, 3) == kIOReturnUnsupported, "%s: input route accepted", o.name);
-        CHECK(r.drv->SendVendorCommand(0xB7, 0, nullptr, 0) == kIOReturnUnsupported, "%s: reset accepted", o.name);
         Finish(o, r);
     }
     // 3f. A unit that stops reporting its phase on port 1: the chain is
@@ -2796,6 +2787,15 @@ static void RunConverterParityChecks()
         r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
         CHECK(st.present == 0, "%s: failed mandatory read still configured unit B", o.name);
         CHECK(st.setupFlags != 0, "%s: failed mandatory read had no setup reason", o.name);
+        uint8_t inputRoute[] = {0, 32, 1};
+        const size_t routeMark = r.card.lines.size();
+        CHECK(r.drv->SendVendorCommand(0xB6, 0, inputRoute, sizeof(inputRoute)) == kIOReturnBadArgument,
+              "B1b: unconfigured B cannot source host 1 even at 64");
+        inputRoute[0] = 32; inputRoute[1] = 0;
+        CHECK(r.drv->SendVendorCommand(0xB6, 0, inputRoute, sizeof(inputRoute)) == kIOReturnBadArgument,
+              "B1b: unconfigured B cannot authorize host 33");
+        for (size_t i = routeMark; i < r.card.lines.size(); i++)
+            CHECK(r.card.lines[i].compare(0, 2, "W ") != 0, "B1b: unconfigured B route wrote hardware");
         CHECK(std::find(r.card.port[1].vendorWrites.begin(), r.card.port[1].vendorWrites.end(), 0xDD) != r.card.port[1].vendorWrites.end(),
               "%s: unlock write was not attempted", o.name);
         CHECK(std::find(r.card.port[1].vendorReads.begin(), r.card.port[1].vendorReads.end(), 0xDD) != r.card.port[1].vendorReads.end(),
@@ -2895,6 +2895,85 @@ static void RunConverterParityChecks()
 }
 #endif
 
+// B1b: card routes select an RX port independently of the host destination.
+// Separate from frozen startup traces: only these explicit commands add writes.
+static void RunSymphonyCardInputRoutes()
+{
+    for (bool legacy : {false, true}) for (bool two : {false, true}) {
+        Options o; o.name = "B1b card input routes"; o.shortFlow = true; o.legacy2100 = legacy; o.micPreInstrument = true;
+        o.portCountProperty = 2; o.port2 = two ? Port::Symphony : Port::Empty;
+        Run r; RunScenario(o, r);
+        auto route = [&](uint8_t host, uint8_t rx, uint8_t enable = 1) {
+            uint8_t pl[] = {host, rx, enable};
+            auto rc = r.drv->SendVendorCommand(0xB6, 0, pl, sizeof(pl));
+            HostPump(); return rc;
+        };
+        auto &c = r.card;
+        CHECK(route(0, 32) == kIOReturnBadArgument, "B1b: port 2 source refused at 32");
+        CHECK(route(32, 0) == kIOReturnBadArgument, "B1b: host 33 refused at 32");
+        CHECK(route(0, 1) == kIOReturnSuccess, "B1b: A input to host 1");
+        CHECK(c.reg[kRegInputRouting] == 0x101, "B1b: RX 1 written");
+        CHECK(LastElementName(c, 0, "in", 1) == LastElementName(c, 0, "in", 2), "B1b: names follow A route");
+        if (two) {
+            // Real audio boards on both units; the generic fixture's type 1
+            // is a MicPre companion with no independent audio channels.
+            c.port[1].stored[(uint64_t(0xA1) << 32) | 0] = {6};
+            c.port[1].stored[(uint64_t(0xA1) << 32) | 1] = {1};
+            r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+            Select(r, 1, "B1b select 64");
+            HostPump();
+            const auto nameA = LastElementName(c, 0, "in", 2);
+            const auto nameB = LastElementName(c, 0, "in", 33);
+            CHECK(!nameA.empty() && !nameB.empty() && nameA != nameB, "B1b: distinct source names available (A=%s B=%s)", nameA.c_str(), nameB.c_str());
+            const size_t mark = c.lines.size();
+            CHECK(route(32, 1) == kIOReturnSuccess, "B1b: A input to host 33");
+            CHECK(route(0, 32) == kIOReturnSuccess, "B1b: B input to host 1");
+            CHECK(route(1, 32) == kIOReturnSuccess, "B1b: duplicate B input");
+            CHECK(c.reg[kRegInputRouting + 32 * 4] == 0x101 && c.reg[kRegInputRouting] == 0x120 &&
+                  c.reg[kRegInputRouting + 4] == 0x120, "B1b: independent source/destination words");
+            CHECK(LastElementName(c, mark, "in", 33) == nameA && LastElementName(c, mark, "in", 1) == nameB &&
+                  LastElementName(c, mark, "in", 2) == nameB, "B1b: cross-port and duplicate names");
+            CHECK(Commands(c, mark, kRegXLink1TX, 0x10).empty() && Commands(c, mark, kRegXLink2TX, 0x10).empty(),
+                  "B1b: card commands never forwarded to peripherals");
+            const auto bNext = LastElementName(c, 0, "in", 34);
+            uint8_t p2p[] = {192, 33}; // unit B P2P 0 <- board input 2
+            CHECK(r.drv->SendVendorCommand(0x31, 0, p2p, sizeof(p2p), 1) == kIOReturnSuccess,
+                  "B1b: unit B capture edit accepted");
+            HostPump();
+            CHECK(!bNext.empty() && LastElementName(c, mark, "in", 1) == bNext &&
+                  LastElementName(c, mark, "in", 2) == bNext, "B1b: names compose B P2P and card routes (want=%s got=%s)", bNext.c_str(), LastElementName(c, mark, "in", 1).c_str());
+        }
+        const size_t refused = c.lines.size();
+        CHECK(r.drv->SendVendorCommand(0xB6, 0, nullptr, 0) == kIOReturnBadArgument,
+              "B1b: missing payload refused");
+        for (size_t i = refused; i < c.lines.size(); i++)
+            CHECK(c.lines[i].compare(0, 2, "W ") != 0, "B1b: refused route wrote hardware");
+        CHECK(route(0, 64) == kIOReturnBadArgument && route(64, 0) == kIOReturnBadArgument,
+              "B1b: out-of-range refused");
+        CHECK(route(0, 0, 0) == kIOReturnSuccess && c.reg[kRegInputRouting] == 0, "B1b: disable input");
+        const uint32_t outputBeforeReset = c.reg[kRegOutputRouting];
+        CHECK(r.drv->SendVendorCommand(0xB7, 0, nullptr, 0) == kIOReturnSuccess, "B1b: reset accepted");
+        CHECK(c.reg[kRegOutputRouting] == outputBeforeReset, "B1b: Symphony input reset preserves outputs");
+        HostPump();
+        for (uint32_t n = 0; n < (two ? 64u : 32u); n++)
+            CHECK(c.reg[kRegInputRouting + n * 4] == (0x100 | n), "B1b: reset input %u", n);
+        if (two) {
+            Select(r, 0, "B1b back to 32");
+            CHECK(route(0, 32) == kIOReturnBadArgument, "B1b: source B refused after leaving 64");
+        }
+        Finish(o, r);
+    }
+    Options o; o.name = "B1b absent Symphony"; o.shortFlow = true; o.port1 = Port::Empty;
+    Run r; RunScenario(o, r);
+    uint8_t pl[] = {0, 0, 1};
+    const size_t mark = r.card.lines.size();
+    CHECK(r.drv->SendVendorCommand(0xB6, 0, pl, sizeof(pl)) == kIOReturnNotReady,
+          "B1b: no source on port 1 refused");
+    for (size_t i = mark; i < r.card.lines.size(); i++)
+        CHECK(r.card.lines[i].compare(0, 2, "W ") != 0, "B1b: no-source route wrote hardware");
+    Finish(o, r);
+}
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -2904,6 +2983,8 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "usage: %s --out <dir> [--verbose]\n", argv[0]); return 2; }
     }
     if (outDir.empty()) { fprintf(stderr, "--out <dir> is required\n"); return 2; }
+
+    RunSymphonyCardInputRoutes();
 
     // A1: exercise new gain behaviour separately from the frozen p1 traces.
     for (bool legacy : {false, true}) {
