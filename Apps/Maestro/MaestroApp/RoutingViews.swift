@@ -802,7 +802,7 @@ struct OutputRoutingView: View {
         var labels: [(number: String, name: String)] = Array(single.prefix(pairs))
         for p in pairs..<TwoUnitOutputRouting.dawPairCount {
             let number = "\(p * 2 + 1)-\(p * 2 + 2)"
-            let name = unitB.thunderboltOutputPairName(pair: p - pairs, prefix: appState.unitBPeripheralPrefix)
+            let name = unitB.thunderboltOutputPairName(pair: p - TwoUnitOutputRouting.unitBChannelBaseDAW / 2, prefix: appState.unitBPeripheralPrefix)
                 ?? CardLayout.softwarePairName(hardwarePair: "Digital \(p * 2 + 1)/\(p * 2 + 2)",
                                                prefix: appState.unitBPeripheralPrefix)
             labels.append((number: number, name: name))

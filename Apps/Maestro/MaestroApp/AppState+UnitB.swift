@@ -15,7 +15,13 @@ extension AppState {
     // MARK: Which unit
 
     /// Unit B's card layout, from its own board types.
-    var unitBLayout: CardLayout? { unitB.map { $0.layout(naming: unitBChannelNaming) } }
+    /// Its rate is unit A's (Word Clock slave), so names follow unit A's rate.
+    var unitBLayout: CardLayout? {
+        guard let unitB else { return nil }
+        var naming = unitBChannelNaming
+        naming.sampleRate = channelNaming.sampleRate
+        return unitB.layout(naming: naming)
+    }
 
     /// Whether the Unit A / Unit B picker is shown (and unit B is usable).
     var unitPickerVisible: Bool {
@@ -122,6 +128,18 @@ extension AppState {
         if let data = try? PropertyListEncoder().encode(settings) {
             UserDefaults.standard.set(data, forKey: key)
         }
+    }
+
+    /// Unit B's channel names follow its saved optical formats and Replaces
+    /// (the driver starts it at ADAT/SMUX; the replay puts these back).
+    func refreshUnitBNamingFromSaved() {
+        let saved = unitBDigitalSettings
+        var naming = CardLayout.ChannelNaming(sampleRate: channelNaming.sampleRate)
+        for slot in 0..<2 {
+            if let format = saved.opticalFormat[slot], format <= 1 { naming.opticalIsSPDIF[slot] = format == 1 }
+            if let replace = saved.spdifReplace[slot], replace <= 8 { naming.spdifReplace[slot] = replace }
+        }
+        if naming != unitBChannelNaming { unitBChannelNaming = naming }
     }
 
     // MARK: Mixer (both units' inputs while 64 channels run)
@@ -311,6 +329,7 @@ extension AppState {
                 .map(CardLayout.peripheralPrefix) ?? info.prefix(after: peripheralPrefix)
         }
         if appeared {
+            refreshUnitBNamingFromSaved()
             print("[Maestro] Unit B: " + info.reportLines(unitAPrefix: peripheralPrefix).joined(separator: "; "))
             // AppState lives on the main actor in practice (as the C
             // callbacks above it assume); the replay runs there.
@@ -352,6 +371,7 @@ extension AppState {
         let config = CardConfiguration(slot1: info.slot1, slot2: info.slot2)
         unitBDevice = (try? SimulatedDevice.symphonyIO(configuration: config)) ?? SimulatedDevice.symphonyIO32ch()
         unitBPeripheralPrefix = info.prefix(after: peripheralPrefix)
+        refreshUnitBNamingFromSaved()
         print("[Maestro] SECOND UNIT SIMULATION: \(info.slot1.productName) + \(info.slot2.productName) — no hardware")
     }
 }
