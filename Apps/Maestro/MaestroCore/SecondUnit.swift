@@ -90,11 +90,12 @@ public struct SecondUnitInfo: Sendable, Equatable {
     }
 
     /// The letter unit B's channels are named with: its own, or the letter
-    /// after unit A's when it has none (as the driver names channels 33-64).
+    /// after unit A's when it has none, 'A' after 'Z' (as the driver names
+    /// channels 33-64).
     public func prefix(after unitAPrefix: String) -> String {
         if let prefixLetter { return prefixLetter }
-        guard let ascii = unitAPrefix.first?.asciiValue, ascii >= 0x41, ascii < 0x5A else { return "B" }
-        return String(UnicodeScalar(ascii + 1))
+        guard let ascii = unitAPrefix.first?.asciiValue, ascii >= 0x41, ascii <= 0x5A else { return "B" }
+        return ascii == 0x5A ? "A" : String(UnicodeScalar(ascii + 1))
     }
 
     /// Unit B's card layout, from its own board types. Unknown until a slot
@@ -152,8 +153,8 @@ public enum SecondUnitHelp {
             + "shows and sets the chosen unit. The Mixer shows both units' inputs, the second unit's after the "
             + "first's and named with its prefix letter, and Output Routing adds the second unit's outputs as "
             + "more columns. Software 33–64 play on the second unit until you route them elsewhere.",
-        "Not sent to the second unit yet: its prefix letter (Maestro keeps it for names), Speaker Mode and "
-            + "the S/PDIF coax settings. Its speaker and headphone controls stay on its front panel.",
+        "Unit A cannot take its clock from Loop Sync while the second unit follows it, so that choice is "
+            + "not offered then. The second unit's speaker and headphone controls stay on its front panel.",
     ]
 }
 
@@ -208,6 +209,27 @@ public enum TwoUnitMixer {
     /// Software Return source pairs: 8 (the driver's 0-7) with one unit, 32
     /// (0-31, the 64 playback channels) with unit B.
     public static func softwareReturnPairCount(unitBActive: Bool) -> Int { unitBActive ? 32 : 8 }
+
+    /// The Software Return source to show for a saved one: a source beyond
+    /// the pairs on offer (DAW 17-64 saved while unit B was there) shows as 1-2.
+    public static func shownSoftwareReturnSource(_ saved: UInt32, pairCount: Int) -> UInt32 {
+        saved < UInt32(max(pairCount, 0)) ? saved : 0
+    }
+
+    /// Whether a saved Software Return source must be put back to 1-2: it is
+    /// beyond the one-unit pairs (0-7) and unit B is known to be gone, as the
+    /// driver resets it on leaving 64 channels. Not while unit B may still
+    /// appear (at launch, before the driver was asked).
+    public static func resetsSavedSoftwareReturn(_ saved: UInt32, unitBKnownAbsent: Bool) -> Bool {
+        unitBKnownAbsent && saved >= UInt32(softwareReturnPairCount(unitBActive: false))
+    }
+
+    /// What to save for a mixer's Software Return source: the one shown,
+    /// except that a saved DAW 17-64 shown as 1-2 (unit B not on the Mixer
+    /// yet) stays saved until unit B is known to be gone.
+    public static func sourceToSave(shown: UInt32, saved: UInt32, pairCount: Int) -> UInt32 {
+        shown == 0 && saved >= UInt32(max(pairCount, 0)) ? saved : shown
+    }
 
     /// "1-2", "3-4", ... "63-64".
     public static func softwareReturnName(_ source: UInt32) -> String {

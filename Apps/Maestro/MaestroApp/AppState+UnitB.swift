@@ -108,25 +108,61 @@ extension AppState {
     }
 
     private var unitBDigitalSettings: SlotDigitalSettings {
-        guard let key = unitBDigitalSettingsKey,
-              let data = UserDefaults.standard.data(forKey: key),
-              let settings = try? PropertyListDecoder().decode(SlotDigitalSettings.self, from: data)
-        else { return SlotDigitalSettings() }
-        return settings
+        guard let key = unitBDigitalSettingsKey else { return SlotDigitalSettings() }
+        return SlotDigitalSettings.load(key: key)
     }
 
     /// `rememberDigitalSetting` for the unit the page shows.
     @MainActor
     func rememberUnitDigitalSetting(_ selector: AudioPropertySelector, slot: Int, value: UInt32) {
-        guard activeUnit == .b else {
-            rememberDigitalSetting(selector, slot: slot, value: value)
-            return
-        }
-        guard let key = unitBDigitalSettingsKey else { return }
-        var settings = unitBDigitalSettings
-        settings.record(selector, slot: slot, value: value)
-        if let data = try? PropertyListEncoder().encode(settings) {
-            UserDefaults.standard.set(data, forKey: key)
+        saveDigitalSetting(selector, slot: slot, value: value, for: unitWriteTarget)
+    }
+
+    // MARK: Writes that wait
+
+    /// The unit a page writes to, taken before the write awaits: its device,
+    /// its saved channel state and its digital-settings key. Reading
+    /// `activeUnit` or the stores again after the await could file unit B's
+    /// values under unit A's keys if the user switched units, or unit B went,
+    /// meanwhile.
+    struct UnitWriteTarget {
+        let unit: DeviceUnit
+        let device: (any DeviceConnection)?
+        let channelStore: ChannelStateStore
+        let digitalSettingsKey: String?
+    }
+
+    /// The unit the page shows now, for a write that is about to await.
+    var unitWriteTarget: UnitWriteTarget {
+        UnitWriteTarget(unit: activeUnit, device: unitDevice, channelStore: unitChannelStateStore,
+                        digitalSettingsKey: activeUnit == .b ? unitBDigitalSettingsKey : digitalSettingsKey)
+    }
+
+    /// Whether the unit a target was taken from is still connected as it
+    /// was: unit A always, unit B while the same connection is there.
+    func isCurrent(_ target: UnitWriteTarget) -> Bool {
+        guard target.unit == .b else { return true }
+        guard let device = target.device, let current = unitBDevice else { return false }
+        return device === current
+    }
+
+    /// Remember a digital setting for the unit `target` was taken from.
+    @MainActor
+    func saveDigitalSetting(_ selector: AudioPropertySelector, slot: Int, value: UInt32,
+                            for target: UnitWriteTarget) {
+        guard let key = target.digitalSettingsKey else { return }
+        SlotDigitalSettings.remember(selector, slot: slot, value: value, key: key)
+    }
+
+    /// Name a slot's S/PDIF Coax Replaces on the unit `target` was taken
+    /// from, while that unit is still there.
+    @MainActor
+    func setSPDIFReplaceNaming(slot: Int, value: UInt32, for target: UnitWriteTarget) {
+        guard slot >= 0, slot < 2, value <= 8, isCurrent(target) else { return }
+        if target.unit == .b {
+            unitBChannelNaming.spdifReplace[slot] = value
+        } else {
+            channelNaming.spdifReplace[slot] = value
         }
     }
 
@@ -148,6 +184,14 @@ extension AppState {
     var mixerStripChannels: [CardLayout.MixerChannel] {
         guard unitBOnCard else { return cardLayout.mixerChannels }
         return TwoUnitMixer.channels(unitA: cardLayout, unitB: unitBLayout, prefixB: unitBPeripheralPrefix)
+    }
+
+    /// Unit B cannot be there: USB, or a port selection that is not 64
+    /// channels. Unknown (nil port selection at launch) is not absent.
+    var unitBKnownAbsent: Bool {
+        if transportType == .usb { return true }
+        if let selection = portSelection.selection, selection != .ports1And2 { return true }
+        return false
     }
 
     /// Software Return pairs the Mixer offers: 8, or 32 with unit B.
@@ -190,9 +234,21 @@ extension AppState {
 
     /// Unit B's saved output routes, rows in the 64-channel grid's numbering
     /// (DAW pairs 0-31, Mixer 1 = 32, Mixer 2 = 33), columns in unit B's own
-    /// output columns. Its own key: unit A's saved table is never touched.
+    /// output columns. Its own key, per unit B card pair as its channel state
+    /// is: unit A's saved table is never touched, and a unit B with other
+    /// cards does not inherit the columns. Nil until unit B's cards are known.
     var unitBOutputRoutingCache: RoutingStateCache? {
-        device.map { RoutingStateCache(direction: "output.unitB", productID: $0.identifier.productID) }
+        guard let device,
+              let direction = Self.unitBOutputRoutingDirection(
+                cardScope: unitBLayout?.savedStateScope,
+                simulating: cardSimulation != nil || simulatedUnitB != nil) else { return nil }
+        return RoutingStateCache(direction: direction, productID: device.identifier.productID)
+    }
+
+    /// The routing cache direction for unit B's outputs with these cards.
+    static func unitBOutputRoutingDirection(cardScope: String?, simulating: Bool) -> String? {
+        guard let cardScope else { return nil }
+        return "output.unitB." + (simulating ? "sim:" : "") + cardScope
     }
 
     /// The card's TDM slot for one side of a 64-channel grid row.
@@ -250,6 +306,20 @@ extension AppState {
             }
         }
         if written > 0 { print("[Maestro] Unit B: wrote \(written) saved output route(s)") }
+    }
+
+    /// Save Software Return 1-2 for each mixer whose saved source is beyond
+    /// the one-unit pairs. Only when unit B is known to be gone.
+    func resetSoftwareReturnSourcesBeyondOneUnit(defaults: UserDefaults = .standard) {
+        for mixer in 0..<2 {
+            let key = "mixerSoftwareReturnSource_\(mixer)"
+            let saved = UInt32(clamping: defaults.integer(forKey: key))
+            if TwoUnitMixer.resetsSavedSoftwareReturn(saved, unitBKnownAbsent: true) {
+                defaults.set(0, forKey: key)
+                print("[Maestro] Mixer \(mixer + 1) Software Return: DAW \(TwoUnitMixer.softwareReturnName(saved)) "
+                      + "is unit B's; back to 1-2")
+            }
+        }
     }
 
     // MARK: Meters
@@ -313,7 +383,12 @@ extension AppState {
         let appeared = info != nil && (unitB == nil || newConnection)
         unitB = info
         guard let info, let tb else {
-            if unitBDevice != nil { print("[Maestro] Unit B: gone (64 channels stopped or port 2 lost)") }
+            if unitBDevice != nil {
+                print("[Maestro] Unit B: gone (64 channels stopped or port 2 lost)")
+                // The driver puts a Software Return beyond DAW 1-16 back to
+                // 1-2 when two units end; save the same.
+                resetSoftwareReturnSourcesBeyondOneUnit()
+            }
             unitBDevice = nil
             unitBOwner = nil
             selectedUnit = .a

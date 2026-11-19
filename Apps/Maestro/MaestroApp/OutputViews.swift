@@ -760,14 +760,16 @@ struct OutputControlsView: View {
                     let optVal = option.id
                     return (option.name, {
                         spdifMirror1 = optVal
+                        // The unit as it is now (see `UnitWriteTarget`).
+                        let target = appState.unitWriteTarget
                         Task {
-                            guard let device = appState.unitDevice else { return }
+                            guard let device = target.device else { return }
                             do {
                                 try await device.setProperty(
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output),
                                     value: .uint32(optVal)
                                 )
-                                appState.rememberUnitDigitalSetting(.spdifMirrorID, slot: 0, value: optVal)
+                                appState.saveDigitalSetting(.spdifMirrorID, slot: 0, value: optVal, for: target)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 1-2 write failed: \(error)")
                             }
@@ -797,14 +799,16 @@ struct OutputControlsView: View {
                     let optVal = option.id
                     return (option.name, {
                         spdifMirror2 = optVal
+                        // The unit as it is now (see `UnitWriteTarget`).
+                        let target = appState.unitWriteTarget
                         Task {
-                            guard let device = appState.unitDevice else { return }
+                            guard let device = target.device else { return }
                             do {
                                 try await device.setProperty(
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output, element: 1),
                                     value: .uint32(optVal)
                                 )
-                                appState.rememberUnitDigitalSetting(.spdifMirrorID, slot: 1, value: optVal)
+                                appState.saveDigitalSetting(.spdifMirrorID, slot: 1, value: optVal, for: target)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 3-4 write failed: \(error)")
                             }
@@ -1059,11 +1063,17 @@ struct OutputControlsView: View {
               OutputChannelLogic.offersAnalogRef(level) else { return }
         let before = channels[index]
         OutputChannelLogic.applyAnalogRefChange(&channels, channel: index, to: level)
+        // The unit and its saved state as they are now (see `UnitWriteTarget`).
+        let target = appState.unitWriteTarget
+        let after = channels[index]
+        let packed = outputAnalogIOTypeWithTrim(index)
         Task {
-            if !(await writeOutputProperty(index, .analogIOType,
-                                           value: .uint32(outputAnalogIOTypeWithTrim(index)))) {
-                channels[index] = before
-                saveChannelStates()
+            if !(await writeOutputProperty(index, .analogIOType, value: .uint32(packed), on: target.device)) {
+                // Put back only this change: a newer one to the channel stays.
+                if index < channels.count, channels[index] == after {
+                    channels[index] = before
+                    target.channelStore.save(channels, for: ChannelStateStore.outputKey)
+                }
             }
         }
 
@@ -1112,7 +1122,14 @@ struct OutputControlsView: View {
 
     @discardableResult
     private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
-        guard let device = appState.unitDevice else { return false }
+        await writeOutputProperty(index, selector, value: value, on: appState.unitDevice)
+    }
+
+    /// The same, to a unit taken before the write was queued.
+    @discardableResult
+    private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
+                                     on device: (any DeviceConnection)?) async -> Bool {
+        guard let device else { return false }
         do {
             let element = UInt32(index)
             try await device.setProperty(

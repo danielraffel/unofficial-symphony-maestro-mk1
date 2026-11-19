@@ -58,4 +58,50 @@ struct UnitBAppTests {
         #expect(shell.contains("if isPerUnit && appState.unitPickerVisible {"))
         #expect(shell.contains("page.id(appState.activeUnit)"))
     }
+
+    @Test("A write that awaits keeps to the unit it was made for")
+    func writesKeepTheirUnit() throws {
+        let input = try source("InputViews.swift")
+        let output = try source("OutputViews.swift")
+        for text in [input, output] {
+            // Unit B's values never re-read the chosen unit after the await.
+            #expect(!text.contains("appState.rememberUnitDigitalSetting("))
+            #expect(!text.contains("appState.unitChannelNaming.spdifReplace["))
+            #expect(text.contains("let target = appState.unitWriteTarget"))
+            // A failed write puts back only its own change, under that unit's key.
+            #expect(text.contains("channels[index] == after"))
+        }
+        #expect(input.contains("target.channelStore.save(channels, for: ChannelStateStore.inputKey)"))
+        #expect(output.contains("target.channelStore.save(channels, for: ChannelStateStore.outputKey)"))
+    }
+
+    @Test("Digital settings are saved under the key they were taken with")
+    func digitalSettingsKeyPerUnit() throws {
+        let defaults = try #require(UserDefaults(suiteName: "UnitBAppTests.digital"))
+        defaults.removePersistentDomain(forName: "UnitBAppTests.digital")
+        SlotDigitalSettings.remember(.spdifReplaceID, slot: 0, value: 3,
+                                     key: "slotDigitalSettings.unitB.x", defaults: defaults)
+        #expect(SlotDigitalSettings.load(key: "slotDigitalSettings.unitB.x", defaults: defaults).spdifReplace[0] == 3)
+        #expect(SlotDigitalSettings.load(key: "slotDigitalSettings.x", defaults: defaults).spdifReplace[0] == nil)
+        defaults.removePersistentDomain(forName: "UnitBAppTests.digital")
+    }
+
+    @Test("Unit B's output routes are kept per unit B card pair")
+    func unitBRoutingCacheScope() {
+        #expect(AppState.unitBOutputRoutingDirection(cardScope: nil, simulating: false) == nil)
+        #expect(AppState.unitBOutputRoutingDirection(cardScope: "optical+none", simulating: false)
+                == "output.unitB.optical+none")
+        #expect(AppState.unitBOutputRoutingDirection(cardScope: "optical+none", simulating: true)
+                == "output.unitB.sim:optical+none")
+    }
+
+    @Test("Unit B's connection says Loop Sync")
+    func unitBConnectionComment() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("MaestroDevice/ThunderboltUnitBConnection.swift")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(!text.contains("a Word Clock slave of unit A"))
+        #expect(text.contains("a Loop Sync slave of unit A"))
+    }
 }

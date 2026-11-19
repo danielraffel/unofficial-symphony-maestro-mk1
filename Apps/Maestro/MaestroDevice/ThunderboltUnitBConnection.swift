@@ -14,7 +14,7 @@
 /// - Speaker level and mute and the optical formats go as vendor commands:
 ///   the Core Audio controls unit A uses belong to unit A.
 /// - Clock source and sample rate are not unit B's to set. The driver makes it
-///   a Word Clock slave of unit A when 64 channels start; the clock read
+///   a Loop Sync slave of unit A when 64 channels start; the clock read
 ///   answers that.
 /// - The card mixer (0xB0-0xB4) and the card output routing (0xB5) are the
 ///   card's, not a unit's: they go through unit A's connection with mixer

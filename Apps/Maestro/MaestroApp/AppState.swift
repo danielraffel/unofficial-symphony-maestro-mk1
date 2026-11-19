@@ -664,16 +664,13 @@ final class AppState {
     /// UserDefaults key for this card pair's remembered optical format,
     /// Replaces and Mirrors (see `SlotDigitalSettings`). Per card pair, as the
     /// daemon kept them per board.
-    private var digitalSettingsKey: String? {
+    var digitalSettingsKey: String? {
         cardLayout.savedStateScope.map { "slotDigitalSettings.\($0)" }
     }
 
     private var rememberedDigitalSettings: SlotDigitalSettings {
-        guard let key = digitalSettingsKey,
-              let data = UserDefaults.standard.data(forKey: key),
-              let settings = try? PropertyListDecoder().decode(SlotDigitalSettings.self, from: data)
-        else { return SlotDigitalSettings() }
-        return settings
+        guard let key = digitalSettingsKey else { return SlotDigitalSettings() }
+        return SlotDigitalSettings.load(key: key)
     }
 
     /// Remember a value written to (or confirmed by) the unit, so it is put back
@@ -681,11 +678,7 @@ final class AppState {
     @MainActor
     func rememberDigitalSetting(_ selector: AudioPropertySelector, slot: Int, value: UInt32) {
         guard let key = digitalSettingsKey else { return }
-        var settings = rememberedDigitalSettings
-        settings.record(selector, slot: slot, value: value)
-        if let data = try? PropertyListEncoder().encode(settings) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        SlotDigitalSettings.remember(selector, slot: slot, value: value, key: key)
     }
 
     /// Put the remembered optical formats, Replaces and Mirrors back on the
