@@ -88,6 +88,22 @@ struct MixerIdentityRestoreTests {
         #expect(state.primaryBoardSource == .detected)
     }
 
+    @Test func discoveryFinishesWhenItsOwnFindingChangesTheConnectedUnit() async {
+        // A Symphony that answered .silent earlier (switched off) now reports
+        // probe 0: discovery's own connectedUnit change must not cancel it.
+        let state = AppState()
+        let connection = SimulatedDevice.symphonyIO32ch()
+        connection.applyCardConfiguration(CardConfiguration(slot1: .analogADDA16, slot2: .analogADDA16))
+        state.device = connection
+        state.connectedUnit = .silent
+        state.primaryBoardSource = .unknown
+        await state.readCardTypes()
+        let source = state.primaryBoardSource
+        let unit = state.connectedUnit
+        #expect(unit == nil)
+        #expect(source == .detected)
+    }
+
     @Test func failedAndDisconnectedKeepUnitScopeAndLoadedStrips() async throws {
         let defaults = UserDefaults.standard
         let before = defaults.dictionaryRepresentation()
