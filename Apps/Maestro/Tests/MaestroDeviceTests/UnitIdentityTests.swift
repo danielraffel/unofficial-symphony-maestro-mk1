@@ -116,4 +116,34 @@ struct UnitIdentityTests {
         let replaced = DeviceSettingsStore(defaults: defaults, productID: 0x12, identity: 2)
         #expect(replaced.value(for: address) == nil)
     }
+
+    @Test func markerWithoutIdentityContinuesUsingMigratedChannelScope() {
+        let suite = "maestro.tests.identity.marker.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let layout = CardLayout(slot1: .optical, slot2: .analogAD16)
+        let legacy = "inputChannelStates.\(layout.savedStateScope!)"
+        let migratedScope = "unitA:v2:a:\(layout.savedStateScope!)"
+        defaults.set(migratedScope, forKey: "\(legacy).migratedTo")
+        defaults.set(Data("new".utf8), forKey: "inputChannelStates.\(migratedScope)")
+        defaults.set(Data("frozen".utf8), forKey: legacy)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
+        #expect(store.loadData(ChannelStateStore.inputKey) == Data("new".utf8))
+        store.saveData(Data("written".utf8), for: ChannelStateStore.inputKey)
+        #expect(defaults.data(forKey: "inputChannelStates.\(migratedScope)") == Data("written".utf8))
+        #expect(defaults.data(forKey: legacy) == Data("frozen".utf8))
+    }
+
+    @Test func settingsMarkerWithoutIdentityUsesMigratedScope() {
+        let suite = "maestro.tests.identity.settings-marker.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let legacy = DeviceSettingsStore.defaultsKey(productID: 0x12)
+        let migrated = DeviceSettingsStore.defaultsKey(productID: 0x12, unit: .a, identity: 0xA)
+        let address = PropertyAddress(selector: .prefix)
+        defaults.set(String(0xA, radix: 16), forKey: "\(legacy).migratedTo")
+        let migratedStore = DeviceSettingsStore(defaults: defaults, productID: 0x12, identity: 0xA)
+        migratedStore.record(.string("new"), for: address)
+        let store = DeviceSettingsStore(defaults: defaults, productID: 0x12)
+        #expect(store.value(for: address) == .string("new"))
+        #expect(defaults.data(forKey: migrated) != nil)
+    }
 }

@@ -87,6 +87,11 @@ public struct ChannelStateStore {
 
     /// The key a `base` is read from / written to for this scope.
     public func key(_ base: String) -> String {
+        if identity == nil, let legacyScope,
+           let migratedScope = defaults.string(forKey: "\(base).\(legacyScope).migratedTo"),
+           !migratedScope.isEmpty {
+            return "\(base).\(migratedScope)"
+        }
         guard let scope else { return base }
         return "\(base).\(scope)"
     }
@@ -97,6 +102,10 @@ public struct ChannelStateStore {
     /// Raw saved data for `base`, applying the migration rules above.
     public func loadData(_ base: String) -> Data? {
         if let data = defaults.data(forKey: key(base)) { return data }
+        if identity == nil, let legacyScope,
+           defaults.string(forKey: "\(base).\(legacyScope).migratedTo") != nil {
+            return nil
+        }
         if identity != nil, let legacyScope, !isSimulating {
             let legacyKey = "\(base).\(legacyScope)"
             let marker = "\(legacyKey).migratedTo"
