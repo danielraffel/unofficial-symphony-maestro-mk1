@@ -3,6 +3,12 @@ import MaestroCore
 import MaestroDevice
 
 extension AppState {
+    private final class PresetCaptureWarnings: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+        func add(_ value: String) { lock.lock(); values.append(value); lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return values }
+    }
     /// Refuse unknown boards and converters before touching hardware or preferences.
     @MainActor
     private func requireSymphonyPreset() throws {
@@ -65,19 +71,21 @@ extension AppState {
         }
         let capturedSeed = seed, capturedBSeed = bSeed
         // Fixed lock order: card/A, then B. All hardware work is off MainActor.
+        let warnings = PresetCaptureWarnings()
         let preset = try await Task.detached {
             try connection.withPresetLock {
                 if let b, let bLayout, let capturedBSeed {
                     return try b.withPresetLock {
-                        var captured = try connection.capturePreset(capturedSeed, layout: layout)
-                        captured.unitB = .init(try b.capturePreset(capturedBSeed, layout: bLayout))
+                        var captured = try connection.capturePreset(capturedSeed, layout: layout, onSkipped: warnings.add)
+                        captured.unitB = .init(try b.capturePreset(capturedBSeed, layout: bLayout, onSkipped: warnings.add))
                         return captured
                     }
                 }
-                return try connection.capturePreset(capturedSeed, layout: layout)
+                return try connection.capturePreset(capturedSeed, layout: layout, onSkipped: warnings.add)
             }
         }.value
         try preset.writeBundle(to: url)
+        if !warnings.all.isEmpty { statusMessage = "Saved with skipped settings: " + warnings.all.joined(separator: ", ") }
     }
 
     @MainActor
@@ -113,9 +121,12 @@ extension AppState {
                 }
             }
         }.value
+        await refreshAfterRecall()
         guard device === connection else { throw DeviceConnectionError.notConnected }
         if recallB, let saved = preset.unitB, let bLayout, unitBDevice === b {
-            UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: "mixerChannelNamesUnitB")
+            if !saved.metadata.channelNames.isEmpty {
+                UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: "mixerChannelNamesUnitB")
+            }
             bStore.save(saved.metadata.inputChannelStates, for: ChannelStateStore.inputKey)
             bStore.save(saved.metadata.outputChannelStates, for: ChannelStateStore.outputKey)
             for (index, mixer) in saved.mixers.enumerated() { bStore.save(mixer.channels, for: ChannelStateStore.mixerKey(index)) }
@@ -134,7 +145,9 @@ extension AppState {
         let meta = preset.metadata
         if !meta.inputChannelStates.isEmpty { channelStateStore.save(meta.inputChannelStates, for: ChannelStateStore.inputKey) }
         if !meta.outputChannelStates.isEmpty { channelStateStore.save(meta.outputChannelStates, for: ChannelStateStore.outputKey) }
-        UserDefaults.standard.set(String(data: try JSONEncoder().encode(meta.channelNames), encoding: .utf8), forKey: "mixerChannelNames")
+        if !meta.channelNames.isEmpty {
+            UserDefaults.standard.set(String(data: try JSONEncoder().encode(meta.channelNames), encoding: .utf8), forKey: "mixerChannelNames")
+        }
         for digital in PresetDigitalWrites.writes(for: meta, layout: cardLayout) {
             rememberDigitalSetting(digital.address.selector, slot: Int(digital.address.element), value: digital.value)
         }
@@ -162,8 +175,6 @@ extension AppState {
             unitBOutputRoutingCache?.save(outputGrid(sources: Array(sources.dropFirst(32)).map(UInt8.init), layout: bLayout, channels: 64))
         }
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
-        if let level = preset.globals[AudioPropertySelector.outputLevel.rawValue] { speakerLevel = -Double(level) }
-        if let mute = preset.globals[AudioPropertySelector.outputMute.rawValue] { speakerMuted = mute != 0 }
         await refreshChannelNaming()
         viewReloadToken = UUID()
     }

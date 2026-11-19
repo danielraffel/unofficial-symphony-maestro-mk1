@@ -234,11 +234,19 @@ struct ThunderboltPresetTests {
         let decoded = try PropertyListDecoder().decode(MaestroPreset.self, from: data)
         let preset = try ThunderboltPreset.legacy(decoded, layout: layout)
         let writes = try preset.writes(layout: layout, legacy: true)
-        #expect(writes.contains(.property(PropertyAddress(selector: .outputLevel), .uint32(32))))
-        #expect(writes.contains(.property(PropertyAddress(selector: .headphone1Level), .uint32(24))))
+        #expect(!writes.contains { if case .property(let a, _) = $0 { return a.selector == .outputLevel || a.selector == .outputMute || a.selector == .outputDim || a.selector == .outputSumToMono || a.selector == .headphone1Level || a.selector == .headphone1Mute || a.selector == .headphone2Level || a.selector == .headphone2Mute }; return false })
         #expect(!writes.contains { if case .output = $0 { return true }; return false })
         #expect(!writes.contains { if case .property(let a, _) = $0 { return a.selector == .speakerOutputMode }; return false })
         #expect(preset.metadata.channelNames == ["Old name"])
+    }
+
+    @Test func coaxMirrorZeroIsAValidHardwareValue() throws {
+        // A unit can report 0 (Off); capture must not fail on it. The original's
+        // Mirrors menu has no Off (OutputChannelLogic.swift:224), so it is not written.
+        var preset = try fixture()
+        preset.metadata.spdifMirrorID = 0
+        let writes = try preset.writes(layout: layout)
+        #expect(!writes.contains(.property(PropertyAddress(selector: .spdifMirrorID, scope: .output), .uint32(0))))
     }
     @Test func appOnlyBundleAndFlatFileAreBothLegacy() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("B4a-legacy-\(UUID().uuidString)")

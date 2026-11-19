@@ -6,46 +6,53 @@ extension ThunderboltPreset {
     static func capture(_ seed: ThunderboltPreset, layout: CardLayout, hostChannels: Int,
                         peripheralB: Bool = false,
                         readProperty: (PropertyAddress) throws -> PropertyValue,
-                        readRaw: (UInt8, UInt32, Int) throws -> Data) throws -> ThunderboltPreset {
+                        readRaw: (UInt8, UInt32, Int) throws -> Data,
+                        onSkipped: @Sendable (String) -> Void = { _ in }) throws -> ThunderboltPreset {
         var preset = seed
         for selector in ThunderboltPreset.monitorOrder + [.headphone1RoutingID, .headphone2RoutingID] {
-            let value = try readProperty(PropertyAddress(selector: selector))
-            guard let raw = value.asUInt32 ?? value.asBool.map({ $0 ? UInt32(1) : 0 }) else {
-                throw ThunderboltPreset.RecallError.unsupported("unreadable monitor setting \(selector).")
-            }
-            preset.globals[selector.rawValue] = raw
+            do {
+                let value = try readProperty(PropertyAddress(selector: selector))
+                guard let raw = value.asUInt32 ?? value.asBool.map({ $0 ? UInt32(1) : 0 }) else {
+                    onSkipped("monitor setting \(selector)"); continue
+                }
+                preset.globals[selector.rawValue] = raw
+            } catch { onSkipped("monitor setting \(selector)") }
         }
-        func monitor(_ selector: AudioPropertySelector) -> UInt32 { preset.globals[selector.rawValue]! }
-        preset.metadata.outputLevel = -Double(monitor(.outputLevel))
-        preset.metadata.outputMuted = monitor(.outputMute) != 0
-        preset.metadata.outputDimmed = monitor(.outputDim) != 0
-        preset.metadata.outputSumToMono = monitor(.outputSumToMono) != 0
-        preset.metadata.hp1Level = -Double(monitor(.headphone1Level))
-        preset.metadata.hp1Muted = monitor(.headphone1Mute) != 0
-        preset.metadata.hp1RoutingID = monitor(.headphone1RoutingID)
-        preset.metadata.hp2Level = -Double(monitor(.headphone2Level))
-        preset.metadata.hp2Muted = monitor(.headphone2Mute) != 0
-        preset.metadata.hp2RoutingID = monitor(.headphone2RoutingID)
-        if !peripheralB { preset.globals[AudioPropertySelector.clockSource.rawValue] = try readProperty(PropertyAddress(selector: .clockSource)).asUInt32 }
-        func read(_ selector: AudioPropertySelector, element: UInt32 = 0) throws -> UInt32 {
-            guard let value = try readProperty(PropertyAddress(selector: selector, element: element)).asUInt32 else {
-                throw ThunderboltPreset.RecallError.unsupported("unreadable setting \(selector).")
+        func monitor(_ selector: AudioPropertySelector) -> UInt32? { preset.globals[selector.rawValue] }
+        if let v = monitor(.outputLevel) { preset.metadata.outputLevel = -Double(v) }
+        if let v = monitor(.outputMute) { preset.metadata.outputMuted = v != 0 }
+        if let v = monitor(.outputDim) { preset.metadata.outputDimmed = v != 0 }
+        if let v = monitor(.outputSumToMono) { preset.metadata.outputSumToMono = v != 0 }
+        if let v = monitor(.headphone1Level) { preset.metadata.hp1Level = -Double(v) }
+        if let v = monitor(.headphone1Mute) { preset.metadata.hp1Muted = v != 0 }
+        if let v = monitor(.headphone1RoutingID) { preset.metadata.hp1RoutingID = v }
+        if let v = monitor(.headphone2Level) { preset.metadata.hp2Level = -Double(v) }
+        if let v = monitor(.headphone2Mute) { preset.metadata.hp2Muted = v != 0 }
+        if let v = monitor(.headphone2RoutingID) { preset.metadata.hp2RoutingID = v }
+        if !peripheralB { if let v = try? readProperty(PropertyAddress(selector: .clockSource)).asUInt32 { preset.globals[AudioPropertySelector.clockSource.rawValue] = v } else { onSkipped("clock source") } }
+        func read(_ selector: AudioPropertySelector, element: UInt32 = 0) -> UInt32 {
+            do {
+                guard let value = try readProperty(PropertyAddress(selector: selector, element: element)).asUInt32 else {
+                    onSkipped("setting \(selector)"); return 0
+                }
+                return value
+            } catch {
+                onSkipped("setting \(selector)"); return 0
             }
-            return value
         }
-        preset.metadata.meterBank1Source = try read(.metersShowInput, element: 1)
-        preset.metadata.meterBank2Source = try read(.metersShowInput, element: 2)
-        preset.metadata.peakHoldMode = try read(.peakHoldMode)
-        preset.metadata.overHoldMode = try read(.oversHoldMode)
+        preset.metadata.meterBank1Source = read(.metersShowInput, element: 1)
+        preset.metadata.meterBank2Source = read(.metersShowInput, element: 2)
+        preset.metadata.peakHoldMode = read(.peakHoldMode)
+        preset.metadata.overHoldMode = read(.oversHoldMode)
         for slot in 0..<2 {
             let card = layout.card(atSlot: slot)
             if card.hasOpticalPorts {
-                let value = try read(card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat, element: UInt32(slot))
+                let value = read(card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat, element: UInt32(slot))
                 if slot == 0 { preset.metadata.opticalInFormat = value } else { preset.metadata.slot2OpticalFormat = value }
             }
             if card.hasSPDIFCoax {
-                let replace = try read(.spdifReplaceID, element: UInt32(slot))
-                let mirror = try read(.spdifMirrorID, element: UInt32(slot))
+                let replace = read(.spdifReplaceID, element: UInt32(slot))
+                let mirror = read(.spdifMirrorID, element: UInt32(slot))
                 if slot == 0 {
                     preset.metadata.spdifReplaceID = replace
                     preset.metadata.spdifMirrorID = mirror
@@ -55,20 +62,20 @@ extension ThunderboltPreset {
                 }
             }
         }
-        preset.inputRoutes = try (0..<32).map {
-            UInt8(try read(.routing, element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32($0)))
+        preset.inputRoutes = (0..<32).map {
+            UInt8(read(.routing, element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32($0)))
         }
-        let selection = try readRaw(0x2A, 0, 1)
-        guard selection.count == 1 else { throw DeviceConnectionError.transportError("Short front panel selection read") }
-        preset.frontPanelSelection = selection[0]
+        if let selection = try? readRaw(0x2A, 0, 1), selection.count == 1 {
+            preset.frontPanelSelection = selection[0]
+        } else { onSkipped("front panel selection") }
         if layout.slot2 == .micPre8 {
-            let identity = try readRaw(0xC0, 0, 8)
-            guard identity.count == 8, identity.contains(where: { $0 != 0 }), identity.contains(where: { $0 != 0xFF }) else {
-                throw RecallError.unsupported("the unit identity could not be read.")
+            if let identity = try? readRaw(0xC0, 0, 8), identity.count == 8,
+               identity.contains(where: { $0 != 0 }), identity.contains(where: { $0 != 0xFF }) {
+                preset.unitID = identity
+            } else {
+                onSkipped("unit identity")
             }
-            preset.unitID = identity
         }
-        _ = try preset.writes(layout: layout, currentUnitID: preset.unitID, hostChannels: hostChannels, peripheralB: peripheralB)
         return preset
     }
 
