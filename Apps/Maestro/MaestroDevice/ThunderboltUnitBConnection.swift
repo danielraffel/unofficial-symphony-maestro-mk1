@@ -28,8 +28,14 @@ import MaestroCore
 public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Sendable {
 
     public let identifier: USBDeviceIdentifier
-    public var isConnected: Bool { connected && transport.isConnected }
+    public var isConnected: Bool { infoLock.withLock { connected } && transport.isConnected }
     private var connected = true
+    private let infoLock = NSLock()
+    private var infoStarted = false
+    private var infoCache = SymphonyDeviceInfo()
+    private let infoRouting: @Sendable () -> SymphonyRoutingModel
+
+    public var deviceInfo: SymphonyDeviceInfo { infoLock.withLock { infoCache } }
 
     /// The same driver client unit A uses; every call carries `port`.
     private let transport: any VendorTransport
@@ -47,11 +53,49 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     public init(identifier: USBDeviceIdentifier, transport: any VendorTransport,
                 settingsStore: DeviceSettingsStore = DeviceSettingsStore(),
+                infoRouting: @escaping @Sendable () -> SymphonyRoutingModel = {
+                    SymphonyRoutingModel(topology: .unknown, hostChannels: 0)
+                },
                 state: @escaping @Sendable () -> UnitBState?) {
         self.identifier = identifier
         self.transport = transport
         self.settingsStore = settingsStore
         self.state = state
+        self.infoRouting = infoRouting
+    }
+
+    /// One attempt per connection. No lock spans a bus call, no batch is queued,
+    /// and the first failure ends the attempt. Each synchronous driver read runs
+    /// off the main actor and uses the existing bounded vendor-read timeout.
+    public func readDeviceInfo() async -> SymphonyDeviceInfo {
+        guard infoLock.withLock({
+            if infoStarted { return false }
+            infoStarted = true
+            return true
+        }) else { return deviceInfo }
+        var requests: [(UInt8, UInt32, Int)] = [(0xC0, 0, 8), (0xA1, 0, 1), (0xA1, 1, 1)]
+        requests += [0, 1, 4, 2, 3, 5, 6].map { (0xA0, UInt32($0), 3) }
+        for (command, value, length) in requests {
+            guard !Task.isCancelled else { break }
+            // Empty slots have no FPGA version: og_source/maestrolink/Software/SymphonyIO.cpp:977-996.
+            let slot: UInt32? = command == 0xA0 ? ([2: 0, 3: 1, 5: 0, 6: 1][value]) : nil
+            if let slot, deviceInfo.boards[slot] == IOCardType.none { continue }
+            let succeeded = await Task.detached(priority: .background) { [self] in
+                guard isConnected, state()?.info?.setupComplete == true,
+                      infoRouting().allows(.deviceInfo, at: .peripheral(.init(port: .two)!)) else { return false }
+                do {
+                    let data = try transport.readVendorCommand(command: command, value: value,
+                                                               responseLength: length, port: Self.port)
+                    return infoLock.withLock {
+                        guard connected else { return false }
+                        return infoCache.decode(command: command, value: value, data: data)
+                    }
+                } catch { return false }
+            }.value
+            guard succeeded else { break }
+            await Task.yield()
+        }
+        return deviceInfo
     }
 
     // MARK: - What unit B supports
@@ -240,7 +284,14 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     /// Unit B shares unit A's driver client; disconnecting it only stops this
     /// connection from sending.
-    public func disconnect() async { connected = false }
+    public func disconnect() async { invalidate() }
+
+    public func invalidate() {
+        infoLock.withLock {
+            connected = false
+            infoCache = SymphonyDeviceInfo()
+        }
+    }
 
     /// Write unit B's stored settings back, as unit A's connection does at connect.
     public func reapplyStoredSettings() async -> DeviceSettingsReplay {

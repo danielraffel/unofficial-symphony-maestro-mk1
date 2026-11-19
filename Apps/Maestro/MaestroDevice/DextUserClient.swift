@@ -451,9 +451,21 @@ public final class DextUserClient: @unchecked Sendable {
             }
         }
         guard kr == KERN_SUCCESS else { throw DextUserClientError.ipcFailed(kr) }
+        return try Self.decodeVendorReadOutput(output, outputSize: outputSize, responseLength: responseLength)
+    }
+
+    /// Do not turn a short user-client reply into zero-filled version/identity bytes.
+    static func decodeVendorReadOutput(_ output: Data, outputSize: Int, responseLength: Int) throws -> Data {
+        guard outputSize >= 8, outputSize <= output.count else {
+            throw DeviceConnectionError.transportError("Short vendor read header")
+        }
         let status = output.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         guard status == 0 else { throw DextUserClientError.dextError(status) }
-        return output.subdata(in: 8..<(8 + responseLength))
+        let length = output.withUnsafeBytes { Int($0.loadUnaligned(fromByteOffset: 4, as: UInt16.self)) }
+        guard length == responseLength, outputSize >= 8 + length else {
+            throw DeviceConnectionError.transportError("Short vendor read payload")
+        }
+        return output.subdata(in: 8..<(8 + length))
     }
 
     /// Read the configured second Symphony I/O (selector 11), without bus traffic.

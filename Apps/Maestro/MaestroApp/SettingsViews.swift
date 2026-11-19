@@ -1129,7 +1129,13 @@ struct SystemSetupView: View {
 
             Section {
                 if appState.connectionMode == .hardware {
-                    if let info = parsedFirmware {
+                    if appState.activeUnit == .b {
+                        LabeledContent("Device Name", value: "Symphony I/O")
+                        LabeledContent("Connection", value: appState.connectionLabel)
+                        ForEach(appState.unitBDeviceInfo.rows, id: \.label) { row in
+                            LabeledContent(row.label, value: row.value)
+                        }
+                    } else if let info = parsedFirmware {
                         LabeledContent("Device Name",
                                        value: appState.connectedUnit?.modelName ?? info.deviceName ?? "Symphony I/O")
                         LabeledContent("Connection", value: appState.connectionLabel)
@@ -1601,7 +1607,7 @@ struct SystemSetupView: View {
             report.connectedUnitLines.append(raw)
         }
         report.port2Lines = appState.secondPortState?.reportLines ?? []
-        report.unitBLines = appState.unitB?.reportLines(unitAPrefix: appState.peripheralPrefix) ?? []
+        report.unitBLines = appState.unitBDeviceInfoReportLines
         return report
     }
 

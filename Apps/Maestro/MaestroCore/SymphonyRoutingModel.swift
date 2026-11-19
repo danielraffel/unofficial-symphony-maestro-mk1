@@ -81,7 +81,7 @@ public struct SymphonyRoutingModel: Sendable {
     }
     public enum Endpoint: Sendable { case card, peripheral(Unit) }
     public enum CommandFamily: CaseIterable, Sendable {
-        case identify, monitor, micPre
+        case identify, monitor, micPre, deviceInfo
         /// Symphony preference load lock (0xDD).
         case preferenceLock
         /// Per-unit crosspoint table (0x31).
@@ -118,7 +118,7 @@ public struct SymphonyRoutingModel: Sendable {
         switch endpoint {
         case .peripheral(let unit):
             switch command {
-            case .identify, .monitor, .micPre, .preferenceLock, .unitRouting: return isSymphony(unit)
+            case .identify, .monitor, .micPre, .deviceInfo, .preferenceLock, .unitRouting: return isSymphony(unit)
             case .cardOutput, .cardInput, .cardReset: return false
             }
         case .card:

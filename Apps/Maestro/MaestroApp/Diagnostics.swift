@@ -140,7 +140,7 @@ extension AppState {
         // reports the two-port experiment on.
         report.port2Lines = currentSecondPortState()?.reportLines ?? []
         // A second Symphony I/O (unit B) on port 2, as the driver reports it now.
-        report.unitBLines = unitB?.reportLines(unitAPrefix: peripheralPrefix) ?? []
+        report.unitBLines = unitBDeviceInfoReportLines
         return report
     }
 
