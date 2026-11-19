@@ -367,13 +367,16 @@ struct PortsWordingTests {
         let s = state(audio: stage2Capable)
         // Chosen in Maestro, not confirmed yet.
         let chosen = PortsPresentation(model: model(0, s, choose: .ports1And2), state: s)
-        #expect(chosen.statusLine == "Switching to 64 channels…")
+        #expect(chosen.statusLine == "Looking for a unit on port 2…")
         #expect(!chosen.statusIsRefusal)
         #expect(chosen.rows.isEmpty)
+        // The label stays at what runs (32) while port 2 is tried, with a spinner.
+        #expect(chosen.shownSelection == .port1 && chosen.isChecking)
         // Chosen elsewhere: the device says 64, the card is not running it yet.
         let elsewhere = PortsPresentation(model: model(1, s), state: s)
-        #expect(elsewhere.statusLine == "Switching to 64 channels…")
+        #expect(elsewhere.statusLine == "Looking for a unit on port 2…")
         #expect(elsewhere.rows.isEmpty)
+        #expect(elsewhere.shownSelection == .port1 && elsewhere.isChecking)
     }
 
     @Test("64 channels running: Link, Clock, Units and Phase")
@@ -384,9 +387,11 @@ struct PortsWordingTests {
         let shown = PortsPresentation(model: model(1, s), state: s)
         #expect(shown.statusLine == nil)
         #expect(shown.rows.map { $0.label } == ["Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Phase"])
+        #expect(shown.shownSelection == .ports1And2 && !shown.isChecking)
         // Back to 32: the rows go again.
         let back = state(audio: stage2Capable)
         #expect(PortsPresentation(model: model(0, back), state: back).rows.isEmpty)
+        #expect(PortsPresentation(model: model(0, back), state: back).shownSelection == .port1)
     }
 
     @Test("the picker shows the device's value, not the request: pick 64, refused, stays 32")

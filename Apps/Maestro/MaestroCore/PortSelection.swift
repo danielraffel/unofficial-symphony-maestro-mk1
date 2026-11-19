@@ -210,7 +210,16 @@ public struct PortsPresentation: Sendable, Equatable {
         public var value: String
     }
 
-    public static let switchingText = "Switching to 64 channels…"
+    public static let switchingText = "Looking for a unit on port 2…"
+
+    /// What the Ports menu's label shows: what actually runs. While 64 is
+    /// being tried it stays at 32 (with a spinner and `switchingText`), so the
+    /// label changes once, to 64 when port 2 answers, and never flicks to 64
+    /// and back when nothing is there.
+    public var shownSelection: PortSelection
+    /// True while a switch to 64 is being tried: the menu is disabled and a
+    /// spinner shows next to it.
+    public var isChecking: Bool
 
     /// The line under the picker: switching, or why 64 is not running.
     public var statusLine: String?
@@ -226,6 +235,8 @@ public struct PortsPresentation: Sendable, Equatable {
         let switching = model.pending == .ports1And2
             || (selection == .ports1And2 && model.pending == nil && !state.audioActive)
         let running = selection == .ports1And2 && model.pending == nil && state.audioActive
+        isChecking = switching
+        shownSelection = running ? .ports1And2 : (switching ? .port1 : (selection ?? .port1))
         if switching {
             statusLine = Self.switchingText
             statusIsRefusal = false

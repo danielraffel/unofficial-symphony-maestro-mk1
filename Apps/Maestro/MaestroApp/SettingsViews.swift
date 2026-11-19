@@ -1193,18 +1193,34 @@ struct SystemSetupView: View {
                         // "Source" (named after the device there, for the Sound
                         // menu), with plain labels here. Shown only when the
                         // device publishes it.
-                        if let selection = appState.portSelection.selection {
+                        if appState.portSelection.selection != nil {
                             let shown = PortsPresentation(model: appState.portSelection, state: port2)
                             LabeledContent("Ports") {
                                 HStack(spacing: 6) {
-                                    Picker("Ports", selection: Binding(
-                                        get: { appState.portSelection.displayedSelection ?? selection },
-                                        set: { appState.choosePortSelection($0) })) {
-                                        ForEach(PortSelection.allCases) { choice in
-                                            Text(choice.pickerLabel).tag(choice)
-                                        }
+                                    if shown.isChecking {
+                                        ProgressView().controlSize(.small)
                                     }
-                                    .labelsHidden()
+                                    // A menu, not a Picker: a Picker whose value
+                                    // stays at 32 while 64 is tried animates
+                                    // the pick reverting (garbled label), and
+                                    // showing 64 first then snapping back read
+                                    // as broken. The label is what runs.
+                                    Menu {
+                                        ForEach(PortSelection.allCases) { choice in
+                                            Button {
+                                                appState.choosePortSelection(choice)
+                                            } label: {
+                                                if choice == shown.shownSelection {
+                                                    Label(choice.pickerLabel, systemImage: "checkmark")
+                                                } else {
+                                                    Text(choice.pickerLabel)
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        Text(shown.shownSelection.pickerLabel)
+                                    }
+                                    .accessibilityLabel("Ports")
                                     .fixedSize()
                                     .disabled(!appState.portSelection.canChoose)
                                     Button { showPortsInfo.toggle() } label: {
