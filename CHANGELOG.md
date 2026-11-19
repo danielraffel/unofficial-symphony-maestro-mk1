@@ -2,9 +2,6 @@
 
 ## 0.9.10 (beta)
 
-- With two Symphony I/Os at 64 channels, selecting Unit B on Outputs now shows its own speaker and headphone monitor controls. Mac volume keys still control Unit A.
-- Clear Meters now clears peaks and overs on both units.
-
 (Work in progress; not released. Intro to be written at release.)
 
 ### Changes that may affect your setup
@@ -14,13 +11,14 @@
 
 ### New
 
+- **With two Symphony I/Os at 64 channels, choosing Unit B on the Outputs page shows unit B's own speaker and headphone controls,** as Apogee's software did. The Mac's volume keys still control unit A.
 - **Identify, on the Output Routing page, lights up all of the Symphony I/O's front-panel lights** so you can find the unit, as Apogee's software did; press it again to turn them off. With two units there is one for each.
 
 ### Fixes
 
 - **With two Symphony I/Os at 64 channels, Output Routing lets any of the 64 DAW channels and both mixers feed any output on either unit,** as Apogee's software did. Before, unit A's outputs could not play DAW channels 33-64.
 - **The 8MicPre gain control in your DAW follows the channel's Mic or Instrument setting.** On an Instrument channel it stops at 65 dB (the slider still shows 0-85 dB).
-
+- **Clear Meters clears peaks and overs on both units.**
 - **Identify stays on when you leave Output Routing, and Maestro turns the lights off when it disconnects or quits.**
 - **Turning the Symphony's knob on an 8MicPre Mic or Instrument channel now moves that channel's gain in Maestro too,** as Apogee's software did.
 - **Choosing 64 channels with nothing on port 2 no longer flickers.** The Ports menu stays at 32 channels with a small spinner while Maestro looks for a unit on port 2, then shows 64 or the warning.
