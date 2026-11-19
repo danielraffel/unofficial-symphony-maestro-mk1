@@ -1169,6 +1169,8 @@ final class AppState {
 
     @MainActor
     func finishRecall() {
+        // An epoch-invalidated two-unit replay re-arms itself when it throws;
+        // only a replay that was deferred during the recall is requested here.
         guard replayDeferral.finishRecall() else { return }
         if usesTwoUnitReplay {
             twoUnitReplayNeeded = true
