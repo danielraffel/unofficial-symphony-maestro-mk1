@@ -296,10 +296,17 @@ struct ThunderboltPresetTests {
         for index in p.mixers.indices { p.mixers[index].channels = Array(p.mixers[index].channels.prefix(preampLayout.mixerChannelCount)) }
         var skipped: [String] = []
         let writes = try p.writes(layout: preampLayout, currentUnitID: p.unitID, onSkipped: { skipped.append($0) })
-        // Bundles never switch phantom on (safety departure until C2), even with
-        // a matching unit ID; the skip is reported.
+        // Merely stamping the bundle's unit ID does not authorize its channels.
         #expect(!writes.contains(.property(PropertyAddress(selector: .phantom), .bool(true))))
         #expect(skipped == ["phantom power not restored from a bundle"])
+        let unitID = try #require(p.unitID)
+        let identity = try #require(SymphonyIdentityReader.decode(unitID))
+        p.metadata.inputChannelStates[0].recordPhantomRequest(true, identity: identity, boardSlot: 1, channel: 0)
+        let verified = try p.writes(layout: preampLayout, currentUnitID: p.unitID)
+        let on = ThunderboltPreset.Write.property(PropertyAddress(selector: .phantom), .bool(true))
+        #expect(verified.contains(on))
+        let mismatch = try p.writes(layout: preampLayout, currentUnitID: Data(repeating: 9, count: 8))
+        #expect(!mismatch.contains(on))
         // An Instrument channel never gets phantom ON either.
         p.metadata.inputChannelStates[0].inputType = AnalogInputLevel.instrument.rawValue
         let instrumentWrites = (try? p.writes(layout: preampLayout, currentUnitID: p.unitID)) ?? []

@@ -126,7 +126,8 @@ public struct ChannelStateStore {
                 let oldLayout = layoutScope.map { role == .b ? "unitB:\($0)" : $0 }
                 let suffix = oldLayout.map { ":\($0)" } ?? ""
                 let old = "\(base).\(role == .a ? "unitA" : "unitB"):v2:\(String(identity, radix: 16))\(suffix)"
-                if let data = defaults.data(forKey: old) {
+                if let historical = defaults.data(forKey: old) {
+                    let data = unverified(historical, base: base)
                     defaults.set(data, forKey: destination)
                     if let oldLayout {
                         let marker = "\(base).\(oldLayout).migratedTo"
@@ -145,7 +146,7 @@ public struct ChannelStateStore {
                 let data = defaults.data(forKey: source)
                     ?? ((claimed || unclaimed) ? defaults.data(forKey: base) : nil)
                 let copied = UnitStateMigration.copyData(defaults: defaults, source: source,
-                                                         destination: destination, owner: scope, data: data)
+                                                         destination: destination, owner: scope, data: data.map { unverified($0, base: base) })
                 if copied != nil, claimed || unclaimed {
                     defaults.set(legacyScope, forKey: Self.claimKey(base))
                 }
@@ -161,26 +162,29 @@ public struct ChannelStateStore {
         let claim = Self.claimKey(base)
         if let owner = defaults.string(forKey: claim), owner != scope { return nil }
         defaults.set(scope, forKey: claim)
-        return legacy
+        return unverified(legacy, base: base)
+    }
+
+    private func unverified(_ data: Data, base: String) -> Data {
+        guard base == Self.inputKey,
+              var inputs = try? JSONDecoder().decode([InputChannelState].self, from: data),
+              inputs.contains(where: { $0.phantomProvenance != nil }) else { return data }
+        for index in inputs.indices { inputs[index].phantomProvenance = nil }
+        return (try? JSONEncoder().encode(inputs)) ?? data
     }
 
     /// Store `data` for `base` under this scope.
     public func saveData(_ data: Data, for base: String) {
         guard !awaitingIdentity else { return }
-        // Bind verification to the exact saved bytes. A partial save or later
-        // migration cannot turn a separate boolean marker into phantom authority.
-        let destination = key(base)
-        let previous = defaults.data(forKey: destination)
-        let verified = identity != nil && (previous == nil
-            || defaults.data(forKey: destination + ".verifiedIdentity") == previous)
-        defaults.set(data, forKey: destination)
-        if verified { defaults.set(data, forKey: destination + ".verifiedIdentity") }
+        defaults.set(data, forKey: key(base))
     }
 
+    /// Compatibility query only; saving an array never establishes authority.
     public var hasVerifiedInputIdentity: Bool {
-        guard identity != nil, !awaitingIdentity,
-              let data = defaults.data(forKey: key(Self.inputKey)) else { return false }
-        return defaults.data(forKey: key(Self.inputKey) + ".verifiedIdentity") == data
+        guard let identity, let inputs: [InputChannelState] = load(Self.inputKey) else { return false }
+        return inputs.enumerated().contains { index, state in
+            state.restoresPhantom(identity: identity, boardSlot: 1, channel: index)
+        }
     }
 
     public func load<T: Decodable>(_ base: String, as type: [T].Type = [T].self) -> [T]? {

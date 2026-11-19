@@ -34,7 +34,7 @@ extension AppState {
             metadata.channelNames = (try? JSONDecoder().decode([String].self, from: Data(names.utf8))) ?? []
         }
         var seed = ThunderboltPreset(layout: layout, metadata: metadata)
-        if channelStateStore.hasVerifiedInputIdentity, let identity = unitAIdentity {
+        if let identity = unitAIdentity {
             seed.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
         }
         // The card-input table only when the serving driver supports it (>= 132).
@@ -68,7 +68,7 @@ extension AppState {
             metadata.outputChannelStates = store.load(ChannelStateStore.outputKey)
                 ?? Array(repeating: OutputChannelState(), count: bLayout.analogOutputStripCount)
             var value = ThunderboltPreset(layout: bLayout, metadata: metadata)
-            if store.hasVerifiedInputIdentity, let identity = unitBIdentity {
+            if let identity = unitBIdentity {
                 value.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
             }
             value.outputRoutes = Array(0..<32)
@@ -152,7 +152,7 @@ extension AppState {
             if !saved.metadata.channelNames.isEmpty {
                 UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: mixerNamesKey(unit: .b))
             }
-            bStore.save(saved.metadata.inputChannelStates, for: ChannelStateStore.inputKey)
+            bStore.save(saved.metadata.inputChannelStates.enumerated().map { $0.element.recalled(identity: bStore.identity, boardSlot: 1, channel: $0.offset) }, for: ChannelStateStore.inputKey)
             bStore.save(saved.metadata.outputChannelStates, for: ChannelStateStore.outputKey)
             for (index, mixer) in saved.mixers.enumerated() { bStore.save(mixer.channels, for: ChannelStateStore.mixerKey(index)) }
             if let bDigitalKey {
@@ -169,12 +169,11 @@ extension AppState {
             + (warningText.isEmpty ? "" : " " + warningText.joined(separator: " "))
         // Commit the app's copy only after hardware recall and ready read-back.
         // No view needs to be open for any of the writes above.
-        // Commit the app shadow while holding the same ordered owner as the
-        // hardware writes. A queued replay cannot interleave between recall
-        // completion and persistence.
-        try connection.withPresetLock {
+        // beginRecall remains active through this synchronous MainActor commit;
+        // replay stays deferred until finishRecall. Do not take the blocking
+        // hardware owner here after the detached transaction has released it.
         let meta = preset.metadata
-        if !meta.inputChannelStates.isEmpty { channelStateStore.save(meta.inputChannelStates, for: ChannelStateStore.inputKey) }
+        if !meta.inputChannelStates.isEmpty { channelStateStore.save(meta.inputChannelStates.enumerated().map { $0.element.recalled(identity: legacy ? nil : unitAIdentity, boardSlot: 1, channel: $0.offset) }, for: ChannelStateStore.inputKey) }
         if !meta.outputChannelStates.isEmpty { channelStateStore.save(meta.outputChannelStates, for: ChannelStateStore.outputKey) }
         if !meta.channelNames.isEmpty {
             UserDefaults.standard.set(String(data: try JSONEncoder().encode(meta.channelNames), encoding: .utf8), forKey: mixerNamesKey())
@@ -204,7 +203,6 @@ extension AppState {
         if !legacy, cardChannels == 64, let bLayout {
             let sources = try ThunderboltPreset.cardTable(preset.outputRoutes.map(Int.init), channels: 64)
             unitBOutputRoutingCache?.save(outputGrid(sources: Array(sources.dropFirst(32)).map(UInt8.init), layout: bLayout, channels: 64))
-        }
         }
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
         await refreshChannelNaming()

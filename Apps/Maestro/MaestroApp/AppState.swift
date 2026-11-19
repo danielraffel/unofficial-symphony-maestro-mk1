@@ -2442,6 +2442,7 @@ final class AppState {
                 outputs: outputStates,
                 layout: cardLayout,
                 device: device,
+                identity: unitAIdentity,
                 spacing: device is XPCDeviceConnection ? .milliseconds(25) : nil)
         }
         if channelReplay.applied > 0 || channelReplay.failed > 0 {
@@ -4382,7 +4383,7 @@ final class AppState {
         // Restore input channel states to UserDefaults (applied by InputControlsView on reload)
         let store = channelStateStore
         if !preset.inputChannelStates.isEmpty {
-            store.save(preset.inputChannelStates, for: ChannelStateStore.inputKey)
+            store.save(preset.inputChannelStates.enumerated().map { $0.element.recalled(identity: nil, boardSlot: 1, channel: $0.offset) }, for: ChannelStateStore.inputKey)
         }
 
         // Restore output channel states to UserDefaults (applied by OutputControlsView on reload)

@@ -259,6 +259,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                 let s = inputs[index]
                 let level = AnalogInputLevel(rawValue: s.inputType)!
                 if !level.isPreampLevel {
+                    if layout.slot2 == .micPre8 && index < 8 { put(.phantom, .bool(false), element: UInt32(index)) }
                     put(.analogIOType, .uint32(InputChannelLogic.analogIOTypeWithTrim(level: level, trim: s.trim)), scope: .input, element: UInt32(index))
                 }
                 put(.digitalRefLevel, .uint32(s.digitalRefLevel), scope: .input, element: UInt32(index))
@@ -276,37 +277,12 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             inputOffset += card.analogInputChannels
             outputOffset += card.analogOutputChannels
         }
-        // og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:2259-2298.
-        if layout.slot2 == .micPre8 {
-            for (index, s) in inputs.prefix(8).enumerated() {
-                let element = UInt32(index)
-                let level = AnalogInputLevel(rawValue: s.inputType)!
-                if level.isPreampLevel {
-                    put(.analogIOType, .uint32(InputChannelLogic.analogIOTypeWithTrim(level: level, trim: s.trim)), scope: .input, element: element)
-                }
-                put(.insertReturnEnable, .bool(level.isPreampLevel && s.insertReturn), element: element)
-                if level.isPreampLevel && s.insertReturn {
-                    for (insert, mask) in InputChannelLogic.insertAssignmentMasks(in: inputs) {
-                        put(.insertID, .uint32(UInt32(mask)), element: UInt32(insert))
-                    }
-                }
-                put(.micGain, .uint32(UInt32(s.micGain)), element: element)
-                put(.instrumentGain, .uint32(UInt32(s.instrumentGain)), element: element)
-                put(.groupID, .uint32(s.group), element: element)
-                put(.phaseReverse, .bool(s.phase), element: element)
-                // Safety departure from the original, which restored phantom ON:
-                // until per-channel provenance exists, bundle state may never
-                // energize a microphone. Capture still records the value; recall
-                // applies OFF and reports that ON was skipped.
-                // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:670-699.
-                if s.phantom {
-                    onSkipped?("phantom power not restored from a bundle")
-                } else {
-                    put(.phantom, .bool(false), element: element)
-                }
-                put(.highPassFilter, .bool(s.hpf), element: element)
-            }
-        }
+        let identity = legacy ? nil : currentUnitID.flatMap(SymphonyIdentityReader.decode)
+        if inputs.enumerated().contains(where: { index, state in
+            state.phantom && !state.restoresPhantom(identity: identity, boardSlot: 1, channel: index)
+        }) { onSkipped?("phantom power not restored from a bundle") }
+        result += MicPreSettingsReplay.writes(inputs: inputs, layout: layout, identity: identity,
+                                              includeLineChannels: true, restoresLineType: false)
         // Headphone crosspoints follow restored board output routes, not card
         // source bytes: og_source/maestrolink/Software/SymphonyIO.cpp:2716-2737.
         for (hp, selector) in [AudioPropertySelector.headphone1RoutingID, .headphone2RoutingID].enumerated() {
@@ -387,8 +363,22 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                 break
             }
         }
+        if failure != nil {
+            for off in MicPreSettingsReplay.phantomOffWrites(writes) {
+                do { try send(off) } catch { failure = "\(failure ?? ""); phantom OFF failed: \(error)" }
+            }
+        }
         var ready = false
         for attempt in 0..<10 {
+            if attempt == 9 && failure == nil {
+                let offWrites = MicPreSettingsReplay.phantomOffWrites(writes)
+                if !offWrites.isEmpty {
+                    failure = "preference unlock timed out; phantom power cleared"
+                    for off in offWrites {
+                        do { try send(off) } catch { failure = "phantom OFF failed: \(error)" }
+                    }
+                }
+            }
             do { ready = try unlock() } catch { ready = false }
             if ready { break }
             if attempt < 9 { retryDelay() }

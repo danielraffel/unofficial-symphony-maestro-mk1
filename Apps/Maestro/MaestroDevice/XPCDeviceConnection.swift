@@ -621,7 +621,70 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             cachedClockSource: getCachedClockSource())
     }
 
+    private let sequenceOwner = AsyncSequenceOwner()
+
+    public func applyMicPreWrites(_ writes: [ThunderboltPreset.Write]) async throws {
+        await sequenceOwner.acquire()
+        var failure: (any Error)?
+        var changes: [PropertyChange] = []
+        do {
+            for write in writes {
+                guard case .property(let address, let value) = write else { continue }
+                try await setOwnedProperty(address, value: value)
+                changes.append(PropertyChange(address: address, value: value))
+            }
+        } catch { failure = error }
+        if failure != nil {
+            for write in MicPreSettingsReplay.phantomOffWrites(writes) {
+                if case .property(let address, let value) = write {
+                    do {
+                        try await setOwnedProperty(address, value: value)
+                        changes.append(PropertyChange(address: address, value: value))
+                    } catch { failure = error }
+                }
+            }
+        }
+        var ready = false
+        for attempt in 0..<10 {
+            if attempt == 9 {
+                for write in MicPreSettingsReplay.phantomOffWrites(writes) {
+                    if case .property(let address, let value) = write {
+                        do {
+                            try await setOwnedProperty(address, value: value)
+                            changes.append(PropertyChange(address: address, value: value))
+                        } catch { failure = error }
+                    }
+                }
+                if failure == nil { failure = DeviceConnectionError.transportError("Preference unlock timed out") }
+            }
+            do {
+                try await transport.sendSetProperty(bRequest: 0xDD, wValue: 0, wIndex: 0, data: Data([0]))
+                let reply = try await transport.sendGetProperty(bRequest: 0xDD, wValue: 0, wIndex: 0, dataLength: 1)
+                ready = reply.status == 0 && reply.data == Data([0])
+            } catch { if failure == nil { failure = error } }
+            if ready { break }
+            if attempt < 9 { try? await Task.sleep(for: .milliseconds(5)) }
+        }
+        await sequenceOwner.release()
+        for change in changes { await listenerStorage.notifyListeners(for: change.address, change: change) }
+        if !ready { throw DeviceConnectionError.transportError("The unit did not confirm the preference unlock") }
+        if let failure { throw failure }
+    }
+
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
+        await sequenceOwner.acquire()
+        do {
+            try await setOwnedProperty(address, value: value)
+            await sequenceOwner.release()
+        } catch {
+            await sequenceOwner.release()
+            throw error
+        }
+        await listenerStorage.notifyListeners(for: address, change: PropertyChange(address: address, value: value))
+    }
+
+    private func setOwnedProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
+
         guard transport.isConnected else {
             throw DeviceConnectionError.notConnected
         }
@@ -671,9 +734,8 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             }
         }
 
-        // Notify listeners
-        let change = PropertyChange(address: address, value: value)
-        await listenerStorage.notifyListeners(for: address, change: change)
+        // Notification happens after releasing the sequence owner, so a
+        // listener may write another property without waiting on itself.
     }
 
     /// Hold the helper's software stage at 0 dB, unmuted. Send this only after
