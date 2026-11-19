@@ -9,6 +9,17 @@ extension AppState {
     @MainActor
     func resolveUnitIdentity(for unit: DeviceUnit, connection: any DeviceConnection,
                              read: @escaping @Sendable () async -> UInt64?) async {
+        // Unstructured ownership: closing the initiating view cannot cancel
+        // discovery, binding, or the connection's USB restore.
+        let operation = Task {
+            await self.completeUnitIdentity(for: unit, connection: connection, read: read)
+        }
+        await operation.value
+    }
+
+    @MainActor
+    private func completeUnitIdentity(for unit: DeviceUnit, connection: any DeviceConnection,
+                                      read: @escaping @Sendable () async -> UInt64?) async {
         let state = unit == .a ? unitAIdentityState : unitBIdentityState
         let pending = unit == .a ? unitAIdentityTask : unitBIdentityTask
         guard state == .pending, pending == nil else { return }
@@ -83,22 +94,55 @@ extension AppState {
         if unit == .a { refreshSoftwareReturnMeterGains() }
         viewReloadToken = UUID()
         let preferences = mixerPreferences
-        if unit == .a, let usb = connection as? XPCDeviceConnection {
+        if unit == .a, let usb = connection as? XPCDeviceConnection,
+           usbIdentityRestoreGeneration != generation, preferences.isWritable {
+            usbIdentityRestoreGeneration = generation
             // The first restore must wait for UID/layout migration, otherwise
             // an unchanged USB unit would receive defaults before its settings.
             await usb.restoreReturnAndMaster(helperMixer: lastSelectedMixer, preferences: preferences)
             guard isCurrent() else { return }
-            let mode = preferences.integer(forKey: "routingMode")
-            usb.setRoutingMode(mode)
+            await restoreUSBRoutingMode(usb, generation: generation, preferences: preferences)
+        }
+    }
+
+    /// Pending discovery owns restoration. Recovery must not synthesize a DAW
+    /// mode from an unreadable preference handle and mute Direct Monitor inputs.
+    @MainActor
+    func restoreUSBMixerAfterRecovery(_ connection: XPCDeviceConnection, helperMixer: Int,
+                                      restoreRoutingMode: Bool) async {
+        let generation = unitAGeneration
+        let preferences = mixerPreferences
+        guard device === connection, preferences.isWritable else { return }
+        await connection.restoreReturnAndMaster(helperMixer: helperMixer, preferences: preferences)
+        guard device === connection, unitAGeneration == generation,
+              mixerPreferences.isWritable, restoreRoutingMode else { return }
+        await restoreUSBRoutingMode(connection, generation: generation, preferences: preferences)
+    }
+
+    @MainActor
+    private func restoreUSBRoutingMode(_ connection: XPCDeviceConnection, generation: UUID,
+                                       preferences: MixerPreferences) async {
+        let mode = preferences.integer(forKey: "routingMode")
+        let current: @Sendable () async -> Bool = { @MainActor [weak self] in
+            guard let self else { return false }
+            return self.device === connection && self.unitAGeneration == generation
+                && self.mixerPreferences.isWritable
+                && self.mixerPreferences.storageKey == preferences.storageKey
+        }
+        await Task.detached {
+            guard await current() else { return }
+            connection.setRoutingMode(mode)
             if mode == 0 {
                 for mixer: UInt16 in 1...2 {
                     for channel: UInt16 in 0..<32 {
-                        usb.sendMixerParam(usbCmd: 0xB3, mixer: mixer, channel: channel, value: 1)
+                        guard await current() else { return }
+                        connection.sendMixerParam(usbCmd: 0xB3, mixer: mixer, channel: channel, value: 1)
                     }
                 }
             }
-        }
+        }.value
     }
+
 
     func claimLegacyUnitState(unit: DeviceUnit, identity: UInt64) -> Bool {
         let layout = unit == .a ? cardLayout : unitBLayout
@@ -132,13 +176,14 @@ extension AppState {
     }
 
     var mixerPreferences: MixerPreferences {
-        if unitAIdentityState == .failed, connectionMode == .hardware, cardSimulation == nil,
-           cardLayout.converter == nil, cardLayout.converterLayout == nil {
-            // Identity unreadable: behave exactly as before per-unit scoping (the legacy
-            // global keys, read and written) so the Mixer, Inputs and Outputs stay usable.
-            return MixerPreferences(legacyDefaults: .standard)
+        // Cache the handle, not its values: reads still see edits and recalls.
+        let key = "\(unitAGeneration)|\(unitAIdentityState)|\(connectionMode)|\(cardSimulation != nil)|\(cardLayout)|\(device != nil)|\(UserDefaults.standard.string(forKey: "mixerWideState.migratedTo") ?? "")"
+        if let cachedMixerPreferences, cachedMixerPreferences.key == key {
+            return cachedMixerPreferences.value
         }
-        return channelStateStore.mixerPreferences
+        let value = channelStateStore.mixerPreferences
+        cachedMixerPreferences = (key, value)
+        return value
     }
 
     func mixerNamesKey(unit: DeviceUnit = .a) -> String {

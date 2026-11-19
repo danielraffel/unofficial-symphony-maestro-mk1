@@ -549,6 +549,7 @@ struct MixerView: View {
         editor.masterLeftLevel = 0
         editor.masterRightLevel = 0
         saveMixerState()
+        initializeChannels()
         Task {
             await syncMixerToHardware()
             await writeSWReturnLevel(0)
@@ -794,15 +795,18 @@ struct MixerView: View {
         // Two-unit lifecycle recall belongs to AppState even with this page closed.
         if recalling && appState.usesTwoUnitReplay { return }
         guard let device = appState.device else { return }
+        let loaded = editor
         let routingMode = appState.mixerPreferences.integer(forKey: "routingMode")
-        for i in 0..<min(editor.channels.count, channelCount) {
-            let ch = editor.channels[i]
+        for i in 0..<min(editor.loadedChannelCount, min(editor.channels.count, channelCount)) {
+            guard loaded.canEdit(appState), appState.device === device else { return }
+            let ch = loaded.channels[i]
             let elem = mixerElement(channel: i)
             let effectiveMute = (routingMode == 0) ? true : ch.isMuted
             do {
                 try await device.setProperty(
                     PropertyAddress(selector: .mixerChannelLevel, element: elem),
                     value: .float64(ch.level))
+                guard loaded.canEdit(appState), appState.device === device else { return }
                 try await device.setProperty(
                     PropertyAddress(selector: .mixerChannelMute, element: elem),
                     value: .bool(effectiveMute))
@@ -810,19 +814,22 @@ struct MixerView: View {
                 // Non-critical — channel may not exist on this board config
             }
         }
+        guard loaded.canEdit(appState), appState.device === device else { return }
         if usbDevice != nil {
             // USB: the unit's mixer owns Master and Software Return for every
             // source. The helper is written neutral inside writeSoftwareReturnSource.
-            await writeMasterFader()
-            await writeSoftwareReturnSource(editor.softwareReturnSource)
+            if editor.loadedMaster { await writeMasterFader() }
+            if editor.loadedReturn { await writeSoftwareReturnSource(editor.softwareReturnSource) }
         } else {
             // Master level
-            do {
-                try await device.setProperty(
-                    PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
-                    value: .float64(editor.masterLevel))
-            } catch {}
-            await writeSoftwareReturnSource(editor.softwareReturnSource)
+            if loaded.loadedMaster {
+                do {
+                    try await device.setProperty(
+                        PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
+                        value: .float64(loaded.masterLevel))
+                } catch {}
+            }
+            if editor.loadedReturn { await writeSoftwareReturnSource(editor.softwareReturnSource) }
         }
         print("[Maestro] syncMixerToHardware: sent \(editor.channels.count) channels + master to mixer \(selectedMixer + 1) (\(routingMode == 0 ? "DAW" : "Direct Monitor"))")
     }

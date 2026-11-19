@@ -12,8 +12,7 @@ struct PreferenceViewScope: Equatable, Hashable {
 
 extension AppState {
     func preferenceViewScope(for unit: DeviceUnit) -> PreferenceViewScope {
-        let store = unit == .a ? channelStateStore : unitBChannelStateStore
-        let preferences = unit == .a ? mixerPreferences : store.mixerPreferences
+        let preferences = unit == .a ? mixerPreferences : unitBChannelStateStore.mixerPreferences
         return PreferenceViewScope(key: preferences.storageKey,
             generation: unit == .a ? unitAGeneration : unitBGeneration,
             isWritable: preferences.isWritable)

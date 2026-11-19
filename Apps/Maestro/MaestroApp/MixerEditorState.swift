@@ -8,6 +8,9 @@ import MaestroDevice
 @MainActor
 struct MixerEditorState {
     let scopes: [PreferenceViewScope]
+    let loadedChannelCount: Int
+    let loadedMaster: Bool
+    let loadedReturn: Bool
     var channels: [MixerChannelState]
     var masterLevel: Double
     var masterLeftLevel: Double
@@ -19,6 +22,11 @@ struct MixerEditorState {
 
     init(appState: AppState, selectedMixer: Int) {
         scopes = appState.mixerViewScopes
+        let saved: [MixerChannelState]? = appState.channelStateStore.load(ChannelStateStore.mixerKey(selectedMixer))
+        loadedChannelCount = saved?.count ?? 0
+        loadedMaster = appState.mixerPreferences.object(forKey: "mixerMasterLevel_\(selectedMixer)") != nil
+        loadedReturn = appState.mixerPreferences.object(forKey: "mixerState_swReturn") != nil
+            || appState.mixerPreferences.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") != nil
         let snapshot = MixerStateSnapshot(
             channelCount: appState.cardLayout.mixerChannels.count,
             mixer: selectedMixer,

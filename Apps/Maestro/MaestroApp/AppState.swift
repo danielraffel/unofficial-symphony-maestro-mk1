@@ -104,8 +104,8 @@ final class AppState {
     /// Session-only Identify latches, one per unit connection.
     let identifyA = IdentifyState()
     let identifyB = IdentifyState()
-    /// Identity belongs to the connection generation. Pending/failed discovery
-    /// cannot select a previous occupant's persistence scope.
+    /// Identity belongs to the connection generation. Pending discovery blocks
+    /// edits; failed discovery follows the existing migration receipts.
     var unitAIdentityState: UnitIdentityState = .pending
     var unitBIdentityState: UnitIdentityState = .pending
     var unitAIdentity: UInt64? {
@@ -121,10 +121,27 @@ final class AppState {
     var unitAIdentityTask: Task<UInt64?, Never>?
     var unitBIdentityTask: Task<UInt64?, Never>?
 
+    var identityRecoveryRetried = false
+    var usbIdentityRestoreGeneration: UUID?
+    var cardDiscoveryTask: Task<Void, Never>?
+    @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
+
+    func retryFailedIdentityOnRecovery() {
+        guard unitAIdentityState == .failed, !identityRecoveryRetried else { return }
+        identityRecoveryRetried = true
+        unitAIdentityState = .pending
+    }
+
     func invalidateUnitAIdentity() {
         unitAIdentityTask?.cancel()
         unitAIdentityTask = nil
         unitAGeneration = UUID()
+        identityRecoveryRetried = false
+        usbIdentityRestoreGeneration = nil
+        // Discovery may itself identify a converter and invalidate identity.
+        // Retire its handle without cancelling that capability discovery.
+        // In-flight old connections stop at the existing generation fences.
+        cardDiscoveryTask = nil
         unitAIdentityState = .pending
     }
 
@@ -194,7 +211,7 @@ final class AppState {
         ChannelStateStore(layout: cardLayout,
                           isSimulatingCards: cardSimulation != nil || connectionMode == .simulated,
                           identity: unitAIdentity,
-                          awaitingIdentity: connectionMode == .hardware && unitAIdentity == nil && cardLayout.converterLayout == nil && cardLayout.converter == nil,
+                          awaitingIdentity: connectionMode == .hardware && unitAIdentityState == .pending && device != nil && cardLayout.converterLayout == nil && cardLayout.converter == nil,
                           allowLegacyMigration: allowsLegacyUnitState(unit: .a))
     }
     /// Whether hardware initialization is complete. Views must wait for this
@@ -518,6 +535,7 @@ final class AppState {
                             // cards it read during the recovery (a Symphony off
                             // at Start, or a card swapped while off): read them
                             // too, so the grid and the replay use the same table.
+                            self.retryFailedIdentityOnRecovery()
                             await self.readCardTypes()
                             if self.recallInFlight {
                                 self.replayDeferral.request()
@@ -2096,6 +2114,19 @@ final class AppState {
 
     @MainActor
     func readCardTypes() async {
+        if let cardDiscoveryTask { await cardDiscoveryTask.value; return }
+        let generation = unitAGeneration
+        let task = Task {
+            guard self.unitAGeneration == generation, !Task.isCancelled else { return }
+            await self.discoverCardsAndIdentity()
+        }
+        cardDiscoveryTask = task
+        await task.value
+        if unitAGeneration == generation { cardDiscoveryTask = nil }
+    }
+
+    @MainActor
+    private func discoverCardsAndIdentity() async {
         guard let device = self.device else { return }
         // What the driver found on the cable, if it is not a Symphony I/O.
         let probeWord = (device as? ThunderboltDeviceConnection)?.linkState()?.unitProbe ?? 0
@@ -2883,9 +2914,13 @@ final class AppState {
                             self.tdmOutputMeteringUnavailable = false
                             self.tdmOutputEchoStreak = 0
                             self.lastMeterPollWantedOutput = nil
+                            if self.unitAIdentityState == .pending {
+                                Task { await self.readCardTypes() }
+                            }
                             let autoRecover = UserDefaults.standard.object(forKey: "autoRecoverMixerState") as? Bool ?? true
                             let now = Date()
-                            if Self.usbRecoveryRestoreDue(lastRecovery: self.lastRecoveryTime, now: now) {
+                            if self.mixerPreferences.isWritable,
+                               Self.usbRecoveryRestoreDue(lastRecovery: self.lastRecoveryTime, now: now) {
                                 self.lastRecoveryTime = now
                                 // The unit comes back at 0 dB, unmuted, and nothing
                                 // else attenuates Software Return or Master now, so
@@ -2895,6 +2930,12 @@ final class AppState {
                                 let recoveryMixer = self.lastSelectedMixer
                                 Task { @MainActor [weak self] in
                                     guard let self, self.device === xpcDev else { return }
+                                    let generation = self.unitAGeneration
+                                    // A failed connect already consumed its initial restore.
+                                    // Retry identity before this ordinary recovery restore.
+                                    self.retryFailedIdentityOnRecovery()
+                                    if self.unitAIdentityState == .pending { await self.readCardTypes() }
+                                    guard self.device === xpcDev, self.unitAGeneration == generation else { return }
                                     do {
                                         let wait = Self.usbSettleRemaining(
                                             appearedAt: self.symphonyAppearedAt, now: Date())
@@ -2902,22 +2943,13 @@ final class AppState {
                                             try? await Task.sleep(for: .milliseconds(Int(wait * 1000)))
                                         }
                                     }
-                                    guard self.device === xpcDev, !Task.isCancelled else { return }
-                                    await xpcDev.restoreReturnAndMaster(helperMixer: recoveryMixer, preferences: self.mixerPreferences)
+                                    guard self.device === xpcDev, self.unitAGeneration == generation, !Task.isCancelled,
+                                          self.mixerPreferences.isWritable else { return }
+                                    await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer,
+                                                                           restoreRoutingMode: autoRecover)
                                 }
                                 if autoRecover {
                                     self.deviceRecoveryCount += 1
-                                    // Re-sync routing mode to proxy
-                                    let routingMode = self.mixerPreferences.integer(forKey: "routingMode")
-                                    xpcDev.setRoutingMode(routingMode)
-                                    if routingMode == 0 {
-                                        for mixerID: UInt16 in 1...2 {
-                                            for ch: UInt16 in 0..<32 {
-                                                xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                                            }
-                                        }
-                                        print("[Maestro] USB recovery: DAW mode — force-muted HW inputs")
-                                    }
                                     print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(self.deviceRecoveryCount))")
                                 }
                             }

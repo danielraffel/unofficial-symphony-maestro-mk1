@@ -111,7 +111,7 @@ extension AppState {
         ChannelStateStore(layout: unitBLayout ?? CardLayout(isKnown: false),
                           isSimulatingCards: cardSimulation != nil || simulatedUnitB != nil, unit: .b,
                           identity: unitBIdentity,
-                          awaitingIdentity: connectionMode == .hardware && unitBIdentity == nil,
+                          awaitingIdentity: connectionMode == .hardware && unitBIdentityState == .pending && unitBDevice != nil,
                           allowLegacyMigration: allowsLegacyUnitState(unit: .b))
     }
     var unitPeripheralPrefix: String {
