@@ -455,6 +455,9 @@ final class AppState {
                         self.converterRoutingReplayNeeded = false
                         await self.replayConverterRouting(resetFirst: true)
                     }
+                    // Unit B is configured by the driver a moment after 64
+                    // channels start, and forgotten when port 2 stops.
+                    await self.refreshUnitBOffMain(tb)
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
                         Self.tbLog.notice("probe recovered after \(failures) failures")
@@ -999,11 +1002,40 @@ final class AppState {
     var portSelection = PortSelectionModel()
     private var portSelectionTask: Task<Void, Never>?
 
+    // MARK: Unit B (a second Symphony I/O on port 2, while 64 channels run)
+    // See AppState+UnitB.swift. All nil / empty with one unit, so nothing
+    // about unit A changes then.
+
+    /// What the driver reports about unit B (selector 11), nil unless it is
+    /// configured, which it is only while 64 channels run.
+    var unitB: SecondUnitInfo?
+    /// Unit B's connection: unit A's driver client with port byte 1.
+    var unitBDevice: (any DeviceConnection)?
+    /// The unit the per-unit pages show. Only `.b` while the picker is shown.
+    var selectedUnit: DeviceUnit = .a
+    /// Unit B's naming state (its optical formats and Replaces).
+    var unitBChannelNaming = CardLayout.ChannelNaming()
+    /// Unit B's prefix letter, as its channels are named.
+    var unitBPeripheralPrefix = "B"
+    /// Unit B's meters: its input strips (card words 32-63, in its layout's
+    /// mixer order), digital input strips, and outputs (words 96-127).
+    var unitBInputMeterLevels: [Double] = []
+    var unitBInputPeakHold: [Double] = []
+    var unitBDigitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: 24)
+    var unitBDigitalInputPeakHold: [Double] = Array(repeating: -60.0, count: 24)
+    var unitBOutputMeterLevels: [Double] = []
+    var unitBOutputPeakHold: [Double] = []
+    /// Debug only: `-MaestroSimulateSecondUnit` (see `SecondUnitSimulation`).
+    @ObservationIgnored var simulatedUnitB: SecondUnitInfo?
+    /// The unit A connection unit B's connection was made from.
+    @ObservationIgnored var unitBOwner: ObjectIdentifier?
+
     /// Ask the driver again. It costs no bus access, and a chain switched on
     /// after the Mac is only found by the driver's later probe.
     func refreshSecondPortState() {
         let shown = currentSecondPortState()
         if shown != secondPortState { secondPortState = shown }
+        refreshUnitB()
         // The converter report follows 32/64 channels too (port 2 counts only
         // while 64 run), and costs no bus access either.
         refreshConverterSystem()
@@ -1108,6 +1140,7 @@ final class AppState {
         Int(primaryBoardType.rawValue) << 8 | Int(secondaryBoardType.rawValue)
             | (connectedUnit?.channels.map { ($0.inputs + 1) << 24 | ($0.outputs + 1) << 16 } ?? 0)
             ^ (converterSystem.map { $0.layoutToken << 32 } ?? 0)
+            ^ unitBLayoutToken
     }
 
     /// Load cached board types from UserDefaults (called at init, before USB reads).
@@ -1578,9 +1611,19 @@ final class AppState {
         // runs and the harness talks to whatever real Symphony is plugged in,
         // exactly what the comment below says must not happen. The request was
         // impossible, so fail loudly instead of quietly doing something else.
+        // Debug only: `-MaestroSimulateSecondUnit analogADDA16+optical` adds a
+        // simulated unit B (port 2, 64 channels). It pins the session to
+        // simulation like the card simulation; unit A takes the
+        // `-MaestroSimulatePrimaryBoard`/`SecondaryBoard` cards, or unit B's.
+        let secondUnitRequest = SecondUnitSimulation.request()
+        if UserDefaults.standard.string(forKey: SecondUnitSimulation.key) != nil, secondUnitRequest == nil {
+            print("[Maestro] SECOND UNIT SIMULATION: invalid request; exiting.")
+            exit(1)
+        }
         let simulationRequest: CardConfiguration?
         do {
             simulationRequest = try SimulatedDevice.simulationRequest()
+                ?? secondUnitRequest.map { CardConfiguration(slot1: $0.slot1, slot2: $0.slot2) }
         } catch {
             print("[Maestro] CARD SIMULATION: invalid request — \(error)")
             print("[Maestro] CARD SIMULATION: refusing to fall through to real hardware; exiting.")
@@ -1654,6 +1697,9 @@ final class AppState {
             ? "Looking for your Symphony…"
             : AppState.simulatedStatusMessage(configuration: simulationRequest)
         self.isHardwareInitialized = true
+        if let secondUnitRequest {
+            applySecondUnitSimulation(secondUnitRequest, identifier: simDevice.identifier)
+        }
     }
 
     /// Set by init when Core Audio still has to be asked for the Symphony.
@@ -2822,6 +2868,9 @@ final class AppState {
                         self.digitalInputMeterLevels = self.smoothMeterLevels(
                             self.digitalInputMeterLevels,
                             raw: ThunderboltInputMeterMap.digitalLevels(host: hostInputs, words: meterWords))
+                        // Unit B (64 channels, a second Symphony I/O): its own
+                        // strips read words 32-63 and 96-127.
+                        self.updateUnitBMeters(dB: dbW)
 
                         // The FPGA meter DMA is not available on every
                         // ThunderBridge FPGA revision and may be temporarily
@@ -3064,7 +3113,7 @@ final class AppState {
     /// Smooth meter levels: snap up to new readings, decay at 3 dB/frame on drops.
     /// At 20fps, 3 dB/frame = 60 dB/s → silence in ~1s after signal stops.
     /// Prevents "flashing" from stale FPGA reads between firmware meter update cycles.
-    private func smoothMeterLevels(_ previous: [Double], raw: [Double]) -> [Double] {
+    func smoothMeterLevels(_ previous: [Double], raw: [Double]) -> [Double] {
         var result = previous
         for i in 0..<min(previous.count, raw.count) {
             if raw[i] >= previous[i] {
@@ -3077,7 +3126,7 @@ final class AppState {
     }
 
     /// Advance peak hold values: snap up to new peaks, decay at 0.4 dB/frame when level drops.
-    private func advancePeakHold(_ hold: [Double], levels: [Double]) -> [Double] {
+    func advancePeakHold(_ hold: [Double], levels: [Double]) -> [Double] {
         var result = hold
         for i in 0..<min(hold.count, levels.count) {
             result[i] = levels[i] > hold[i] ? levels[i] : max(hold[i] - 0.4, levels[i])

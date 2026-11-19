@@ -122,21 +122,7 @@ public final class DextUserClient: @unchecked Sendable {
         lock.unlock()
 
         // Pack the input struct (matches SymphonyVendorCommandInput layout)
-        var input = Data(count: Self.inputSize)
-        input.withUnsafeMutableBytes { buf in
-            let ptr = buf.baseAddress!
-            ptr.storeBytes(of: Self.magic, as: UInt32.self)
-            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
-            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
-            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
-            let payloadLen = UInt16(payload.count)
-            ptr.storeBytes(of: payloadLen, toByteOffset: 12, as: UInt16.self)
-            if !payload.isEmpty {
-                payload.withUnsafeBytes { payloadPtr in
-                    (ptr + 14).copyMemory(from: payloadPtr.baseAddress!, byteCount: payload.count)
-                }
-            }
-        }
+        let input = Self.packVendorCommand(command: command, value: value, payload: payload, port: port)
 
         // Call the dext's ExternalMethod via IOKit IPC
         var outputData = Data(count: 4)  // SymphonyVendorCommandOutput = 4 bytes
@@ -455,15 +441,7 @@ public final class DextUserClient: @unchecked Sendable {
         // driver rejects any other size before the request reaches it. This
         // sent 16 until 2026-11-13, so every read through here failed with
         // kIOReturnBadArgument, routing readback included.
-        var input = Data(count: Self.vendorReadInputSize)
-        input.withUnsafeMutableBytes { p in
-            let ptr = p.baseAddress!
-            ptr.storeBytes(of: Self.magic, as: UInt32.self)
-            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
-            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
-            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
-            ptr.storeBytes(of: UInt16(responseLength), toByteOffset: 12, as: UInt16.self)
-        }
+        let input = Self.packVendorRead(command: command, value: value, responseLength: responseLength, port: port)
         var output = Data(count: 72)
         var outputSize = output.count
         let kr = input.withUnsafeBytes { inPtr in
@@ -488,8 +466,46 @@ public final class DextUserClient: @unchecked Sendable {
             IOConnectCallStructMethod(conn, 11, nil, 0, p.baseAddress, &outSize)
         }
         guard kr == KERN_SUCCESS, outSize == 40 else { return nil }
-        func u32(_ off: Int) -> UInt32 { out.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off, as: UInt32.self) } }
-        return UnitBState(present: u32(4) != 0, boardType: [out[8], out[9]], boardValid: [out[10], out[11]], prefix: out[12], clockSource: out[13], setupFlags: u32(16), txErrors: u32(20))
+        return UnitBState.decode(out)
+    }
+
+    // MARK: - Packing (pure, so the exact bytes can be tested)
+
+    /// The 78-byte `SymphonyVendorCommandInput`: magic, command, port, two
+    /// reserved bytes, value, payload length, payload. `port` 0 is unit A on
+    /// ThunderBridge port 1, 1 is unit B on port 2.
+    public static func packVendorCommand(command: UInt8, value: UInt32, payload: Data, port: UInt8) -> Data {
+        var input = Data(count: inputSize)
+        input.withUnsafeMutableBytes { buf in
+            let ptr = buf.baseAddress!
+            ptr.storeBytes(of: magic, as: UInt32.self)
+            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
+            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
+            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
+            let payloadLen = UInt16(payload.count)
+            ptr.storeBytes(of: payloadLen, toByteOffset: 12, as: UInt16.self)
+            if !payload.isEmpty {
+                payload.withUnsafeBytes { payloadPtr in
+                    (ptr + 14).copyMemory(from: payloadPtr.baseAddress!, byteCount: payload.count)
+                }
+            }
+        }
+        return input
+    }
+
+    /// The 14-byte packed `SymphonyVendorReadInput`: magic, command, port, two
+    /// reserved bytes, value, response length.
+    public static func packVendorRead(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) -> Data {
+        var input = Data(count: vendorReadInputSize)
+        input.withUnsafeMutableBytes { p in
+            let ptr = p.baseAddress!
+            ptr.storeBytes(of: magic, as: UInt32.self)
+            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
+            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
+            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
+            ptr.storeBytes(of: UInt16(responseLength), toByteOffset: 12, as: UInt16.self)
+        }
+        return input
     }
 
     /// The driver's logical nValue for a request: mixer ID in the high word,
@@ -499,15 +515,27 @@ public final class DextUserClient: @unchecked Sendable {
     }
 
     /// Convenience: send a command from a USBControlRequest.
-    public func sendFromUSBRequest(_ request: USBControlRequest) throws {
+    public func sendFromUSBRequest(_ request: USBControlRequest, port: UInt8 = 0) throws {
         try sendVendorCommand(
             command: request.request,
             value: Self.nValue(for: request),
-            payload: request.data
+            payload: request.data,
+            port: port
         )
     }
 }
 
+/// The two vendor calls a Symphony I/O connection needs, so a unit's
+/// connection can be tested without the driver. `DextUserClient` is the real one.
+public protocol VendorTransport: AnyObject, Sendable {
+    var isConnected: Bool { get }
+    func sendVendorCommand(command: UInt8, value: UInt32, payload: Data, port: UInt8) throws
+    func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) throws -> Data
+}
+
+extension DextUserClient: VendorTransport {}
+
+/// Selector 11: the second Symphony I/O (unit B) as the driver configured it.
 public struct UnitBState: Sendable, Equatable {
     public let present: Bool
     public let boardType: [UInt8]
@@ -520,6 +548,24 @@ public struct UnitBState: Sendable, Equatable {
                 clockSource: UInt8, setupFlags: UInt32, txErrors: UInt32) {
         self.present = present; self.boardType = boardType; self.boardValid = boardValid
         self.prefix = prefix; self.clockSource = clockSource; self.setupFlags = setupFlags; self.txErrors = txErrors
+    }
+
+    /// Decode `SymphonyUnitBStateOutput` (40 bytes): status, present, board
+    /// types, board valid, prefix, clock source, set-up flags, errors. Nil for
+    /// a short buffer or a non-zero status.
+    public static func decode(_ bytes: [UInt8]) -> UnitBState? {
+        guard bytes.count >= 40 else { return nil }
+        func u32(_ off: Int) -> UInt32 { bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off, as: UInt32.self) } }
+        guard u32(0) == 0 else { return nil }
+        return UnitBState(present: u32(4) != 0, boardType: [bytes[8], bytes[9]], boardValid: [bytes[10], bytes[11]],
+                          prefix: bytes[12], clockSource: bytes[13], setupFlags: u32(16), txErrors: u32(20))
+    }
+
+    /// The transport-free view the app works with; nil unless unit B is configured.
+    public var info: SecondUnitInfo? {
+        guard present else { return nil }
+        return SecondUnitInfo(boardType: boardType, boardValid: boardValid, prefix: prefix,
+                              clockSource: clockSource, setupFlags: setupFlags, txErrors: txErrors)
     }
 }
 

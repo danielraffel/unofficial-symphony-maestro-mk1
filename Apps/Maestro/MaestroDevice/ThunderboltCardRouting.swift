@@ -102,4 +102,34 @@ public enum ThunderboltCardRouting {
         guard let slot = slot(forSource: source) else { return nil }
         return Route(channel: channel, slot: slot, enabled: true)
     }
+
+    // MARK: - Unit B (64 channels, a second Symphony I/O on port 2)
+
+    /// XLink TX channel of unit B's first output: its outputs are TX 32-63,
+    /// which the driver accepts only while 64 channels run with unit B
+    /// (`kPort2FirstChannel`, `CardMixerUnitBActive`).
+    public static let unitBChannelBase: UInt8 = 32
+
+    /// TDM slot of host playback channel `channel` (0-63): `PCI_OUT n`.
+    public static func playbackSlot(channel: Int) -> UInt8? {
+        guard channel >= 0, channel < 64 else { return nil }
+        return pciOutBase &+ UInt8(channel)
+    }
+
+    /// TDM slot of card mixer `mixer` (0 or 1), `side` 0 = left, 1 = right.
+    public static func mixerSlot(mixer: Int, side: Int) -> UInt8? {
+        guard (0...1).contains(mixer), (0...1).contains(side) else { return nil }
+        return mixerOutBase &+ UInt8(mixer * 2 + side)
+    }
+
+    /// The card route for one of unit B's outputs: `destination` is the output
+    /// as unit B addresses it (IOBoard0 32-47, IOBoard1 48-63), `slot` the TDM
+    /// slot to play (nil clears the route: the channel is disabled and left on
+    /// its straight `PCI_OUT 32 + c` slot, as the driver starts it).
+    public static func unitBRoute(destination: UInt8, slot: UInt8?) -> Route? {
+        guard let local = channel(forDestination: destination) else { return nil }
+        let channel = unitBChannelBase &+ local
+        guard let slot else { return Route(channel: channel, slot: pciOutBase &+ channel, enabled: false) }
+        return Route(channel: channel, slot: slot, enabled: true)
+    }
 }

@@ -369,9 +369,12 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         // (0xE4/0xE5). ThunderBridge's original PCIe mixer instead selects a
         // host-playback pair by changing the card FPGA mixer return route.
         if address.selector == .mixerSoftwareReturnID {
-            guard let source = value.asUInt32, source <= 7 else {
+            // 0-7 with one unit; 0-31 (the 64 playback channels) while 64
+            // channels run with a Symphony I/O on port 2. The driver refuses
+            // 8-31 otherwise, and the Mixer offers them only then.
+            guard let source = value.asUInt32, source <= 31 else {
                 throw DeviceConnectionError.typeMismatch(
-                    expected: "UInt32 software return source 0...7", got: "\(value)")
+                    expected: "UInt32 software return source 0...31", got: "\(value)")
             }
             guard address.element & 0xFFFF == 0,
                   (1...2).contains(address.element >> 16) else {
@@ -532,6 +535,19 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// EXPERIMENT (64 channels): what the driver found on its second XLink
     /// port. Nil from a driver without that selector (every released one).
     public func secondPortState() -> SecondPortState? { dextClient.readPort2State() }
+
+    /// The second Symphony I/O (unit B) as the driver configured it when 64
+    /// channels started (selector 11). Nil from a driver without the selector.
+    public func readUnitBState() -> UnitBState? { dextClient.readUnitBState() }
+
+    /// A connection to unit B through this connection's driver client: the
+    /// same calls with port byte 1. Unit A's bytes are not affected.
+    public func makeUnitBConnection(settingsStore: DeviceSettingsStore = DeviceSettingsStore()) -> ThunderboltUnitBConnection {
+        let client = dextClient
+        return ThunderboltUnitBConnection(identifier: identifier, transport: client,
+                                          settingsStore: settingsStore,
+                                          state: { client.readUnitBState() })
+    }
 
     /// The driver's converter report (dext 131+); nil from older drivers.
     public func converterState() -> ConverterState? { dextClient.readConverterState() }

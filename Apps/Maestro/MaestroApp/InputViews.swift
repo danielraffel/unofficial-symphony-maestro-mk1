@@ -56,8 +56,8 @@ struct InputControlsView: View {
     }
 
     private static func seedChannels(_ appState: AppState) -> [InputChannelState] {
-        let count = appState.cardLayout.analogInputStripCount
-        guard let saved: [InputChannelState] = appState.channelStateStore.load(ChannelStateStore.inputKey),
+        let count = appState.unitCardLayout.analogInputStripCount
+        guard let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey),
               !saved.isEmpty else {
             return (0..<count).map { _ in InputChannelState() }
         }
@@ -68,7 +68,7 @@ struct InputControlsView: View {
     /// The installed cards' layout — every count on this page comes from here.
     /// See `CardLayout`: the `*PairsPerBoard` counts are the XLink bus slice and
     /// report 8 pairs for an 8MicPre, which has no converters at all.
-    private var layout: CardLayout { appState.cardLayout }
+    private var layout: CardLayout { appState.unitCardLayout }
 
     /// User-editable insert names, edited in Device Settings and shared across
     /// every channel -- see `InsertLabels`. Stored as a plain dictionary so it
@@ -87,7 +87,7 @@ struct InputControlsView: View {
     /// legacy daemon, `SymphonyIO.cpp:933-948`) but either is accepted here.
     private var micPreInstalled: Bool {
         InputChannelLogic.micPreIsUsable(
-            primary: appState.primaryBoardType, secondary: appState.secondaryBoardType)
+            primary: appState.unitPrimaryBoardType, secondary: appState.unitSecondaryBoardType)
     }
 
     /// Analog INPUT channels contributed by the card the MicPre delegates onto --
@@ -100,8 +100,8 @@ struct InputControlsView: View {
     /// preamps at all, and offering Mic/Instrument there would put eight preamp
     /// strips in front of zero analog inputs.
     private var micPreHostAnalogInputs: Int {
-        let primary = appState.primaryBoardType
-        let secondary = appState.secondaryBoardType
+        let primary = appState.unitPrimaryBoardType
+        let secondary = appState.unitSecondaryBoardType
         let host = primary == .micPre8 ? secondary : primary
         return host.analogInputChannels
     }
@@ -349,10 +349,10 @@ struct InputControlsView: View {
                             }
                             ADATStereoPairView(
                                 label: digPair.label,
-                                leftLevel: Self.meterLevel(appState.digitalInputMeterLevels, digPair.meterIndex),
-                                rightLevel: Self.meterLevel(appState.digitalInputMeterLevels, digPair.meterIndex, offset: 1),
-                                leftPeak: Self.meterLevel(appState.digitalInputPeakHold, digPair.meterIndex),
-                                rightPeak: Self.meterLevel(appState.digitalInputPeakHold, digPair.meterIndex, offset: 1),
+                                leftLevel: Self.meterLevel(appState.unitDigitalInputMeterLevels, digPair.meterIndex),
+                                rightLevel: Self.meterLevel(appState.unitDigitalInputMeterLevels, digPair.meterIndex, offset: 1),
+                                leftPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex),
+                                rightPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex, offset: 1),
                                 matchHeight: analogStripHeight > 0 ? analogStripHeight : nil,
                                 showZoneColoring: appState.showMeterZoneColoring
                             )
@@ -463,7 +463,7 @@ struct InputControlsView: View {
 
     private func initializeChannels() {
         // Keyed by the installed card pair — see `ChannelStateStore`.
-        if let saved: [InputChannelState] = appState.channelStateStore.load(ChannelStateStore.inputKey),
+        if let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey),
            !saved.isEmpty {
             let n = analogInputStripCount
             if saved.count >= n {
@@ -492,7 +492,7 @@ struct InputControlsView: View {
     }
 
     private func saveChannelStates() {
-        appState.channelStateStore.save(channels, for: ChannelStateStore.inputKey)
+        appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
     }
 
     /// Debug: force analog levels from `-MaestroSimulateAnalogLevels` so a Mic or
@@ -523,7 +523,7 @@ struct InputControlsView: View {
 
     @discardableResult
     private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
-        guard let device = appState.device else { return false }
+        guard let device = appState.unitDevice else { return false }
         do {
             let element = UInt32(index)
             try await device.setProperty(
@@ -759,7 +759,7 @@ struct InputControlsView: View {
     /// Push one full insert table. `element` is the INSERT index here — see the
     /// `.insertID` case in `SymphonyIOPropertyMapper`.
     private func pushInsertAssignments(_ assignments: [(insert: Int, mask: UInt8)]) async {
-        guard let device = appState.device else { return }
+        guard let device = appState.unitDevice else { return }
         for (insert, mask) in assignments {
             do {
                 try await device.setProperty(
@@ -903,7 +903,7 @@ struct InputControlsView: View {
                     return (option.name, {
                         value.wrappedValue = optVal
                         Task {
-                            guard let device = appState.device else { return }
+                            guard let device = appState.unitDevice else { return }
                             do {
                                 try await device.setProperty(
                                     PropertyAddress(selector: selector, scope: .input, element: element),
@@ -912,8 +912,8 @@ struct InputControlsView: View {
                                 // The replaced pair is renamed "SPDIF Cx" in routing
                                 // and mixer labels, as the daemon renamed it.
                                 if element < 2 {
-                                    appState.channelNaming.spdifReplace[Int(element)] = optVal
-                                    appState.rememberDigitalSetting(.spdifReplaceID, slot: Int(element), value: optVal)
+                                    appState.unitChannelNaming.spdifReplace[Int(element)] = optVal
+                                    appState.rememberUnitDigitalSetting(.spdifReplaceID, slot: Int(element), value: optVal)
                                 }
                             } catch {
                                 print("[Maestro] SPDIF Replace write failed: \(error)")
@@ -927,12 +927,12 @@ struct InputControlsView: View {
     }
 
     private func loadDigitalSettings() async {
-        guard let device = appState.device else { return }
+        guard let device = appState.unitDevice else { return }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input))
             if let u = val.asUInt32 {
                 spdifReplace1 = u
-                if u <= 8 { appState.channelNaming.spdifReplace[0] = u }
+                if u <= 8 { appState.unitChannelNaming.spdifReplace[0] = u }
             }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace1: \(error)")
@@ -941,7 +941,7 @@ struct InputControlsView: View {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input, element: 1))
             if let u = val.asUInt32 {
                 spdifReplace2 = u
-                if u <= 8 { appState.channelNaming.spdifReplace[1] = u }
+                if u <= 8 { appState.unitChannelNaming.spdifReplace[1] = u }
             }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace2: \(error)")
@@ -1247,12 +1247,12 @@ struct InputChannelStripView: View {
 
     private var resolvedMeterLevel: Double {
         guard let appState, let meterIndex else { return meterLevel }
-        return meterIndex < appState.inputMeterLevels.count ? appState.inputMeterLevels[meterIndex] : -60
+        return meterIndex < appState.unitInputMeterLevels.count ? appState.unitInputMeterLevels[meterIndex] : -60
     }
 
     private var resolvedMeterPeakHold: Double {
         guard let appState, let meterIndex else { return meterPeakHold }
-        return meterIndex < appState.inputPeakHold.count ? appState.inputPeakHold[meterIndex] : -60
+        return meterIndex < appState.unitInputPeakHold.count ? appState.unitInputPeakHold[meterIndex] : -60
     }
 
     /// Soft limit options for the card that owns this channel.

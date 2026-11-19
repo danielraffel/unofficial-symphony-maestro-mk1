@@ -35,15 +35,26 @@ public struct ChannelStateStore {
     /// True under the card-simulation harness: isolated from real state.
     public let isSimulating: Bool
 
+    /// Which unit the state belongs to. Unit B (the second Symphony I/O on
+    /// ThunderBridge port 2) has its own keys, prefixed `unitB:`, so a unit B
+    /// with the same cards as unit A never reads or overwrites unit A's state,
+    /// and it never inherits or claims the legacy unscoped key.
+    public let unit: DeviceUnit
+
     public init(
         defaults: UserDefaults = .standard,
         layout: CardLayout,
-        isSimulatingCards: Bool = SimulatedDevice.isSimulatingCards()
+        isSimulatingCards: Bool = SimulatedDevice.isSimulatingCards(),
+        unit: DeviceUnit = .a
     ) {
         self.defaults = defaults
         self.isSimulating = isSimulatingCards
+        self.unit = unit
         if let scope = layout.savedStateScope {
-            self.scope = isSimulatingCards ? "sim:\(scope)" : scope
+            let unitScope = unit == .b ? "unitB:\(scope)" : scope
+            self.scope = isSimulatingCards ? "sim:\(unitScope)" : unitScope
+        } else if unit == .b {
+            self.scope = isSimulatingCards ? "sim:unitB" : "unitB"
         } else {
             self.scope = nil
         }
@@ -63,6 +74,7 @@ public struct ChannelStateStore {
         if let data = defaults.data(forKey: key(base)) { return data }
         guard let scope else { return nil }                 // unscoped key was already tried
         guard !isSimulating else { return nil }             // never inherit real state
+        guard unit == .a else { return nil }                // unit B never inherits unit A's
         guard let legacy = defaults.data(forKey: base) else { return nil }
         let claim = Self.claimKey(base)
         if let owner = defaults.string(forKey: claim), owner != scope { return nil }

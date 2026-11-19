@@ -92,8 +92,8 @@ struct OutputControlsView: View {
 
     init(appState: AppState) {
         self.appState = appState
-        let count = max(appState.cardLayout.analogOutputStripCount, 1)
-        let restored: [OutputChannelState]? = appState.channelStateStore.load(ChannelStateStore.outputKey)
+        let count = max(appState.unitCardLayout.analogOutputStripCount, 1)
+        let restored: [OutputChannelState]? = appState.unitChannelStateStore.load(ChannelStateStore.outputKey)
         if let restored, !restored.isEmpty {
             _channels = State(initialValue: restored.count >= count
                               ? Array(restored.prefix(count))
@@ -147,7 +147,7 @@ struct OutputControlsView: View {
     }
 
     /// The installed cards' layout — every count on this page comes from here.
-    private var layout: CardLayout { appState.cardLayout }
+    private var layout: CardLayout { appState.unitCardLayout }
 
     /// Headphone Output Source options, as **source IDs 0-15**.
     ///
@@ -263,6 +263,9 @@ struct OutputControlsView: View {
                 .fixedSize()
                 .help("Restore speaker/headphone levels, mute, dim, sum and speaker mode "
                       + "to the factory defaults. Routing is not touched.")
+                // The monitor controls are unit A's (the toolbar volume and
+                // the Mac's output); unit B keeps its own on its front panel.
+                .disabled(appState.activeUnit == .b)
                 .symphonyOnly(appState.converterRoutingSurface)
 
                 Spacer()
@@ -333,7 +336,9 @@ struct OutputControlsView: View {
 
                     // Speaker / HP section — inline after analog strips, no header
                     // Gate on !channels.isEmpty so monitor+digital don't flash before analog strips render.
-                    if !channels.isEmpty {
+                    // Unit A only: the monitor section drives the toolbar
+                    // volume and the Mac's output, which are unit A's.
+                    if !channels.isEmpty && appState.activeUnit == .a {
                         Divider().opacity(0.4)
 
                         outputMonitorSection
@@ -376,10 +381,10 @@ struct OutputControlsView: View {
                             }
                             ADATStereoPairView(
                                 label: digPair.label,
-                                leftLevel: Self.meterLevel(appState.digitalOutputMeterLevels, digPair.meterIndex),
-                                rightLevel: Self.meterLevel(appState.digitalOutputMeterLevels, digPair.meterIndex, offset: 1),
-                                leftPeak: Self.meterLevel(appState.digitalOutputPeakHold, digPair.meterIndex),
-                                rightPeak: Self.meterLevel(appState.digitalOutputPeakHold, digPair.meterIndex, offset: 1),
+                                leftLevel: Self.meterLevel(appState.unitDigitalOutputMeterLevels, digPair.meterIndex),
+                                rightLevel: Self.meterLevel(appState.unitDigitalOutputMeterLevels, digPair.meterIndex, offset: 1),
+                                leftPeak: Self.meterLevel(appState.unitDigitalOutputPeakHold, digPair.meterIndex),
+                                rightPeak: Self.meterLevel(appState.unitDigitalOutputPeakHold, digPair.meterIndex, offset: 1),
                                 matchHeight: analogStripHeight > 0 ? analogStripHeight : nil,
                                 showZoneColoring: appState.showMeterZoneColoring
                             )
@@ -756,13 +761,13 @@ struct OutputControlsView: View {
                     return (option.name, {
                         spdifMirror1 = optVal
                         Task {
-                            guard let device = appState.device else { return }
+                            guard let device = appState.unitDevice else { return }
                             do {
                                 try await device.setProperty(
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output),
                                     value: .uint32(optVal)
                                 )
-                                appState.rememberDigitalSetting(.spdifMirrorID, slot: 0, value: optVal)
+                                appState.rememberUnitDigitalSetting(.spdifMirrorID, slot: 0, value: optVal)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 1-2 write failed: \(error)")
                             }
@@ -793,13 +798,13 @@ struct OutputControlsView: View {
                     return (option.name, {
                         spdifMirror2 = optVal
                         Task {
-                            guard let device = appState.device else { return }
+                            guard let device = appState.unitDevice else { return }
                             do {
                                 try await device.setProperty(
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output, element: 1),
                                     value: .uint32(optVal)
                                 )
-                                appState.rememberDigitalSetting(.spdifMirrorID, slot: 1, value: optVal)
+                                appState.rememberUnitDigitalSetting(.spdifMirrorID, slot: 1, value: optVal)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 3-4 write failed: \(error)")
                             }
@@ -895,7 +900,7 @@ struct OutputControlsView: View {
     private func initializeOutputChannels() {
         let n = max(analogOutputStripCount, 1)
         // Keyed by the installed card pair — see `ChannelStateStore`.
-        if let saved: [OutputChannelState] = appState.channelStateStore.load(ChannelStateStore.outputKey),
+        if let saved: [OutputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.outputKey),
            !saved.isEmpty {
             if saved.count >= n {
                 channels = Array(saved.prefix(n))
@@ -910,11 +915,11 @@ struct OutputControlsView: View {
     }
 
     private func saveChannelStates() {
-        appState.channelStateStore.save(channels, for: ChannelStateStore.outputKey)
+        appState.unitChannelStateStore.save(channels, for: ChannelStateStore.outputKey)
     }
 
     private func loadSPDIFMirrors() async {
-        guard let device = appState.device else { return }
+        guard let device = appState.unitDevice else { return }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifMirrorID, scope: .output))
             if let u = val.asUInt32 { spdifMirror1 = u }
@@ -934,38 +939,39 @@ struct OutputControlsView: View {
 
     private func loadMonitorState() async {
         defer { isMonitorLoading = false }
-        guard appState.device != nil else { return }
+        // Unit B's page has no monitor section (see `outputMonitorSection`).
+        guard appState.activeUnit == .a, appState.unitDevice != nil else { return }
         let deadline = Date().addingTimeInterval(30)
         while !appState.isHardwareInitialized {
             if Date() > deadline { return }
             try? await Task.sleep(for: .milliseconds(100))
         }
         do {
-            if let attenuation = (try await appState.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+            if let attenuation = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
                 appState.speakerLevel = -Double(attenuation)
             }
         } catch { print("[Maestro] ERROR: output loadMonitorState outputLevel: \(error)") }
         do {
-            if let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
+            if let mute = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
                 appState.speakerMuted = mute
             }
         } catch { print("[Maestro] ERROR: output loadMonitorState outputMute: \(error)") }
         do {
-            if let dim = (try await appState.device?.getProperty(PropertyAddress(selector: .outputDim)))?.asBool {
+            if let dim = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputDim)))?.asBool {
                 speakerDim = dim
             }
         } catch DeviceConnectionError.unsupportedProperty(_) {
             // Optional on some Symphony/ThunderBridge configurations.
         } catch { print("[Maestro] ERROR: output loadMonitorState outputDim: \(error)") }
         do {
-            if let mono = (try await appState.device?.getProperty(PropertyAddress(selector: .outputSumToMono)))?.asBool {
+            if let mono = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputSumToMono)))?.asBool {
                 speakerMono = mono
             }
         } catch DeviceConnectionError.unsupportedProperty(_) {
             // Optional on some Symphony/ThunderBridge configurations.
         } catch { print("[Maestro] ERROR: output loadMonitorState outputSumToMono: \(error)") }
         do {
-            if let mode = (try await appState.device?.getProperty(PropertyAddress(selector: .speakerOutputMode)))?.asUInt32 {
+            if let mode = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .speakerOutputMode)))?.asUInt32 {
                 speakerConfig = mode
                 appState.speakerOutputMode = mode
             }
@@ -974,58 +980,58 @@ struct OutputControlsView: View {
             // Speaker Select mask (0xE9). `SymphonyIO::init` reads it the same
             // way before it trusts its own copy (`SymphonyIO.cpp:1334-1339`).
             // A zero mask is never legal, so it is treated as "no answer".
-            if let mask = (try await appState.device?.getProperty(
+            if let mask = (try await appState.unitDevice?.getProperty(
                 PropertyAddress(selector: .activeSpeakerSet)))?.asUInt32, mask & 0x7 != 0 {
                 speakerSetMask = mask & 0x7
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* not on every unit */ }
         do {
-            if let att = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 {
+            if let att = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 {
                 appState.hp1Level = -Double(min(att, 64))
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP1 level: \(error)") }
         do {
-            if let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone1Mute)))?.asBool {
+            if let mute = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1Mute)))?.asBool {
                 appState.hp1Muted = mute
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP1 mute: \(error)") }
         do {
-            if let dim = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone1Dim)))?.asBool {
+            if let dim = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1Dim)))?.asBool {
                 hp1Dim = dim
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP dim may not be supported */ }
         do {
-            if let mono = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone1SumToMono)))?.asBool {
+            if let mono = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1SumToMono)))?.asBool {
                 hp1Mono = mono
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP mono may not be supported */ }
         do {
-            if let att = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone2Level)))?.asUInt32 {
+            if let att = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2Level)))?.asUInt32 {
                 appState.hp2Level = -Double(min(att, 64))
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP2 level: \(error)") }
         do {
-            if let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone2Mute)))?.asBool {
+            if let mute = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2Mute)))?.asBool {
                 appState.hp2Muted = mute
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP2 mute: \(error)") }
         do {
-            if let dim = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone2Dim)))?.asBool {
+            if let dim = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2Dim)))?.asBool {
                 hp2Dim = dim
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP dim may not be supported */ }
         do {
-            if let mono = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone2SumToMono)))?.asBool {
+            if let mono = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2SumToMono)))?.asBool {
                 hp2Mono = mono
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP mono may not be supported */ }
         do {
-            if let routing = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone1RoutingID)))?.asUInt32 {
+            if let routing = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1RoutingID)))?.asUInt32 {
                 hp1Source = routing
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP1 routing: \(error)") }
         do {
-            if let routing = (try await appState.device?.getProperty(PropertyAddress(selector: .headphone2RoutingID)))?.asUInt32 {
+            if let routing = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2RoutingID)))?.asUInt32 {
                 hp2Source = routing
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP2 routing: \(error)") }
@@ -1106,7 +1112,7 @@ struct OutputControlsView: View {
 
     @discardableResult
     private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
-        guard let device = appState.device else { return false }
+        guard let device = appState.unitDevice else { return false }
         do {
             let element = UInt32(index)
             try await device.setProperty(
@@ -1133,7 +1139,7 @@ struct OutputControlsView: View {
 
     private func writeMonitorProperty(_ selector: AudioPropertySelector, value: PropertyValue) async {
         do {
-            try await appState.device?.setProperty(PropertyAddress(selector: selector), value: value)
+            try await appState.unitDevice?.setProperty(PropertyAddress(selector: selector), value: value)
         } catch {
             print("[Maestro] ERROR: writeMonitorProperty \(selector) failed: \(error)")
         }
@@ -1156,7 +1162,7 @@ struct OutputControlsView: View {
         let selector: AudioPropertySelector =
             headphone == .headphone1 ? .headphone1RoutingID : .headphone2RoutingID
         await writeMonitorProperty(selector, value: .uint32(sourceID))
-        guard let device = appState.device else { return }
+        guard let device = appState.unitDevice else { return }
         // The crosspoint source is inherited from the app's own output-routing
         // knowledge, never from a 0x31 readback (that returns residue, 0x20 for
         // every destination — Docs/issue-1-research.md).
@@ -1222,12 +1228,12 @@ struct OutputControlsView: View {
         // and greys out the speaker knob, while the confirmation text promises
         // "returns to Stereo". Defaulting to Stereo on unknown provenance keeps
         // the dialog honest and matches what the proxy writes at every boot.
-        let boardsMeasured = appState.primaryBoardSource == .detected
-                          && appState.secondaryBoardSource == .detected
+        let boardsMeasured = appState.unitPrimaryBoardSource == .detected
+                          && appState.unitSecondaryBoardSource == .detected
         let mode: SymphonyIOSpeakerMode
         if boardsMeasured {
-            let analogOuts = appState.primaryBoardType.analogOutputChannels
-                           + appState.secondaryBoardType.analogOutputChannels
+            let analogOuts = appState.unitPrimaryBoardType.analogOutputChannels
+                           + appState.unitSecondaryBoardType.analogOutputChannels
             mode = SymphonyIOMonitorDefaults.speakerMode(analogOutputChannels: analogOuts)
         } else {
             mode = .stereo
@@ -1277,12 +1283,12 @@ struct OutputChannelStripView: View {
 
     private var resolvedMeterLevel: Double {
         guard let appState, let meterIndex else { return meterLevel }
-        return meterIndex < appState.outputMeterLevels.count ? appState.outputMeterLevels[meterIndex] : -60
+        return meterIndex < appState.unitOutputMeterLevels.count ? appState.unitOutputMeterLevels[meterIndex] : -60
     }
 
     private var resolvedMeterPeakHold: Double {
         guard let appState, let meterIndex else { return meterPeakHold }
-        return meterIndex < appState.outputPeakHold.count ? appState.outputPeakHold[meterIndex] : -60
+        return meterIndex < appState.unitOutputPeakHold.count ? appState.unitOutputPeakHold[meterIndex] : -60
     }
 
     /// Output analog ref: no Variable option (input-only).

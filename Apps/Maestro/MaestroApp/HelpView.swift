@@ -158,6 +158,7 @@ struct HelpView: View {
                 // Text from MaestroCore so a test can check it uses the
                 // driver's Source menu names.
                 ForEach(PortSelection.helpText, id: \.self) { Text(LocalizedStringKey($0)) }
+                ForEach(SecondUnitHelp.lines, id: \.self) { Text(LocalizedStringKey($0)) }
             }
 
             HelpQuestion("Does Maestro work with AD-16X, DA-16X or Rosetta converters?") {
