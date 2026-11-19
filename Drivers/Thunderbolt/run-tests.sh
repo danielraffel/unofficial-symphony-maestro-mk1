@@ -164,7 +164,14 @@ build_and_run() {
         -o "$out/register-trace"
     # A failed check inside the harness is reported with the trace comparisons
     # below rather than instead of them.
-    "$out/register-trace" --out "$out" ${VERBOSE[@]+"${VERBOSE[@]}"} || status=1
+    # The base ref's driver is run through this harness only for its traces:
+    # checks added for newer behaviour are expected to fail there.
+    if [[ "$label" == working* ]]; then
+        "$out/register-trace" --out "$out" ${VERBOSE[@]+"${VERBOSE[@]}"} || status=1
+    else
+        "$out/register-trace" --out "$out" ${VERBOSE[@]+"${VERBOSE[@]}"} > "$out/checks.txt" 2>&1 || true
+        echo "[trace] base ref harness checks: $(grep -c '^FAIL' "$out/checks.txt" || true) failing (expected for newer checks; traces compared below)"
+    fi
 }
 
 compare_dir() {
