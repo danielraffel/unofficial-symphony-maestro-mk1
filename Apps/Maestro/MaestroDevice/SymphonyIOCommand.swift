@@ -69,6 +69,10 @@ public enum SymphonyIOCommand: UInt8, Sendable, CaseIterable {
     case audioRouting = 0x31
     /// Set device channel bank. wValue: usage type enum.
     case deviceChannelBank = 0x32
+    /// Set front-panel identify LEDs. pData: 1=on, 0=off; state stays on until off.
+    /// Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIOVendorSpecific.h:178-182`,
+    /// `og_source/maestrolink/Software/SymphonyIO/SymphonyIOControl.cpp:136-150`.
+    case identifyUnit = 0x33
     /// Get/set optical format. wValue: board index. pData: 0=ADAT, 1=S/PDIF.
     /// Evidence: `SymphonyIOVendorSpecific.h` lines 183-188
     case opticalFormat = 0x34
@@ -934,6 +938,21 @@ public enum SymphonyIOMonitorDefaults {
 ///
 /// Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIOControl.cpp`
 public enum SymphonyIORequestBuilder {
+
+    // MARK: Device identity
+
+    /// Toggle the front-panel identify LEDs.
+    ///
+    /// This is a stateful command rather than a timed pulse: the original
+    /// daemon sends `1` when identify is enabled and keeps the LEDs on until a
+    /// later `0` (`SymphonyIOControl.cpp:136-150`).
+    public static func setIdentify(enabled: Bool) -> USBControlRequest {
+        USBControlRequest(
+            direction: .write,
+            request: SymphonyIOCommand.identifyUnit.rawValue,
+            data: Data([enabled ? 1 : 0])
+        )
+    }
 
     // MARK: Sample Rate
 

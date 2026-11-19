@@ -62,6 +62,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         .groupID, .insertID, .insertReturnEnable,
         .analogIOType, .digitalRefLevel,
         .outputLevel, .outputMute, .outputDim, .outputSumToMono,
+        .identify,
         .headphone1Level, .headphone2Level, .headphone1Mute, .headphone2Mute,
         .headphone1Dim, .headphone2Dim, .headphone1SumToMono, .headphone2SumToMono,
         .activeSpeakerSet,

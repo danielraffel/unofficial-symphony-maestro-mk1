@@ -18,19 +18,14 @@ import MaestroDevice
 /// Fader, D/A Meter and S/PDIF Mirrors, all with the option-click and range
 /// behaviour Apogee describes.
 ///
-/// The eighth, "Device Icon & ID Button", is **not** implemented. Note that the
+/// The eighth, "Device Icon & ID Button", is implemented on the routing page. Note that the
 /// guide's *text* for item 1 is a copy of item 4's ("use this drop down menu to
 /// choose the analog level for each D/A conversion channel") — the callout
 /// points at the device icon and the ID button in the row header, which is a
 /// different control entirely. The ID button toggles
 /// `kmAEstroPropertyIdentify` / `SymphonyIOCommands_IdentifyUnit` (`0x33`) to
 /// flash the front-panel LEDs (`APAnchorDeviceViewController.m:191-196`).
-/// `AudioPropertySelector.identify` ("AEbb") exists, but no case in
-/// `SymphonyIOCommand` or `SymphonyIOPropertyMapper` maps it to `0x33`, so the
-/// write would be dropped.
-/// TODO(SymphonyIOCommand/SymphonyIOPropertyMapper owner): add
-/// `identifyUnit = 0x33` and map `.identify` to it; this page can then host the
-/// ID button.
+/// `AudioPropertySelector.identify` ("AEbb") maps to the stateful `0x33` command.
 ///
 /// Evidence: `og_source/maestro2/App/Controllers/Output/`
 /// Evidence: `og_source/generic/CoreAudio/mAEstro.h` — output properties

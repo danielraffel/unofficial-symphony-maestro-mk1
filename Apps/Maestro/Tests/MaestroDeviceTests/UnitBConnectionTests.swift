@@ -97,6 +97,15 @@ struct UnitBConnectionTests {
         #expect(t.sent.first?.port == 1)
     }
 
+    @Test("Identify on unit B uses command 0x33 and port byte 1")
+    func identifyUsesUnitBPort() async throws {
+        let t = RecordingVendorTransport()
+        let c = connection(t)
+        try await c.setProperty(PropertyAddress(selector: .identify), value: .bool(true))
+        #expect(t.sent == [RecordingVendorTransport.Sent(command: 0x33, value: 0,
+                                                          payload: Data([1]), port: 1)])
+    }
+
     @Test("Unit B reads go out on port 1")
     func readsOnPort2() async throws {
         let t = RecordingVendorTransport()

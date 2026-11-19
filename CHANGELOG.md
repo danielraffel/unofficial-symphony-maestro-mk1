@@ -2,9 +2,20 @@
 
 ## 0.9.10 (beta)
 
-Input gain controls now remember Mic and Instrument settings independently and send each to the matching preamp stage.
+(Work in progress; not released. Intro to be written at release.)
 
-- Instrument input gain now reaches the 8MicPre correctly, with its full 0–65 dB range.
+### Changes that may affect your setup
+
+- **Instrument gain on an 8MicPre now reaches the preamp's Instrument stage, with its own 0-65 dB range.** Before, Maestro sent Instrument gain as Mic gain. Mic and Instrument gains are now remembered separately for each channel, as in Apogee's software, so switching a channel between Mic and Instrument brings back the gain you last used for that type.
+- **The connection in Device Info reads "Thunderbolt (Symphony 64 PCIe card)",** without the word "experimental".
+
+### New
+
+- **Identify, on the Output Routing page, lights up all of the Symphony I/O's front-panel lights** so you can find the unit, as Apogee's software did; press it again to turn them off. With two units there is one for each.
+
+### Fixes
+
+- **Choosing 64 channels with nothing on port 2 no longer flickers.** The Ports menu stays at 32 channels with a small spinner while Maestro looks for a unit on port 2, then shows 64 or the warning.
 
 ## 0.9.9 (beta)
 

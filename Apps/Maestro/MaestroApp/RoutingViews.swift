@@ -629,6 +629,15 @@ struct OutputRoutingView: View {
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
                 }
+                // The original's ID button sat in each device's column header
+                // (APRoutingDeviceColumnViewController.m:212-219); Symphony I/O only.
+                if appState.connectedUnit == nil {
+                    IdentifyButton(title: appState.unitBOnCard ? "Identify A" : "Identify",
+                                   device: appState.device)
+                    if appState.unitBOnCard {
+                        IdentifyButton(title: "Identify B", device: appState.unitBDevice)
+                    }
+                }
                 Spacer()
                 PresetMenuButton(
                     presetNames: presetNames,

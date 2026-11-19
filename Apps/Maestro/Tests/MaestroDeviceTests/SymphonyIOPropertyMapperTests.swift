@@ -152,6 +152,20 @@ struct SymphonyIOPropertyMapperTests {
 
     // MARK: - Write Request Tests
 
+    @Test func identifyWriteUsesStateful33CommandAndOneBytePayload() throws {
+        let address = PropertyAddress(selector: .identify)
+        let on = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .bool(true))
+        #expect(on.direction == .write)
+        #expect(on.request == 0x33)
+        #expect(on.value == 0)
+        #expect(on.index == 0)
+        #expect(on.data == Data([1]))
+
+        let off = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .uint32(0))
+        #expect(off.request == SymphonyIOCommand.identifyUnit.rawValue)
+        #expect(off.data == Data([0]))
+    }
+
     @Test func outputLevelWriteFromFloat64() throws {
         let address = PropertyAddress(selector: .outputLevel)
         let request = try SymphonyIOPropertyMapper.buildWriteRequest(
