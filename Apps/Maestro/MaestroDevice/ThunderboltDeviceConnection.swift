@@ -699,6 +699,15 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         let client = dextClient
         return ThunderboltUnitBConnection(identifier: identifier, transport: client,
                                           settingsStore: settingsStore,
+                                          infoRouting: { [weak self] in
+                                              guard let self, let converters = client.readConverterState() else {
+                                                  return SymphonyRoutingModel(topology: .unknown, hostChannels: 0)
+                                              }
+                                              return SymphonyRoutingModel(
+                                                  topology: converters.flags & 3 == 0 ? .symphonyOnly : .unknown,
+                                                  hostChannels: self.portSelectionID().flatMap(PortSelection.init(rawValue:))?.channelCount ?? 0,
+                                                  unitBConfigured: client.readUnitBState()?.info?.setupComplete == true)
+                                          },
                                           state: { client.readUnitBState() })
     }
 

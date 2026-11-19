@@ -141,7 +141,7 @@ struct SymphonyRoutingModelTests {
         ]
         for (model, output, inputReset, unitA, unitB) in fixtures {
             for command in M.CommandFamily.allCases {
-                let peripheral = [.identify, .monitor, .micPre, .preferenceLock, .unitRouting].contains(command)
+                let peripheral = [.identify, .monitor, .micPre, .deviceInfo, .preferenceLock, .unitRouting].contains(command)
                 #expect(model.allows(command, at: .card) == (command == .cardOutput ? output : (!peripheral && inputReset)))
                 for port in M.Port.allCases {
                     for address in 1...4 {

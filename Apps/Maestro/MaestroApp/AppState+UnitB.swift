@@ -374,6 +374,12 @@ extension AppState {
         unitBOutputPeakHold = advancePeakHold(unitBOutputPeakHold, levels: unitBOutputMeterLevels)
     }
 
+    /// Both copy paths use the live connection's cache, even before System Setup opens.
+    var unitBDeviceInfoReportLines: [String] {
+        guard let unitB, unitBDevice != nil else { return [] }
+        return unitB.reportLines(unitAPrefix: peripheralPrefix) + unitBDeviceInfo.reportLines
+    }
+
     // MARK: Lifecycle
 
     /// Ask the driver about unit B (no bus access) and follow what it says.
@@ -404,7 +410,12 @@ extension AppState {
     /// happen during a link recovery).
     func applyUnitB(_ info: SecondUnitInfo?, from tb: ThunderboltDeviceConnection?, confirmedAbsent: Bool = false) {
         let owner = tb.map { ObjectIdentifier($0) }
-        let newConnection = info != nil && owner != unitBOwner
+        // Board or configured-state changes invalidate the per-connection readings;
+        // ordinary prefix/clock/error-count changes do not identify a replacement.
+        let changedHardware = info != nil && unitB != nil &&
+            (info?.slot1 != unitB?.slot1 || info?.slot2 != unitB?.slot2 ||
+             info?.slotValid != unitB?.slotValid || info?.setupComplete != unitB?.setupComplete)
+        let newConnection = info != nil && (owner != unitBOwner || changedHardware)
         guard info != unitB || newConnection || (info == nil && unitBDevice != nil) else { return }
         let appeared = info != nil && (unitB == nil || newConnection)
         unitB = info
@@ -416,9 +427,11 @@ extension AppState {
                 if confirmedAbsent { resetSoftwareReturnSourcesBeyondOneUnit() }
             }
             let oldDevice = unitBDevice
+            (oldDevice as? ThunderboltUnitBConnection)?.invalidate()
             Task { await oldDevice?.disconnect() }
             unitBDevice = nil
             unitBMonitor = UnitBMonitorState()
+            unitBDeviceInfo = SymphonyDeviceInfo()
             unitBOwner = nil
             selectedUnit = .a
             unitBInputMeterLevels = []
@@ -428,8 +441,16 @@ extension AppState {
         if newConnection || unitBDevice == nil {
             let connection = tb.makeUnitBConnection(settingsStore: .persistent(for: tb.identifier, unit: .b))
             let oldDevice = unitBDevice
+            (oldDevice as? ThunderboltUnitBConnection)?.invalidate()
             Task { await oldDevice?.disconnect() }
             unitBDevice = connection
+            unitBDeviceInfo = SymphonyDeviceInfo()
+            nonisolated(unsafe) let infoOwner = self
+            Task { @MainActor in
+                let info = await connection.readDeviceInfo()
+                guard infoOwner.unitBDevice === connection else { return }
+                infoOwner.unitBDeviceInfo = info
+            }
             let monitor = UnitBMonitorState()
             unitBMonitor = monitor
             Task { @MainActor in await monitor.refresh(from: connection) }
