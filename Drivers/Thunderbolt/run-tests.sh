@@ -11,12 +11,10 @@
 #
 # Part 2: the register-trace test.
 #
-# What it proves: with the two-port experiment off (no SymphonyPortCount key in
-# the personality, which is how every released build runs), the driver does to
-# the card exactly what it did before the experiment existed: the same BAR
-# reads and writes with the same values, the same PCI config accesses, the same
-# sleeps between them, the same DMA mappings and stream formats, in the same
-# order.
+# What it proves: single-port and shipped two-port-at-32 behaviour remains
+# byte-identical to its recorded baseline and the requested base driver source.
+# The installer writes SymphonyPortCount=2 from Tools/versions.json; the source
+# Info.plist remains a template without the key.
 #
 # How: Tests/RegisterTrace compiles the real Source/SymphonyThunderbridge.cpp on
 # the host against small stand-ins for DriverKit (Tests/RegisterTrace/shim) and
@@ -31,6 +29,9 @@
 #      the working tree's. This is the before/after check. The default base is
 #      the first of fix/card-parity and main that exists: the release driver
 #      this branch is built on (option-card parity) until it is on main.
+#      p2-32-* pins the shipped personality at 32 channels through the same
+#      Symphony lifecycle and idle/streaming retire flows. It is also compared
+#      byte-for-byte against the base, with no XLink-traffic exceptions.
 #   3. The two-port traces (p2-*) are compared with golden/ so a change to the
 #      port-2 sequence is always a visible diff, and the harness asserts the
 #      Stage 1 limits (no port-2 DMA, no channel-count or routing change).
@@ -55,6 +56,7 @@
 #   Drivers/Thunderbolt/run-tests.sh                 # all checks, default base ref
 #   Drivers/Thunderbolt/run-tests.sh --against REF   # use another base ref
 #   Drivers/Thunderbolt/run-tests.sh --no-ref        # golden files only
+#   Drivers/Thunderbolt/run-tests.sh --record-p2-32  # rewrite only golden/p2-32-*.trace
 #   Drivers/Thunderbolt/run-tests.sh --record-p2     # rewrite golden/p2-*.trace
 #   Drivers/Thunderbolt/run-tests.sh --record-p1     # rewrite golden/p1-*.trace
 #                                                    # (only when the default
@@ -73,6 +75,7 @@ RUN_HOST_TESTS=true
 USE_REF=true
 RECORD_P1=false
 RECORD_P2=false
+RECORD_P2_32=false
 VERBOSE=()
 
 while [[ $# -gt 0 ]]; do
@@ -81,6 +84,7 @@ while [[ $# -gt 0 ]]; do
         --no-ref)    USE_REF=false ;;
         --record-p1) RECORD_P1=true ;;
         --record-p2) RECORD_P2=true ;;
+        --record-p2-32) RECORD_P2_32=true ;;
         --verbose)   VERBOSE=(--verbose) ;;
         --traces-only) RUN_HOST_TESTS=false ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -203,11 +207,11 @@ compare_dir() {
     return $failed
 }
 
-# The two-port experiment is switched on by a personality key that must never
-# be in the checked-in Info.plist: released builds are made from it.
+# The installer supplies the port count from Tools/versions.json, rather than
+# hard-coding it in the source Info.plist template.
 if grep -q 'SymphonyPortCount' "$TB_DIR/Info.plist"; then
     echo "[FAIL] Drivers/Thunderbolt/Info.plist contains SymphonyPortCount; the key belongs" >&2
-    echo "       only in an experimental package's personality, never in the repository." >&2
+    echo "       in the installer-generated personality, not the source template." >&2
     exit 1
 fi
 
@@ -223,7 +227,18 @@ if $RECORD_P2; then
     echo "[trace] recorded two-port golden traces from the working tree"
 fi
 
+if $RECORD_P2_32; then
+    cp "$TMP/work"/p2-32-*.trace "$GOLDEN/"
+    echo "[trace] recorded shipped two-port-at-32 golden traces from the working tree"
+fi
+
 compare_dir 'p1-*.trace' "$GOLDEN" "$TMP/work" "golden (release driver)" || status=1
+compare_dir 'p2-32-*.trace' "$GOLDEN" "$TMP/work" "golden (shipped two-port at 32)" || status=1
+for name in p2-32-symphony p2-32-retire-idle p2-32-retire-streaming; do
+    if [[ ! -f "$GOLDEN/$name.trace" || ! -f "$TMP/work/$name.trace" ]]; then
+        echo "[trace] FAIL $name: missing shipped-personality coverage"; status=1
+    fi
+done
 # dext 130: the expansion register (0x2214) is written for the Symphony 64 PCIe
 # card only, as Apogee's CMD_CONFIGURE does. A write in any ThunderBridge
 # scenario would be a change to the ThunderBridge path.
@@ -258,6 +273,7 @@ if $USE_REF; then
         git -C "$REPO_ROOT" archive "$BASE_REF" Drivers/Thunderbolt/Source | tar -x -C "$TMP/ref-src"
         build_and_run "$TMP/ref-src/Drivers/Thunderbolt/Source" "$TMP/ref" \
             "$BASE_REF @ $(git -C "$REPO_ROOT" rev-parse --short "$BASE_REF")"
+        compare_dir 'p2-32-*.trace' "$TMP/work" "$TMP/ref" "driver source at $BASE_REF" || status=1
         # p1-legacy-2100 is the one single-port trace that is meant to differ
         # from a base without the PCIe card's receive order: there the driver
         # reads that card the ThunderBridge way and never gets a vendor reply.
@@ -351,4 +367,4 @@ if [[ $status -ne 0 ]]; then
     echo "[FAIL] the driver no longer programs the card the way the baseline does"
     exit 1
 fi
-echo "[ok] single-port register traces are identical to the baseline"
+echo "[ok] single-port and shipped two-port-at-32 traces are identical to the baseline"
