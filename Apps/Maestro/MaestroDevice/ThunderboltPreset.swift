@@ -1,7 +1,7 @@
 import Foundation
 import MaestroCore
 
-/// Single Symphony I/O recall. The host owns write-only channel and mixer
+/// Symphony I/O card and per-unit recall. The host owns write-only channel and mixer
 /// settings, as in og_source/maestrolink/Software/SymphonyIO.cpp:1395-1412.
 /// This is deliberately separate from the legacy daemon's plist format.
 public struct ThunderboltPreset: Codable, Sendable, Equatable {
@@ -18,6 +18,52 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public var routingMode: Int = 1
     public var frontPanelSelection: UInt8?
     public var unitID: Data?
+    /// Version 2 adds the second peripheral; absent in single-unit bundles.
+    public var unitB: Peripheral?
+
+    public struct Peripheral: Codable, Sendable, Equatable {
+        public var boards: [UInt8]
+        public var metadata: MaestroPreset
+        public var globals: [UInt32: UInt32]
+        public var inputRoutes: [UInt8]
+        public var frontPanelSelection: UInt8?
+        public var unitID: Data?
+        public var mixers: [Mixer]
+        public var routingMode: Int
+
+        public init(_ preset: ThunderboltPreset) {
+            boards = preset.boards; metadata = preset.metadata; globals = preset.globals
+            inputRoutes = preset.inputRoutes; frontPanelSelection = preset.frontPanelSelection
+            unitID = preset.unitID; mixers = preset.mixers; routingMode = preset.routingMode
+        }
+
+        public func preset(layout: CardLayout) -> ThunderboltPreset {
+            var value = ThunderboltPreset(layout: layout, metadata: metadata)
+            value.boards = boards; value.globals = globals; value.inputRoutes = inputRoutes
+            value.frontPanelSelection = frontPanelSelection; value.unitID = unitID
+            value.mixers = mixers; value.routingMode = routingMode
+            value.outputRoutes = Array(0..<32)
+            return value
+        }
+    }
+
+    /// Original card layer identity-extends when a second port appears.
+    /// og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:1817-1860.
+    public static func cardTable(_ saved: [Int], channels: Int) throws -> [Int] {
+        guard [32, 64].contains(saved.count), [32, 64].contains(channels) else {
+            throw RecallError.unsupported("incomplete card table.")
+        }
+        return (0..<channels).map { $0 < saved.count ? saved[$0] : $0 }
+    }
+
+    public func unitBSkipReason(layout: CardLayout?, configured: Bool) -> String? {
+        guard let unitB else { return nil }
+        guard configured, let layout, layout.isKnown else { return "Unit B skipped: not configured at 64 channels." }
+        guard unitB.boards == [layout.slot1.rawValue, layout.slot2.rawValue] else {
+            return "Unit B skipped: the installed cards differ from the saved cards."
+        }
+        return nil
+    }
 
     public struct Mixer: Codable, Sendable, Equatable {
         public var channels: [MixerChannelState]
@@ -65,16 +111,22 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         case output(ThunderboltCardRouting.Route)
         case cardInput(ConverterRouting.Command)
         case frontPanel(UInt8)
+
+        public var isCardRoute: Bool {
+            switch self { case .cardInput, .output: return true; default: return false }
+        }
     }
 
     /// Validate everything before the first write, including data that the wire
     /// mapper would otherwise truncate. Old app-only presets have no routes,
     /// mixer, or extra monitor fields; absence means leave that setting alone.
-    public func writes(layout: CardLayout, legacy: Bool = false, currentUnitID: Data? = nil) throws -> [Write] {
+    public func writes(layout: CardLayout, legacy: Bool = false, currentUnitID: Data? = nil, hostChannels: Int = 32, peripheralB: Bool = false) throws -> [Write] {
         func require(_ condition: Bool, _ reason: String) throws {
             if !condition { throw RecallError.unsupported(reason) }
         }
-        try require(version == 1 && metadata.version == 1, "unknown format version.")
+        try require([1, 2].contains(version) && metadata.version == 1 && (version == 2 || unitB == nil), "unknown format version.")
+        try require(version == 2 || (outputRoutes.count <= 32 && (cardInputRoutes?.count ?? 0) <= 32),
+                    "two-port card tables require format version 2.")
         try require(layout.isKnown && layout.converter == nil && layout.converterLayout == nil,
                     "the Symphony I/O card layout is not known.")
         try require(boards == [layout.slot1.rawValue, layout.slot2.rawValue], "the installed cards differ from the saved cards.")
@@ -82,10 +134,11 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         let outputs = metadata.outputChannelStates
         try require(inputs.count == layout.analogInputStripCount || (legacy && inputs.isEmpty), "input channel count differs.")
         try require(outputs.count == layout.analogOutputStripCount || (legacy && outputs.isEmpty), "output channel count differs.")
-        try require((inputRoutes.count == 32 && outputRoutes.count == 32 && mixers.count == 2)
+        try require((inputRoutes.count == 32 && [32, 64].contains(outputRoutes.count) && mixers.count == 2)
                     || (legacy && inputRoutes.isEmpty && outputRoutes.isEmpty && mixers.isEmpty), "incomplete routing or mixer state.")
         try require(routingMode == 0 || routingMode == 1, "unsupported mixer routing mode.")
-        let allowedGlobals = Set((Self.monitorOrder + [.clockSource, .headphone1RoutingID, .headphone2RoutingID]).map(\.rawValue))
+        try require([32, 64].contains(hostChannels), "unsupported channel count.")
+        let allowedGlobals = Set((Self.monitorOrder + (peripheralB ? [] : [.clockSource]) + [.headphone1RoutingID, .headphone2RoutingID]).map(\.rawValue))
         try require(Set(globals.keys).isSubset(of: allowedGlobals), "unknown device settings.")
         if !legacy {
             try require(Set(globals.keys) == allowedGlobals, "incomplete monitor settings.")
@@ -145,7 +198,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                         "independent software-return strips are not supported by this preset format.")
         }
         for mixer in mixers {
-            try require(mixer.channels.count == layout.mixerChannelCount && mixer.source < 8,
+            try require(mixer.channels.count == layout.mixerChannelCount && mixer.source < (hostChannels == 64 || outputRoutes.count == 64 ? 32 : 8),
                         "unsupported mixer channels or software return source.")
             for channel in mixer.channels + [mixer.softwareReturn] {
                 try require(channel.level.isFinite && (-48...6).contains(channel.level)
@@ -161,9 +214,11 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         // Card routing precedes peripheral recall: og_source/maestrolink/Software/
         // SymphonyController.cpp:696-704; SymphonyCard.cpp:412-415.
         if let cardInputRoutes {
-            try require(cardInputRoutes.count == 32, "incomplete card input routes.")
-            let routing = SymphonyCardInputRouting(model: .init(topology: .symphonyOnly, hostChannels: 32))
-            for (host, source) in cardInputRoutes.enumerated() {
+            let table = try Self.cardTable(cardInputRoutes, channels: hostChannels)
+            try require(cardInputRoutes.allSatisfy { $0 >= -1 && $0 < cardInputRoutes.count }, "invalid card input source.")
+            let routing = SymphonyCardInputRouting(model: .init(topology: .symphonyOnly, hostChannels: hostChannels, unitBConfigured: hostChannels == 64))
+            for (host, saved) in table.enumerated() {
+                let source = saved >= hostChannels ? -1 : saved
                 try require(source >= -1, "invalid card input source.")
                 guard let command = routing.command(host: host, source: source == -1 ? nil : source) else {
                     throw RecallError.unsupported("unsupported card input route.")
@@ -177,11 +232,15 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             put(.routing, .uint32(UInt32(source)), scope: .input,
                 element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(index))
         }
-        for (index, source) in outputRoutes.enumerated() {
-            guard let route = ThunderboltCardRouting.route(destination: UInt8(index + 32), source: source) else {
-                throw RecallError.unsupported("unsupported output route.")
-            }
-            result.append(.output(route))
+        for source in outputRoutes {
+            try require(ThunderboltCardRouting.route(destination: 32, source: source, unitBActive: outputRoutes.count == 64 || hostChannels == 64) != nil,
+                        "unsupported output route.")
+        }
+        let outputsOnCard = legacy ? [] : try Self.cardTable(outputRoutes.map(Int.init), channels: hostChannels)
+        for (index, saved) in outputsOnCard.enumerated() {
+            let source = UInt8(saved >= hostChannels && saved < 64 ? Int(SymphonyIORoutingAddress.none) : saved)
+            let local = ThunderboltCardRouting.route(destination: UInt8(index % 32 + 32), source: source, unitBActive: hostChannels == 64)!
+            result.append(.output(.init(channel: UInt8(index), slot: local.enabled ? local.slot : UInt8(64 + index), enabled: local.enabled)))
         }
         // og_source/maestrolink/Software/SymphonyIO.cpp:4660-4708.
         for selector in Self.monitorOrder {
@@ -260,7 +319,10 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         // og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:1750-1754.
         for (index, mixer) in mixers.enumerated() {
             let base = UInt32(index + 1) << 16
-            put(.mixerSoftwareReturnID, .uint32(mixer.source), element: base)
+            // A return pair outside the live card width stays unchanged.
+            if mixer.source < (hostChannels == 64 ? 32 : 8) {
+                put(.mixerSoftwareReturnID, .uint32(mixer.source), element: base)
+            }
             for (channel, s) in (mixer.channels + [mixer.softwareReturn]).enumerated() {
                 let id = channel == mixer.channels.count ? 1000 : layout.mixerChannels[channel].hardwareIndex
                 let element = base | UInt32(id)
@@ -271,7 +333,27 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             }
             put(.mixerChannelLevel, .float64(mixer.master), element: base | 2000)
         }
-        return result
+        if peripheralB {
+            // Card masters/returns belong to A; only B input strips use 32-63.
+            return result.compactMap { write in
+                switch write {
+                case .cardInput, .output: return nil
+                case .property(let address, let value):
+                    if address.selector == .clockSource || address.selector == .mixerSoftwareReturnID { return nil }
+                    if [.mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo].contains(address.selector) {
+                        let channel = address.element & 0xFFFF
+                        guard channel < 32 else { return nil }
+                        return .property(PropertyAddress(selector: address.selector, scope: address.scope,
+                                                         element: address.element + 32), value)
+                    }
+                    return write
+                default: return write
+                }
+            }
+        }
+        // The card is routed before any peripheral's ApplySettingsToHardware.
+        // og_source/maestrolink/Software/SymphonyController.cpp:696-704.
+        return result.filter(\.isCardRoute) + result.filter { !$0.isCardRoute }
     }
 
     public static func legacy(_ metadata: MaestroPreset, layout: CardLayout) throws -> ThunderboltPreset {

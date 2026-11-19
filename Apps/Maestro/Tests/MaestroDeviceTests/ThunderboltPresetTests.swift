@@ -164,8 +164,8 @@ struct ThunderboltPresetTests {
 
     @Test func recallOrderAndNoMuteFirst() throws {
         let writes = try fixture().writes(layout: layout)
-        #expect(writes[0] == .property(PropertyAddress(selector: .routing, scope: .input, element: 192), .uint32(63)))
-        #expect(writes[32] == .output(.init(channel: 0, slot: 130, enabled: true)))
+        #expect(writes[32] == .property(PropertyAddress(selector: .routing, scope: .input, element: 192), .uint32(63)))
+        #expect(writes[0] == .output(.init(channel: 0, slot: 130, enabled: true)))
         let monitor = Array(writes[64..<78])
         let selectors = monitor.compactMap { write -> AudioPropertySelector? in
             if case .property(let address, _) = write { return address.selector }; return nil

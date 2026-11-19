@@ -3,20 +3,22 @@ import MaestroCore
 import MaestroDevice
 
 extension AppState {
-    /// B4a owns unit A only. Refuse before touching hardware or preferences.
+    /// Refuse unknown boards and converters before touching hardware or preferences.
     @MainActor
-    private func requireSingleUnitPreset() throws {
-        guard connectedUnit == nil, !unitBOnCard, portSelection.selection != .ports1And2,
-              selectedUnit == .a, cardLayout.isKnown,
+    private func requireSymphonyPreset() throws {
+        guard connectedUnit == nil, converterSystem == nil, cardLayout.isKnown,
               RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil else {
-            throw ThunderboltPreset.RecallError.unsupported("this recall requires one Symphony I/O on unit A with known cards.")
+            throw ThunderboltPreset.RecallError.unsupported("this recall requires Symphony I/O with known cards.")
         }
     }
 
     @MainActor
     func saveThunderboltPresetBundle(to url: URL, connection: ThunderboltDeviceConnection) async throws {
-        try requireSingleUnitPreset()
+        try requireSymphonyPreset()
         let layout = cardLayout
+        if unitBOnCard && !unitBInputRoutingAllowed {
+            throw ThunderboltPreset.RecallError.unsupported("unit B is not configured at 64 channels.")
+        }
         var metadata = MaestroPreset()
         metadata.inputChannelStates = channelStateStore.load(ChannelStateStore.inputKey)
             ?? Array(repeating: InputChannelState(), count: layout.analogInputStripCount)
@@ -27,7 +29,7 @@ extension AppState {
         }
         var seed = ThunderboltPreset(layout: layout, metadata: metadata)
         let cardInputs = symphonyCardInputStore?.load() ?? [:]
-        seed.cardInputRoutes = (0..<32).map { cardInputs[$0] ?? $0 }
+        seed.cardInputRoutes = (0..<(unitBOnCard ? 64 : 32)).map { cardInputs[$0] ?? $0 }
         seed.routingMode = UserDefaults.standard.integer(forKey: "routingMode")
         seed.mixers = (0..<2).map {
             ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount,
@@ -38,21 +40,95 @@ extension AppState {
             let destination = UInt8(channel + 32)
             return saved[destination] ?? ThunderboltCardRouting.mainPairDefaultSource(forDestination: destination) ?? UInt8(channel)
         }
-        // Off the main actor: the capture is many bus round trips (the window
-        // must not freeze while it runs).
-        let capturedSeed = seed
-        let preset = try await Task.detached { try connection.capturePreset(capturedSeed, layout: layout) }.value
+        let b = unitBOnCard ? unitBDevice as? ThunderboltUnitBConnection : nil
+        let bLayout = unitBLayout
+        var bSeed: ThunderboltPreset?
+        if let bLayout, b != nil {
+            seed.version = 2
+            seed.outputRoutes += unitBOutputSources(layout: bLayout)
+            var metadata = MaestroPreset()
+            if let names = UserDefaults.standard.string(forKey: "mixerChannelNamesUnitB") {
+                metadata.channelNames = (try? JSONDecoder().decode([String].self, from: Data(names.utf8))) ?? []
+            }
+            let store = unitBChannelStateStore
+            metadata.inputChannelStates = store.load(ChannelStateStore.inputKey)
+                ?? Array(repeating: InputChannelState(), count: bLayout.analogInputStripCount)
+            metadata.outputChannelStates = store.load(ChannelStateStore.outputKey)
+                ?? Array(repeating: OutputChannelState(), count: bLayout.analogOutputStripCount)
+            var value = ThunderboltPreset(layout: bLayout, metadata: metadata)
+            value.outputRoutes = Array(0..<32)
+            value.routingMode = seed.routingMode
+            value.mixers = (0..<2).map {
+                ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: bLayout.mixerChannelCount, mixer: $0, store: store))
+            }
+            bSeed = value
+        }
+        let capturedSeed = seed, capturedBSeed = bSeed
+        // Fixed lock order: card/A, then B. All hardware work is off MainActor.
+        let preset = try await Task.detached {
+            try connection.withPresetLock {
+                if let b, let bLayout, let capturedBSeed {
+                    return try b.withPresetLock {
+                        var captured = try connection.capturePreset(capturedSeed, layout: layout)
+                        captured.unitB = .init(try b.capturePreset(capturedBSeed, layout: bLayout))
+                        return captured
+                    }
+                }
+                return try connection.capturePreset(capturedSeed, layout: layout)
+            }
+        }.value
         try preset.writeBundle(to: url)
     }
 
     @MainActor
     func loadThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
-        try requireSingleUnitPreset()
+        try requireSymphonyPreset()
         let (preset, legacy) = try ThunderboltPreset.loadBundle(from: url, layout: cardLayout)
         let layout = cardLayout
-        // Off the main actor: the recall is many bus writes plus the unlock
-        // read-back (the window must not freeze while it runs).
-        try await Task.detached { try connection.recallPreset(preset, layout: layout, legacy: legacy) }.value
+        let b = unitBOnCard ? unitBDevice as? ThunderboltUnitBConnection : nil
+        let bLayout = unitBLayout
+        let bStore = unitBChannelStateStore
+        let bDigitalKey = unitBDigitalSettingsKey
+        let skip = preset.unitBSkipReason(layout: bLayout, configured: b != nil && unitBInputRoutingAllowed
+            && unitBBoardSource(slot: 0) == .detected && unitBBoardSource(slot: 1) == .detected)
+        let recallB = preset.unitB != nil && skip == nil
+        let cardChannels = unitBOnCard && unitBInputRoutingAllowed && skip == nil ? 64 : 32
+        try await Task.detached {
+            try connection.withPresetLock {
+                let aWrites = try connection.presetWrites(preset, layout: layout, legacy: legacy, channels: cardChannels)
+                if recallB, let b, let bLayout, let saved = preset.unitB {
+                    try b.withPresetLock {
+                        let bWrites = try b.presetWrites(saved, layout: bLayout)
+                        do { try connection.applyPresetWrites(aWrites, layout: layout) }
+                        catch {
+                            // Card routing may already have changed B's feed.
+                            // Finish both units even when A's recall failed.
+                            try? b.applyPresetWrites([], layout: bLayout) { try connection.writePresetMixer($0, value: $1) }
+                            throw error
+                        }
+                        try b.applyPresetWrites(bWrites, layout: bLayout) { try connection.writePresetMixer($0, value: $1) }
+                    }
+                } else {
+                    try connection.applyPresetWrites(aWrites, layout: layout)
+                }
+            }
+        }.value
+        guard device === connection else { throw DeviceConnectionError.notConnected }
+        if recallB, let saved = preset.unitB, let bLayout, unitBDevice === b {
+            UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: "mixerChannelNamesUnitB")
+            bStore.save(saved.metadata.inputChannelStates, for: ChannelStateStore.inputKey)
+            bStore.save(saved.metadata.outputChannelStates, for: ChannelStateStore.outputKey)
+            for (index, mixer) in saved.mixers.enumerated() { bStore.save(mixer.channels, for: ChannelStateStore.mixerKey(index)) }
+            if let bDigitalKey {
+                for digital in PresetDigitalWrites.writes(for: saved.metadata, layout: bLayout) {
+                    SlotDigitalSettings.remember(digital.address.selector, slot: Int(digital.address.element), value: digital.value, key: bDigitalKey)
+                }
+            }
+            unitBInputRoutingCache?.save(SymphonyIODefaultRouting.inputGrid(
+                saved.inputRoutes.enumerated().map { (destination: UInt8(192 + $0.offset), source: $0.element) },
+                columns: bLayout.inputRoutingColumns))
+        }
+        statusMessage = skip.map { "Unit A loaded. " + $0 } ?? "Settings loaded."
         // Commit the app's copy only after hardware recall and ready read-back.
         // No view needs to be open for any of the writes above.
         let meta = preset.metadata
@@ -64,17 +140,26 @@ extension AppState {
         }
         for (index, mixer) in preset.mixers.enumerated() {
             channelStateStore.save(mixer.channels, for: ChannelStateStore.mixerKey(index))
-            UserDefaults.standard.set(mixer.source, forKey: "mixerSoftwareReturnSource_\(index)")
+            if mixer.source < (cardChannels == 64 ? 32 : 8) {
+                UserDefaults.standard.set(mixer.source, forKey: "mixerSoftwareReturnSource_\(index)")
+            }
             UserDefaults.standard.set(mixer.master, forKey: "mixerMasterLevel_\(index)")
             UserDefaults.standard.set(try JSONEncoder().encode(mixer.softwareReturn), forKey: "mixerState_swReturn")
         }
         if !legacy {
             UserDefaults.standard.set(preset.routingMode, forKey: "routingMode")
-            persistPresetRoutes(preset, productID: connection.identifier.productID)
+            persistPresetRoutes(preset, productID: connection.identifier.productID, recalledChannels: cardChannels)
             if let routes = preset.cardInputRoutes {
-                symphonyCardInputEdits = Dictionary(uniqueKeysWithValues: routes.enumerated().map { ($0.offset, $0.element) })
+                let applied = try ThunderboltPreset.cardTable(routes, channels: cardChannels)
+                symphonyCardInputEdits.merge(Dictionary(uniqueKeysWithValues: applied.enumerated().map {
+                    ($0.offset, $0.element >= cardChannels ? -1 : $0.element)
+                })) { _, new in new }
                 symphonyCardInputStore?.save(symphonyCardInputEdits)
             }
+        }
+        if !legacy, cardChannels == 64, let bLayout {
+            let sources = try ThunderboltPreset.cardTable(preset.outputRoutes.map(Int.init), channels: 64)
+            unitBOutputRoutingCache?.save(outputGrid(sources: Array(sources.dropFirst(32)).map(UInt8.init), layout: bLayout, channels: 64))
         }
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
         if let level = preset.globals[AudioPropertySelector.outputLevel.rawValue] { speakerLevel = -Double(level) }
@@ -84,7 +169,7 @@ extension AppState {
     }
 
     @MainActor
-    private func persistPresetRoutes(_ preset: ThunderboltPreset, productID: UInt16) {
+    private func persistPresetRoutes(_ preset: ThunderboltPreset, productID: UInt16, recalledChannels: Int) {
         var input: [Int: Int] = [:]
         for pair in 0..<16 {
             if let column = cardLayout.inputRoutingColumns.firstIndex(where: { $0.routingByte == preset.inputRoutes[pair * 2] }) {
@@ -92,16 +177,47 @@ extension AppState {
             }
         }
         RoutingStateCache(direction: "input", productID: productID).save(input)
-        var output: [Int: Set<Int>] = Dictionary(uniqueKeysWithValues: (0..<18).map { ($0, Set<Int>()) })
-        for (column, destination) in cardLayout.outputRoutingColumns.enumerated() {
-            let source = preset.outputRoutes[Int(destination.routingByte) - 32]
+        let channels = unitBOnCard ? 64 : 32
+        RoutingStateCache(direction: "output", productID: productID).save(
+            outputGrid(sources: preset.outputRoutes.prefix(32).map { Int($0) >= recalledChannels && $0 < 64 ? SymphonyIORoutingAddress.none : $0 }, layout: cardLayout, channels: channels, unitA: true))
+    }
+
+    private func outputGrid(sources: [UInt8], layout: CardLayout, channels: Int, unitA: Bool = false) -> [Int: Set<Int>] {
+        var output = Dictionary(uniqueKeysWithValues: (0..<(channels / 2 + 2)).map { ($0, Set<Int>()) })
+        for (column, destination) in layout.outputRoutingColumns.enumerated() {
+            let source = sources[Int(destination.routingByte) - 32]
             let row: Int?
-            if source < 32 { row = Int(source) / 2 }
-            else if source == SymphonyIORoutingAddress.mixer0Base { row = 16 }
-            else if source == SymphonyIORoutingAddress.mixer1Base { row = 17 }
+            if Int(source) < channels { row = Int(source) / 2 }
+            else if source == SymphonyIORoutingAddress.mixer0Base { row = channels / 2 }
+            else if source == SymphonyIORoutingAddress.mixer1Base { row = channels / 2 + 1 }
             else { row = nil }
             if let row { output[row, default: []].insert(column) }
         }
-        RoutingStateCache(direction: "output", productID: productID).save(output)
+        if unitA && channels == 64 {
+            let pairs = (device?.identifier.mode.channelCount ?? 32) / 2
+            return Dictionary(uniqueKeysWithValues: output.compactMap { row, columns in
+                TwoUnitOutputRouting.unitARow(gridRow: row, unitAPairs: pairs).map { ($0, columns) }
+            })
+        }
+        return output
+    }
+
+    private func unitBOutputSources(layout: CardLayout) -> [UInt8] {
+        var sources = Array(UInt8(32)..<UInt8(64))
+        guard let rows = unitBOutputRoutingCache?.loadMulti() else { return sources }
+        for (col, destination) in layout.outputRoutingColumns.enumerated() {
+            let complete = (0..<34).allSatisfy { rows[$0] != nil }
+            let row = rows.first { $0.value.contains(col) }?.key
+            if row == nil && !complete { continue }
+            for side in 0..<2 {
+                let source: UInt8
+                if let row, row < 32 { source = UInt8(row * 2 + side) }
+                else if row == 32 { source = SymphonyIORoutingAddress.mixer0Base + UInt8(side) }
+                else if row == 33 { source = SymphonyIORoutingAddress.mixer1Base + UInt8(side) }
+                else { source = SymphonyIORoutingAddress.none }
+                sources[Int(destination.routingByte) - 32 + side] = source
+            }
+        }
+        return sources
     }
 }

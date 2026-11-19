@@ -18,11 +18,13 @@
 
 ### Fixes
 
+- **With two Symphony I/Os at 64 channels, Reset Routing resets the selected routing direction across the whole card and both units.**
+- **Settings bundles now save and restore both Symphony I/Os.** Older bundles restore unit A only. If unit B is absent or has different cards, Maestro restores unit A and reports that unit B was skipped.
+
 - **Device Info now shows Unit B’s own firmware, board versions and hardware ID with two Symphony I/Os at 64 channels.** Unreadable fields say “Unknown”, and copied diagnostics include both units.
 - **Unit B’s headphone sources now work on the Outputs page**, and stay routed after resetting or loading unit B’s output routing.
 
-- **Input Routing now follows the Unit A / Unit B picker with two Symphony I/Os at 64 channels.** Unit B shows its own inputs and saves its routing choices separately; Reset Routing affects only the chosen unit.
-- **Input Routing now follows the Unit A / Unit B picker with two Symphony I/Os at 64 channels.** Unit B shows its own inputs and saves its routing choices separately; Reset Routing restores the chosen unit’s input table and the card’s software-input mapping.
+- **Input Routing now follows the Unit A / Unit B picker with two Symphony I/Os at 64 channels.** Unit B shows its own inputs and saves its routing choices separately.
 - **Saving and loading a preset on ThunderBridge or PCIe now restores the Symphony I/O’s routing, mixer, monitor and channel settings.** Previously, loading a bundle restored only its channel names. Presets for a different card layout are refused before any settings change.
 - **With two Symphony I/Os at 64 channels, Output Routing lets any of the 64 DAW channels and both mixers feed any output on either unit,** as Apogee's software did. Before, unit A's outputs could not play DAW channels 33-64.
 - **The 8MicPre gain control in your DAW follows the channel's Mic or Instrument setting.** On an Instrument channel it stops at 65 dB (the slider still shows 0-85 dB).
