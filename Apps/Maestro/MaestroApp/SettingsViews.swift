@@ -74,7 +74,7 @@ struct DeviceSettingsView: View {
     ]
 
     /// The installed cards' layout — capability gating on this page comes from here.
-    private var layout: CardLayout { appState.cardLayout }
+    private var layout: CardLayout { appState.unitCardLayout }
 
     /// The optical format selector follows the direction provided by the card.
     /// AD16 is output-only, so reading `opticalInFormat` for that slot reports
@@ -89,7 +89,7 @@ struct DeviceSettingsView: View {
     private var settingsLoadID: DeviceSettingsLoadID {
         DeviceSettingsLoadID(reloadToken: appState.viewReloadToken,
                              cardLayoutToken: appState.cardLayoutToken,
-                             deviceID: appState.device.map(ObjectIdentifier.init))
+                             deviceID: appState.unitDevice.map(ObjectIdentifier.init))
     }
 
     /// Meter bank sources the installed cards can actually feed. A 16x16 has no
@@ -152,7 +152,7 @@ struct DeviceSettingsView: View {
                     guard !isLoading else { return }
                     Task {
                         do {
-                            try await appState.device?.setProperty(
+                            try await appState.unitDevice?.setProperty(
                                 PropertyAddress(selector: .metersShowInput, element: 1),
                                 value: .uint32(newValue)
                             )
@@ -171,7 +171,7 @@ struct DeviceSettingsView: View {
                     guard !isLoading else { return }
                     Task {
                         do {
-                            try await appState.device?.setProperty(
+                            try await appState.unitDevice?.setProperty(
                                 PropertyAddress(selector: .metersShowInput, element: 2),
                                 value: .uint32(newValue)
                             )
@@ -202,7 +202,7 @@ struct DeviceSettingsView: View {
                 }
                 .onChange(of: peripheralPrefix) { _, newValue in
                     guard !isLoading else { return }
-                    appState.peripheralPrefix = CardLayout.peripheralPrefix(newValue)
+                    appState.unitPeripheralPrefix = CardLayout.peripheralPrefix(newValue)
                     Task { await writeProperty(.prefix, value: .string(newValue)) }
                 }
             }
@@ -222,7 +222,7 @@ struct DeviceSettingsView: View {
             // kmAEstroPropertyInsertNameForID ('AEiv'); with no daemon they live
             // in UserDefaults, and the user-visible behaviour is the same.
             if InputChannelLogic.micPreIsUsable(
-                primary: appState.primaryBoardType, secondary: appState.secondaryBoardType) {
+                primary: appState.unitPrimaryBoardType, secondary: appState.unitSecondaryBoardType) {
                 Section("Insert Labels") {
                     ForEach(1...InsertLabels.count, id: \.self) { id in
                         insertLabelField(UInt32(id))
@@ -269,7 +269,7 @@ struct DeviceSettingsView: View {
                     .foregroundStyle(.secondary)
                 }
 
-                if let device = appState.device {
+                if let device = appState.unitDevice {
                     LabeledContent("Model", value: device.identifier.displayName)
                     LabeledContent("Mode", value: device.identifier.mode.displayName)
                     LabeledContent("Channels", value: "\(device.identifier.mode.channelCount)")
@@ -417,7 +417,7 @@ struct DeviceSettingsView: View {
             card == 0 ? opticalFormatCard1 : opticalFormatCard2
         } set: { newValue in
             guard !isLoading, !isWritingOpticalFormat, let newValue, newValue <= 1 else { return }
-            guard let device = appState.device, device.isConnected else {
+            guard let device = appState.unitDevice, device.isConnected else {
                 setOpticalReadback(nil, card: card)
                 errorMessage = "Device not connected. Optical format is unavailable."
                 return
@@ -434,7 +434,7 @@ struct DeviceSettingsView: View {
         else { opticalFormatCard2 = validValue }
         // Optical channel names everywhere follow the confirmed format.
         if let validValue, card < 2 {
-            appState.channelNaming.opticalIsSPDIF[Int(card)] = validValue == 1
+            appState.unitChannelNaming.opticalIsSPDIF[Int(card)] = validValue == 1
         }
     }
 
@@ -469,7 +469,7 @@ struct DeviceSettingsView: View {
             }
             guard settingsLoadID == loadID else { return }
             setOpticalReadback(actual, card: card)
-            appState.rememberDigitalSetting(address.selector, slot: Int(card), value: actual)
+            appState.rememberUnitDigitalSetting(address.selector, slot: Int(card), value: actual)
             errorMessage = actual == format ? nil : "Card \(card + 1) did not confirm the requested optical format."
         } catch {
             guard settingsLoadID == loadID else { return }
@@ -482,7 +482,7 @@ struct DeviceSettingsView: View {
     private func readSetting(_ selector: AudioPropertySelector, element: UInt32 = 0) async throws -> PropertyValue? {
         try Task.checkCancellation()
         do {
-            let value = try await appState.device?.getProperty(PropertyAddress(selector: selector, element: element))
+            let value = try await appState.unitDevice?.getProperty(PropertyAddress(selector: selector, element: element))
             try Task.checkCancellation()
             return value
         } catch {
@@ -505,7 +505,7 @@ struct DeviceSettingsView: View {
         defer {
             if settingsLoadGeneration == generation { isLoading = false }
         }
-        guard appState.device != nil else { return }
+        guard appState.unitDevice != nil else { return }
         // P3G-25 pattern: add 30-second timeout guard to prevent permanent spinner
         // if hardware initialization never completes (daemon crash, device unplugged, etc.).
         let deadline = Date().addingTimeInterval(30)
@@ -603,7 +603,7 @@ struct DeviceSettingsView: View {
             if let pfx = (try await readSetting(.prefix))?.asString,
                !pfx.isEmpty {
                 peripheralPrefix = String(pfx.prefix(1))
-                appState.peripheralPrefix = CardLayout.peripheralPrefix(pfx)
+                appState.unitPeripheralPrefix = CardLayout.peripheralPrefix(pfx)
             }
         } catch is CancellationError {
             return
@@ -655,7 +655,7 @@ struct DeviceSettingsView: View {
     }
 
     private func writeProperty(_ selector: AudioPropertySelector, value: PropertyValue) async {
-        guard let device = appState.device else { return }
+        guard let device = appState.unitDevice else { return }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: selector),
@@ -922,6 +922,18 @@ struct SystemSetupView: View {
 
     var body: some View {
         Form {
+            // Unit B (port 2, 64 channels) is a Word Clock slave of unit A:
+            // the driver sets it so when 64 channels start, and its rate is
+            // unit A's. Nothing here to choose.
+            if appState.activeUnit == .b, let unitB = appState.unitB {
+                Section("Clock") {
+                    LabeledContent("Clock Source", value: unitB.clockSourceName)
+                    LabeledContent("Sample Rate", value: "Follows unit A")
+                    Text("Unit B takes its clock from unit A through a BNC cable. See Help, \"Can I connect more than one Symphony I/O?\"")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
             // P3F-21: Mode-aware Clock section
             Section("Clock") {
                 // Sample Rate
@@ -1013,6 +1025,20 @@ struct SystemSetupView: View {
                 }
             }
             .disabled(isLoading)
+            }
+
+            // The second Symphony I/O, whichever unit is shown.
+            if let unitB = appState.unitB, appState.unitPickerVisible {
+                Section("Unit B (Port 2)") {
+                    LabeledContent("Model", value: "Symphony I/O")
+                    LabeledContent("IOBoard 1", value: unitB.slotValid[0] ? unitB.slot1.productName : "Not read")
+                    LabeledContent("IOBoard 2", value: unitB.slotValid[1] ? unitB.slot2.productName : "Not read")
+                    LabeledContent("Prefix", value: appState.unitBPeripheralPrefix)
+                    LabeledContent("Clock", value: unitB.clockSourceName)
+                    LabeledContent("Set-up", value: unitB.setupComplete ? "Complete" : "Incomplete")
+                    LabeledContent("Message Errors", value: "\(unitB.txErrors)")
+                }
+            }
 
             // P3D-03: Word clock output config
             if !isProToolsMode {
@@ -1055,7 +1081,7 @@ struct SystemSetupView: View {
                     guard !isLoading else { return }
                     Task {
                         do {
-                            try await appState.device?.setProperty(
+                            try await appState.unitDevice?.setProperty(
                                 PropertyAddress(selector: .peakHoldMode),
                                 value: .uint32(newValue)
                             )
@@ -1074,7 +1100,7 @@ struct SystemSetupView: View {
                     guard !isLoading else { return }
                     Task {
                         do {
-                            try await appState.device?.setProperty(
+                            try await appState.unitDevice?.setProperty(
                                 PropertyAddress(selector: .oversHoldMode),
                                 value: .uint32(newValue)
                             )
@@ -1548,6 +1574,7 @@ struct SystemSetupView: View {
             report.connectedUnitLines.append(raw)
         }
         report.port2Lines = appState.secondPortState?.reportLines ?? []
+        report.unitBLines = appState.unitB?.reportLines(unitAPrefix: appState.peripheralPrefix) ?? []
         return report
     }
 
@@ -1748,14 +1775,14 @@ struct SystemSetupView: View {
         }
         // Peak Hold and Over Hold mode
         do {
-            if let ph = (try await device.getProperty(PropertyAddress(selector: .peakHoldMode))).asUInt32 {
+            if let ph = (try await (appState.unitDevice ?? device).getProperty(PropertyAddress(selector: .peakHoldMode))).asUInt32 {
                 peakHoldMode = ph
             }
         } catch {
             print("[Maestro] ERROR: loadProperties peakHoldMode failed: \(error)")
         }
         do {
-            if let oh = (try await device.getProperty(PropertyAddress(selector: .oversHoldMode))).asUInt32 {
+            if let oh = (try await (appState.unitDevice ?? device).getProperty(PropertyAddress(selector: .oversHoldMode))).asUInt32 {
                 overHoldMode = oh
             }
         } catch {

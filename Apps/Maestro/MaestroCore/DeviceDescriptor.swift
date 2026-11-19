@@ -930,6 +930,9 @@ public struct DeviceInfoReport: Sendable, Equatable {
     /// EXPERIMENT (64 channels): `SecondPortState.reportLines`. Empty for every
     /// driver that is not running the two-port experiment.
     public var port2Lines: [String] = []
+    /// A second Symphony I/O on port 2 while 64 channels run
+    /// (`SecondUnitInfo.reportLines`). Empty with one unit.
+    public var unitBLines: [String] = []
 
     public init(
         deviceName: String = "Symphony I/O",
@@ -995,6 +998,7 @@ public struct DeviceInfoReport: Sendable, Equatable {
             lines.append("Connected Unit: \(connectedUnit)")
         }
         lines.append(contentsOf: port2Lines)
+        lines.append(contentsOf: unitBLines)
         return lines.joined(separator: "\n")
     }
 

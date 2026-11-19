@@ -57,7 +57,9 @@ struct MixerView: View {
             channelCount: appState.cardLayout.mixerChannels.count,
             mixer: mixer,
             store: appState.channelStateStore)
-        _channels = State(initialValue: snapshot.channels)
+        // With a second Symphony I/O on port 2 (64 channels), its strips
+        // follow unit A's, from unit B's own saved state.
+        _channels = State(initialValue: appState.mixerStripStates(unitA: snapshot.channels, mixer: mixer))
         // Software Return and Master are each one stereo fader drawn with two
         // handles that always move together (see MixerPairLink). The saved
         // left value is that mixer's level for the pair.
@@ -127,7 +129,9 @@ struct MixerView: View {
     /// `totalPairsPerBoard * 2` is the XLink bus slice — a flat 16 per installed
     /// board whatever the board is — so it drew 32 strips for a 16x16 + 8MicPre
     /// (16 real channels) and 32 for any other pair regardless of what they carry.
-    private var mixerChannels: [CardLayout.MixerChannel] { layout.mixerChannels }
+    /// With a second Symphony I/O on port 2 (64 channels), unit B's strips
+    /// follow unit A's (mixer channels 32-63, `TwoUnitMixer`).
+    private var mixerChannels: [CardLayout.MixerChannel] { appState.mixerStripChannels }
 
     private var channelCount: Int { mixerChannels.count }
 
@@ -754,10 +758,10 @@ struct MixerView: View {
 
     private func initializeChannels() {
         let snapshot = MixerStateSnapshot(
-            channelCount: channelCount,
+            channelCount: appState.cardLayout.mixerChannels.count,
             mixer: selectedMixer,
             store: appState.channelStateStore)
-        channels = snapshot.channels
+        channels = appState.mixerStripStates(unitA: snapshot.channels, mixer: selectedMixer)
         softwareReturnSource = snapshot.softwareReturnSource
         masterLevel = snapshot.masterLevel
         masterLeftLevel = snapshot.masterLevel
@@ -773,7 +777,7 @@ struct MixerView: View {
 
     /// Persist current mixer channel states to UserDefaults.
     private func saveMixerState() {
-        appState.channelStateStore.save(channels, for: ChannelStateStore.mixerKey(selectedMixer))
+        appState.saveMixerStrips(channels, mixer: selectedMixer)
         if let data = try? JSONEncoder().encode(swReturnChannel) {
             UserDefaults.standard.set(data, forKey: "mixerState_swReturn")
         }
@@ -918,6 +922,7 @@ struct MixerView: View {
             batchCenterPans()
         },
         softwareReturnSource: $softwareReturnSource,
+        softwareReturnPairCount: appState.softwareReturnPairCount,
         onSoftwareReturnSourceChange: { source in
             softwareReturnSource = source
             Task { await writeSoftwareReturnSource(source); saveMixerState() }
@@ -1139,8 +1144,9 @@ struct MixerView: View {
     /// Route the selected USB playback stereo pair into this mixer's Software
     /// Return input, matching the legacy AEsR property.
     private func writeSoftwareReturnSource(_ source: UInt32) async {
+        // 8 pairs, or 32 while 64 channels run with unit B (ThunderBridge only).
         guard let device = appState.device,
-              SymphonyIOSoftwareReturnSource(rawValue: source) != nil else { return }
+              source < UInt32(appState.softwareReturnPairCount) else { return }
         do {
             let element = UInt32(selectedMixer + 1) << 16
             try await device.setProperty(
@@ -1263,6 +1269,8 @@ struct MixerChannelStripView: View {
     var customLabel: String = ""
     var onCustomLabelChange: ((String) -> Void)? = nil
     var softwareReturnSource: Binding<UInt32>? = nil
+    /// Software Return pairs offered: 8, or 32 with a second unit (64 channels).
+    var softwareReturnPairCount: Int = 8
     var onSoftwareReturnSourceChange: ((UInt32) -> Void)? = nil
     var showZoneColoring: Bool = false
     /// Legacy Maestro draws a stereo return as one fader with a left and a
@@ -1283,8 +1291,7 @@ struct MixerChannelStripView: View {
 
     private var resolvedMeterLevels: (left: Double, right: Double?) {
         if let appState, let index = inputMeterIndex {
-            let rawInput = index < appState.inputMeterLevels.count
-                ? appState.inputMeterLevels[index] : -60.0
+            let rawInput = appState.mixerInputMeterLevel(strip: index)
             let level: Double
             if channel.isMuted && !preMuteMetering {
                 level = -60.0
@@ -1525,14 +1532,15 @@ struct MixerChannelStripView: View {
             // hardware/card label at the top of the strip.
             if let sourceBinding = softwareReturnSource {
                 PillMenu(
-                    text: SymphonyIOSoftwareReturnSource(rawValue: sourceBinding.wrappedValue)?.displayName ?? "1-2",
+                    text: sourceBinding.wrappedValue < UInt32(softwareReturnPairCount)
+                        ? TwoUnitMixer.softwareReturnName(sourceBinding.wrappedValue) : "1-2",
                     fontSize: 9,
                     pillHeight: 22,
                     toolTip: "Software Return source — selects the DAW stereo pair feeding this mixer",
-                    options: SymphonyIOSoftwareReturnSource.allCases.map { source in
-                        (source.displayName, {
-                            sourceBinding.wrappedValue = source.rawValue
-                            onSoftwareReturnSourceChange?(source.rawValue)
+                    options: (0..<UInt32(softwareReturnPairCount)).map { source in
+                        (TwoUnitMixer.softwareReturnName(source), {
+                            sourceBinding.wrappedValue = source
+                            onSoftwareReturnSourceChange?(source)
                         })
                     }
                 )

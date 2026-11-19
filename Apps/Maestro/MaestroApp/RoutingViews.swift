@@ -492,6 +492,11 @@ struct InputRoutingView: View {
 struct OutputRoutingView: View {
     private let appState: AppState
     @State private var routes: [Int: Set<Int>] = [:] // row → {cols} mapping (source → HW output dests, supports dual routing)
+    /// Unit B's outputs (64 channels, a second Symphony I/O on port 2): grid
+    /// row (DAW pairs 0-31, Mixer 1 = 32, Mixer 2 = 33) → unit B columns.
+    /// Saved under unit B's own key; unit A's `routes` keep their encoding.
+    @State private var unitBRoutes: [Int: Set<Int>] = [:]
+    @State private var unitBChosenRows: Set<Int> = []
     /// Rows the user actually chose. Only these are persisted — see
     /// ``RoutingStateCache``. The output grid has never been seen poisoned the way
     /// the input grid was, but it cached the same way, so it could be.
@@ -679,19 +684,35 @@ struct OutputRoutingView: View {
                     // Output Routing column headers — board-aware OUTPUT analog/digital split.
                     let colLabels: [(type: String, channels: String)] =
                         columns.map { (type: $0.type, channels: $0.channels) }
+                        + unitBColumns.map { (type: "\(appState.unitBPeripheralPrefix) \($0.type)", channels: $0.channels) }
+                    let labels = gridRowLabels
                     RoutingGridView(
-                        rowCount: rowLabels.count,
-                        columnCount: hwPairCount,
-                        rowLabels: rowLabels,
+                        rowCount: labels.count,
+                        columnCount: hwPairCount + unitBColumns.count,
+                        rowLabels: labels,
                         columnLabels: colLabels,
                         rowGroupLabel: "Software Outputs",
                         colGroupLabel: "Hardware Outputs",
-                        isActiveCell: { row, col in routes[row]?.contains(col) == true },
+                        isActiveCell: { row, col in
+                            if col >= hwPairCount {
+                                return unitBRoutes[row]?.contains(col - hwPairCount) == true
+                            }
+                            guard let aRow = unitARow(gridRow: row) else { return false }
+                            return routes[aRow]?.contains(col) == true
+                        },
                         hoverRow: $hoverRow,
                         hoverCol: $hoverCol,
                         columnMeterLevels: [],
-                        onCellTap: { row, col in
+                        onCellTap: { gridRow, col in
                             guard !isLoadingRoutes else { return }
+                            if col >= hwPairCount {
+                                tapUnitB(row: gridRow, col: col - hwPairCount)
+                                return
+                            }
+                            guard let row = unitARow(gridRow: gridRow) else {
+                                errorMessage = "Unit A's outputs play Software 1-32 or a mixer; 33-64 are unit B's."
+                                return
+                            }
                             // Toggle: if this (row,col) is active, remove it; otherwise add it.
                             // Each column can only have one source row — clear other rows' claim.
                             let removing = routes[row]?.contains(col) == true
@@ -751,10 +772,102 @@ struct OutputRoutingView: View {
             guard !Task.isCancelled else { indicatorTask.cancel(); return }
             routes = restoredRoutes(measured.isEmpty ? defaultRouteGrid() : measured)
             userChosenRows = Set(routingCache?.loadMulti()?.keys.map { $0 } ?? [])
+            loadUnitBRoutes()
             presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
             isLoadingRoutes = false
             showLoadingIndicator = false
             indicatorTask.cancel()
+        }
+    }
+
+    // MARK: Unit B's outputs (64 channels)
+
+    /// Unit B's output columns, after unit A's; none with one unit.
+    private var unitBColumns: [CardLayout.RoutingColumn] {
+        appState.unitBOnCard ? (appState.unitBLayout?.outputRoutingColumns ?? []) : []
+    }
+
+    /// A grid row in unit A's saved numbering (the grid's own with one unit).
+    private func unitARow(gridRow: Int) -> Int? {
+        guard appState.unitBOnCard else { return gridRow }
+        return TwoUnitOutputRouting.unitARow(gridRow: gridRow, unitAPairs: swOutputPairCount)
+    }
+
+    /// Row labels: with unit B, the 64 DAW channels (33-64 named after unit
+    /// B's outputs, where the card plays them by default), then the mixers.
+    private var gridRowLabels: [(number: String, name: String)] {
+        let single = rowLabels
+        guard appState.unitBOnCard, let unitB = appState.unitBLayout else { return single }
+        let pairs = swOutputPairCount
+        var labels: [(number: String, name: String)] = Array(single.prefix(pairs))
+        for p in pairs..<TwoUnitOutputRouting.dawPairCount {
+            let number = "\(p * 2 + 1)-\(p * 2 + 2)"
+            let name = unitB.thunderboltOutputPairName(pair: p - pairs, prefix: appState.unitBPeripheralPrefix)
+                ?? CardLayout.softwarePairName(hardwarePair: "Digital \(p * 2 + 1)/\(p * 2 + 2)",
+                                               prefix: appState.unitBPeripheralPrefix)
+            labels.append((number: number, name: name))
+        }
+        // Mixer buses, numbered after the 64 DAW channels as the rows above.
+        for i in 0..<2 {
+            let ch1 = TwoUnitOutputRouting.dawPairCount * 2 + 1 + i * 2
+            labels.append((number: "\(ch1)-\(ch1 + 1)", name: "Mixer \(i + 1)"))
+        }
+        return labels
+    }
+
+    /// The card's start-up routes for unit B (output c plays DAW 33 + c) with
+    /// the saved choices laid over them.
+    private func loadUnitBRoutes() {
+        guard appState.unitBOnCard else {
+            unitBRoutes = [:]
+            unitBChosenRows = []
+            return
+        }
+        var grid: [Int: Set<Int>] = [:]
+        for (col, column) in unitBColumns.enumerated() {
+            guard let channel = ThunderboltCardRouting.channel(forDestination: column.routingByte) else { continue }
+            grid[TwoUnitOutputRouting.defaultRow(unitBChannel: Int(channel)), default: []].insert(col)
+        }
+        let saved = appState.unitBOutputRoutingCache?.loadMulti() ?? [:]
+        for (row, cols) in saved where row >= 0 && row < TwoUnitOutputRouting.rowCount {
+            let live = cols.filter { $0 >= 0 && $0 < unitBColumns.count }
+            guard !live.isEmpty else { continue }
+            for (other, others) in grid where other != row {
+                let remaining = others.subtracting(live)
+                if remaining.isEmpty { grid.removeValue(forKey: other) } else { grid[other] = remaining }
+            }
+            grid[row] = live
+        }
+        unitBRoutes = grid
+        unitBChosenRows = Set(saved.keys)
+    }
+
+    /// A click on one of unit B's columns: the same one-source-per-output
+    /// rule as unit A's, written as a card route on XLink TX 32-63.
+    private func tapUnitB(row: Int, col: Int) {
+        guard col >= 0, col < unitBColumns.count else { return }
+        let removing = unitBRoutes[row]?.contains(col) == true
+        if removing {
+            unitBRoutes[row]?.remove(col)
+            if unitBRoutes[row]?.isEmpty == true { unitBRoutes.removeValue(forKey: row) }
+        } else {
+            for (key, vals) in unitBRoutes where vals.contains(col) {
+                unitBRoutes[key]?.remove(col)
+                if unitBRoutes[key]?.isEmpty == true { unitBRoutes.removeValue(forKey: key) }
+            }
+            unitBRoutes[row, default: []].insert(col)
+        }
+        unitBChosenRows.insert(row)
+        appState.unitBOutputRoutingCache?.save(unitBRoutes.filter { unitBChosenRows.contains($0.key) })
+        let destLeft = unitBColumns[col].routingByte
+        Task {
+            do {
+                try await appState.writeUnitBOutputRoutePair(destLeft: destLeft, gridRow: removing ? nil : row)
+                errorMessage = nil
+                print("[Maestro] OutputRouting: unit B row \(row) → col \(col) (dest \(destLeft), clear=\(removing))")
+            } catch {
+                errorMessage = "Error: \(error.localizedDescription)"
+            }
         }
     }
 

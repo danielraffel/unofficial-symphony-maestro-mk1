@@ -90,6 +90,38 @@ struct SecondUnitTests {
         #expect(TwoUnitMixer.softwareReturnName(31) == "63-64")
     }
 
+    @Test("The second-unit simulation parses card tokens")
+    func simulationParse() {
+        #expect(SecondUnitSimulation.key == "MaestroSimulateSecondUnit")
+        #expect(SecondUnitSimulation.parse("16x16") == SecondUnitInfo(slot1: .analogADDA16, slot2: .none))
+        #expect(SecondUnitSimulation.parse("analogAES+analogAD16") == SecondUnitInfo(slot1: .analogAES, slot2: .analogAD16))
+        #expect(SecondUnitSimulation.parse("8x8+a16")?.slot2 == .analogAD16)
+        #expect(SecondUnitSimulation.parse("nonsense") == nil)
+        // An 8MicPre cannot be in slot 1.
+        #expect(SecondUnitSimulation.parse("micPre8") == nil)
+    }
+
+    @Test("Help says how to cable and clock two units")
+    func help() {
+        let text = SecondUnitHelp.lines.joined(separator: " ")
+        for phrase in ["PC-32", "port 1", "port 2", "Loop Sync", "**Word Clock Out**", "**Word Clock In**",
+                       "**Unit A / Unit B**", "SYM AIM", "Output Routing"] {
+            #expect(text.contains(phrase), "\(phrase)")
+        }
+        for word in ["beta", "Beta", "test build"] { #expect(!text.contains(word)) }
+    }
+
+    @Test("Device Info and Diagnostics carry unit B's lines")
+    func deviceInfoLines() {
+        var report = DeviceInfoReport(connection: "ThunderBridge")
+        let without = report.clipboardText
+        #expect(!without.contains("Unit B"))
+        report.unitBLines = SecondUnitInfo(slot1: .optical, slot2: .none).reportLines(unitAPrefix: "A")
+        #expect(report.clipboardText.hasPrefix(without))
+        #expect(report.clipboardText.contains("Unit B (port 2): Symphony I/O"))
+        #expect(report.clipboardText.contains("Unit B clock: Word Clock (follows unit A)"))
+    }
+
     @Test("Output Routing at 64: unit A's saved rows keep their meaning")
     func outputRoutingRows() {
         #expect(TwoUnitOutputRouting.rowCount == 34)

@@ -131,6 +131,31 @@ public struct SecondUnitInfo: Sendable, Equatable {
     }
 }
 
+/// Help's answer for two units, after `PortSelection.helpText`. The cabling
+/// follows Apogee's Symphony I/O User's Guide ("2 Symphony I/Os together with
+/// Symphony 64 Thunderbridge or PCI", p. 87) and the ThunderBridge Quick Start
+/// Guide ("Connecting Multiple Apogee Interfaces", pp. 17-18); the clock line
+/// says what this driver does (`ConfigureUnitB`: Word Clock, slave).
+public enum SecondUnitHelp {
+    public static let lines = [
+        "**Cabling.** Connect the main port of each Symphony I/O to the ThunderBridge with a PC-32 cable: "
+            + "the first unit to port 1 (channels 1–32), the second to port 2 (channels 33–64). "
+            + "Apogee allows one Symphony I/O per port, so two is the most. Set both units to Symphony mode "
+            + "(SYM AIM) on their front panels.",
+        "**Clock.** The unit on port 2 follows the unit on port 1. Apogee's guide links the two units with BNC "
+            + "cables between their Loop Sync connectors. Maestro sets the second unit to **Word Clock**, which is "
+            + "what Apogee's software chose when Loop Sync was not used, so connect a BNC cable from the first "
+            + "unit's **Word Clock Out** to the second unit's **Word Clock In**.",
+        "**In Maestro.** Once 64 channels run and the driver has set up the second unit, Input, Output, "
+            + "Device Settings and System Setup show a **Unit A / Unit B** picker at the top; each page then "
+            + "shows and sets the chosen unit. The Mixer shows both units' inputs, the second unit's after the "
+            + "first's and named with its prefix letter, and Output Routing adds the second unit's outputs as "
+            + "more columns. Software 33–64 play on the second unit until you route them elsewhere.",
+        "Not sent to the second unit yet: its prefix letter (Maestro keeps it for names), Speaker Mode and "
+            + "the S/PDIF coax settings. Its speaker and headphone controls stay on its front panel.",
+    ]
+}
+
 /// When the Unit A / Unit B picker is shown.
 public enum UnitPicker {
     /// Only on ThunderBridge, only for a Symphony I/O (not converters), and only
@@ -236,4 +261,32 @@ public enum TwoUnitOutputRouting {
 
     /// DAW channel (0-based) unit B's first output plays by default.
     public static let unitBChannelBaseDAW = 32
+}
+
+/// Debug only: the second-unit simulation's launch argument.
+public enum SecondUnitSimulation {
+    public static let key = "MaestroSimulateSecondUnit"
+
+    /// "analogADDA16+optical", "16x16", "8x8+A16"... Each `+`-separated token
+    /// is a card (`CardSimulation.parseCard`); "16x16" is a 16x16 alone.
+    public static func parse(_ value: String) -> SecondUnitInfo? {
+        let tokens = value.split(separator: "+").map { String($0).trimmingCharactersInSimpleWhitespace() }
+        func card(_ token: String) -> IOCardType? {
+            switch token.lowercased() {
+            case "16x16": return .analogADDA16
+            case "8x8": return .optical
+            case "a16", "ad16": return .analogAD16
+            case "d16", "da16": return .analogDA16
+            default: return CardSimulation.parseCard(token)
+            }
+        }
+        guard let first = tokens.first, let slot1 = card(first) else { return nil }
+        let slot2 = tokens.count > 1 ? card(tokens[1]) : IOCardType.none
+        guard let slot2, (try? CardConfiguration(slot1: slot1, slot2: slot2).validate()) != nil else { return nil }
+        return SecondUnitInfo(slot1: slot1, slot2: slot2)
+    }
+
+    public static func request(defaults: UserDefaults = .standard) -> SecondUnitInfo? {
+        defaults.string(forKey: key).flatMap(parse)
+    }
 }

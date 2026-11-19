@@ -456,7 +456,24 @@ struct DetailView: View {
     @Environment(AppState.self) private var appState
     let area: NavigationArea
 
+    /// Input, Output, Device Settings and System Setup belong to one unit:
+    /// with a second Symphony I/O on port 2 they follow the unit picker, and
+    /// are rebuilt when it changes.
+    private var isPerUnit: Bool { UnitPicker.isPerUnit(page: area.rawValue) }
+
     var body: some View {
+        if isPerUnit && appState.unitPickerVisible {
+            VStack(spacing: 0) {
+                UnitPickerBar()
+                page.id(appState.activeUnit)
+            }
+        } else {
+            page
+        }
+    }
+
+    @ViewBuilder
+    private var page: some View {
         switch area {
         case .input:          InputControlsView(appState: appState)
         case .output:         OutputControlsView(appState: appState)
