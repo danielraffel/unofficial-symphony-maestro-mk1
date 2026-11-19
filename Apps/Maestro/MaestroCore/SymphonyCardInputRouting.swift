@@ -8,6 +8,17 @@ public struct SymphonyCardInputRouting: Sendable {
 
     public init(model: SymphonyRoutingModel) { self.model = model }
 
+    /// Build 132 first accepts Symphony I/O card input commands (0xB6/0xB7).
+    /// Unknown/older serving drivers retain the per-unit routing surface only.
+    public init(model: SymphonyRoutingModel, servingBuild: ServingDextBuild?) {
+        if case .build(let build) = servingBuild, build >= 132 {
+            self.model = model
+        } else {
+            self.model = SymphonyRoutingModel(topology: .unknown, hostChannels: model.hostChannels,
+                                             unitBConfigured: model.unitBConfigured)
+        }
+    }
+
     /// B1b's Symphony rules: even a 64-channel personality exposes only 32
     /// routes until B is configured. Mixed/converter routing has its own owner.
     public var channelCount: Int {

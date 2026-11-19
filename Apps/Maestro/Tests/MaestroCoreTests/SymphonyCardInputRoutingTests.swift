@@ -3,6 +3,22 @@ import Testing
 @testable import MaestroCore
 
 struct SymphonyCardInputRoutingTests {
+    @Test func servingDriverCapability() {
+        let model = SymphonyRoutingModel(topology: .symphonyOnly, hostChannels: 32, unitBConfigured: false)
+        for build: ServingDextBuild? in [nil, .olderThanBuildReporting, .build(0), .build(131), .build(132), .build(133)] {
+            let routing = SymphonyCardInputRouting(model: model, servingBuild: build)
+            let supported = build == .build(132) || build == .build(133)
+            #expect(routing.channelCount == (supported ? 32 : 0))
+            #expect((routing.resetCommand != nil) == supported)
+            #expect((routing.command(host: 0, source: 1) != nil) == supported)
+        }
+        let converter = SymphonyRoutingModel(topology: .converterOnly(.init(port1: [.ad16x])),
+                                            hostChannels: 32, unitBConfigured: false)
+        let routing = SymphonyCardInputRouting(model: converter, servingBuild: .build(132))
+        #expect(routing.channelCount == 0)
+        #expect(routing.resetCommand == nil)
+    }
+
     @Test func bytesAndRefusals() throws {
         for channels in [0, 32, 64] {
             for configured in [false, true] {
