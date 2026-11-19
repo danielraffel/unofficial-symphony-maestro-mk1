@@ -245,13 +245,20 @@ static inline void ConverterAuthChallenge(uint32_t &state, uint8_t out[kConverte
     }
 }
 
-// VerifyDataInDevice. `routing` is the unit's routing byte; the original passed
-// CONVERT_NEW_ROUTING_TO_DEVICEINFO(routing) = routing << 4 as a UInt8, so the
-// value it mixed in (HostInfo, nibbles swapped) is routing & 0x0F.
-static inline bool ConverterAuthVerify(const uint8_t out[kConverterAuthBytes],
-                                       const uint8_t in[kConverterAuthBytes], uint8_t routing)
+// The device-info byte the original mixed in: DeviceInfoCached (XLink.cpp
+// :1718-1733) = CONVERT_NEW_ROUTING_TO_OLDDEVICEINFO(routing, minor firmware)
+// = ((routing & 0x0F) << 4) | (INQUIRE & 0x0F), passed to VerifyDataInDevice
+// as a UInt8.
+static inline uint8_t ConverterAuthDeviceInfo(uint8_t routing, uint8_t inquire)
 {
-    const uint8_t info = (uint8_t)(routing << 4);
+    return (uint8_t)(((routing & 0x0F) << 4) | (inquire & 0x0F));
+}
+
+// VerifyDataInDevice (XLink.cpp:2846-2905). `info` is ConverterAuthDeviceInfo;
+// the value mixed in (HostInfo) is it with its halves swapped.
+static inline bool ConverterAuthVerify(const uint8_t out[kConverterAuthBytes],
+                                       const uint8_t in[kConverterAuthBytes], uint8_t info)
+{
     const uint8_t hostInfo = (uint8_t)(((info & 0x0F) << 4) | ((info & 0xF0) >> 4));
     uint8_t host[8], rnd[8], res[8];
     for (uint32_t i = 0; i < 8; i++) {
@@ -276,7 +283,7 @@ static inline bool ConverterAuthVerify(const uint8_t out[kConverterAuthBytes],
 // What a genuine unit answers, for the host tests and the register-trace card:
 // bytes 8-15 are the unit's own, bytes 0-7 follow from them. (Test helper; the
 // driver never builds an answer.)
-static inline void ConverterAuthExpectedAnswer(const uint8_t out[kConverterAuthBytes], uint8_t routing,
+static inline void ConverterAuthExpectedAnswer(const uint8_t out[kConverterAuthBytes], uint8_t info,
                                                const uint8_t unitBytes[8], uint8_t in[kConverterAuthBytes])
 {
     for (uint32_t i = 0; i < 8; i++) in[i + 8] = unitBytes[i];
@@ -285,7 +292,6 @@ static inline void ConverterAuthExpectedAnswer(const uint8_t out[kConverterAuthB
     // the result depends only on bytes 8-15, so one pass gives the answer.
     uint8_t probe[kConverterAuthBytes];
     for (uint32_t i = 0; i < kConverterAuthBytes; i++) probe[i] = in[i];
-    const uint8_t info = (uint8_t)(routing << 4);
     const uint8_t hostInfo = (uint8_t)(((info & 0x0F) << 4) | ((info & 0xF0) >> 4));
     uint8_t host[8], rnd[8];
     for (uint32_t i = 0; i < 8; i++) {

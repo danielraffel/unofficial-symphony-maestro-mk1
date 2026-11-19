@@ -110,14 +110,28 @@ int main()
     CHECK(ConverterFirmwareOutOfDate(1, 15), "1.F out of date");
     CHECK(!ConverterFirmwareOutOfDate(3, 0), "3.0 ok");
 
-    // Authentication: a genuine answer verifies; one wrong byte, or the wrong
-    // routing nibble, does not.
+    // Authentication: a genuine answer verifies with the unit's device info,
+    // which carries its minor firmware (INQUIRE low nibble); the wrong minor,
+    // the wrong routing or one wrong byte does not.
     { uint32_t st = 0x12345678u; uint8_t out[16], in[16]; const uint8_t unit[8] = {1, 2, 3, 4, 0x55, 0xAA, 7, 0x80};
+      const uint8_t inquire = 0x37;   // AD-16X, minor firmware 7
+      const uint8_t info = ConverterAuthDeviceInfo(kConverterRoutingAD, inquire);
+      CHECK(info == 0x37, "device info 0x%02x (want routing nibble 3, minor 7)", info);
+      CHECK(ConverterAuthDeviceInfo(kConverterRoutingRosetta, 0x5A) == 0x5A, "Rosetta minor 10");
       ConverterAuthChallenge(st, out);
-      ConverterAuthExpectedAnswer(out, kConverterRoutingAD, unit, in);
-      CHECK(ConverterAuthVerify(out, in, kConverterRoutingAD), "genuine answer verifies");
-      CHECK(!ConverterAuthVerify(out, in, kConverterRoutingDA) || (kConverterRoutingAD & 0xF) == (kConverterRoutingDA & 0xF), "routing nibble matters");
-      in[3] ^= 1; CHECK(!ConverterAuthVerify(out, in, kConverterRoutingAD), "a wrong byte fails");
+      ConverterAuthExpectedAnswer(out, info, unit, in);
+      CHECK(ConverterAuthVerify(out, in, info), "genuine answer verifies");
+      int wrongMinorAccepted = 0, wrongRoutingAccepted = 0;
+      for (uint32_t k = 0; k < 2000; k++) {   // over many challenges the mixed-in byte must matter
+          uint8_t o[16], a[16]; ConverterAuthChallenge(st, o);
+          ConverterAuthExpectedAnswer(o, info, unit, a);
+          if (!ConverterAuthVerify(o, a, info)) { CHECK(false, "genuine answer %u rejected", k); break; }
+          if (ConverterAuthVerify(o, a, ConverterAuthDeviceInfo(kConverterRoutingAD, 0x30))) wrongMinorAccepted++;
+          if (ConverterAuthVerify(o, a, ConverterAuthDeviceInfo(kConverterRoutingDA, inquire))) wrongRoutingAccepted++;
+      }
+      CHECK(wrongMinorAccepted < 2000, "the minor firmware never affects the check");
+      CHECK(wrongRoutingAccepted < 2000, "the routing never affects the check");
+      in[3] ^= 1; CHECK(!ConverterAuthVerify(out, in, info), "a wrong byte fails");
       uint32_t st2 = 0x12345678u; uint8_t out2[16]; ConverterAuthChallenge(st2, out2);
       CHECK(memcmp(out, out2, 16) == 0, "challenge sequence is reproducible"); }
 

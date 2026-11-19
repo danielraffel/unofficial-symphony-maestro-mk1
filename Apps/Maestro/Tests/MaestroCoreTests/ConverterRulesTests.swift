@@ -159,8 +159,12 @@ struct ConverterSystemTests {
         let old = ConverterUnit(port: 1, address: 3, word: word(0xC6, 0x02, auth: false))
         #expect(old.firmwareOutOfDate)
         #expect(old.authText == "authentication failed")
+        // No XTD reply: major 0, minor from INQUIRE, as the original reported it
+        // (and warned about: the oldest firmware).
         let noXtd = ConverterUnit(port: 0, address: 1, word: UInt32(0x37) | ConverterState.unitInquireOK)
-        #expect(noXtd.firmwareText == "firmware unknown" && !noXtd.firmwareOutOfDate)
+        #expect(noXtd.firmwareText == "X-Symphony v0.7" && noXtd.firmwareOutOfDate)
+        let nothing = ConverterUnit(port: 0, address: 1, word: UInt32(0x30) | ConverterState.unitInquireOK)
+        #expect(nothing.firmwareText == "firmware unknown" && !nothing.firmwareOutOfDate)
         #expect(noXtd.authOK == nil)
         // 0x0F: AD by default, DA when the driver applied that Device Type.
         let dd = ConverterUnit(port: 0, address: 2, word: word(0xF7, 0x02))
@@ -185,9 +189,12 @@ struct ConverterSystemTests {
         #expect(system.ports[0][1].firmwareText == "firmware unknown")
         #expect(system.connectedUnit == .chain([.ad16x, .ad16x, .da16x, .da16x]))
         #expect(system.hostInputCount == 32 && system.hostOutputCount == 32)
-        // No XTD reply: firmware unknown, never "out of date".
+        // No XTD reply: v0.N from INQUIRE, which is out of date (the original
+        // warned); a unit that reports 0.0 is unknown and never warned about.
         let noXtd = try #require(ConverterSystem(probeWord: ran | inquireOK | 0x31))
-        #expect(noXtd.ports[0][0].firmwareText == "firmware unknown" && noXtd.firmwareNotices.isEmpty)
+        #expect(noXtd.ports[0][0].firmwareText == "X-Symphony v0.1" && noXtd.firmwareNotices.count == 1)
+        let zero = try #require(ConverterSystem(probeWord: ran | inquireOK | 0x30))
+        #expect(zero.ports[0][0].firmwareText == "firmware unknown" && zero.firmwareNotices.isEmpty)
         // No probe, or nothing answered: nil.
         #expect(ConverterSystem(probeWord: 0) == nil)
         #expect(ConverterSystem(probeWord: ran) == nil)
@@ -312,6 +319,7 @@ struct ConverterSystemTests {
         let system = try #require(ConverterSystem(state: decoded))
         #expect(system.firmwareNotices == [
             "X-Symphony firmware v2.6 in AD-16X (port 1, unit 1) is out of date. Version 2.7 or later is required.",
+            "X-Symphony firmware v0.7 in AD-16X (port 1, unit 3) is out of date. Version 2.7 or later is required.",
         ])
     }
 

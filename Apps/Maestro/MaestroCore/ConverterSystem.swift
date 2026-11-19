@@ -235,8 +235,11 @@ public struct ConverterUnit: Sendable, Equatable {
         self.routing = routing
         self.kind = ConverterRules.kind(routing: routing, ddIsAD: ddIsAD)
         self.isR200 = routing == ConverterRules.routingRosetta && isR200
+        // As the original (XLink.cpp:1503-1548, SymphonyController.cpp:2573-2588):
+        // major from XTD_INQUIRE, 0 when the unit does not answer it (the oldest
+        // firmware), minor from INQUIRE. v0.N is real and out of date.
         self.firmwareMajor = xtdOK ? xtd & 0x0F : 0
-        self.firmwareMinor = xtdOK ? inquire & 0x0F : 0
+        self.firmwareMinor = inquireOK ? inquire & 0x0F : 0
     }
 
     /// A unit from the driver's unit word (selector 9).

@@ -314,7 +314,7 @@ struct Port {
             if (Unit *u = addr ? reachable(addr) : nullptr) {
                 static const uint8_t own[8] = { 0x5A, 0x13, 0xC4, 0x7E, 0x21, 0x99, 0x0F, 0xB2 };
                 uint8_t in[16];
-                ConverterAuthExpectedAnswer(u->authOut, ConverterRouting(u->inquire, u->xtd), own, in);
+                ConverterAuthExpectedAnswer(u->authOut, ConverterAuthDeviceInfo(ConverterRouting(u->inquire, u->xtd), u->inquire), own, in);
                 if (!u->authGenuine) in[0] ^= 0x01;
                 if (data < 16) reply(addr, cmd, in[data]);
             }
@@ -2508,6 +2508,42 @@ static void RunConverterParityChecks()
         // Never configured as converters at any point: unit 1 is never
         // authenticated (that happens only once it is taken for a converter).
         CHECK(AfterIdentification(r.card) == r.card.lines.size(), "%s: unit 1 was configured as a converter", o.name);
+        Finish(o, r);
+    }
+    // 3c. Converters on both ports: 64 channels and back to 32, then a rate
+    //     change. Port 2's units are still listed but port 2 is off; the
+    //     alignment must look at port 1 only and still write the jam (the
+    //     original aligned enabled ports only).
+#ifdef TRACE_HAVE_PORT2_AUDIO
+    {
+        Options o; o.name = "converters: 64 then 32, then a rate change"; o.port1 = Port::Converters;
+        o.port2 = Port::Converters; o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        Select(r, 1, "converters: select 64");
+        Select(r, 0, "converters: back to 32");
+        c.phase("rate change at 32 after 64");
+        const size_t mark = c.lines.size();
+        gHostAudio.device->SetSampleRate(48000.0);
+        CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: rate change failed", o.name);
+        CHECK(CountAccess(c, mark, 'W', kRegJam) == 1, "%s: jam not written after going back to 32 (%zu writes)",
+              o.name, CountAccess(c, mark, 'W', kRegJam));
+        CHECK(Commands(c, mark, kRegXLink2TX, 0x09).empty(), "%s: port 2 asked its phase while off", o.name);
+        Finish(o, r);
+    }
+#endif
+    // 3d. A DD-16X (routing 0x0F with an XTD reply) after an AD-16X: still converters.
+    {
+        Options o; o.name = "converters: AD then DD"; o.port1 = Port::Converters; o.shortFlow = true;
+        o.port1Units = { U(0x37, 0x02), U(0xF7, 0x02) };
+        Run r;
+        RunScenario(o, r);
+        const SymphonyConverterStateOutput st = ConvState(r);
+        CHECK((st.flags & kSymphonyConvPort1Converters) && st.unitCount[0] == 2, "%s: flags 0x%x units %u",
+              o.name, st.flags, st.unitCount[0]);
+        CHECK((st.unit[0][1] & kSymphonyConvUnitAuthOK), "%s: DD unit not authenticated (0x%08x)", o.name, st.unit[0][1]);
         Finish(o, r);
     }
     // 4. A unit whose authentication does not verify is reported and kept.

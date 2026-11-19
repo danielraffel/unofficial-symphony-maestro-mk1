@@ -344,6 +344,7 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  convHostOut;
     uint32_t  convAuthState;           // challenge generator state (fixed seed, like random())
     bool      convRecoveryPending;     // atomic; a recovery waits for a controlled restart
+    bool      port2On;                 // xlinkQueue; GCSR2 has port 2 enabled (SetPort2Enabled)
     uint64_t  convLastRecoveryNs;      // watch-local
     uint32_t  convFailedRecoveries;    // watch-local; recoveries since the last healthy check
     uint32_t  lastWatchClockReg;       // watch-local: last kRegXLinkClocking sample
@@ -1714,7 +1715,7 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
     if (vendorAnswered)
         ivars->symphonyAnsweredSinceStart = true;
     const bool converters = !ivars->symphonyAnsweredSinceStart &&
-                            UnitProbeIsConvertersOnly(ivars->unitProbeWord);
+                            (UnitProbeIsConvertersOnly(ivars->unitProbeWord) || __atomic_load_n(&ivars->convPort1, __ATOMIC_ACQUIRE));
     const bool was = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
     if (was && !converters) {
         __atomic_store_n(&ivars->converterVolumeKeys, false, __ATOMIC_RELEASE);
@@ -1827,7 +1828,7 @@ static bool XLinkQueryOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t txRegister
 // reports the result (kSymphonyConvUnitAuthRan/AuthOK) but refuses nothing: the
 // check only protects the host, and a mistake here would lock out real units.
 static uint32_t AuthenticateConverter(SymphonyThunderbridge_IVars *ivars, uint64_t tx, uint64_t rx,
-                                      uint8_t addr, uint8_t routing, int port)
+                                      uint8_t addr, uint8_t routing, uint8_t inquire, int port)
 {
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
@@ -1839,7 +1840,7 @@ static uint32_t AuthenticateConverter(SymphonyThunderbridge_IVars *ivars, uint64
         ok = SendXLinkCommandOn(dev, mi, tx, addr, kXLinkCmdAuthWrite, out[i]);
     for (uint32_t i = 0; ok && i < kConverterAuthBytes; i++)
         ok = XLinkQueryOn(dev, mi, tx, rx, addr, kXLinkCmdAuthRead, (uint8_t)i, &in[i], ivars->isLegacyPCIe2100);
-    const bool verified = ok && ConverterAuthVerify(out, in, routing);
+    const bool verified = ok && ConverterAuthVerify(out, in, ConverterAuthDeviceInfo(routing, inquire));
     STLOG("Converter: port %d unit %u authentication %{public}s", port, addr,
           !ok ? "did not complete" : verified ? "verified" : "FAILED (reported, unit kept)");
     return kSymphonyConvUnitAuthRan | (verified ? kSymphonyConvUnitAuthOK : 0u);
@@ -1850,6 +1851,25 @@ static uint8_t ConverterUnitRouting(uint32_t word)
     const uint8_t inquire = (uint8_t)(word & kSymphonyConvUnitInquireMask);
     const uint8_t xtd = (word & kSymphonyConvUnitXtdOK) ? (uint8_t)(word >> kSymphonyConvUnitXtdShift) : 0;
     return ConverterRouting(inquire, xtd);
+}
+
+// Every unit a known converter, from its own INQUIRE and XTD_INQUIRE answers
+// (the original accepted any routing other than 0, XLink.cpp:601-660; a
+// Symphony I/O is 0xFF). 0x0F (DD-16X, or an AD/DA-16X in Advanced routing)
+// only with an XTD reply, since without one it looks like a Symphony I/O
+// whose XTD answer was lost.
+static bool UnitsAreConverters(const uint32_t *units, uint32_t count)
+{
+    if (count == 0) return false;
+    for (uint32_t u = 0; u < count; u++) {
+        const uint32_t w = units[u];
+        if (!(w & kSymphonyConvUnitInquireOK)) return false;
+        const uint8_t r = ConverterUnitRouting(w);
+        if (r == kConverterRoutingRosetta || r == kConverterRoutingAD || r == kConverterRoutingDA) continue;
+        if (r == kConverterRoutingDD && (w & kSymphonyConvUnitXtdOK)) continue;
+        return false;
+    }
+    return true;
 }
 
 // The chain the placement and names follow: port 1's converters, and port 2's
@@ -1937,6 +1957,8 @@ static void ApplyConverterWordClock(SymphonyThunderbridge_IVars *ivars)
     const bool ok = external
         ? SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex, kXLinkCmdAddrAll, kXLinkCmdSetExtLock, 1)
         : SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex, 1, kXLinkCmdSetExtLock, 0);
+    // SetExtLock waits for lock afterwards (XLink.cpp:1213).
+    WaitForLock(ivars->pciDevice, ivars->barMemoryIndex, 5000);
     if (external) __atomic_or_fetch(&ivars->convFlags, kSymphonyConvClockExternal, __ATOMIC_RELEASE);
     else __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvClockExternal, __ATOMIC_RELEASE);
     STLOG("Converter: word clock %{public}s%{public}s", external ? "external" : "internal",
@@ -1954,7 +1976,7 @@ static bool ConverterRateAndPhase(SymphonyThunderbridge_IVars *ivars, double rat
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     SendXLinkCommand(dev, mi, kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, rateCode);
-    const bool locked = WaitForLock(dev, mi, 1250);
+    const bool locked = WaitForLock(dev, mi, 5000);   // WAIT_FOR_LOCK_AFTER_SRATE_CHANGE scale
     const uint32_t actual = GetActualClockRate(dev, mi);
     STLOG("Converter: rate %u Hz (%{public}s): data link %{public}s, card measures %u Hz",
           (uint32_t)(rate + 0.5), why, locked ? "LOCKED" : "still slipping", actual);
@@ -2295,7 +2317,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             // The rest of BusInit's per-unit sequence (firmware, DEVICE_TYPE,
             // authentication) only when unit 1 itself identifies as a converter;
             // anything else gets the plain walk it always had.
-            const bool unit1Converter = !ivars->symphonyAnsweredSinceStart && UnitProbeIsConvertersOnly(probe);
+            const bool unit1Converter = !ivars->symphonyAnsweredSinceStart && UnitsAreConverters(units, 1);
             if ((probe & kUnitProbeInquireOK) && (inquire >> 4) != 0) {
                 for (uint8_t addr = 2; addr <= kXLinkMaxDevices; addr++) {
                     uint8_t next = 0, nextXtd = 0, scratch = 0;
@@ -2329,7 +2351,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                         XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, addr,
                                      kXLinkCmdDeviceType, &scratch, ivars->isLegacyPCIe2100);
                         word |= AuthenticateConverter(ivars, kRegXLink1TX, kRegXLink1RX, addr,
-                                                      ConverterUnitRouting(word), 1);
+                                                      ConverterUnitRouting(word), next, 1);
                     }
                     if (!SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
                                           addr, kXLinkCmdPassCommands, 1)) {
@@ -2362,7 +2384,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             const bool stable = (probe & kUnitProbeInquireOK) &&
                 XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, symphonyAddr,
                              kXLinkCmdInquire, &again, ivars->isLegacyPCIe2100) && again == inquire;
-            if (!ivars->symphonyAnsweredSinceStart && UnitProbeIsConvertersOnly(probe) && stable) {
+            if (!ivars->symphonyAnsweredSinceStart && UnitsAreConverters(units, unitCount) && stable) {
                 convCandidate = true;
                 convCandidateCount = unitCount;
                 for (uint32_t u = 0; u < kXLinkMaxDevices; u++) convCandidateUnits[u] = units[u];
@@ -2432,8 +2454,14 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             for (uint32_t u = 0; u < kXLinkMaxDevices; u++) units[u] = convCandidateUnits[u];
             const uint32_t unitCount = convCandidateCount;
 
+            {
+                uint8_t type1 = 0;   // BusInit asks every unit its DEVICE_TYPE at its address
+                XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, 1, kXLinkCmdDeviceType, &type1,
+                             ivars->isLegacyPCIe2100);
+            }
             units[0] |= AuthenticateConverter(ivars, kRegXLink1TX, kRegXLink1RX, 1,
-                                              ConverterUnitRouting(units[0]), 1);
+                                              ConverterUnitRouting(units[0]),
+                                              (uint8_t)(units[0] & kSymphonyConvUnitInquireMask), 1);
             ConvSetPort(ivars, 0, true, unitCount, units);
             __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort1Converters, __ATOMIC_RELEASE);
             STLOG("Converter: port 1 carries %u converter unit(s); Symphony I/O set-up skipped", unitCount);
@@ -2894,6 +2922,7 @@ static void SetPort2Enabled(SymphonyThunderbridge_IVars *ivars, bool on)
 {
     if (ivars->portCount != 2) return;
     ivars->port2DisablePending = false;
+    ivars->port2On = on;
     if (on) {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLinkClocking, kXLinkClockEnable2, 0);
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2, 0, kGCSR2_DisablePort2);
@@ -3035,7 +3064,7 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                     uint8_t scratch = 0;
                     XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, addr,
                                    kXLinkCmdDeviceType, &scratch, ivars->isLegacyPCIe2100);
-                    word |= AuthenticateConverter(ivars, kRegXLink2TX, kRegXLink2RX, addr, channels, 2);
+                    word |= AuthenticateConverter(ivars, kRegXLink2TX, kRegXLink2RX, addr, channels, inquire, 2);
                 }
                 if (!addressed ||
                     !SendXLinkCommandOn(dev, mi, kRegXLink2TX, addr, kXLinkCmdPassCommands, 1)) {
@@ -3485,7 +3514,10 @@ static void AlignXLinkPhase(SymphonyThunderbridge_IVars *ivars)
     for (int port = 1; port <= 2 && !failed; port++) {
         const uint64_t tx = port == 1 ? kRegXLink1TX : kRegXLink2TX;
         const uint64_t rx = port == 1 ? kRegXLink1RX : kRegXLink2RX;
-        const uint32_t count = port == 1 ? port1Units : ivars->port2UnitCount;
+        // Only a port that is switched on (the original: PortEnabled && clock,
+        // XLink.cpp:985-986, 1079-1083); after 64 -> 32 port 2's units are still
+        // listed but cannot answer, and asking them would fail the whole jam.
+        const uint32_t count = port == 1 ? port1Units : (ivars->port2On ? ivars->port2UnitCount : 0);
         for (uint8_t addr = 1; addr <= count && addr <= kXLinkMaxDevices; addr++) {
             if (port == 2) {
                 const uint32_t word = ivars->port2Unit[addr - 1];
