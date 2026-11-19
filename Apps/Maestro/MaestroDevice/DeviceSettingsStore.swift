@@ -38,15 +38,33 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     /// Keyed by product ID for the same reason as the routing cache:
     /// ThunderBridge and each USB mode are different devices to the app and
     /// must not replay one another's settings.
-    public init(defaults: UserDefaults, productID: UInt16, unit: DeviceUnit = .a) {
+    public init(defaults: UserDefaults, productID: UInt16, unit: DeviceUnit = .a, identity: UInt64? = nil) {
         self.defaults = defaults
-        self.key = Self.defaultsKey(productID: productID, unit: unit)
-        self.values = Self.decode(defaults.data(forKey: Self.defaultsKey(productID: productID, unit: unit)))
+        let legacyKey = Self.defaultsKey(productID: productID, unit: unit)
+        if let identity {
+            let identityKey = Self.defaultsKey(productID: productID, unit: unit, identity: identity)
+            self.key = identityKey
+            let migrationKey = "\(legacyKey).migratedTo"
+            if let data = defaults.data(forKey: identityKey) {
+                self.values = Self.decode(data)
+            } else if let owner = defaults.string(forKey: migrationKey), owner != String(identity, radix: 16) {
+                self.values = [:]
+            } else {
+                self.values = Self.decode(defaults.data(forKey: legacyKey))
+                if !self.values.isEmpty {
+                    defaults.set(Self.encode(self.values), forKey: identityKey)
+                }
+                defaults.set(String(identity, radix: 16), forKey: migrationKey)
+            }
+        } else {
+            self.key = legacyKey
+            self.values = Self.decode(defaults.data(forKey: legacyKey))
+        }
     }
 
     /// The store the app uses for a real device.
-    public static func persistent(for identifier: USBDeviceIdentifier, unit: DeviceUnit = .a) -> DeviceSettingsStore {
-        DeviceSettingsStore(defaults: .standard, productID: identifier.productID, unit: unit)
+    public static func persistent(for identifier: USBDeviceIdentifier, unit: DeviceUnit = .a, identity: UInt64? = nil) -> DeviceSettingsStore {
+        DeviceSettingsStore(defaults: .standard, productID: identifier.productID, unit: unit, identity: identity)
     }
 
     public static func defaultsKey(productID: UInt16) -> String {
@@ -57,6 +75,10 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     /// settings under its own key, so they never replace unit A's.
     public static func defaultsKey(productID: UInt16, unit: DeviceUnit) -> String {
         unit == .a ? defaultsKey(productID: productID) : "deviceSettings_\(productID)_unitB_v1"
+    }
+
+    public static func defaultsKey(productID: UInt16, unit: DeviceUnit, identity: UInt64) -> String {
+        "deviceSettings_\(productID)_\(unit == .a ? "unitA" : "unitB")_identity_v2_\(String(identity, radix: 16))"
     }
 
     public func value(for address: PropertyAddress) -> PropertyValue? {

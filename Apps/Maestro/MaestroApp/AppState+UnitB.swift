@@ -54,7 +54,8 @@ extension AppState {
     }
     var unitBChannelStateStore: ChannelStateStore {
         ChannelStateStore(layout: unitBLayout ?? CardLayout(isKnown: false),
-                          isSimulatingCards: cardSimulation != nil || simulatedUnitB != nil, unit: .b)
+                          isSimulatingCards: cardSimulation != nil || simulatedUnitB != nil, unit: .b,
+                          identity: unitBIdentity)
     }
     var unitPeripheralPrefix: String {
         get { activeUnit == .b ? unitBPeripheralPrefix : peripheralPrefix }
@@ -425,6 +426,8 @@ extension AppState {
         }
         let state = tb.readUnitBState()
         applyUnitB(state?.info, from: tb, confirmedAbsent: state?.present == false)
+        // No bus access here: unit B's identity is read once, off the main
+        // thread, by refreshUnitBOffMain (the health loop).
     }
 
     /// The same, with the read off the main thread (the health loop's call:
@@ -435,6 +438,13 @@ extension AppState {
         let state = await Task.detached(priority: .utility) { tb.readUnitBState() }.value
         guard (device as? ThunderboltDeviceConnection) === tb, connectedUnit == nil else { return }
         applyUnitB(state?.info, from: tb, confirmedAbsent: state?.present == false)
+        // Once per unit-B connection: the health loop calls this every few
+        // seconds and must not put a vendor read on the bus each time.
+        guard state?.present == true, unitBIdentity == nil,
+              SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .b) else { return }
+        let identity = await tb.readHardwareUniqueID(port: ThunderboltUnitBConnection.port)
+        guard (device as? ThunderboltDeviceConnection) === tb, connectedUnit == nil else { return }
+        unitBIdentity = identity
     }
 
     /// Follow unit B appearing, changing or going. On appearing (or on a new
@@ -454,6 +464,7 @@ extension AppState {
         let appeared = info != nil && (unitB == nil || newConnection)
         unitB = info
         guard let info, let tb else {
+            unitBIdentity = nil
             if unitBDevice != nil {
                 print("[Maestro] Unit B: gone (64 channels stopped or port 2 lost)")
                 // The driver puts a Software Return beyond DAW 1-16 back to

@@ -103,6 +103,9 @@ final class AppState {
     /// Session-only Identify latches, one per unit connection.
     let identifyA = IdentifyState()
     let identifyB = IdentifyState()
+    /// Hardware UIDs read at connect. Nil preserves the legacy layout scope.
+    var unitAIdentity: UInt64?
+    var unitBIdentity: UInt64?
 
     /// Currently connected device (real or simulated).
     var device: (any DeviceConnection)? {
@@ -153,7 +156,8 @@ final class AppState {
     var channelStateStore: ChannelStateStore {
         // The converter simulation keeps its own (`sim:`) state too.
         ChannelStateStore(layout: cardLayout,
-                          isSimulatingCards: cardSimulation != nil || connectionMode == .simulated)
+                          isSimulatingCards: cardSimulation != nil || connectionMode == .simulated,
+                          identity: unitAIdentity)
     }
     /// Whether hardware initialization is complete. Views must wait for this
     /// before reading from the device to avoid racing with initializeDevice().
@@ -1921,6 +1925,26 @@ final class AppState {
     /// Read I/O card types from hardware via USB 0xA1 (async, fire-and-forget).
     /// Retries the secondary board read with delays — some firmware revisions need
     /// time between sequential EP0 vendor reads to different board slots.
+    /// Read identity only after card/converter capabilities are known; this
+    /// keeps converter chains away from the Symphony-only 0xC0 command.
+    @MainActor
+    private func readUnitAIdentityAfterCapabilities() async {
+        let identity: UInt64?
+        if let tb = device as? ThunderboltDeviceConnection {
+            guard SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .a) else { return }
+            identity = await tb.readHardwareUniqueID()
+        } else if let usb = device as? XPCDeviceConnection {
+            // The USB discovery path publishes Symphony I/O devices only; a
+            // converter chain exists only behind the ThunderBridge capability matrix.
+            guard cardLayout.converter == nil else { return }
+            identity = await usb.readHardwareUniqueID()
+        } else {
+            return
+        }
+        guard device != nil else { return }
+        unitAIdentity = identity
+    }
+
     @MainActor
     func readCardTypes() async {
         guard let device = self.device else { return }
@@ -1999,12 +2023,14 @@ final class AppState {
                 self.secondaryBoardSource = .detected
                 print("[Maestro] Secondary board: \(card.digitalLabel) (raw=\(raw)) [attempt \(attempt)]")
                 saveBoardTypeCache()
+                await readUnitAIdentityAfterCapabilities()
                 return
             }
         }
         print("[Maestro] Secondary board: not detected after 3 attempts (hardware may have 1 board or slot 1 empty)")
         // Still save whatever we got (primary may have succeeded)
         saveBoardTypeCache()
+        await readUnitAIdentityAfterCapabilities()
     }
 
     /// Sync persisted output routing to hardware on connect/reconnect.

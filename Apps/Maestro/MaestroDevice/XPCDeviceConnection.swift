@@ -437,6 +437,19 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         }
     }
 
+    /// Read the original Symphony 0xC0 hardware UID through the existing USB
+    /// proxy path, with the same bounded zero-retry rule.
+    public func readHardwareUniqueID() async -> UInt64? {
+        await SymphonyIdentityReader.read(attempts: SymphonyIdentityReader.maximumAttempts,
+                                          delay: SymphonyIdentityReader.retryDelay) {
+            let reply = try await self.transport.sendGetProperty(
+                bRequest: SymphonyIdentityReader.command, wValue: 0, wIndex: 0,
+                dataLength: UInt16(SymphonyIdentityReader.responseLength))
+            guard reply.status == 0 else { throw DeviceConnectionError.transportError("USB identity status \(reply.status)") }
+            return reply.data
+        }
+    }
+
     // MARK: - Cache Accessors
 
     private func getCachedSampleRate() -> Double {
