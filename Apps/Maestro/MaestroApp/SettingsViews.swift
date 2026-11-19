@@ -107,31 +107,9 @@ struct DeviceSettingsView: View {
         guard !isLoading, appState.preferenceViewScope(for: .a).isWritable else { return }
         appState.mixerPreferences.set(newMode, forKey: "routingMode")
         if let xpcDev = appState.device as? XPCDeviceConnection {
-            xpcDev.setRoutingMode(newMode)
-            if newMode == 0 {
-                // DAW: force-mute all HW inputs on both mixers
-                for mixerID: UInt16 in 1...2 {
-                    for ch: UInt16 in 0..<32 {
-                        xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                    }
-                }
-            } else {
-                // Direct Monitor: restore persisted mute state
-                for mixerIdx in 0..<2 {
-                    let key = "mixerState_\(mixerIdx)"
-                    let mixerID = UInt16(mixerIdx + 1)
-                    if let data = appState.channelStateStore.loadData(key),
-                       let saved = try? JSONDecoder().decode([MixerChannelState].self, from: data) {
-                        for (ch, state) in saved.enumerated() {
-                            xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: UInt16(ch), value: state.isMuted ? 1 : 0)
-                        }
-                    } else {
-                        for ch: UInt16 in 0..<32 {
-                            xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
-                        }
-                    }
-                }
-            }
+            let generation = appState.unitAGeneration
+            let preferences = appState.mixerPreferences
+            Task { await appState.synchronizeUSBRoutingMode(xpcDev, generation: generation, preferences: preferences) }
         }
         appState.routingModeChangeCount += 1
     }

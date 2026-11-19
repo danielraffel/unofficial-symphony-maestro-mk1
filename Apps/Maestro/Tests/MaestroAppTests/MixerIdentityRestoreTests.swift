@@ -12,6 +12,7 @@ private final class MixerRestoreTransport: XPCTransport, @unchecked Sendable {
     }
     private let lock = NSLock()
     private var captured = Capture()
+    var sendDelay: UInt64 = 0
     var snapshot: Capture { lock.withLock { captured } }
     var isConnected: Bool { true }
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
@@ -28,6 +29,7 @@ private final class MixerRestoreTransport: XPCTransport, @unchecked Sendable {
     func resetAudioOutput() {}
     func setRoutingMode(_ mode: Int) { lock.withLock { captured.modes.append(mode) } }
     func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {
+        if sendDelay > 0 { Thread.sleep(forTimeInterval: Double(sendDelay) / 1_000_000_000) }
         lock.withLock { captured.mutes.append((usbCmd, mixer, channel, value)) }
     }
 }
@@ -36,6 +38,36 @@ extension StandardDefaultsSuites {
 @Suite("Mixer identity completion", .serialized)
 @MainActor
 struct MixerIdentityRestoreTests {
+    @Test func routingModeRaceCancelsStaleDawMuteLoop() async throws {
+        let state = AppState()
+        state.connectionMode = .hardware
+        let transport = MixerRestoreTransport()
+        transport.sendDelay = 2_000_000
+        let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "fix18-route-race"))
+        let usb = XPCDeviceConnection(identifier: id, transport: transport)
+        state.device = usb
+        state.unitAIdentity = 42
+        state.unitAIdentityState = .known(42)
+        state.mixerPreferences.set(0, forKey: "routingMode")
+        let first = Task { await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
+                                                                  preferences: state.mixerPreferences) }
+        try await Task.sleep(for: .milliseconds(3))
+        state.mixerPreferences.set(1, forKey: "routingMode")
+        let second = Task { await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
+                                                                   preferences: state.mixerPreferences) }
+        await first.value
+        await second.value
+        let result = transport.snapshot
+        // The stale DAW sync may be cancelled before it sends anything ([1]) or
+        // after its mode write ([0, 1]); either way Direct Monitor wins and no
+        // DAW mute lands after it.
+        let finalMode = result.modes.last
+        #expect(finalMode == 1)
+        #expect(result.modes == [1] || result.modes == [0, 1])
+        #expect(result.mutes.last?.3 == 0)
+    }
+
     @Test func cancelledViewStillDiscoversCards() async {
         let defaults = UserDefaults.standard
         let before = defaults.dictionaryRepresentation()

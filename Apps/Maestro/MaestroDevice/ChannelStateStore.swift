@@ -99,7 +99,11 @@ public struct ChannelStateStore {
     public var mixerPreferences: MixerPreferences {
         if !awaitingIdentity, identity == nil, !isSimulating, permitsLegacyInheritance, unit == .a {
             if let owner = defaults.string(forKey: "mixerWideState.migratedTo"), !owner.isEmpty {
-                return MixerPreferences(defaults: defaults, scope: owner, migrate: false)
+                // A crash may leave the ownership marker and receipt before
+                // the destination dictionary is materialized. Finish that
+                // receipt-backed copy before exposing a writable handle;
+                // defaults must never synthesize the destination first.
+                return MixerPreferences(defaults: defaults, scope: owner, migrate: true)
             }
             return MixerPreferences(legacyDefaults: defaults)
         }

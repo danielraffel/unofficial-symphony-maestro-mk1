@@ -97,11 +97,16 @@ extension AppState {
         if unit == .a, let usb = connection as? XPCDeviceConnection,
            usbIdentityRestoreGeneration != generation, preferences.isWritable {
             usbIdentityRestoreGeneration = generation
+            usbMixerLifecycleRestoreGeneration = generation
             // The first restore must wait for UID/layout migration, otherwise
             // an unchanged USB unit would receive defaults before its settings.
             await usb.restoreReturnAndMaster(helperMixer: lastSelectedMixer, preferences: preferences)
             guard isCurrent() else { return }
-            await restoreUSBRoutingMode(usb, generation: generation, preferences: preferences)
+            // Connection/recovery restores the routing selector.  Direct
+            // Monitor deliberately leaves the input-mute registers alone;
+            // those writes belong only to an explicit settings switch.
+            await synchronizeUSBRoutingMode(usb, generation: generation, preferences: preferences,
+                                            applyInputMutes: false)
         }
     }
 
@@ -112,35 +117,60 @@ extension AppState {
                                       restoreRoutingMode: Bool) async {
         let generation = unitAGeneration
         let preferences = mixerPreferences
-        guard device === connection, preferences.isWritable else { return }
+        guard device === connection, preferences.isWritable,
+              unitAIdentityState != .pending else { return }
+        usbMixerLifecycleRestoreGeneration = generation
         await connection.restoreReturnAndMaster(helperMixer: helperMixer, preferences: preferences)
         guard device === connection, unitAGeneration == generation,
               mixerPreferences.isWritable, restoreRoutingMode else { return }
-        await restoreUSBRoutingMode(connection, generation: generation, preferences: preferences)
+        await synchronizeUSBRoutingMode(connection, generation: generation, preferences: preferences,
+                                        applyInputMutes: false)
     }
 
     @MainActor
-    private func restoreUSBRoutingMode(_ connection: XPCDeviceConnection, generation: UUID,
-                                       preferences: MixerPreferences) async {
+    func synchronizeUSBRoutingMode(_ connection: XPCDeviceConnection, generation: UUID,
+                                    preferences: MixerPreferences,
+                                    applyInputMutes: Bool = true) async {
         let mode = preferences.integer(forKey: "routingMode")
+        let savedMutes: [[UInt8]] = (0..<2).map { mixerIdx in
+            let key = "mixerState_\(mixerIdx)"
+            guard let data = channelStateStore.loadData(key),
+                  let saved = try? JSONDecoder().decode([MixerChannelState].self, from: data)
+            else { return Array(repeating: UInt8(0), count: 32) }
+            return saved.prefix(32).map { $0.isMuted ? 1 : 0 }
+                + Array(repeating: UInt8(0), count: max(0, 32 - saved.count))
+        }
+        routingModeEpoch &+= 1
+        let epoch = routingModeEpoch
+        routingModeTask?.cancel()
+        if let old = routingModeTask { await old.value }
         let current: @Sendable () async -> Bool = { @MainActor [weak self] in
             guard let self else { return false }
             return self.device === connection && self.unitAGeneration == generation
                 && self.mixerPreferences.isWritable
                 && self.mixerPreferences.storageKey == preferences.storageKey
+                && self.routingModeEpoch == epoch
+                && self.mixerPreferences.integer(forKey: "routingMode") == mode
         }
-        await Task.detached {
-            guard await current() else { return }
+        let task = Task.detached(priority: .utility) {
+            guard await current(), !Task.isCancelled else { return }
             connection.setRoutingMode(mode)
-            if mode == 0 {
-                for mixer: UInt16 in 1...2 {
-                    for channel: UInt16 in 0..<32 {
-                        guard await current() else { return }
-                        connection.sendMixerParam(usbCmd: 0xB3, mixer: mixer, channel: channel, value: 1)
-                    }
+            // A lifecycle restore must preserve Direct Monitor's existing
+            // input-mute state. DAW still asserts its traditional 64 mutes
+            // once per connection; an explicit settings switch applies the
+            // saved Direct Monitor state (or unmutes missing strips).
+            guard applyInputMutes || mode == 0 else { return }
+            for mixer: UInt16 in 1...2 {
+                for channel: UInt16 in 0..<32 {
+                    guard await current(), !Task.isCancelled else { return }
+                    let value = mode == 0 ? UInt8(1) : savedMutes[Int(mixer - 1)][Int(channel)]
+                    connection.sendMixerParam(usbCmd: 0xB3, mixer: mixer, channel: channel, value: value)
                 }
             }
-        }.value
+        }
+        routingModeTask = task
+        await task.value
+        if routingModeEpoch == epoch { routingModeTask = nil }
     }
 
 

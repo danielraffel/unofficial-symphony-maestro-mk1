@@ -122,12 +122,19 @@ final class AppState {
     var unitBIdentityTask: Task<UInt64?, Never>?
 
     var identityRecoveryRetried = false
+    private weak var identityRetryConnection: AnyObject?
     var usbIdentityRestoreGeneration: UUID?
     var cardDiscoveryTask: Task<Void, Never>?
+    private var cardDiscoveryTaskGeneration: UUID?
+    private weak var cardDiscoveryTaskConnection: AnyObject?
+    var routingModeEpoch: UInt64 = 0
+    var routingModeTask: Task<Void, Never>?
+    var usbMixerLifecycleRestoreGeneration: UUID?
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
 
     func retryFailedIdentityOnRecovery() {
-        guard unitAIdentityState == .failed, !identityRecoveryRetried else { return }
+        guard unitAIdentityState == .failed, !identityRecoveryRetried,
+              identityRetryConnection === (device as AnyObject?) else { return }
         identityRecoveryRetried = true
         unitAIdentityState = .pending
     }
@@ -136,12 +143,11 @@ final class AppState {
         unitAIdentityTask?.cancel()
         unitAIdentityTask = nil
         unitAGeneration = UUID()
-        identityRecoveryRetried = false
         usbIdentityRestoreGeneration = nil
-        // Discovery may itself identify a converter and invalidate identity.
-        // Retire its handle without cancelling that capability discovery.
-        // In-flight old connections stop at the existing generation fences.
-        cardDiscoveryTask = nil
+        // Keep the discovery handle until its task has been cancelled and
+        // awaited by the next owner. This prevents a replacement discovery
+        // from running concurrently against a retired connection.
+        cardDiscoveryTask?.cancel()
         unitAIdentityState = .pending
     }
 
@@ -164,6 +170,8 @@ final class AppState {
                 invalidateUnitAIdentity()
                 invalidateUnitBIdentity()
                 unitBIdentityAttempted = false
+                identityRecoveryRetried = false
+                identityRetryConnection = newValue as AnyObject?
             }
         }
     }
@@ -1083,7 +1091,7 @@ final class AppState {
     /// layout is read, so the first report already has them. With no stored
     /// clock choice the driver's current clock is kept. Older drivers reject
     /// the call and nothing changes.
-    func applyStoredConverterConfig(_ tb: ThunderboltDeviceConnection) {
+    nonisolated static func applyStoredConverterConfig(_ tb: ThunderboltDeviceConnection) {
         // Either port: port-2 converters behind a Symphony I/O need their
         // Device Types too.
         guard let state = tb.converterState(), state.port1Converters || state.port2Converters,
@@ -2114,22 +2122,45 @@ final class AppState {
 
     @MainActor
     func readCardTypes() async {
-        if let cardDiscoveryTask { await cardDiscoveryTask.value; return }
         let generation = unitAGeneration
+        let connection = device as AnyObject?
+        if let old = cardDiscoveryTask {
+            if cardDiscoveryTaskGeneration == generation,
+               cardDiscoveryTaskConnection === connection {
+                await old.value
+                return
+            }
+            old.cancel()
+            await old.value
+            cardDiscoveryTask = nil
+            cardDiscoveryTaskGeneration = nil
+            cardDiscoveryTaskConnection = nil
+        }
         let task = Task {
             guard self.unitAGeneration == generation, !Task.isCancelled else { return }
             await self.discoverCardsAndIdentity()
         }
         cardDiscoveryTask = task
+        cardDiscoveryTaskGeneration = generation
+        cardDiscoveryTaskConnection = connection
         await task.value
-        if unitAGeneration == generation { cardDiscoveryTask = nil }
+        if cardDiscoveryTaskGeneration == generation {
+            cardDiscoveryTask = nil
+            cardDiscoveryTaskGeneration = nil
+            cardDiscoveryTaskConnection = nil
+        }
     }
 
     @MainActor
     private func discoverCardsAndIdentity() async {
         guard let device = self.device else { return }
+        let generation = unitAGeneration
         // What the driver found on the cable, if it is not a Symphony I/O.
-        let probeWord = (device as? ThunderboltDeviceConnection)?.linkState()?.unitProbe ?? 0
+        let probeWord: UInt32
+        if let tb = device as? ThunderboltDeviceConnection {
+            probeWord = await Task.detached(priority: .utility) { tb.linkState()?.unitProbe ?? 0 }.value
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+        } else { probeWord = 0 }
         connectedUnitProbeWord = probeWord
         connectedUnit = ConnectedUnit(probeWord: probeWord)
         // The converter report (dext 131+): the stored Device Types and clock
@@ -2137,20 +2168,27 @@ final class AppState {
         // reported there count as identified even without a probe word, so the
         // guards that keep Symphony I/O commands away from them still hold.
         loggedConverterNotices = []
-        if let tb = device as? ThunderboltDeviceConnection { applyStoredConverterConfig(tb) }
-        refreshConverterSystem()
+        if let tb = device as? ThunderboltDeviceConnection {
+            await Task.detached(priority: .utility) { Self.applyStoredConverterConfig(tb) }.value
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+            let state = await Task.detached(priority: .utility) { tb.converterState() }.value
+            guard self.device === device, !Task.isCancelled else { return }
+            let system = Self.converterSystem(state: state, probeWord: probeWord)
+            if system != converterSystem { converterSystem = system }
+            connectedUnit = connectedUnit ?? system?.connectedUnit
+        } else { refreshConverterSystem() }
         if connectedUnit != nil || converterSystem != nil {
             invalidateUnitAIdentity()
             invalidateUnitBIdentity()
             unitAIdentityState = .failed
             unitBIdentityState = .failed
         }
-        let generation = unitAGeneration
         // Needed before the input routing is laid out (thunderboltCaptureSlot1),
         // so it is awaited here; read off the main thread like every other
         // user-client call that can wait on the driver.
         if let tb = device as? ThunderboltDeviceConnection {
             let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             if (self.device as? ThunderboltDeviceConnection) === tb { servingDextBuild = build }
         } else {
             servingDextBuild = nil
@@ -2182,7 +2220,9 @@ final class AppState {
         // measured empty. USB's proxy cannot make that distinction and keeps
         // the conservative unknown behavior below.
         let thunderboltReadDistinguishesEmptySlot = device is ThunderboltDeviceConnection
-        if let raw = (try? await device.getProperty(PropertyAddress(selector: .primaryBoardType)))?.asUInt32,
+        let primaryRaw = try? await device.getProperty(PropertyAddress(selector: .primaryBoardType))
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+        if let raw = primaryRaw?.asUInt32,
            raw <= UInt32(UInt8.max),
            let card = IOCardType(rawValue: UInt8(raw)) {
             guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
@@ -2204,9 +2244,11 @@ final class AppState {
         for attempt in 1...3 {
             if attempt > 1 {
                 do { try await Task.sleep(for: .milliseconds(100 * attempt)) } catch { return }
-                guard self.device === device, unitAGeneration == generation else { return }
+                guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             }
-            if let raw = (try? await device.getProperty(PropertyAddress(selector: .secondaryBoardType)))?.asUInt32,
+            let secondaryRaw = try? await device.getProperty(PropertyAddress(selector: .secondaryBoardType))
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+            if let raw = secondaryRaw?.asUInt32,
                raw <= UInt32(UInt8.max),
                let card = IOCardType(rawValue: UInt8(raw)),
                (card != .none || thunderboltReadDistinguishesEmptySlot) {
