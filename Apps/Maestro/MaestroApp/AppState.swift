@@ -1132,6 +1132,8 @@ final class AppState {
     /// The unit whose monitor receives Mac volume keys. Unit A is the default;
     /// the picker is only shown for two configured Symphony I/Os at 64 channels.
     var monitorDevice: DeviceUnit = .a
+    @ObservationIgnored private var monitorSelectionTask: Task<Void, Never>?
+    @ObservationIgnored private var monitorSelectionGeneration = 0
     /// Unit B's naming state (its optical formats and Replaces).
     var unitBChannelNaming = CardLayout.ChannelNaming()
     /// Unit B's prefix letter, as its channels are named.
@@ -1160,11 +1162,10 @@ final class AppState {
            selection == .ports1And2,
            unitB?.setupComplete == true {
             let saved = MonitorDeviceSelectionStore.load(productID: tb.identifier.productID)
-            if monitorDevice != saved { monitorDevice = saved }
-            _ = tb.setMonitorDevice(monitorDevice)
-        } else if monitorDevice != .a {
+            if monitorSelectionTask == nil { requestMonitorDevice(saved, persist: false) }
+        } else if monitorDevice != .a || monitorSelectionTask != nil {
             monitorDevice = .a
-            if let tb = device as? ThunderboltDeviceConnection { _ = tb.setMonitorDevice(.a) }
+            requestMonitorDevice(.a, persist: false)
         }
         // The converter report follows 32/64 channels too (port 2 counts only
         // while 64 run), and costs no bus access either.
@@ -1264,12 +1265,35 @@ final class AppState {
 
     @MainActor
     func chooseMonitorDevice(_ unit: DeviceUnit) {
-        guard unit == .a || (unit == .b && unitB?.setupComplete == true &&
+        requestMonitorDevice(unit, persist: true)
+    }
+
+    private func requestMonitorDevice(_ unit: DeviceUnit, persist: Bool) {
+        guard unit == .a || (unitB?.setupComplete == true &&
                              portSelection.selection == .ports1And2),
               let tb = device as? ThunderboltDeviceConnection else { return }
-        guard tb.setMonitorDevice(unit) else { return }
-        monitorDevice = unit
-        MonitorDeviceSelectionStore.save(unit, productID: tb.identifier.productID)
+        monitorSelectionGeneration += 1
+        let generation = monitorSelectionGeneration
+        let previous = monitorSelectionTask
+        let bDevice = unitBDevice
+        // AppState lives on the main actor in practice (same pattern as the
+        // Loop Sync restore); the task below runs there.
+        nonisolated(unsafe) weak var weakSelf = self
+        monitorSelectionTask = Task { @MainActor in
+            // Preserve request order even if a previous off-main transaction is
+            // already in the driver. Stale completions never publish app state.
+            await previous?.value
+            guard let self = weakSelf, generation == self.monitorSelectionGeneration else { return }
+            defer { if generation == self.monitorSelectionGeneration { self.monitorSelectionTask = nil } }
+            guard self.device === tb, self.unitBDevice === bDevice else { return }
+            let accepted = await tb.setMonitorDevice(unit)
+            guard accepted, generation == self.monitorSelectionGeneration,
+                  self.device === tb, self.unitBDevice === bDevice,
+                  unit == .a || (self.unitB?.setupComplete == true &&
+                                  self.portSelection.selection == .ports1And2) else { return }
+            self.monitorDevice = unit
+            if persist { MonitorDeviceSelectionStore.save(unit, productID: tb.identifier.productID) }
+        }
     }
 
     /// The driver's answer right now, without storing it. Nil unless the
@@ -3447,7 +3471,7 @@ final class AppState {
                 channel: channel, gain: gain, revision: frontPanelMicPreRevision)
         case .level(.speaker, let dB, _):
             if speakerLevel != dB { speakerLevel = dB }
-            scheduleSpeakerLevelPush(dB)
+            if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB) }
         case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
         case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
         case .level: break   // MicPre selections arrive as .micPreGain
@@ -3455,17 +3479,8 @@ final class AppState {
             speakerMuted = muted
             hp1Muted = muted
             hp2Muted = muted
-            // Over ThunderBridge the Mac's mute control is the driver's own, and
-            // it knows nothing of a mute made on the front panel. Maestro reads
-            // that control whenever the Mac's volume changes, so without this
-            // the speaker flipped back to "unmuted" on screen while the unit
-            // stayed muted, and it took a mute and an unmute in Maestro to
-            // recover (2026-11-13). Setting it sends the unit the state it is
-            // already in.
-            if transportType == .thunderbolt, let device {
-                Task { try? await device.setProperty(
-                    PropertyAddress(selector: .outputMute), value: .bool(muted)) }
-            }
+            // ThunderBridge consumes the physical observation in the driver;
+            // no echo through the card's selected-monitor HAL control.
         case .metersCleared:
             // The unit's held peaks are gone; drop Maestro's copies too.
             inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
@@ -3496,20 +3511,13 @@ final class AppState {
     private func scheduleSpeakerLevelPush(_ dB: Double) {
         speakerPushGeneration += 1
         let generation = speakerPushGeneration
+        let sourceDevice = device
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.frontPanelPushQuietInterval)
-            guard let self, generation == self.speakerPushGeneration,
+            guard let self, generation == self.speakerPushGeneration, self.device === sourceDevice,
                   self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
             self.lastFrontPanelSpeakerPush = dB
-            if self.transportType == .thunderbolt {
-                // The Mac's volume control for ThunderBridge is the driver's own;
-                // setting the level through the connection updates it.
-                let attenuation = UInt32(max(0, min(64, -dB)))
-                try? await self.device?.setProperty(
-                    PropertyAddress(selector: .outputLevel), value: .uint32(attenuation))
-            } else {
-                self.writeASPVolume(dB)
-            }
+            if self.transportType != .thunderbolt { self.writeASPVolume(dB) }
         }
     }
 
@@ -3598,6 +3606,7 @@ final class AppState {
 
     /// Read current volume from the synced audio device and update speakerLevel.
     func readASPVolume() {
+        if transportType == .thunderbolt && (monitorDevice != .a || monitorSelectionTask != nil) { return }
         guard aspDeviceID != kAudioObjectUnknown else { return }
         // Skip if we just wrote — avoids feedback loop where our own write
         // triggers the listener which re-reads the same value.
@@ -3613,7 +3622,8 @@ final class AppState {
             var dB: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
             if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &dB) == noErr {
-                speakerLevel = Double(dB)
+                if speakerOutputMode == 0 { hp1Level = Double(dB) }
+                else { speakerLevel = Double(dB) }
             }
         } else {
             // USB/ASP: read VolumeScalar and convert to dB
@@ -3634,6 +3644,7 @@ final class AppState {
 
     /// Read current mute state from the ASP device and update speakerMuted.
     func readASPMute() {
+        if transportType == .thunderbolt && (monitorDevice != .a || monitorSelectionTask != nil) { return }
         guard aspDeviceID != kAudioObjectUnknown else { return }
         if Date().timeIntervalSince(aspWriteTimestamp) < 0.2 { return }
         var addr = AudioObjectPropertyAddress(
@@ -3644,7 +3655,8 @@ final class AppState {
         var muted: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &muted) == noErr {
-            speakerMuted = muted != 0
+            if transportType == .thunderbolt && speakerOutputMode == 0 { hp1Muted = muted != 0 }
+            else { speakerMuted = muted != 0 }
         }
     }
 

@@ -1,7 +1,7 @@
 /// Thunderbolt device connection for Symphony IO via ThunderBridge.
 ///
 /// Uses two communication paths:
-/// 1. CoreAudio HAL properties (volume, mute, sample rate) — direct to dext
+/// 1. CoreAudio HAL properties (sample rate, converter trim) — direct to dext
 /// 2. IOUserClient (mic gain, phantom, routing, clock, mixer, etc.) — via DextUserClient
 ///
 /// The IOUserClient path sends vendor commands through the dext's XLink control
@@ -46,8 +46,6 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
     /// Property selectors handled via CoreAudio HAL (more efficient path).
     private static let coreAudioSelectors: Set<AudioPropertySelector> = [
-        .outputLevel,       // → kAudioDevicePropertyVolumeDecibels
-        .outputMute,        // → kAudioDevicePropertyMute
         .sampleRate,        // → kAudioDevicePropertyNominalSampleRate
     ]
 
@@ -62,7 +60,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         .groupID, .insertID, .insertReturnEnable,
         // Analog / digital input
         .analogIOType, .digitalRefLevel,
-        // Output monitoring
+        // Physical unit A output monitoring
+        .outputLevel, .outputMute,
         .outputDim, .outputSumToMono,
         .headphone1Level, .headphone2Level,
         .headphone1Mute, .headphone2Mute,
@@ -362,7 +361,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     // MARK: - DeviceConnection Protocol
 
     public func getProperty(_ address: PropertyAddress) async throws -> PropertyValue {
-        try readProperty(address)
+        try await Task.detached { try self.readProperty(address) }.value
     }
 
     private func readProperty(_ address: PropertyAddress) throws -> PropertyValue {
@@ -372,10 +371,19 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
         // CoreAudio HAL path (volume, mute, sample rate)
         switch address.selector {
-        case .outputLevel:
-            return try .float64(Float64(readVolumeDecibels()))
-        case .outputMute:
-            return try .uint32(readMute() ? 1 : 0)
+        case .outputLevel, .outputMute:
+            // This connection owns physical A. The card HAL control may own B
+            // or HP1. Converter-only volume remains the card's mixer trim.
+            if converterState().map({ $0.flags & ConverterState.flagPort1Converters != 0 }) == true {
+                return address.selector == .outputLevel
+                    ? try .float64(Float64(readVolumeDecibels()))
+                    : try .uint32(readMute() ? 1 : 0)
+            }
+            let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+            let data = try dextClient.readVendorCommand(command: request.request,
+                value: DextUserClient.nValue(for: request), responseLength: 1)
+            guard let byte = data.first else { throw DeviceConnectionError.notConnected }
+            return .uint32(UInt32(byte))
         case .sampleRate:
             return try .float64(readNominalSampleRate())
         case .outputLevelRange:
@@ -459,7 +467,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
-        try writeProperty(address, value: value)
+        try await Task.detached { try self.writeProperty(address, value: value) }.value
     }
 
     private func writeProperty(_ address: PropertyAddress, value: PropertyValue) throws {
@@ -467,7 +475,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         defer { presetLock.unlock() }
         guard isConnected else { throw DeviceConnectionError.notConnected }
 
-        // CoreAudio HAL path
+        // Physical monitor writes use A's port; HAL is only the converter trim.
         switch address.selector {
         case .outputLevel:
             // The UI sends .outputLevel as a UInt32 ATTENUATION (0..64, where 0 = loudest),
@@ -484,7 +492,13 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             } else {
                 throw DeviceConnectionError.typeMismatch(expected: "Float64 or UInt32", got: "\(value)")
             }
-            try writeVolumeDecibels(db)
+            if converterState().map({ $0.flags & ConverterState.flagPort1Converters != 0 }) == true {
+                try writeVolumeDecibels(db)
+            } else {
+                let attenuation = UInt32(max(0, min(64, -db)))
+                try sendViaDext(SymphonyIOPropertyMapper.buildWriteRequest(
+                    for: address, value: .uint32(attenuation)))
+            }
             notifyListeners(for: address.selector, value: value)
             return
 
@@ -493,7 +507,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             if let u = value.asUInt32 { muted = u != 0 }
             else if let b = value.asBool { muted = b }
             else { throw DeviceConnectionError.typeMismatch(expected: "UInt32/Bool", got: "\(value)") }
-            try writeMute(muted)
+            if converterState().map({ $0.flags & ConverterState.flagPort1Converters != 0 }) == true {
+                try writeMute(muted)
+            } else {
+                try sendViaDext(SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .bool(muted)))
+            }
             notifyListeners(for: address.selector, value: value)
             return
 
@@ -787,8 +805,15 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// Select which Symphony I/O owns the card's single Core Audio volume/mute
     /// control. The dext refuses unit B unless it is configured at 64 channels.
     @discardableResult
-    public func setMonitorDevice(_ unit: DeviceUnit) -> Bool {
-        dextClient.setMonitorDevice(unit)
+    public func setMonitorDevice(_ unit: DeviceUnit) async -> Bool {
+        await Task.detached { self.setMonitorDeviceOffMain(unit) }.value
+    }
+
+    private func setMonitorDeviceOffMain(_ unit: DeviceUnit) -> Bool {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected else { return false }
+        return dextClient.setMonitorDevice(unit)
     }
 
     /// A connection to unit B through this connection's driver client: the
