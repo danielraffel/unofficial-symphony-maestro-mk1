@@ -87,18 +87,7 @@ struct StatusBarView: View {
 
             // Clear Meters — resets all peak hold and over indicators (fixed position, far right)
             Button {
-                appState.inputPeakHold = Array(repeating: -60.0, count: appState.inputPeakHold.count)
-                appState.outputPeakHold = Array(repeating: -60.0, count: appState.outputPeakHold.count)
-                appState.digitalInputPeakHold = Array(repeating: -60.0, count: 24)
-                appState.digitalOutputPeakHold = Array(repeating: -60.0, count: 24)
-                Task {
-                    do {
-                        try await appState.device?.setProperty(
-                            PropertyAddress(selector: .peaksClear), value: .uint32(1))
-                    } catch {
-                        print("[Maestro] ERROR: Clear Meters failed: \(error)")
-                    }
-                }
+                appState.clearMeters()
             } label: {
                 Text("Clear Meters")
                     .font(.system(size: 11))

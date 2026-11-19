@@ -90,12 +90,23 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     /// timeout, so this is kept to what the pages ask for and unit A's
     /// connection can also answer (plus the controls unit A reads from Core
     /// Audio).
+    /// Monitor state is recalled from hardware, not replayed from the host.
+    /// Firmware indices are supplied by the existing mapper: HP1=0, HP2=1,
+    /// speaker=2 (og_source/symphonymk1/ext/Symphony64/generic/Products/
+    /// SymphonyIO/SymphonyIOControl.cpp:25-31,2119-2160).
+    public static let monitorSelectors: Set<AudioPropertySelector> = [
+        .outputLevel, .outputMute, .outputDim, .outputSumToMono, .speakerOutputMode,
+        .headphone1Level, .headphone1Mute, .headphone1Dim, .headphone1SumToMono,
+        .headphone2Level, .headphone2Mute, .headphone2Dim, .headphone2SumToMono,
+        .activeSpeakerSet,
+    ]
+
     static let vendorReads: Set<AudioPropertySelector> = [
         .outputLevel, .outputMute, .headphone1Level, .headphone2Level,
         .headphone1Mute, .headphone2Mute, .opticalInFormat, .opticalOutFormat,
     ]
 
-    static let storedSelectors = Set(DeviceSettingsStore.ownedSettings)
+    static let storedSelectors = Set(DeviceSettingsStore.ownedSettings).subtracting(monitorSelectors)
 
     private static var supported: Set<AudioPropertySelector> {
         mappedWrites.union(heldUntilDriverKeepsUnitsApart).union(vendorReads)
@@ -129,7 +140,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
             break
         }
         if let value = rememberedValue(for: address) { return value }
-        guard Self.vendorReads.contains(address.selector) else {
+        guard Self.vendorReads.union(Self.monitorSelectors).contains(address.selector) else {
             throw DeviceConnectionError.unsupportedProperty(address.selector)
         }
         let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
@@ -142,8 +153,12 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         switch address.selector {
         case .outputLevel, .headphone1Level, .headphone2Level:
             return .uint32(UInt32(byte))          // attenuation, as the pages read it
-        case .outputMute, .headphone1Mute, .headphone2Mute:
+        case .outputMute, .headphone1Mute, .headphone2Mute,
+             .outputDim, .outputSumToMono, .headphone1Dim, .headphone2Dim,
+             .headphone1SumToMono, .headphone2SumToMono:
             return .bool(byte != 0)
+        case .activeSpeakerSet:
+            return .uint32(UInt32(byte & 0x07))
         default:
             return .uint32(UInt32(byte))
         }
@@ -200,7 +215,8 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     }
 
     public func isPropertySettable(_ address: PropertyAddress) async -> Bool {
-        Self.mappedWrites.contains(address.selector) || address.selector == .prefix
+        Self.mappedWrites.contains(address.selector)
+            || (Self.driverKeepsUnitsApart && Self.heldUntilDriverKeepsUnitsApart.contains(address.selector))
     }
 
     public func addListener(_ listener: PropertyListener, for address: PropertyAddress) async {

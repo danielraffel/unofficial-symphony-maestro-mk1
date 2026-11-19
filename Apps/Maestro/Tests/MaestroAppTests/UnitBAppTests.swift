@@ -6,6 +6,23 @@ import Testing
 
 @Suite("Unit B in the app")
 struct UnitBAppTests {
+    @Test("Monitor writes keep their captured unit and Core Audio stays with A")
+    func monitorUnitBoundaries() throws {
+        let output = try source("OutputViews.swift")
+        #expect(output.contains("monitorTarget = appState.unitWriteTarget"))
+        #expect(output.contains("guard appState.isCurrent(monitorTarget), let device = monitorTarget.device"))
+        #expect(output.contains("if monitorTarget.unit == .a { appState.writeASPVolume(level) }"))
+        #expect(output.contains("if monitorTarget.unit == .a { appState.writeASPMute(speakerMuted) }"))
+        #expect(!output.contains("if !channels.isEmpty && appState.activeUnit == .a"))
+        let units = try source("AppState+UnitB.swift")
+        #expect(units.contains("let devices = [device, unitBDevice].compactMap { $0 }"))
+        #expect(units.contains("unitBMonitor = monitor"))
+        #expect(units.contains("await monitor.refresh(from: connection)"))
+        for file in ["MonitorViews.swift", "MaestroApp.swift"] {
+            #expect(try source(file).contains("appState.clearMeters()"))
+        }
+    }
+
     @Test("Unit B output pairs route on XLink TX 32-63")
     func unitBRoutePairs() throws {
         let board0 = SymphonyIORoutingAddress.ioBoard0Base

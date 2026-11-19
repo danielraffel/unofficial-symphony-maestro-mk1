@@ -31,6 +31,11 @@ import MaestroDevice
 /// Evidence: `og_source/generic/CoreAudio/mAEstro.h` — output properties
 struct OutputControlsView: View {
     private let appState: AppState
+    // Fixed for this page's lifetime (.id(activeUnit) in AppShell). Queued
+    // monitor operations must never follow a later picker selection.
+    private let monitorTarget: AppState.UnitWriteTarget
+    private let bMonitor: UnitBMonitorState
+
     @State private var channels: [OutputChannelState]
     @State private var errorMessage: String?
     @State private var showResetAlert: Bool = false
@@ -50,9 +55,9 @@ struct OutputControlsView: View {
     @State private var analogStripHeight: CGFloat = 0
 
     // Speaker / HP state — inline in output tab
-    @State private var speakerDim: Bool = false
-    @State private var speakerMono: Bool = false
-    @State private var speakerConfig: UInt32 = 2  // default Stereo (Out 1-2)
+    @State private var aSpeakerDim: Bool = false
+    @State private var aSpeakerMono: Bool = false
+    @State private var aSpeakerConfig: UInt32 = 2  // default Stereo (Out 1-2)
     /// Speaker Select mask — bit 0/1/2 = set A/B/C, shown as pills 1/2/3.
     ///
     /// This really is a **bitmask**, not a selected index, so more than one
@@ -67,15 +72,15 @@ struct OutputControlsView: View {
     /// (`SymphonyIOCommand.setActiveSpeakerSet`, masked to `& 0x07`).
     ///
     /// Defaults to set A, as the daemon does (`SymphonyIO.cpp:168`).
-    @State private var speakerSetMask: UInt32 = SpeakerOutputLogic.defaultSpeakerSetMask
+    @State private var aSpeakerSetMask: UInt32 = SpeakerOutputLogic.defaultSpeakerSetMask
     // HP level/mute synced via AppState (shared with monitor panel)
-    @State private var hp1Dim: Bool = false
-    @State private var hp1Mono: Bool = false
+    @State private var aHp1Dim: Bool = false
+    @State private var aHp1Mono: Bool = false
     // Source IDs are output-pair indices 0-15 (see hpSourceOptions), so the first
     // analog pair is 0, not 1. The old default of 1 selected "Line 3-4".
     @State private var hp1Source: UInt32 = 0
-    @State private var hp2Dim: Bool = false
-    @State private var hp2Mono: Bool = false
+    @State private var aHp2Dim: Bool = false
+    @State private var aHp2Mono: Bool = false
     @State private var hp2Source: UInt32 = 0
     @State private var isMonitorLoading = true
     @State private var scrollPosition: ScrollPosition
@@ -87,6 +92,8 @@ struct OutputControlsView: View {
 
     init(appState: AppState) {
         self.appState = appState
+        monitorTarget = appState.unitWriteTarget
+        bMonitor = appState.unitBMonitor
         let count = max(appState.unitCardLayout.analogOutputStripCount, 1)
         let restored: [OutputChannelState]? = appState.unitChannelStateStore.load(ChannelStateStore.outputKey)
         if let restored, !restored.isEmpty {
@@ -215,7 +222,6 @@ struct OutputControlsView: View {
     private var hasDigitalIO: Bool { layout.showsDigitalSection(isInput: false) }
 
     var body: some View {
-        @Bindable var state = appState
         VStack(spacing: 0) {
             // Toolbar row — Show/Hide Trims, Reset Trims
             HStack {
@@ -258,8 +264,7 @@ struct OutputControlsView: View {
                 .fixedSize()
                 .help("Restore speaker/headphone levels, mute, dim, sum and speaker mode "
                       + "to the factory defaults. Routing is not touched.")
-                // The monitor controls are unit A's (the toolbar volume and
-                // the Mac's output); unit B keeps its own on its front panel.
+                // Unit B reset/replay is a separate plan item.
                 .disabled(appState.activeUnit == .b)
                 .symphonyOnly(appState.converterRoutingSurface)
 
@@ -331,9 +336,7 @@ struct OutputControlsView: View {
 
                     // Speaker / HP section — inline after analog strips, no header
                     // Gate on !channels.isEmpty so monitor+digital don't flash before analog strips render.
-                    // Unit A only: the monitor section drives the toolbar
-                    // volume and the Mac's output, which are unit A's.
-                    if !channels.isEmpty && appState.activeUnit == .a {
+                    if !channels.isEmpty {
                         Divider().opacity(0.4)
 
                         outputMonitorSection
@@ -494,30 +497,193 @@ struct OutputControlsView: View {
         scrollObservationEnabled = true
     }
 
+    private var speakerDim: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.outputDim]?.asBool ?? false : aSpeakerDim }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.outputDim] = .bool(newValue) }
+            else { aSpeakerDim = newValue }
+        }
+    }
+    private var speakerDimBinding: Binding<Bool> {
+        Binding(get: { speakerDim }, set: { speakerDim = $0 })
+    }
+
+    private var speakerMono: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.outputSumToMono]?.asBool ?? false : aSpeakerMono }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.outputSumToMono] = .bool(newValue) }
+            else { aSpeakerMono = newValue }
+        }
+    }
+    private var speakerMonoBinding: Binding<Bool> {
+        Binding(get: { speakerMono }, set: { speakerMono = $0 })
+    }
+
+    private var speakerConfig: UInt32 {
+        get { monitorTarget.unit == .b ? bMonitor.values[.speakerOutputMode]?.asUInt32 ?? 2 : aSpeakerConfig }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.speakerOutputMode] = .uint32(newValue) }
+            else { aSpeakerConfig = newValue }
+        }
+    }
+
+
+    private var speakerSetMask: UInt32 {
+        get { monitorTarget.unit == .b ? bMonitor.values[.activeSpeakerSet]?.asUInt32 ?? 1 : aSpeakerSetMask }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.activeSpeakerSet] = .uint32(newValue) }
+            else { aSpeakerSetMask = newValue }
+        }
+    }
+
+
+    private var hp1Dim: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone1Dim]?.asBool ?? false : aHp1Dim }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone1Dim] = .bool(newValue) }
+            else { aHp1Dim = newValue }
+        }
+    }
+    private var hp1DimBinding: Binding<Bool> {
+        Binding(get: { hp1Dim }, set: { hp1Dim = $0 })
+    }
+
+    private var hp1Mono: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone1SumToMono]?.asBool ?? false : aHp1Mono }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone1SumToMono] = .bool(newValue) }
+            else { aHp1Mono = newValue }
+        }
+    }
+    private var hp1MonoBinding: Binding<Bool> {
+        Binding(get: { hp1Mono }, set: { hp1Mono = $0 })
+    }
+
+    private var hp2Dim: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone2Dim]?.asBool ?? false : aHp2Dim }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone2Dim] = .bool(newValue) }
+            else { aHp2Dim = newValue }
+        }
+    }
+    private var hp2DimBinding: Binding<Bool> {
+        Binding(get: { hp2Dim }, set: { hp2Dim = $0 })
+    }
+
+    private var hp2Mono: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone2SumToMono]?.asBool ?? false : aHp2Mono }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone2SumToMono] = .bool(newValue) }
+            else { aHp2Mono = newValue }
+        }
+    }
+    private var hp2MonoBinding: Binding<Bool> {
+        Binding(get: { hp2Mono }, set: { hp2Mono = $0 })
+    }
+
+    private var speakerLevel: Double {
+        get { monitorTarget.unit == .b ? -Double(bMonitor.values[.outputLevel]?.asUInt32 ?? 64) : appState.speakerLevel }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.outputLevel] = .uint32(UInt32(max(0, -newValue))) }
+            else { appState.speakerLevel = newValue }
+        }
+    }
+    private var speakerLevelBinding: Binding<Double> {
+        Binding(get: { speakerLevel }, set: { speakerLevel = $0 })
+    }
+
+    private var speakerMuted: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.outputMute]?.asBool ?? false : appState.speakerMuted }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.outputMute] = .bool(newValue) }
+            else { appState.speakerMuted = newValue }
+        }
+    }
+    private var speakerMutedBinding: Binding<Bool> {
+        Binding(get: { speakerMuted }, set: { speakerMuted = $0 })
+    }
+
+    private var hp1Level: Double {
+        get { monitorTarget.unit == .b ? -Double(bMonitor.values[.headphone1Level]?.asUInt32 ?? 64) : appState.hp1Level }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone1Level] = .uint32(UInt32(max(0, -newValue))) }
+            else { appState.hp1Level = newValue }
+        }
+    }
+    private var hp1LevelBinding: Binding<Double> {
+        Binding(get: { hp1Level }, set: { hp1Level = $0 })
+    }
+
+    private var hp1Muted: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone1Mute]?.asBool ?? false : appState.hp1Muted }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone1Mute] = .bool(newValue) }
+            else { appState.hp1Muted = newValue }
+        }
+    }
+    private var hp1MutedBinding: Binding<Bool> {
+        Binding(get: { hp1Muted }, set: { hp1Muted = $0 })
+    }
+
+    private var hp2Level: Double {
+        get { monitorTarget.unit == .b ? -Double(bMonitor.values[.headphone2Level]?.asUInt32 ?? 64) : appState.hp2Level }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone2Level] = .uint32(UInt32(max(0, -newValue))) }
+            else { appState.hp2Level = newValue }
+        }
+    }
+    private var hp2LevelBinding: Binding<Double> {
+        Binding(get: { hp2Level }, set: { hp2Level = $0 })
+    }
+
+    private var hp2Muted: Bool {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone2Mute]?.asBool ?? false : appState.hp2Muted }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone2Mute] = .bool(newValue) }
+            else { appState.hp2Muted = newValue }
+        }
+    }
+    private var hp2MutedBinding: Binding<Bool> {
+        Binding(get: { hp2Muted }, set: { hp2Muted = $0 })
+    }
+
+    private var speakerOutputMode: UInt32 {
+        get { monitorTarget.unit == .b ? bMonitor.values[.speakerOutputMode]?.asUInt32 ?? 2 : appState.speakerOutputMode }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.speakerOutputMode] = .uint32(newValue) }
+            else { appState.speakerOutputMode = newValue }
+        }
+    }
+
+
+    private func monitorUnknown(_ selector: AudioPropertySelector) -> Bool {
+        monitorTarget.unit == .b && bMonitor.values[selector] == nil
+    }
+
     // MARK: - Speaker / HP Inline Section
 
     @ViewBuilder
     private var outputMonitorSection: some View {
-        @Bindable var state = appState
         VStack(spacing: 6) {
             // Speaker section
             VStack(spacing: 4) {
                 HStack(spacing: 6) {
                     RotaryKnobView(
-                        value: $state.speakerLevel,
+                        value: speakerLevelBinding,
                         range: -64...0,
                         step: 1,
                         label: appState.converterVolumeKeys ? "Volume" : "Speaker",
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
-                        arcColor: appState.speakerMuted ? .red.opacity(0.4) : speakerDim ? .orange.opacity(0.6) : Color(red: 0.52, green: 0.69, blue: 0.98),
+                        arcColor: speakerMuted ? .red.opacity(0.4) : speakerDim ? .orange.opacity(0.6) : Color(red: 0.52, green: 0.69, blue: 0.98),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             Task { await writeMonitorProperty(.outputLevel, value: .uint32(UInt32(max(0, -level)))) }
-                            appState.writeASPVolume(level)
+                            if monitorTarget.unit == .a { appState.writeASPVolume(level) }
                         }
                     )
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputLevel)))
                     .help(appState.converterVolumeKeys ? ConverterMonitorText.volume
                           : "Speaker Level — controls the speaker output level. In 2 or 3 "
                           + "Speaker Sets mode every active set is adjusted together. "
@@ -530,24 +696,27 @@ struct OutputControlsView: View {
                     // Sum to Mono "M", which reads as Mute and is what a public
                     // bug report called out. Art: `Mute_Medium_On.png` renders
                     // "M", `Dim_Medium_On.png` "D", `Sum_Medium_On.png` "Σ".
-                    outputToggle("M", isOn: $state.speakerMuted, tint: .red,
+                    outputToggle("M", isOn: speakerMutedBinding, tint: .red,
                                  tooltip: appState.converterVolumeKeys ? ConverterMonitorText.mute
                                      : "Mute — silences the speaker output.",
                                  enabled: speakerControlsEnabled) {
-                        Task { await writeMonitorProperty(.outputMute, value: .bool(appState.speakerMuted)) }
-                        appState.writeASPMute(appState.speakerMuted)
+                        Task { await writeMonitorProperty(.outputMute, value: .bool(speakerMuted)) }
+                        if monitorTarget.unit == .a { appState.writeASPMute(speakerMuted) }
                     }
-                    outputToggle("D", isOn: $speakerDim, tint: .orange,
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputMute)))
+                    outputToggle("D", isOn: speakerDimBinding, tint: .orange,
                                  tooltip: Self.dimTooltip("speaker"),
                                  enabled: speakerControlsEnabled) {
                         Task { await writeMonitorProperty(.outputDim, value: .bool(speakerDim)) }
                     }
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputDim)))
                     .symphonyOnly(appState.converterVolumeKeys)
-                    outputToggle("Σ", isOn: $speakerMono, tint: .purple,
+                    outputToggle("Σ", isOn: speakerMonoBinding, tint: .purple,
                                  tooltip: Self.sumTooltip("speaker"),
                                  enabled: speakerSumEnabled) {
                         Task { await writeMonitorProperty(.outputSumToMono, value: .bool(speakerMono)) }
                     }
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputSumToMono)))
                     .symphonyOnly(appState.converterVolumeKeys)
                 }
 
@@ -568,7 +737,7 @@ struct OutputControlsView: View {
                             (name, {
                                 let oldMode = speakerConfig
                                 speakerConfig = val
-                                appState.speakerOutputMode = val
+                                speakerOutputMode = val
                                 guard SpeakerOutputLogic.modeChangeClearsMonitorState(from: oldMode,
                                                                                        to: val) else { return }
                                 // Legacy clears these controls on every user
@@ -576,7 +745,7 @@ struct OutputControlsView: View {
                                 // format. Keep the UI and both transports in
                                 // the same state even when the hardware was
                                 // previously muted or dimmed.
-                                appState.speakerMuted = false
+                                speakerMuted = false
                                 speakerDim = false
                                 speakerMono = false
                                 Task {
@@ -588,10 +757,12 @@ struct OutputControlsView: View {
                             })
                         }
                     )
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.speakerOutputMode)))
                     .frame(maxWidth: .infinity)
 
                     ForEach(0..<3, id: \.self) { index in
                         speakerSelectButton(index)
+                            .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.activeSpeakerSet)))
                     }
                 }
                 .symphonyOnly(appState.converterVolumeKeys)
@@ -603,34 +774,38 @@ struct OutputControlsView: View {
             VStack(spacing: 4) {
                 HStack(spacing: 6) {
                     RotaryKnobView(
-                        value: $state.hp1Level,
+                        value: hp1LevelBinding,
                         range: -64...0,
                         step: 1,
                         label: "Headphone 1",
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
-                        arcColor: appState.hp1Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
+                        arcColor: hp1Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             Task { await writeMonitorProperty(.headphone1Level, value: .uint32(UInt32(max(0, -level)))) }
                         }
                     )
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Level)))
                     .help("Headphone Level — controls the output level of Headphone 1. "
                           + "Drag to adjust, double-tap to reset.")
 
-                    outputToggle("M", isOn: $state.hp1Muted, tint: .red,
+                    outputToggle("M", isOn: hp1MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 1.") {
-                        Task { await writeMonitorProperty(.headphone1Mute, value: .bool(appState.hp1Muted)) }
+                        Task { await writeMonitorProperty(.headphone1Mute, value: .bool(hp1Muted)) }
                     }
-                    outputToggle("D", isOn: $hp1Dim, tint: .orange,
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Mute)))
+                    outputToggle("D", isOn: hp1DimBinding, tint: .orange,
                                  tooltip: Self.dimTooltip("Headphone 1")) {
                         Task { await writeMonitorProperty(.headphone1Dim, value: .bool(hp1Dim)) }
                     }
-                    outputToggle("Σ", isOn: $hp1Mono, tint: .purple,
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Dim)))
+                    outputToggle("Σ", isOn: hp1MonoBinding, tint: .purple,
                                  tooltip: Self.sumTooltip("Headphone 1")) {
                         Task { await writeMonitorProperty(.headphone1SumToMono, value: .bool(hp1Mono)) }
                     }
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1SumToMono)))
                 }
 
                 // HP 1 routing dropdown below knob
@@ -648,6 +823,7 @@ struct OutputControlsView: View {
                     }
                 )
                 .frame(maxWidth: .infinity)
+                .symphonyOnly(monitorTarget.unit == .b)
             }
             .symphonyOnly(appState.converterVolumeKeys)
 
@@ -657,34 +833,38 @@ struct OutputControlsView: View {
             VStack(spacing: 4) {
                 HStack(spacing: 6) {
                     RotaryKnobView(
-                        value: $state.hp2Level,
+                        value: hp2LevelBinding,
                         range: -64...0,
                         step: 1,
                         label: "Headphone 2",
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
-                        arcColor: appState.hp2Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
+                        arcColor: hp2Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             Task { await writeMonitorProperty(.headphone2Level, value: .uint32(UInt32(max(0, -level)))) }
                         }
                     )
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Level)))
                     .help("Headphone Level — controls the output level of Headphone 2. "
                           + "Drag to adjust, double-tap to reset.")
 
-                    outputToggle("M", isOn: $state.hp2Muted, tint: .red,
+                    outputToggle("M", isOn: hp2MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 2.") {
-                        Task { await writeMonitorProperty(.headphone2Mute, value: .bool(appState.hp2Muted)) }
+                        Task { await writeMonitorProperty(.headphone2Mute, value: .bool(hp2Muted)) }
                     }
-                    outputToggle("D", isOn: $hp2Dim, tint: .orange,
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Mute)))
+                    outputToggle("D", isOn: hp2DimBinding, tint: .orange,
                                  tooltip: Self.dimTooltip("Headphone 2")) {
                         Task { await writeMonitorProperty(.headphone2Dim, value: .bool(hp2Dim)) }
                     }
-                    outputToggle("Σ", isOn: $hp2Mono, tint: .purple,
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Dim)))
+                    outputToggle("Σ", isOn: hp2MonoBinding, tint: .purple,
                                  tooltip: Self.sumTooltip("Headphone 2")) {
                         Task { await writeMonitorProperty(.headphone2SumToMono, value: .bool(hp2Mono)) }
                     }
+                    .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2SumToMono)))
                 }
 
                 // HP 2 routing dropdown below knob
@@ -702,6 +882,7 @@ struct OutputControlsView: View {
                     }
                 )
                 .frame(maxWidth: .infinity)
+                .symphonyOnly(monitorTarget.unit == .b)
             }
             .symphonyOnly(appState.converterVolumeKeys)
         }
@@ -938,99 +1119,102 @@ struct OutputControlsView: View {
 
     private func loadMonitorState() async {
         defer { isMonitorLoading = false }
-        // Unit B's page has no monitor section (see `outputMonitorSection`).
-        guard appState.activeUnit == .a, appState.unitDevice != nil else { return }
+        if monitorTarget.unit == .b {
+            if let device = monitorTarget.device { await bMonitor.refresh(from: device) }
+            return
+        }
+        guard monitorTarget.device != nil else { return }
         let deadline = Date().addingTimeInterval(30)
         while !appState.isHardwareInitialized {
             if Date() > deadline { return }
             try? await Task.sleep(for: .milliseconds(100))
         }
         do {
-            if let attenuation = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
-                appState.speakerLevel = -Double(attenuation)
+            if let attenuation = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+                speakerLevel = -Double(attenuation)
             }
         } catch { print("[Maestro] ERROR: output loadMonitorState outputLevel: \(error)") }
         do {
-            if let mute = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
-                appState.speakerMuted = mute
+            if let mute = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
+                speakerMuted = mute
             }
         } catch { print("[Maestro] ERROR: output loadMonitorState outputMute: \(error)") }
         do {
-            if let dim = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputDim)))?.asBool {
+            if let dim = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputDim)))?.asBool {
                 speakerDim = dim
             }
         } catch DeviceConnectionError.unsupportedProperty(_) {
             // Optional on some Symphony/ThunderBridge configurations.
         } catch { print("[Maestro] ERROR: output loadMonitorState outputDim: \(error)") }
         do {
-            if let mono = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .outputSumToMono)))?.asBool {
+            if let mono = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputSumToMono)))?.asBool {
                 speakerMono = mono
             }
         } catch DeviceConnectionError.unsupportedProperty(_) {
             // Optional on some Symphony/ThunderBridge configurations.
         } catch { print("[Maestro] ERROR: output loadMonitorState outputSumToMono: \(error)") }
         do {
-            if let mode = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .speakerOutputMode)))?.asUInt32 {
+            if let mode = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .speakerOutputMode)))?.asUInt32 {
                 speakerConfig = mode
-                appState.speakerOutputMode = mode
+                speakerOutputMode = mode
             }
         } catch { /* speakerOutputMode may not be supported on MKI */ }
         do {
             // Speaker Select mask (0xE9). `SymphonyIO::init` reads it the same
             // way before it trusts its own copy (`SymphonyIO.cpp:1334-1339`).
             // A zero mask is never legal, so it is treated as "no answer".
-            if let mask = (try await appState.unitDevice?.getProperty(
+            if let mask = (try await monitorTarget.device?.getProperty(
                 PropertyAddress(selector: .activeSpeakerSet)))?.asUInt32, mask & 0x7 != 0 {
                 speakerSetMask = mask & 0x7
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* not on every unit */ }
         do {
-            if let att = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 {
-                appState.hp1Level = -Double(min(att, 64))
+            if let att = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 {
+                hp1Level = -Double(min(att, 64))
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP1 level: \(error)") }
         do {
-            if let mute = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1Mute)))?.asBool {
-                appState.hp1Muted = mute
+            if let mute = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone1Mute)))?.asBool {
+                hp1Muted = mute
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP1 mute: \(error)") }
         do {
-            if let dim = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1Dim)))?.asBool {
+            if let dim = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone1Dim)))?.asBool {
                 hp1Dim = dim
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP dim may not be supported */ }
         do {
-            if let mono = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1SumToMono)))?.asBool {
+            if let mono = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone1SumToMono)))?.asBool {
                 hp1Mono = mono
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP mono may not be supported */ }
         do {
-            if let att = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2Level)))?.asUInt32 {
-                appState.hp2Level = -Double(min(att, 64))
+            if let att = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone2Level)))?.asUInt32 {
+                hp2Level = -Double(min(att, 64))
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP2 level: \(error)") }
         do {
-            if let mute = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2Mute)))?.asBool {
-                appState.hp2Muted = mute
+            if let mute = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone2Mute)))?.asBool {
+                hp2Muted = mute
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP2 mute: \(error)") }
         do {
-            if let dim = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2Dim)))?.asBool {
+            if let dim = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone2Dim)))?.asBool {
                 hp2Dim = dim
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP dim may not be supported */ }
         do {
-            if let mono = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2SumToMono)))?.asBool {
+            if let mono = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone2SumToMono)))?.asBool {
                 hp2Mono = mono
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { /* HP mono may not be supported */ }
         do {
-            if let routing = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone1RoutingID)))?.asUInt32 {
+            if let routing = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone1RoutingID)))?.asUInt32 {
                 hp1Source = routing
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP1 routing: \(error)") }
         do {
-            if let routing = (try await appState.unitDevice?.getProperty(PropertyAddress(selector: .headphone2RoutingID)))?.asUInt32 {
+            if let routing = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .headphone2RoutingID)))?.asUInt32 {
                 hp2Source = routing
             }
         } catch DeviceConnectionError.unsupportedProperty(_) { } catch { print("[Maestro] ERROR: output loadMonitorState HP2 routing: \(error)") }
@@ -1151,7 +1335,8 @@ struct OutputControlsView: View {
 
     private func writeMonitorProperty(_ selector: AudioPropertySelector, value: PropertyValue) async {
         do {
-            try await appState.unitDevice?.setProperty(PropertyAddress(selector: selector), value: value)
+            guard appState.isCurrent(monitorTarget), let device = monitorTarget.device else { return }
+            try await device.setProperty(PropertyAddress(selector: selector), value: value)
         } catch {
             print("[Maestro] ERROR: writeMonitorProperty \(selector) failed: \(error)")
         }
@@ -1203,12 +1388,12 @@ struct OutputControlsView: View {
         let attenuation = UInt32(SymphonyIOMonitorDefaults.levelAttenuationDB)
         let level = -Double(SymphonyIOMonitorDefaults.levelAttenuationDB)
 
-        appState.speakerLevel = level
-        appState.hp1Level = level
-        appState.hp2Level = level
-        appState.speakerMuted = SymphonyIOMonitorDefaults.muted
-        appState.hp1Muted = SymphonyIOMonitorDefaults.muted
-        appState.hp2Muted = SymphonyIOMonitorDefaults.muted
+        speakerLevel = level
+        hp1Level = level
+        hp2Level = level
+        speakerMuted = SymphonyIOMonitorDefaults.muted
+        hp1Muted = SymphonyIOMonitorDefaults.muted
+        hp2Muted = SymphonyIOMonitorDefaults.muted
         speakerDim = SymphonyIOMonitorDefaults.dimmed
         hp1Dim = SymphonyIOMonitorDefaults.dimmed
         hp2Dim = SymphonyIOMonitorDefaults.dimmed
@@ -1219,7 +1404,7 @@ struct OutputControlsView: View {
         await writeMonitorProperty(.outputLevel, value: .uint32(attenuation))
         await writeMonitorProperty(.headphone1Level, value: .uint32(attenuation))
         await writeMonitorProperty(.headphone2Level, value: .uint32(attenuation))
-        appState.writeASPVolume(level)
+        if monitorTarget.unit == .a { appState.writeASPVolume(level) }
 
         for (selector, flag) in [
             (AudioPropertySelector.outputMute, SymphonyIOMonitorDefaults.muted),
@@ -1234,7 +1419,7 @@ struct OutputControlsView: View {
         ] {
             await writeMonitorProperty(selector, value: .bool(flag))
         }
-        appState.writeASPMute(SymphonyIOMonitorDefaults.muted)
+        if monitorTarget.unit == .a { appState.writeASPMute(SymphonyIOMonitorDefaults.muted) }
 
         // Speaker mode from board types, but ONLY when those types were actually
         // measured. Unprovenanced boards read as .none, which yields 0 analog
@@ -1253,7 +1438,7 @@ struct OutputControlsView: View {
             mode = .stereo
         }
         speakerConfig = UInt32(mode.rawValue)
-        appState.speakerOutputMode = UInt32(mode.rawValue)
+        speakerOutputMode = UInt32(mode.rawValue)
         await writeMonitorProperty(.speakerOutputMode, value: .uint32(UInt32(mode.rawValue)))
 
         await writeMonitorProperty(.peakHoldMode,
