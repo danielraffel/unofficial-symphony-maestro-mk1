@@ -109,6 +109,91 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         return deviceInfo
     }
 
+    /// A captured B connection never retargets to A. Validate the live topology
+    /// and both detected boards before capture/recall and before every send.
+    public func checkPresetLayout(_ layout: CardLayout) throws {
+        let live = state()
+        guard isConnected, live?.present == true, live?.info?.setupComplete == true,
+              infoRouting().allows(.preferenceLock, at: .peripheral(.init(port: .two)!)),
+              layout.isKnown, layout.converter == nil, layout.converterLayout == nil,
+              live?.info?.slotValid == [true, true],
+              live?.info?.slot1 == layout.slot1, live?.info?.slot2 == layout.slot2 else {
+            throw ThunderboltPreset.RecallError.unsupported("unit B's live card layout could not be verified.")
+        }
+    }
+
+    public func withPresetLock<T>(_ body: () throws -> T) rethrows -> T {
+        try sequenceLock.withLock(body)
+    }
+
+    private func presetRead(_ command: UInt8, _ value: UInt32, _ count: Int, layout: CardLayout) throws -> Data {
+        try checkPresetLayout(layout)
+        let data = try transport.readVendorCommand(command: command, value: value, responseLength: count, port: Self.port)
+        guard data.count == count else { throw DeviceConnectionError.transportError("Short unit B preset read") }
+        return data
+    }
+
+    public func capturePreset(_ seed: ThunderboltPreset, layout: CardLayout) throws -> ThunderboltPreset {
+        try sequenceLock.withLock {
+            try checkPresetLayout(layout)
+            return try ThunderboltPreset.capture(seed, layout: layout, hostChannels: 64, peripheralB: true,
+                readProperty: { address in
+                    let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+                    let data = try self.presetRead(request.request, DextUserClient.nValue(for: request), max(1, request.data.count), layout: layout)
+                    if ThunderboltPreset.monitorOrder.contains(address.selector) { return .uint32(UInt32(data[0])) }
+                    return try SymphonyIOPropertyMapper.decodeResponse(USBControlResponse(data: data, bytesTransferred: data.count), for: address)
+                }, readRaw: { try self.presetRead($0, $1, $2, layout: layout) })
+        }
+    }
+
+    public func routingResetWrites(layout: CardLayout, input: Bool) throws -> [ThunderboltPreset.Write] {
+        try checkPresetLayout(layout)
+        return try ThunderboltPreset.peripheralReset(layout: layout, input: input) { selector in
+            try self.readProperty(PropertyAddress(selector: selector)).asUInt32
+        }
+    }
+
+    public func presetWrites(_ saved: ThunderboltPreset.Peripheral, layout: CardLayout) throws -> [ThunderboltPreset.Write] {
+        try checkPresetLayout(layout)
+        let identity = saved.metadata.inputChannelStates.contains(where: \.phantom)
+            ? try presetRead(0xC0, 0, 8, layout: layout) : nil
+        if let identity {
+            guard identity.count == 8, identity.contains(where: { $0 != 0 }), identity.contains(where: { $0 != 0xFF }) else {
+                throw ThunderboltPreset.RecallError.unsupported("unit B's identity could not be read.")
+            }
+        }
+        return try saved.preset(layout: layout).writes(layout: layout, currentUnitID: identity, hostChannels: 64, peripheralB: true)
+    }
+
+    public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout,
+                                  cardWrite: (PropertyAddress, PropertyValue) throws -> Void) throws {
+        try sequenceLock.withLock {
+            try checkPresetLayout(layout)
+            try ThunderboltPreset.recall(writes, send: { write in
+                try self.checkPresetLayout(layout)
+                switch write {
+                case .property(let address, let value):
+                    if [.mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo].contains(address.selector) {
+                        try cardWrite(address, value)
+                    } else {
+                        if Self.isHeadphoneSource(address.selector), self.headphoneAssignments == nil {
+                            _ = try self.readProperty(address)
+                        }
+                        try self.writeProperty(address, value: value)
+                    }
+                case .frontPanel(let selection):
+                    try self.transport.sendVendorCommand(command: 0x2A, value: 0, payload: Data([selection]), port: Self.port)
+                case .output, .cardInput:
+                    throw DeviceConnectionError.transportError("Card routing is not a unit B vendor command")
+                }
+            }, unlock: {
+                try self.checkPresetLayout(layout)
+                try self.transport.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]), port: Self.port)
+                return try self.presetRead(0xDD, 0, 1, layout: layout) == Data([0])
+            })
+        }
+    }
+
     // MARK: - What unit B supports
 
     /// Written to unit B through the property mapper, with port byte 1.
@@ -173,6 +258,10 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     // MARK: - DeviceConnection
 
     public func getProperty(_ address: PropertyAddress) async throws -> PropertyValue {
+        try sequenceLock.withLock { try readProperty(address) }
+    }
+
+    private func readProperty(_ address: PropertyAddress) throws -> PropertyValue {
         guard isConnected else { throw DeviceConnectionError.notConnected }
         if Self.isHeadphoneSource(address.selector) {
             return try sequenceLock.withLock {

@@ -427,6 +427,15 @@ struct InputRoutingView: View {
     /// confirmation at all, which is how a reset derived from a WRONG card could
     /// run unannounced.
     private func requestRoutingReset() {
+        if appState.unitBOnCard {
+            let refusal = RoutingResetGuard.refusalReason(board1: appState.primaryBoardReading, board2: appState.secondaryBoardReading)
+            let ready = refusal == nil && appState.unitBInputRoutingAllowed
+                && appState.unitBBoardSource(slot: 0) == .detected && appState.unitBBoardSource(slot: 1) == .detected
+            resetPrompt = RoutingResetPrompt(title: "Reset Input Routing",
+                message: ready ? "Reset input routing for the whole card and both Symphony I/Os (channels 1–64)?"
+                    : (refusal ?? "Unit B I/O cards were not detected this session."), isRefusal: !ready)
+            return
+        }
         guard canWrite, let device else { return }
         let b1 = board1Reading
         let b2 = board2Reading
@@ -466,6 +475,13 @@ struct InputRoutingView: View {
     /// Only reachable through ``requestRoutingReset()``, which refuses unless both
     /// slots were genuinely detected this session.
     private func resetToDefaultRouting() async {
+        if appState.unitBOnCard {
+            do {
+                try await appState.resetTwoUnitRouting(input: true)
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription }
+            return
+        }
         guard canWrite, let device else { return }
         let b1 = board1Reading
         let b2 = board2Reading
@@ -917,6 +933,9 @@ struct OutputRoutingView: View {
             grid[TwoUnitOutputRouting.defaultRow(unitBChannel: Int(channel)), default: []].insert(col)
         }
         let saved = appState.unitBOutputRoutingCache?.loadMulti() ?? [:]
+        // Bundle recall saves every row, including empty rows: this is a full
+        // table, so an unclaimed output must stay disconnected.
+        if (0..<TwoUnitOutputRouting.rowCount).allSatisfy({ saved[$0] != nil }) { grid = [:] }
         for (row, cols) in saved where row >= 0 && row < TwoUnitOutputRouting.rowCount {
             let live = cols.filter { $0 >= 0 && $0 < unitBColumns.count }
             guard !live.isEmpty else { continue }
@@ -978,6 +997,13 @@ struct OutputRoutingView: View {
     /// handler forbids ("each column can only have one source row") and the
     /// hardware cannot hold. Display only: nothing is written here.
     private func restoredRoutes(_ base: [Int: Set<Int>]) -> [Int: Set<Int>] {
+        let saved = routingCache?.loadMulti() ?? [:]
+        let rowCount = appState.unitBOnCard ? TwoUnitOutputRouting.rowCount : swOutputPairCount + 2
+        if (0..<rowCount).allSatisfy({ saved[$0] != nil }) {
+            return saved.filter { (0..<rowCount).contains($0.key) }.mapValues {
+                $0.filter { columns.indices.contains($0) }
+            }
+        }
         var routes = base
         for (row, cols) in routingCache?.loadMulti() ?? [:] where
             TwoUnitOutputRouting.playbackPair(unitARow: row, unitAPairs: swOutputPairCount,
@@ -1165,6 +1191,15 @@ struct OutputRoutingView: View {
     /// end up carrying — ADAT included, because that is the destination a wrong
     /// card silently re-points.
     private func requestRoutingReset() {
+        if appState.unitBOnCard {
+            let refusal = RoutingResetGuard.refusalReason(board1: appState.primaryBoardReading, board2: appState.secondaryBoardReading)
+            let ready = refusal == nil && appState.unitBInputRoutingAllowed
+                && appState.unitBBoardSource(slot: 0) == .detected && appState.unitBBoardSource(slot: 1) == .detected
+            resetPrompt = RoutingResetPrompt(title: "Reset Output Routing",
+                message: ready ? "Reset output routing for the whole card and both Symphony I/Os (channels 1–64)?"
+                    : (refusal ?? "Unit B I/O cards were not detected this session."), isRefusal: !ready)
+            return
+        }
         resetUnit = appState.activeUnit
         resetTarget = appState.unitWriteTarget
         if resetUnit == .b {
@@ -1216,6 +1251,13 @@ struct OutputRoutingView: View {
     /// Only reachable through ``requestRoutingReset()``, which refuses unless both
     /// slots were genuinely detected this session.
     private func resetToDefaultRouting() async {
+        if appState.unitBOnCard {
+            do {
+                try await appState.resetTwoUnitRouting(input: false)
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription }
+            return
+        }
         if resetUnit == .b {
             guard let target = resetTarget, appState.isCurrent(target) else { return }
             var defaults: [Int: Set<Int>] = [:]

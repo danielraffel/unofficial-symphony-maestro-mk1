@@ -182,70 +182,19 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         defer { presetLock.unlock() }
         try checkPresetLayout(layout)
         var preset = seed
-        for (channel, source) in presetOutputRoutes where channel < 32 && preset.outputRoutes.count == 32 {
+        for (channel, source) in presetOutputRoutes where Int(channel) < preset.outputRoutes.count {
             preset.outputRoutes[Int(channel)] = source
         }
-        if preset.cardInputRoutes?.count == 32 {
-            for (host, source) in presetCardInputRoutes where host < 32 {
+        if let count = preset.cardInputRoutes?.count {
+            for (host, source) in presetCardInputRoutes where host < count {
                 preset.cardInputRoutes?[host] = source
             }
         }
-        for selector in ThunderboltPreset.monitorOrder + [.headphone1RoutingID, .headphone2RoutingID] {
-            let value = try readPresetProperty(PropertyAddress(selector: selector))
-            guard let raw = value.asUInt32 ?? value.asBool.map({ $0 ? UInt32(1) : 0 }) else {
-                throw ThunderboltPreset.RecallError.unsupported("unreadable monitor setting \(selector).")
-            }
-            preset.globals[selector.rawValue] = raw
-        }
-        func monitor(_ selector: AudioPropertySelector) -> UInt32 { preset.globals[selector.rawValue]! }
-        preset.metadata.outputLevel = -Double(monitor(.outputLevel))
-        preset.metadata.outputMuted = monitor(.outputMute) != 0
-        preset.metadata.outputDimmed = monitor(.outputDim) != 0
-        preset.metadata.outputSumToMono = monitor(.outputSumToMono) != 0
-        preset.metadata.hp1Level = -Double(monitor(.headphone1Level))
-        preset.metadata.hp1Muted = monitor(.headphone1Mute) != 0
-        preset.metadata.hp1RoutingID = monitor(.headphone1RoutingID)
-        preset.metadata.hp2Level = -Double(monitor(.headphone2Level))
-        preset.metadata.hp2Muted = monitor(.headphone2Mute) != 0
-        preset.metadata.hp2RoutingID = monitor(.headphone2RoutingID)
-        preset.globals[AudioPropertySelector.clockSource.rawValue] = try readProperty(PropertyAddress(selector: .clockSource)).asUInt32
-        func read(_ selector: AudioPropertySelector, element: UInt32 = 0) throws -> UInt32 {
-            guard let value = try readPresetProperty(PropertyAddress(selector: selector, element: element)).asUInt32 else {
-                throw ThunderboltPreset.RecallError.unsupported("unreadable setting \(selector).")
-            }
-            return value
-        }
-        preset.metadata.meterBank1Source = try read(.metersShowInput, element: 1)
-        preset.metadata.meterBank2Source = try read(.metersShowInput, element: 2)
-        preset.metadata.peakHoldMode = try read(.peakHoldMode)
-        preset.metadata.overHoldMode = try read(.oversHoldMode)
-        for slot in 0..<2 {
-            let card = layout.card(atSlot: slot)
-            if card.hasOpticalPorts {
-                let value = try read(card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat, element: UInt32(slot))
-                if slot == 0 { preset.metadata.opticalInFormat = value } else { preset.metadata.slot2OpticalFormat = value }
-            }
-            if card.hasSPDIFCoax {
-                let replace = try read(.spdifReplaceID, element: UInt32(slot))
-                let mirror = try read(.spdifMirrorID, element: UInt32(slot))
-                if slot == 0 {
-                    preset.metadata.spdifReplaceID = replace
-                    preset.metadata.spdifMirrorID = mirror
-                } else {
-                    preset.metadata.slot2SPDIFReplaceID = replace
-                    preset.metadata.slot2SPDIFMirrorID = mirror
-                }
-            }
-        }
-        preset.inputRoutes = try (0..<32).map {
-            UInt8(try read(.routing, element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32($0)))
-        }
-        let selection = try dextClient.readVendorCommand(command: 0x2A, value: 0, responseLength: 1)
-        guard selection.count == 1 else { throw DeviceConnectionError.transportError("Short front panel selection read") }
-        preset.frontPanelSelection = selection[0]
-        if layout.slot2 == .micPre8 { preset.unitID = try readPresetUnitID() }
-        _ = try preset.writes(layout: layout, currentUnitID: preset.unitID)
-        return preset
+        return try ThunderboltPreset.capture(preset, layout: layout, hostChannels: presetChannelCount(),
+            readProperty: { address in
+                if address.selector == .clockSource { return try self.readProperty(address) }
+                return try self.readPresetProperty(address)
+            }, readRaw: { try self.dextClient.readVendorCommand(command: $0, value: $1, responseLength: $2) })
     }
 
     private func readPresetUnitID() throws -> Data {
@@ -258,7 +207,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     private func checkPresetLayout(_ layout: CardLayout) throws {
-        guard isConnected, portSelectionID() != PortSelection.ports1And2.rawValue,
+        guard isConnected, let converters = dextClient.readConverterState(), converters.flags & 3 == 0,
+              [32, 64].contains(presetChannelCount()),
               layout.isKnown, layout.converter == nil, layout.converterLayout == nil,
               try readProperty(PropertyAddress(selector: .primaryBoardType)).asUInt32 == UInt32(layout.slot1.rawValue),
               try readProperty(PropertyAddress(selector: .secondaryBoardType)).asUInt32 == UInt32(layout.slot2.rawValue) else {
@@ -283,10 +233,46 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         presetLock.lock()
         defer { presetLock.unlock() }
         try checkPresetLayout(layout)
+        let writes = try presetWrites(preset, layout: layout, legacy: legacy)
+        try applyPresetWrites(writes, layout: layout)
+    }
+
+    public func routingResetWrites(layout: CardLayout, input: Bool) throws -> [ThunderboltPreset.Write] {
+        try checkPresetLayout(layout)
+        return try ThunderboltPreset.peripheralReset(layout: layout, input: input) { selector in
+            try self.readPresetProperty(PropertyAddress(selector: selector)).asUInt32
+        }
+    }
+
+    public func presetWrites(_ preset: ThunderboltPreset, layout: CardLayout, legacy: Bool = false,
+                             channels: Int? = nil) throws -> [ThunderboltPreset.Write] {
+        try checkPresetLayout(layout)
         let identity = preset.metadata.inputChannelStates.contains(where: \.phantom) ? try readPresetUnitID() : nil
-        let writes = try preset.writes(layout: layout, legacy: legacy, currentUnitID: identity)
+        return try preset.writes(layout: layout, legacy: legacy, currentUnitID: identity, hostChannels: channels ?? presetChannelCount())
+    }
+
+    public func writePresetMixer(_ address: PropertyAddress, value: PropertyValue) throws {
+        guard [.mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo].contains(address.selector),
+              (32..<64).contains(address.element & 0xFFFF), presetChannelCount() == 64 else {
+            throw DeviceConnectionError.unsupportedProperty(address.selector)
+        }
+        try writeProperty(address, value: value)
+    }
+
+    public func withPresetLock<T>(_ body: () throws -> T) rethrows -> T {
+        try presetLock.withLock(body)
+    }
+
+    private func presetChannelCount() -> Int {
+        portSelectionID().flatMap(PortSelection.init(rawValue:))?.channelCount ?? 0
+    }
+
+    public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout) throws {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        try checkPresetLayout(layout)
         try ThunderboltPreset.recall(writes, send: { write in
-            guard self.isConnected else { throw DeviceConnectionError.notConnected }
+            try self.checkPresetLayout(layout)
             switch write {
             case .property(let address, let value):
                 // In Line mode the HAL volume belongs to HP1. A preset's speaker
@@ -302,6 +288,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 try self.dextClient.sendVendorCommand(command: 0x2A, value: 0, payload: Data([selection]))
             }
         }, unlock: {
+            try self.checkPresetLayout(layout)
             try self.dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
             let reply = try self.dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1)
             return reply == Data([0])
@@ -681,8 +668,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             command: ThunderboltCardRouting.outputRouteCommand,
             value: 0,
             payload: route.payload)
-        if route.channel < 32,
-           !route.enabled || (64..<96).contains(route.slot) || (128..<132).contains(route.slot) {
+        if route.channel < 64,
+           !route.enabled || (64..<128).contains(route.slot) || (128..<132).contains(route.slot) {
             let source: UInt8
             if !route.enabled { source = SymphonyIORoutingAddress.none }
             else if route.slot >= ThunderboltCardRouting.mixerOutBase {
