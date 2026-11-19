@@ -23,7 +23,10 @@ public struct InputChannelState: Codable, Sendable, Equatable {
     /// Last stored Instrument-stage gain.
     public var instrumentGain: Double = 0
     /// +48V phantom power enable. Maps to 'AEph' (phantom).
-    public var phantom: Bool = false
+    public var phantom: Bool = false {
+        didSet { if !phantom { phantomProvenance = nil } }
+    }
+    public var phantomProvenance: PhantomProvenance?
     /// Phase inversion enable. Maps to 'AEre' (phaseReverse).
     public var phase: Bool = false
     /// High-pass filter enable. Maps to 'AEhf' (highPassFilter).
@@ -35,6 +38,7 @@ public struct InputChannelState: Codable, Sendable, Equatable {
     /// Default +4 dBu (1) matches original Maestro 2 line-level default.
     public var inputType: UInt32 = 1 {
         didSet {
+            if inputType != AnalogInputLevel.mic.rawValue { phantomProvenance = nil }
             if inputType == AnalogInputLevel.mic.rawValue { gain = micGain }
             if inputType == AnalogInputLevel.instrument.rawValue { gain = instrumentGain }
         }
@@ -110,6 +114,7 @@ public struct InputChannelState: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = InputChannelState()
         gain            = try c.decodeIfPresent(Double.self, forKey: .gain) ?? d.gain
+        phantomProvenance = try c.decodeIfPresent(PhantomProvenance.self, forKey: .phantomProvenance)
         phantom         = try c.decodeIfPresent(Bool.self,   forKey: .phantom) ?? d.phantom
         phase           = try c.decodeIfPresent(Bool.self,   forKey: .phase) ?? d.phase
         hpf             = try c.decodeIfPresent(Bool.self,   forKey: .hpf) ?? d.hpf

@@ -44,15 +44,14 @@ public enum AnalogChannelSettingsReplay {
     /// firmware answers 0x60 for inputs only (`SymphonyIOStateData.cpp`,
     /// the AnalogIOType get), so an output's type is always written.
     ///
-    /// Mic and Instrument channels (a Mic Pre's) are not replayed: the type
-    /// alone (trim "do not set") without gain, phantom, filter, phase, group
-    /// and insert would not restore them. The Input page sends that whole set
-    /// when the level is changed there.
+    /// Mic/Instrument restoration runs under the transport's transaction owner,
+    /// with identity-bound phantom policy and unlock/read-back on every exit.
     public static func apply(
         inputs: [InputChannelState],
         outputs: [OutputChannelState],
         layout: CardLayout,
         device: any DeviceConnection,
+        identity: UInt64? = nil,
         spacing: Duration? = nil
     ) async -> Result {
         guard replays(layout: layout) else { return Result() }
@@ -98,7 +97,7 @@ public enum AnalogChannelSettingsReplay {
             let state = inputs[index]
             let element = UInt32(index)
             let level = AnalogInputLevel(rawValue: state.inputType) ?? .plus4dBu
-            if !level.isPreampLevel {
+            if !level.isPreampLevel && !(layout.slot2 == .micPre8 && index < 8) {
                 await writeType(PropertyAddress(selector: .analogIOType, scope: .input, element: element),
                                 type: level.rawValue,
                                 packed: InputChannelLogic.analogIOTypeWithTrim(level: level, trim: state.trim))
@@ -122,6 +121,11 @@ public enum AnalogChannelSettingsReplay {
             await writeIfDifferent(PropertyAddress(selector: .digitalRefLevel, scope: .output, element: element),
                                    state.digitalRefLevel)
         }
+        let preampWrites = MicPreSettingsReplay.writes(inputs: inputs, layout: layout, identity: identity)
+        do {
+            try await MicPreSettingsReplay.apply(preampWrites, layout: layout, device: device)
+            result.applied += preampWrites.count
+        } catch { result.failed += 1 }
         return result
     }
 }

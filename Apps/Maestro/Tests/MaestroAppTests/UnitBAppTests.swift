@@ -115,10 +115,14 @@ struct UnitBAppTests {
             #expect(!text.contains("appState.rememberUnitDigitalSetting("))
             #expect(!text.contains("appState.unitChannelNaming.spdifReplace["))
             #expect(text.contains("let target = appState.unitWriteTarget"))
-            // A failed write puts back only its own change, under that unit's key.
-            #expect(text.contains("channels[index] == after"))
+            // Both pages retain the captured unit across suspension.
         }
-        #expect(input.contains("target.channelStore.save(channels, for: ChannelStateStore.inputKey)"))
+        // Input type changes execute one immutable sequence and do not restore
+        // an old phantom-ON snapshot after a partial hardware failure.
+        #expect(input.contains("let sequence = writes"))
+        #expect(input.contains("MicPreSettingsReplay.apply(sequence, layout: layout, device: device)"))
+        #expect(output.contains("channels[index] == after"))
+        #expect(input.contains("target.channelStore.save(saved, for: ChannelStateStore.inputKey)"))
         #expect(output.contains("target.channelStore.save(channels, for: ChannelStateStore.outputKey)"))
     }
 

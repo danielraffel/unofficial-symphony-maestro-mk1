@@ -167,8 +167,7 @@ extension AppState {
                 plan.settings.append(.unit(unit, entry.address, entry.value))
             }
         }
-        // Preserve connect's analog-only recall for both units. No phantom
-        // or preamp type is introduced here; those have their own identity gate.
+        // MicPre replay shares this transaction owner and the per-unit F2 identity.
         for (unit, layout, store, digital) in [
             (DeviceUnit.a, cardLayout, channelStateStore, rememberedDigitalSettings),
             (.b, layoutB, unitBChannelStateStore, unitBDigitalSettings)
@@ -177,13 +176,18 @@ extension AppState {
             let outputs: [OutputChannelState] = store.load(ChannelStateStore.outputKey) ?? []
             for (index, state) in inputs.prefix(layout.analogInputStripCount).enumerated() {
                 let level = AnalogInputLevel(rawValue: state.inputType) ?? .plus4dBu
-                if !level.isPreampLevel {
+                if !level.isPreampLevel && !(layout.slot2 == .micPre8 && index < 8) {
                     plan.settings.append(.unit(unit, PropertyAddress(selector: .analogIOType, scope: .input, element: UInt32(index)),
                                                .uint32(InputChannelLogic.analogIOTypeWithTrim(level: level, trim: state.trim))))
                 }
                 plan.settings.append(.unit(unit, PropertyAddress(selector: .digitalRefLevel, scope: .input, element: UInt32(index)), .uint32(state.digitalRefLevel)))
                 let softLimit = InputChannelLogic.coerceSoftLimit(state.softLimit, card: layout.cardForAnalogInputStrip(index))
                 plan.settings.append(.unit(unit, PropertyAddress(selector: .softLimit, scope: .input, element: UInt32(index)), .uint32(softLimit)))
+            }
+            for write in MicPreSettingsReplay.writes(inputs: inputs, layout: layout, identity: store.identity) {
+                if case .property(let address, let value) = write {
+                    plan.settings.append(.unit(unit, address, value))
+                }
             }
             for (index, state) in outputs.prefix(layout.analogOutputStripCount).enumerated() {
                 let trim = UInt32(UInt8(bitPattern: Int8(clamping: Int((state.trim * 10).rounded()))))

@@ -250,7 +250,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         try checkPresetLayout(layout)
         let servingBuild = servingDriverBuild()
         let cardInputSupported = if case .build(let build) = servingBuild { build >= 132 } else { false }
-        return try preset.writes(layout: layout, legacy: legacy, currentUnitID: nil,
+        return try preset.writes(layout: layout, legacy: legacy, currentUnitID: layout.slot2 == .micPre8 ? try? dextClient.readVendorCommand(command: 0xC0, value: 0, responseLength: 8) : nil,
                                  hostChannels: channels ?? presetChannelCount(),
                                  cardInputSupported: cardInputSupported, onSkipped: onSkipped)
     }

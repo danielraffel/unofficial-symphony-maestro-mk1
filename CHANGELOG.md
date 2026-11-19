@@ -7,7 +7,8 @@
 ### Changes that may affect your setup
 
 - Symphony settings, input routes and channel labels now follow the identified physical unit when it moves between ports. Previously saved layout settings are preserved for their first identified owner; replacement units do not inherit them. Saved phantom power from an unverified migration cannot authorize preset recall.
-- **Settings bundles never turn phantom power on during recall.** Phantom-off is restored, while phantom-on is captured but skipped and reported until per-channel provenance is available; this deliberate safety change differs from the original software.
+- 8MicPre Mic and Instrument settings are restored after connection and recovery, including both gain stages. Phantom power is restored only when Maestro recorded it for the same physical unit, board slot and Mic channel. Older or unverified settings restore phantom OFF.
+- Leaving Mic turns phantom power off, including when another setting fails.
 - **Instrument gain on an 8MicPre now reaches the preamp's Instrument stage, with its own 0-65 dB range.** Before, Maestro sent Instrument gain as Mic gain. Mic and Instrument gains are now remembered separately for each channel, as in Apogee's software, so switching a channel between Mic and Instrument brings back the gain you last used for that type.
 - **The connection in Device Info reads "Thunderbolt (Symphony 64 PCIe card)",** without the word "experimental".
 

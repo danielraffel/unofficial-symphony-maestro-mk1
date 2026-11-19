@@ -237,8 +237,23 @@ struct InputControlsView: View {
                             meterIndex: i,
                             showTrims: appState.showInputTrims,
                             onPhantomChange: { enabled in
-                                Task { await writeChannelProperty(i, .phantom, value: .bool(enabled)) }
+                                let target = appState.unitWriteTarget
+                                channels[i].recordPhantomRequest(enabled, identity: target.channelStore.identity,
+                                                                 boardSlot: 1, channel: i)
+                                let requested = channels[i]
                                 saveChannelStates()
+                                Task {
+                                    let accepted = await writeChannelProperty(i, .phantom, value: .bool(enabled), on: target.device)
+                                    if !accepted {
+                                        var saved: [InputChannelState] = target.channelStore.load(ChannelStateStore.inputKey) ?? []
+                                        if i < saved.count, saved[i] == requested {
+                                            saved[i].phantom = false
+                                            target.channelStore.save(saved, for: ChannelStateStore.inputKey)
+                                        }
+                                        if appState.activeUnit == target.unit, appState.isCurrent(target),
+                                           i < channels.count, channels[i] == requested { channels[i].phantom = false }
+                                    }
+                                }
                             },
                             onPhaseChange: { enabled in
                                 Task { await writeChannelProperty(i, .phaseReverse, value: .bool(enabled)) }
@@ -491,6 +506,10 @@ struct InputControlsView: View {
             channels = (0..<analogInputStripCount).map { _ in InputChannelState() }
             print("[Maestro] initializeChannels: no saved state — using defaults (\(analogInputStripCount) strips)")
         }
+        let identity = appState.unitChannelStateStore.identity
+        for index in channels.indices {
+            channels[index] = channels[index].recalled(identity: identity, boardSlot: 1, channel: index)
+        }
         applySimulatedAnalogLevels()
         syncAppliedGains()
         didInitializeChannels = true
@@ -598,104 +617,58 @@ struct InputControlsView: View {
     private func applyInputTypeChange(_ index: Int) {
         guard index < channels.count else { return }
         let level = AnalogInputLevel(rawValue: channels[index].inputType) ?? .plus4dBu
-        let before = channels[index]
-        let clearedPhantom = InputChannelLogic.applyLevelChange(&channels[index], to: level)
-
-        // Soft limit choices are card-dependent; collapse an illegal carry-over.
-        channels[index].softLimit = InputChannelLogic.coerceSoftLimit(
-            channels[index].softLimit, card: cardForStrip(index))
-
-        // applyLevelChange also drops the channel out of its gain group and, when
-        // the new level is not Mic/Instrument, frees the insert and its return.
-        // Push whichever of those actually moved.
-        let clearedGroup = before.group != channels[index].group
-        let clearedInsert = before.insert != channels[index].insert
-        let clearedInsertReturn = before.insertReturn != channels[index].insertReturn
-
-        let packed = analogIOTypeWithTrim(index)
-        let gain = UInt32(max(0, channels[index].gain.rounded()))
-        let sendsGain = InputChannelLogic.usesGainKnob(level: level)
-        let insertsAfterLevelChange = insertAssignmentWrites()
-        // The unit and its saved state as they are now: the writes below
-        // await, and the user may switch units (or unit B go) meanwhile.
-        let target = appState.unitWriteTarget
-        let after = channels[index]
-        Task {
-            if clearedPhantom {
-                await writeChannelProperty(index, .phantom, value: .bool(false), on: target.device)
-            }
-            if !(await writeChannelProperty(index, .analogIOType, value: .uint32(packed), on: target.device)) {
-                // Put back only this change: a newer one to the channel stays.
-                if index < channels.count, channels[index] == after {
-                    channels[index] = before
-                    target.channelStore.save(channels, for: ChannelStateStore.inputKey)
-                }
-            }
-            if sendsGain {
-                // Re-assert gain: Mic (0-85) and Instrument (0-65) are separate
-                // hardware gain stages, so the value must be re-sent after a swap.
-                await writeChannelProperty(index, InputChannelLogic.gainSelector(for: level), value: .uint32(gain), on: target.device)
-            }
-            if clearedGroup {
-                await writeChannelProperty(index, .groupID,
-                                          value: .uint32(InputChannelLogic.groupOff), on: target.device)
-            }
-            if clearedInsert {
-                // 0xC8 is addressed by INSERT and rebuilt whole — releasing this
-                // channel's insert means writing mask 0 to it, which only the full
-                // table does (`SymphonyIOBoard_MicPre8ch.cpp:1790-1810`).
-                await pushInsertAssignments(insertsAfterLevelChange, on: target.device)
-            }
-            if clearedInsertReturn {
-                await writeChannelProperty(index, .insertReturnEnable, value: .bool(false), on: target.device)
-            }
-        }
-        syncAppliedGains()
-
-        // Option-click applies the level to every other channel that offers it.
-        // Evidence: APInputTabRowViewController.m:258-271.
+        InputChannelLogic.applyLevelChange(&channels[index], to: level)
+        var changed = [index]
         if Self.optionKeyIsDown {
-            let snapshot = channels
-            let others = InputChannelLogic.applyLevelToAll(
-                &channels, to: level, micPreInstalled: micPreInstalled,
-                hostAnalogInputChannels: micPreHostAnalogInputs, excluding: index)
-            for i in others {
-                // Each of these ran the same transition, so push the same set of
-                // dependent writes the touched channel gets.
-                let otherPacked = analogIOTypeWithTrim(i)
-                let droppedPhantom = snapshot[i].phantom && !channels[i].phantom
-                let droppedGroup = snapshot[i].group != channels[i].group
-                let droppedReturn = snapshot[i].insertReturn != channels[i].insertReturn
-                let sendsOtherGain = InputChannelLogic.usesGainKnob(level: level)
-                let otherGain = UInt32(max(0, channels[i].gain.rounded()))
-                Task {
-                    if droppedPhantom {
-                        await writeChannelProperty(i, .phantom, value: .bool(false), on: target.device)
-                    }
-                    await writeChannelProperty(i, .analogIOType, value: .uint32(otherPacked), on: target.device)
-                    if sendsOtherGain {
-                        await writeChannelProperty(i, InputChannelLogic.gainSelector(for: level), value: .uint32(otherGain), on: target.device)
-                    }
-                    if droppedGroup {
-                        await writeChannelProperty(i, .groupID,
-                                                  value: .uint32(InputChannelLogic.groupOff), on: target.device)
-                    }
-                    if droppedReturn {
-                        await writeChannelProperty(i, .insertReturnEnable, value: .bool(false), on: target.device)
+            changed += InputChannelLogic.applyLevelToAll(&channels, to: level,
+                micPreInstalled: micPreInstalled, hostAnalogInputChannels: micPreHostAnalogInputs,
+                excluding: index)
+        }
+        let target = appState.unitWriteTarget
+        let layout = appState.activeUnit == .b ? appState.unitBLayout : appState.cardLayout
+        var writes: [ThunderboltPreset.Write] = []
+        for channel in changed {
+            channels[channel].softLimit = InputChannelLogic.coerceSoftLimit(channels[channel].softLimit,
+                                                                           card: cardForStrip(channel))
+            let element = UInt32(channel)
+            func put(_ selector: AudioPropertySelector, _ value: PropertyValue, scope: PropertyScope = .global) {
+                writes.append(.property(PropertyAddress(selector: selector, scope: scope, element: element), value))
+            }
+            // OFF first when leaving Mic; a type failure must not leave power on.
+            // Safety departure: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:455-526.
+            if micPreInstalled && channel < 8 && level != .mic { put(.phantom, .bool(false)) }
+            put(.analogIOType, .uint32(analogIOTypeWithTrim(channel)), scope: .input)
+            if micPreInstalled && channel < 8 {
+                put(.insertReturnEnable, .bool(channels[channel].insertReturn))
+                for assignment in insertAssignmentWrites() {
+                    writes.append(.property(PropertyAddress(selector: .insertID, element: UInt32(assignment.insert)),
+                                            .uint32(UInt32(assignment.mask))))
+                }
+                put(.micGain, .uint32(UInt32(max(0, min(85, channels[channel].micGain.rounded())))))
+                put(.instrumentGain, .uint32(UInt32(max(0, min(65, channels[channel].instrumentGain.rounded())))))
+                put(.groupID, .uint32(channels[channel].group))
+            }
+        }
+        let sequence = writes
+        let hasPreampWrites = micPreInstalled && changed.contains(where: { $0 < 8 })
+        syncAppliedGains()
+        saveChannelStates()
+        Task {
+            guard let device = target.device else { return }
+            do {
+                if hasPreampWrites {
+                    guard let layout else { throw DeviceConnectionError.notConnected }
+                    try await MicPreSettingsReplay.apply(sequence, layout: layout, device: device)
+                } else {
+                    // Preserve the existing non-MicPre/converter property path.
+                    for write in sequence {
+                        if case .property(let address, let value) = write {
+                            try await device.setProperty(address, value: value)
+                        }
                     }
                 }
-            }
-            // One rebuild covers every insert the option-click released. It is
-            // deliberately outside the per-channel loop: `0xC8` is addressed by
-            // INSERT, so N channels dropping inserts is still ONE eight-write
-            // table, and it must be built from the final state of `channels`.
-            if others.contains(where: { snapshot[$0].insert != channels[$0].insert }) {
-                let rebuilt = insertAssignmentWrites()
-                Task { await pushInsertAssignments(rebuilt) }
-            }
-            syncAppliedGains()
+            } catch { errorMessage = "Could not update input channel \(index + 1)." }
         }
-        saveChannelStates()
     }
 
     /// Digital Ref change, with legacy's option-click "apply to every channel".

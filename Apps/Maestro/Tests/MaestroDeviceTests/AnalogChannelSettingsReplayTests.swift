@@ -5,7 +5,7 @@ import Foundation
 
 @Suite("Analog channel settings replay")
 struct AnalogChannelSettingsReplayTests {
-    final class RecordingDevice: DeviceConnection, @unchecked Sendable {
+    final class RecordingDevice: MicPreReplayConnection, @unchecked Sendable {
         let identifier = USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID, productID: 0x12, deviceUID: "replay")!
         let isConnected = true
         var writes: [(PropertyAddress, PropertyValue)] = []
@@ -17,6 +17,11 @@ struct AnalogChannelSettingsReplayTests {
             return .uint32(value)
         }
         func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws { writes.append((address, value)) }
+        func replayMicPreSettings(_ writes: [ThunderboltPreset.Write], layout: CardLayout) async throws {
+            for write in writes {
+                if case .property(let address, let value) = write { try await setProperty(address, value: value) }
+            }
+        }
         func hasProperty(_ address: PropertyAddress) async -> Bool { true }
         func isPropertySettable(_ address: PropertyAddress) async -> Bool { true }
         func addListener(_ listener: PropertyListener, for address: PropertyAddress) async {}
@@ -101,10 +106,20 @@ struct AnalogChannelSettingsReplayTests {
         _ = await AnalogChannelSettingsReplay.apply(
             inputs: inputs, outputs: [], layout: CardLayout(slot1: .analogADDA16, slot2: .micPre8), device: device)
         let channel0 = device.writes.filter { $0.0.element == 0 }
-        #expect(!channel0.contains { $0.0.selector == .analogIOType })
+        #expect(channel0.contains { $0.0.selector == .analogIOType })
         // The 16x16 knows Off and On (2) only: a saved -2 dBFS (1) goes as On.
         let softLimits = device.writes.filter { $0.0.selector == .softLimit }.map(\.1)
         #expect(softLimits == [.uint32(2), .uint32(2)])
+    }
+
+    @Test func connectRestoresBothPreampStages() async {
+        let device = RecordingDevice()
+        let state = InputChannelState(micGain: 80, instrumentGain: 20, inputType: 3)
+        _ = await AnalogChannelSettingsReplay.apply(inputs: [state], outputs: [],
+            layout: CardLayout(slot1: .analogADDA16, slot2: .micPre8), device: device)
+        let selectors = device.writes.map(\.0.selector)
+        #expect(selectors.contains(.micGain))
+        #expect(selectors.contains(.instrumentGain))
     }
 
     @Test func usbReplaySwitchCoversChannels() {

@@ -33,9 +33,30 @@ public struct TwoUnitReplay: Sendable {
                 try send(write)
             }
         } catch { failure = error }
+        if failure != nil {
+            // Clear each unit independently; a failure on A must not prevent B's
+            // safety cleanup. Validation still refuses a stale/replaced target.
+            for write in settings {
+                guard case .unit(let unit, let address, _) = write,
+                      address.selector == .phantom else { continue }
+                do { try validate(); try send(.unit(unit, address, .bool(false))) }
+                catch { failure = error }
+            }
+        }
         for unit in DeviceUnit.allCases {
             var ready = false
             for attempt in 0..<10 {
+                if attempt == 9 {
+                    var clearedPhantom = false
+                    for write in settings {
+                        guard case .unit(let target, let address, _) = write,
+                              target == unit, address.selector == .phantom else { continue }
+                        clearedPhantom = true
+                        do { try validate(); try send(.unit(unit, address, .bool(false))) }
+                        catch { failure = error }
+                    }
+                    if clearedPhantom && failure == nil { failure = DeviceConnectionError.transportError("Preference unlock timed out") }
+                }
                 do {
                     try validate()
                     ready = try unlock(unit)

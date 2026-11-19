@@ -292,7 +292,7 @@ struct UnitIdentityTests {
         let unverified = try capture(seed)
         #expect(unverified.unitID == nil)
         store.save(metadata.inputChannelStates, for: ChannelStateStore.inputKey)
-        #expect(store.hasVerifiedInputIdentity)
+        #expect(!store.hasVerifiedInputIdentity)
         seed.unitID = identity
         let captured = try capture(seed)
         #expect(captured.unitID == identity)

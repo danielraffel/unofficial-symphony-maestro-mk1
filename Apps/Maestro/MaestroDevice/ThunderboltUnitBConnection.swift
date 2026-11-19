@@ -170,7 +170,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
                              cardInputSupported: Bool = true,
                              onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
-        return try saved.preset(layout: layout).writes(layout: layout, currentUnitID: nil, hostChannels: 64,
+        return try saved.preset(layout: layout).writes(layout: layout, currentUnitID: layout.slot2 == .micPre8 ? try? presetRead(0xC0, 0, 8, layout: layout) : nil, hostChannels: 64,
                                                         peripheralB: true, cardInputSupported: cardInputSupported,
                                                         onSkipped: onSkipped)
     }
