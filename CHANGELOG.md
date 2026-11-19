@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.10 (beta)
+
+(Work in progress; not released.)
+
+- **Identify, on the Output Routing page, lights up all of the Symphony I/O's front-panel lights** so you can find the unit, as Apogee's software did; press it again to turn them off. With two units there is one for each.
+
 ## 0.9.9 (beta)
 
 Apogee's older converters and a second Symphony I/O now work the way they did with Apogee's software, on the ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.8. With one Symphony I/O, little changes for you; see "Changes that may affect your setup".

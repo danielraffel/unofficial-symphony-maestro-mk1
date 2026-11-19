@@ -425,6 +425,14 @@ public enum SymphonyIOPropertyMapper {
             }
             return SymphonyIORequestBuilder.setClockMode(source: source)
 
+        // Identify is a stateful LED toggle: 1 stays on until a later 0.
+        // Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIO.cpp:2511-2521`.
+        case .identify:
+            guard let enabled = value.asBool ?? value.asUInt32.map({ $0 != 0 }) else {
+                throw DeviceConnectionError.typeMismatch(expected: "Bool or UInt32", got: "\(value)")
+            }
+            return SymphonyIORequestBuilder.setIdentify(enabled: enabled)
+
         // Mic preamp
         case .micGain:
             guard let gain = value.asUInt32 else {
