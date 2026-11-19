@@ -732,8 +732,15 @@ final class AppState {
         }
     }
 
+    /// The driver's converter report when it identifies converters; otherwise
+    /// the older probe word (an older driver, or a report taken while the driver
+    /// re-identifies the cable). The probe word is 0 once a Symphony I/O
+    /// answers, so a Symphony never gets a converter layout from it.
     static func converterSystem(state: ConverterState?, probeWord: UInt32) -> ConverterSystem? {
-        if let state { return ConverterSystem(state: state) }
+        if let state, state.port1Converters || state.port2Converters,
+           let system = ConverterSystem(state: state) {
+            return system
+        }
         return ConverterSystem(probeWord: probeWord, config: ConverterConfig.load())
     }
 

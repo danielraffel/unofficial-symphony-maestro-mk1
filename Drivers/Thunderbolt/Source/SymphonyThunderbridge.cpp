@@ -327,7 +327,8 @@ struct SymphonyThunderbridge_IVars {
     // (SymphonyConverters.h). Written on xlinkQueue (or in Start() before the
     // queue runs); convConfig, convFlags and convRecoveryPending are atomic, the
     // rest are read by ReadConverterState as a best-effort snapshot.
-    bool      convPort1;               // port 1 positively identified as converters
+    IOLock   *convLock;                // guards convPort1/convUnitCount/convUnit for readers off xlinkQueue
+    bool      convPort1;               // port 1 positively identified as converters (atomic)
     uint32_t  convUnitCount[2];        // units per port (port 2 from the port-2 probe)
     uint32_t  convUnit[2][4];          // kSymphonyConvUnit* words, nearest first
     uint32_t  convPhase[2];            // last WCLK_PHASE byte per unit
@@ -1764,6 +1765,39 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
 // has been positively identified as converters (convPort1), so a Symphony I/O
 // never sees any of it.
 
+// Converter state is written on xlinkQueue and read from other queues (channel
+// names, the audio device's latency, the user client, StartDevice): every
+// write goes through ConvSetPort under convLock, and readers off the queue
+// take a copy under the same lock (ConvSnapshot) or read convPort1 atomically.
+struct ConvSnapshotData {
+    bool     port1;
+    uint32_t count[2];
+    uint32_t unit[2][4];
+};
+static bool ConvPort1(const SymphonyThunderbridge_IVars *ivars)
+{
+    return __atomic_load_n(&ivars->convPort1, __ATOMIC_ACQUIRE);
+}
+static void ConvSetPort(SymphonyThunderbridge_IVars *ivars, uint32_t port, bool present,
+                        uint32_t count, const uint32_t *units)
+{
+    if (ivars->convLock) IOLockLock(ivars->convLock);
+    ivars->convUnitCount[port] = present ? count : 0;
+    for (uint32_t u = 0; u < 4; u++) ivars->convUnit[port][u] = (present && units) ? units[u] : 0;
+    if (port == 0) __atomic_store_n(&ivars->convPort1, present, __ATOMIC_RELEASE);
+    if (ivars->convLock) IOLockUnlock(ivars->convLock);
+}
+static void ConvSnapshot(const SymphonyThunderbridge_IVars *ivars, ConvSnapshotData &d)
+{
+    if (ivars->convLock) IOLockLock(ivars->convLock);
+    d.port1 = ivars->convPort1;
+    for (uint32_t p = 0; p < 2; p++) {
+        d.count[p] = ivars->convUnitCount[p];
+        for (uint32_t u = 0; u < 4; u++) d.unit[p][u] = ivars->convUnit[p][u];
+    }
+    if (ivars->convLock) IOLockUnlock(ivars->convLock);
+}
+
 // A query that carries a data byte (AUTH_READ takes the byte index), else like
 // XLinkInquireOn.
 static bool XLinkQueryOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t txRegister, uint64_t rxRegister,
@@ -1826,12 +1860,14 @@ static void BuildConverterChain(SymphonyThunderbridge_IVars *ivars, ConverterCha
     c = ConverterChain{};
     const uint32_t config = __atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE);
     const uint32_t flags = __atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE);
+    ConvSnapshotData d;
+    ConvSnapshot(ivars, d);
     for (uint32_t port = 0; port < 2; port++) {
-        if (port == 0 && !ivars->convPort1) continue;
+        if (port == 0 && !d.port1) continue;
         if (port == 1 && !(flags & kSymphonyConvPort2Converters)) continue;
-        for (uint32_t u = 0; u < ivars->convUnitCount[port] && u < kConverterMaxUnitsPerPort; u++) {
+        for (uint32_t u = 0; u < d.count[port] && u < kConverterMaxUnitsPerPort; u++) {
             const bool ddAsDA = (config >> (kSymphonyConvConfigDDAsDAShift + port * 4 + u)) & 1u;
-            c.kind[port][c.count[port]++] = ConverterKindForRouting(ConverterUnitRouting(ivars->convUnit[port][u]), !ddAsDA);
+            c.kind[port][c.count[port]++] = ConverterKindForRouting(ConverterUnitRouting(d.unit[port][u]), !ddAsDA);
         }
     }
 }
@@ -1885,9 +1921,10 @@ static void ApplyConverterRouting(SymphonyThunderbridge_IVars *ivars, const char
 static void ConverterLatencyFor(SymphonyThunderbridge_IVars *ivars, double rate, uint32_t *in, uint32_t *out)
 {
     *in = *out = 0;
-    if (!ivars || !ivars->convPort1 || ivars->convUnitCount[0] == 0) return;
+    if (!ivars || !ConvPort1(ivars)) return;
     ConverterChain c;
     BuildConverterChain(ivars, c);
+    if (c.count[0] == 0) return;
     *in = ConverterLatency(c.kind[0][0], (uint32_t)(rate + 0.5), true);
     *out = ConverterLatency(c.kind[0][0], (uint32_t)(rate + 0.5), false);
 }
@@ -2198,6 +2235,13 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         uint8_t startupHP2Mute = 0;    // unmuted fallback
         uint8_t readback = 0;
         bool vendorAnswered = false;   // any Symphony vendor read below answered
+        // dext 131: converters found by the probe below. They are configured
+        // only after every Symphony I/O read in this block has also gone
+        // unanswered (a Symphony I/O that loses one read and answers INQUIRE
+        // like a converter answers the later ones and stays a Symphony I/O).
+        bool convCandidate = false;
+        uint32_t convCandidateUnits[kXLinkMaxDevices] = {};
+        uint32_t convCandidateCount = 0;
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerMode, 0,
                               &readback, 1, txSeq,
@@ -2208,8 +2252,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             // never sees the answer vanish for the length of a re-init.
             ivars->unitProbeWord = 0;
             if (ivars->convPort1) {
-                ivars->convPort1 = false;
-                ivars->convUnitCount[0] = 0;
+                ConvSetPort(ivars, 0, false, 0, nullptr);
                 __atomic_and_fetch(&ivars->convFlags, ~(kSymphonyConvPort1Converters | kSymphonyConvRoutingApplied), __ATOMIC_RELEASE);
             }
         } else {
@@ -2320,40 +2363,13 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                 XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, symphonyAddr,
                              kXLinkCmdInquire, &again, ivars->isLegacyPCIe2100) && again == inquire;
             if (!ivars->symphonyAnsweredSinceStart && UnitProbeIsConvertersOnly(probe) && stable) {
-                units[0] |= AuthenticateConverter(ivars, kRegXLink1TX, kRegXLink1RX, 1,
-                                                  ConverterUnitRouting(units[0]), 1);
-                ivars->convPort1 = true;
-                ivars->convUnitCount[0] = unitCount;
-                for (uint32_t u = 0; u < kXLinkMaxDevices; u++) ivars->convUnit[0][u] = units[u];
-                __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort1Converters, __ATOMIC_RELEASE);
-                STLOG("Converter: port 1 carries %u converter unit(s); Symphony I/O set-up skipped", unitCount);
-                // SetWCMaster after enumeration, the rate set with lock, actual
-                // rate and phase, EnableDeviceRouting's per-unit unmute, and the
-                // routing layer's placement.
-                ApplyConverterWordClock(ivars);
-                ConverterRateAndPhase(ivars, rate, rateCode, "after enumeration");
-                UnmuteConverterUnits(ivars, kRegXLink1TX, unitCount);
-                ApplyConverterRouting(ivars, "link configured");
-                // No Symphony I/O vendor traffic to a converter (the original sent
-                // its messages to Symphony I/O units only). Monitor state: the
-                // converter trim (ClassifyVolumeTarget).
-                out->lineMonitor = false;
-                out->speakerAttenuation = startupVolume;
-                out->speakerMute = startupMute != 0;
-                out->hp1Attenuation = startupHP1Volume;
-                out->hp1Mute = startupHP1Mute != 0;
-                out->monitorAttenuation = startupVolume;
-                out->monitorMute = startupMute != 0;
-                if (ClassifyVolumeTarget(ivars, false, out)) {
-                    out->monitorAttenuation = ivars->converterTrimAtten;
-                    out->monitorMute = ivars->converterTrimMuted;
-                }
-                return true;
+                convCandidate = true;
+                convCandidateCount = unitCount;
+                for (uint32_t u = 0; u < kXLinkMaxDevices; u++) convCandidateUnits[u] = units[u];
             }
-            if (ivars->convPort1) {
+            if (!convCandidate && ivars->convPort1) {
                 STLOG("Converter: port 1 no longer identifies as converters; Symphony I/O behaviour");
-                ivars->convPort1 = false;
-                ivars->convUnitCount[0] = 0;
+                ConvSetPort(ivars, 0, false, 0, nullptr);
                 __atomic_and_fetch(&ivars->convFlags, ~(kSymphonyConvPort1Converters | kSymphonyConvRoutingApplied), __ATOMIC_RELEASE);
             }
         }
@@ -2411,6 +2427,43 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
               "hp1Volume=%u hp1Mute=%u hp2Volume=%u hp2Mute=%u activeSet=0x%02x",
               startupMode, startupVolume, startupMute, startupHP1Volume,
               startupHP1Mute, startupHP2Volume, startupHP2Mute, startupActiveSet);
+        if (convCandidate && !vendorAnswered && !ivars->symphonyAnsweredSinceStart) {
+            uint32_t units[kXLinkMaxDevices];
+            for (uint32_t u = 0; u < kXLinkMaxDevices; u++) units[u] = convCandidateUnits[u];
+            const uint32_t unitCount = convCandidateCount;
+
+            units[0] |= AuthenticateConverter(ivars, kRegXLink1TX, kRegXLink1RX, 1,
+                                              ConverterUnitRouting(units[0]), 1);
+            ConvSetPort(ivars, 0, true, unitCount, units);
+            __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort1Converters, __ATOMIC_RELEASE);
+            STLOG("Converter: port 1 carries %u converter unit(s); Symphony I/O set-up skipped", unitCount);
+            // SetWCMaster after enumeration, the rate set with lock, actual
+            // rate and phase, EnableDeviceRouting's per-unit unmute, and the
+            // routing layer's placement.
+            ApplyConverterWordClock(ivars);
+            ConverterRateAndPhase(ivars, rate, rateCode, "after enumeration");
+            UnmuteConverterUnits(ivars, kRegXLink1TX, unitCount);
+            ApplyConverterRouting(ivars, "link configured");
+            // No Symphony I/O vendor traffic to a converter (the original sent
+            // its messages to Symphony I/O units only). Monitor state: the
+            // converter trim (ClassifyVolumeTarget).
+            out->lineMonitor = false;
+            out->speakerAttenuation = startupVolume;
+            out->speakerMute = startupMute != 0;
+            out->hp1Attenuation = startupHP1Volume;
+            out->hp1Mute = startupHP1Mute != 0;
+            out->monitorAttenuation = startupVolume;
+            out->monitorMute = startupMute != 0;
+            if (ClassifyVolumeTarget(ivars, false, out)) {
+                out->monitorAttenuation = ivars->converterTrimAtten;
+                out->monitorMute = ivars->converterTrimMuted;
+            }
+            return true;
+        } else if (convCandidate || ivars->convPort1) {
+            STLOG("Converter: a Symphony I/O read answered after the probe — Symphony I/O behaviour");
+            ConvSetPort(ivars, 0, false, 0, nullptr);
+            __atomic_and_fetch(&ivars->convFlags, ~(kSymphonyConvPort1Converters | kSymphonyConvRoutingApplied), __ATOMIC_RELEASE);
+        }
         out->lineMonitor = startupMode == 0;
         out->speakerAttenuation = startupVolume;
         out->speakerMute = (startupMute != 0 || startupVolume >= 64);
@@ -3030,7 +3083,7 @@ static void Port2AudioFallBack(SymphonyThunderbridge_IVars *ivars, SymphonyThund
 static void ClearPort2Units(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
 {
     __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
-    ivars->convUnitCount[1] = 0;
+    ConvSetPort(ivars, 1, false, 0, nullptr);
     ivars->port2Clocking  = clk;
     ivars->port2UnitCount = 0;
     ivars->port2RateHz    = 0;
@@ -3594,13 +3647,13 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     // layer's rules, after port 1's channels (SymphonyConverters.h). A Symphony
     // I/O on port 2 keeps the identity routing written above.
     {
-        uint32_t n = 0;
+        uint32_t n = 0, p2units[kXLinkMaxDevices] = {};
         for (uint32_t u = 0; u < ivars->port2UnitCount && u < kXLinkMaxDevices; u++) {
             const uint32_t w = ivars->port2Unit[u];
             if (!(w & kSymphonyPort2UnitAddressed) || ConverterUnitRouting(w) == kConverterRoutingSymphony) break;
-            ivars->convUnit[1][n++] = w;
+            p2units[n++] = w;
         }
-        ivars->convUnitCount[1] = n;
+        ConvSetPort(ivars, 1, n != 0, n, p2units);
         if (n) {
             __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
             ApplyConverterRouting(ivars, "64 channels");
@@ -3636,7 +3689,7 @@ static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outco
     // dext 131: port 2's converters stop counting (their routing entries are
     // disabled with the rest of port 2's below).
     __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
-    ivars->convUnitCount[1] = 0;
+    ConvSetPort(ivars, 1, false, 0, nullptr);
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     const bool wasRunning = Port2StopBothEngines(dev, mi);
@@ -3744,10 +3797,10 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     const bool convP2 = (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) != 0;
     ConverterChain conv;
     BuildConverterChain(ivars, conv);
-    const uint32_t convBase = ivars->convPort1 ? 0 : 32;           // first host channel converters name
-    const char convPrefix = ivars->convPort1 ? 'A' : 'B';         // a Symphony I/O on port 1 is unit A
+    const uint32_t convBase = ConvPort1(ivars) ? 0 : 32;           // first host channel converters name
+    const char convPrefix = ConvPort1(ivars) ? 'A' : 'B';         // a Symphony I/O on port 1 is unit A
     const uint32_t nameCount = convP2 ? 64 : 32;
-    auto convNames = [&](uint32_t n) { return ivars->convPort1 || (convP2 && n >= 32); };
+    auto convNames = [&](uint32_t n) { return ConvPort1(ivars) || (convP2 && n >= 32); };
     uint32_t changed = 0;
     for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedInputName[0])] = {};
@@ -4349,11 +4402,15 @@ static bool ConverterHealthCheck(SymphonyThunderbridge_IVars *ivars, SymphonyThu
         reinit = true;
     }
     const uint32_t ports = (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) ? 2 : 1;
-    for (uint32_t port = 0; port < ports && !reinit; port++) {
+    // Each unanswered query waits up to 20 ms on xlinkQueue; after two in one
+    // tick the rest wait for the next tick, so clock, config and app commands
+    // are never held up for long while audio runs.
+    uint32_t misses = 0;
+    for (uint32_t port = 0; port < ports && !reinit && misses < 2; port++) {
         const uint64_t tx = port ? kRegXLink2TX : kRegXLink1TX;
         const uint64_t rx = port ? kRegXLink2RX : kRegXLink1RX;
         uint32_t phases = 0;
-        for (uint32_t u = 0; u < ivars->convUnitCount[port] && u < kXLinkMaxDevices; u++) {
+        for (uint32_t u = 0; u < ivars->convUnitCount[port] && u < kXLinkMaxDevices && misses < 2; u++) {
             const uint8_t addr = (uint8_t)(u + 1);
             const uint32_t w = ivars->convUnit[port][u];
             if (port == 0) {
@@ -4372,7 +4429,7 @@ static bool ConverterHealthCheck(SymphonyThunderbridge_IVars *ivars, SymphonyThu
             uint8_t a = 0, b = 0;
             const bool aOK = XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhaseQuery, &a, pcie);
             const bool bOK = aOK && XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhaseQuery, &b, pcie);
-            if (!bOK) continue;   // a unit that does not report its phase is not judged on it
+            if (!bOK) { misses++; continue; }   // a unit that does not report its phase is not judged on it
             phases |= (uint32_t)b << (8 * u);
             const int diff = (int)a - (int)b;
             if (diff > kConverterPhaseJitter || diff < -kConverterPhaseJitter) {
@@ -4660,10 +4717,12 @@ kern_return_t SymphonyThunderbridge::ReadConverterState(uint32_t *outWords)
     SymphonyConverterStateOutput o = {};
     o.version = 1;
     o.flags = __atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE);
+    ConvSnapshotData d;
+    ConvSnapshot(ivars, d);
     for (uint32_t p = 0; p < 2; p++) {
-        o.unitCount[p] = ivars->convUnitCount[p];
+        o.unitCount[p] = d.count[p];
         for (uint32_t u = 0; u < 4; u++) {
-            uint32_t w = ivars->convUnit[p][u];
+            uint32_t w = d.unit[p][u];
             if (u < o.unitCount[p]) {
                 const uint32_t bit = p * 4 + u;
                 const uint32_t cfg = __atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE);
@@ -4972,6 +5031,7 @@ bool SymphonyThunderbridge::init()
     if (!ivars) {
         return false;
     }
+    ivars->convLock = IOLockAlloc();
     STLOG("init()");
     return true;
 }
@@ -4980,6 +5040,7 @@ void SymphonyThunderbridge::free()
 {
     STLOG("free()");
     if (ivars) {
+        if (ivars->convLock) { IOLockFree(ivars->convLock); ivars->convLock = nullptr; }
         // Interrupt source and queue are released in Stop()'s Cancel completion.
         // OSSafeReleaseNULL is safe on nullptr (no-op if already released).
         OSSafeReleaseNULL(ivars->interruptSource);
@@ -7241,7 +7302,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     // units' window, a unit that lost lock, a word clock change) is done here,
     // with the rate-change transaction below: mute, stop DMA, the rate to every
     // unit, lock, verify, phase alignment, restart, unmute.
-    if (ivars->convPort1 && __atomic_load_n(&ivars->convRecoveryPending, __ATOMIC_ACQUIRE)) {
+    if (ConvPort1(ivars) && __atomic_load_n(&ivars->convRecoveryPending, __ATOMIC_ACQUIRE)) {
         STLOG("StartDevice: converter recovery pending — running the rate transaction at the same rate");
         ivars->lastSampleRate = 0;
     }
@@ -7481,7 +7542,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 // dext 131: converters on either card get the same alignment
                 // (the original ran it in every SetSampleRate); a Symphony I/O on
                 // the ThunderBridge is unchanged.
-                if (ivars->isLegacyPCIe2100 || ivars->convPort1) {
+                if (ivars->isLegacyPCIe2100 || ConvPort1(ivars)) {
                     AlignXLinkPhase(ivars);
                     __atomic_store_n(&ivars->convRecoveryPending, false, __ATOMIC_RELEASE);
                     __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvRecoveryPending, __ATOMIC_RELEASE);

@@ -2406,15 +2406,16 @@ static SymphonyConverterStateOutput ConvState(Run &r)
     return o;
 }
 static Unit U(uint8_t inquire, uint8_t xtd = 0) { Unit u; u.inquire = inquire; u.xtd = xtd; return u; }
-// The first line after which the driver treats port 1 as converters: its first
-// AUTH_START. (Before that it tried one Symphony I/O vendor read, which is how a
-// converter is told apart.)
+// The first line after which the driver treats port 1 as converters: unit 1's
+// AUTH_START, sent once every Symphony I/O read of the bring-up has gone
+// unanswered (those reads are how a converter is told apart from a Symphony
+// I/O that lost one read; units 2-4 are authenticated earlier, during discovery).
 static size_t AfterIdentification(const FakeCard &c)
 {
     for (size_t i = 0; i < c.lines.size(); i++) {
         unsigned long long off = 0; unsigned val = 0;
         if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) == 2 && off == kRegXLink1TX &&
-            ((val >> 9) & 0xFF) == 0x06)
+            ((val >> 9) & 0xFF) == 0x06 && ((val >> 17) & 0x3F) == 1)
             return i;
     }
     return c.lines.size();
@@ -2492,6 +2493,21 @@ static void RunConverterParityChecks()
         CHECK(Commands(c, 0, kRegXLink1TX, 0x06).empty(), "%s: AUTH_START sent to a Symphony I/O", o.name);
         CHECK(Commands(c, 0, kRegXLink1TX, 0x0C).empty(), "%s: DEVICE_TYPE sent to a Symphony I/O", o.name);
         CHECK(ConvState(r).flags == 0, "%s: converter flags 0x%x on a Symphony I/O", o.name, ConvState(r).flags);
+        Finish(o, r);
+    }
+    // 3b. The review's case: a Symphony I/O that loses its first read and
+    //     answers INQUIRE like a DA-16X answers the later reads, so it is never
+    //     configured as converters and gets its Symphony set-up.
+    {
+        Options o; o.name = "converters: Symphony losing one read stays a Symphony"; o.shortFlow = true;
+        o.dropVendorReads = 1; o.symphonyInquire = 0xC0;
+        Run r;
+        RunScenario(o, r);
+        CHECK(!(ConvState(r).flags & kSymphonyConvPort1Converters), "%s: identified as converters (flags 0x%x)",
+              o.name, ConvState(r).flags);
+        // Never configured as converters at any point: unit 1 is never
+        // authenticated (that happens only once it is taken for a converter).
+        CHECK(AfterIdentification(r.card) == r.card.lines.size(), "%s: unit 1 was configured as a converter", o.name);
         Finish(o, r);
     }
     // 4. A unit whose authentication does not verify is reported and kept.
