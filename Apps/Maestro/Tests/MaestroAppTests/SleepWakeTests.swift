@@ -10,6 +10,8 @@ struct SleepWakeTests {
     func state(_ connection: any DeviceConnection) -> AppState {
         let state = AppState()
         state.device = connection
+        state.connectionMode = .hardware
+        state.transportType = .thunderbolt
         state.wakeRetryInterval = .milliseconds(1)
         state.wakeRetryLimit = 3
         state.wakeReadTimeout = .milliseconds(5)
@@ -37,6 +39,18 @@ struct SleepWakeTests {
         #expect(connection.hardwareWriteGate?.allowsWrites == true)
         #expect(state.meterPollingTask != nil)
         #expect(connection.writeCount == 0)
+    }
+
+    @Test func missingDidWakeNotificationUsesBoundedFallback() async {
+        let connection = WakeConnection()
+        let state = state(connection)
+        state.wakeFallbackDelay = .milliseconds(1)
+        defer { state.stopMeterPolling() }
+        state.suspendTwoUnitReplay()
+        await state.wakeFallbackTask?.value
+        await state.wakeReconnectTask?.value
+        #expect(state.hardwareSleepState == .awake)
+        #expect(!state.hardwareWritesSuspended)
     }
 
     @Test func failedWakeReadExhaustsAndReconnectsWithDisconnectBookkeeping() async {
@@ -247,6 +261,67 @@ struct SleepWakeTests {
         #expect(state.isHardwareInitialized)
         #expect(!state.hardwareWritesSuspended)
         await connection.disconnect()
+    }
+
+    @Test func thunderboltWakeDownHandsOffToHealthLoopAfterThreeNoClockProbes() async {
+        let connection = await Task.detached {
+            ThunderboltDeviceConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier, audioDeviceID: 0)
+        }.value
+        let state = state(connection)
+        state.wakeRetryInterval = .milliseconds(1)
+        state.wakeRetryLimit = 10
+        state.wakeLinkProbe = { _ in
+            LinkState(state: .down, clockPresent: false, ioRunning: false, irqCount: 0,
+                      recoveryCount: 1, hwSuspended: false, linkConfigured: true,
+                      lastClockReg: 0, watchTicks: 1, audioWraps: 0)
+        }
+        state.suspendTwoUnitReplay()
+        state.wakeTwoUnitReplay()
+        await state.wakeReconnectTask?.value
+        #expect(state.hardwareSleepState == .awake)
+        #expect(state.connectionMode == .disconnected)
+        #expect(state.awaitingSymphonyReturn)
+        #expect(!state.isHardwareInitialized)
+        state.stopThunderboltHealthCheck()
+        await connection.disconnect()
+    }
+
+    @Test func thunderboltWakeKeepsRecoveringProbeInValidation() {
+        let state = state(WakeConnection())
+        let recovering = link(status: .recovering)
+        #expect(!state.wakeProbeIsStable(recovering))
+        #expect(state.hardwareSleepState == .awake)
+    }
+
+    @Test func thunderboltWakeStaleClientReconnectsImmediatelyWhenLinkStateMissing() async {
+        let connection = await Task.detached {
+            ThunderboltDeviceConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier, audioDeviceID: 0)
+        }.value
+        let state = state(connection)
+        state.wakeRetryLimit = 30
+        state.wakeRetryInterval = .seconds(10)
+        var reconnects = 0
+        state.reconnectOperation = { reconnects += 1 }
+        state.wakeLinkProbe = { _ in nil }
+        state.suspendTwoUnitReplay()
+        state.wakeTwoUnitReplay()
+        await state.wakeReconnectTask?.value
+        #expect(reconnects == 1)
+        #expect(state.hardwareSleepState == .awake)
+        #expect(!state.reconnectRequestedWhileSuspended)
+        await connection.disconnect()
+    }
+
+    @Test func removedDeviceDuringValidationEndsValidationBeforeReconnect() async {
+        let state = state(WakeConnection())
+        var reconnects = 0
+        state.reconnectOperation = { reconnects += 1 }
+        state.hardwareSleepState = .validating
+        state.connectionMode = .disconnected
+        await state.reconnectHardware()
+        #expect(reconnects == 1)
+        #expect(state.hardwareSleepState == .awake)
+        #expect(!state.hardwareWritesSuspended)
     }
 }
 

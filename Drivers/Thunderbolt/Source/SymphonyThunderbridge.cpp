@@ -5357,7 +5357,6 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     // A watch tick may occur while power is off. Never publish the pre-sleep
     // UP cache as proof that the post-wake link check completed. No bus access.
     if (__atomic_load_n(&ivars->providerPowerOff, __ATOMIC_ACQUIRE) ||
-        __atomic_load_n(&ivars->hwSuspended, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&ivars->linkNeedsRevalidation, __ATOMIC_ACQUIRE))
         outWords[1] = kLinkStateRecovering;
     outWords[2]  = ivars->linkClockPresent ? 1u : 0u;

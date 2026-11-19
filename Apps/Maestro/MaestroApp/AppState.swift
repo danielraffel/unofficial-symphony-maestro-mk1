@@ -89,7 +89,7 @@ enum ConnectionMode: Equatable {
 ///
 /// Evidence: `og_source/maestro2/App/Controllers/APApplicationDelegate.m`
 @Observable
-final class AppState {
+final class AppState: @unchecked Sendable {
     struct FrontPanelMicPreUpdate: Equatable {
         let unit: DeviceUnit
         let channel: Int
@@ -1183,10 +1183,13 @@ final class AppState {
     var hardwareWritesSuspended: Bool { hardwareSleepState != .awake }
     var twoUnitSleeping: Bool { hardwareWritesSuspended }
     @ObservationIgnored var wakeReconnectTask: Task<Void, Never>?
+    @ObservationIgnored var wakeFallbackTask: Task<Void, Never>?
     @ObservationIgnored var reconnectRequestedWhileSuspended = false
     @ObservationIgnored var wakeRetryInterval: Duration = .seconds(2)
     @ObservationIgnored var wakeRetryLimit = 30
     @ObservationIgnored var wakeReadTimeout: Duration = .seconds(2)
+    @ObservationIgnored var wakeFallbackDelay: Duration = .seconds(10)
+    @ObservationIgnored private var sleepWakeObservers: [NSObjectProtocol] = []
     // Injectable boundaries let tests exercise the real orchestration without hardware.
     @ObservationIgnored var launchDiscoveryOperation: (@MainActor () async -> [CoreAudioDeviceConnection.DiscoveredSymphonyIO])?
     @ObservationIgnored var reconnectOperation: (@MainActor () async -> Void)?
@@ -1196,6 +1199,7 @@ final class AppState {
     @ObservationIgnored var wakeBaselineRecoveryCount: UInt32?
     @ObservationIgnored var wakeStableRecoveryCount: UInt32?
     @ObservationIgnored var wakeStableProbeCount = 0
+    @ObservationIgnored var wakeDownProbeCount = 0
     @ObservationIgnored var inputRoutingReplayNeeded = false
     @ObservationIgnored var replayDeferral = ReplayDeferral()
 
@@ -1948,6 +1952,7 @@ final class AppState {
             self.transportType = .thunderbolt
             self.statusMessage = "Simulating \(unit.modelName ?? "converters") — no hardware"
             self.isHardwareInitialized = true
+            installSleepWakeObservers()
             return
         }
 
@@ -1987,6 +1992,24 @@ final class AppState {
         if let secondUnitRequest {
             applySecondUnitSimulation(secondUnitRequest, identifier: simDevice.identifier)
         }
+        installSleepWakeObservers()
+    }
+
+    private func installSleepWakeObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        sleepWakeObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.suspendTwoUnitReplay() }
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.wakeTwoUnitReplay() }
+            }
+        ]
+    }
+
+    deinit {
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in sleepWakeObservers { center.removeObserver(observer) }
     }
 
     /// Set by init when Core Audio still has to be asked for the Symphony.
@@ -2576,6 +2599,9 @@ final class AppState {
     /// Reconnect to hardware (called after toggle-driver.sh, plug-in, or USB reset).
     @MainActor
     func reconnectHardware() async {
+        if hardwareSleepState == .validating, connectionMode == .disconnected {
+            endWakeValidationForReconnect()
+        }
         guard admitConnectionWork() else { return }
         if cardSimulation != nil {
             print("[Maestro] CARD SIMULATION: reconnect ignored — session pinned to the simulated unit")

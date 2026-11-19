@@ -852,7 +852,7 @@ struct SystemSetupView: View {
                         }
                     }
                 }
-                .disabled(isLoading || isProToolsMode || rateSettling)
+                .disabled(isLoading || isProToolsMode || rateSettling || appState.hardwareWritesSuspended)
                 .onChange(of: sampleRate) { _, newRate in
                     // Our own assignment, not the user's. This is checked BEFORE
                     // the loading guard and the marker is always consumed: the
@@ -864,7 +864,7 @@ struct SystemSetupView: View {
                     let mine = programmaticRate
                     programmaticRate = nil
                     if let mine, abs(mine - newRate) < 1.0 { return }
-                    guard !isLoading else { return }
+                    guard !isLoading, !appState.hardwareWritesSuspended else { return }
                     // One writer at a time, and the flag goes up HERE rather than
                     // inside the task: between this closure and the task's first
                     // line the reconcile loop could otherwise get a turn, read the
@@ -1792,7 +1792,8 @@ struct SystemSetupView: View {
         func isCurrent() -> Bool { generation == rateWriteGeneration }
         // meterDevice is a CoreAudioDeviceConnection to the real USB device even when
         // the primary device connection is XPC.
-        guard let conn = (appState.device as? CoreAudioDeviceConnection) ?? appState.meterDevice else {
+        guard !appState.hardwareWritesSuspended,
+              let conn = (appState.device as? CoreAudioDeviceConnection) ?? appState.meterDevice else {
             errorMessage = "Cannot set the sample rate: no CoreAudio connection to the hardware."
             rateWriteInFlight = false
             rateSettling = false
@@ -1810,6 +1811,7 @@ struct SystemSetupView: View {
             }
         }
         do {
+            guard !appState.hardwareWritesSuspended else { return }
             let settled = try await conn.setNominalSampleRateAndWait(rate)
             guard isCurrent() else { return }
             // Ours, not the user's: without the sentinel this assignment re-enters

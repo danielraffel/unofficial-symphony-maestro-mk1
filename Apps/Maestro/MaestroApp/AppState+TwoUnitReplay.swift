@@ -218,6 +218,13 @@ extension AppState {
         hardwareSleepState = .sleeping
         wakeReconnectTask?.cancel()
         wakeReconnectTask = nil
+        wakeFallbackTask?.cancel()
+        wakeFallbackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: self.wakeFallbackDelay)
+            guard !Task.isCancelled, self.hardwareSleepState == .sleeping else { return }
+            self.wakeTwoUnitReplay()
+        }
         wakeValidationGeneration &+= 1
         if let tb = device as? ThunderboltDeviceConnection, let link = tb.lastLinkState {
             wakeBaselineWatchTicks = link.watchTicks
@@ -228,6 +235,7 @@ extension AppState {
         }
         wakeStableRecoveryCount = nil
         wakeStableProbeCount = 0
+        wakeDownProbeCount = 0
         device?.hardwareWriteGate?.holdForValidation()
         unitBDevice?.hardwareWriteGate?.holdForValidation()
         twoUnitReplayNeeded = true
@@ -240,8 +248,21 @@ extension AppState {
     @MainActor
     func wakeTwoUnitReplay() {
         guard hardwareSleepState == .sleeping else { return }
+        wakeFallbackTask?.cancel()
+        wakeFallbackTask = nil
         hardwareSleepState = .validating
         retryWakeValidation()
+    }
+
+    @MainActor
+    func endWakeValidationForReconnect() {
+        guard hardwareSleepState == .validating else { return }
+        wakeReconnectTask?.cancel()
+        wakeReconnectTask = nil
+        hardwareSleepState = .awake
+        device?.hardwareWriteGate?.retire()
+        unitBDevice?.hardwareWriteGate?.retire()
+        reconnectRequestedWhileSuspended = false
     }
 
     /// Record all interrupted discovery/reconnect work, including work that spans
@@ -288,10 +309,11 @@ extension AppState {
                         let link: LinkState?
                         if let probe = self.wakeLinkProbe { link = await probe(tb) }
                         else {
-                            link = await Task.detached(priority: .utility) {
-                                let verdict = tb.probeEndpoint()
-                                return verdict.isLive ? tb.lastLinkState : nil
-                            }.value
+                            // Wake validation is deliberately limited to the
+                            // driver's cached link-state selector. The older
+                            // timing-health probe is a vendor read and can
+                            // never certify a sleeping/revalidating endpoint.
+                            link = await Task.detached(priority: .utility) { tb.linkState() }.value
                         }
                         guard !Task.isCancelled, self.wakeValidationGeneration == generation else { return }
                         if self.device !== connection {
@@ -299,13 +321,30 @@ extension AppState {
                             self.wakeStableProbeCount = 0
                             self.reconnectRequestedWhileSuspended = true
                         } else if let link {
+                            if link.state == .down && !link.clockPresent {
+                                self.wakeDownProbeCount += 1
+                            } else {
+                                self.wakeDownProbeCount = 0
+                            }
+                            if self.wakeDownProbeCount >= 3 {
+                                self.markHardwareDisconnected()
+                                self.hardwareSleepState = .awake
+                                self.startThunderboltHealthCheck()
+                                return
+                            }
                             if self.wakeProbeIsStable(link) {
                                 self.finishWakeValidation(connection)
                                 return
                             }
                         } else {
+                            // A removed/stale user client cannot become valid by
+                            // waiting for the retry budget. Hand it to the same
+                            // reconnect path used by a live device-list removal.
                             self.wakeStableRecoveryCount = nil
                             self.wakeStableProbeCount = 0
+                            self.endWakeValidationForReconnect()
+                            await self.reconnectHardware()
+                            return
                         }
                     } else if await self.validateHardwareAfterWake(connection) { return }
                 }
@@ -340,6 +379,7 @@ extension AppState {
     @MainActor
     func finishWakeValidation(_ connection: any DeviceConnection) {
         guard hardwareSleepState == .validating, device === connection else { return }
+        wakeDownProbeCount = 0
         hardwareSleepState = .awake
         // A pinned simulation has no discovery/replay work to restart.
         if cardSimulation != nil { reconnectRequestedWhileSuspended = false }
@@ -348,6 +388,7 @@ extension AppState {
             replaySuspendedReconnectIfNeeded()
             return
         }
+        guard connectionMode == .hardware else { return }
         connection.hardwareWriteGate?.openAfterValidation()
         isHardwareInitialized = true
         twoUnitReplayNeeded = usesTwoUnitReplay
