@@ -238,39 +238,36 @@ struct ConverterRoutingTests {
 @Suite("Port status messages")
 struct PortStatusMessageTests {
     @Test func apogeeWording() {
-        #expect(PortStatusMessage.primary(.noHardware)
-                == "No hardware has been detected on the primary port of the ThunderBridge. "
-                    + "Verify that the hardware is properly connected and powered on.")
-        #expect(PortStatusMessage.primary(.busError)
-                == "A bus error has occurred on the primary port of the ThunderBridge. "
-                    + "Verify that the hardware is properly connected and powered on.")
+        let verify = "\nVerify that the hardware is properly connected and powered on."
+        let absent = "No hardware has been detected on the primary port of the ThunderBridge." + verify
+        let busHeadline = "A bus error has occurred on the Primary port of the ThunderBridge."
+        let bus = busHeadline + verify
+        let absentPCIe = "No hardware has been detected on the primary port of the Symphony 64 PCIe card." + verify
+        #expect(PortStatusMessage.primary(.noHardware) == absent)
+        #expect(PortStatusMessage.primary(.busError) == bus)
         #expect(PortStatusMessage.primary(.other) == nil)
         let pcie = PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2100")
         #expect(pcie == "the Symphony 64 PCIe card")
         #expect(PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2200") == "the ThunderBridge")
         #expect(PortStatusMessage.cardPhrase(pciIdentifier: nil) == "the ThunderBridge")
-        #expect(PortStatusMessage.primary(.noHardware, card: pcie)
-                == "No hardware has been detected on the primary port of the Symphony 64 PCIe card. "
-                    + "Verify that the hardware is properly connected and powered on.")
-        #expect(PortStatusMessage.headline(PortStatusMessage.busError(port: .primary))
-                == "A bus error has occurred on the primary port of the ThunderBridge.")
+        #expect(PortStatusMessage.primary(.noHardware, card: pcie) == absentPCIe)
+        #expect(PortStatusMessage.headline(bus) == busHeadline)
     }
 
     @Test func secondPortNotFound() {
         // 64 channels refused because nothing answered on port 2 (reason 1).
         let refused = SecondPortState(portCount: 2, audio: 0x11 | (1 << 8))
-        #expect(refused.plainProblemText(card: "the Symphony 64 PCIe card")
-                == "No hardware has been detected on the secondary port of the Symphony 64 PCIe card. "
-                    + "Verify that the hardware is properly connected and powered on.")
-        // Other refusals keep their wording.
+        let headline = "No hardware has been detected on the secondary port of the Symphony 64 PCIe card."
+        let expected = headline + "\nVerify that the hardware is properly connected and powered on."
+        #expect(refused.plainProblemText(card: "the Symphony 64 PCIe card") == expected)
+        // A clock failure uses the original clock status.
         let other = SecondPortState(portCount: 2, audio: 0x11 | (3 << 8))
-        #expect(other.plainProblemText == "64 channels could not start: "
-                + SecondPortState.plainReason(3) + ".")
+        #expect(other.plainProblemText == "Clock Mismatch")
         var model = PortSelectionModel()
         model.deviceReported(dataSourceID: 0, state: SecondPortState(portCount: 2, audio: 0x01),
                              card: "the Symphony 64 PCIe card")
         _ = model.userChose(.ports1And2)
         model.deviceReported(dataSourceID: 0, state: refused, card: "the Symphony 64 PCIe card")
-        #expect(model.notice?.hasPrefix("No hardware has been detected on the secondary port of the Symphony 64 PCIe card.") == true)
+        #expect(model.notice?.hasPrefix(headline) == true)
     }
 }

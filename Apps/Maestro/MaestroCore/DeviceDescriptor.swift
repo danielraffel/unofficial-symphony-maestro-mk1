@@ -966,12 +966,14 @@ public struct DeviceInfoReport: Sendable, Equatable {
         self.channelCount = channelCount
     }
 
-    /// Slot line text, e.g. `"8x8 OPT (detected), Version: v33"`.
+    /// Preserve the reported component value; missing reads are not hidden.
+    public static func versionText(_ value: String?) -> String {
+        guard let value, !value.isEmpty, value != "—" else { return "Unknown" }
+        return value
+    }
+
     public static func boardLine(_ reading: BoardTypeReading, version: String?) -> String {
-        guard let version, !version.isEmpty, reading.source != .unknown else {
-            return reading.displayText
-        }
-        return "\(reading.displayText), Version: \(version)"
+        "\(reading.displayText), Version: \(versionText(version))"
     }
 
     /// The exact text the Device Info Copy button places on the clipboard.
@@ -979,8 +981,8 @@ public struct DeviceInfoReport: Sendable, Equatable {
         var lines: [String] = []
         lines.append("Device Name: \(deviceName)")
         lines.append("Connection: \(connection)")
-        if let firmwareVersion { lines.append("Firmware: \(firmwareVersion)") }
-        if let fpgaVersion { lines.append("FPGA version: \(fpgaVersion)") }
+        if connectedUnit == nil { lines.append("Firmware: \(Self.versionText(firmwareVersion))") }
+        if connectedUnit == nil { lines.append("FPGA version: \(Self.versionText(fpgaVersion))") }
         if let hardwareID { lines.append("Hardware ID: \(hardwareID)") }
         if connectedUnit == nil {
             lines.append("IOBoard1: \(DeviceInfoReport.boardLine(board1, version: board1Version))")
@@ -988,7 +990,7 @@ public struct DeviceInfoReport: Sendable, Equatable {
         }
         // A converter has no option cards, so those lines are left out; "not
         // detected" would read as a fault.
-        if let xmosVersion { lines.append("XMOS Version: \(xmosVersion)") }
+        if connectedUnit == nil { lines.append("XMOS Version: \(Self.versionText(xmosVersion))") }
         if let deviceModel { lines.append("Device Model: \(deviceModel)") }
         if let mode { lines.append("Mode: \(mode)") }
         if let channelCount { lines.append("Channel Count: \(channelCount)") }

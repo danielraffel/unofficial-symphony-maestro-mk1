@@ -187,12 +187,16 @@ public struct SecondPortState: Sendable, Equatable {
     /// sentence for it (`PortStatusMessage`).
     public func plainProblemText(card: String) -> String? {
         guard !audioActive else { return nil }
-        if audioFellBack { return "Back to 32 channels: " + Self.plainReason(audioReason) + "." }
-        if audioRefused {
-            if audioReason == 1 { return PortStatusMessage.noHardware(port: .secondary, card: card) }
-            return "64 channels could not start: " + Self.plainReason(audioReason) + "."
+        guard audioFellBack || audioRefused else { return nil }
+        // Original status vocabulary: og_source/maestrolink/Software/
+        // SymphonyController.cpp:1260-1343,2011-2063. Keep detailed driver
+        // reason codes in reportLines, not new instructions in the Ports UI.
+        switch audioReason {
+        case 1, 5: return PortStatusMessage.noHardware(port: .secondary, card: card)
+        case 3, 7: return "Clock Mismatch"
+        case 2, 4, 6, 8: return PortStatusMessage.busError(port: .secondary, card: card)
+        default: return "Port Error"
         }
-        return nil
     }
 
     /// Why 64 channels are not running although they were asked for or were

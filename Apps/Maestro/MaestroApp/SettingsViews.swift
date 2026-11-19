@@ -669,118 +669,6 @@ struct DeviceSettingsView: View {
 
 }
 
-/// Parsed firmware/device info from the 'AEt1' (versionString) daemon property.
-/// The daemon returns an XML plist string with nested dicts for USB Daemon and Symphony I/O.
-private struct FirmwareInfo {
-    var deviceName: String?
-    var firmwareVersion: String?
-    var fpgaVersion: String?
-    var hardwareID: String?
-    var ioBoard1Type: String?
-    var ioBoard1Version: String?
-    var ioBoard2Type: String?
-    var ioBoard2Version: String?
-    var xmosVersion: String?
-
-    static func parse(_ xmlString: String) -> FirmwareInfo? {
-        guard let data = xmlString.data(using: .utf8),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) else { return nil }
-
-        // The daemon returns an array of dicts (root is <array>).
-        // Each dict may have a "Children" array of component dicts.
-        // Each component dict has "name" (String) and "info" (dict with properties).
-        // Screenshot confirmed structure: [{ "Children": [{ "name": "USB Daemon", "info": { "version": "1.23.0" } },
-        //   { "name": "Symphony I/O", "info": { "FPGA version": "v73", "Hardware ID": "...",
-        //     "IOBoard1 Type": "8ch Analog-Optical", "IOBoard1 version": "v33", ... } }] }]
-        var info = FirmwareInfo()
-        info.deviceName = "Symphony I/O"
-
-        func processItems(_ items: [[String: Any]]) {
-            for item in items {
-                let name = item["name"] as? String ?? ""
-                let itemInfo = item["info"] as? [String: Any] ?? [:]
-                if name == "USB Daemon" {
-                    info.firmwareVersion = itemInfo["version"] as? String
-                } else {
-                    // Symphony I/O or similar hardware component
-                    if let v = itemInfo["FPGA version"] as? String { info.fpgaVersion = v }
-                    if let v = itemInfo["Hardware ID"] as? String { info.hardwareID = v }
-                    if let v = itemInfo["XMOS version"] as? String { info.xmosVersion = v }
-                    if let v = itemInfo["IOBoard1 Type"] as? String { info.ioBoard1Type = v }
-                    if let v = itemInfo["IOBoard1 version"] as? String { info.ioBoard1Version = v }
-                    if let v = itemInfo["IOBoard2 Type"] as? String { info.ioBoard2Type = v }
-                    if let v = itemInfo["IOBoard2 version"] as? String { info.ioBoard2Version = v }
-                }
-                if let children = item["Children"] as? [[String: Any]] {
-                    processItems(children)
-                }
-            }
-        }
-
-        if let rootArray = plist as? [[String: Any]] {
-            processItems(rootArray)
-        } else if let rootDict = plist as? [String: Any] {
-            processItems([rootDict])
-        }
-
-        guard info.firmwareVersion != nil || info.fpgaVersion != nil || info.hardwareID != nil else { return nil }
-        return info
-    }
-
-    /// Construct FirmwareInfo from static device knowledge when daemon XML is unavailable.
-    /// On macOS 26, the daemon is broken and USB vendor reads fail, so we populate
-    /// what we can from the USBDeviceIdentifier and any firmware version string we got.
-    static func fromDevice(_ device: any DeviceConnection, firmwareVersion: String) -> FirmwareInfo {
-        var info = FirmwareInfo()
-        info.deviceName = device.identifier.displayName
-        if firmwareVersion != "—" {
-            info.firmwareVersion = firmwareVersion
-        }
-        return info
-    }
-
-    /// Board type the daemon's version XML reported for a slot, if it can be
-    /// mapped onto a known module. A value here came off the device, so it counts
-    /// as a live detection.
-    func xmlBoardType(slot: Int) -> IOCardType? {
-        let label = slot == 1 ? ioBoard1Type : ioBoard2Type
-        guard let label, !label.isEmpty else { return nil }
-        return IOCardType.fromLegacyLabel(label)
-    }
-
-    /// Build the Device Info panel's content.
-    ///
-    /// Board types are passed in as `BoardTypeReading`s rather than strings so the
-    /// panel can say whether each slot was actually read back or is a stale cache.
-    func report(
-        connectionMode: String,
-        board1: BoardTypeReading,
-        board2: BoardTypeReading,
-        deviceModel: String? = nil,
-        mode: String? = nil,
-        channelCount: Int? = nil,
-        connectedUnit: String? = nil,
-        connectedUnitModel: String? = nil
-    ) -> DeviceInfoReport {
-        DeviceInfoReport(
-            deviceName: connectedUnitModel ?? deviceName ?? "Symphony I/O",
-            connection: connectionMode,
-            firmwareVersion: firmwareVersion,
-            fpgaVersion: fpgaVersion,
-            hardwareID: hardwareID,
-            xmosVersion: xmosVersion,
-            board1: board1,
-            board1Version: ioBoard1Version,
-            board2: board2,
-            board2Version: ioBoard2Version,
-            deviceModel: deviceModel,
-            mode: mode,
-            channelCount: channelCount,
-            connectedUnit: connectedUnit
-        )
-    }
-}
-
 /// System Setup view — clock, sample rate, word clock, keyboard volume, device info.
 /// Mode-aware: shows different controls for Symphony/Standalone/Pro Tools HD modes.
 ///
@@ -1039,7 +927,7 @@ struct SystemSetupView: View {
                             Circle()
                                 .fill(clockLocked ? .green : .red)
                                 .frame(width: 8, height: 8)
-                            Text(clockLocked ? "Ready" : "Clock Mismatch")   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                            Text(PortStatusMessage.clock(locked: clockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -1171,8 +1059,10 @@ struct SystemSetupView: View {
                                 LabeledContent(row.label, value: row.value)
                             }
                         }
-                        if let fw = info.firmwareVersion { LabeledContent("Firmware", value: fw) }
-                        if let fpga = info.fpgaVersion { LabeledContent("FPGA Version", value: fpga) }
+                        if appState.connectedUnit == nil {
+                            LabeledContent("Firmware", value: DeviceInfoReport.versionText(info.firmwareVersion))
+                            LabeledContent("FPGA Version", value: DeviceInfoReport.versionText(info.fpgaVersion))
+                        }
                         if let hw = info.hardwareID { LabeledContent("Hardware ID", value: hw) }
                         // Board types, with provenance. Never present a cached
                         // value as a measurement — card detection fails on USB.
@@ -1195,9 +1085,11 @@ struct SystemSetupView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        if let xmos = info.xmosVersion { LabeledContent("XMOS Version", value: xmos) }
+                        if appState.connectedUnit == nil {
+                            LabeledContent("XMOS Version", value: DeviceInfoReport.versionText(info.xmosVersion))
+                        }
                     } else {
-                        LabeledContent("Firmware Version", value: firmwareVersion)
+                        LabeledContent("Firmware Version", value: DeviceInfoReport.versionText(firmwareVersion))
                     }
 
                     if let system = appState.cardLayout.converterLayout {
@@ -1705,6 +1597,8 @@ struct SystemSetupView: View {
         // values it then assigns would reach the pickers' onChange as user input.
         let generation = UUID()
         propertiesLoadGeneration = generation
+        firmwareVersion = "—"
+        parsedFirmware = nil
         isLoading = true
         defer { if propertiesLoadGeneration == generation { isLoading = false } }
         guard let device = appState.device else {
@@ -1792,7 +1686,6 @@ struct SystemSetupView: View {
         do {
             if let ver = (try await device.getProperty(PropertyAddress(selector: .versionString))).asString,
                !ver.isEmpty {
-                firmwareVersion = ver
                 parsedFirmware = FirmwareInfo.parse(ver)
             }
         } catch {

@@ -20,6 +20,13 @@ public enum PortStatusMessage {
         case primary, secondary
     }
 
+    /// Evidence: og_source/maestrolink/Software/SymphonyIO.cpp:2961-2968;
+    /// SymphonyController.cpp:1328-1343. No reconnect instructions are added.
+    public static func clock(locked: Bool, link: Link = .other) -> String {
+        if link != .other { return "Bus Error" }
+        return locked ? "Ready" : "Clock Mismatch"
+    }
+
     public static let verify = "Verify that the hardware is properly connected and powered on."
     public static let defaultCard = "the ThunderBridge"
 
@@ -35,11 +42,11 @@ public enum PortStatusMessage {
     static func name(_ port: Port) -> String { port == .primary ? "primary" : "secondary" }
 
     public static func noHardware(port: Port, card: String = defaultCard) -> String {
-        "No hardware has been detected on the \(name(port)) port of \(card). " + verify
+        "No hardware has been detected on the \(name(port)) port of \(card).\n" + verify
     }
 
     public static func busError(port: Port, card: String = defaultCard) -> String {
-        "A bus error has occurred on the \(name(port)) port of \(card). " + verify
+        "A bus error has occurred on the \(port == .primary ? "Primary" : "Secondary") port of \(card).\n" + verify
     }
 
     /// The port-1 message for a link state, nil when there is nothing to add.
@@ -54,7 +61,7 @@ public enum PortStatusMessage {
     /// The first sentence, for the one-line status bar (the whole message is
     /// its tooltip).
     public static func headline(_ message: String) -> String {
-        guard let end = message.range(of: ". ") else { return message }
+        guard let end = message.range(of: ".\n") else { return message }
         return String(message[..<end.lowerBound]) + "."
     }
 }

@@ -91,15 +91,14 @@ struct DeviceInfoReportTests {
         #expect(DeviceInfoReport.boardLine(.detected(.optical), version: "v33")
                 == "8x8 OPT (detected), Version: v33")
         #expect(DeviceInfoReport.boardLine(.detected(.optical), version: nil)
-                == "8x8 OPT (detected)")
+                == "8x8 OPT (detected), Version: Unknown")
         #expect(DeviceInfoReport.boardLine(.detected(.optical), version: "")
-                == "8x8 OPT (detected)")
+                == "8x8 OPT (detected), Version: Unknown")
     }
 
-    /// An unknown slot must not carry a version — a version we cannot attribute
-    /// to a known board is worse than no version.
-    @Test func boardLineDropsVersionForUnknownSlot() {
-        #expect(DeviceInfoReport.boardLine(.unknown, version: "v33") == "Unknown (not detected)")
+    /// Board type and firmware version are independent reads.
+    @Test func boardLineKeepsVersionForUnknownSlot() {
+        #expect(DeviceInfoReport.boardLine(.unknown, version: "v33") == "Unknown (not detected), Version: v33")
     }
 
     // MARK: - The user's actual hardware
@@ -168,15 +167,19 @@ struct DeviceInfoReportTests {
         #expect(report.clipboardText == expected)
     }
 
-    @Test func clipboardTextOmitsMissingFieldsButNeverTheBoards() {
+    @Test func clipboardTextMarksMissingFirmwareAndBoardsUnknown() {
         let report = DeviceInfoReport(connection: "Thunderbolt (ThunderBridge)")
         let lines = report.clipboardText.split(separator: "\n").map(String.init)
-        #expect(lines == [
+        let expected = [
             "Device Name: Symphony I/O",
             "Connection: Thunderbolt (ThunderBridge)",
-            "IOBoard1: Unknown (not detected)",
-            "IOBoard2: Unknown (not detected)",
-        ])
+            "Firmware: Unknown",
+            "FPGA version: Unknown",
+            "IOBoard1: Unknown (not detected), Version: Unknown",
+            "IOBoard2: Unknown (not detected), Version: Unknown",
+            "XMOS Version: Unknown",
+        ]
+        #expect(lines == expected)
     }
 
     // MARK: - Exhaustive: all 8 x 8 card combinations

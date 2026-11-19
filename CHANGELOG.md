@@ -22,6 +22,8 @@
 
 ### Fixes
 
+- Device Info shows “Unknown” for unreadable firmware components and no longer labels the USB daemon’s software version as hardware firmware. Port errors use the original Maestro wording.
+
 - Keep each Symphony I/O’s speaker controls and front-panel changes on that unit when Mac volume keys target the other unit. Switching the keyboard-volume target, or losing unit B, restores the selected unit’s own level and mute without a volume jump. Monitor selection no longer waits for the hardware on the app’s main thread.
 
 - **Reset Routing keeps working when an older driver is still serving after an app update.** The card-input grid requires driver build 132 or newer, and Reset Output Routing leaves card inputs unchanged.

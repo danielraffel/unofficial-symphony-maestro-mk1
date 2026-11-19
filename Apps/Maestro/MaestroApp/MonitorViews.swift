@@ -26,7 +26,7 @@ struct StatusBarView: View {
                 Image(systemName: clockLocked ? "lock.fill" : "lock.open")
                     .foregroundStyle(clockLocked ? .green : .red)
                     .font(.system(size: 11))
-                Text(clockLocked ? "Ready" : "Clock Mismatch")   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                Text(PortStatusMessage.clock(locked: clockLocked, link: appState.transportType == .thunderbolt ? appState.thunderboltPortLink : .other))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -72,7 +72,7 @@ struct StatusBarView: View {
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
-                    .help(appState.portStatusMessage.map { $0 + " Click to reconnect." } ?? "Click to reconnect to hardware")
+                    .help(appState.portStatusMessage ?? appState.endpointStatusMessage)
                 } else {
                     if appState.connectionMode == .hardware {
                         Image(systemName: "cable.connector")

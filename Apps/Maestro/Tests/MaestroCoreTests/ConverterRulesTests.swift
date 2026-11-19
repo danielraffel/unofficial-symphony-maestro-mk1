@@ -164,7 +164,7 @@ struct ConverterSystemTests {
         let noXtd = ConverterUnit(port: 0, address: 1, word: UInt32(0x37) | ConverterState.unitInquireOK)
         #expect(noXtd.firmwareText == "X-Symphony v0.7" && noXtd.firmwareOutOfDate)
         let nothing = ConverterUnit(port: 0, address: 1, word: UInt32(0x30) | ConverterState.unitInquireOK)
-        #expect(nothing.firmwareText == "firmware unknown" && !nothing.firmwareOutOfDate)
+        #expect(nothing.firmwareText == "Unknown" && !nothing.firmwareOutOfDate)
         #expect(noXtd.authOK == nil)
         // 0x0F: AD by default, DA when the driver applied that Device Type.
         let dd = ConverterUnit(port: 0, address: 2, word: word(0xF7, 0x02))
@@ -186,7 +186,7 @@ struct ConverterSystemTests {
         #expect(system.source == .probeWord && !system.port2Counted && system.ports[1].isEmpty)
         #expect(system.ports[0].map(\.kind) == [.ad16x, .ad16x, .da16x, .da16x])
         #expect(system.ports[0][0].firmwareText == "X-Symphony v2.7")
-        #expect(system.ports[0][1].firmwareText == "firmware unknown")
+        #expect(system.ports[0][1].firmwareText == "Unknown")
         #expect(system.connectedUnit == .chain([.ad16x, .ad16x, .da16x, .da16x]))
         #expect(system.hostInputCount == 32 && system.hostOutputCount == 32)
         // No XTD reply: v0.N from INQUIRE, which is out of date (the original
@@ -194,7 +194,7 @@ struct ConverterSystemTests {
         let noXtd = try #require(ConverterSystem(probeWord: ran | inquireOK | 0x31))
         #expect(noXtd.ports[0][0].firmwareText == "X-Symphony v0.1" && noXtd.firmwareNotices.count == 1)
         let zero = try #require(ConverterSystem(probeWord: ran | inquireOK | 0x30))
-        #expect(zero.ports[0][0].firmwareText == "firmware unknown" && zero.firmwareNotices.isEmpty)
+        #expect(zero.ports[0][0].firmwareText == "Unknown" && zero.firmwareNotices.isEmpty)
         // No probe, or nothing answered: nil.
         #expect(ConverterSystem(probeWord: 0) == nil)
         #expect(ConverterSystem(probeWord: ran) == nil)

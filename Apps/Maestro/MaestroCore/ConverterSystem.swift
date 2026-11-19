@@ -305,7 +305,7 @@ public struct ConverterUnit: Sendable, Equatable {
         ConverterRules.firmwareOutOfDate(major: firmwareMajor, minor: firmwareMinor)
     }
     public var firmwareText: String {
-        firmwareKnown ? "X-Symphony v\(firmwareMajor).\(firmwareMinor)" : "firmware unknown"
+        firmwareKnown ? "X-Symphony v\(firmwareMajor).\(firmwareMinor)" : "Unknown"
     }
 
     /// The model, as the Device Type choice makes it.

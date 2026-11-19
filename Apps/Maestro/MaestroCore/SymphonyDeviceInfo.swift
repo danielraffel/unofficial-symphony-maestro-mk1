@@ -37,14 +37,14 @@ public struct SymphonyDeviceInfo: Sendable, Equatable {
 
     public var rows: [Row] {
         var result: [Row] = [
-            .init(label: "Firmware", value: versions[0] ?? "Unknown"),
-            .init(label: "FPGA Version", value: versions[1] ?? "Unknown"),
+            .init(label: "Firmware", value: DeviceInfoReport.versionText(versions[0])),
+            .init(label: "FPGA Version", value: DeviceInfoReport.versionText(versions[1])),
             .init(label: "Hardware ID", value: uniqueID ?? "Unknown"),
-            .init(label: "Main Board Hardware Version", value: versions[4] ?? "Unknown")]
+            .init(label: "Main Board Hardware Version", value: DeviceInfoReport.versionText(versions[4]))]
         for slot: UInt32 in 0..<2 {
             result.append(.init(label: "IOBoard \(slot + 1)", value: boards[slot]?.productName ?? "Unknown"))
-            result.append(.init(label: "IOBoard \(slot + 1) Version", value: versions[slot + 2] ?? "Unknown"))
-            result.append(.init(label: "IOBoard \(slot + 1) Hardware Version", value: versions[slot + 5] ?? "Unknown"))
+            result.append(.init(label: "IOBoard \(slot + 1) Version", value: DeviceInfoReport.versionText(versions[slot + 2])))
+            result.append(.init(label: "IOBoard \(slot + 1) Hardware Version", value: DeviceInfoReport.versionText(versions[slot + 5])))
         }
         return result
     }
