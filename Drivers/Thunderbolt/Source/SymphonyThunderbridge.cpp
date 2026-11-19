@@ -7673,7 +7673,21 @@ kern_return_t SymphonyThunderbridge::StopDevice(
     __atomic_store_n(&ivars->ioRunning, false, __ATOMIC_RELEASE);
 
     // Call super to update IO state
-    return super::StopDevice(in_object_id, in_flags);
+    const kern_return_t ret = super::StopDevice(in_object_id, in_flags);
+
+    // dext 131: the card keeps playing its output ring while DMA runs, so the
+    // last ~170 ms a client wrote would repeat until IO starts again (heard on
+    // the PCIe card after quitting a DAW). Apogee's performAudioEngineStop
+    // cleared the host output buffers for the same reason ("this will help to
+    // clear the sample buffers in the hardware", SymphonyBaseAudioEngine.cpp
+    // :846-870) before stopping DMA. Host memory only, no register access;
+    // the next client's audio overwrites it as before.
+    if (ivars->h2aDMA)
+        ivars->h2aDMA->PerformOperation(kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+    if (ivars->h2a2DMA)
+        ivars->h2a2DMA->PerformOperation(kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
+    STLOG("StopDevice: playback buffers cleared (the card plays silence until IO starts again)");
+    return ret;
 }
 
 // ── Stop ────────────────────────────────────────────────────────────────────
