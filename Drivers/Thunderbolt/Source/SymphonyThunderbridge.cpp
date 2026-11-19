@@ -77,10 +77,10 @@ struct ThunderboltMixerState {
     bool swReturnMuted;
     bool masterMuted;
     bool swReturnSoloed;
-    uint8_t inputByte[32];
-    uint8_t inputPanByte[32];
-    bool inputMuted[32];
-    bool inputSoloed[32];
+    uint8_t inputByte[64];
+    uint8_t inputPanByte[64];
+    bool inputMuted[64];
+    bool inputSoloed[64];
 };
 
 struct SymphonyThunderbridge_IVars {
@@ -362,8 +362,8 @@ struct SymphonyThunderbridge_IVars {
     bool      wakeFoundEndpointAbsent; // atomic; SetPowerState(On) saw no endpoint (tunnel lost)
     // dext 115: shadow of the card output routing table the app wrote through
     // kThunderboltCardOutputRouteCommand, replayed by ReprogramCardAfterReset.
-    uint32_t  cardOutputRoute[32];
-    bool      cardOutputRouteSet[32];
+    uint32_t  cardOutputRoute[64];
+    bool      cardOutputRouteSet[64];
     // dext 116: whether the app has ever written mixer N's state (0xB0–0xB3).
     // Until it has, a re-init must write Start()'s unity defaults, not the
     // all-zero cached state (which silenced outputs 1-2 after wake, 12:18).
@@ -3508,12 +3508,16 @@ static void Port2StartBothEngines(SymphonyThunderbridge_IVars *ivars)
 // Port 2's routing entries (32..63): input n <- XLink RX slot n, output n <-
 // PCI OUT slot 64+n, with or without the enable bit (og Sym64Routing::init and
 // DisableXLinkPortChannels). Whole values are written, not read-modify-write.
-static void Port2ProgramRouting(IOPCIDevice *dev, uint8_t mi, bool enable)
+static void Port2ProgramRouting(SymphonyThunderbridge_IVars *ivars, bool enable)
 {
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
     const uint32_t en = enable ? kRoutingEnable : 0;
     for (uint32_t n = kPort2FirstChannel; n < kPort2FirstChannel + kMaxChannelsPerPort; n++) {
         WriteRegister(dev, mi, kRegInputRouting + n * 4, (kTDM_XLinkRX0 + n) | en);
-        WriteRegister(dev, mi, kRegOutputRouting + n * 4, (kTDM_PCIOut0 + n) | en);
+        const uint32_t output = (enable && ivars->cardOutputRouteSet[n])
+            ? ivars->cardOutputRoute[n] : ((kTDM_PCIOut0 + n) | en);
+        WriteRegister(dev, mi, kRegOutputRouting + n * 4, output);
     }
 }
 
@@ -3742,7 +3746,7 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonRegisters);
         return false;
     }
-    Port2ProgramRouting(dev, mi, true);
+    Port2ProgramRouting(ivars, true);
     // The units on port 2 were never unmuted in stage 1 (og EnableDeviceRouting).
     for (uint8_t addr = 1; addr <= ivars->port2UnitCount && addr <= kXLinkMaxDevices; addr++) {
         if (!(ivars->port2Unit[addr - 1] & kSymphonyPort2UnitAddressed)) continue;
@@ -3772,7 +3776,7 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
     // take time too). Stop() re-clears the DMA bits after draining this queue
     // in any case; this keeps the window as small as the one-port restart's.
     if (!XLinkTxAdmissible(ivars)) {
-        Port2ProgramRouting(dev, mi, false);
+        Port2ProgramRouting(ivars, false);
         Port2ProgramBuffers(ivars, false);
         ivars->port2DisablePending = true;
         Port2AudioNote(ivars, kSymphonyPort2AudioRefused, kSymphonyPort2ReasonUnreachable);
@@ -3799,7 +3803,7 @@ static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outco
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     const bool wasRunning = Port2StopBothEngines(dev, mi);
-    Port2ProgramRouting(dev, mi, false);
+    Port2ProgramRouting(ivars, false);
     Port2ProgramBuffers(ivars, false);
     Port2SilenceBuffers(ivars);
     // Port 2 off again, as the original's SetNumPorts(1) (XLink.cpp:906-907).
@@ -6575,7 +6579,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                 state.masterMuted = false;
                 state.swReturnSoloed = false;
                 ivars->mixerSwReturnSource[mixer] = 0;
-                for (int c = 0; c < 32; c++) {
+                for (int c = 0; c < 64; c++) {
                     state.inputByte[c] = 48;      // 0 dB when unmuted
                     state.inputPanByte[c] = 64;   // center
                     state.inputMuted[c] = true;   // inputs start muted
@@ -7555,7 +7559,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 // Audio is asked to return the streams to 32 channels.
                 bool restartBothPorts = bothPorts;
                 if (bothPorts && rateOk && !(port2 && port2Rate.ok)) {
-                    Port2ProgramRouting(ivars->pciDevice, ivars->barMemoryIndex, false);
+                    Port2ProgramRouting(ivars, false);
                     Port2ProgramBuffers(ivars, false);
                     SetPort2Enabled(ivars, false);   // back at 32: port 2 disabled, as SetNumPorts(1)
                     // Port 2 had no unit clock at all: its units are gone.
@@ -8423,6 +8427,26 @@ static uint32_t TrimmedMixerCoef(int index)
     return v ? v : kMixerMuteCoeff;
 }
 
+// Unit B contributes the second 32 hardware-input strips only while the card
+// is actually running 64 channels and the port-2 probe identified a Symphony
+// I/O (the probe's channel-group byte is 0xFF). Converters keep their existing
+// routing/mixer paths. Evidence: the original port-2 XLink probe and
+// SymphonyPCIeCardMixer.cpp:1101-1130,1276-1330.
+static bool CardMixerUnitBActive(const SymphonyThunderbridge_IVars *iv)
+{
+    if (!iv || iv->portCount != 2 || !iv->port2On ||
+        __atomic_load_n(&iv->portMode, __ATOMIC_ACQUIRE) != 64 ||
+        iv->port2UnitCount == 0)
+        return false;
+    const uint32_t flags = __atomic_load_n(&iv->port2Flags, __ATOMIC_ACQUIRE);
+    return (flags & kSymphonyPort2FlagDataLinkUp) != 0 &&
+           (iv->port2Unit[0] & kSymphonyPort2UnitAddressed) != 0 &&
+           // The probe records the two routing replies in the low bytes. A
+           // Symphony I/O reports 0xFF on both (the XTD-valid bit is retained
+           // separately, so use the recorded bytes here).
+           (iv->port2Unit[0] & 0xFFu) == 0xFFu;
+}
+
 static void WriteMixerCoefPair(IOPCIDevice *dev, uint8_t mi,
                                uint64_t offL, uint64_t offR,
                                int lvl, uint8_t pan, bool play, int trim = 0)
@@ -8457,7 +8481,8 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv,
     ThunderboltMixerState &state = iv->mixer[mixerID - 1];
     const uint32_t physicalBase = ThunderboltMixerPhysicalBase(mixerID);
     bool anySolo = state.swReturnSoloed;
-    for (int c = 0; c < 32 && !anySolo; c++)
+    const int inputCount = CardMixerUnitBActive(iv) ? 64 : 32;
+    for (int c = 0; c < inputCount && !anySolo; c++)
         if (state.inputSoloed[c]) anySolo = true;
 
     // Converter volume keys: mixer 1 only, every source it carries, so the
@@ -8491,8 +8516,8 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv,
     WriteRegister(dev, mi, MixerCoefOffset(physicalBase, 128), returnCoefL);
     WriteRegister(dev, mi, MixerCoefOffset(physicalBase + 1, 129), returnCoefR);
 
-    // Fixed hardware inputs 0..31.
-    for (int c = 0; c < 32; c++) {
+    // Fixed hardware inputs 0..31, plus unit B's XLink RX 32..63 at 64ch.
+    for (int c = 0; c < inputCount; c++) {
         bool play = !state.inputMuted[c] && !trimMuted &&
                     (!anySolo || state.inputSoloed[c]);
         WriteMixerCoefPair(dev, mi, MixerCoefOffset(physicalBase, c),
@@ -8570,8 +8595,10 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             uint16_t mixerID = (uint16_t)(value >> 16);
             uint16_t element = (uint16_t)(value & 0xFFFF);
             uint8_t source = payload[0];
-            if (element == 0 && mixerID >= 1 && mixerID <= 2 &&
-                IsThunderboltSoftwareReturnSource(source)) {
+            const bool sourceOK = IsThunderboltSoftwareReturnSource(source) ||
+                                  (CardMixerUnitBActive(ivars) &&
+                                   IsThunderboltSoftwareReturnSource64(source));
+            if (element == 0 && mixerID >= 1 && mixerID <= 2 && sourceOK) {
                 for (uint8_t side = 0; side < 2; side++) {
                     WriteRegister(
                         ivars->pciDevice, ivars->barMemoryIndex,
@@ -8647,7 +8674,8 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         }
         if (command == kThunderboltCardOutputRouteCommand) {
             if (!payload || payloadLen != 3 ||
-                payload[0] >= kThunderboltCardOutputChannels) {
+                payload[0] >= kThunderboltCardOutputChannels ||
+                (payload && payload[0] >= kPort2FirstChannel && !CardMixerUnitBActive(ivars))) {
                 STERR("Card output route: bad request payload=%u ch=%u",
                       payloadLen, payload ? payload[0] : 0xFF);
                 result = kIOReturnBadArgument;
@@ -8677,7 +8705,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             bool isMixerCh = (ch == kMixerChSwReturn || ch == kMixerChMaster ||
                               ch == kMixerChSwReturnLeft || ch == kMixerChSwReturnRight ||
                               ch == kMixerChMasterLeft || ch == kMixerChMasterRight ||
-                              ch < 32);
+                              ch < (CardMixerUnitBActive(ivars) ? 64 : 32));
             if ((mixerID == 1 || mixerID == 2) && isMixerCmd && isMixerCh && payload && payloadLen >= 1) {
                 ThunderboltMixerState &state = ivars->mixer[mixerID - 1];
                 uint8_t p0 = payload[0];

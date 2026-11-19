@@ -133,6 +133,9 @@ build_and_run() {
     if grep -q 'PerformPortModeChange' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_PORT2_AUDIO)
     fi
+    if grep -q 'CardMixerUnitBActive' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_UNITB_MIXER)
+    fi
     # Retire for upgrade (selector 7, release driver 123). It refuses an
     # unstamped build, so the harness stamps one; nothing else reads it.
     # The Symphony 64 PCIe card's own receive order. The check that

@@ -20,6 +20,7 @@
 #include "HostDriverKit.h"
 #include "SymphonyThunderbridge.h"
 #include "Sym64Registers.h"
+#include "SymphonyCardMixerRouting.h"
 #include "SymphonyThunderbridgeShared.h"
 #ifdef TRACE_HAVE_CONVERTER_PARITY
 #include "SymphonyConverters.h"
@@ -129,6 +130,7 @@ struct Port {
     bool     answersVendor = true;    // Symphony: replies to vendor reads
     uint32_t dropVendorReads = 0;     // Symphony: the next N vendor reads get no reply
     uint8_t  symphonyInquire = 0;     // Symphony: INQUIRE reply byte (0 = none)
+    bool     symphonyProbeAnswered = false;
     bool     ignoreRate = false;      // units do not follow SET_SAMPLE_RATE
     bool     txBusy = false;          // TX register reports busy (commands time out)
     uint32_t slipReads = 0;           // the next N status reads report a data slip
@@ -264,6 +266,7 @@ struct Port {
             for (auto &u : units) { u.addr = 0; u.passing = false; }
             frame.clear();
             dupArmed = false;
+            symphonyProbeAnswered = false;
             return;
         }
         const uint8_t addr = (uint8_t)((val >> 17) & 0x3F);
@@ -292,7 +295,10 @@ struct Port {
         case 0x05:
         case 0x0B: {
             if (kind == Symphony) {
-                if (symphonyInquire && cmd == 0x05 && addr <= 1) reply(addr, cmd, symphonyInquire);
+                if (symphonyInquire && (cmd == 0x05 || cmd == 0x0B) && !symphonyProbeAnswered) {
+                    reply(addr, cmd, symphonyInquire);
+                    if (cmd == 0x0B) symphonyProbeAnswered = true;
+                }
                 break;
             }
             Unit *u = addr ? reachable(addr) : firstNotPassing();
@@ -611,6 +617,7 @@ static void RunScenario(const Options &o, Run &r)
     card.port[0].dropVendorReads = o.dropVendorReads;
     card.port[0].symphonyInquire = o.symphonyInquire;
     if (!o.latePort2) Attach(card.port[1], o.port2);
+    if (o.port2 == Port::Symphony) card.port[1].symphonyInquire = 0xFF;
     if (o.dirtyRegisters) {
         card.reg[kRegGCSR]  = 0x2db8011b;
         card.reg[kRegGCSR2] = 0x05a0301b;   // DMA bits + both port-disable bits stale
@@ -2312,6 +2319,10 @@ static std::vector<Options> TwoPortScenarios()
     std::vector<Options> v;
     { Options o; o.name = "p2-symphony-plus-converters"; o.port2 = Port::Converters; o.portCountProperty = 2;
       o.dirtyRegisters = true; v.push_back(o); }
+#ifdef TRACE_HAVE_UNITB_MIXER
+    { Options o; o.name = "p2-symphony-plus-symphony"; o.port2 = Port::Symphony; o.portCountProperty = 2;
+      o.shortFlow = true; v.push_back(o); }
+#endif
     { Options o; o.name = "p2-port2-empty"; o.portCountProperty = 2; o.shortFlow = true; v.push_back(o); }
     { Options o; o.name = "p2-converters-both-ports"; o.port1 = Port::Converters; o.port2 = Port::Converters;
       o.portCountProperty = 2; v.push_back(o); }
@@ -2874,16 +2885,50 @@ int main(int argc, char **argv)
             CHECK((s.w[2] & 1u) != 0 && s.w[11] == 1, "%s: selecting 64 did not probe port 2 once (flags 0x%x, %u probes)",
                   o.name, s.w[2], s.w[11]);
             if (o.port2 != Port::Empty) {
-                CHECK((s.w[2] & 2u) != 0 && s.w[6] == 2 && (s.w[7] & 0xFF) == 0x30 && (s.w[8] & 0xFF) == 0xC0,
-                      "%s: port 2 units not found on selecting 64 (flags 0x%x, %u units)", o.name, s.w[2], s.w[6]);
+                if (o.port2 == Port::Symphony)
+                    CHECK((s.w[2] & 2u) != 0 && s.w[6] == 1 && (s.w[7] & 0xFF) == 0xFF,
+                          "%s: Symphony unit B not found on selecting 64 (flags 0x%x, %u units)", o.name, s.w[2], s.w[6]);
+                else
+                    CHECK((s.w[2] & 2u) != 0 && s.w[6] == 2 && (s.w[7] & 0xFF) == 0x30 && (s.w[8] & 0xFF) == 0xC0,
+                          "%s: port 2 units not found on selecting 64 (flags 0x%x, %u units)", o.name, s.w[2], s.w[6]);
             } else {
                 CHECK((s.w[14] & kSymphonyPort2AudioRefused) && AudioReason(s) == kSymphonyPort2ReasonNoUnit,
                       "%s: 64 with nothing on port 2 not refused (0x%08x)", o.name, s.w[14]);
                 CHECK((r.card.reg[kRegGCSR2] & kGCSR2_DisablePort2) != 0, "%s: port 2 left enabled after the refusal", o.name);
             }
         }
+#ifdef TRACE_HAVE_UNITB_MIXER
+        if (o.port2 == Port::Symphony) {
+            uint8_t level = 48;
+            CHECK(r.drv->SendVendorCommand(0xB0, (1u << 16) | 63, &level, 1) == kIOReturnSuccess,
+                  "%s: unit-B mixer channel 63 rejected at 64", o.name);
+            uint8_t unmute = 0;
+            r.drv->SendVendorCommand(0xB3, (1u << 16) | 63, &unmute, 1);
+            CHECK(r.card.reg[MixerCoefOffset(0, 63)] == kMixerUnityCoeff,
+                  "%s: unit-B mixer channel 63 coefficient 0x%08x", o.name,
+                  r.card.reg[MixerCoefOffset(0, 63)]);
+            uint8_t source = 31;
+            CHECK(r.drv->SendVendorCommand(0xB4, (1u << 16), &source, 1) == kIOReturnSuccess,
+                  "%s: software-return source 31 rejected at 64", o.name);
+            CHECK(r.card.reg[ThunderboltMixerReturnRegister(1, 0)] == (126u | kRoutingEnable) &&
+                  r.card.reg[ThunderboltMixerReturnRegister(1, 1)] == (127u | kRoutingEnable),
+                  "%s: software-return source 31 mapped incorrectly", o.name);
+            uint8_t route[3] = { 63, 127, 1 };
+            CHECK(r.drv->SendVendorCommand(0xB5, 0, route, 3) == kIOReturnSuccess,
+                  "%s: unit-B card output 63 rejected at 64", o.name);
+            CHECK(r.card.reg[kRegOutputRouting + 63 * 4] == (127u | kRoutingEnable),
+                  "%s: unit-B output route 63 not written", o.name);
+        }
+#endif
         const size_t back = Select(r, 0, "select Port 1: 32ch again");
         CheckAt32(o, r, back);
+#ifdef TRACE_HAVE_UNITB_MIXER
+        if (o.port2 == Port::Symphony) {
+            uint8_t route[3] = { 63, 127, 1 };
+            CHECK(r.drv->SendVendorCommand(0xB5, 0, route, 3) == kIOReturnBadArgument,
+                  "%s: unit-B output route 63 accepted at 32", o.name);
+        }
+#endif
 #endif
         Finish(o, r);
         accesses += r.card.lines.size();
