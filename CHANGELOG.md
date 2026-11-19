@@ -11,6 +11,7 @@ Thanks to the people who reported converters showing only four units, a tone rep
 - **This beta updates the ThunderBridge and PCIe driver (0.11.5, build 131).** After installing, restart the Mac (or reconnect the ThunderBridge or PCIe chassis) so the new driver takes over.
 - **Maestro sends each input and output channel's level, trim, Digital Ref and Soft Limit to the Symphony when it connects,** as Apogee's software did. Before, Maestro only showed what it had saved, so after using Apogee's software or switching the unit off and on, a page could show a level the unit was not at. Channels on an 8MicPre set to Mic or Instrument are left as they are.
 - **The clock status reads "Ready" or "Clock Mismatch",** Apogee's wording, instead of "Locked" or "Unlocked".
+- **The Sample Rate menu comes back sooner after a change:** once the Symphony has locked to the new rate (between 1.5 and 3 seconds) instead of after a fixed 5 seconds.
 - **On the PCIe card and the ThunderBridge, audio stops cleanly when your DAW stops.** Before, the card could keep repeating the last fraction of a second it played.
 
 ### AD-16X, DA-16X, DD-16X and Rosetta converters

@@ -1888,10 +1888,17 @@ struct SystemSetupView: View {
             // The PLL re-acquires over the next few seconds; do not let a refresh
             // in that window report the clock as unlocked.
             appState.suppressClockLockReporting()
+            // The picker comes back once the clock has re-locked (at least
+            // 1.5 s, at most 3 s); see SampleRatePickerHold.
             holdForSettle = true
-            let settledUntil = appState.clockLockSuppressedUntil
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(max(0, settledUntil.timeIntervalSinceNow)))
+                let clock = ContinuousClock()
+                let start = clock.now
+                while isCurrent() {
+                    try? await Task.sleep(for: SampleRatePickerHold.pollInterval)
+                    if SampleRatePickerHold.shouldRelease(elapsed: clock.now - start,
+                                                          clockLocked: conn.isClockLocked) { break }
+                }
                 if isCurrent() { rateSettling = false }
             }
             clockLocked = true
