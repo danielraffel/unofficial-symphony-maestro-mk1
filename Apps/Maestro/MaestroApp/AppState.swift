@@ -129,6 +129,8 @@ final class AppState {
     private weak var cardDiscoveryTaskConnection: AnyObject?
     var routingModeEpoch: UInt64 = 0
     var routingModeTask: Task<Void, Never>?
+    var routingModeTaskAppliesInputMutes = false
+    var routingModeTaskMode: Int?
     var usbMixerLifecycleRestoreGeneration: UUID?
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
 
@@ -3012,11 +3014,16 @@ final class AppState {
                                 Task { @MainActor [weak self] in
                                     guard let self, self.device === xpcDev else { return }
                                     let generation = self.unitAGeneration
+                                    let restoreGenerationAtStart = self.usbIdentityRestoreGeneration
                                     // A failed connect already consumed its initial restore.
                                     // Retry identity before this ordinary recovery restore.
                                     self.retryFailedIdentityOnRecovery()
                                     if self.unitAIdentityState == .pending { await self.readCardTypes() }
                                     guard self.device === xpcDev, self.unitAGeneration == generation else { return }
+                                    // Identity discovery owns the first restore. If this
+                                    // recovery joined that pending discovery, do not replay
+                                    // Master/Return (or DAW mutes) a second time.
+                                    if restoreGenerationAtStart != self.usbIdentityRestoreGeneration { return }
                                     do {
                                         let wait = Self.usbSettleRemaining(
                                             appearedAt: self.symphonyAppearedAt, now: Date())

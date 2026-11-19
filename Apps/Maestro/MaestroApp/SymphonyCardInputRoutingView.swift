@@ -9,49 +9,94 @@ struct SymphonyCardInputRoutingView: View {
     @State private var hoverRow: Int?
     @State private var hoverColumn: Int?
     @State private var writing = false
-    @State private var error: String?
+    @State private var errorMessage: String?
+    @State private var presetNames: [String] = []
+    @State private var resetPrompt: RoutingResetPrompt?
+
+    private let presetKey = "inputRoutingPresets.twoUnit"
 
     var body: some View {
         let routing = appState.symphonyCardInputs
         let names = appState.symphonyCardInputNames()
-        let sources = names.indices.filter { names[$0] != CardLayout.notApplicable }
+        let columns = SymphonyCombinedInputRouting.columns(
+            unitANames: Array(names.prefix(16)), unitBNames: Array(names.dropFirst(16).prefix(16)))
         VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Button("Reset Routing") {
+                    resetPrompt = RoutingResetPrompt(
+                        title: "Reset Input Routing",
+                        message: "Reset input routing for both Symphony I/Os (channels 1–64)?",
+                        isRefusal: false)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .routingResetPrompt($resetPrompt) {
+                    Task {
+                        do { try await appState.resetTwoUnitRouting(input: true); errorMessage = nil }
+                        catch { errorMessage = error.localizedDescription }
+                    }
+                }
+                PresetMenuButton(
+                    presetNames: presetNames,
+                    onSave: { name in
+                        PresetManager.saveRoutingPreset(name: name,
+                            routes: appState.symphonyCardInputEdits, key: presetKey)
+                        presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
+                    },
+                    onLoad: { name in
+                        guard let preset = PresetManager.loadRoutingPresets(key: presetKey)[name] else { return }
+                        Task {
+                            let ok = await appState.applySymphonyCardInputs(preset)
+                            errorMessage = ok ? nil : "The card refused the input route."
+                        }
+                    },
+                    onDelete: { name in
+                        PresetManager.deleteRoutingPreset(name: name, key: presetKey)
+                        presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
+                    })
+                Spacer()
+            }
+            .padding(.horizontal, 16)
             Text("Software Inputs").font(.headline).padding(.horizontal, 16)
             ScrollView([.horizontal, .vertical]) {
                 RoutingGridView(
-                    rowCount: routing.channelCount / 2,
-                    columnCount: sources.count,
-                    rowLabels: (0..<routing.channelCount / 2).map { row in
+                    rowCount: SymphonyCombinedInputRouting.softwarePairCount,
+                    columnCount: columns.count,
+                    rowLabels: (0..<SymphonyCombinedInputRouting.softwarePairCount).map { row in
                         (number: "\(row * 2 + 1)-\(row * 2 + 2)", name: rowName(row, names: names))
                     },
-                    columnLabels: sources.map { (type: names[$0], channels: "") },
+                    columnLabels: columns.map { (type: $0.name, channels: "") },
                     rowGroupLabel: "Software Inputs", colGroupLabel: "Hardware Inputs",
                     isActiveCell: { row, column in
-                        routing.source(host: row * 2, edits: appState.symphonyCardInputEdits) == sources[column] * 2
-                            && routing.source(host: row * 2 + 1, edits: appState.symphonyCardInputEdits) == sources[column] * 2 + 1
+                        guard columns.indices.contains(column) else { return false }
+                        let source = columns[column].sourcePair * 2
+                        return routing.source(host: row * 2, edits: appState.symphonyCardInputEdits) == source
+                            && routing.source(host: row * 2 + 1, edits: appState.symphonyCardInputEdits) == source + 1
                     },
                     hoverRow: $hoverRow, hoverCol: $hoverColumn,
                     onCellTap: { row, column in
                         guard !writing else { return }
-                        let source = sources[column] * 2
+                        guard columns.indices.contains(column) else { return }
+                        let source = columns[column].sourcePair * 2
                         let clear = routing.source(host: row * 2, edits: appState.symphonyCardInputEdits) == source
                             && routing.source(host: row * 2 + 1, edits: appState.symphonyCardInputEdits) == source + 1
                         writing = true
+                        let selectedEdits = SymphonyCombinedInputRouting.cardEdits(row: row, column: columns[column])
                         Task {
-                            let ok = await appState.applySymphonyCardInputs([
-                                row * 2: clear ? -1 : source,
-                                row * 2 + 1: clear ? -1 : source + 1])
-                            error = ok ? nil : "The card refused the input route."
+                            let edits = clear ? selectedEdits.mapValues { _ in -1 } : selectedEdits
+                            let ok = await appState.applySymphonyCardInputs(edits)
+                            errorMessage = ok ? nil : "The card refused the input route."
                             writing = false
                         }
                     })
                     .padding(16)
             }
             .disabled(writing)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal, 16) }
+            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red).padding(.horizontal, 16) }
         }
         .task(id: appState.symphonyCardInputStore?.key) {
             appState.symphonyCardInputEdits = appState.symphonyCardInputStore?.load() ?? [:]
+            presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
         }
     }
     private func rowName(_ row: Int, names: [String]) -> String {

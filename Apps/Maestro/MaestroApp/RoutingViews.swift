@@ -164,18 +164,17 @@ struct InputRoutingView: View {
             }
         } else {
             VStack(spacing: 0) {
-                // One grid per routing device, as in Apogee's software
-                // (og_source/maestro2/App/Controllers/APInputRoutingTabViewController.m:96-104).
-                // A single Symphony I/O keeps its own grid only; the card's
-                // cross-unit grid appears with two units at 64 channels.
+                // ThunderBridge exposes the card as one routing device. With
+                // two Symphony I/Os the combined card grid owns the whole
+                // surface; the per-unit grid remains the single-unit page.
                 if appState.showsSymphonyCardInputGrid {
                     SymphonyCardInputRoutingView(appState: appState)
-                    Divider()
+                } else {
+                    routingGrid
+                        .onChange(of: appState.activeUnit) { _, _ in
+                            presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
+                        }
                 }
-                routingGrid
-                    .onChange(of: appState.activeUnit) { _, _ in
-                        presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
-                    }
             }
         }
     }

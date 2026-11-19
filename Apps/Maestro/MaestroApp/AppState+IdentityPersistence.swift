@@ -142,6 +142,10 @@ extension AppState {
         }
         routingModeEpoch &+= 1
         let epoch = routingModeEpoch
+        // A lifecycle sync may pre-empt an explicit Direct Monitor switch.
+        // Preserve that switch's mute work when it targets the same mode.
+        let carriesInputMutes = applyInputMutes ||
+            (routingModeTaskAppliesInputMutes && routingModeTaskMode == mode)
         routingModeTask?.cancel()
         if let old = routingModeTask { await old.value }
         let current: @Sendable () async -> Bool = { @MainActor [weak self] in
@@ -159,7 +163,7 @@ extension AppState {
             // input-mute state. DAW still asserts its traditional 64 mutes
             // once per connection; an explicit settings switch applies the
             // saved Direct Monitor state (or unmutes missing strips).
-            guard applyInputMutes || mode == 0 else { return }
+            guard carriesInputMutes || mode == 0 else { return }
             for mixer: UInt16 in 1...2 {
                 for channel: UInt16 in 0..<32 {
                     guard await current(), !Task.isCancelled else { return }
@@ -168,9 +172,15 @@ extension AppState {
                 }
             }
         }
+        routingModeTaskAppliesInputMutes = carriesInputMutes
+        routingModeTaskMode = mode
         routingModeTask = task
         await task.value
-        if routingModeEpoch == epoch { routingModeTask = nil }
+        if routingModeEpoch == epoch {
+            routingModeTask = nil
+            routingModeTaskAppliesInputMutes = false
+            routingModeTaskMode = nil
+        }
     }
 
 
