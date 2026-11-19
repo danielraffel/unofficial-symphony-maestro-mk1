@@ -55,6 +55,7 @@ public:
     kern_return_t ReadLinkState(uint32_t *outWords);
     kern_return_t RetireForUpgrade(uint32_t replacementBuild);
     kern_return_t ReadPort2State(uint32_t *outWords);   // experiment/64ch-port2 only
+    kern_return_t LoopSyncConfig(uint32_t operation, uint32_t config, uint32_t *outWords);
     kern_return_t ReadUnitBState(uint32_t *outWords);
     kern_return_t ReadConverterState(uint32_t *outWords);
     kern_return_t SetConverterConfig(uint32_t config);

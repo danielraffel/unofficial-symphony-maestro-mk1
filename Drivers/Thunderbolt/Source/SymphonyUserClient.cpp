@@ -121,6 +121,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount = 0,
         .checkStructureOutputSize = sizeof(SymphonyUnitBStateOutput),
     },
+    [kSelectorLoopSync] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyLoopSyncInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyLoopSyncOutput),
+    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -359,6 +367,20 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         output.build = (uint32_t)SYMPHONY_DEXT_BUILD;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorLoopSync) {
+        if (!ivars->driver || !arguments->structureInput) return kIOReturnNotReady;
+        auto *input = (const SymphonyLoopSyncInput *)arguments->structureInput->getBytesNoCopy();
+        if (!SymphonyLoopSyncInputValid(input)) return kIOReturnBadArgument;
+        SymphonyLoopSyncOutput output = {};
+        kern_return_t r = ivars->driver->LoopSyncConfig(input->operation, input->config,
+                                                      reinterpret_cast<uint32_t *>(&output));
+        if (r != kIOReturnSuccess) return r;
+        auto data = OSData::withBytes(&output, sizeof(output));
+        if (!data) return kIOReturnNoMemory;
+        arguments->structureOutput = data;
         return kIOReturnSuccess;
     }
 

@@ -707,6 +707,27 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// channels started (selector 11). Nil from a driver without the selector.
     public func readUnitBState() -> UnitBState? { dextClient.readUnitBState() }
 
+    /// Capture this connection, then do bounded driver work away from the main actor.
+    public func loopSync(_ settings: LoopSyncSettings? = nil) async throws -> LoopSyncState {
+        let client = dextClient
+        return try await Task.detached { try client.loopSync(settings) }.value
+    }
+
+    public func setUnitBMasterSource(_ key: UInt32) async throws {
+        guard let decoded = ClockSourceMenu.decode(key), decoded.source != 3 else {
+            throw DeviceConnectionError.transportError("Invalid master clock source")
+        }
+        let client = dextClient
+        try await Task.detached {
+            let state = try client.loopSync()
+            guard state.valid, state.settings.effectiveMaster == .b else {
+                throw DeviceConnectionError.notConnected
+            }
+            let bytes = Data([decoded.source, 1, 1, decoded.boardInput ?? 0])
+            try client.sendVendorCommand(command: 0x50, value: 0, payload: bytes, port: 1)
+        }.value
+    }
+
     /// A connection to unit B through this connection's driver client: the
     /// same calls with port byte 1. Unit A's bytes are not affected.
     public func makeUnitBConnection(settingsStore: DeviceSettingsStore = DeviceSettingsStore()) -> ThunderboltUnitBConnection {

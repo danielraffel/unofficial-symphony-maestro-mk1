@@ -422,6 +422,11 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  unitBSetupFlags;
     uint32_t  unitBTxErrors;
     bool      unitBConfigured;
+    // Default enabled: og_source/maestrolink/Software/SymphonyController.cpp:2708.
+    uint32_t  loopSyncConfig; // xlinkQueue only, default 0 = enabled, master A
+    bool      loopSyncValid;
+    uint8_t   unitBMasterClock[4];
+    bool      unitBMasterClockKnown;
     // dext 131 review: the last full ClockMode (0x50) sent to unit A on any
     // path, so entering or leaving two-unit mode only changes its Loop Sync
     // output byte and never the user's source. xlinkQueue only.
@@ -3822,7 +3827,7 @@ static void AlignXLinkPhase(SymphonyThunderbridge_IVars *ivars)
 // Unit A's clock with or without its Loop Sync output, from the last ClockMode
 // it was sent (the user's source is kept). With unit B present unit A must be
 // the Loop Sync master: a recorded Loop Sync slave source becomes Internal.
-static void SendUnitAClock(SymphonyThunderbridge_IVars *ivars, bool loopSyncOut)
+static bool SendUnitAClock(SymphonyThunderbridge_IVars *ivars, bool loopSyncOut)
 {
     uint8_t bytes[4] = { 0x01, 0x01, 0x00, 0x00 };
     if (ivars->unitAClockKnown) memcpy(bytes, ivars->unitAClock, 4);
@@ -3831,10 +3836,52 @@ static void SendUnitAClock(SymphonyThunderbridge_IVars *ivars, bool loopSyncOut)
         bytes[1] = 1;
         bytes[2] = 1;
     }
-    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+    if (!loopSyncOut && ivars->loopSyncConfig != 0) {
+        // Restore A as a standalone master after a non-default topology.
+        if (bytes[0] == 3) { bytes[0] = 1; bytes[3] = 0; }
+        bytes[1] = 1; bytes[2] = 0;
+    }
+    const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
                       kSIOCmd_ClockMode, 0, bytes, sizeof(bytes), ivars->runtimeTxSeq);
     STLOG("Unit A clock: source %u, %{public}s, Loop Sync output %{public}s",
           bytes[0], bytes[1] ? "master" : "slave", bytes[2] ? "on" : "off");
+    return ok;
+}
+
+// Evidence: og_source/maestrolink/Software/SymphonyController.cpp:202-235
+// (master first), og_source/maestrolink/Software/SymphonyPeripheralDevice.cpp:340-346
+// (off => first unit), og_source/maestrolink/Software/SymphonyIO.cpp:4754-4767
+// (non-master without Loop Sync => Word Clock).
+static bool ApplyLoopSync(SymphonyThunderbridge_IVars *ivars, uint32_t config)
+{
+    const bool enabled = !(config & 1);
+    const unsigned master = enabled && (config & 2) ? 1 : 0;
+    uint8_t clock[2][4] = { {1,1,0,0}, {1,1,0,0} };
+    if (ivars->unitAClockKnown) memcpy(clock[0], ivars->unitAClock, 4);
+    if (ivars->unitBMasterClockKnown) memcpy(clock[1], ivars->unitBMasterClock, 4);
+    if (clock[master][0] == 3) { clock[master][0] = 1; clock[master][3] = 0; }
+    clock[master][1] = 1;
+    clock[master][2] = enabled ? 1 : 0;
+    const unsigned slave = 1 - master;
+    clock[slave][0] = enabled ? 3 : 2;
+    clock[slave][1] = enabled ? 0 : 1;
+    clock[slave][2] = enabled ? 1 : 0;
+    clock[slave][3] = 0;
+    ivars->loopSyncValid = false;
+    for (unsigned n = 0; n < 2; n++) {
+        if (!XLinkTxAdmissible(ivars) || !ivars->port2On) return false;
+        const unsigned p = n == 0 ? master : slave;
+        if (!SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                 p ? kRegXLink2TX : kRegXLink1TX,
+                                 p ? 1 : ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
+                                 clock[p], 4, p ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq)) {
+            if (p) ivars->unitBTxErrors++;
+            return false; // never make a slave follow a master whose write failed
+        }
+        if (p) ivars->unitBClockSource = clock[p][0];
+    }
+    ivars->loopSyncValid = true;
+    return true;
 }
 
 static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, uint16_t mixerID, uint8_t source);
@@ -3846,6 +3893,7 @@ static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
 {
     const bool was = ivars->unitBConfigured;
     ivars->unitBConfigured = false;
+    ivars->loopSyncValid = false;
     if (!was) return;
     const bool reachable = touchHardware && ivars->pciDevice && XLinkTxAdmissible(ivars);
     if (reachable) SendUnitAClock(ivars, false);
@@ -3947,12 +3995,19 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     // links the units by their Loop Sync BNCs): the master (unit A) first with
     // its Loop Sync output on, then unit B as Loop Sync slave
     // (SymphonyController.cpp:202-235, SymphonyIO.cpp:4752-4767).
-    SendUnitAClock(ivars, true);   // unit A: master, Loop Sync output on, its own source kept
-    IOSleep(10);
-    const uint8_t clockData[4] = { 0x03, 0x00, 0x01, 0x00 };   // unit B: Loop Sync, slave
-    const bool clockOK = send(kSIOCmd_ClockMode, 0, clockData, sizeof(clockData));
+    bool clockOK;
+    if (ivars->loopSyncConfig == 0) {
+        // Preserve the existing default startup bytes and delays.
+        const bool masterOK = SendUnitAClock(ivars, true);
+        IOSleep(10);
+        const uint8_t clockData[4] = { 0x03, 0x00, 0x01, 0x00 };
+        clockOK = masterOK && send(kSIOCmd_ClockMode, 0, clockData, sizeof(clockData));
+        if (clockOK) ivars->unitBClockSource = 3;
+        ivars->loopSyncValid = clockOK;
+    } else {
+        clockOK = ApplyLoopSync(ivars, ivars->loopSyncConfig);
+    }
     require(clockOK, kUnitBFailClock, "clock mode");
-    if (clockOK) ivars->unitBClockSource = 3;
     IOSleep(10);
     for (uint32_t b = 0; b < 2; b++) {
         if (!BootSendsOpticalFormat(ivars->unitBBoardValid[b], ivars->unitBBoardType[b])) continue;
@@ -4002,8 +4057,9 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     require(unlocked, kUnitBFailUnlock, "preference unlock/read-back");
     ivars->unitBSetupFlags = unlocked && mandatoryOK ? kUnitBSetupOK : failures;
     ivars->unitBConfigured = unlocked && mandatoryOK;
+    if (!ivars->unitBConfigured) ivars->loopSyncValid = false;
     if (!ivars->unitBConfigured) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
-    STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, Loop Sync slave of unit A, %u message error(s))",
+    STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, %u message error(s))",
           unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
           ivars->unitBPrefix, ivars->unitBTxErrors);
 }
@@ -4738,7 +4794,9 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
             // dext 131 review: the port-1 bring-up sent unit A a plain master
             // ClockMode; with unit B following it by Loop Sync, put unit A's
             // Loop Sync output back on and remind unit B it is the slave.
-            if (ivars->unitBConfigured) {
+            if (ivars->unitBConfigured && ivars->loopSyncConfig != 0) {
+                ApplyLoopSync(ivars, ivars->loopSyncConfig);
+            } else if (ivars->unitBConfigured) {
                 SendUnitAClock(ivars, true);
                 const uint8_t slave[4] = { 0x03, 0x00, 0x01, 0x00 };
                 if (!SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink2TX, 1,
@@ -5284,6 +5342,44 @@ kern_return_t SymphonyThunderbridge::ReadPort2State(uint32_t *outWords)
         outWords[15] = ivars->port2PhaseWord;
     }
     return kIOReturnSuccess;
+}
+
+// Serialized with all hardware work. No caller can change a single-unit rig,
+// a converter chain, or an unconfigured second unit through this selector.
+kern_return_t SymphonyThunderbridge::LoopSyncConfig(uint32_t operation, uint32_t config, uint32_t *outWords)
+{
+    if (!outWords || operation > 1 || config > 3) return kIOReturnBadArgument;
+    if (!ivars || !ivars->xlinkQueue) return kIOReturnNotReady;
+    __block kern_return_t result = kIOReturnNotReady;
+    ivars->xlinkQueue->DispatchSync(^{
+        if (!XLinkTxAdmissible(ivars) || !ivars->unitBConfigured || !ivars->port2On ||
+            __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != 64 || ivars->convPort1 ||
+            (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters)) return;
+        if (operation == 1 && (config != ivars->loopSyncConfig || !ivars->loopSyncValid)) {
+            // Keep the requested topology even on a partial failure; valid=false
+            // reports uncertainty, and a repeat applies both writes again.
+            ivars->loopSyncConfig = config;
+            if (!ApplyLoopSync(ivars, config)) { result = kIOReturnIOError; return; }
+        }
+        SymphonyLoopSyncOutput out = {};
+        out.config = ivars->loopSyncConfig;
+        out.valid = ivars->loopSyncValid ? 1 : 0;
+        out.sourceA = ivars->unitAClockKnown ? ivars->unitAClock[0] | (ivars->unitAClock[3] << 8) : 1;
+        out.sourceB = ivars->unitBMasterClockKnown ? ivars->unitBMasterClock[0] | (ivars->unitBMasterClock[3] << 8) : 1;
+        for (unsigned p = 0; p < 2; p++) {
+            if (!XLinkTxAdmissible(ivars)) break;
+            uint8_t measured[5] = {};
+            bool ok = ReadVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                p ? kRegXLink2TX : kRegXLink1TX, p ? kRegXLink2RX : kRegXLink1RX,
+                p ? 1 : ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, measured, 5,
+                p ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
+            uint32_t lock = ok && measured[0] <= 1 ? (measured[0] ? 2 : 1) : 0;
+            if (p) out.lockB = lock; else out.lockA = lock;
+        }
+        memcpy(outWords, &out, sizeof(out));
+        result = kIOReturnSuccess;
+    });
+    return result;
 }
 
 kern_return_t SymphonyThunderbridge::ReadUnitBState(uint32_t *outWords)
@@ -9275,7 +9371,25 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         // the source. Loop Sync as unit A's source is refused then.
         uint8_t clockCopy[4];
         const uint8_t *sendPayload = payload;
-        if (port == 0 && command == kSIOCmd_ClockMode && payload && payloadLen == 4) {
+        if (ivars->unitBConfigured && command == kSIOCmd_ClockMode) {
+            const bool enabled = !(ivars->loopSyncConfig & 1);
+            const unsigned master = enabled && (ivars->loopSyncConfig & 2) ? 1 : 0;
+            if (!payload || payloadLen != 4 || port != master || payload[0] == 3) {
+                result = kIOReturnUnsupported;
+                return;
+            }
+            memcpy(clockCopy, payload, 4);
+            clockCopy[1] = 1; clockCopy[2] = enabled ? 1 : 0;
+            sendPayload = clockCopy;
+            if (port) {
+                memcpy(ivars->unitBMasterClock, payload, 4);
+                ivars->unitBMasterClockKnown = true;
+                ivars->unitBClockSource = payload[0];
+            } else {
+                memcpy(ivars->unitAClock, payload, 4);
+                ivars->unitAClockKnown = true;
+            }
+        } else if (port == 0 && command == kSIOCmd_ClockMode && payload && payloadLen == 4) {
             if (ivars->unitBConfigured && payload[0] == 3) {
                 STLOG("SendVendorCommand: Loop Sync refused for unit A while unit B follows it");
                 result = kIOReturnUnsupported;
@@ -9300,6 +9414,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                                       port ? 1 : ivars->symphonyAddr, command, value,
                                       sendPayload, payloadLen, seq);
         if (!ok) {
+            if (ivars->unitBConfigured && command == kSIOCmd_ClockMode) ivars->loopSyncValid = false;
             STERR("SendVendorCommand: failed cmd=0x%02x value=0x%08x payload=%u",
                   command, value, payloadLen);
             result = kIOReturnIOError;
@@ -9729,7 +9844,7 @@ kern_return_t SymphonyThunderbridge::RequestClockSource(uint32_t source)
                     const uint32_t want = src == 1 ? (cfg & ~kSymphonyConvConfigClockExternal)
                                                    : (cfg | kSymphonyConvConfigClockExternal);
                     if (want != cfg) SetConverterConfig(want);
-                } else if (admissible && ivars->unitBConfigured && src == 3) {
+                } else if (admissible && ivars->unitBConfigured && (src == 3 || ivars->loopSyncConfig == 2)) {
                     // dext 131: with unit B on port 2, unit A is the Loop Sync
                     // master; it cannot also be a Loop Sync slave.
                     STLOG("RequestClockSource: Loop Sync refused for unit A while unit B follows it");
@@ -9743,7 +9858,7 @@ kern_return_t SymphonyThunderbridge::RequestClockSource(uint32_t source)
                         (uint8_t)(src == 3 ? 0 : 1),
                         // dext 131: with unit B on port 2, unit A stays the
                         // Loop Sync master (output on), as the original.
-                        (uint8_t)((src == 3 || ivars->unitBConfigured) ? 1 : 0),
+                        (uint8_t)((src == 3 || (ivars->unitBConfigured && !(ivars->loopSyncConfig & 1))) ? 1 : 0),
                         0
                     };
                     SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,

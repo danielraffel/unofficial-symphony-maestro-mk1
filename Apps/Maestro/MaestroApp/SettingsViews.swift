@@ -927,20 +927,19 @@ struct SystemSetupView: View {
 
     var body: some View {
         Form {
-            // Unit B (port 2, 64 channels) is a Loop Sync slave of unit A:
-            // the driver sets it so when 64 channels start, and its rate is
-            // unit A's. Nothing here to choose.
             if appState.activeUnit == .b, let unitB = appState.unitB {
                 Section("Clock") {
-                    LabeledContent("Clock Source", value: unitB.clockSourceName)
-                    LabeledContent("Sample Rate", value: "Follows unit A")
-                    Text("Unit B takes its clock from unit A through the Loop Sync BNC cables. See Help, \"Can I connect more than one Symphony I/O?\"")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if appState.loopSyncVisible {
+                        LoopSyncControls(appState: appState)
+                    } else {
+                        LabeledContent("Clock Source", value: unitB.clockSourceName)
+                    }
+                    LabeledContent("Sample Rate", value: formatSampleRate(sampleRate))
                 }
             } else {
             // P3F-21: Mode-aware Clock section
             Section("Clock") {
+                if appState.loopSyncVisible { LoopSyncControls(appState: appState) }
                 // Sample Rate
                 Picker("Sample Rate", selection: $sampleRate) {
                     if availableRates.isEmpty {
@@ -980,37 +979,40 @@ struct SystemSetupView: View {
                     }
                 }
 
-                // Clock Source
-                Picker("Clock Source", selection: $clockSource) {
-                    ForEach(clockSourceChoices) { choice in
-                        Text(choice.name).tag(choice.id)
+                // The non-master's source is dictated by the topology.
+                if appState.loopSyncState?.settings.effectiveMaster == .b {
+                    LabeledContent("Clock Source", value: "Loop Sync")
+                } else {
+                    Picker("Clock Source", selection: $clockSource) {
+                        ForEach(clockSourceChoices) { choice in
+                            Text(choice.name).tag(choice.id)
+                        }
                     }
-                }
-                .disabled(isProToolsMode)
-                .onChange(of: clockSource) { _, newSource in
-                    guard !isLoading else { return }
-                    // A readback, not a selection: do not send the device the
-                    // value it just reported.
-                    if programmaticClockSource == newSource {
+                    .disabled(isProToolsMode)
+                    .onChange(of: clockSource) { _, newSource in
+                        guard !isLoading else { return }
+                        // A readback, not a selection: do not send the device the
+                        // value it just reported.
+                        if programmaticClockSource == newSource {
+                            programmaticClockSource = nil
+                            return
+                        }
                         programmaticClockSource = nil
-                        return
+                        Task { await writeClockSource(newSource) }
                     }
-                    programmaticClockSource = nil
-                    Task { await writeClockSource(newSource) }
+                    // The rows change when the board types arrive or a card
+                    // changes. Keep the selection on the row for the same source
+                    // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and
+                    // do not send it: nothing was chosen.
+                    .onChange(of: clockSourceChoices.map(\.id)) { _, ids in
+                        guard !ids.contains(clockSource),
+                              let row = ClockSourceMenu.row(for: clockSource, in: clockSourceChoices),
+                              row != clockSource else { return }
+                        programmaticClockSource = row
+                        clockSource = row
+                    }
                 }
-                // The rows change when the board types arrive or a card
-                // changes. Keep the selection on the row for the same source
-                // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and
-                // do not send it: nothing was chosen.
-                .onChange(of: clockSourceChoices.map(\.id)) { _, ids in
-                    guard !ids.contains(clockSource),
-                          let row = ClockSourceMenu.row(for: clockSource, in: clockSourceChoices),
-                          row != clockSource else { return }
-                    programmaticClockSource = row
-                    clockSource = row
-                }
-
-                if unitBFollowsUnitA {
+                if unitBFollowsUnitA && appState.loopSyncState?.settings.effectiveMaster != .b {
                     Text(ClockSourceMenu.loopSyncUnavailableNote)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1022,16 +1024,18 @@ struct SystemSetupView: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                // Clock Lock Status
-                HStack {
-                    Text("Clock Status")
-                    Spacer()
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(clockLocked ? .green : .red)
-                            .frame(width: 8, height: 8)
-                        Text(clockLocked ? "Ready" : "Clock Mismatch")   // Apogee's wording (SymphonyIO.cpp:2961-2968)
-                            .foregroundStyle(.secondary)
+                // Single-unit status keeps its existing read path.
+                if !appState.loopSyncVisible {
+                    HStack {
+                        Text("Clock Status")
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(clockLocked ? .green : .red)
+                                .frame(width: 8, height: 8)
+                            Text(clockLocked ? "Ready" : "Clock Mismatch")   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -1507,6 +1511,7 @@ struct SystemSetupView: View {
             // plist read, and stop immediately when Maestro is no longer active.
             while !Task.isCancelled {
                 appState.refreshInstalledDexts()
+                await appState.refreshLoopSync()
                 try? await Task.sleep(for: .seconds(2))
             }
         }
@@ -1790,6 +1795,7 @@ struct SystemSetupView: View {
         // Hand the assembled report to AppState so the About box can copy hardware and
         // software in one button without duplicating the provenance logic above.
         appState.refreshSecondPortState()
+        await appState.refreshLoopSync()
         appState.deviceInfoSnapshot = currentDeviceReport()
         do {
             if let mode = (try await device.getProperty(PropertyAddress(selector: .deviceMode))).asUInt32 {
