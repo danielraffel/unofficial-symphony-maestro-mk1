@@ -10,11 +10,15 @@ final class RecordingVendorTransport: VendorTransport, @unchecked Sendable {
     var sent: [Sent] = []
     var reads: [Read] = []
     var reply: [UInt8] = [0x07]
+    var failRead = false
+    var emptyRead = false
     var isConnected: Bool { true }
     func sendVendorCommand(command: UInt8, value: UInt32, payload: Data, port: UInt8) throws {
         sent.append(Sent(command: command, value: value, payload: payload, port: port))
     }
     func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) throws -> Data {
+        if failRead { throw DeviceConnectionError.notConnected }
+        if emptyRead { return Data() }
         reads.append(Read(command: command, value: value, length: responseLength, port: port))
         let bytes = Array(reply.prefix(responseLength)) + [UInt8](repeating: 0, count: max(0, responseLength - reply.count))
         return Data(bytes)
@@ -69,6 +73,7 @@ struct UnitBConnectionTests {
         (PropertyAddress(selector: .headphone1Level), .uint32(20)),
         (PropertyAddress(selector: .headphone2Mute), .bool(true)),
         (PropertyAddress(selector: .activeSpeakerSet), .uint32(3)),
+        (PropertyAddress(selector: .peaksClear), .uint32(1)),
         (PropertyAddress(selector: .peakHoldMode), .uint32(1)),
         (PropertyAddress(selector: .oversHoldMode), .uint32(2)),
         (PropertyAddress(selector: .opticalInFormat, element: 1), .uint32(1)),
@@ -167,12 +172,70 @@ struct UnitBConnectionTests {
         let t = RecordingVendorTransport()
         let c = ThunderboltUnitBConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier, transport: t,
                                            settingsStore: DeviceSettingsStore(), state: { Self.state })
-        try await c.setProperty(PropertyAddress(selector: .outputDim), value: .bool(true))
-        #expect(try await c.getProperty(PropertyAddress(selector: .outputDim)) == .bool(true))
+        try await c.setProperty(PropertyAddress(selector: .peakHoldMode), value: .uint32(1))
+        #expect(try await c.getProperty(PropertyAddress(selector: .peakHoldMode)) == .uint32(1))
         t.sent = []
         let replay = await c.reapplyStoredSettings()
         #expect(replay.applied == 1)
         #expect(t.sent.count == 1 && t.sent.first?.port == 1)
+    }
+
+    /// Explicit wire expectations, independent of the mapper under test.
+    static let monitorWire: [(AudioPropertySelector, UInt8, UInt32, PropertyValue)] = [
+        (.headphone1Level, 0x23, 0, .uint32(41)), (.headphone2Level, 0x23, 1, .uint32(51)),
+        (.headphone1Mute, 0x24, 0, .bool(true)), (.headphone2Mute, 0x24, 1, .bool(true)),
+        (.speakerOutputMode, 0x25, 0, .uint32(2)),
+        (.outputLevel, 0x26, 0, .uint32(31)), (.outputMute, 0x27, 0, .bool(true)),
+        (.headphone1Dim, 0xE7, 0, .bool(true)), (.headphone2Dim, 0xE7, 1, .bool(true)),
+        (.outputDim, 0xE7, 2, .bool(true)),
+        (.headphone1SumToMono, 0xE8, 0, .bool(true)), (.headphone2SumToMono, 0xE8, 1, .bool(true)),
+        (.outputSumToMono, 0xE8, 2, .bool(true)), (.activeSpeakerSet, 0xE9, 0, .uint32(3)),
+    ]
+
+    @Test("All B monitor selectors use their firmware indices and port 1 for reads and writes")
+    func monitorWire() async throws {
+        let t = RecordingVendorTransport()
+        let c = connection(t)
+        for (selector, opcode, index, value) in Self.monitorWire {
+            let address = PropertyAddress(selector: selector)
+            let byte = UInt8(value.asUInt32 ?? (value.asBool == true ? 1 : 0))
+            t.reply = [byte]
+            try await c.setProperty(address, value: value)
+            #expect(t.sent.last == .init(command: opcode, value: index, payload: Data([byte]), port: 1))
+            #expect(try await c.getProperty(address) == value)
+            #expect(t.reads.last == .init(command: opcode, value: index, length: 1, port: 1))
+            #expect(await c.isPropertySettable(address))
+        }
+    }
+
+    @Test("B monitor recall never returns or replays host settings, including failed reads")
+    func monitorHardwareRecall() async throws {
+        let t = RecordingVendorTransport()
+        let store = DeviceSettingsStore()
+        for (selector, _, _, value) in Self.monitorWire {
+            store.record(value, for: PropertyAddress(selector: selector))
+        }
+        let c = ThunderboltUnitBConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier,
+                                           transport: t, settingsStore: store, state: { Self.state })
+        #expect(await c.reapplyStoredSettings().applied == 0)
+        #expect(t.sent.isEmpty)
+        for (selector, _, _, _) in Self.monitorWire {
+            t.failRead = true
+            await #expect(throws: DeviceConnectionError.self) {
+                try await c.getProperty(PropertyAddress(selector: selector))
+            }
+            t.failRead = false
+            t.emptyRead = true
+            await #expect(throws: DeviceConnectionError.self) {
+                try await c.getProperty(PropertyAddress(selector: selector))
+            }
+            t.emptyRead = false
+        }
+        await c.disconnect()
+        await #expect(throws: DeviceConnectionError.self) {
+            try await c.setProperty(PropertyAddress(selector: .outputLevel), value: .uint32(0))
+        }
+        #expect(t.sent.isEmpty)
     }
 
     @Test("Selector 11 decodes; a non-zero status is not a reading")

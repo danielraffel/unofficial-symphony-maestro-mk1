@@ -135,14 +135,7 @@ struct MaestroApp: App {
                 Divider()
 
                 Button("Clear Meters") {
-                    Task {
-                        do {
-                            try await appState.device?.setProperty(
-                                PropertyAddress(selector: .peaksClear), value: .uint32(1))
-                        } catch {
-                            print("[Maestro] ERROR: Clear Meters failed: \(error)")
-                        }
-                    }
+                    appState.clearMeters()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
 

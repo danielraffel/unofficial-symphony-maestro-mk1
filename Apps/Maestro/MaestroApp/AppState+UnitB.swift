@@ -392,7 +392,10 @@ extension AppState {
                 // 1-2 when two units end; save the same, once it says so.
                 if confirmedAbsent { resetSoftwareReturnSourcesBeyondOneUnit() }
             }
+            let oldDevice = unitBDevice
+            Task { await oldDevice?.disconnect() }
             unitBDevice = nil
+            unitBMonitor = UnitBMonitorState()
             unitBOwner = nil
             selectedUnit = .a
             unitBInputMeterLevels = []
@@ -401,7 +404,12 @@ extension AppState {
         }
         if newConnection || unitBDevice == nil {
             let connection = tb.makeUnitBConnection(settingsStore: .persistent(for: tb.identifier, unit: .b))
+            let oldDevice = unitBDevice
+            Task { await oldDevice?.disconnect() }
             unitBDevice = connection
+            let monitor = UnitBMonitorState()
+            unitBMonitor = monitor
+            Task { @MainActor in await monitor.refresh(from: connection) }
             unitBOwner = owner
             unitBPeripheralPrefix = connection.settingsStore.value(for: PropertyAddress(selector: .prefix))?.asString
                 .map(CardLayout.peripheralPrefix) ?? info.prefix(after: peripheralPrefix)
@@ -437,6 +445,27 @@ extension AppState {
         print("[Maestro] Unit B: re-applied \(settings.applied) setting(s), \(channels.applied) analog channel "
               + "setting(s), \(digital) digital setting(s)"
               + (settings.failed.isEmpty && channels.failed == 0 ? "" : "; refused \(settings.failed.count + channels.failed)"))
+    }
+
+    /// Global clear reaches both peripherals, as in
+    /// og_source/maestrolink/Software/SymphonyController.cpp:316-331.
+    @MainActor
+    func clearMeters() {
+        inputPeakHold = Array(repeating: -60, count: inputPeakHold.count)
+        outputPeakHold = Array(repeating: -60, count: outputPeakHold.count)
+        digitalInputPeakHold = Array(repeating: -60, count: 24)
+        digitalOutputPeakHold = Array(repeating: -60, count: 24)
+        unitBInputPeakHold = Array(repeating: -60, count: unitBInputPeakHold.count)
+        unitBOutputPeakHold = Array(repeating: -60, count: unitBOutputPeakHold.count)
+        unitBDigitalInputPeakHold = Array(repeating: -60, count: 24)
+        let devices = [device, unitBDevice].compactMap { $0 }
+        Task {
+            for device in devices {
+                do {
+                    try await device.setProperty(PropertyAddress(selector: .peaksClear), value: .uint32(1))
+                } catch { print("[Maestro] ERROR: Clear Meters failed: \(error)") }
+            }
+        }
     }
 
     // MARK: Simulation (debug only)

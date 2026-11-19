@@ -176,6 +176,7 @@ final class AppState {
         didSet { UserDefaults.standard.set(showMeterZoneColoring, forKey: "meterZoneColoring") }
     }
     /// Current speaker level (shared between monitor panel and volume key handler).
+    var unitBMonitor = UnitBMonitorState()
     var speakerLevel: Double = -20
     /// Current speaker mute state (shared between monitor panel and volume key handler).
     var speakerMuted: Bool = false

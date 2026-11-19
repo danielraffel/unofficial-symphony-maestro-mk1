@@ -2,6 +2,9 @@
 
 ## 0.9.10 (beta)
 
+- With two Symphony I/Os at 64 channels, selecting Unit B on Outputs now shows its own speaker and headphone monitor controls. Mac volume keys still control Unit A.
+- Clear Meters now clears peaks and overs on both units.
+
 (Work in progress; not released. Intro to be written at release.)
 
 ### Changes that may affect your setup
