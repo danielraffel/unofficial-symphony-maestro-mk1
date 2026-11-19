@@ -116,4 +116,13 @@ struct UnitBAppTests {
         #expect(state.contains("system.driverSupportsConverterControls else { return nil }"))
         #expect(state.contains("isSimulatingCards: cardSimulation != nil || connectionMode == .simulated"))
     }
+
+    @Test("Software Return 1-2 is saved only when the driver says unit B is gone")
+    func softwareReturnResetNeedsAnAnswer() throws {
+        let text = try source("AppState+UnitB.swift")
+        #expect(text.contains("if confirmedAbsent { resetSoftwareReturnSourcesBeyondOneUnit() }"))
+        #expect(text.contains("confirmedAbsent: state?.present == false"))
+        let mixer = try source("MixerViews.swift")
+        #expect(mixer.contains("let held = TwoUnitMixer.isHeld("))
+    }
 }

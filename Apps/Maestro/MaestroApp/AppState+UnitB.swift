@@ -360,7 +360,8 @@ extension AppState {
             applyUnitB(nil, from: nil)
             return
         }
-        applyUnitB(tb.readUnitBState()?.info, from: tb)
+        let state = tb.readUnitBState()
+        applyUnitB(state?.info, from: tb, confirmedAbsent: state?.present == false)
     }
 
     /// The same, with the read off the main thread (the health loop's call:
@@ -368,15 +369,17 @@ extension AppState {
     @MainActor
     func refreshUnitBOffMain(_ tb: ThunderboltDeviceConnection) async {
         guard simulatedUnitB == nil else { return }
-        let info = await Task.detached(priority: .utility) { tb.readUnitBState()?.info }.value
+        let state = await Task.detached(priority: .utility) { tb.readUnitBState() }.value
         guard (device as? ThunderboltDeviceConnection) === tb, connectedUnit == nil else { return }
-        applyUnitB(info, from: tb)
+        applyUnitB(state?.info, from: tb, confirmedAbsent: state?.present == false)
     }
 
     /// Follow unit B appearing, changing or going. On appearing (or on a new
     /// connection), its connection is made and its saved settings are put back
-    /// once. On going, the pages return to unit A.
-    func applyUnitB(_ info: SecondUnitInfo?, from tb: ThunderboltDeviceConnection?) {
+    /// once. On going, the pages return to unit A. `confirmedAbsent`: the
+    /// driver answered that unit B is not there (not a failed read, which can
+    /// happen during a link recovery).
+    func applyUnitB(_ info: SecondUnitInfo?, from tb: ThunderboltDeviceConnection?, confirmedAbsent: Bool = false) {
         let owner = tb.map { ObjectIdentifier($0) }
         let newConnection = info != nil && owner != unitBOwner
         guard info != unitB || newConnection || (info == nil && unitBDevice != nil) else { return }
@@ -386,8 +389,8 @@ extension AppState {
             if unitBDevice != nil {
                 print("[Maestro] Unit B: gone (64 channels stopped or port 2 lost)")
                 // The driver puts a Software Return beyond DAW 1-16 back to
-                // 1-2 when two units end; save the same.
-                resetSoftwareReturnSourcesBeyondOneUnit()
+                // 1-2 when two units end; save the same, once it says so.
+                if confirmedAbsent { resetSoftwareReturnSourcesBeyondOneUnit() }
             }
             unitBDevice = nil
             unitBOwner = nil

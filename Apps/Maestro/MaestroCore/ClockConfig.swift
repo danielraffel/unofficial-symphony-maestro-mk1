@@ -195,7 +195,7 @@ public enum ClockSourceMenu {
 
     /// Shown under unit A's clock picker while unit B follows it.
     public static let loopSyncUnavailableNote =
-        "Loop Sync is not offered: unit B takes its clock from unit A through it."
+        "Unit A can't take Loop Sync while unit B follows it."
 
     /// Shown when the driver refuses a clock choice while unit B follows unit A.
     public static let refusedWithUnitBNote =

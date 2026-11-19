@@ -35,16 +35,19 @@ public enum AnalogChannelSettingsReplay {
     /// Per channel, in the original's order: analog type with trim, Digital
     /// Ref, Soft Limit (inputs); analog type with trim, Digital Ref (outputs).
     ///
-    /// Where the unit can be read (the analog type, 0x60, and the Digital
-    /// Ref) it is read first and only a value that differs is written, so a
-    /// connect is not slowed by writes that change nothing; a read that fails
-    /// (ThunderBridge has none) still writes. The trim rides in the analog
-    /// type write and cannot be read, so a type write with a trim other than
-    /// 0 (the unit's start value) is always sent.
+    /// Where the unit can be read (an input's analog type, 0x60, and the
+    /// Digital Ref) it is read first and only a value that differs is
+    /// written, so a connect is not slowed by writes that change nothing; a
+    /// read that fails (ThunderBridge has none) still writes. The trim rides
+    /// in the analog type write and cannot be read, so a type write with a
+    /// trim other than 0 (the unit's start value) is always sent. The
+    /// firmware answers 0x60 for inputs only (`SymphonyIOStateData.cpp`,
+    /// the AnalogIOType get), so an output's type is always written.
     ///
-    /// Mic and Instrument channels are a Mic Pre's: the Input page sends their
-    /// type together with gain, phantom, filter, phase, group and insert, and
-    /// the type alone (trim "do not set") is not sent here.
+    /// Mic and Instrument channels (a Mic Pre's) are not replayed: the type
+    /// alone (trim "do not set") without gain, phantom, filter, phase, group
+    /// and insert would not restore them. The Input page sends that whole set
+    /// when the level is changed there.
     public static func apply(
         inputs: [InputChannelState],
         outputs: [OutputChannelState],
@@ -73,9 +76,9 @@ public enum AnalogChannelSettingsReplay {
         }
 
         /// Write the packed type and trim unless the unit has that type and
-        /// the trim is 0.
+        /// the trim is 0. Inputs only can be read.
         func writeType(_ address: PropertyAddress, type: UInt32, packed: UInt32) async {
-            if (packed >> 8) & 0xFF == 0, await unitHas(address, type) {
+            if address.scope == .input, (packed >> 8) & 0xFF == 0, await unitHas(address, type) {
                 result.skipped += 1
                 return
             }

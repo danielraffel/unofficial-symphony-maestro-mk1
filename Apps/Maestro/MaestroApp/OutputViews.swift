@@ -1203,6 +1203,8 @@ struct OutputControlsView: View {
     /// controller (`SymphonyIO.cpp:1626-1634`); on this unit that would rewrite
     /// the ADAT output crosspoints. Reset Routing lives on the routing pages.
     private func resetMonitorDefaults(scope: SymphonyIOResetScope) async {
+        // The trims below are saved after several awaits: keep them to this unit.
+        let target = appState.unitWriteTarget
         let attenuation = UInt32(SymphonyIOMonitorDefaults.levelAttenuationDB)
         let level = -Double(SymphonyIOMonitorDefaults.levelAttenuationDB)
 
@@ -1266,10 +1268,10 @@ struct OutputControlsView: View {
 
         if scope.resetsTrims {
             for i in 0..<channels.count { channels[i].trim = 0 }
-            saveChannelStates()
+            target.channelStore.save(channels, for: ChannelStateStore.outputKey)
             for i in 0..<channels.count {
                 await writeOutputProperty(i, .analogIOType,
-                                          value: .uint32(outputAnalogIOTypeWithTrim(i)))
+                                          value: .uint32(outputAnalogIOTypeWithTrim(i)), on: target.device)
             }
         }
         print("[Maestro] Monitor reset to defaults (scope: \(scope), trims \(scope.resetsTrims ? "cleared" : "preserved"))")

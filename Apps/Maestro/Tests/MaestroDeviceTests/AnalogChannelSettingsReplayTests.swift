@@ -77,11 +77,11 @@ struct AnalogChannelSettingsReplayTests {
             inputs: [InputChannelState(softLimit: 2, inputType: 1, trim: 0, digitalRefLevel: 4)],
             outputs: [OutputChannelState(analogRefLevel: 2, digitalRefLevel: 1, trim: 0)],
             layout: CardLayout(slot1: .analogADDA16, slot2: .none), device: device)
-        // Type and Digital Ref match on the input, the type on the output.
-        // Soft Limit has no read used here and is always sent.
+        // Type and Digital Ref match on the input. Soft Limit has no read
+        // used here, and the firmware reads an input's type only, so both are sent.
         #expect(device.writes.map(\.0) == [
-            PropertyAddress(selector: .softLimit, scope: .input, element: 0), refOut])
-        #expect(result.skipped == 3)
+            PropertyAddress(selector: .softLimit, scope: .input, element: 0), typeOut, refOut])
+        #expect(result.skipped == 2)
     }
 
     @Test func aTrimIsAlwaysSentAndFailedReadsStillWrite() async {

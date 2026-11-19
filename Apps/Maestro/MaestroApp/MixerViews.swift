@@ -1158,11 +1158,17 @@ struct MixerView: View {
         // 8 pairs, or 32 while 64 channels run with unit B (ThunderBridge only).
         guard let device = appState.device,
               source < UInt32(appState.softwareReturnPairCount) else { return }
+        // A saved DAW 17-64 shown as 1-2 before unit B is reported is not
+        // sent: the card keeps its own source until then.
+        let saved = UInt32(clamping: UserDefaults.standard.integer(forKey: "mixerSoftwareReturnSource_\(selectedMixer)"))
+        let held = TwoUnitMixer.isHeld(shown: source, saved: saved, pairCount: appState.softwareReturnPairCount)
         do {
             let element = UInt32(selectedMixer + 1) << 16
-            try await device.setProperty(
-                PropertyAddress(selector: .mixerSoftwareReturnID, element: element),
-                value: .uint32(source))
+            if !held {
+                try await device.setProperty(
+                    PropertyAddress(selector: .mixerSoftwareReturnID, element: element),
+                    value: .uint32(source))
+            }
         } catch DeviceConnectionError.unsupportedProperty(_) {
             // Software-return routing is unavailable on some hardware paths;
             // keep the rest of the mixer usable without a false error.

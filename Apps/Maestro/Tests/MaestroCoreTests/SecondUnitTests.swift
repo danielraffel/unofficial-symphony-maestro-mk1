@@ -126,6 +126,11 @@ struct SecondUnitTests {
         #expect(TwoUnitMixer.sourceToSave(shown: 3, saved: 20, pairCount: 8) == 3)
         #expect(TwoUnitMixer.sourceToSave(shown: 0, saved: 20, pairCount: 32) == 0)
         #expect(TwoUnitMixer.sourceToSave(shown: 0, saved: 5, pairCount: 8) == 0)
+        // Held: neither saved over nor sent while unit B may still appear.
+        #expect(TwoUnitMixer.isHeld(shown: 0, saved: 20, pairCount: 8))
+        #expect(!TwoUnitMixer.isHeld(shown: 0, saved: 20, pairCount: 32))
+        #expect(!TwoUnitMixer.isHeld(shown: 0, saved: 0, pairCount: 8))
+        #expect(!TwoUnitMixer.isHeld(shown: 3, saved: 20, pairCount: 8))
         // Saved back to 1-2 only once unit B is known to be gone, as the driver does.
         #expect(TwoUnitMixer.resetsSavedSoftwareReturn(8, unitBKnownAbsent: true))
         #expect(!TwoUnitMixer.resetsSavedSoftwareReturn(7, unitBKnownAbsent: true))

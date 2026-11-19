@@ -228,7 +228,13 @@ public enum TwoUnitMixer {
     /// except that a saved DAW 17-64 shown as 1-2 (unit B not on the Mixer
     /// yet) stays saved until unit B is known to be gone.
     public static func sourceToSave(shown: UInt32, saved: UInt32, pairCount: Int) -> UInt32 {
-        shown == 0 && saved >= UInt32(max(pairCount, 0)) ? saved : shown
+        isHeld(shown: shown, saved: saved, pairCount: pairCount) ? saved : shown
+    }
+
+    /// A saved DAW 17-64 source shown as 1-2 while unit B is not on the Mixer
+    /// (yet): neither saved over nor sent to the card, which keeps its own.
+    public static func isHeld(shown: UInt32, saved: UInt32, pairCount: Int) -> Bool {
+        shown == 0 && saved >= UInt32(max(pairCount, 0))
     }
 
     /// "1-2", "3-4", ... "63-64".
