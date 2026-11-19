@@ -219,10 +219,28 @@ extension AppState {
         wakeReconnectTask?.cancel()
         wakeReconnectTask = nil
         wakeFallbackTask?.cancel()
+        // Fallback for a missed didWake. It is evidence-based, not a timer from
+        // willSleep: it fires wakeFallbackDelay after the system has actually
+        // slept (the continuous clock ran ahead of the suspending clock), or
+        // after wakeFallbackAbortLimit if no sleep ever happened (aborted sleep).
+        // The original only resumes on SystemWake
+        // (og_source/maestrolink/Software/SymphonyIOSymphonyPeripheralDevice.cpp:307-325).
+        let continuousStart = ContinuousClock.now
+        let suspendingStart = SuspendingClock.now
         wakeFallbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: self.wakeFallbackDelay)
+            let tick = min(self.wakeFallbackDelay, .seconds(2))
+            var sleptAt: ContinuousClock.Instant?
+            while !Task.isCancelled, self.hardwareSleepState == .sleeping {
+                try? await Task.sleep(for: tick)
+                let now = ContinuousClock.now
+                let slept = (now - continuousStart) - (SuspendingClock.now - suspendingStart)
+                if sleptAt == nil, slept > .seconds(1) { sleptAt = now }
+                if let sleptAt, now - sleptAt >= self.wakeFallbackDelay { break }
+                if sleptAt == nil, now - continuousStart >= self.wakeFallbackAbortLimit { break }
+            }
             guard !Task.isCancelled, self.hardwareSleepState == .sleeping else { return }
+            self.wakeFallbackFired = true
             self.wakeTwoUnitReplay()
         }
         wakeValidationGeneration &+= 1
@@ -247,7 +265,12 @@ extension AppState {
 
     @MainActor
     func wakeTwoUnitReplay() {
-        guard hardwareSleepState == .sleeping else { return }
+        if hardwareSleepState != .sleeping {
+            // A real didWake after the fallback already ran: validate again.
+            guard wakeFallbackFired else { return }
+            wakeFallbackFired = false
+            suspendTwoUnitReplay()
+        }
         wakeFallbackTask?.cancel()
         wakeFallbackTask = nil
         hardwareSleepState = .validating
@@ -327,6 +350,8 @@ extension AppState {
                                 self.wakeDownProbeCount = 0
                             }
                             if self.wakeDownProbeCount >= 3 {
+                                // The health loop owns reconnect from here.
+                                self.reconnectRequestedWhileSuspended = false
                                 self.markHardwareDisconnected()
                                 self.hardwareSleepState = .awake
                                 self.startThunderboltHealthCheck()
@@ -342,8 +367,11 @@ extension AppState {
                             // reconnect path used by a live device-list removal.
                             self.wakeStableRecoveryCount = nil
                             self.wakeStableProbeCount = 0
+                            // This code runs inside wakeReconnectTask: detach it first so
+                            // ending validation does not cancel the reconnect itself.
+                            self.wakeReconnectTask = nil
                             self.endWakeValidationForReconnect()
-                            await self.reconnectHardware()
+                            Task { @MainActor in await self.reconnectHardware() }
                             return
                         }
                     } else if await self.validateHardwareAfterWake(connection) { return }
@@ -393,6 +421,10 @@ extension AppState {
         isHardwareInitialized = true
         twoUnitReplayNeeded = usesTwoUnitReplay
         startMeterPolling()
+        if cardDiscoverySkippedDuringSleep {
+            cardDiscoverySkippedDuringSleep = false
+            Task { @MainActor in await self.readCardTypes() }
+        }
     }
 
     @MainActor

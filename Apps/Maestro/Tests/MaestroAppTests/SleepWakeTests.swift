@@ -45,6 +45,7 @@ struct SleepWakeTests {
         let connection = WakeConnection()
         let state = state(connection)
         state.wakeFallbackDelay = .milliseconds(1)
+        state.wakeFallbackAbortLimit = .milliseconds(5) // no real sleep in a test: aborted-sleep path
         defer { state.stopMeterPolling() }
         state.suspendTwoUnitReplay()
         await state.wakeFallbackTask?.value
@@ -322,6 +323,41 @@ struct SleepWakeTests {
         #expect(reconnects == 1)
         #expect(state.hardwareSleepState == .awake)
         #expect(!state.hardwareWritesSuspended)
+    }
+
+    @Test func fallbackDoesNotFireBeforeSleepOrAbortLimit() async {
+        let connection = WakeConnection()
+        let state = state(connection)
+        state.wakeFallbackDelay = .milliseconds(1)
+        state.wakeFallbackAbortLimit = .seconds(30)
+        defer { state.wakeFallbackTask?.cancel(); state.stopMeterPolling() }
+        state.suspendTwoUnitReplay()
+        try? await Task.sleep(for: .milliseconds(300))
+        // No sleep happened and the abort limit is far away: still suspended.
+        let stillSleeping = state.hardwareSleepState
+        #expect(stillSleeping == .sleeping)
+    }
+
+    @Test func realDidWakeAfterFallbackValidatesAgain() async {
+        let connection = WakeConnection()
+        let state = state(connection)
+        state.wakeFallbackDelay = .milliseconds(1)
+        state.wakeFallbackAbortLimit = .milliseconds(5)
+        defer { state.stopMeterPolling() }
+        state.suspendTwoUnitReplay()
+        await state.wakeFallbackTask?.value
+        await state.wakeReconnectTask?.value
+        let afterFallback = state.hardwareSleepState
+        let fired = state.wakeFallbackFired
+        #expect(afterFallback == .awake)
+        #expect(fired)
+        state.wakeTwoUnitReplay() // the real didWake arrives later
+        let firedAfterWake = state.wakeFallbackFired
+        let stateAfterWake = state.hardwareSleepState
+        #expect(!firedAfterWake)
+        #expect(stateAfterWake != .sleeping)
+        await state.wakeReconnectTask?.value
+        #expect(state.hardwareSleepState == .awake)
     }
 }
 

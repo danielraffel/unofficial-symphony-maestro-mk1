@@ -1207,6 +1207,10 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored var wakeRetryLimit = 30
     @ObservationIgnored var wakeReadTimeout: Duration = .seconds(2)
     @ObservationIgnored var wakeFallbackDelay: Duration = .seconds(10)
+    /// No sleep observed this long after willSleep: treat it as an aborted sleep.
+    @ObservationIgnored var wakeFallbackAbortLimit: Duration = .seconds(120)
+    @ObservationIgnored var wakeFallbackFired = false
+    @ObservationIgnored var cardDiscoverySkippedDuringSleep = false
     @ObservationIgnored private var sleepWakeObservers: [NSObjectProtocol] = []
     // Injectable boundaries let tests exercise the real orchestration without hardware.
     @ObservationIgnored var launchDiscoveryOperation: (@MainActor () async -> [CoreAudioDeviceConnection.DiscoveredSymphonyIO])?
@@ -2189,7 +2193,7 @@ final class AppState: @unchecked Sendable {
 
     @MainActor
     func readCardTypes() async {
-        guard hardwareSleepState != .sleeping else { return }
+        guard hardwareSleepState != .sleeping else { cardDiscoverySkippedDuringSleep = true; return }
         if let cardDiscoveryTask { await cardDiscoveryTask.value; return }
         let generation = unitAGeneration
         let task = Task {
@@ -2651,7 +2655,9 @@ final class AppState: @unchecked Sendable {
         stopThunderboltHealthCheck()
         thunderboltWatchTask?.cancel()
         stopMeterPolling()
-        if let reconnectOperation { await reconnectOperation(); return }
+        // Test seam. Mirrors the real path's cancellation early return below, so
+        // a reconnect that runs inside a cancelled task fails the tests too.
+        if let reconnectOperation { guard !Task.isCancelled else { return }; await reconnectOperation(); return }
         // Rebuild the AUDIO path too, not just the app's link to the proxy.
         //
         // Reconnecting the app re-establishes app<->proxy and clears stale
