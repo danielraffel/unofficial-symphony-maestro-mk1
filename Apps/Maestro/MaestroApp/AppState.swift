@@ -558,7 +558,7 @@ final class AppState {
                         if !self.thunderboltControlReconnectAttempted {
                             self.thunderboltControlReconnectAttempted = true
                             if let tb = self.device as? ThunderboltDeviceConnection {
-                                tb.reconnectDextClient()
+                                Task.detached(priority: .utility) { tb.reconnectDextClient() }
                             }
                         }
                     }
@@ -2292,13 +2292,9 @@ final class AppState {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
             }
-            if usesTwoUnitReplay {
-                try await Task.detached(priority: .userInitiated) {
-                    try thunderbolt.setCardOutputRoute(route)
-                }.value
-            } else {
+            try await Task.detached(priority: .userInitiated) {
                 try thunderbolt.setCardOutputRoute(route)
-            }
+            }.value
             return
         }
         try await device.setProperty(
@@ -4205,7 +4201,7 @@ final class AppState {
     /// and other properties that AppState caches. Re-reading ensures the volume HUD,
     /// menu bar level indicator, and volume keys stay in sync with hardware.
     @MainActor
-    private func refreshAfterRecall() async {
+    func refreshAfterRecall() async {
         guard let dev = device else { return }
         if let att = (try? await dev.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
             speakerLevel = -Double(att)
@@ -4213,6 +4209,10 @@ final class AppState {
         if let muted = (try? await dev.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
             speakerMuted = muted
         }
+        if let level = (try? await dev.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 { hp1Level = -Double(level) }
+        if let muted = (try? await dev.getProperty(PropertyAddress(selector: .headphone1Mute)))?.asBool { hp1Muted = muted }
+        if let level = (try? await dev.getProperty(PropertyAddress(selector: .headphone2Level)))?.asUInt32 { hp2Level = -Double(level) }
+        if let muted = (try? await dev.getProperty(PropertyAddress(selector: .headphone2Mute)))?.asBool { hp2Muted = muted }
     }
 
     /// Whether a preset's speaker, headphone and device settings are sent:

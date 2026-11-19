@@ -177,7 +177,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
     /// Capture the readable state under the same lock used by recall and UI
     /// writes. Write-only fields in `seed` come from the app's existing stores.
-    public func capturePreset(_ seed: ThunderboltPreset, layout: CardLayout) throws -> ThunderboltPreset {
+    public func capturePreset(_ seed: ThunderboltPreset, layout: CardLayout,
+                              onSkipped: @Sendable @escaping (String) -> Void = { _ in }) throws -> ThunderboltPreset {
         presetLock.lock()
         defer { presetLock.unlock() }
         try checkPresetLayout(layout)
@@ -194,7 +195,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             readProperty: { address in
                 if address.selector == .clockSource { return try self.readProperty(address) }
                 return try self.readPresetProperty(address)
-            }, readRaw: { try self.dextClient.readVendorCommand(command: $0, value: $1, responseLength: $2) })
+            }, readRaw: { try self.dextClient.readVendorCommand(command: $0, value: $1, responseLength: $2) },
+            onSkipped: onSkipped)
     }
 
     private func readPresetUnitID() throws -> Data {
@@ -272,7 +274,6 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         defer { presetLock.unlock() }
         try checkPresetLayout(layout)
         try ThunderboltPreset.recall(writes, send: { write in
-            try self.checkPresetLayout(layout)
             switch write {
             case .property(let address, let value):
                 // In Line mode the HAL volume belongs to HP1. A preset's speaker
@@ -346,7 +347,6 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                     guard let id = self.settingsStore.value(for: PropertyAddress(selector: selector))?.asUInt32,
                           let pair = SymphonyIOHeadphoneRouting.outputPairDestinations(sourceID: id),
                           let headphone = SymphonyIOHeadphoneRouting.Headphone(rawValue: hp) else { continue }
-                    try validate()
                     try self.sendViaDext(SymphonyIORequestBuilder.setHeadphoneCrosspoint(
                         headphone: headphone, leftSource: pair.left - 32, rightSource: pair.right - 32))
                 }

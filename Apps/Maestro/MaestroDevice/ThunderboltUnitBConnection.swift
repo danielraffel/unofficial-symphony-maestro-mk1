@@ -133,7 +133,8 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         return data
     }
 
-    public func capturePreset(_ seed: ThunderboltPreset, layout: CardLayout) throws -> ThunderboltPreset {
+    public func capturePreset(_ seed: ThunderboltPreset, layout: CardLayout,
+                              onSkipped: @Sendable @escaping (String) -> Void = { _ in }) throws -> ThunderboltPreset {
         try sequenceLock.withLock {
             try checkPresetLayout(layout)
             return try ThunderboltPreset.capture(seed, layout: layout, hostChannels: 64, peripheralB: true,
@@ -142,7 +143,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
                     let data = try self.presetRead(request.request, DextUserClient.nValue(for: request), max(1, request.data.count), layout: layout)
                     if ThunderboltPreset.monitorOrder.contains(address.selector) { return .uint32(UInt32(data[0])) }
                     return try SymphonyIOPropertyMapper.decodeResponse(USBControlResponse(data: data, bytesTransferred: data.count), for: address)
-                }, readRaw: { try self.presetRead($0, $1, $2, layout: layout) })
+                }, readRaw: { try self.presetRead($0, $1, $2, layout: layout) }, onSkipped: onSkipped)
         }
     }
 

@@ -140,10 +140,9 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         try require([32, 64].contains(hostChannels), "unsupported channel count.")
         let allowedGlobals = Set((Self.monitorOrder + (peripheralB ? [] : [.clockSource]) + [.headphone1RoutingID, .headphone2RoutingID]).map(\.rawValue))
         try require(Set(globals.keys).isSubset(of: allowedGlobals), "unknown device settings.")
-        if !legacy {
-            try require(Set(globals.keys) == allowedGlobals, "incomplete monitor settings.")
-            try require(frontPanelSelection != nil, "missing front panel selection.")
-        }
+        // A save may contain the readable subset when one vendor read was
+        // unavailable. Missing fields are intentionally left unchanged on
+        // recall (the write loop already skips absent globals).
         if let selection = frontPanelSelection { try require(selection <= (layout.slot2 == .micPre8 ? 10 : 2), "invalid front panel selection.") }
         for (selector, value) in globals {
             let s = AudioPropertySelector(rawValue: selector)
@@ -190,7 +189,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             if card.hasSPDIFCoax {
                 let replace = digitalSettings.spdifReplace[slot], mirror = digitalSettings.spdifMirror[slot]
                 try require((legacy && replace == nil) || (replace != nil && replace! <= 8), "invalid or missing coax replacement.")
-                try require((legacy && (mirror == nil || mirror == 0)) || (mirror != nil && (1...8).contains(mirror!)), "invalid or missing coax mirror.")
+                try require((legacy && (mirror == nil || mirror == 0)) || (mirror != nil && (0...8).contains(mirror!)), "invalid or missing coax mirror.")
             }
         }
         if mixers.count == 2 {
@@ -363,16 +362,10 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                 throw RecallError.unsupported("invalid monitor level.")
             }
         }
+        // App-only bundles historically restored app metadata and names. They
+        // never changed monitor state on the ThunderBridge transport.
         preset.globals = [
-            AudioPropertySelector.outputLevel.rawValue: UInt32(-metadata.outputLevel),
-            AudioPropertySelector.outputMute.rawValue: metadata.outputMuted ? 1 : 0,
-            AudioPropertySelector.outputDim.rawValue: metadata.outputDimmed ? 1 : 0,
-            AudioPropertySelector.outputSumToMono.rawValue: metadata.outputSumToMono ? 1 : 0,
-            AudioPropertySelector.headphone1Level.rawValue: UInt32(-metadata.hp1Level),
-            AudioPropertySelector.headphone1Mute.rawValue: metadata.hp1Muted ? 1 : 0,
             AudioPropertySelector.headphone1RoutingID.rawValue: metadata.hp1RoutingID,
-            AudioPropertySelector.headphone2Level.rawValue: UInt32(-metadata.hp2Level),
-            AudioPropertySelector.headphone2Mute.rawValue: metadata.hp2Muted ? 1 : 0,
             AudioPropertySelector.headphone2RoutingID.rawValue: metadata.hp2RoutingID,
         ]
         _ = try preset.writes(layout: layout, legacy: true)
