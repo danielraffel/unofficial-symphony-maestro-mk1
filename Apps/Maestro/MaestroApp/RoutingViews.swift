@@ -1235,7 +1235,6 @@ struct OutputRoutingView: View {
                 Every hardware output will be re-pointed to the default:
 
                 \(plan.joined(separator: "\n"))
-                \(appState.symphonyCardInputs.channelCount > 0 ? "The card’s software-input mapping for all connected units will also return to its default." : "")
                 """,
             isRefusal: false)
     }
@@ -1286,11 +1285,8 @@ struct OutputRoutingView: View {
             print("[Maestro] OutputRouting: reset refused at write time, provenance not .detected")
             return
         }
-        if appState.symphonyCardInputs.channelCount > 0,
-           !(await appState.applySymphonyCardInputs([:], reset: true)) {
-            errorMessage = "The card refused Reset Routing."
-            return
-        }
+        // Output reset must leave card inputs alone, matching ResetRouting(false).
+        // Evidence: og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:849-953.
         // Over USB: 16, not the device mode's channel count — see
         // `SymphonyIODefaultRouting.usbChannelCount`. In 8-ch mode the mode count
         // wrapped ADAT 1-8 back onto DAW 1-8; in 32-ch mode it assigned USB 16-31,

@@ -8,7 +8,7 @@ extension AppState {
         return SymphonyCardInputRouting(model: SymphonyRoutingModel(
             topology: symphony ? .symphonyOnly : .unknown,
             hostChannels: portSelection.selection?.channelCount ?? 32,
-            unitBConfigured: unitBInputRoutingAllowed))
+            unitBConfigured: unitBInputRoutingAllowed), servingBuild: servingDextBuild)
     }
 
     var symphonyCardInputStore: SymphonyCardInputStore? {

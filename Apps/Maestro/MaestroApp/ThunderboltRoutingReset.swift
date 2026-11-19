@@ -16,6 +16,9 @@ extension AppState {
         }
         let aLayout = cardLayout
         let inputStore = symphonyCardInputStore
+        // Older serving drivers still reset the peripheral input tables.
+        let cardWrites = input && symphonyCardInputs.channelCount == 0 ? []
+            : ThunderboltPreset.cardReset(input: input, layouts: [aLayout, bLayout])
         let aInputCache = RoutingStateCache(direction: "input", productID: a.identifier.productID)
         let aOutputCache = RoutingStateCache(direction: "output", productID: a.identifier.productID)
         let bInputCache = unitBInputRoutingCache, bOutputCache = unitBOutputRoutingCache
@@ -25,7 +28,7 @@ extension AppState {
                     let aWrites = try a.routingResetWrites(layout: aLayout, input: input)
                     let bWrites = try b.routingResetWrites(layout: bLayout, input: input)
                     do {
-                        try a.applyPresetWrites(ThunderboltPreset.cardReset(input: input, layouts: [aLayout, bLayout]) + aWrites, layout: aLayout)
+                        try a.applyPresetWrites(cardWrites + aWrites, layout: aLayout)
                     } catch {
                         try? b.applyPresetWrites([], layout: bLayout) { try a.writePresetMixer($0, value: $1) }
                         throw error
@@ -46,8 +49,10 @@ extension AppState {
             }
             aInputCache.save(grid(planned.0, layout: aLayout))
             bInputCache?.save(grid(planned.1, layout: bLayout))
-            symphonyCardInputEdits = Dictionary(uniqueKeysWithValues: (0..<64).map { ($0, $0) })
-            inputStore?.save(symphonyCardInputEdits)
+            if !cardWrites.isEmpty {
+                symphonyCardInputEdits = Dictionary(uniqueKeysWithValues: (0..<64).map { ($0, $0) })
+                inputStore?.save(symphonyCardInputEdits)
+            }
         } else {
             func grid(_ layout: CardLayout, base: Int) -> [Int: Set<Int>] {
                 var rows = Dictionary(uniqueKeysWithValues: (0..<34).map { ($0, Set<Int>()) })

@@ -20,6 +20,8 @@
 
 ### Fixes
 
+- **Reset Routing keeps working when an older driver is still serving after an app update.** The card-input grid requires driver build 132 or newer, and Reset Output Routing leaves card inputs unchanged.
+
 - Restore both Symphony I/Os’ routing, mixers and headphone sources after returning to 64 channels, waking or recovering a link, even with the Mixer page closed.
 - **With two Symphony I/Os at 64 channels, Reset Routing resets the selected routing direction across the whole card and both units.**
 - **Settings bundles now save and restore both Symphony I/Os.** Older bundles restore unit A only. If unit B is absent or has different cards, Maestro restores unit A and reports that unit B was skipped.
