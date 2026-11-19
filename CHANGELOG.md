@@ -25,7 +25,7 @@ Thanks to the people who reported converters showing only four units, a tone rep
 - **Device Type**, as in Apogee's software, for the units that do not say what they are: choose DD-16X / AD-16X or DA-16X for a unit in Advanced Routing, and Rosetta 800 or Rosetta 200 for a Rosetta.
 - **The driver keeps an eye on the units** about once a second and recovers if one drifts out of time, stops answering, or a unit is added or removed.
 - **The latency your DAW compensates for** is the converters' own.
-- None of this has been tried on real converters yet. If you have them, please send a Diagnostics report (Settings › Diagnostics) after switching them on.
+- None of this has been tried on real converters yet. If you have them, please send a Diagnostics report (see "Please test" below).
 
 ### Two Symphony I/O units (64 channels)
 
@@ -40,6 +40,23 @@ Thanks to the people who reported converters showing only four units, a tone rep
 ### 8MicPre
 
 - **Phantom power and gain for the 8MicPre now appear in your DAW over ThunderBridge and PCIe.** The driver was looking for the Mic Pre in the wrong slot, so the controls never appeared.
+
+### Please test
+
+If you have any of these, a Diagnostics report helps a lot: in **Device Settings › Preferences**, turn on **Diagnostics**, switch your units off and on, use them for a few minutes, then press **Stop Diagnostics** and send the report.
+
+- **AD-16X, DA-16X, DD-16X or Rosetta converters,** on port 1, port 2 or both: do all your units appear, with the right names and channels in your DAW, and do routing changes and rate changes work? Please say which units are on which port, in cable order.
+- **Two Symphony I/Os at 64 channels:** does the second unit appear, follow the first unit's clock over Loop Sync, and play and record on channels 33-64?
+- **An 8MicPre over ThunderBridge or PCIe:** do phantom power and gain appear in your DAW and work?
+- **The Symphony 64 PCIe card:** does audio stop cleanly when you stop or quit your DAW?
+
+### What's next
+
+More is on the way in the following betas:
+
+- **Second Symphony I/O:** editing its Input Routing, its headphone and monitor controls, its firmware and serial in Device Info, and Reset Routing and presets that cover its outputs.
+- **8MicPre:** Mic and Instrument settings sent to the unit when Maestro connects, as line levels already are.
+- Fixes for whatever the reports above turn up.
 
 ### Release notes
 
