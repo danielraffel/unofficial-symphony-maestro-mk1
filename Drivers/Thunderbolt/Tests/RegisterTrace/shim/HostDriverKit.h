@@ -147,6 +147,7 @@ void HostDefer(std::deque<HostBlock> *queue, HostBlock b);
 void HostDrain(std::deque<HostBlock> *queue);
 void HostPump();
 extern std::deque<HostBlock> gHostCompletions;
+extern bool gHostDispatchSyncDrain;
 
 class IODispatchQueue : public OSObject {
 public:
@@ -154,7 +155,7 @@ public:
         *out = new IODispatchQueue;
         return kIOReturnSuccess;
     }
-    void DispatchSync(HostBlock b) { HostDrain(&pending); b(); }
+    void DispatchSync(HostBlock b) { if (gHostDispatchSyncDrain) HostDrain(&pending); b(); }
     void DispatchAsync(HostBlock b) { HostDefer(&pending, b); }
     std::deque<HostBlock> pending;
 };

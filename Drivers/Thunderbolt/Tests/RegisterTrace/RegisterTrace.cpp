@@ -63,6 +63,7 @@ int gHostLocksHeld = 0;
 HostAudioRegistry gHostAudio;
 std::deque<HostBlock> gHostCompletions;
 static std::vector<std::deque<HostBlock> *> gQueues;
+bool gHostDispatchSyncDrain = true;
 static bool gVerbose = false;
 static int gFailures = 0;
 
@@ -3228,6 +3229,54 @@ static void RunPreampHostRoutes()
     HostPump();
     CHECK(b[phantom] == std::vector<uint8_t>({1}) && b[mic] == std::vector<uint8_t>({44}) &&
           !a.count(phantom) && !a.count(mic), "B10: host 1 writes B over port 2 only");
+
+    // B11: admission is not permission to use a stale physical route.  Change
+    // the host route while each XLink lane is queued; phantom ON and gain are
+    // dropped; phantom OFF still reaches the admitted channel (safe direction);
+    // nothing touches the newly selected A unit.
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for stale-route checks");
+    const size_t staleOnMark = r.card.lines.size();
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B11: queue phantom ON");
+    gHostDispatchSyncDrain = false;
+    CHECK(route(0, 0) == kIOReturnSuccess, "B11: change route before phantom ON drains");
+    gHostDispatchSyncDrain = true;
+    HostPump();
+    CHECK(Commands(r.card, staleOnMark, kRegXLink1TX, 0x10).empty() &&
+          Commands(r.card, staleOnMark, kRegXLink2TX, 0x10).empty(),
+          "B11: stale phantom ON sends nothing");
+
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for phantom OFF");
+    const size_t staleOffMark = r.card.lines.size();
+    CHECK(drv->RequestPhantom(0, false) == kIOReturnSuccess, "B11: queue phantom OFF");
+    gHostDispatchSyncDrain = false;
+    CHECK(route(0, 0) == kIOReturnSuccess, "B11: change route before phantom OFF drains");
+    gHostDispatchSyncDrain = true;
+    HostPump();
+    CHECK(Commands(r.card, staleOffMark, kRegXLink1TX, 0x10).empty() &&
+          !Commands(r.card, staleOffMark, kRegXLink2TX, 0x10).empty() &&
+          b[phantom] == std::vector<uint8_t>({0}),
+          "B11: phantom OFF still reaches the admitted B channel, never the new A route");
+
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for stale gain");
+    const size_t staleGainMark = r.card.lines.size();
+    CHECK(drv->RequestMicGain(0, 52) == kIOReturnSuccess, "B11: queue gain");
+    gHostDispatchSyncDrain = false;
+    CHECK(route(0, 0) == kIOReturnSuccess, "B11: change route before gain drains");
+    gHostDispatchSyncDrain = true;
+    HostPump();
+    CHECK(Commands(r.card, staleGainMark, kRegXLink1TX, 0x10).empty() &&
+          Commands(r.card, staleGainMark, kRegXLink2TX, 0x10).empty(),
+          "B11: stale gain sends nothing");
+
+    // The unchanged-route path remains the existing positive control above.
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for unchanged control");
+    const size_t unchangedMark = r.card.lines.size();
+    CHECK(drv->RequestMicGain(0, 53) == kIOReturnSuccess, "B11: queue unchanged gain");
+    HostPump();
+    CHECK(!Commands(r.card, unchangedMark, kRegXLink2TX, 0x10).empty() &&
+          b[mic] == std::vector<uint8_t>({53}),
+          "B11: unchanged route still sends B gain");
+
     CHECK(route(8, 0) == kIOReturnSuccess, "B10: A routed to host 9");
     CHECK(drv->RequestPhantom(8, true) == kIOReturnSuccess && drv->RequestMicGain(8, 33) == kIOReturnSuccess,
           "B10: host 9 accepts A preamp writes");
