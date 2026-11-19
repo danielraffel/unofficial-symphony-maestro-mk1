@@ -214,6 +214,25 @@ struct ConverterRoutingTests {
             }
         }
     }
+
+    @Test("A refused route goes back alone; accepted and newer ones stay")
+    func revertRefusedOnly() {
+        let previous = ConverterRoutingEdits(outputs: [0: 70], inputs: [2: 5])
+        let attempted = ConverterRoutingEdits(outputs: [0: 80, 1: 81], inputs: [2: 6])
+        let refused = [ConverterRouting.outputCommand(bus: 1, source: 81)]
+        #expect(attempted.reverting(refused, attempted: attempted, previous: previous)
+                == ConverterRoutingEdits(outputs: [0: 80], inputs: [2: 6]))
+        // A newer change to the refused route stays.
+        var newer = attempted; newer.outputs[1] = 90
+        #expect(newer.reverting(refused, attempted: attempted, previous: previous).outputs[1] == 90)
+        // An input route.
+        let refusedInput = [ConverterRouting.inputCommand(host: 2, bus: 6)]
+        #expect(attempted.reverting(refusedInput, attempted: attempted, previous: previous).inputs[2] == 5)
+        // A refused Reset Routing puts everything back.
+        let reset = [ConverterRouting.resetRoutingCommand]
+        #expect(ConverterRoutingEdits().reverting(reset, attempted: ConverterRoutingEdits(), previous: previous)
+                == previous)
+    }
 }
 
 @Suite("Port status messages")

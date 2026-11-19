@@ -523,7 +523,14 @@ struct InputControlsView: View {
 
     @discardableResult
     private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
-        guard let device = appState.unitDevice else { return false }
+        await writeChannelProperty(index, selector, value: value, on: appState.unitDevice)
+    }
+
+    /// The same, to a unit taken before an earlier await.
+    @discardableResult
+    private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
+                                      on device: (any DeviceConnection)?) async -> Bool {
+        guard let device else { return false }
         do {
             let element = UInt32(index)
             try await device.setProperty(
@@ -578,13 +585,20 @@ struct InputControlsView: View {
         let gain = UInt32(max(0, channels[index].gain.rounded()))
         let sendsGain = InputChannelLogic.usesGainKnob(level: level)
         let insertsAfterLevelChange = insertAssignmentWrites()
+        // The unit and its saved state as they are now: the writes below
+        // await, and the user may switch units (or unit B go) meanwhile.
+        let target = appState.unitWriteTarget
+        let after = channels[index]
         Task {
             if clearedPhantom {
-                await writeChannelProperty(index, .phantom, value: .bool(false))
+                await writeChannelProperty(index, .phantom, value: .bool(false), on: target.device)
             }
-            if !(await writeChannelProperty(index, .analogIOType, value: .uint32(packed))) {
-                channels[index] = before
-                saveChannelStates()
+            if !(await writeChannelProperty(index, .analogIOType, value: .uint32(packed), on: target.device)) {
+                // Put back only this change: a newer one to the channel stays.
+                if index < channels.count, channels[index] == after {
+                    channels[index] = before
+                    target.channelStore.save(channels, for: ChannelStateStore.inputKey)
+                }
             }
             if sendsGain {
                 // Re-assert gain: Mic (0-85) and Instrument (0-65) are separate
@@ -592,20 +606,20 @@ struct InputControlsView: View {
                 // TODO(instrument-gain): Instrument gain is opcode 0xC4
                 // (`SymphonyIOCommand.instrumentGain`), but no property selector maps
                 // to it yet — `.micGain` (0xC3) is all we can address today.
-                await writeChannelProperty(index, .micGain, value: .uint32(gain))
+                await writeChannelProperty(index, .micGain, value: .uint32(gain), on: target.device)
             }
             if clearedGroup {
                 await writeChannelProperty(index, .groupID,
-                                          value: .uint32(InputChannelLogic.groupOff))
+                                          value: .uint32(InputChannelLogic.groupOff), on: target.device)
             }
             if clearedInsert {
                 // 0xC8 is addressed by INSERT and rebuilt whole — releasing this
                 // channel's insert means writing mask 0 to it, which only the full
                 // table does (`SymphonyIOBoard_MicPre8ch.cpp:1790-1810`).
-                await pushInsertAssignments(insertsAfterLevelChange)
+                await pushInsertAssignments(insertsAfterLevelChange, on: target.device)
             }
             if clearedInsertReturn {
-                await writeChannelProperty(index, .insertReturnEnable, value: .bool(false))
+                await writeChannelProperty(index, .insertReturnEnable, value: .bool(false), on: target.device)
             }
         }
         syncAppliedGains()
@@ -759,7 +773,12 @@ struct InputControlsView: View {
     /// Push one full insert table. `element` is the INSERT index here — see the
     /// `.insertID` case in `SymphonyIOPropertyMapper`.
     private func pushInsertAssignments(_ assignments: [(insert: Int, mask: UInt8)]) async {
-        guard let device = appState.unitDevice else { return }
+        await pushInsertAssignments(assignments, on: appState.unitDevice)
+    }
+
+    private func pushInsertAssignments(_ assignments: [(insert: Int, mask: UInt8)],
+                                       on device: (any DeviceConnection)?) async {
+        guard let device else { return }
         for (insert, mask) in assignments {
             do {
                 try await device.setProperty(
@@ -902,8 +921,11 @@ struct InputControlsView: View {
                     let optVal = option.id
                     return (option.name, {
                         value.wrappedValue = optVal
+                        // The unit as it is now: unit B's answer must not
+                        // land in unit A's names or saved settings.
+                        let target = appState.unitWriteTarget
                         Task {
-                            guard let device = appState.unitDevice else { return }
+                            guard let device = target.device else { return }
                             do {
                                 try await device.setProperty(
                                     PropertyAddress(selector: selector, scope: .input, element: element),
@@ -912,8 +934,9 @@ struct InputControlsView: View {
                                 // The replaced pair is renamed "SPDIF Cx" in routing
                                 // and mixer labels, as the daemon renamed it.
                                 if element < 2 {
-                                    appState.unitChannelNaming.spdifReplace[Int(element)] = optVal
-                                    appState.rememberUnitDigitalSetting(.spdifReplaceID, slot: Int(element), value: optVal)
+                                    appState.setSPDIFReplaceNaming(slot: Int(element), value: optVal, for: target)
+                                    appState.saveDigitalSetting(.spdifReplaceID, slot: Int(element),
+                                                                value: optVal, for: target)
                                 }
                             } catch {
                                 print("[Maestro] SPDIF Replace write failed: \(error)")
@@ -927,12 +950,13 @@ struct InputControlsView: View {
     }
 
     private func loadDigitalSettings() async {
-        guard let device = appState.unitDevice else { return }
+        let target = appState.unitWriteTarget
+        guard let device = target.device else { return }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input))
             if let u = val.asUInt32 {
                 spdifReplace1 = u
-                if u <= 8 { appState.unitChannelNaming.spdifReplace[0] = u }
+                appState.setSPDIFReplaceNaming(slot: 0, value: u, for: target)
             }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace1: \(error)")
@@ -941,7 +965,7 @@ struct InputControlsView: View {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input, element: 1))
             if let u = val.asUInt32 {
                 spdifReplace2 = u
-                if u <= 8 { appState.unitChannelNaming.spdifReplace[1] = u }
+                appState.setSPDIFReplaceNaming(slot: 1, value: u, for: target)
             }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace2: \(error)")

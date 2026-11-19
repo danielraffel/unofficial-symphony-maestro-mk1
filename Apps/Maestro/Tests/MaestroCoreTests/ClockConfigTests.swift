@@ -128,4 +128,17 @@ struct ClockConfigTests {
         #expect(rates.count == 6)
         #expect(rates.contains(.rate192000))
     }
+
+    @Test("Unit A offers no Loop Sync while unit B follows it")
+    func noLoopSyncWithUnitB() {
+        let loop = ClockSourceChoice(id: ClockSourceMenu.loopSync, name: "Loop Sync", source: 3, boardInput: nil)
+        let menu = ClockSourceMenu.thunderbolt(slot1: .analogAES, slot2: .none) + [loop]
+        let withB = ClockSourceMenu.unitAChoices(menu, unitBFollows: true)
+        #expect(!withB.contains { $0.source == 3 })
+        #expect(withB.count == menu.count - 1)
+        #expect(ClockSourceMenu.unitAChoices(menu, unitBFollows: false) == menu)
+        #expect(!ClockSourceMenu.unitAMaySend(ClockSourceMenu.loopSync, unitBFollows: true))
+        #expect(ClockSourceMenu.unitAMaySend(ClockSourceMenu.loopSync, unitBFollows: false))
+        #expect(ClockSourceMenu.unitAMaySend(ClockSourceMenu.wordClock, unitBFollows: true))
+    }
 }

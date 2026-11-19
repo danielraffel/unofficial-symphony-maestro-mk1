@@ -53,6 +53,7 @@ struct MixerView: View {
         self.appState = appState
         let mixer = appState.lastSelectedMixer == 1 ? 1 : 0
         _selectedMixer = State(initialValue: mixer)
+        if appState.unitBKnownAbsent { appState.resetSoftwareReturnSourcesBeyondOneUnit() }
         let snapshot = MixerStateSnapshot(
             channelCount: appState.cardLayout.mixerChannels.count,
             mixer: mixer,
@@ -70,7 +71,9 @@ struct MixerView: View {
         _swReturnChannel = State(initialValue: swReturn)
         _swReturnLeftLevel = State(initialValue: swLevel)
         _swReturnRightLevel = State(initialValue: swLevel)
-        _softwareReturnSource = State(initialValue: snapshot.softwareReturnSource)
+        // A source beyond the pairs on offer (DAW 17-64, unit B's) shows as 1-2.
+        _softwareReturnSource = State(initialValue: TwoUnitMixer.shownSoftwareReturnSource(
+            snapshot.softwareReturnSource, pairCount: appState.softwareReturnPairCount))
         _masterLevel = State(initialValue: snapshot.masterLevel)
         _masterLeftLevel = State(initialValue: snapshot.masterLevel)
         _masterRightLevel = State(initialValue: snapshot.masterLevel)
@@ -762,7 +765,8 @@ struct MixerView: View {
             mixer: selectedMixer,
             store: appState.channelStateStore)
         channels = appState.mixerStripStates(unitA: snapshot.channels, mixer: selectedMixer)
-        softwareReturnSource = snapshot.softwareReturnSource
+        softwareReturnSource = TwoUnitMixer.shownSoftwareReturnSource(
+            snapshot.softwareReturnSource, pairCount: appState.softwareReturnPairCount)
         masterLevel = snapshot.masterLevel
         masterLeftLevel = snapshot.masterLevel
         masterRightLevel = snapshot.masterLevel
@@ -789,7 +793,12 @@ struct MixerView: View {
         // The pairs can no longer be unlinked. Older versions read these flags.
         UserDefaults.standard.set(true, forKey: "mixerSWReturnFadersLinked")
         UserDefaults.standard.set(true, forKey: "mixerMasterFadersLinked")
-        UserDefaults.standard.set(softwareReturnSource, forKey: "mixerSoftwareReturnSource_\(selectedMixer)")
+        let sourceKey = "mixerSoftwareReturnSource_\(selectedMixer)"
+        UserDefaults.standard.set(
+            TwoUnitMixer.sourceToSave(shown: softwareReturnSource,
+                                      saved: UInt32(clamping: UserDefaults.standard.integer(forKey: sourceKey)),
+                                      pairCount: appState.softwareReturnPairCount),
+            forKey: sourceKey)
         // Keep the ThunderBridge SW Return meters in step with the faders/pan/mute.
         appState.refreshSoftwareReturnMeterGains()
     }
@@ -925,6 +934,8 @@ struct MixerView: View {
         softwareReturnPairCount: appState.softwareReturnPairCount,
         onSoftwareReturnSourceChange: { source in
             softwareReturnSource = source
+            // The user's choice is saved as chosen, 1-2 included.
+            UserDefaults.standard.set(source, forKey: "mixerSoftwareReturnSource_\(selectedMixer)")
             Task { await writeSoftwareReturnSource(source); saveMixerState() }
         },
         showZoneColoring: appState.showMeterZoneColoring,
@@ -1147,11 +1158,17 @@ struct MixerView: View {
         // 8 pairs, or 32 while 64 channels run with unit B (ThunderBridge only).
         guard let device = appState.device,
               source < UInt32(appState.softwareReturnPairCount) else { return }
+        // A saved DAW 17-64 shown as 1-2 before unit B is reported is not
+        // sent: the card keeps its own source until then.
+        let saved = UInt32(clamping: UserDefaults.standard.integer(forKey: "mixerSoftwareReturnSource_\(selectedMixer)"))
+        let held = TwoUnitMixer.isHeld(shown: source, saved: saved, pairCount: appState.softwareReturnPairCount)
         do {
             let element = UInt32(selectedMixer + 1) << 16
-            try await device.setProperty(
-                PropertyAddress(selector: .mixerSoftwareReturnID, element: element),
-                value: .uint32(source))
+            if !held {
+                try await device.setProperty(
+                    PropertyAddress(selector: .mixerSoftwareReturnID, element: element),
+                    value: .uint32(source))
+            }
         } catch DeviceConnectionError.unsupportedProperty(_) {
             // Software-return routing is unavailable on some hardware paths;
             // keep the rest of the mixer usable without a false error.

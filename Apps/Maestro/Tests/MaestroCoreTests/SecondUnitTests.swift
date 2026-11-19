@@ -30,7 +30,9 @@ struct SecondUnitTests {
         #expect(none.prefixLetter == nil)
         #expect(none.prefix(after: "A") == "B")
         #expect(none.prefix(after: "C") == "D")
-        #expect(none.prefix(after: "Z") == "B")
+        // After 'Z' the driver names unit B's channels 'A'.
+        #expect(none.prefix(after: "Z") == "A")
+        #expect(none.prefix(after: "?") == "B")
     }
 
     @Test("Clock and report lines")
@@ -109,6 +111,30 @@ struct SecondUnitTests {
             #expect(text.contains(phrase), "\(phrase)")
         }
         for word in ["beta", "Beta", "test build"] { #expect(!text.contains(word)) }
+        // The prefix, Speaker Mode and coax settings are sent to unit B now.
+        #expect(!text.contains("Not sent to the second unit"))
+        #expect(text.contains("Loop Sync while the second unit follows it"))
+    }
+
+    @Test("Software Return beyond DAW 1-16 after unit B goes")
+    func softwareReturnAfterUnitB() {
+        // Shown as 1-2 while only 8 pairs are offered; kept while unit B may still come.
+        #expect(TwoUnitMixer.shownSoftwareReturnSource(20, pairCount: 8) == 0)
+        #expect(TwoUnitMixer.shownSoftwareReturnSource(20, pairCount: 32) == 20)
+        #expect(TwoUnitMixer.shownSoftwareReturnSource(7, pairCount: 8) == 7)
+        #expect(TwoUnitMixer.sourceToSave(shown: 0, saved: 20, pairCount: 8) == 20)
+        #expect(TwoUnitMixer.sourceToSave(shown: 3, saved: 20, pairCount: 8) == 3)
+        #expect(TwoUnitMixer.sourceToSave(shown: 0, saved: 20, pairCount: 32) == 0)
+        #expect(TwoUnitMixer.sourceToSave(shown: 0, saved: 5, pairCount: 8) == 0)
+        // Held: neither saved over nor sent while unit B may still appear.
+        #expect(TwoUnitMixer.isHeld(shown: 0, saved: 20, pairCount: 8))
+        #expect(!TwoUnitMixer.isHeld(shown: 0, saved: 20, pairCount: 32))
+        #expect(!TwoUnitMixer.isHeld(shown: 0, saved: 0, pairCount: 8))
+        #expect(!TwoUnitMixer.isHeld(shown: 3, saved: 20, pairCount: 8))
+        // Saved back to 1-2 only once unit B is known to be gone, as the driver does.
+        #expect(TwoUnitMixer.resetsSavedSoftwareReturn(8, unitBKnownAbsent: true))
+        #expect(!TwoUnitMixer.resetsSavedSoftwareReturn(7, unitBKnownAbsent: true))
+        #expect(!TwoUnitMixer.resetsSavedSoftwareReturn(20, unitBKnownAbsent: false))
     }
 
     @Test("Device Info and Diagnostics carry unit B's lines")

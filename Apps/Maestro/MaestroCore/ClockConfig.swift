@@ -181,6 +181,26 @@ public enum ClockSourceMenu {
         return choices
     }
 
+    /// Unit A's rows while a second Symphony I/O (unit B, port 2) follows it:
+    /// no Loop Sync. The driver keeps unit A's Loop Sync output on for unit B
+    /// and refuses Loop Sync as unit A's own source then.
+    public static func unitAChoices(_ choices: [ClockSourceChoice], unitBFollows: Bool) -> [ClockSourceChoice] {
+        unitBFollows ? choices.filter { $0.source != UInt8(loopSync) } : choices
+    }
+
+    /// Whether a picker key may be sent to unit A.
+    public static func unitAMaySend(_ key: UInt32, unitBFollows: Bool) -> Bool {
+        !(unitBFollows && decode(key)?.source == UInt8(loopSync))
+    }
+
+    /// Shown under unit A's clock picker while unit B follows it.
+    public static let loopSyncUnavailableNote =
+        "Unit A can't take Loop Sync while unit B follows it."
+
+    /// Shown when the driver refuses a clock choice while unit B follows unit A.
+    public static let refusedWithUnitBNote =
+        "The driver did not accept that clock source while unit B follows unit A through Loop Sync."
+
     /// The board input byte an optical clock row sends. The DA16's optical
     /// receiver has its own index table (`SymphonyIOVendorSpecific.h:903-912`).
     public static func opticalClockInput(card: IOCardType, opticalIsSPDIF: Bool?) -> UInt8 {

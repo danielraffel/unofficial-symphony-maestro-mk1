@@ -131,7 +131,9 @@ struct InputRoutingView: View {
             if let layout = appState.converterRoutingLayout {
                 ConverterInputRoutingView(appState: appState, layout: layout)
             } else {
-                ConverterRoutingUnavailableNote(title: "Input Routing")
+                ConverterRoutingUnavailableNote(
+                    title: "Input Routing",
+                    driverTooOld: appState.converterSystem?.driverSupportsConverterControls == false)
             }
         } else {
             routingGrid
@@ -609,7 +611,9 @@ struct OutputRoutingView: View {
             if let layout = appState.converterRoutingLayout, let system = appState.cardLayout.converterLayout {
                 ConverterOutputRoutingView(appState: appState, layout: layout, system: system)
             } else {
-                ConverterRoutingUnavailableNote(title: "Output Routing")
+                ConverterRoutingUnavailableNote(
+                    title: "Output Routing",
+                    driverTooOld: appState.converterSystem?.driverSupportsConverterControls == false)
             }
         } else {
             routingGrid

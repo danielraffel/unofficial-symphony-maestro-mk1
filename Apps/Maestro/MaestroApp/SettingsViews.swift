@@ -876,13 +876,18 @@ struct SystemSetupView: View {
         // Older converters: their own clock or word clock, as the original
         // offered, written as the converter config's clock bit.
         if appState.convertersIdentified { return ClockSourceMenu.converters }
-        return appState.transportType == .usb
-            ? ClockSourceMenu.usb
-            : ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
-                                          slot2: appState.secondaryBoardType,
-                                          sampleRate: sampleRate > 0 ? sampleRate : nil,
-                                          opticalIsSPDIF: appState.channelNaming.opticalIsSPDIF)
+        guard appState.transportType != .usb else { return ClockSourceMenu.usb }
+        return ClockSourceMenu.unitAChoices(
+            ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
+                                        slot2: appState.secondaryBoardType,
+                                        sampleRate: sampleRate > 0 ? sampleRate : nil,
+                                        opticalIsSPDIF: appState.channelNaming.opticalIsSPDIF),
+            unitBFollows: unitBFollowsUnitA)
     }
+
+    /// A second Symphony I/O on port 2 takes its clock from unit A through
+    /// Loop Sync, so unit A cannot take Loop Sync itself.
+    private var unitBFollowsUnitA: Bool { appState.unitB != nil }
 
     /// Fallback rates shown when device doesn't report available rates.
     private static let defaultRates: [Double] = [
@@ -1003,6 +1008,12 @@ struct SystemSetupView: View {
                           row != clockSource else { return }
                     programmaticClockSource = row
                     clockSource = row
+                }
+
+                if unitBFollowsUnitA {
+                    Text(ClockSourceMenu.loopSyncUnavailableNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 if isProToolsMode {
@@ -2000,6 +2011,11 @@ struct SystemSetupView: View {
             return
         }
         guard let device = appState.device else { return }
+        let unitBFollows = unitBFollowsUnitA
+        guard ClockSourceMenu.unitAMaySend(source, unitBFollows: unitBFollows) else {
+            errorMessage = ClockSourceMenu.loopSyncUnavailableNote
+            return
+        }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .clockSource),
@@ -2007,7 +2023,9 @@ struct SystemSetupView: View {
             )
             errorMessage = nil
         } catch {
-            errorMessage = "Error setting clock source: \(error.localizedDescription)"
+            errorMessage = unitBFollows
+                ? ClockSourceMenu.refusedWithUnitBNote
+                : "Error setting clock source: \(error.localizedDescription)"
         }
     }
 
@@ -2032,7 +2050,15 @@ struct ConverterUnitRows: View {
         ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
             LabeledContent(row.label, value: row.value)
         }
-        ForEach(system.ports[0] + (system.port2Counted ? system.ports[1] : []), id: \.rowID) { unit in
+        // An older driver (the probe word) cannot take a Device Type.
+        if !system.driverSupportsConverterControls,
+           (system.ports[0] + system.ports[1]).contains(where: { !$0.deviceTypeChoices.isEmpty }) {
+            Text(ConverterDriverText.update)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        ForEach(system.driverSupportsConverterControls
+                ? system.ports[0] + (system.port2Counted ? system.ports[1] : []) : [], id: \.rowID) { unit in
             if let current = unit.deviceType, !unit.deviceTypeChoices.isEmpty {
                 Picker("Device Type, port \(unit.port + 1) unit \(unit.address)", selection: Binding(
                     get: { current },

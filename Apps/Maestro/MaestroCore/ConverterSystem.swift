@@ -121,8 +121,9 @@ public enum ConverterDeviceType: String, Sendable, CaseIterable, Identifiable {
         }
     }
 
-    /// The UserDefaults key for one unit's choice: `converterDeviceType.p1.u2`
-    /// for port 1, unit address 2.
+    /// One unit's place in `ConverterConfig.deviceTypes`, and its older
+    /// UserDefaults key: `converterDeviceType.p1.u2` for port 1, unit address 2.
+    /// Saved now per unit with its routing (`ConverterConfig.deviceTypeKey`).
     public static func defaultsKey(port: Int, address: Int) -> String {
         "converterDeviceType.p\(port + 1).u\(address)"
     }
@@ -134,7 +135,8 @@ public struct ConverterConfig: Sendable, Equatable {
     public static let clockExternalBit: UInt32 = 0x01
     public static let ddAsDAShift: UInt32 = 8
     public static let r200Shift: UInt32 = 16
-    /// UserDefaults key of the clock choice; absent until the user picks one.
+    /// The older UserDefaults key of the clock choice (one for every chain),
+    /// and the start of the per-chain keys (`clockKey(for:simulated:)`).
     public static let clockDefaultsKey = "converterClockExternal"
 
     /// Units (by `ConverterDeviceType.defaultsKey`) whose choice is not the default.
@@ -147,27 +149,70 @@ public struct ConverterConfig: Sendable, Equatable {
         self.clockExternal = clockExternal
     }
 
-    public static func load(_ defaults: UserDefaults = .standard) -> ConverterConfig {
+    // MARK: Where the choices are kept
+    //
+    // A Device Type is kept for the unit it was made for: its port, address
+    // and routing byte, so another unit at that address does not take it. (Not
+    // the whole chain: the chain's signature changes with the Device Type
+    // itself and with every 32/64 switch.) The clock is kept for port 1's
+    // chain, the converters that own it. A simulation keeps its own (`sim`).
+    // The older unscoped keys are moved to the first unit or chain that
+    // reads them, once.
+
+    /// Storage key of one unit's Device Type.
+    public static func deviceTypeKey(port: Int, address: Int, routing: UInt8, simulated: Bool) -> String {
+        let hex = String(routing, radix: 16)
+        return "converterDeviceType." + (simulated ? "sim." : "")
+            + "p\(port + 1).u\(address).r" + (hex.count < 2 ? "0" + hex : hex)
+    }
+
+    /// Storage key of the clock choice for port 1's chain, nil without one.
+    public static func clockKey(for system: ConverterSystem, simulated: Bool) -> String? {
+        let chain = system.clockChainSignature
+        guard !chain.isEmpty else { return nil }
+        return clockDefaultsKey + "." + (simulated ? "sim:" : "") + chain
+    }
+
+    /// The choices kept for these units.
+    public static func load(_ defaults: UserDefaults = .standard, for system: ConverterSystem,
+                            simulated: Bool) -> ConverterConfig {
         var types: [String: ConverterDeviceType] = [:]
-        for port in 0..<2 {
-            for address in 1...ConverterRules.maxUnitsPerPort {
-                let key = ConverterDeviceType.defaultsKey(port: port, address: address)
-                if let raw = defaults.string(forKey: key), let type = ConverterDeviceType(rawValue: raw) {
-                    types[key] = type
-                }
+        for unit in system.ports[0] + system.ports[1] where !unit.deviceTypeChoices.isEmpty {
+            let key = deviceTypeKey(port: unit.port, address: unit.address, routing: unit.routing,
+                                    simulated: simulated)
+            if !simulated {
+                migrate(from: ConverterDeviceType.defaultsKey(port: unit.port, address: unit.address),
+                        to: key, defaults: defaults)
+            }
+            if let raw = defaults.string(forKey: key), let type = ConverterDeviceType(rawValue: raw),
+               unit.deviceTypeChoices.contains(type) {
+                types[ConverterDeviceType.defaultsKey(port: unit.port, address: unit.address)] = type
             }
         }
-        let clock = defaults.object(forKey: clockDefaultsKey) as? Bool
+        var clock: Bool?
+        if let key = clockKey(for: system, simulated: simulated) {
+            if !simulated { migrate(from: clockDefaultsKey, to: key, defaults: defaults) }
+            clock = defaults.object(forKey: key) as? Bool
+        }
         return ConverterConfig(deviceTypes: types, clockExternal: clock)
     }
 
-    public static func saveDeviceType(_ type: ConverterDeviceType, port: Int, address: Int,
+    public static func saveDeviceType(_ type: ConverterDeviceType, unit: ConverterUnit, simulated: Bool,
                                       defaults: UserDefaults = .standard) {
-        defaults.set(type.rawValue, forKey: ConverterDeviceType.defaultsKey(port: port, address: address))
+        defaults.set(type.rawValue, forKey: deviceTypeKey(port: unit.port, address: unit.address,
+                                                          routing: unit.routing, simulated: simulated))
     }
 
-    public static func saveClockExternal(_ external: Bool, defaults: UserDefaults = .standard) {
-        defaults.set(external, forKey: clockDefaultsKey)
+    public static func saveClockExternal(_ external: Bool, for system: ConverterSystem, simulated: Bool,
+                                         defaults: UserDefaults = .standard) {
+        guard let key = clockKey(for: system, simulated: simulated) else { return }
+        defaults.set(external, forKey: key)
+    }
+
+    private static func migrate(from legacy: String, to key: String, defaults: UserDefaults) {
+        guard defaults.object(forKey: key) == nil, let value = defaults.object(forKey: legacy) else { return }
+        defaults.set(value, forKey: key)
+        defaults.removeObject(forKey: legacy)
     }
 
     public func deviceType(port: Int, address: Int) -> ConverterDeviceType? {
@@ -434,6 +479,30 @@ public struct ConverterSystem: Sendable, Equatable {
 
     public var chain: ConverterRules.Chain {
         ConverterRules.Chain(port1: ports[0].map(\.kind), port2: port2Counted ? ports[1].map(\.kind) : [])
+    }
+
+    /// Port 1's units by address and routing byte, e.g. `p1u1r03-p1u2r0c`:
+    /// the converters whose clock the converter config sets. Empty when port
+    /// 1 has a Symphony I/O. Unlike `routingSignature` it does not change
+    /// with a Device Type or with 32/64 channels.
+    public var clockChainSignature: String {
+        ports[0].map { unit in
+            let hex = String(unit.routing, radix: 16)
+            return "p1u\(unit.address)r" + (hex.count < 2 ? "0" + hex : hex)
+        }.joined(separator: "-")
+    }
+
+    /// Whether the driver itself reports the units (selector 9). The older
+    /// probe word comes from drivers that cannot route converters or take a
+    /// Device Type.
+    public var driverSupportsConverterControls: Bool { source != .probeWord }
+
+    /// Build a system twice: once to learn its units, then with the choices
+    /// kept for them.
+    public static func withStoredConfig(simulated: Bool, defaults: UserDefaults = .standard,
+                                        _ make: (ConverterConfig) -> ConverterSystem?) -> ConverterSystem? {
+        guard let first = make(ConverterConfig()) else { return nil }
+        return make(ConverterConfig.load(defaults, for: first, simulated: simulated)) ?? first
     }
 
     /// Whether every counted unit is a converter we know, so the app can lay
