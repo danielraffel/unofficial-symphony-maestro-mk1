@@ -3866,6 +3866,23 @@ static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, u
 // and its unit addressed; nothing is sent unless the unit answers a vendor read.
 static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
 {
+    // setupFlags is already part of selector 11.  Keep bit 0 as the historic
+    // "configured" value and expose the first failed mandatory stage in the
+    // high byte so the app can report why unit B fell back without an ABI
+    // change.  The stage order follows the original ApplySettingsToHardware /
+    // SetPeripheralReady flow (og_source/maestrolink/Software/SymphonyIO.cpp:4660-4735).
+    enum : uint32_t {
+        kUnitBSetupOK       = 1u << 0,
+        kUnitBFailBoard0    = 1u << 8,
+        kUnitBFailBoard1    = 1u << 9,
+        kUnitBFailPrefix    = 1u << 10,
+        kUnitBFailLock      = 1u << 11,
+        kUnitBFailClock     = 1u << 12,
+        kUnitBFailOptical   = 1u << 13,
+        kUnitBFailRouting   = 1u << 14,
+        kUnitBFailMute      = 1u << 15,
+        kUnitBFailUnlock    = 1u << 16,
+    };
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     const bool pcie = ivars->isLegacyPCIe2100;
@@ -3877,21 +3894,42 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     };
     ivars->unitBConfigured = false;
     ivars->unitBSetupFlags = 0;
+    uint32_t failures = 0;
+    bool mandatoryOK = true;
+    auto require = [&](bool ok, uint32_t flag, const char *stage) {
+        if (ok) return;
+        mandatoryOK = false;
+        failures |= flag;
+        STERR("Unit B: mandatory %s failed", stage);
+    };
     for (uint32_t b = 0; b < 2; b++) {
         uint8_t bt = kSIOOptionBoard_None;
-        ivars->unitBBoardValid[b] = ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1,
-                                                        kSIOCmd_OptionBoardType, b, &bt, 1, seq, pcie);
+        const bool boardOK = ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1,
+                                                 kSIOCmd_OptionBoardType, b, &bt, 1, seq, pcie);
+        if (!boardOK) ivars->unitBTxErrors++;
+        require(boardOK, b == 0 ? kUnitBFailBoard0 : kUnitBFailBoard1,
+                b == 0 ? "OptionBoardType(0) read" : "OptionBoardType(1) read");
+        ivars->unitBBoardValid[b] = boardOK;
         ivars->unitBBoardType[b] = ivars->unitBBoardValid[b] ? bt : 0;
     }
+    // Identity gate (kept from dext 131): a unit that answers neither board-type
+    // read is not a Symphony I/O (converters do not answer Symphony vendor
+    // reads). Nothing more is sent to it — no lock, clock, routing or unlock —
+    // and unit A's clock is not touched.
     if (!ivars->unitBBoardValid[0] && !ivars->unitBBoardValid[1]) {
+        ivars->unitBSetupFlags = failures;
         STERR("Unit B: the Symphony I/O on port 2 does not answer — not configured");
         return;
     }
     uint8_t prefix = 0;
-    if (ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1, kSymphonyCmdPrefix, 0, &prefix, 1, seq, pcie))
+    const bool prefixOK = ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1,
+                                               kSymphonyCmdPrefix, 0, &prefix, 1, seq, pcie);
+    if (!prefixOK) ivars->unitBTxErrors++;
+    require(prefixOK, kUnitBFailPrefix, "prefix read");
+    if (prefixOK)
         ivars->unitBPrefix = prefix;
     uint8_t lock = 1;
-    send(kSIOCmd_PreferenceLoadLock, 0, &lock, 1);
+    require(send(kSIOCmd_PreferenceLoadLock, 0, &lock, 1), kUnitBFailLock, "preference lock");
     IOSleep(10);
     // Loop Sync, as the original by default (SymphonyController m_fLoopSyncMode
     // starts true, SymphonyController.cpp:2708; the Symphony I/O user guide
@@ -3901,21 +3939,23 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     SendUnitAClock(ivars, true);   // unit A: master, Loop Sync output on, its own source kept
     IOSleep(10);
     const uint8_t clockData[4] = { 0x03, 0x00, 0x01, 0x00 };   // unit B: Loop Sync, slave
-    if (send(kSIOCmd_ClockMode, 0, clockData, sizeof(clockData))) ivars->unitBClockSource = 3;
+    const bool clockOK = send(kSIOCmd_ClockMode, 0, clockData, sizeof(clockData));
+    require(clockOK, kUnitBFailClock, "clock mode");
+    if (clockOK) ivars->unitBClockSource = 3;
     IOSleep(10);
     for (uint32_t b = 0; b < 2; b++) {
         if (!BootSendsOpticalFormat(ivars->unitBBoardValid[b], ivars->unitBBoardType[b])) continue;
         const uint8_t format = 0;   // ADAT/SMUX until Maestro sets unit B's
         ivars->unitBOptical[b] = 0;
-        send(kSIOCmd_OpticalFormat, b, &format, 1);
+        require(send(kSIOCmd_OpticalFormat, b, &format, 1), kUnitBFailOptical, "optical format");
         IOSleep(10);
     }
     uint8_t routes[32];
     for (int n = 0; n < 16; n++) { routes[n * 2] = (uint8_t)(kSIODest_IOBoard0Ch0 + n); routes[n * 2 + 1] = (uint8_t)(kSIOSrc_XLinkCh0 + n); }
-    send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+    require(send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes)), kUnitBFailRouting, "playback routing (board 0)");
     IOSleep(20);
     for (int n = 0; n < 16; n++) { routes[n * 2] = (uint8_t)(kSIODest_IOBoard1Ch0 + n); routes[n * 2 + 1] = (uint8_t)(kSIOSrc_XLinkCh0 + 16 + n); }
-    send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+    require(send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes)), kUnitBFailRouting, "playback routing (board 1)");
     IOSleep(20);
     for (int half = 0; half < 2; half++) {
         for (int n = 0; n < 16; n++) {
@@ -3923,18 +3963,30 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
             routes[n * 2] = (uint8_t)(kSIODest_P2PCh0 + host);
             routes[n * 2 + 1] = SymphonyCaptureSource(ivars->unitBBoardType[0], ivars->unitBBoardValid[0], host);
         }
-        send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+        require(send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes)), kUnitBFailRouting, "capture routing");
         IOSleep(20);
     }
     for (uint16_t ch = 0; ch < 32; ch++) {
         const uint8_t muted = 1;
-        send(kSIOCmd_MixerInputMute, (uint32_t)ch, &muted, 1);
+        require(send(kSIOCmd_MixerInputMute, (uint32_t)ch, &muted, 1), kUnitBFailMute, "mixer input mute");
     }
+    // Match SetPeripheralReady(true): retry the final unlock, and verify the
+    // read-back up to ten times at 5 ms intervals even when an earlier stage
+    // failed, so a partially configured unit is never left muted.
     uint8_t unlock = 0;
-    const bool unlocked = send(kSIOCmd_PreferenceLoadLock, 0, &unlock, 1);
-    ivars->unitBSetupFlags = unlocked ? 1u : 0u;
-    ivars->unitBConfigured = unlocked;
-    if (!unlocked) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
+    bool unlocked = false;
+    for (int attempt = 0; attempt < 10; attempt++) {
+        send(kSIOCmd_PreferenceLoadLock, 0, &unlock, 1);
+        uint8_t locked = 1;
+        const bool read = ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1,
+                                              kSIOCmd_PreferenceLoadLock, 0, &locked, 1, seq, pcie);
+        if (read && locked == 0) { unlocked = true; break; }
+        if (attempt != 9) IOSleep(5);
+    }
+    require(unlocked, kUnitBFailUnlock, "preference unlock/read-back");
+    ivars->unitBSetupFlags = unlocked && mandatoryOK ? kUnitBSetupOK : failures;
+    ivars->unitBConfigured = unlocked && mandatoryOK;
+    if (!ivars->unitBConfigured) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
     STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, Loop Sync slave of unit A, %u message error(s))",
           unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
           ivars->unitBPrefix, ivars->unitBTxErrors);

@@ -47,7 +47,8 @@ public struct SecondUnitInfo: Sendable, Equatable {
     public let prefixByte: UInt8
     /// The clock source the driver set (3 = Loop Sync; 2 = Word Clock from older builds).
     public let clockSource: UInt8
-    /// Bit 0: the set-up completed (the unit unlocked after it).
+    /// Bit 0: the set-up completed (the unit unlocked after it). Other bits
+    /// identify a mandatory ConfigureUnitB stage that failed.
     public let setupFlags: UInt32
     /// Messages to unit B that failed since the driver started.
     public let txErrors: UInt32

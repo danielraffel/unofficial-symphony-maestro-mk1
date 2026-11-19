@@ -27,6 +27,7 @@
 #endif
 
 #include <cstdarg>
+#include <algorithm>
 #include <functional>
 
 // The app-facing layouts: the existing link-state reply must keep its size, and
@@ -150,6 +151,8 @@ struct Port {
     std::vector<uint8_t> frame;       // Symphony: request frame being received
     uint8_t  devSeq = 0;
     std::map<uint64_t, std::vector<uint8_t>> stored;   // Symphony: written values
+    std::vector<uint8_t> vendorWrites;                // command IDs, for fault-path assertions
+    std::vector<uint8_t> vendorReads;
     uint64_t commandsSeen = 0;        // anything written to the TX register
 
     bool present() const { return kind != Empty; }
@@ -252,10 +255,12 @@ struct Port {
         const uint32_t nValue = c[2] | (c[3] << 8) | (c[4] << 16) | ((uint32_t)c[5] << 24);
         const uint16_t len = (uint16_t)(c[6] | (c[7] << 8));
         if (c[0] == 0x40) {
+            vendorWrites.push_back(cmd);
             stored[((uint64_t)cmd << 32) | nValue] = std::vector<uint8_t>(c + 8, c + 8 + len);
             return;
         }
         if (c[0] != 0xC0) return;
+        vendorReads.push_back(cmd);
         if (dropVendorReads) { dropVendorReads--; return; }
         std::vector<uint8_t> out = { 0xC3, (uint8_t)(8 + len), devSeq++, f[2] };
         out.insert(out.end(), c, c + 8);
@@ -574,6 +579,7 @@ struct Options {
     bool        micPreInstrument = false; // fitted MicPre, channel 1 initially Instrument
     bool        shortFlow = false;        // Start, StartDevice, link watch, Stop only
     uint32_t    dropVendorReads = 0;      // port 1 Symphony: first N vendor reads unanswered
+    uint32_t    dropPort2VendorReads = 0; // port 2 Symphony: first N vendor reads unanswered
     uint8_t     symphonyInquire = 0;      // port 1 Symphony: INQUIRE reply (0 = none)
     std::vector<Unit> port1Units;         // converters on port 1 other than the default AD,DA
 };
@@ -630,6 +636,7 @@ static void RunScenario(const Options &o, Run &r)
     }
     if (!o.latePort2) Attach(card.port[1], o.port2);
     if (o.port2 == Port::Symphony) card.port[1].symphonyInquire = 0xFF;
+    card.port[1].dropVendorReads = o.dropPort2VendorReads;
     if (o.dirtyRegisters) {
         card.reg[kRegGCSR]  = 0x2db8011b;
         card.reg[kRegGCSR2] = 0x05a0301b;   // DMA bits + both port-disable bits stale
@@ -2775,6 +2782,24 @@ static void RunConverterParityChecks()
             HostPump();
             CHECK(Commands(c, m3, kRegXLink1TX, 0x10).empty(), "%s: strip 40 went to unit A as a vendor message", o.name);
         }
+        Finish(o, r);
+    }
+    // A failed mandatory read must leave unit B unconfigured, while the
+    // SetPeripheralReady-style unlock/read-back is still attempted.
+    {
+        Options o; o.name = "unit B: failed setup still unlocks"; o.port2 = Port::Symphony;
+        o.portCountProperty = 2; o.shortFlow = true; o.dropPort2VendorReads = 1;
+        Run r;
+        RunScenario(o, r);
+        Select(r, 1, "unit B: select 64 with a failed board read");
+        SymphonyUnitBStateOutput st = {};
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 0, "%s: failed mandatory read still configured unit B", o.name);
+        CHECK(st.setupFlags != 0, "%s: failed mandatory read had no setup reason", o.name);
+        CHECK(std::find(r.card.port[1].vendorWrites.begin(), r.card.port[1].vendorWrites.end(), 0xDD) != r.card.port[1].vendorWrites.end(),
+              "%s: unlock write was not attempted", o.name);
+        CHECK(std::find(r.card.port[1].vendorReads.begin(), r.card.port[1].vendorReads.end(), 0xDD) != r.card.port[1].vendorReads.end(),
+              "%s: unlock read-back was not attempted", o.name);
         Finish(o, r);
     }
 #endif

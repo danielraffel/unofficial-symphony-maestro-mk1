@@ -48,6 +48,15 @@ struct SecondUnitTests {
         #expect(lines.contains("Unit B prefix: B (none kept on the unit)"))
     }
 
+    @Test("A failed setup flag remains visible as incomplete")
+    func failedSetupIsNotComplete() {
+        let info = SecondUnitInfo(slot1: .analogAES, slot2: .none, slotValid: [true, true],
+                                  setupFlags: 1 << 10, txErrors: 1)
+        #expect(!info.setupComplete)
+        #expect(info.reportLines(unitAPrefix: "A").contains("Unit B set-up: incomplete"))
+        #expect(info.reportLines(unitAPrefix: "A").contains("Unit B message errors: 1"))
+    }
+
     @Test("The picker shows only on ThunderBridge with unit B configured at 64 channels")
     func pickerVisibility() {
         let b = SecondUnitInfo(slot1: .optical, slot2: .none)
