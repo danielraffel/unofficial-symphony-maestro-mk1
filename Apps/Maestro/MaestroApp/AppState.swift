@@ -370,7 +370,7 @@ final class AppState {
     /// Recompute `softwareReturnMeterGains` from the persisted SW Return state.
     @MainActor
     func refreshSoftwareReturnMeterGains() {
-        let defaults = UserDefaults.standard
+        let defaults = mixerPreferences
         var pan = 0.0
         var muted = false
         var level = 0.0
@@ -1833,9 +1833,7 @@ final class AppState {
     }
 
     init() {
-        // Before anything reads the saved mixer state: pairs an earlier version
-        // saved unlinked become linked pairs at their quieter side.
-        MixerPairLink.migrateSavedPairs()
+        // Pair migration runs only after selecting the physical mixer scope.
         // Load cached board types so routing labels are correct before USB reads complete.
         // Card simulation (debug only). Lets us run the app as hardware we do not
         // physically own -- chiefly a MicPre8, so the mic preamp UI can be seen
@@ -2045,26 +2043,7 @@ final class AppState {
                 self.activeAudioDeviceID = audioDeviceID
                 print("[Maestro] AppState.init: Connected to hardware via XPC proxy (USB)")
 
-                // The proxy persists across app restarts and may hold a level or
-                // mute from an older Maestro; the unit's mixer returns to defaults
-                // after a power cycle. Put Master and Software Return (both
-                // mixers) back on the unit and the proxy's software stage to
-                // neutral, from the saved values.
-                let restoreMixer = self.lastSelectedMixer
-                Task { await xpcDevice.restoreReturnAndMaster(helperMixer: restoreMixer) }
-                print("[Maestro] AppState.init: Restoring saved Master/SW Return to the unit")
-
-                // Sync routing mode with proxy
-                let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
-                xpcDevice.setRoutingMode(routingMode)
-                if routingMode == 0 {
-                    for mixerID: UInt16 in 1...2 {
-                        for ch: UInt16 in 0..<32 {
-                            xpcDevice.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                        }
-                    }
-                    print("[Maestro] AppState.init: DAW mode — force-muted HW inputs")
-                }
+                // Mixer restoration follows identity resolution.
             }
 
             // The Core Audio IOProc is an input tap, so starting it makes macOS treat
@@ -2678,21 +2657,7 @@ final class AppState {
                     self.applyPendingAutoSwitch()
                     self.startThunderboltWatchWhileOnUSB(discovered)
 
-                    // Put saved Master and Software Return (both mixers) back on
-                    // the unit, and the proxy's software stage to neutral.
-                    await xpcDevice.restoreReturnAndMaster(helperMixer: self.lastSelectedMixer)
-
-                    // Sync routing mode on reconnect
-                    let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
-                    xpcDevice.setRoutingMode(routingMode)
-                    if routingMode == 0 {
-                        for mixerID: UInt16 in 1...2 {
-                            for ch: UInt16 in 0..<32 {
-                                xpcDevice.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                            }
-                        }
-                        print("[Maestro] reconnect: DAW mode — force-muted HW inputs")
-                    }
+                    // Mixer restoration follows identity resolution.
                 }
 
                 // Read card types and sync routing (USB-specific but harmless for TB)
@@ -2929,19 +2894,21 @@ final class AppState {
                                 // appeared alone until it has settled.
                                 let recoveryMixer = self.lastSelectedMixer
                                 Task { @MainActor [weak self] in
-                                    if let self {
+                                    guard let self, self.device === xpcDev else { return }
+                                    do {
                                         let wait = Self.usbSettleRemaining(
                                             appearedAt: self.symphonyAppearedAt, now: Date())
                                         if wait > 0 {
                                             try? await Task.sleep(for: .milliseconds(Int(wait * 1000)))
                                         }
                                     }
-                                    await xpcDev.restoreReturnAndMaster(helperMixer: recoveryMixer)
+                                    guard self.device === xpcDev, !Task.isCancelled else { return }
+                                    await xpcDev.restoreReturnAndMaster(helperMixer: recoveryMixer, preferences: self.mixerPreferences)
                                 }
                                 if autoRecover {
                                     self.deviceRecoveryCount += 1
                                     // Re-sync routing mode to proxy
-                                    let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
+                                    let routingMode = self.mixerPreferences.integer(forKey: "routingMode")
                                     xpcDev.setRoutingMode(routingMode)
                                     if routingMode == 0 {
                                         for mixerID: UInt16 in 1...2 {
@@ -3039,8 +3006,7 @@ final class AppState {
                             // AEsR.  The proxy reports one peak pair per USB pair, so do
                             // not mirror channels 0/1 into both mixer strips.
                             func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
-                                let source = UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)")
+                                let source = self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")
                                 let left = source * 2
                                 guard left >= 0, left + 1 < peaks.count else {
                                     return (-60.0, -60.0)
@@ -3189,8 +3155,7 @@ final class AppState {
                         if let softwarePeaks = self.meterDevice?.softwareOutputPeaks(),
                            softwarePeaks.count >= 2 {
                             func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
-                                let source = UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)")
+                                let source = self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")
                                 let left = source * 2
                                 guard left >= 0, left + 1 < softwarePeaks.count else {
                                     return (-60.0, -60.0)
@@ -3262,8 +3227,7 @@ final class AppState {
                            softwarePeaks.count >= 2,
                            self.mixerMeterLevels.count >= 4 {
                             func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
-                                let source = max(0, min(7, UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)")))
+                                let source = max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")))
                                 let left = source * 2
                                 guard left + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
                                 // Mirror what the card mixer delivers: USB meters
@@ -3334,8 +3298,7 @@ final class AppState {
                             newOutput = self.linearMeterLevels(
                                 from: softwarePeaks, count: self.outputMeterLevels.count)
                             let sources = [0, 1].map { mixer in
-                                let pair = max(0, min(7, UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)"))) * 2
+                                let pair = max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))) * 2
                                 guard pair + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
                                 return (
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[pair]),
@@ -3973,8 +3936,7 @@ final class AppState {
     /// Source IDs are pair indices: 0 = USB 1–2, ..., 7 = USB 15–16.
     private func cachedMixerSoftwareReturnSources() -> [Int] {
         [0, 1].map { mixer in
-            max(0, min(7, UserDefaults.standard.integer(
-                forKey: "mixerSoftwareReturnSource_\(mixer)")))
+            max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")))
         }
     }
 

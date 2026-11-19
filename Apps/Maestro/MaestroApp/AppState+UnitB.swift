@@ -409,7 +409,8 @@ extension AppState {
 
     /// Save Software Return 1-2 for each mixer whose saved source is beyond
     /// the one-unit pairs. Only when unit B is known to be gone.
-    func resetSoftwareReturnSourcesBeyondOneUnit(defaults: UserDefaults = .standard) {
+    func resetSoftwareReturnSourcesBeyondOneUnit() {
+        let defaults = mixerPreferences
         for mixer in 0..<2 {
             let key = "mixerSoftwareReturnSource_\(mixer)"
             let saved = UInt32(clamping: defaults.integer(forKey: key))

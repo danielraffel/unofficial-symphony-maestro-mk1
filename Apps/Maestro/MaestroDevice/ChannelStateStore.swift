@@ -96,6 +96,13 @@ public struct ChannelStateStore {
         }
     }
 
+    public var mixerPreferences: MixerPreferences {
+        MixerPreferences(defaults: defaults,
+            scope: awaitingIdentity ? "pending" : (scope ?? (isSimulating ? "sim:unidentified" : "unidentified")),
+            migrate: identity != nil && !isSimulating && !awaitingIdentity
+                && permitsLegacyInheritance && unit == .a && allowLegacyMigration)
+    }
+
     /// The key a `base` is read from / written to for this scope.
     public func key(_ base: String) -> String {
         if identity == nil, !isSimulating, permitsLegacyInheritance, let legacyScope,

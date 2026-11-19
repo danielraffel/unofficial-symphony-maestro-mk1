@@ -13,8 +13,10 @@ public struct MixerStateSnapshot: Sendable {
         channelCount: Int,
         mixer: Int,
         store: ChannelStateStore,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        preferences: MixerPreferences? = nil
     ) {
+        let defaults = preferences ?? store.mixerPreferences
         let count = max(0, channelCount)
         let empty = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
         if let saved: [MixerChannelState] = store.load(ChannelStateStore.mixerKey(mixer)),
@@ -27,13 +29,13 @@ public struct MixerStateSnapshot: Sendable {
         }
 
         // Software return is shared by both mixers because it is one USB path.
-        swReturnChannel = Self.savedSoftwareReturn(defaults: defaults)
+        swReturnChannel = Self.savedSoftwareReturn(preferences: defaults)
         softwareReturnSource = UInt32(clamping: defaults.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))
-        masterLevel = Self.savedMasterLevel(mixer: mixer, defaults: defaults)
+        masterLevel = Self.savedMasterLevel(mixer: mixer, preferences: defaults)
     }
 
     /// The saved Software Return strip (shared by both mixers), or a neutral one.
-    public static func savedSoftwareReturn(defaults: UserDefaults = .standard) -> MixerChannelState {
+    public static func savedSoftwareReturn(preferences defaults: MixerPreferences) -> MixerChannelState {
         if let data = defaults.data(forKey: "mixerState_swReturn"),
            let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
             return saved
@@ -41,7 +43,7 @@ public struct MixerStateSnapshot: Sendable {
         return MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
     }
 
-    public static func savedMasterLevel(mixer: Int, defaults: UserDefaults = .standard) -> Double {
+    public static func savedMasterLevel(mixer: Int, preferences defaults: MixerPreferences) -> Double {
         defaults.object(forKey: "mixerMasterLevel_\(mixer)") as? Double ?? 0
     }
 }
