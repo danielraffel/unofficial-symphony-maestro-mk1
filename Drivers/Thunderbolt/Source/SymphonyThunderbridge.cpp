@@ -486,6 +486,7 @@ struct SymphonyThunderbridge_IVars {
     bool      port2ClockingProblem;  // port-2 LED state, xlinkQueue only
     bool      port2ResumeUnitSeen;   // a returned unit has been observed for the saved 64 request
     uint64_t  port2ResumeProbeNs;    // xlinkQueue; last time port 2 was switched on just to look
+    uint32_t  port2ResumeProbes;     // xlinkQueue; active looks since the 64 request (stop after 20)
     // EnablePort2Audio gave up because a stop or power-down began after it had
     // enabled port 2, and wrote nothing more. The next link-watch tick that
     // reaches the card at 32 channels disables port 2 again. xlinkQueue only.
@@ -3305,6 +3306,7 @@ static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, SymphonyThunderb
             SetPort2Enabled(ivars, false);
         } else if (!abandonedSwitch && !clock && __atomic_load_n(&ivars->requestedPortMode, __ATOMIC_ACQUIRE) == 64 &&
                    !__atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE) &&
+                   ivars->port2ResumeProbes < 20 &&
                    clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - ivars->port2ResumeProbeNs >= 30000000000ull) {
             // The FPGA may suppress RX2 detection while DisablePort2 is set;
             // briefly enable the bus so a late powered-on unit can be seen.
@@ -3312,6 +3314,9 @@ static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, SymphonyThunderb
             // enabling port 2 and polling for its clock (up to 2 s on this
             // queue) must never disturb or hold up port 1 audio at 32 channels.
             ivars->port2ResumeProbeNs = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+            // About ten minutes of looking (20 x 30 s), then only the passive
+            // check above; choosing 64 channels again starts over.
+            ivars->port2ResumeProbes++;
             SetPort2Enabled(ivars, true);
             for (int poll = 0; poll < kPort2ClockPollsOnSelect && !clock; poll++) {
                 ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegXLinkClocking, &clk);
@@ -5331,6 +5336,7 @@ kern_return_t SymphonyThunderbridge::RequestPortMode(uint32_t selectorValue)
     if (selectorValue != kSymphonyPortSourcePort1 && selectorValue != kSymphonyPortSourcePorts1And2)
         return kIOReturnBadArgument;
     const uint32_t want = selectorValue == kSymphonyPortSourcePorts1And2 ? 64u : 32u;
+    ivars->port2ResumeProbes = 0;   // a new request: look for a returning unit again
     __atomic_store_n(&ivars->requestedPortMode, want, __ATOMIC_RELEASE);
     if (want == 32) ivars->port2ResumeUnitSeen = false;
     // Already there (the same entry picked again, or Core Audio restoring the

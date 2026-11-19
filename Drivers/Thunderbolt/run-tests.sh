@@ -310,6 +310,11 @@ if $USE_REF; then
             fi
             rm -f "$TMP/ref/p1-converters.trace"
         fi
+        # TEMPORARY (remove once the base ref contains MicPreChannelsForSlots,
+        # i.e. after 0.9.9 is on dev): this exception accepts any XLink 1
+        # message difference against an older base, because one removed read
+        # shifts every later message's sequence number. The golden comparison
+        # above stays exact and is the guard that matters.
         # dext 131: the Mic Pre slot fix (issue 29) drops the duplicate primary-
         # slot OptionBoardType (0xA1) read in Start(), so against a base without
         # it every Symphony trace is one vendor message shorter. Only XLink 1
