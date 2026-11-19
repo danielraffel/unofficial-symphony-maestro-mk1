@@ -870,6 +870,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return reply
     }
 
+    /// Awaited by the one front-panel owner, off the main actor. No bus writes.
+    public func publishObservedMicGains(_ gains: [FrontPanelSync.ObservedGain], port: UInt8) async {
+        let client = dextClient
+        await Task.detached(priority: .utility) {
+            for gain in gains {
+                _ = client.publishObservedMicGain(port: port, channel: gain.channel,
+                                                  lane: gain.lane, gain: gain.gain)
+            }
+        }.value
+    }
+
     /// One read of the unit's front panel state (vendor read `0x28`), through
     /// the driver's general vendor read. Nil when the unit does not answer or
     /// the reply is not a real reading. Runs off the caller's thread: the driver

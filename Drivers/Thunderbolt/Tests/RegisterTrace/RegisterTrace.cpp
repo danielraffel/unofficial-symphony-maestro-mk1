@@ -45,7 +45,13 @@ static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kS
 #ifdef TRACE_HAVE_CONVERTER_PARITY
 static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorReadUnitB == 11 && kSelectorCount >= 12, "converter/unit-B selectors");
 #ifdef kSelectorSetMonitorDevice
-static_assert(kSelectorSetMonitorDevice == 12 && kSelectorCount == 14, "monitor selector (12), Loop Sync (13)");
+static_assert(kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13, "existing selectors unchanged");
+#ifdef kSelectorPublishMicGain
+static_assert(kSelectorPublishMicGain == 14 && kSelectorCount == 15 &&
+              sizeof(SymphonyObservedGainInput) == 24, "host gain observation ABI v1");
+#else
+static_assert(kSelectorCount == 14, "baseline selector count");
+#endif
 #endif
 static_assert(sizeof(SymphonyConverterStateOutput) == 112 && sizeof(SymphonyConverterConfigInput) == 8, "converter struct sizes");
 #endif
@@ -3198,6 +3204,16 @@ static void RunPreampHostRoutes()
         return drv->SendVendorCommand(0xB6, 0, pl, sizeof(pl));
     };
     CHECK(route(0, 32) == kIOReturnBadArgument, "B10: B route refused at 32");
+#ifdef kSelectorPublishMicGain
+    CHECK(drv->PublishObservedMicGain(1, 0, 0, 42) == kIOReturnNotReady,
+          "M13: B observation refused at 32");
+    SymphonyObservedGainInput input = {kSymphonyUCMagic, 1, 1, 0, 0, 42};
+    CHECK(SymphonyObservedGainInputValid(&input), "M13: valid ABI input");
+    input.version = 2;
+    CHECK(!SymphonyObservedGainInputValid(&input), "M13: unknown ABI version rejected");
+    input.version = 1; input.magic = 0;
+    CHECK(!SymphonyObservedGainInputValid(&input), "M13: wrong magic rejected");
+#endif
     b[(uint64_t(0xA1) << 32) | 0] = {6};
     b[(uint64_t(0xA1) << 32) | 1] = {1};
     drv->StopDevice(1, IOUserAudioStartStopFlags::None);
@@ -3224,6 +3240,35 @@ static void RunPreampHostRoutes()
           gHostAudio.micGains.at(0)->GetDecibelValue() == 46 &&
           gHostAudio.micGains.at(1)->GetDecibelValue() == 46,
           "B10: duplicates coalesce and both HAL controls publish B gain");
+#ifdef kSelectorPublishMicGain
+    // Major 13: observations publish through both route layers, to aliases,
+    // without enqueueing hardware writes. The positive control above wrote 46.
+    HostPump();
+    const size_t bObservedMark = r.card.lines.size();
+    CHECK(drv->PublishObservedMicGain(1, 0, 0, 51) == kIOReturnSuccess,
+          "M13: accept B observed gain");
+    CHECK(gHostAudio.micGains.at(0)->GetDecibelValue() == 51 &&
+          gHostAudio.micGains.at(1)->GetDecibelValue() == 51,
+          "M13: B observed gain reaches routed HAL aliases");
+    HostPump();
+    CHECK(r.card.lines.size() == bObservedMark, "M13: B observation performs no bus IO");
+    CHECK(route(2, 0) == kIOReturnSuccess, "M13: route A preamp to host 3");
+    HostPump();
+    const size_t aObservedMark = r.card.lines.size();
+    CHECK(drv->PublishObservedMicGain(0, 0, 0, 29) == kIOReturnSuccess &&
+          gHostAudio.micGains.at(2)->GetDecibelValue() == 29,
+          "M13: A observed gain reaches remapped HAL input");
+    HostPump();
+    CHECK(a[mic] == std::vector<uint8_t>({33}) && b[mic] == std::vector<uint8_t>({46}),
+          "M13: observations never echo gain to hardware");
+    CHECK(r.card.lines.size() == aObservedMark, "M13: publication performs no bus IO");
+    CHECK(drv->PublishObservedMicGain(1, 0, 1, 20) == kIOReturnNotReady,
+          "M13: stale stage refused");
+    CHECK(drv->PublishObservedMicGain(2, 0, 0, 20) == kIOReturnBadArgument &&
+          drv->PublishObservedMicGain(0, 8, 0, 20) == kIOReturnBadArgument &&
+          drv->PublishObservedMicGain(0, 0, 1, 66) == kIOReturnBadArgument,
+          "M13: malformed observations refused");
+#endif
     drv->RequestMicGain(0, 47); drv->RequestMicGain(8, 34); HostPump();
     CHECK(b[mic] == std::vector<uint8_t>({47}) && a[mic] == std::vector<uint8_t>({34}),
           "B10: pending A and B gains remain independent");
@@ -3246,6 +3291,10 @@ static void RunPreampHostRoutes()
     r.card.port[1].kind = Port::Empty;
     drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
     const size_t removed = r.card.lines.size();
+#ifdef kSelectorPublishMicGain
+    CHECK(drv->PublishObservedMicGain(1, 0, 1, 42) == kIOReturnNotReady,
+          "M13: observation refuses removed B");
+#endif
     CHECK(drv->RequestPhantom(1, false) == kIOReturnSuccess &&
           drv->RequestMicGain(1, 13) == kIOReturnSuccess, "B10: removed B falls back to saved A route");
     HostPump();

@@ -35,7 +35,15 @@
 // Selector 12: monitor device (B5c); 13: Loop Sync (B9). Existing ABIs are unchanged.
 #define kSelectorSetMonitorDevice 12         // input: SymphonyMonitorDeviceInput
 #define kSelectorLoopSync       13
-#define kSelectorCount          14
+#define kSelectorPublishMicGain  14 // host observation only; never sends hardware
+#define kSelectorCount          15
+
+// Version 1, 24 bytes. Gain is integer dB; lane 0 = Mic, 1 = Instrument.
+typedef struct { uint32_t magic, version, port, channel, lane, gain; } SymphonyObservedGainInput;
+static inline bool SymphonyObservedGainInputValid(const SymphonyObservedGainInput *i) {
+    return i && i->magic == kSymphonyUCMagic && i->version == 1 &&
+        i->port < 2 && i->channel < 8 && i->lane < 2 && i->gain <= (i->lane ? 65u : 85u);
+}
 
 // Version 1: operation 0 reads; 1 applies. config bit 0 = disabled,
 // bit 1 = preferred master B (retained while disabled). Zero is the legacy default.

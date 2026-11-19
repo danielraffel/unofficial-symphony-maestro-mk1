@@ -9,6 +9,7 @@ final class RecordingVendorTransport: VendorTransport, @unchecked Sendable {
     struct Read: Equatable { let command: UInt8; let value: UInt32; let length: Int; let port: UInt8 }
     var sent: [Sent] = []
     var reads: [Read] = []
+    var readOnMainThread = false
     var reply: [UInt8] = [0x07]
     var failSendAt: Int?
     var failRead = false
@@ -19,6 +20,7 @@ final class RecordingVendorTransport: VendorTransport, @unchecked Sendable {
         sent.append(Sent(command: command, value: value, payload: payload, port: port))
     }
     func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) throws -> Data {
+        readOnMainThread = Thread.isMainThread
         if failRead { throw DeviceConnectionError.notConnected }
         if emptyRead { return Data() }
         reads.append(Read(command: command, value: value, length: responseLength, port: port))
@@ -35,6 +37,37 @@ struct UnitBConnectionTests {
     private func connection(_ t: RecordingVendorTransport, state: UnitBState? = Self.state) -> ThunderboltUnitBConnection {
         ThunderboltUnitBConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier, transport: t,
                                    state: { state })
+    }
+
+    @Test("front-panel poll is off-main, port 1, and only for configured B at 64")
+    @MainActor
+    func frontPanelPoll() async {
+        for channels in [32, 64] {
+            for configured in [false, true] {
+                let t = RecordingVendorTransport()
+                t.reply = [0, 0, 0xbb, 0x80, 1, 1, 0, 0, 3, 42, 1, 0]
+                let c = ThunderboltUnitBConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier,
+                    transport: t, infoRouting: {
+                        SymphonyRoutingModel(topology: .symphonyOnly, hostChannels: channels,
+                                             unitBConfigured: configured)
+                    }, state: { configured ? Self.state : nil })
+                let update = await c.readParameterUpdates()
+                if channels == 64 && configured {
+                    #expect(update?.selectionAttenuation == 42)
+                    #expect(t.reads == [.init(command: 0x28, value: 1, length: 12, port: 1)])
+                    #expect(!t.readOnMainThread)
+                } else {
+                    #expect(update == nil)
+                    #expect(t.reads.isEmpty)
+                }
+                #expect(t.sent.isEmpty)
+                c.invalidate()
+                let count = t.reads.count
+                let retired = await c.readParameterUpdates()
+                #expect(retired == nil)
+                #expect(t.reads.count == count)
+            }
+        }
     }
 
     @Test("Input stereo pairs use unit-local P2P destinations and port byte 1")

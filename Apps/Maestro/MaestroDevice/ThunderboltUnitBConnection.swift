@@ -75,6 +75,18 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         self.infoRouting = infoRouting
     }
 
+    /// The existing front-panel owner awaits one bounded read per cycle. Recheck
+    /// live 64-channel topology on the worker, not just when the task was created.
+    public func readParameterUpdates() async -> SymphonyIOParameterUpdates? {
+        await Task.detached(priority: .utility) { [self] in
+            guard isConnected, state()?.present == true, state()?.info?.setupComplete == true,
+                  infoRouting().allows(.deviceInfo, at: .peripheral(.init(port: .two)!)) else { return nil }
+            guard let data = try? transport.readVendorCommand(command: 0x28, value: 1,
+                responseLength: SymphonyIOParameterUpdates.byteCount, port: Self.port) else { return nil }
+            return SymphonyIOParameterUpdates(data: data)
+        }.value
+    }
+
     /// One attempt per connection. No lock spans a bus call, no batch is queued,
     /// and the first failure ends the attempt. Each synchronous driver read runs
     /// off the main actor and uses the existing bounded vendor-read timeout.

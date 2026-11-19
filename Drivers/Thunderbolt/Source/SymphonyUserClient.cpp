@@ -121,6 +121,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount = 0,
         .checkStructureOutputSize = sizeof(SymphonyUnitBStateOutput),
     },
+    [kSelectorPublishMicGain] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyObservedGainInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = 0,
+    },
     [kSelectorLoopSync] = {
         .function = nullptr,
         .checkCompletionExists = false,
@@ -376,6 +384,13 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorPublishMicGain) {
+        if (!ivars->driver || !arguments->structureInput) return kIOReturnNotReady;
+        auto *input = (const SymphonyObservedGainInput *)arguments->structureInput->getBytesNoCopy();
+        if (!SymphonyObservedGainInputValid(input)) return kIOReturnBadArgument;
+        return ivars->driver->PublishObservedMicGain(input->port, input->channel, input->lane, input->gain);
     }
 
     if (selector == kSelectorLoopSync) {
