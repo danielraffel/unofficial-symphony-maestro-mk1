@@ -99,7 +99,7 @@ struct AboutView: View {
                     CopyGlyph(copied: showCopied)
                 }
                 .buttonStyle(.borderless)
-                .help("Copy full device and software info for a bug report")
+                .maestroHelp("Copy full device and software info for a bug report")
                 .accessibilityLabel("Copy device and software info")
             }
             // A forgotten test-feed override would silently stop production updates.

@@ -16,7 +16,7 @@ struct UnitPickerBar: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("Choose which Symphony I/O this page shows: unit A on ThunderBridge port 1 "
+            .maestroHelp("Choose which Symphony I/O this page shows: unit A on ThunderBridge port 1 "
                   + "or unit B on port 2")
             Text(appState.activeUnit.portName)
                 .font(.caption)

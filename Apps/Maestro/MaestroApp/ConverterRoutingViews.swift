@@ -51,7 +51,7 @@ struct ConverterOutputRoutingView: View {
                 Button("Reset Routing") { resetPrompt = converterResetPrompt() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("Put Output Routing back to the default placement across the converter chain.")
+                    .maestroHelp("Put Output Routing back to the default placement across the converter chain.")
                     .routingResetPrompt($resetPrompt) {
                         Task {
                             let ok = await appState.resetConverterRouting()
@@ -126,7 +126,7 @@ struct ConverterInputRoutingView: View {
                 Button("Reset Routing") { resetPrompt = converterResetPrompt() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("Put Input Routing back to the default placement across the converter chain.")
+                    .maestroHelp("Put Input Routing back to the default placement across the converter chain.")
                     .routingResetPrompt($resetPrompt) {
                         Task {
                             let ok = await appState.resetConverterRouting()

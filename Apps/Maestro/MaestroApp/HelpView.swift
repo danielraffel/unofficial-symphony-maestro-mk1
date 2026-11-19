@@ -90,6 +90,7 @@ struct HelpView: View {
             }
             HelpQuestion("Can I choose a light or dark appearance?") {
                 Text("In **Device Settings › Preferences**, set **Appearance** to **Auto**, **Light**, or **Dark**. Auto is the default and follows your Mac’s appearance. Light and Dark apply only to Maestro. Your choice is saved and takes effect immediately.")
+                Text("You can turn Maestro’s short control explanations on or off with **Show tooltips** in **Device Settings › Preferences**; they are on by default.")
             }
             HelpQuestion("When and how should I use diagnostics?") {
                 Text("Use it when something doesn't work and you can make it happen again: your Symphony or converter isn't found, there's no sound, your DAW freezes or goes silent when it selects the device, audio drops out or crackles, or a control or the volume keys do nothing. Also use it when the developer asks you to.")
@@ -393,7 +394,7 @@ struct HelpView: View {
                     CopyGlyph(copied: showCommandCopied)
                 }
                 .buttonStyle(.borderless)
-                .help("Copy command")
+                .maestroHelp("Copy command")
                 .accessibilityLabel("Copy uninstall command")
             }
         }

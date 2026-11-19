@@ -188,7 +188,7 @@ struct InputRoutingView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Put Input Routing back to the default: each software input records the matching hardware input.")
+                .maestroHelp("Put Input Routing back to the default: each software input records the matching hardware input.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
                 }
@@ -704,7 +704,7 @@ struct OutputRoutingView: View {
                 Button("Reset Routing") { requestRoutingReset() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Put Output Routing back to the default: each software output goes to the matching hardware output.")
+                .maestroHelp("Put Output Routing back to the default: each software output goes to the matching hardware output.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
                 }
@@ -1464,7 +1464,7 @@ struct RoutingGridView: View {
                         .minimumScaleFactor(0.75)
                         .opacity(row < rowLabels.count && CardLayout.isNotApplicable(rowLabels[row].name)
                                  ? Self.notApplicableOpacity : 1)
-                        .help(row < rowLabels.count ? rowLabels[row].name : "")
+                        .maestroHelp(row < rowLabels.count ? rowLabels[row].name : "")
                         .padding(.trailing, 4)
                         .frame(width: nameWidth, height: cellHeight, alignment: .trailing)
                         .background(row % 2 == 0 ? Color.gray.opacity(0.08) : Color.gray.opacity(0.04))
@@ -1557,7 +1557,7 @@ struct PresetMenuButton: View {
         }
         .menuStyle(.borderlessButton)
         .frame(width: 24)
-        .help("Presets")
+        .maestroHelp("Presets")
         .alert("Save Preset", isPresented: $showSaveAlert) {
             TextField("Preset Name", text: $newPresetName)
             Button("Save") {

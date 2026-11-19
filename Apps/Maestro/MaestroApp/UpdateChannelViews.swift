@@ -79,7 +79,7 @@ struct UpdateChannelSettings: View {
         }
         .pickerStyle(.segmented)
         .disabled(pickerDisabled)
-        .help(UpdateChannelCopy.pickerHelp)
+        .maestroHelp(UpdateChannelCopy.pickerHelp)
         .unredacted()
         .onAppear { updates.refreshForPreferencesIfAllowed() }
         .sheet(item: $dialog) { dialog in

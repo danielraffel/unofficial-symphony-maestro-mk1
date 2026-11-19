@@ -42,6 +42,7 @@ struct DeviceSettingsView: View {
     // Preferences — stored locally
     @EnvironmentObject private var updates: UpdateController
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .auto
+    @AppStorage(MaestroHelpModifier.preferenceKey) private var showTooltips = true
     @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
     @AppStorage("popupsEnabled") private var popupsEnabled = true
     @AppStorage("usbHealthCheckEnabled") private var usbHealthCheckEnabled = false
@@ -132,6 +133,7 @@ struct DeviceSettingsView: View {
                             Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
                             Text("SPDIF").tag(UInt32(1) as UInt32?)
                         }
+                        .maestroHelp("Choose whether this card's optical ports use ADAT/SMUX or S/PDIF format.")
                     }
 
                     if layout.hasOpticalPorts(slot: 1) {
@@ -142,6 +144,7 @@ struct DeviceSettingsView: View {
                             Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
                             Text("SPDIF").tag(UInt32(1) as UInt32?)
                         }
+                        .maestroHelp("Choose whether this card's optical ports use ADAT/SMUX or S/PDIF format.")
                     }
                 }
                 .disabled(isLoading || isWritingOpticalFormat)
@@ -162,6 +165,7 @@ struct DeviceSettingsView: View {
                         Text(opt.1).tag(opt.0)
                     }
                 }
+                .maestroHelp("Choose which inputs or outputs this front-panel meter bank shows.")
                 .onChange(of: meterBank1Source) { _, newValue in
                     guard !isLoading else { return }
                     Task {
@@ -181,6 +185,7 @@ struct DeviceSettingsView: View {
                         Text(opt.1).tag(opt.0)
                     }
                 }
+                .maestroHelp("Choose which inputs or outputs this front-panel meter bank shows.")
                 .onChange(of: meterBank2Source) { _, newValue in
                     guard !isLoading else { return }
                     Task {
@@ -247,7 +252,7 @@ struct DeviceSettingsView: View {
                             labels.resetAll()
                             saveInsertLabels(labels)
                         }
-                        .help("Restore the default names, Insert 1 through Insert 8.")
+                        .maestroHelp("Restore the default names, Insert 1 through Insert 8.")
                     }
                 }
             }
@@ -264,7 +269,7 @@ struct DeviceSettingsView: View {
                             Image(systemName: "info.circle")
                         }
                         .buttonStyle(.plain)
-                        .help(Self.aimExplainer)
+                        .maestroHelp(Self.aimExplainer)
                         .accessibilityLabel("About Audio Interface Mode")
                         .popover(isPresented: $showAIMInfo, arrowEdge: .bottom) {
                             VStack(alignment: .leading, spacing: 8) {
@@ -298,11 +303,14 @@ struct DeviceSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .help("Auto follows your Mac’s appearance. Light and Dark apply only to Maestro.")
+                .maestroHelp("Auto follows your Mac’s appearance. Light and Dark apply only to Maestro.")
                 .unredacted()
 
+                Toggle("Show tooltips", isOn: $showTooltips)
+                .maestroHelp("Show short explanations when you hold the pointer over controls.")
+
                 Toggle("Automatically check for updates", isOn: $updates.automaticallyChecksForUpdates)
-                    .help(UpdateChannelCopy.automaticCheckHelp)
+                    .maestroHelp(UpdateChannelCopy.automaticCheckHelp)
                     .unredacted()
                 Button("Check for Updates…", action: updates.checkForUpdates)
                     .disabled(!updates.canCheckForUpdates)
@@ -320,36 +328,36 @@ struct DeviceSettingsView: View {
                 }
 
                 Toggle("Remember Input, Output, and Mixer scroll positions", isOn: $rememberControlTabScrollPositions)
-                    .help("Keep each wide control tab at its current horizontal position until Maestro quits")
+                    .maestroHelp("Keep each wide control tab at its current horizontal position until Maestro quits")
 
                 Toggle("Launch Maestro automatically when connecting a device", isOn: $autoLaunchEnabled)
                     .onChange(of: autoLaunchEnabled) { _, enabled in
                         AutoLaunchManager.shared.setEnabled(enabled)
                     }
-                    .help("Install a LaunchAgent that opens Maestro when a Symphony IO is plugged in")
+                    .maestroHelp("Install a LaunchAgent that opens Maestro when a Symphony IO is plugged in")
 
                 Toggle("Display pop-ups", isOn: $popupsEnabled)
-                    .help("Show floating volume overlay when adjusting levels via media keys")
+                    .maestroHelp("Show floating volume overlay when adjusting levels via media keys")
 
                 Toggle("USB connection health check", isOn: $usbHealthCheckEnabled)
                     .onChange(of: usbHealthCheckEnabled) { _, enabled in
                         if enabled { appState.startUSBHealthCheck() }
                         else { appState.stopUSBHealthCheck() }
                     }
-                    .help("Periodically verify USB connectivity and automatically recover stale connections. Enable if your device disconnects during sleep/wake or after cable bumps.")
+                    .maestroHelp("Periodically verify USB connectivity and automatically recover stale connections. Enable if your device disconnects during sleep/wake or after cable bumps.")
 
                 Toggle("Auto-recover mixer state on USB reconnect", isOn: $autoRecoverMixerState)
-                    .help("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")
+                    .maestroHelp("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")
 
                 Toggle("Automatically switch to Symphony when connected", isOn: $autoSwitchToSymphony)
-                    .help("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
+                    .maestroHelp("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
 
                 if autoSwitchToSymphony {
                     Picker("Preferred USB output", selection: $preferredUSBOutput) {
                         Text("Maestro USB (Recommended)").tag(0)
                         Text("USB Audio (No Keyboard Volume)").tag(1)
                     }
-                    .help("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
+                    .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
                 }
 
                 Picker("Monitoring Mode", selection: Binding(get: { routingMode }, set: { setRoutingMode($0) })) {
@@ -360,7 +368,7 @@ struct DeviceSettingsView: View {
                 // Hardware-backed, unlike the rest of this section, so it carries
                 // the load gate itself rather than inheriting one from the Section.
                 .disabled(isLoading || !appState.preferenceViewScope(for: .a).isWritable)
-                .help("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
+                .maestroHelp("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
             }
 
             if let error = errorMessage {
@@ -632,7 +640,7 @@ struct DeviceSettingsView: View {
                 .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 200)
-                .help("Name for insert \(id). This name is shared by every channel. "
+                .maestroHelp("Name for insert \(id). This name is shared by every channel. "
                       + "Clear the field to go back to \"\(InsertLabels.defaultName(id))\".")
         }
     }
@@ -831,6 +839,7 @@ struct SystemSetupView: View {
                     }
                 }
                 .disabled(isLoading || isProToolsMode || rateSettling)
+                .maestroHelp("Set the sample rate used by the Symphony audio device.")
                 .onChange(of: sampleRate) { _, newRate in
                     // Our own assignment, not the user's. This is checked BEFORE
                     // the loading guard and the marker is always consumed: the
@@ -867,6 +876,7 @@ struct SystemSetupView: View {
                         }
                     }
                     .disabled(isProToolsMode)
+                    .maestroHelp("Choose the clock source that keeps the Symphony audio timing in step.")
                     .onChange(of: clockSource) { _, newSource in
                         guard !isLoading else { return }
                         // A readback, not a selection: do not send the device the
@@ -930,6 +940,7 @@ struct SystemSetupView: View {
                         Text("Unit B").tag(DeviceUnit.b)
                     }
                     .pickerStyle(.menu)
+                    .maestroHelp("Choose which Symphony I/O supplies keyboard volume control.")
                 }
             }
 
@@ -983,6 +994,7 @@ struct SystemSetupView: View {
                         Text(name).tag(val)
                     }
                 }
+                .maestroHelp("Choose how long the highest meter level stays visible.")
                 .onChange(of: peakHoldMode) { _, newValue in
                     guard !isLoading else { return }
                     Task {
@@ -1002,6 +1014,7 @@ struct SystemSetupView: View {
                         Text(name).tag(val)
                     }
                 }
+                .maestroHelp("Choose how long an over-level indicator stays visible.")
                 .onChange(of: overHoldMode) { _, newValue in
                     guard !isLoading else { return }
                     Task {
@@ -1018,7 +1031,7 @@ struct SystemSetupView: View {
 
                 @Bindable var mutableAppState = appState
                 Toggle("Meter Zone Coloring", isOn: $mutableAppState.showMeterZoneColoring)
-                    .help("When enabled, idle meter segments show a muted green/yellow/red gradient indicating their dB zone. When disabled, idle segments are a uniform gray.")
+                    .maestroHelp("When enabled, idle meter segments show a muted green/yellow/red gradient indicating their dB zone. When disabled, idle segments are a uniform gray.")
             }
             .disabled(isLoading)
 
@@ -1059,10 +1072,10 @@ struct SystemSetupView: View {
                         } else {
                         LabeledContent("IOBoard 1",
                                        value: DeviceInfoReport.boardLine(board1Reading, version: info.ioBoard1Version))
-                            .help(board1Reading.detailedText)
+                            .maestroHelp(board1Reading.detailedText)
                         LabeledContent("IOBoard 2",
                                        value: DeviceInfoReport.boardLine(board2Reading, version: info.ioBoard2Version))
-                            .help(board2Reading.detailedText)
+                            .maestroHelp(board2Reading.detailedText)
                         }
                         if appState.connectedUnit == nil, let notice = boardDetectionNotice {
                             Label(notice, systemImage: "exclamationmark.triangle")
@@ -1127,6 +1140,7 @@ struct SystemSetupView: View {
                                     }
                                     .accessibilityLabel("Ports")
                                     .fixedSize()
+                                    .maestroHelp("Choose 32 channels or 64 channels from two Symphony I/Os.")
                                     .disabled(!appState.portSelection.canChoose)
                                     Button { showPortsInfo.toggle() } label: {
                                         Image(systemName: "info.circle")
@@ -1134,6 +1148,7 @@ struct SystemSetupView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityLabel("About Ports")
+                                    .maestroHelp("Explain the available channel counts.")
                                     // Same look as the Audio Interface Mode popover:
                                     // left-aligned (the row's trailing alignment
                                     // would otherwise carry into the popover).
@@ -1183,7 +1198,7 @@ struct SystemSetupView: View {
                     Button("Rescan") {
                         Task { await appState.reconnectHardware() }
                     }
-                    .help("Re-establish the link to Symphony and rebuild the audio "
+                    .maestroHelp("Re-establish the link to Symphony and rebuild the audio "
                           + "path. Same as View > Rescan (⌘R).")
                 } else if appState.connectionMode == .simulated, let unit = appState.connectedUnit {
                     // Converter simulation: the same rows a real converter gets.
@@ -1213,9 +1228,9 @@ struct SystemSetupView: View {
                     LabeledContent("Device Name", value: "Symphony I/O (simulated)")
                     LabeledContent("Connection", value: "Card simulation — no hardware")
                     LabeledContent("IOBoard 1", value: DeviceInfoReport.boardLine(board1Reading, version: nil))
-                        .help(board1Reading.detailedText)
+                        .maestroHelp(board1Reading.detailedText)
                     LabeledContent("IOBoard 2", value: DeviceInfoReport.boardLine(board2Reading, version: nil))
-                        .help(board2Reading.detailedText)
+                        .maestroHelp(board2Reading.detailedText)
                     if let notice = boardDetectionNotice {
                         Label(notice, systemImage: "exclamationmark.triangle")
                             .font(.caption)
@@ -1254,7 +1269,7 @@ struct SystemSetupView: View {
                             .font(.caption)
                         }
                         .buttonStyle(.plain)
-                        .help("Copy device info to clipboard")
+                        .maestroHelp("Copy device info to clipboard")
                     }
                 }
             }
@@ -1297,7 +1312,7 @@ struct SystemSetupView: View {
                             .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(dextActionInFlight)
-                            .help("Register or request approval for the embedded ThunderBridge driver")
+                            .maestroHelp("Register or request approval for the embedded ThunderBridge driver")
                         } else {
                             // Keep the settings shortcut available even when the
                             // extension is healthy, so users can review its state
@@ -1305,7 +1320,7 @@ struct SystemSetupView: View {
                             Button("Open Driver Settings…", action: openDriverExtensions)
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
-                                .help("Open macOS Login Items & Extensions for the Maestro driver")
+                                .maestroHelp("Open macOS Login Items & Extensions for the Maestro driver")
                         }
                     }
                 }
@@ -1325,7 +1340,7 @@ struct SystemSetupView: View {
                         .foregroundStyle(.secondary)
                 }
                 LabeledContent("App Path", value: info.appPath)
-                    .help(info.appPath)
+                    .maestroHelp(info.appPath)
             } header: {
                 HStack {
                     Text("Software Info")
@@ -1347,7 +1362,7 @@ struct SystemSetupView: View {
                         .font(.caption)
                     }
                     .buttonStyle(.plain)
-                    .help("Copy software info to clipboard")
+                    .maestroHelp("Copy software info to clipboard")
                 }
             }
 
@@ -1996,7 +2011,7 @@ struct ConverterUnitRows: View {
                     set: { appState.setConverterDeviceType($0, port: unit.port, address: unit.address) })) {
                     ForEach(unit.deviceTypeChoices) { Text($0.label).tag($0) }
                 }
-                .help("Routing 0x0" + String(unit.routing, radix: 16, uppercase: true)
+                .maestroHelp("Routing 0x0" + String(unit.routing, radix: 16, uppercase: true)
                       + " can be more than one unit. Choose the one that is connected.")
             }
         }

@@ -18,6 +18,6 @@ struct IdentifyButton: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .disabled(device == nil)
-        .help("Light every front-panel light on this Symphony I/O so you can find it. Click again to turn them off.")
+        .maestroHelp("Light every front-panel light on this Symphony I/O so you can find it. Click again to turn them off.")
     }
 }
