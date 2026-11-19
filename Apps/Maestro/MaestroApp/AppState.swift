@@ -598,6 +598,7 @@ final class AppState {
                 slot1: primaryBoardType, slot2: secondaryBoardType),
             fallbackChannelCount: device?.identifier.mode.channelCount ?? 16,
             converter: connectedUnit,
+            converters: converterSystem,
             naming: channelNaming)
     }
 
@@ -701,6 +702,82 @@ final class AppState {
     /// The driver's raw probe word behind `connectedUnit`, for the copied
     /// Device Info. Zero when the driver did not probe.
     var connectedUnitProbeWord: UInt32 = 0
+    /// Every converter unit on both ports (selector 9, dext 131+), or port 1
+    /// from the probe word with an older driver, or the converter simulation.
+    /// Nil for a Symphony I/O. Lays out, names and meters converter channels.
+    var converterSystem: ConverterSystem?
+    /// The firmware notices already logged for this connection, so each is
+    /// said once.
+    private var loggedConverterNotices: Set<String> = []
+
+    /// Whether the clock picker offers only the converters' Internal and
+    /// External choices: port-1 converters are identified (or simulated).
+    var convertersIdentified: Bool { connectedUnit != nil && converterSystem != nil }
+
+    /// Read the driver's converter report again (no bus access) and rebuild
+    /// `converterSystem`. With an older driver it is rebuilt from the probe
+    /// word and the stored Device Types.
+    func refreshConverterSystem() {
+        guard connectionMode != .simulated else { return }
+        guard let tb = device as? ThunderboltDeviceConnection else {
+            if converterSystem != nil { converterSystem = nil }
+            return
+        }
+        let system = Self.converterSystem(state: tb.converterState(), probeWord: connectedUnitProbeWord)
+        if system != converterSystem { converterSystem = system }
+        if connectedUnit == nil, let unit = system?.connectedUnit { connectedUnit = unit }
+        for notice in system?.firmwareNotices ?? [] where !loggedConverterNotices.contains(notice) {
+            loggedConverterNotices.insert(notice)
+            print("[Maestro] \(notice)")
+        }
+    }
+
+    static func converterSystem(state: ConverterState?, probeWord: UInt32) -> ConverterSystem? {
+        if let state { return ConverterSystem(state: state) }
+        return ConverterSystem(probeWord: probeWord, config: ConverterConfig.load())
+    }
+
+    /// At connect: send the stored Device Types and clock choice before the
+    /// layout is read, so the first report already has them. With no stored
+    /// clock choice the driver's current clock is kept. Older drivers reject
+    /// the call and nothing changes.
+    func applyStoredConverterConfig(_ tb: ThunderboltDeviceConnection) {
+        guard let state = tb.converterState(), state.port1Converters else { return }
+        let word = ConverterConfig.load().word(currentClockExternal: state.clockExternal)
+        if word != state.config, !tb.setConverterConfig(word) {
+            print("[Maestro] Converter config 0x\(String(word, radix: 16)) was not accepted")
+        }
+    }
+
+    /// The user chose a converter clock source (bit 0 of the converter
+    /// config). Never sent as a Symphony I/O ClockMode.
+    @discardableResult
+    func setConverterClock(external: Bool) -> Bool {
+        ConverterConfig.saveClockExternal(external)
+        return sendConverterConfig()
+    }
+
+    /// The user chose a Device Type for a unit whose routing does not say
+    /// what it is (0x0F or 0x05).
+    func setConverterDeviceType(_ type: ConverterDeviceType, port: Int, address: Int) {
+        ConverterConfig.saveDeviceType(type, port: port, address: address)
+        if connectionMode == .simulated, let system = converterSystem {
+            // Rebuild the simulated units with the new choice.
+            let name = UserDefaults.standard.string(forKey: ConnectedUnit.simulationKey) ?? ""
+            converterSystem = ConverterSystem(simulationName: name, config: ConverterConfig.load()) ?? system
+            return
+        }
+        sendConverterConfig()
+    }
+
+    @discardableResult
+    private func sendConverterConfig() -> Bool {
+        guard let tb = device as? ThunderboltDeviceConnection else { return connectionMode == .simulated }
+        let current = converterSystem?.clockExternal ?? false
+        let ok = tb.setConverterConfig(ConverterConfig.load().word(currentClockExternal: current))
+        refreshConverterSystem()
+        return ok
+    }
     /// The update channel in effect (mirrored from UpdateController), for the
     /// copied software report.
     var updateChannel: UpdateChannel?
@@ -729,6 +806,9 @@ final class AppState {
     func refreshSecondPortState() {
         let shown = currentSecondPortState()
         if shown != secondPortState { secondPortState = shown }
+        // The converter report follows 32/64 channels too (port 2 counts only
+        // while 64 run), and costs no bus access either.
+        refreshConverterSystem()
     }
 
     /// Follow the device's port selector for as long as this device is
@@ -827,6 +907,7 @@ final class AppState {
     var cardLayoutToken: Int {
         Int(primaryBoardType.rawValue) << 8 | Int(secondaryBoardType.rawValue)
             | (connectedUnit?.channels.map { ($0.inputs + 1) << 24 | ($0.outputs + 1) << 16 } ?? 0)
+            ^ (converterSystem.map { $0.layoutToken << 32 } ?? 0)
     }
 
     /// Load cached board types from UserDefaults (called at init, before USB reads).
@@ -1319,7 +1400,9 @@ final class AppState {
         // Debug only: show the app as it would look with older converters
         // attached. No hardware is discovered or touched.
         if let name = UserDefaults.standard.string(forKey: ConnectedUnit.simulationKey) {
-            guard let unit = ConnectedUnit(simulationName: name) else {
+            // One port ("ad16x+da16x") or two ("...|..."), which means 64 channels.
+            guard let system = ConverterSystem(simulationName: name, config: ConverterConfig.load()),
+                  let unit = system.connectedUnit else {
                 print("[Maestro] CONVERTER SIMULATION: invalid request '\(name)'; exiting.")
                 exit(1)
             }
@@ -1329,6 +1412,7 @@ final class AppState {
             primaryBoardSource = .unknown
             secondaryBoardSource = .unknown
             self.connectedUnit = unit
+            self.converterSystem = system
             self.device = SimulatedDevice.symphonyIO32ch()
             self.connectionMode = .simulated
             self.transportType = .thunderbolt
@@ -1527,6 +1611,13 @@ final class AppState {
         let probeWord = (device as? ThunderboltDeviceConnection)?.linkState()?.unitProbe ?? 0
         connectedUnitProbeWord = probeWord
         connectedUnit = ConnectedUnit(probeWord: probeWord)
+        // The converter report (dext 131+): the stored Device Types and clock
+        // go to the driver first, then both ports are read. Port-1 converters
+        // reported there count as identified even without a probe word, so the
+        // guards that keep Symphony I/O commands away from them still hold.
+        loggedConverterNotices = []
+        if let tb = device as? ThunderboltDeviceConnection { applyStoredConverterConfig(tb) }
+        refreshConverterSystem()
         // Needed before the input routing is laid out (thunderboltCaptureSlot1),
         // so it is awaited here; read off the main thread like every other
         // user-client call that can wait on the driver.
@@ -2466,8 +2557,12 @@ final class AppState {
                         // of the host input its hardware channel is routed to
                         // (ThunderboltInputMeterMap).
                         self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
-                        let meterWords = self.thunderboltInputMeterWords
-                        var hostInputs = (0..<ThunderboltInputMeterMap.hostInputCount).map { dbW($0) }
+                        var meterWords = self.thunderboltInputMeterWords
+                        // Converters are read by bus slot over both ports (64
+                        // words); a Symphony I/O keeps host inputs 0-31.
+                        let convertersMetered = self.thunderboltInputMeterLayout?.converterLayout != nil
+                        var hostInputs = (0..<(convertersMetered ? ThunderboltInputMeterMap.converterWordCount
+                                                : ThunderboltInputMeterMap.hostInputCount)).map { dbW($0) }
                         var outp = self.outputMeterLevels
                         for i in 0..<outp.count { outp[i] = dbW(64 + i) }     // host playback 64-95
                         newOutput = outp
@@ -2480,8 +2575,16 @@ final class AppState {
                         if (hostInputs.max() ?? -60.0) <= -60.0,
                            let softwareInputs = self.meterDevice?.softwareInputPeaks(),
                            !softwareInputs.isEmpty {
+                            // Core Audio's channel n is host channel n, not a bus
+                            // slot: converter strips read it one to one.
+                            if convertersMetered {
+                                hostInputs = self.linearMeterLevels(
+                                    from: softwareInputs, count: ThunderboltInputMeterMap.converterWordCount)
+                                meterWords = ThunderboltInputMeterMap.Words(channels: [], digital: meterWords.digital)
+                            } else {
                             hostInputs = self.linearMeterLevels(
                                 from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount)
+                            }
                         }
                         newInput = ThunderboltInputMeterMap.stripLevels(
                             host: hostInputs, words: meterWords, count: self.inputMeterLevels.count)
@@ -2624,11 +2727,20 @@ final class AppState {
                                 // Core Audio channel n is host input n: map it
                                 // to the strips as the FPGA words are.
                                 self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                                if self.thunderboltInputMeterLayout?.converterLayout != nil {
+                                    // Converters: host channel n is strip n.
+                                    newInput = ThunderboltInputMeterMap.stripLevels(
+                                        host: self.linearMeterLevels(
+                                            from: softwareInputs, count: ThunderboltInputMeterMap.converterWordCount),
+                                        words: ThunderboltInputMeterMap.Words(channels: [], digital: []),
+                                        count: self.inputMeterLevels.count)
+                                } else {
                                 newInput = ThunderboltInputMeterMap.stripLevels(
                                     host: self.linearMeterLevels(
                                         from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount),
                                     words: self.thunderboltInputMeterWords,
                                     count: self.inputMeterLevels.count)
+                                }
                             } else {
                                 newInput = [Double](repeating: -60.0, count: self.inputMeterLevels.count)
                             }
@@ -3183,6 +3295,12 @@ final class AppState {
                 || thunderboltInputMeterLayout != layout else { return }
         thunderboltInputMeterWordsPollStamp = pollCount
         thunderboltInputMeterLayout = layout
+        // Converters: each host input reads its bus slot's word (port * 32 +
+        // slot), over both ports while 64 channels run.
+        if let system = layout.converterLayout {
+            thunderboltInputMeterWords = ThunderboltInputMeterMap.converterWords(system)
+            return
+        }
         var replayed: [SymphonyIODefaultRouting.Route] = []
         if RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil {
             let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)

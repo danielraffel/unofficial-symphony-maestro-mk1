@@ -123,6 +123,8 @@ struct InputControlsView: View {
     /// Evidence: `SymphonyIOBoard_MicPre8ch.cpp:914-961`, `SymphonyIO_Stream.cpp:653-655`.
     private var inputChannelLabels: [String] {
         (1...max(analogInputStripCount, 1)).map { number in
+            // Converters: the unit channel this host input carries, "A Line 1".
+            if let name = layout.converterChannelName(host: number - 1, isInput: true) { return name }
             // A pair the S/PDIF coax replaces carries the coax, and is named so.
             if let coax = layout.coaxNameForAnalogInputStrip(number - 1) { return coax }
             let raw = number - 1 < channels.count ? channels[number - 1].inputType : 1

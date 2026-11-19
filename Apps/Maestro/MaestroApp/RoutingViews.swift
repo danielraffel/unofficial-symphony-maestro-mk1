@@ -168,9 +168,12 @@ struct InputRoutingView: View {
                     // Each software input is named after what is routed to it
                     // (the original's Core Audio names, `SymphonyCard.cpp:828-866`),
                     // so a row follows its route, the rate, format and Replaces.
-                    let names = CardLayout.softwareInputRowNames(
-                        rowCount: pairCount, routes: routes, columns: columns,
-                        prefix: appState.peripheralPrefix)
+                    // Converters: named after the unit channels each Mac input
+                    // pair carries ("A Line 1/2"), as the driver names them.
+                    let names = layout.converterPairNames(isInput: true, pairCount: pairCount)
+                        ?? CardLayout.softwareInputRowNames(
+                            rowCount: pairCount, routes: routes, columns: columns,
+                            prefix: appState.peripheralPrefix)
                     let rowLabels: [(number: String, name: String)] = (0..<pairCount).map { i in
                         (number: "\(i * 2 + 1)-\(i * 2 + 2)", name: names[i])
                     }
@@ -518,11 +521,18 @@ struct OutputRoutingView: View {
     private var rowLabels: [(number: String, name: String)] {
         let total = swOutputPairCount
         let hardware = layout.outputRoutingColumns
+        // Converters: each Mac output pair is named after the unit channels
+        // it plays to ("C Line 1/2"), as the driver names them.
+        let converterNames = layout.converterPairNames(isInput: false, pairCount: total)
         var labels: [(number: String, name: String)] = []
         for i in 0..<total {
             let sw1 = i * 2 + 1
             let sw2 = i * 2 + 2
             let name: String
+            if let converterNames {
+                labels.append((number: "\(sw1)-\(sw2)", name: converterNames[i]))
+                continue
+            }
             // The unit's prefix letter, and a bare "N.A." for a pair with no
             // channel the rate or format carries (`APUtilities.m:323-400`).
             // ThunderBridge: the board outputs at the same position (Mac 1-16

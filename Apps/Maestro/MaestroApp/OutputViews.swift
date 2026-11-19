@@ -207,7 +207,8 @@ struct OutputControlsView: View {
     private var outputChannelLabels: [String] {
         let count = analogOutputStripCount
         guard count > 0 else { return [] }
-        return (1...count).map { "Line \($0)" }
+        // Converters: the unit channel this host output plays to, "C Line 1".
+        return (1...count).map { layout.converterChannelName(host: $0 - 1, isInput: false) ?? "Line \($0)" }
     }
 
     /// Board-aware digital output stereo pairs (AES / ADAT meter strips).

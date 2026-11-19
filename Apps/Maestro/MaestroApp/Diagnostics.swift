@@ -123,7 +123,11 @@ extension AppState {
             report.connection = connectionLabel
             report.connectedUnit = unit.displayName
             report.connectedUnitLines = unit.unitRows.map { "\($0.label): \($0.value)" }
-            if let channels = unit.channels {
+            if let system = converterSystem {
+                // Both ports, raw words, firmware, authentication, the driver's
+                // flags, phase, health counters, latency and host counts.
+                report.connectedUnitLines = system.reportLines(twoPortDriver: currentSecondPortState() != nil)
+            } else if let channels = unit.channels {
                 report.connectedUnitLines.append("Inputs: \(channels.inputs)")
                 report.connectedUnitLines.append("Outputs: \(channels.outputs)")
             }
