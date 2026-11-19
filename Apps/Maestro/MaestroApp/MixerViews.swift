@@ -448,7 +448,9 @@ struct MixerView: View {
             // Local state is already complete; only hardware synchronization
             // waits for this task. No partial strip layout is exposed meanwhile.
             ensureNamesAndVisibility()
-            await syncMixerToHardware(recalling: true)
+            if appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration {
+                await syncMixerToHardware(recalling: true)
+            }
             restoreSessionScrollPosition()
         }
         .onAppear { appState.startMeterPolling() }
@@ -460,29 +462,27 @@ struct MixerView: View {
             initializeChannels()
             ensureNamesAndVisibility()
             restoreSessionScrollPosition()
-            Task { await syncMixerToHardware(recalling: true) }
+            if appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration {
+                Task { await syncMixerToHardware(recalling: true) }
+            }
         }
 
         .onChange(of: appState.deviceRecoveryCount) { _, _ in
             // USB recovered after power cycle/sleep — FPGA reset to defaults.
             // Reload persisted mixer state and re-sync to hardware.
             initializeChannels()
-            Task {
-                guard !appState.usesTwoUnitReplay else { return }
-                // On USB this also puts Software Return and Master back, for
-                // the shown mixer, and the helper's stage to neutral.
-                await syncMixerToHardware()
-                if usbDevice == nil {
-                    await writeSWReturnMute(editor.swReturnChannel.isMuted)
-                    await writeSWReturnLevel(editor.swReturnChannel.level)
-                    await writeSWReturnPan(editor.swReturnChannel.pan)
-                    await writeSoftwareReturnSource(editor.softwareReturnSource)
+            if appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration {
+                Task {
+                    guard !appState.usesTwoUnitReplay else { return }
+                    await syncMixerToHardware()
                 }
             }
-            print("[Maestro] MixerView: Re-synced mixer state after USB recovery")
+            print("[Maestro] MixerView: Reloaded mixer state after recovery")
         }
         .onChange(of: appState.routingModeChangeCount) { _, _ in
-            Task { await syncMixerToHardware() }
+            // Routing-mode and hardware-input mutes are serialized by
+            // AppState; reload the snapshot without starting a second writer.
+            initializeChannels()
         }
     }
 
