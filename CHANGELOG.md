@@ -15,6 +15,8 @@
 
 ### Fixes
 
+- **Identify remembers each unit’s lights when you leave Output Routing.** A failed write keeps the button unchanged, and Maestro turns the lights off when disconnecting or quitting if the unit is still reachable.
+
 - **Turning the Symphony's knob on an 8MicPre Mic or Instrument channel now moves that channel's gain in Maestro too,** as Apogee's software did.
 - **Choosing 64 channels with nothing on port 2 no longer flickers.** The Ports menu stays at 32 channels with a small spinner while Maestro looks for a unit on port 2, then shows 64 or the warning.
 

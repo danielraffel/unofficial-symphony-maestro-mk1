@@ -19,6 +19,7 @@ import MaestroDevice
 
 @main
 struct MaestroApp: App {
+    @NSApplicationDelegateAdaptor(MaestroAppDelegate.self) private var appDelegate
     @StateObject private var updates = UpdateController()
     @State private var appState = AppState()
     @State private var diagnostics = DiagnosticsRecorder()
@@ -67,6 +68,7 @@ struct MaestroApp: App {
                 .onReceive(updates.$effectiveChannel) { appState.updateChannel = $0 }
                 .environment(diagnostics)
                 .onAppear {
+                    appDelegate.appState = appState
                     diagnostics.appState = appState
                     // Testing only: `-MaestroDiagnosticsSelfTest 20` turns
                     // diagnostics on, adds a note, runs the checks again and

@@ -633,9 +633,10 @@ struct OutputRoutingView: View {
                 // (APRoutingDeviceColumnViewController.m:212-219); Symphony I/O only.
                 if appState.connectedUnit == nil {
                     IdentifyButton(title: appState.unitBOnCard ? "Identify A" : "Identify",
-                                   device: appState.device)
+                                   device: appState.device, state: appState.identifyA)
                     if appState.unitBOnCard {
-                        IdentifyButton(title: "Identify B", device: appState.unitBDevice)
+                        IdentifyButton(title: "Identify B", device: appState.unitBDevice,
+                                       state: appState.identifyB)
                     }
                 }
                 Spacer()

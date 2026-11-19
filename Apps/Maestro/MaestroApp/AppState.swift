@@ -100,8 +100,19 @@ final class AppState {
     /// state update only: the front-panel path never writes the value back.
     var frontPanelMicPreUpdate: FrontPanelMicPreUpdate?
     private var frontPanelMicPreRevision = 0
+    /// Session-only Identify latches, one per unit connection.
+    let identifyA = IdentifyState()
+    let identifyB = IdentifyState()
+
     /// Currently connected device (real or simulated).
-    var device: (any DeviceConnection)?
+    var device: (any DeviceConnection)? {
+        willSet {
+            if device !== newValue {
+                identifyA.reset()
+                identifyB.reset()
+            }
+        }
+    }
     /// Currently selected navigation area.
     var selectedArea: NavigationArea = .launchDefault
     /// Which mix the Mixer tab was last showing (0 = Mix 1, 1 = Mix 2), so
@@ -114,7 +125,14 @@ final class AppState {
     /// Whether to show the Help panel.
     var showHelp: Bool = false
     /// Connection mode.
-    var connectionMode: ConnectionMode = .disconnected
+    var connectionMode: ConnectionMode = .disconnected {
+        didSet {
+            if connectionMode == .disconnected {
+                identifyA.reset()
+                identifyB.reset()
+            }
+        }
+    }
     /// Active transport type (USB or Thunderbolt).
     var transportType: TransportType? = nil
     /// Whether the transport itself is present. ThunderBridge can remain
@@ -1051,7 +1069,11 @@ final class AppState {
     /// configured, which it is only while 64 channels run.
     var unitB: SecondUnitInfo?
     /// Unit B's connection: unit A's driver client with port byte 1.
-    var unitBDevice: (any DeviceConnection)?
+    var unitBDevice: (any DeviceConnection)? {
+        willSet {
+            if unitBDevice !== newValue { identifyB.reset() }
+        }
+    }
     /// The unit the per-unit pages show. Only `.b` while the picker is shown.
     var selectedUnit: DeviceUnit = .a
     /// Unit B's naming state (its optical formats and Replaces).
@@ -2315,6 +2337,11 @@ final class AppState {
         if let xpcDev = device as? XPCDeviceConnection {
             xpcDev.resetAudioOutput()
         }
+
+        let identifyAOff = identifyA.reset()
+        let identifyBOff = identifyB.reset()
+        await identifyAOff.value
+        await identifyBOff.value
 
         // Close existing connection if any
         if let existing = device {
