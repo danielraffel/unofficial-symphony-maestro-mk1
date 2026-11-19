@@ -14,6 +14,8 @@ extension AppState {
               let b = unitBDevice as? ThunderboltUnitBConnection, let bLayout = unitBLayout else {
             throw DeviceConnectionError.notConnected
         }
+        beginRecall()
+        defer { finishRecall() }
         let aLayout = cardLayout
         let inputStore = symphonyCardInputStore
         let aInputCache = RoutingStateCache(direction: "input", productID: a.identifier.productID)

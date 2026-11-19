@@ -6,6 +6,33 @@ import Testing
 
 @Suite("Unit B in the app")
 struct UnitBAppTests {
+    @Test("Sparse replay output cache keeps untouched defaults")
+    func sparseReplayOutputOverlay() {
+        let destinations: [UInt8] = [32, 33, 48, 49]
+        let defaults: [UInt8: UInt8] = [32: 128, 33: 129, 48: 16, 49: 17]
+        let saved: [UInt8: UInt8] = [32: 8, 33: 9]
+        let merged = AppState.replayOutputSources(defaults: defaults, saved: saved,
+                                                   complete: false, destinations: destinations)
+        #expect(merged == [32: 8, 33: 9, 48: 16, 49: 17])
+        let complete = AppState.replayOutputSources(defaults: defaults, saved: saved,
+                                                     complete: true, destinations: destinations)
+        #expect(complete == [32: 8, 33: 9, 48: SymphonyIORoutingAddress.none,
+                             49: SymphonyIORoutingAddress.none])
+    }
+
+    @Test("Replay requested during recall is deferred until stores commit")
+    func replayDeferral() {
+        var state = ReplayDeferral()
+        state.beginRecall()
+        state.request()
+        #expect(state.isInFlight())
+        let released = state.finishRecall()
+        #expect(released)
+        #expect(!state.isInFlight())
+        let releasedAgain = state.finishRecall()
+        #expect(!releasedAgain)
+    }
+
     @Test("Monitor writes keep their captured unit and Core Audio stays with A")
     func monitorUnitBoundaries() throws {
         let output = try source("OutputViews.swift")

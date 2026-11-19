@@ -2,7 +2,41 @@ import Foundation
 import MaestroCore
 import MaestroDevice
 
+final class ReplayDeferral: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recallInFlight = false
+    private var requestedDuringRecall = false
+
+    func beginRecall() { lock.lock(); defer { lock.unlock() }; recallInFlight = true }
+    func request() {
+        lock.lock(); defer { lock.unlock() }
+        if recallInFlight { requestedDuringRecall = true }
+    }
+    func finishRecall() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        recallInFlight = false
+        let requested = requestedDuringRecall
+        requestedDuringRecall = false
+        return requested
+    }
+    func isInFlight() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return recallInFlight
+    }
+}
+
 extension AppState {
+    static func replayOutputSources(defaults: [UInt8: UInt8], saved: [UInt8: UInt8],
+                                    complete: Bool, destinations: [UInt8]) -> [UInt8: UInt8] {
+        var result = complete
+            ? Dictionary(uniqueKeysWithValues: destinations.map { ($0, SymphonyIORoutingAddress.none) })
+            : defaults
+        for destination in destinations {
+            if let source = saved[destination] { result[destination] = source }
+        }
+        return result
+    }
+
     /// At 64 channels the health loop owns routing recall, including the
     /// initial connect. At 32 the existing single-unit path is unchanged.
     var usesTwoUnitReplay: Bool {
@@ -15,6 +49,7 @@ extension AppState {
     @MainActor
     func replayUnitBSettings() async {
         guard usesTwoUnitReplay, twoUnitReplayNeeded, !twoUnitReplayRunning,
+              !recallInFlight,
               !twoUnitSleeping, connectionMode == .hardware, isHardwareInitialized,
               let tb = device as? ThunderboltDeviceConnection,
               let b = unitBDevice as? ThunderboltUnitBConnection,
@@ -26,10 +61,12 @@ extension AppState {
         let link = await Task.detached(priority: .utility) { tb.linkState() }.value
         guard device === tb, unitBDevice === b, let link else { return }
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
+        let replayDeferral = self.replayDeferral
         twoUnitReplayNeeded = false
         do {
             try await Task.detached(priority: .utility) {
-                try tb.replayTwoUnits(plan, unitB: b, recoveryCount: link.recoveryCount)
+                try tb.replayTwoUnits(plan, unitB: b, recoveryCount: link.recoveryCount,
+                                      shouldContinue: { !replayDeferral.isInFlight() })
             }.value
             guard device === tb, unitBDevice === b else { return }
             if let mode = tb.settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32 {
@@ -71,22 +108,31 @@ extension AppState {
         let outputCache = RoutingStateCache(direction: "output", productID: tb.identifier.productID)
         Self.migrateMainPairToMixer(cache: outputCache, mixerRow: tb.identifier.mode.channelCount / 2,
                                    board1: primaryBoardType, board2: secondaryBoardType)
-        // A saved grid is a complete assignment: an unowned column is
-        // silence, not permission to resurrect the driver's default route.
-        if outputCache.loadMulti() != nil {
+        let savedA = outputCache.loadMulti() ?? [:]
+        let completeA = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { savedA[$0] != nil }
+        let defaultsA = SymphonyIODefaultRouting.thunderboltOutputRoutes(
+            board0Outputs: primaryBoardType.totalOutputChannels,
+            board1Outputs: secondaryBoardType.totalOutputChannels)
+        let defaultSourcesA = Dictionary(uniqueKeysWithValues: defaultsA.map { ($0.destination, $0.source) })
+        if !savedA.isEmpty {
             let sources = cachedOutputRouteMap()
-            for column in cardLayout.outputRoutingColumns {
-                for destination in [column.routingByte, column.routingByte &+ 1] {
-                    let source = sources[destination] ?? SymphonyIORoutingAddress.none
+            let destinations = cardLayout.outputRoutingColumns.flatMap { [$0.routingByte, $0.routingByte &+ 1] }
+            let merged = Self.replayOutputSources(defaults: defaultSourcesA, saved: sources,
+                                                  complete: completeA, destinations: destinations)
+            for destination in destinations {
+                    let source = merged[destination] ?? SymphonyIORoutingAddress.none
                     if let route = ThunderboltCardRouting.route(destination: destination, source: source, unitBActive: true) {
                         plan.card.append(.card(.output(route)))
                     }
-                }
             }
         }
         if let rows = unitBOutputRoutingCache?.loadMulti() {
+            let completeB = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { rows[$0] != nil }
             for (index, column) in layoutB.outputRoutingColumns.enumerated() {
                 let row = rows.keys.sorted().last { rows[$0]?.contains(index) == true }
+                    ?? (completeB ? nil : ThunderboltCardRouting.channel(forDestination: column.routingByte).map {
+                        TwoUnitOutputRouting.defaultRow(unitBChannel: Int($0))
+                    })
                 if let routes = Self.unitBRoutePair(destLeft: column.routingByte, gridRow: row) {
                     plan.card += routes.map { .card(.output($0)) }
                 }

@@ -298,7 +298,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// Both connections share this recursive serial owner, also used by UI
     /// writes and preset recall. Never hold it across an async suspension.
     public func replayTwoUnits(_ plan: TwoUnitReplay, unitB: ThunderboltUnitBConnection,
-                               recoveryCount: UInt32) throws {
+                               recoveryCount: UInt32,
+                               shouldContinue: @Sendable @escaping () -> Bool = { true }) throws {
         presetLock.lock()
         defer { presetLock.unlock() }
         func validate() throws {
@@ -321,6 +322,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             }
         }
         try plan.run(validate: validate, send: { write in
+            guard shouldContinue() else { throw DeviceConnectionError.notConnected }
             switch write {
             case .unit(let unit, let address, let value):
                 if address.selector == .prefix {
