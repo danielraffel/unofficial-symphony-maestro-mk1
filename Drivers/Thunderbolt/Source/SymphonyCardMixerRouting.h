@@ -67,7 +67,11 @@ static constexpr uint32_t kThunderboltCardRouteEnable           = 0x100;
 //        enable 0/1] -> SM_REG_INPUT_ROUTING entry hostInput <- XLINK_RX xlinkRx;
 //   0xB7 puts both tables back on the default placement (Reset Routing),
 //        no payload.
-// A Symphony I/O refuses 0xB6 and 0xB7: its inputs are routed by the unit.
+// Symphony I/O also accepts 0xB6: host and RX are independently 0..31,
+// or 0..63 at 64 channels with unit B configured and its link in use.
+// 0xB7 restores its card input defaults (the unit's 0x31 table is separate).
+// Converter rules above are unchanged. Evidence: og_source/maestrolink/Software/
+// SymphonyPCIeRoutingController.cpp:976-1069,1860-1888.
 static constexpr uint8_t  kThunderboltCardInputRouteCommand       = 0xB6;
 static constexpr uint8_t  kThunderboltConverterRoutingResetCommand = 0xB7;
 static constexpr uint32_t kThunderboltCardInputRoutingRegister    = 0x2000;

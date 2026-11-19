@@ -407,6 +407,8 @@ struct SymphonyThunderbridge_IVars {
     // S/PDIF Coax Replaces (0x35) writes and reads. Written on xlinkQueue,
     // read on the default queue, both with __atomic_*.
     uint8_t   inputRouteSource[32];
+    uint8_t   unitBInputRouteSource[32];
+    uint32_t  cardInputRoute[64]; // actual FPGA input words, for host names; atomic across queues
     uint8_t   namingCoaxReplace[2];
     uint8_t   sessionCoaxMirror[2];   // last Mirrors (0x36) sent, 0 = none this session
     uint8_t   sessionCoaxBoardType[2]; // the slot's card type those two belong to, 0 = none
@@ -1963,6 +1965,13 @@ static void BuildConverterChain(SymphonyThunderbridge_IVars *ivars, ConverterCha
     }
 }
 
+// Keep Symphony naming tied to card input writes, including topology resets.
+static void WriteCardInputRoute(SymphonyThunderbridge_IVars *iv, uint32_t host, uint32_t word)
+{
+    WriteRegister(iv->pciDevice, iv->barMemoryIndex, kRegInputRouting + host * 4, word);
+    __atomic_store_n(&iv->cardInputRoute[host], word, __ATOMIC_RELEASE);
+}
+
 // Card routing for converters (routeSymphonyHW): host input h <- XLink RX of its
 // unit channel's slot, XLink TX slot <- host output h (direct, as the original's
 // default; mixers go nowhere until routed). Host channels and slots with
@@ -2007,7 +2016,7 @@ static void ApplyConverterRouting(SymphonyThunderbridge_IVars *ivars, const char
         if (ivars->convOutRouteSet & (1ull << n)) { outSrc[n] = ivars->convOutRoute[n]; edited++; }
     }
     for (uint32_t n = first; n < last; n++) {
-        WriteRegister(dev, mi, kRegInputRouting + n * 4, inSrc[n]);
+        WriteCardInputRoute(ivars, n, inSrc[n]);
         WriteRegister(dev, mi, kRegOutputRouting + n * 4, outSrc[n]);
     }
     if (edited) STLOG("Converter routing: %u route(s) chosen in Maestro kept", edited);
@@ -3668,7 +3677,7 @@ static void Port2ProgramRouting(SymphonyThunderbridge_IVars *ivars, bool enable)
     const uint8_t mi = ivars->barMemoryIndex;
     const uint32_t en = enable ? kRoutingEnable : 0;
     for (uint32_t n = kPort2FirstChannel; n < kPort2FirstChannel + kMaxChannelsPerPort; n++) {
-        WriteRegister(dev, mi, kRegInputRouting + n * 4, (kTDM_XLinkRX0 + n) | en);
+        WriteCardInputRoute(ivars, n, (kTDM_XLinkRX0 + n) | en);
         const uint32_t output = (enable && ivars->cardOutputRouteSet[n])
             ? ivars->cardOutputRoute[n] : ((kTDM_PCIOut0 + n) | en);
         WriteRegister(dev, mi, kRegOutputRouting + n * 4, output);
@@ -3965,7 +3974,12 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
             routes[n * 2] = (uint8_t)(kSIODest_P2PCh0 + host);
             routes[n * 2 + 1] = SymphonyCaptureSource(ivars->unitBBoardType[0], ivars->unitBBoardValid[0], host);
         }
-        require(send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes)), kUnitBFailRouting, "capture routing");
+        const bool captureOK = send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+        require(captureOK, kUnitBFailRouting, "capture routing");
+        if (captureOK) {
+            for (uint32_t n = 0; n < 16; n++)
+                __atomic_store_n(&ivars->unitBInputRouteSource[(unsigned)half * 16 + n], routes[n * 2 + 1], __ATOMIC_RELEASE);
+        }
         IOSleep(20);
     }
     for (uint16_t ch = 0; ch < 32; ch++) {
@@ -4225,15 +4239,10 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev
 // routes or mixer (SymphonyHostOutputName). Both are republished on the same
 // events: rate, optical format, prefix, Replaces and a card read or recovery.
 //
-// EXPERIMENT (64ch): host inputs and outputs 33-64 (port 2, while "Port 1-2:
-// 64ch" runs) are left unnamed (SymphonyHostOutputName names only 1-32), so Core Audio shows its default. How the original named
-// them has not been established: its daemon resolved a channel's name through
-// the routing controller to the stream it was routed from
-// (maestrolink/Software/SymphonyCard.cpp:828-866), which suggests the names
-// came from the port-2 unit's own cards and prefix, but that path has not been
-// traced for a second port and nothing was observed on hardware. This driver
-// only identifies port-2 units over XLink and reads neither their cards nor
-// their prefix, so it names nothing there.
+// Inputs first resolve the card host-to-RX route, then that port's P2P table.
+// This also handles duplicate sources and cross-port routes; disabled routes
+// have no hardware name. Output names remain fixed by position.
+// Evidence: og_source/maestrolink/Software/SymphonyCard.cpp:828-866.
 //
 // Runs on the default queue (Start, or a block queued by
 // ScheduleChannelNames), never on xlinkQueue.
@@ -4279,10 +4288,15 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     uint32_t changed = 0;
     for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedInputName[0])] = {};
-        const uint8_t source = n < 32 ? __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE)
-                                      : (uint8_t)(kSymphonyRoutingSourceIOBoard0 + (n - 32));
+        const uint32_t route = __atomic_load_n(&ivars->cardInputRoute[n], __ATOMIC_ACQUIRE);
+        const uint32_t rx = route & 0xFFu;
         if (convNames(n)) ConverterHostChannelName(conv, true, n - convBase, name, sizeof(name), convPrefix);
-        else if (!SymphonyHostInputName(n < 32 ? s : sB, source, name, sizeof(name))) name[0] = 0;
+        else if ((route & kRoutingEnable) && rx < 64) {
+            const uint8_t source = rx < 32
+                ? __atomic_load_n(&ivars->inputRouteSource[rx], __ATOMIC_ACQUIRE)
+                : __atomic_load_n(&ivars->unitBInputRouteSource[rx - 32], __ATOMIC_ACQUIRE);
+            if (!SymphonyHostInputName(rx < 32 ? s : sB, source, name, sizeof(name))) name[0] = 0;
+        }
         if (strncmp(name, ivars->publishedInputName[n], sizeof(name)) == 0) continue;
         // A null name removes it, leaving Core Audio's default for that channel.
         OSString *str = name[0] ? OSString::withCString(name) : nullptr;
@@ -4581,7 +4595,7 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
         const uint32_t def = ((n < 2) ? (kTDM_Mixer0Out + n) : (kTDM_PCIOut0 + n)) | kRoutingEnable;
         WriteRegister(dev, mi, kRegOutputRouting + n * 4,
                       ivars->cardOutputRouteSet[n] ? ivars->cardOutputRoute[n] : def);
-        WriteRegister(dev, mi, kRegInputRouting + n * 4, (kTDM_XLinkRX0 + n) | kRoutingEnable);
+        WriteCardInputRoute(ivars, n, (kTDM_XLinkRX0 + n) | kRoutingEnable);
     }
     // dext 131: converters keep the routing layer's placement.
     ApplyConverterRouting(ivars, "card reprogrammed after reset");
@@ -6021,9 +6035,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // Needed for capture (recording from Symphony IO ADCs).
 
     for (uint32_t n = 0; n < kMaxChannelsPerPort; n++) {
-        WriteRegister(ivars->pciDevice, ivars->barMemoryIndex,
-                      kRegInputRouting + n * 4,
-                      (kTDM_XLinkRX0 + n) | kRoutingEnable);
+        WriteCardInputRoute(ivars, n, (kTDM_XLinkRX0 + n) | kRoutingEnable);
     }
     STLOG("Input routing: %u channels mapped (XLink RX → PCI_IN, enabled)",
           kMaxChannelsPerPort);
@@ -9103,12 +9115,31 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         {
             const bool p2conv = (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) != 0;
             const bool conv = ivars->convPort1 || p2conv;
-            if (command == kThunderboltConverterRoutingResetCommand || command == kThunderboltCardInputRouteCommand) {
-                if (!conv) {
-                    STLOG("Card routing 0x%02x: refused — no converters (a Symphony I/O routes its own inputs)", command);
-                    result = kIOReturnUnsupported;
+            if (!conv && (command == kThunderboltConverterRoutingResetCommand ||
+                          command == kThunderboltCardInputRouteCommand)) {
+                // The source peripheral port is independent of the software destination.
+                // Evidence: og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:976-1069,1860-1888.
+                if (!ivars->symphonyLinkConfigured) {
+                    result = kIOReturnNotReady;
                     return;
                 }
+                const bool unitB = ivars->unitBConfigured && CardMixerUnitBActive(ivars);
+                const uint32_t channels = unitB ? 64 : 32;
+                if (command == kThunderboltCardInputRouteCommand) {
+                    if (!payload || payloadLen != 3 || payload[0] >= channels || payload[1] >= channels) {
+                        result = kIOReturnBadArgument;
+                        return;
+                    }
+                    WriteCardInputRoute(ivars, payload[0], (kTDM_XLinkRX0 + payload[1]) |
+                                        (payload[2] ? kRoutingEnable : 0u));
+                } else {
+                    for (uint32_t n = 0; n < 64; n++)
+                        WriteCardInputRoute(ivars, n, (kTDM_XLinkRX0 + n) |
+                                            (n < channels ? kRoutingEnable : 0u));
+                }
+                namesChanged = true;
+                result = kIOReturnSuccess;
+                return;
             }
             if (conv && command == kThunderboltConverterRoutingResetCommand) {
                 ivars->convOutRouteSet = 0;
@@ -9292,10 +9323,19 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 PublishMicGain(ivars, value);
         }
         // Host input names follow the capture routes and S/PDIF Coax Replaces.
-        // dext 131: all of this is unit A's state; a command to unit B (port
-        // 1) only updates unit B's own prefix (its channel names 33-64).
+        // Each unit owns its own P2P table and naming state. The card route
+        // decides which host inputs carry that unit, including duplicates.
         if (port == 1) {
-            if (command == kSymphonyCmdPrefix && payload && payloadLen == 1 &&
+            if (command == kSIOCmd_AudioRouting) {
+                uint8_t sources[32];
+                for (uint32_t n = 0; n < 32; n++)
+                    sources[n] = __atomic_load_n(&ivars->unitBInputRouteSource[n], __ATOMIC_ACQUIRE);
+                if (SymphonyNoteInputRoutes(sources, payload, payloadLen)) {
+                    for (uint32_t n = 0; n < 32; n++)
+                        __atomic_store_n(&ivars->unitBInputRouteSource[n], sources[n], __ATOMIC_RELEASE);
+                    namesChanged = true;
+                }
+            } else if (command == kSymphonyCmdPrefix && payload && payloadLen == 1 &&
                 SymphonyIsPrefixLetter(payload[0]) && ivars->unitBPrefix != payload[0]) {
                 ivars->unitBPrefix = payload[0];
                 namesChanged = true;
