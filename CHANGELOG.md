@@ -18,6 +18,8 @@
 
 ### Fixes
 
+- Restore both Symphony I/Os’ routing, mixers and headphone sources after returning to 64 channels, waking or recovering a link, even with the Mixer page closed.
+
 - **Device Info now shows Unit B’s own firmware, board versions and hardware ID with two Symphony I/Os at 64 channels.** Unreadable fields say “Unknown”, and copied diagnostics include both units.
 - **Unit B’s headphone sources now work on the Outputs page**, and stay routed after resetting or loading unit B’s output routing.
 

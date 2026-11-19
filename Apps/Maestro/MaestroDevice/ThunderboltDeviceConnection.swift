@@ -308,6 +308,68 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         })
     }
 
+    /// Both connections share this recursive serial owner, also used by UI
+    /// writes and preset recall. Never hold it across an async suspension.
+    public func replayTwoUnits(_ plan: TwoUnitReplay, unitB: ThunderboltUnitBConnection,
+                               recoveryCount: UInt32) throws {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        func validate() throws {
+            let link = linkState()
+            let stateB = readUnitBState()
+            let channels = portSelectionID().flatMap(PortSelection.init(rawValue:))?.channelCount ?? 0
+            let converters = converterState()
+            let model = SymphonyRoutingModel(
+                topology: converters.map { $0.flags & 3 == 0 } == true ? .symphonyOnly : .unknown,
+                hostChannels: channels, unitBConfigured: stateB?.info?.setupComplete == true)
+            guard DeviceUnit.allCases.allSatisfy({ unit in
+                let port: SymphonyRoutingModel.Port = unit == .a ? .one : .two
+                return model.allows(.unitRouting, at: .peripheral(.init(port: port)!))
+                    && model.allows(.monitor, at: .peripheral(.init(port: port)!))
+            }), isConnected, unitB.isConnected, link?.recoveryCount == recoveryCount,
+                  stateB?.boardType == plan.unitBBoards, stateB?.boardValid == [1, 1],
+                  TwoUnitReplay.ready(channels: channels, link: link, unitB: stateB,
+                                      port2Locked: (secondPortState()?.flags ?? 0) & SecondPortState.flagLocked != 0) else {
+                throw DeviceConnectionError.notConnected
+            }
+        }
+        try plan.run(validate: validate, send: { write in
+            switch write {
+            case .unit(let unit, let address, let value):
+                if address.selector == .prefix {
+                    guard let byte = CardLayout.peripheralPrefixByte(value.asString) else {
+                        throw DeviceConnectionError.typeMismatch(expected: "letter A-Z", got: "\(value)")
+                    }
+                    try self.dextClient.sendVendorCommand(command: Self.prefixCommand, value: 0,
+                                                           payload: Data([byte]), port: unit.portByte)
+                } else if unit == .a { try self.writeProperty(address, value: value) }
+                else { try unitB.writeProperty(address, value: value) }
+            case .card(let write):
+                switch write {
+                case .property(let address, let value): try self.writeProperty(address, value: value)
+                case .output(let route): try self.setCardOutputRoute(route)
+                case .cardInput(let command): try self.sendConverterRouting(command)
+                case .frontPanel: throw DeviceConnectionError.notConnected
+                }
+            case .headphones(.b): try unitB.replayRecoveryHeadphones()
+            case .headphones(.a):
+                for (hp, selector) in [AudioPropertySelector.headphone1RoutingID, .headphone2RoutingID].enumerated() {
+                    guard let id = self.settingsStore.value(for: PropertyAddress(selector: selector))?.asUInt32,
+                          let pair = SymphonyIOHeadphoneRouting.outputPairDestinations(sourceID: id),
+                          let headphone = SymphonyIOHeadphoneRouting.Headphone(rawValue: hp) else { continue }
+                    try validate()
+                    try self.sendViaDext(SymphonyIORequestBuilder.setHeadphoneCrosspoint(
+                        headphone: headphone, leftSource: pair.left - 32, rightSource: pair.right - 32))
+                }
+            }
+        }, unlock: { unit in
+            if unit == .b { return try unitB.finishRecovery() }
+            try self.dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
+            try validate()
+            return try self.dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1) == Data([0])
+        })
+    }
+
     // MARK: - DeviceConnection Protocol
 
     public func getProperty(_ address: PropertyAddress) async throws -> PropertyValue {
@@ -713,6 +775,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         let client = dextClient
         return ThunderboltUnitBConnection(identifier: identifier, transport: client,
                                           settingsStore: settingsStore,
+                                          sequenceLock: presetLock,
                                           infoRouting: { [weak self] in
                                               guard let self, let converters = client.readConverterState() else {
                                                   return SymphonyRoutingModel(topology: .unknown, hostChannels: 0)

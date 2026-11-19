@@ -477,7 +477,11 @@ final class AppState {
                             // at Start, or a card swapped while off): read them
                             // too, so the grid and the replay use the same table.
                             await self.readCardTypes()
-                            await self.syncInputRoutingToHardware()
+                            if self.usesTwoUnitReplay {
+                                self.twoUnitReplayNeeded = true
+                            } else {
+                                await self.syncInputRoutingToHardware()
+                            }
                         }
                         self.thunderboltSeenRecoveryCount = count
                     }
@@ -490,6 +494,7 @@ final class AppState {
                     // Unit B is configured by the driver a moment after 64
                     // channels start, and forgotten when port 2 stops.
                     await self.refreshUnitBOffMain(tb)
+                    await self.replayUnitBSettings()
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
                         Self.tbLog.notice("probe recovered after \(failures) failures")
@@ -700,7 +705,7 @@ final class AppState {
         cardLayout.savedStateScope.map { "slotDigitalSettings.\($0)" }
     }
 
-    private var rememberedDigitalSettings: SlotDigitalSettings {
+    var rememberedDigitalSettings: SlotDigitalSettings {
         guard let key = digitalSettingsKey else { return SlotDigitalSettings() }
         return SlotDigitalSettings.load(key: key)
     }
@@ -718,6 +723,7 @@ final class AppState {
     /// at ADAT/SMUX and the firmware starts Replaces Off, Mirrors Analog 1-2.
     @MainActor
     func reapplyDigitalSettings() async {
+        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard let device else { return }
         for write in rememberedDigitalSettings.writes(layout: cardLayout) {
             do {
@@ -1074,6 +1080,9 @@ final class AppState {
     /// What the driver reports about unit B (selector 11), nil unless it is
     /// configured, which it is only while 64 channels run.
     var unitB: SecondUnitInfo?
+    @ObservationIgnored var twoUnitReplayNeeded = false
+    @ObservationIgnored var twoUnitReplayRunning = false
+    @ObservationIgnored var twoUnitSleeping = false
     /// Unit B's connection: unit A's driver client with port byte 1.
     var unitBDevice: (any DeviceConnection)? {
         willSet {
@@ -1153,16 +1162,23 @@ final class AppState {
 
     @MainActor
     private func applyPortSelection(id: UInt32?) {
-        refreshSecondPortState()
+        let shown = currentSecondPortState()
+        if shown != secondPortState { secondPortState = shown }
         var model = portSelection
         model.deviceReported(dataSourceID: id, state: secondPortState,
                              card: PortStatusMessage.cardPhrase(
                                 pciIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier()))
         if model != portSelection {
+            if model.selection != portSelection.selection {
+                twoUnitReplayNeeded = model.selection == .ports1And2
+                (unitBDevice as? ThunderboltUnitBConnection)?.invalidate()
+                applyUnitB(nil, from: nil, confirmedAbsent: model.selection == .port1)
+            }
             portSelection = model
             print("[Maestro] Port selection: \(model.selection?.name ?? "none")"
                   + (model.notice.map { " (\($0))" } ?? ""))
         }
+        refreshSecondPortState()
     }
 
     /// The user picked an entry in Maestro: write it to the device, the way
@@ -2012,6 +2028,7 @@ final class AppState {
     /// Called after readCardTypes() so board types are available for byte mapping.
     @MainActor
     func syncOutputRoutingToHardware() async {
+        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard let device = self.device else { return }
         // Converters: their own routes, kept per chain, never the Symphony
         // I/O table below (same product ID) and never behind the card
@@ -2084,6 +2101,7 @@ final class AppState {
     /// once, as evidence of what it really carries.
     @MainActor
     func syncInputRoutingToHardware() async {
+        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
         // Symphony I/O routing. Nothing is sent to a converter unprompted, the
         // read-back included (see syncDeviceSettingsToHardware).
@@ -2169,7 +2187,13 @@ final class AppState {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
             }
-            try thunderbolt.setCardOutputRoute(route)
+            if usesTwoUnitReplay {
+                try await Task.detached(priority: .userInitiated) {
+                    try thunderbolt.setCardOutputRoute(route)
+                }.value
+            } else {
+                try thunderbolt.setCardOutputRoute(route)
+            }
             return
         }
         try await device.setProperty(
@@ -2196,6 +2220,7 @@ final class AppState {
     /// stored, so a unit nobody has configured here is left alone.
     @MainActor
     func syncDeviceSettingsToHardware() async {
+        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
         // These are Symphony I/O settings. A converter does not have them, and
         // what its firmware does with Symphony commands is unknown, so nothing
@@ -2242,7 +2267,7 @@ final class AppState {
         let store = (device as? ThunderboltDeviceConnection)?.settingsStore
             ?? (device as? XPCDeviceConnection)?.settingsStore
         let replaysHeadphones = !(device is XPCDeviceConnection) || XPCDeviceConnection.replaysOnConnect
-        if let store, replaysHeadphones {
+        if let store, replaysHeadphones, !usesTwoUnitReplay {
             let saved: [(SymphonyIOHeadphoneRouting.Headphone, AudioPropertySelector)] =
                 [(.headphone1, .headphone1RoutingID), (.headphone2, .headphone2RoutingID)]
             for (headphone, selector) in saved {
@@ -3672,6 +3697,10 @@ final class AppState {
     /// card layout changes. The table is the driver's board-order table with
     /// the saved Input Routing choices that `syncInputRoutingToHardware`
     /// writes over it (only when the cards were read this session, as there).
+    func invalidateThunderboltInputMeterMap() {
+        thunderboltInputMeterWordsPollStamp = -1
+    }
+
     private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
         let layout = cardLayout
         guard thunderboltInputMeterWordsPollStamp < 0

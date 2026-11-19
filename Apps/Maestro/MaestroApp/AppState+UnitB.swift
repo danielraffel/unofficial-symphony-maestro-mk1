@@ -107,7 +107,7 @@ extension AppState {
         unitBLayout?.savedStateScope.map { "slotDigitalSettings.unitB.\($0)" }
     }
 
-    private var unitBDigitalSettings: SlotDigitalSettings {
+    var unitBDigitalSettings: SlotDigitalSettings {
         guard let key = unitBDigitalSettingsKey else { return SlotDigitalSettings() }
         return SlotDigitalSettings.load(key: key)
     }
@@ -309,9 +309,12 @@ extension AppState {
             if simulatedUnitB != nil { return }
             throw DeviceConnectionError.notConnected
         }
-        let b = unitBDevice as? ThunderboltUnitBConnection
-        for route in routes { try tb.setCardOutputRoute(route) }
-        try await b?.reapplyHeadphoneCrosspoints()
+        guard let b = unitBDevice as? ThunderboltUnitBConnection else {
+            throw DeviceConnectionError.notConnected
+        }
+        try await Task.detached(priority: .userInitiated) {
+            try await b.applyOutputRouting(routes) { try tb.setCardOutputRoute($0) }
+        }.value
     }
 
     /// A complete B output table, used by Reset Routing and the routing preset.
@@ -344,25 +347,6 @@ extension AppState {
         }.value
         guard unitBDevice === b else { throw DeviceConnectionError.notConnected }
         unitBOutputRoutingCache?.save(rows)
-    }
-
-    /// Put unit B's saved output routes back on the card.
-    @MainActor
-    func syncUnitBOutputRouting() async {
-        guard unitBOnCard, let layout = unitBLayout, let routes = unitBOutputRoutingCache?.loadMulti() else { return }
-        let columns = layout.outputRoutingColumns
-        var written = 0
-        for (row, cols) in routes.sorted(by: { $0.key < $1.key }) {
-            for col in cols.sorted() where col >= 0 && col < columns.count {
-                do {
-                    try await writeUnitBOutputRoutePair(destLeft: columns[col].routingByte, gridRow: row)
-                    written += 1
-                } catch {
-                    print("[Maestro] Unit B output route \(row) → \(col) failed: \(error)")
-                }
-            }
-        }
-        if written > 0 { print("[Maestro] Unit B: wrote \(written) saved output route(s)") }
     }
 
     /// Save Software Return 1-2 for each mixer whose saved source is beyond
@@ -418,7 +402,7 @@ extension AppState {
 
     /// Ask the driver about unit B (no bus access) and follow what it says.
     func refreshUnitB() {
-        guard simulatedUnitB == nil else { return }
+        guard simulatedUnitB == nil, !twoUnitSleeping else { return }
         guard let tb = device as? ThunderboltDeviceConnection, connectedUnit == nil else {
             applyUnitB(nil, from: nil)
             return
@@ -431,7 +415,7 @@ extension AppState {
     /// user-client calls can wait behind a link recovery).
     @MainActor
     func refreshUnitBOffMain(_ tb: ThunderboltDeviceConnection) async {
-        guard simulatedUnitB == nil else { return }
+        guard simulatedUnitB == nil, !twoUnitSleeping else { return }
         let state = await Task.detached(priority: .utility) { tb.readUnitBState() }.value
         guard (device as? ThunderboltDeviceConnection) === tb, connectedUnit == nil else { return }
         applyUnitB(state?.info, from: tb, confirmedAbsent: state?.present == false)
@@ -489,8 +473,6 @@ extension AppState {
             unitBMonitor = monitor
             Task { @MainActor in
                 await monitor.refresh(from: connection)
-                do { try await connection.reapplyHeadphoneCrosspoints() }
-                catch { print("[Maestro] Unit B headphone recall failed: \(error)") }
             }
             unitBOwner = owner
             unitBPeripheralPrefix = connection.settingsStore.value(for: PropertyAddress(selector: .prefix))?.asString
@@ -499,34 +481,10 @@ extension AppState {
         if appeared {
             refreshUnitBNamingFromSaved()
             print("[Maestro] Unit B: " + info.reportLines(unitAPrefix: peripheralPrefix).joined(separator: "; "))
-            // AppState lives on the main actor in practice (as the C
-            // callbacks above it assume); the replay runs there.
-            nonisolated(unsafe) let state = self
-            Task { @MainActor in await state.replayUnitBSettings() }
+            // One owner: the health loop waits for both configured links and
+            // restores tables, card routes/mixers, then names/meters/headphones.
+            twoUnitReplayNeeded = true
         }
-    }
-
-    /// Put unit B's saved settings back, as the connect replay does for unit
-    /// A: its device settings, analog channel settings (port 2), optical
-    /// formats, and its output routes on the card.
-    @MainActor
-    func replayUnitBSettings() async {
-        guard connectionMode == .hardware, let b = unitBDevice as? ThunderboltUnitBConnection,
-              let layout = unitBLayout else { return }
-        let settings = await b.reapplyStoredSettings()
-        let store = unitBChannelStateStore
-        let channels = await AnalogChannelSettingsReplay.apply(
-            inputs: store.load(ChannelStateStore.inputKey) ?? [],
-            outputs: store.load(ChannelStateStore.outputKey) ?? [],
-            layout: layout, device: b)
-        var digital = 0
-        for write in unitBDigitalSettings.writes(layout: layout) {
-            if (try? await b.setProperty(write.address, value: .uint32(write.value))) != nil { digital += 1 }
-        }
-        await syncUnitBOutputRouting()
-        print("[Maestro] Unit B: re-applied \(settings.applied) setting(s), \(channels.applied) analog channel "
-              + "setting(s), \(digital) digital setting(s)"
-              + (settings.failed.isEmpty && channels.failed == 0 ? "" : "; refused \(settings.failed.count + channels.failed)"))
     }
 
     /// Global clear reaches both peripherals, as in

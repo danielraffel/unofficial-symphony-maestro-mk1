@@ -134,6 +134,12 @@ struct ContentView: View {
             .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             .background(UnborderedToolbarApplicator())
         }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in
+            appState.suspendTwoUnitReplay()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)) { _ in
+            appState.wakeTwoUnitReplay()
+        }
         .sheet(isPresented: $state.showAbout) {
             AboutView()
         }
