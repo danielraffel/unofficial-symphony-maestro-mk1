@@ -75,6 +75,11 @@ public:
     // EXPERIMENT (64ch, stage 1): what the last XLink port-2 probe found, as
     // the 16 words of SymphonyPort2StateOutput. No bus access.
     virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
+    // dext 131: the older XLink converters (SymphonyConverterStateOutput, 28
+    // words; no bus access) and the user's choices for them
+    // (SymphonyConverterConfigInput.config: word clock, Device Type).
+    virtual kern_return_t ReadConverterState(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t SetConverterConfig(uint32_t config) LOCALONLY;
     // EXPERIMENT (64ch, stage 2), two-port builds only.
     // RequestPortMode: the port selector's new value (kSymphonyPortSource*).
     // Records it and asks Core Audio for a device configuration change; touches

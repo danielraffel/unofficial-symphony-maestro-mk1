@@ -70,6 +70,22 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyPort2StateOutput),
     },
+    [kSelectorReadConverters] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = 0,
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = sizeof(SymphonyConverterStateOutput),
+    },
+    [kSelectorSetConverterConfig] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = sizeof(SymphonyConverterConfigInput),
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = 0,
+    },
     [kSelectorReadVendor] = {
         .function                 = nullptr,
         .checkCompletionExists    = false,
@@ -290,6 +306,26 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadConverters) {
+        if (!ivars->driver) {
+            UCLOG("ExternalMethod: no driver (converter state)");
+            return kIOReturnNotReady;
+        }
+        SymphonyConverterStateOutput output = {};
+        kern_return_t r = ivars->driver->ReadConverterState(reinterpret_cast<uint32_t *>(&output));
+        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorSetConverterConfig) {
+        if (!ivars->driver || !arguments->structureInput) return kIOReturnBadArgument;
+        auto *input = (const SymphonyConverterConfigInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyUCMagic) return kIOReturnBadArgument;
+        return ivars->driver->SetConverterConfig(input->config);
     }
 
     if (selector == kSelectorReadVendor) {

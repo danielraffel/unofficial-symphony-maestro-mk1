@@ -143,6 +143,10 @@ build_and_run() {
     if grep -q 'ClassifyVolumeTarget' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_CONVERTER_VOLUME)
     fi
+    # dext 131: the older XLink converters as the original ran them.
+    if grep -q 'ReadConverterState' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_CONVERTER_PARITY)
+    fi
     if grep -q 'RetireForUpgrade' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_RETIRE -DSYMPHONY_DEXT_BUILD=1000)
     fi
@@ -272,6 +276,20 @@ if $USE_REF; then
                 status=1
             else
                 echo "[trace] ok   p1-converters.trace differs from $BASE_REF as intended (converter volume keys)"
+            fi
+            rm -f "$TMP/ref/p1-converters.trace"
+        fi
+        # dext 131: p1-converters is meant to differ from a base without the
+        # converter parity (the original's per-unit sequence, authentication,
+        # routing-layer placement, no Symphony I/O vendor traffic). Every
+        # Symphony trace must still be identical.
+        if [[ -f "$TMP/ref/p1-converters.trace" ]] && \
+           ! grep -q 'ReadConverterState' "$TMP/ref-src/Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp"; then
+            if cmp -s "$TMP/ref/p1-converters.trace" "$TMP/work/p1-converters.trace"; then
+                echo "[trace] FAIL p1-converters.trace is the same as the base, which lacks the converter parity"
+                status=1
+            else
+                echo "[trace] ok   p1-converters.trace differs from $BASE_REF as intended (converter parity)"
             fi
             rm -f "$TMP/ref/p1-converters.trace"
         fi

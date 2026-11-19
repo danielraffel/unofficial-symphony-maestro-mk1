@@ -166,8 +166,10 @@ static inline bool ConverterChannelName(ConverterKind k, bool input, char prefix
 }
 
 // The name of a host channel: the unit channel behind it, or "N.A.".
+// firstPrefix: 'A' normally; 'B' when a Symphony I/O on port 1 is unit A and
+// the converters are on port 2.
 static inline void ConverterHostChannelName(const ConverterChain &c, bool input, uint32_t host,
-                                            char *buf, size_t size)
+                                            char *buf, size_t size, char firstPrefix = 'A')
 {
     ConverterChannel map[kConverterMaxHostChannels];
     ConverterHostMap(c, input, map);
@@ -175,7 +177,7 @@ static inline void ConverterHostChannelName(const ConverterChain &c, bool input,
         const ConverterChannel &m = map[host];
         uint32_t idx = m.unit, port = 0;
         if (idx >= c.count[0]) { idx -= c.count[0]; port = 1; }
-        if (ConverterChannelName(c.kind[port][idx], input, (char)('A' + m.unit), m.element + 1u, buf, size))
+        if (ConverterChannelName(c.kind[port][idx], input, (char)(firstPrefix + m.unit), m.element + 1u, buf, size))
             return;
     }
     snprintf(buf, size, "N.A.");
@@ -217,4 +219,87 @@ static inline bool ConverterFirmwareOutOfDate(uint8_t major, uint8_t minor)
     if (major == 0 && minor == 0) return false;
     return major < kConverterMinFirmwareMajor ||
            (major == kConverterMinFirmwareMajor && minor < kConverterMinFirmwareMinor);
+}
+
+// Authentication (Symphony64 Driver/XLink.cpp:2846-2975, AUTHENTICATE_XLINK_DEVICES
+// was defined in the shipped driver). The host sends AUTH_START, 16 bytes with
+// AUTH_WRITE, then reads 16 bytes with AUTH_READ (data = byte index), and checks
+// the unit's first 8 bytes against a function of the host's bytes 8-15, the
+// unit's bytes 8-15 (bit-shuffled) and the unit's routing nibble. It is the host
+// checking the unit is genuine; the unit does not depend on the result.
+static constexpr uint8_t kXLinkCmdAuthStart = 0x06;
+static constexpr uint8_t kXLinkCmdAuthWrite = 0x07;
+static constexpr uint8_t kXLinkCmdAuthRead  = 0x08;
+static constexpr uint32_t kConverterAuthBytes = 16;
+
+// The 16 bytes the host sends. The original filled them from random(), which
+// the driver never seeded (the same sequence every load); this keeps a fixed
+// sequence as well, so the register traces stay reproducible.
+static inline void ConverterAuthChallenge(uint32_t &state, uint8_t out[kConverterAuthBytes])
+{
+    for (uint32_t i = 0; i < kConverterAuthBytes; i++) {
+        if ((i % 4) == 0) {   // one 32-bit draw per four bytes, like random() >> (i%4)*8
+            state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        }
+        out[i] = (uint8_t)(state >> ((i % 4) * 8));
+    }
+}
+
+// VerifyDataInDevice. `routing` is the unit's routing byte; the original passed
+// CONVERT_NEW_ROUTING_TO_DEVICEINFO(routing) = routing << 4 as a UInt8, so the
+// value it mixed in (HostInfo, nibbles swapped) is routing & 0x0F.
+static inline bool ConverterAuthVerify(const uint8_t out[kConverterAuthBytes],
+                                       const uint8_t in[kConverterAuthBytes], uint8_t routing)
+{
+    const uint8_t info = (uint8_t)(routing << 4);
+    const uint8_t hostInfo = (uint8_t)(((info & 0x0F) << 4) | ((info & 0xF0) >> 4));
+    uint8_t host[8], rnd[8], res[8];
+    for (uint32_t i = 0; i < 8; i++) {
+        const uint8_t b = in[i + 8];
+        host[i] = out[i + 8];
+        rnd[i] = (uint8_t)(((b & 0x80) >> 5) | ((b & 0x40) >> 6) | ((b & 0x20) << 2) | (b & 0x10) |
+                           ((b & 0x08) >> 2) | ((b & 0x04) << 4) | ((b & 0x02) << 2) | ((b & 0x01) << 5));
+    }
+    res[0] = (rnd[0] & 0x80) ? (uint8_t)(host[1] ^ rnd[5]) : (uint8_t)~(host[1] ^ rnd[2]);
+    res[1] = (rnd[1] & 0x40) ? (uint8_t)(host[3] ^ rnd[2]) : (uint8_t)~(host[3] ^ rnd[1]);
+    res[2] = (rnd[2] & 0x20) ? (uint8_t)(host[5] ^ rnd[1]) : (uint8_t)~(host[5] ^ rnd[4]);
+    res[3] = (rnd[3] & 0x10) ? (uint8_t)(host[7] ^ rnd[4]) : (uint8_t)~(host[7] ^ rnd[6]);
+    res[4] = (rnd[4] & 0x08) ? (uint8_t)(hostInfo ^ rnd[6]) : (uint8_t)~(host[2] ^ rnd[7]);
+    res[5] = (rnd[5] & 0x04) ? (uint8_t)(host[4] ^ rnd[7]) : (uint8_t)~(host[4] ^ rnd[0]);
+    res[6] = (rnd[6] & 0x02) ? (uint8_t)(host[6] ^ rnd[0]) : (uint8_t)~(hostInfo ^ rnd[3]);
+    res[7] = (rnd[7] & 0x01) ? (uint8_t)(host[0] ^ rnd[3]) : (uint8_t)~(host[0] ^ rnd[5]);
+    for (uint32_t i = 0; i < 8; i++)
+        if (res[i] != in[i]) return false;
+    return true;
+}
+
+// What a genuine unit answers, for the host tests and the register-trace card:
+// bytes 8-15 are the unit's own, bytes 0-7 follow from them. (Test helper; the
+// driver never builds an answer.)
+static inline void ConverterAuthExpectedAnswer(const uint8_t out[kConverterAuthBytes], uint8_t routing,
+                                               const uint8_t unitBytes[8], uint8_t in[kConverterAuthBytes])
+{
+    for (uint32_t i = 0; i < 8; i++) in[i + 8] = unitBytes[i];
+    for (uint32_t i = 0; i < 8; i++) in[i] = 0;
+    // Solve for bytes 0-7 by computing the expected result with them unset:
+    // the result depends only on bytes 8-15, so one pass gives the answer.
+    uint8_t probe[kConverterAuthBytes];
+    for (uint32_t i = 0; i < kConverterAuthBytes; i++) probe[i] = in[i];
+    const uint8_t info = (uint8_t)(routing << 4);
+    const uint8_t hostInfo = (uint8_t)(((info & 0x0F) << 4) | ((info & 0xF0) >> 4));
+    uint8_t host[8], rnd[8];
+    for (uint32_t i = 0; i < 8; i++) {
+        const uint8_t b = probe[i + 8];
+        host[i] = out[i + 8];
+        rnd[i] = (uint8_t)(((b & 0x80) >> 5) | ((b & 0x40) >> 6) | ((b & 0x20) << 2) | (b & 0x10) |
+                           ((b & 0x08) >> 2) | ((b & 0x04) << 4) | ((b & 0x02) << 2) | ((b & 0x01) << 5));
+    }
+    in[0] = (rnd[0] & 0x80) ? (uint8_t)(host[1] ^ rnd[5]) : (uint8_t)~(host[1] ^ rnd[2]);
+    in[1] = (rnd[1] & 0x40) ? (uint8_t)(host[3] ^ rnd[2]) : (uint8_t)~(host[3] ^ rnd[1]);
+    in[2] = (rnd[2] & 0x20) ? (uint8_t)(host[5] ^ rnd[1]) : (uint8_t)~(host[5] ^ rnd[4]);
+    in[3] = (rnd[3] & 0x10) ? (uint8_t)(host[7] ^ rnd[4]) : (uint8_t)~(host[7] ^ rnd[6]);
+    in[4] = (rnd[4] & 0x08) ? (uint8_t)(hostInfo ^ rnd[6]) : (uint8_t)~(host[2] ^ rnd[7]);
+    in[5] = (rnd[5] & 0x04) ? (uint8_t)(host[4] ^ rnd[7]) : (uint8_t)~(host[4] ^ rnd[0]);
+    in[6] = (rnd[6] & 0x02) ? (uint8_t)(host[6] ^ rnd[0]) : (uint8_t)~(hostInfo ^ rnd[3]);
+    in[7] = (rnd[7] & 0x01) ? (uint8_t)(host[0] ^ rnd[3]) : (uint8_t)~(host[0] ^ rnd[5]);
 }

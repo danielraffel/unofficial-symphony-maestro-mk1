@@ -53,6 +53,8 @@ public:
     kern_return_t ReadLinkState(uint32_t *outWords);
     kern_return_t RetireForUpgrade(uint32_t replacementBuild);
     kern_return_t ReadPort2State(uint32_t *outWords);   // experiment/64ch-port2 only
+    kern_return_t ReadConverterState(uint32_t *outWords);
+    kern_return_t SetConverterConfig(uint32_t config);
     kern_return_t RequestPortMode(uint32_t selectorValue);   // experiment, stage 2
     kern_return_t PerformPortModeChange();                   // experiment, stage 2
     kern_return_t ReadVendorCommand(uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen);

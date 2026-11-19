@@ -21,6 +21,9 @@
 #include "SymphonyThunderbridge.h"
 #include "Sym64Registers.h"
 #include "SymphonyThunderbridgeShared.h"
+#ifdef TRACE_HAVE_CONVERTER_PARITY
+#include "SymphonyConverters.h"
+#endif
 
 #include <cstdarg>
 #include <functional>
@@ -31,7 +34,11 @@ static_assert(sizeof(SymphonyLinkStateOutput) == 64, "ReadLinkState layout chang
 #ifdef TRACE_HAVE_PORT2
 static_assert(sizeof(SymphonyPort2StateOutput) == 64, "ReadPort2State is 16 words");
 static_assert(offsetof(SymphonyPort2StateOutput, unit) == 7 * sizeof(uint32_t), "unit[] at word 7");
-static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorRetireForUpgrade == 7 && kSelectorReadPort2State == 8 && kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorCount == 11, "selector numbers");
+static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorRetireForUpgrade == 7 && kSelectorReadPort2State == 8, "selector numbers");
+#ifdef TRACE_HAVE_CONVERTER_PARITY
+static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorCount == 11, "converter selectors");
+static_assert(sizeof(SymphonyConverterStateOutput) == 112 && sizeof(SymphonyConverterConfigInput) == 8, "converter struct sizes");
+#endif
 #endif
 
 HostBackend *gHostBackend = nullptr;
@@ -110,6 +117,10 @@ struct Unit {
     uint8_t phase = 0x20;             // reply to XLINK_CMD_WCLK_PHASE (0x09)
     bool    answersPhase = true;
     uint32_t unmutes = 0;             // UNMUTE (0x0A, data 0x80) commands addressed to it
+    uint8_t  authOut[16] = {};        // AUTH_WRITE bytes since AUTH_START
+    uint32_t authIdx = 0;
+    bool     authGenuine = true;      // answers AUTH_READ like a real Apogee unit
+    uint32_t authStarts = 0;
 };
 
 struct Port {
@@ -292,6 +303,23 @@ struct Port {
             if (Unit *u = addr ? reachable(addr) : nullptr)
                 if (u->answersPhase) reply(addr, cmd, u->phase);
             break;
+#ifdef TRACE_HAVE_CONVERTER_PARITY
+        case 0x06:
+            if (Unit *u = addr ? reachable(addr) : nullptr) { u->authIdx = 0; u->authStarts++; }
+            break;
+        case 0x07:
+            if (Unit *u = addr ? reachable(addr) : nullptr) if (u->authIdx < 16) u->authOut[u->authIdx++] = data;
+            break;
+        case 0x08:
+            if (Unit *u = addr ? reachable(addr) : nullptr) {
+                static const uint8_t own[8] = { 0x5A, 0x13, 0xC4, 0x7E, 0x21, 0x99, 0x0F, 0xB2 };
+                uint8_t in[16];
+                ConverterAuthExpectedAnswer(u->authOut, ConverterRouting(u->inquire, u->xtd), own, in);
+                if (!u->authGenuine) in[0] ^= 0x01;
+                if (data < 16) reply(addr, cmd, in[data]);
+            }
+            break;
+#endif
         case 0x0A:
             if (addr == 0) { for (auto &u : units) if (data & 0x80) u.unmutes++; }
             else if (Unit *u = reachable(addr)) { if (data & 0x80) u->unmutes++; }
@@ -535,6 +563,7 @@ struct Options {
     bool        shortFlow = false;        // Start, StartDevice, link watch, Stop only
     uint32_t    dropVendorReads = 0;      // port 1 Symphony: first N vendor reads unanswered
     uint8_t     symphonyInquire = 0;      // port 1 Symphony: INQUIRE reply (0 = none)
+    std::vector<Unit> port1Units;         // converters on port 1 other than the default AD,DA
 };
 
 static void Attach(Port &p, Port::Kind kind)
@@ -578,6 +607,7 @@ static void RunScenario(const Options &o, Run &r)
     if (o.legacy2100) card.pciDeviceID = kSymphonyPCIeDeviceID;
     card.gatePort2 = o.portCountProperty == 2;
     if (!o.lateSymphony) Attach(card.port[0], o.port1);
+    if (!o.port1Units.empty() && o.port1 == Port::Converters) card.port[0].units = o.port1Units;
     card.port[0].dropVendorReads = o.dropVendorReads;
     card.port[0].symphonyInquire = o.symphonyInquire;
     if (!o.latePort2) Attach(card.port[1], o.port2);
@@ -737,6 +767,7 @@ static void Finish(const Options &o, Run &r)
     r.drv = nullptr;
     gHostBackend = nullptr;
 }
+
 
 static std::vector<std::string> Trace(const Options &o)
 {
@@ -1503,10 +1534,45 @@ static void CheckBothPortsRunning(const char *what, Run &r, size_t mark)
     CHECK(c.reg[kRegA2H2HBA] == 0x10300000 && c.reg[kRegH2A2HBA] == 0x10400000,
           "%s: port-2 buffer addresses 0x%08x / 0x%08x", what, c.reg[kRegA2H2HBA], c.reg[kRegH2A2HBA]);
     CHECK(c.reg[kRegA2HHBA] == 0x10000000 && c.reg[kRegH2AHBA] == 0x10100000, "%s: port-1 buffer addresses changed", what);
-    for (uint32_t n = 32; n < 64; n++) {
-        CHECK(c.reg[kRegInputRouting + n * 4] == (n | 0x100), "%s: input route %u = 0x%03x", what, n, c.reg[kRegInputRouting + n * 4]);
-        CHECK(c.reg[kRegOutputRouting + n * 4] == ((64 + n) | 0x100), "%s: output route %u = 0x%03x", what, n,
-              c.reg[kRegOutputRouting + n * 4]);
+    // Port 2's entries: identity for a Symphony I/O; for converters (dext 131)
+    // the routing layer's placement after port 1's 32 (SymphonyConverters.h),
+    // with host channels and slots that carry nothing disabled.
+    uint32_t wantIn[64] = {}, wantOut[64] = {};
+    for (uint32_t n = 32; n < 64; n++) { wantIn[n] = n | 0x100; wantOut[n] = (64 + n) | 0x100; }
+    // Host channels are packed across both ports: with converters on port 1
+    // too, port 2's follow port 1's units, else they follow the Symphony I/O's 32.
+    uint32_t checkFrom = 32;
+#ifdef TRACE_HAVE_CONVERTER_PARITY
+    bool p2conv = c.port[1].kind == Port::Converters && !c.port[1].units.empty();
+    for (const Unit &u : c.port[1].units)
+        if (ConverterRouting(u.inquire, u.xtd) == kConverterRoutingSymphony) p2conv = false;
+    if (p2conv) {
+        const bool p1conv = c.port[0].kind == Port::Converters;
+        ConverterChain chain = {};
+        if (p1conv)
+            for (const Unit &u : c.port[0].units)
+                chain.kind[0][chain.count[0]++] = ConverterKindForRouting(ConverterRouting(u.inquire, u.xtd));
+        for (const Unit &u : c.port[1].units)
+            chain.kind[1][chain.count[1]++] = ConverterKindForRouting(ConverterRouting(u.inquire, u.xtd));
+        ConverterChannel inMap[kConverterMaxHostChannels], outMap[kConverterMaxHostChannels];
+        ConverterHostMap(chain, true, inMap);
+        ConverterHostMap(chain, false, outMap);
+        const uint32_t base = p1conv ? 0 : 32;
+        checkFrom = p1conv ? 0 : 32;
+        for (uint32_t n = checkFrom; n < 64; n++) { wantIn[n] = 0; wantOut[n] = 0; }
+        for (uint32_t h = 0; h + base < 64; h++) {
+            const uint32_t host = h + base;
+            if (inMap[h].valid) wantIn[host] = (inMap[h].port * 32 + inMap[h].slot) | 0x100;
+            if (outMap[h].valid)
+                wantOut[outMap[h].port * 32 + outMap[h].slot] = ((host < 2) ? (128 + host) : (64 + host)) | 0x100;
+        }
+    }
+#endif
+    for (uint32_t n = checkFrom; n < 64; n++) {
+        CHECK(c.reg[kRegInputRouting + n * 4] == wantIn[n], "%s: input route %u = 0x%03x (want 0x%03x)", what, n,
+              c.reg[kRegInputRouting + n * 4], wantIn[n]);
+        CHECK(c.reg[kRegOutputRouting + n * 4] == wantOut[n], "%s: output route %u = 0x%03x (want 0x%03x)", what, n,
+              c.reg[kRegOutputRouting + n * 4], wantOut[n]);
     }
     CHECK(c.reg[kRegIntMask] == kInt_A2HWrap, "%s: interrupt mask 0x%08x (port-1 wrap only)", what, c.reg[kRegIntMask]);
     // Original's order: every step reaches GCSR2 (port 2) before GCSR (port 1).
@@ -2331,6 +2397,194 @@ static void RunNominalRateNames()
     gHostBackend = nullptr;
 }
 
+#ifdef TRACE_HAVE_CONVERTER_PARITY
+// ── dext 131: converters as the original ran them ───────────────────────────
+static SymphonyConverterStateOutput ConvState(Run &r)
+{
+    SymphonyConverterStateOutput o = {};
+    r.drv->ReadConverterState(reinterpret_cast<uint32_t *>(&o));
+    return o;
+}
+static Unit U(uint8_t inquire, uint8_t xtd = 0) { Unit u; u.inquire = inquire; u.xtd = xtd; return u; }
+// The first line after which the driver treats port 1 as converters: its first
+// AUTH_START. (Before that it tried one Symphony I/O vendor read, which is how a
+// converter is told apart.)
+static size_t AfterIdentification(const FakeCard &c)
+{
+    for (size_t i = 0; i < c.lines.size(); i++) {
+        unsigned long long off = 0; unsigned val = 0;
+        if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) == 2 && off == kRegXLink1TX &&
+            ((val >> 9) & 0xFF) == 0x06)
+            return i;
+    }
+    return c.lines.size();
+}
+
+static void RunConverterParityChecks()
+{
+    // 1. Four units on port 1 (AD, AD, DA, DA): every unit found, addressed,
+    //    authenticated; no Symphony I/O vendor message; per-unit unmute; the
+    //    routing layer's placement; AD latency; DAW names.
+    {
+        Options o; o.name = "converters: AD,AD,DA,DA on port 1"; o.port1 = Port::Converters; o.shortFlow = true;
+        o.port1Units = { U(0x37, 0x02), U(0x37, 0x02), U(0xC7, 0x02), U(0xC7, 0x02) };
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        const SymphonyConverterStateOutput st = ConvState(r);
+        CHECK(st.flags & kSymphonyConvPort1Converters, "%s: port 1 not identified as converters (flags 0x%x)", o.name, st.flags);
+        CHECK(st.unitCount[0] == 4, "%s: %u units (want 4)", o.name, st.unitCount[0]);
+        for (uint32_t u = 0; u < 4; u++) {
+            const uint32_t w = st.unit[0][u];
+            CHECK((w & kSymphonyConvUnitAddressed) && (w & kSymphonyConvUnitAuthRan) && (w & kSymphonyConvUnitAuthOK),
+                  "%s: unit %u word 0x%08x (want addressed + authenticated)", o.name, u + 1, w);
+            CHECK(c.port[0].units[u].unmutes >= 1, "%s: unit %u never unmuted by address", o.name, u + 1);
+            CHECK(c.port[0].units[u].authStarts >= 1, "%s: unit %u never authenticated", o.name, u + 1);
+        }
+        CHECK(AfterIdentification(c) < c.lines.size(), "%s: never authenticated", o.name);
+        {
+            const size_t from = AfterIdentification(c);
+            std::string where;
+            for (size_t i = from; i < c.lines.size() && where.empty(); i++) {
+                unsigned long long off = 0; unsigned val = 0;
+                if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) == 2 && off == kRegXLink1TX && ((val >> 9) & 0xFF) == 0x10) {
+                    for (size_t j = i; j-- > 0;) if (c.lines[j].rfind("-- ", 0) == 0) { where = c.lines[j]; break; }
+                    if (where.empty()) where = "(start)";
+                }
+            }
+            CHECK(where.empty(), "%s: a Symphony I/O vendor message went to converters (phase %s)", o.name, where.c_str());
+        }
+        CHECK(st.hostInputs == 32 && st.hostOutputs == 32, "%s: host %u in / %u out (want 32/32)", o.name, st.hostInputs, st.hostOutputs);
+        for (uint32_t n = 0; n < 32; n++) {
+            CHECK(c.reg[kRegInputRouting + n * 4] == (n | 0x100), "%s: input route %u = 0x%03x", o.name, n, c.reg[kRegInputRouting + n * 4]);
+            const uint32_t wantOut = ((n < 2) ? (128 + n) : (64 + n)) | 0x100;
+            CHECK(c.reg[kRegOutputRouting + n * 4] == wantOut, "%s: output route %u = 0x%03x", o.name, n, c.reg[kRegOutputRouting + n * 4]);
+        }
+        CHECK(st.latencyIn == 36 && st.latencyOut == 35, "%s: latency %u/%u (want AD 36/35 at 44.1 kHz)", o.name, st.latencyIn, st.latencyOut);
+        CHECK(r.card.port[0].units[3].addr == 4, "%s: unit 4 has address %u", o.name, r.card.port[0].units[3].addr);
+        Finish(o, r);
+    }
+    // 2. A Rosetta then an AD-16X: the AD's inputs sit on slots 17-32 and
+    //    reach host inputs 9-24; host 25-32 and the Rosetta's empty slots carry nothing.
+    {
+        Options o; o.name = "converters: Rosetta then AD"; o.port1 = Port::Converters; o.shortFlow = true;
+        o.port1Units = { U(0x57, 0x02), U(0x37, 0x02) };
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        CHECK(c.reg[kRegInputRouting + 7 * 4] == (7 | 0x100), "%s: host 8 <- 0x%03x", o.name, c.reg[kRegInputRouting + 7 * 4]);
+        CHECK(c.reg[kRegInputRouting + 8 * 4] == (16 | 0x100), "%s: host 9 <- 0x%03x (want slot 17)", o.name, c.reg[kRegInputRouting + 8 * 4]);
+        CHECK(c.reg[kRegInputRouting + 23 * 4] == (31 | 0x100), "%s: host 24 <- 0x%03x", o.name, c.reg[kRegInputRouting + 23 * 4]);
+        CHECK(c.reg[kRegInputRouting + 24 * 4] == 0, "%s: host 25 routed (0x%03x)", o.name, c.reg[kRegInputRouting + 24 * 4]);
+        CHECK(c.reg[kRegOutputRouting + 8 * 4] == 0, "%s: output slot 9 routed (0x%03x)", o.name, c.reg[kRegOutputRouting + 8 * 4]);
+        const SymphonyConverterStateOutput st = ConvState(r);
+        CHECK(st.latencyIn == 36 && st.latencyOut == 34, "%s: latency %u/%u (want Rosetta 36/34)", o.name, st.latencyIn, st.latencyOut);
+        Finish(o, r);
+    }
+    // 3. A Symphony I/O that loses its vendor reads and answers INQUIRE 0xF:
+    //    nothing converter-specific reaches it.
+    {
+        Options o; o.name = "converters: ambiguous Symphony gets none of it"; o.shortFlow = true;
+        o.dropVendorReads = 8; o.symphonyInquire = 0xF0;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        CHECK(Commands(c, 0, kRegXLink1TX, 0x06).empty(), "%s: AUTH_START sent to a Symphony I/O", o.name);
+        CHECK(Commands(c, 0, kRegXLink1TX, 0x0C).empty(), "%s: DEVICE_TYPE sent to a Symphony I/O", o.name);
+        CHECK(ConvState(r).flags == 0, "%s: converter flags 0x%x on a Symphony I/O", o.name, ConvState(r).flags);
+        Finish(o, r);
+    }
+    // 4. A unit whose authentication does not verify is reported and kept.
+    {
+        Options o; o.name = "converters: failed authentication is reported"; o.port1 = Port::Converters; o.shortFlow = true;
+        o.port1Units = { U(0x37, 0x02), U(0xC7, 0x02) };
+        o.port1Units[1].authGenuine = false;
+        Run r;
+        RunScenario(o, r);
+        const SymphonyConverterStateOutput st = ConvState(r);
+        CHECK(st.unitCount[0] == 2, "%s: %u units (want 2, the failing one kept)", o.name, st.unitCount[0]);
+        CHECK((st.unit[0][1] & kSymphonyConvUnitAuthRan) && !(st.unit[0][1] & kSymphonyConvUnitAuthOK),
+              "%s: unit 2 word 0x%08x (want ran, not verified)", o.name, st.unit[0][1]);
+        CHECK(st.hostOutputs == 16, "%s: the failing DA's outputs not placed (%u)", o.name, st.hostOutputs);
+        Finish(o, r);
+    }
+    // 5. Health: a unit drifts out of the 0x01-0x2F window while audio runs.
+    //    The watch only reads (no jam under running DMA), marks the recovery,
+    //    and the next StartDevice runs the rate transaction with the alignment.
+    {
+        Options o; o.name = "converters: phase out of window"; o.port1 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        c.phase("unit 2 out of phase");
+        c.port[0].units[1].phase = 0x40;
+        size_t mark = c.lines.size();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        SymphonyConverterStateOutput st = ConvState(r);
+        CHECK(st.phaseErrors >= 1, "%s: no phase error counted", o.name);
+        CHECK(st.flags & kSymphonyConvRecoveryPending, "%s: no recovery pending (flags 0x%x)", o.name, st.flags);
+        CHECK(CountAccess(c, mark, 'W', kRegJam) == 0, "%s: jam written from the watch", o.name);
+        c.port[0].units[1].phase = 0x20;
+        c.phase("controlled restart");
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        mark = c.lines.size();
+        CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: restart failed", o.name);
+        CHECK(FindWrite(c, mark, kRegJam, 0x1B) != SIZE_MAX, "%s: alignment not written in the restart", o.name);
+        st = ConvState(r);
+        CHECK(!(st.flags & kSymphonyConvRecoveryPending), "%s: recovery still pending", o.name);
+        Finish(o, r);
+    }
+    // 6. Health: a unit added at the end while running re-runs the bus init.
+    {
+        Options o; o.name = "converters: unit added"; o.port1 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        c.phase("a third unit at the end");
+        c.port[0].units.push_back(U(0x37, 0x02));
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(ConvState(r).unitCount[0] == 3, "%s: %u units after the add (want 3)", o.name, ConvState(r).unitCount[0]);
+        Finish(o, r);
+    }
+    // 7. External word clock: SET_EXT_LOCK to every unit with data 1, never a
+    //    Symphony ClockMode; the Core Audio clock selector maps onto it too.
+    {
+        Options o; o.name = "converters: external word clock"; o.port1 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        size_t mark = c.lines.size();
+        CHECK(r.drv->SetConverterConfig(kSymphonyConvConfigClockExternal) == kIOReturnSuccess, "%s: config refused", o.name);
+        HostPump();
+        bool ext = false;
+        for (uint32_t v : Commands(c, mark, kRegXLink1TX, 0x04)) if (v == 0x0001) ext = true;   // addr 0, data 1
+        CHECK(ext, "%s: SET_EXT_LOCK(broadcast, 1) not sent", o.name);
+        CHECK(ConvState(r).flags & kSymphonyConvClockExternal, "%s: flags 0x%x", o.name, ConvState(r).flags);
+        mark = c.lines.size();
+        r.drv->RequestClockSource(1);   // Internal from Audio MIDI Setup
+        HostPump();
+        bool internal = false;
+        for (uint32_t v : Commands(c, mark, kRegXLink1TX, 0x04)) if (v == 0x0100) internal = true;   // addr 1, data 0
+        CHECK(internal, "%s: Internal did not send SET_EXT_LOCK(1, 0)", o.name);
+        CHECK(Commands(c, AfterIdentification(c), kRegXLink1TX, 0x10).empty(), "%s: ClockMode (a vendor message) went to converters", o.name);
+        Finish(o, r);
+    }
+    // 8. Device Type: a 0x0F unit used as a DA-16X puts its analog channels on
+    //    the outputs; the state reports the choice.
+    {
+        Options o; o.name = "converters: Device Type"; o.port1 = Port::Converters; o.shortFlow = true;
+        o.port1Units = { U(0xF7, 0x02) };
+        Run r;
+        RunScenario(o, r);
+        r.drv->SetConverterConfig(1u << kSymphonyConvConfigDDAsDAShift);
+        HostPump();
+        CHECK(ConvState(r).unit[0][0] & kSymphonyConvUnitTypeIsDA, "%s: Device Type not reported", o.name);
+        Finish(o, r);
+    }
+}
+#endif
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -2344,6 +2598,9 @@ int main(int argc, char **argv)
     RunNominalRateNames();
 #ifdef TRACE_HAVE_CONVERTER_VOLUME
     RunVolumeKeyChecks();
+#endif
+#ifdef TRACE_HAVE_CONVERTER_PARITY
+    RunConverterParityChecks();
 #endif
 
     size_t accesses = 0;

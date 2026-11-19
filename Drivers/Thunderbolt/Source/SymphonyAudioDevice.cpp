@@ -93,11 +93,21 @@ static kern_return_t SetTimingTuple(IOUserAudioDevice* device,
     return TimingTuplesEqual(readback, tuple) ? kIOReturnSuccess : kIOReturnError;
 }
 
+// dext 131 (SymphonyThunderbridge.cpp): the converters' latency, 0/0 for a Symphony I/O.
+void SymphonyConverterLatencyForDevice(IOUserAudioDevice *device, double rate,
+                                       uint32_t *inLatency, uint32_t *outLatency);
+
 static kern_return_t ApplyTimingTuple(IOUserAudioDevice* device, double rate,
                                       const TimingTupleState* rollback)
 {
     if (!device) return kIOReturnBadArgument;
-    const TimingProfile profile = TimingProfileForRate(rate);
+    TimingProfile profile = TimingProfileForRate(rate);
+    uint32_t convIn = 0, convOut = 0;
+    SymphonyConverterLatencyForDevice(device, rate, &convIn, &convOut);
+    if (convIn || convOut) {
+        profile.inputConverterLatency = convIn;
+        profile.outputConverterLatency = convOut;
+    }
     const kern_return_t inputSafety = device->SetInputSafetyOffset(profile.safetyOffset);
     const kern_return_t outputSafety = device->SetOutputSafetyOffset(profile.safetyOffset);
     const uint32_t inputLatencyFrames = profile.inputConverterLatency + profile.frameSize;

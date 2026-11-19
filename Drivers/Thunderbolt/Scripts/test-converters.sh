@@ -110,6 +110,17 @@ int main()
     CHECK(ConverterFirmwareOutOfDate(1, 15), "1.F out of date");
     CHECK(!ConverterFirmwareOutOfDate(3, 0), "3.0 ok");
 
+    // Authentication: a genuine answer verifies; one wrong byte, or the wrong
+    // routing nibble, does not.
+    { uint32_t st = 0x12345678u; uint8_t out[16], in[16]; const uint8_t unit[8] = {1, 2, 3, 4, 0x55, 0xAA, 7, 0x80};
+      ConverterAuthChallenge(st, out);
+      ConverterAuthExpectedAnswer(out, kConverterRoutingAD, unit, in);
+      CHECK(ConverterAuthVerify(out, in, kConverterRoutingAD), "genuine answer verifies");
+      CHECK(!ConverterAuthVerify(out, in, kConverterRoutingDA) || (kConverterRoutingAD & 0xF) == (kConverterRoutingDA & 0xF), "routing nibble matters");
+      in[3] ^= 1; CHECK(!ConverterAuthVerify(out, in, kConverterRoutingAD), "a wrong byte fails");
+      uint32_t st2 = 0x12345678u; uint8_t out2[16]; ConverterAuthChallenge(st2, out2);
+      CHECK(memcmp(out, out2, 16) == 0, "challenge sequence is reproducible"); }
+
     if (failures) { fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     printf("[PASS] converter identity, placement, names, latency, firmware\n");
     return 0;

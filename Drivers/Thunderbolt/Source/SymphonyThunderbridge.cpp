@@ -41,6 +41,7 @@
 #include "SymphonyCardMixerRouting.h"
 #include "SymphonyOptionBoard.h"
 #include "SymphonyRetire.h"
+#include "SymphonyConverters.h"
 
 // ── Logging ─────────────────────────────────────────────────────────────────
 // DriverKit only provides os_log with OS_LOG_TYPE_DEFAULT — no os_log_error.
@@ -322,6 +323,28 @@ struct SymphonyThunderbridge_IVars {
     bool      converterVolumeKeys;        // keys drive the mixer-1 trim, not 0x26/0x27
     uint8_t   converterTrimAtten;         // 0..64 dB, from the volume control
     bool      converterTrimMuted;         // from the mute control
+    // dext 131: the older XLink converters, as Apogee's driver ran them
+    // (SymphonyConverters.h). Written on xlinkQueue (or in Start() before the
+    // queue runs); convConfig, convFlags and convRecoveryPending are atomic, the
+    // rest are read by ReadConverterState as a best-effort snapshot.
+    bool      convPort1;               // port 1 positively identified as converters
+    uint32_t  convUnitCount[2];        // units per port (port 2 from the port-2 probe)
+    uint32_t  convUnit[2][4];          // kSymphonyConvUnit* words, nearest first
+    uint32_t  convPhase[2];            // last WCLK_PHASE byte per unit
+    uint32_t  convConfig;              // atomic; SymphonyConverterConfigInput.config
+    uint32_t  convFlags;               // atomic; kSymphonyConv*
+    uint32_t  convHealthTicks;
+    uint32_t  convPhaseErrors;
+    uint32_t  convUnlocks;
+    uint32_t  convRecoveries;
+    uint32_t  convLatencyIn;           // 0 = the Symphony I/O table applies
+    uint32_t  convLatencyOut;
+    uint32_t  convHostIn;
+    uint32_t  convHostOut;
+    uint32_t  convAuthState;           // challenge generator state (fixed seed, like random())
+    bool      convRecoveryPending;     // atomic; a recovery waits for a controlled restart
+    uint64_t  convLastRecoveryNs;      // watch-local
+    uint32_t  convFailedRecoveries;    // watch-local; recoveries since the last healthy check
     uint32_t  lastWatchClockReg;       // watch-local: last kRegXLinkClocking sample
     uint64_t  linkWatchTicks;          // watch-local
     bool      linkNeedsRevalidation;   // atomic; set by SetPowerState(On), consumed by the watch
@@ -369,8 +392,8 @@ struct SymphonyThunderbridge_IVars {
     uint8_t   namingCoaxReplace[2];
     uint8_t   sessionCoaxMirror[2];   // last Mirrors (0x36) sent, 0 = none this session
     uint8_t   sessionCoaxBoardType[2]; // the slot's card type those two belong to, 0 = none
-    char      publishedInputName[32][20]; // what Core Audio has now; "" = no name set
-    char      publishedOutputName[32][20]; // same, for the 32 host outputs
+    char      publishedInputName[64][20]; // what Core Audio has now; "" = no name set
+    char      publishedOutputName[64][20]; // same, for the host outputs (33-64: converters on port 2 only)
     uint8_t   namingPrefix;               // unit's peripheral prefix byte (0x37); not A-Z = "A"
 
     // ── EXPERIMENT (64ch, stage 1): second XLink port, discovery only ───────
@@ -607,6 +630,7 @@ static constexpr uint8_t  kXLinkCmdUnmute          = 0x0A;
 // the older converters apart: 0x3 AD-16X, 0xC DA-16X, 0xF DD-16X, 0x5 Rosetta 800.
 static constexpr uint8_t  kXLinkCmdInquire         = 0x05;
 static constexpr uint8_t  kXLinkCmdXtdInquire      = 0x0B;
+static constexpr uint8_t  kXLinkCmdDeviceType      = 0x0C;   // XLINK_DEVICE_TYPE (XLinkRegisters.h:481)
 static constexpr uint8_t  kXLinkMaxDevices         = 4;     // XLINK_MAX_DEVICES
 // ReadLinkState word 15 layout (dext 121+): bits 0-7 unit 1 INQUIRE reply,
 // bits 8-15 unit 1 XTD_INQUIRE reply, bits 16-27 the bank nibbles of units 2,
@@ -669,10 +693,17 @@ static kern_return_t FirstTimingFailure(kern_return_t a, kern_return_t b,
     return d;
 }
 
-static kern_return_t ApplyAudioTimingProfile(IOUserAudioDevice *audioDevice, double rate)
+// convIn/convOut: dext 131, the converters' own latency (ConverterLatencyFor)
+// in place of the Symphony I/O figures; 0/0 keeps the table.
+static kern_return_t ApplyAudioTimingProfile(IOUserAudioDevice *audioDevice, double rate,
+                                             uint32_t convIn = 0, uint32_t convOut = 0)
 {
     if (!audioDevice) return kIOReturnBadArgument;
-    const TimingProfile profile = TimingProfileForRate(rate);
+    TimingProfile profile = TimingProfileForRate(rate);
+    if (convIn || convOut) {
+        profile.inputConverterLatency = convIn;
+        profile.outputConverterLatency = convOut;
+    }
     const kern_return_t inputSafety = audioDevice->SetInputSafetyOffset(profile.safetyOffset);
     const kern_return_t outputSafety = audioDevice->SetOutputSafetyOffset(profile.safetyOffset);
     const uint32_t inputLatencyFrames = profile.inputConverterLatency + profile.frameSize;
@@ -1723,6 +1754,195 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
     return converters;
 }
 
+// ── dext 131: the older XLink converters ─────────────────────────────────────
+// Apogee's driver ran AD-16X, DA-16X, DD-16X and Rosetta 800/200 units on
+// either port (Symphony64 Driver/XLink.cpp BusInit :483-689, SetSampleRate
+// :995-1150, EnableDeviceRouting :1862-1877, CheckLinkStatus/FrequencyStatus
+// :1995-2512) and its daemon placed and named their channels
+// (maestrolink SymphonyPCIeRoutingController.cpp, SymphonyPeripheralDevice.cpp).
+// The rules are in SymphonyConverters.h. Everything here runs only once port 1
+// has been positively identified as converters (convPort1), so a Symphony I/O
+// never sees any of it.
+
+// A query that carries a data byte (AUTH_READ takes the byte index), else like
+// XLinkInquireOn.
+static bool XLinkQueryOn(IOPCIDevice *dev, uint8_t memIndex, uint64_t txRegister, uint64_t rxRegister,
+                         uint8_t addr, uint8_t cmd, uint8_t data, uint8_t *outReply, bool pcieOrder)
+{
+    if (!SendXLinkCommandOn(dev, memIndex, txRegister, addr, cmd, data))
+        return false;
+    for (int ms = 0; ms < 20; ms++) {
+        uint32_t word = 0;
+        while (ReadXLinkRXWordOn(dev, memIndex, rxRegister, pcieOrder, &word)) {
+            const uint8_t slot   = (uint8_t)((word & 0x0F000000u) >> 24);
+            const uint8_t rxAddr = (uint8_t)((word & 0x007E0000u) >> 17);
+            const uint8_t rxCmd  = (uint8_t)((word & 0x0001FE00u) >> 9);
+            if (slot != 9 || rxAddr != addr || rxCmd != cmd)
+                continue;
+            *outReply = (uint8_t)((word & 0x000001FEu) >> 1);
+            return true;
+        }
+        IOSleep(1);
+    }
+    return false;
+}
+
+// AuthenticateDevice (XLink.cpp:2922-2970): AUTH_START, 16 x AUTH_WRITE, 16 x
+// AUTH_READ, then VerifyDataInDevice. The original refused a unit that failed
+// (bus reset, BusInit fails, :635-650). This driver runs the same exchange and
+// reports the result (kSymphonyConvUnitAuthRan/AuthOK) but refuses nothing: the
+// check only protects the host, and a mistake here would lock out real units.
+static uint32_t AuthenticateConverter(SymphonyThunderbridge_IVars *ivars, uint64_t tx, uint64_t rx,
+                                      uint8_t addr, uint8_t routing, int port)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    if (ivars->convAuthState == 0) ivars->convAuthState = 0x2545F491u;
+    uint8_t out[kConverterAuthBytes], in[kConverterAuthBytes] = {};
+    ConverterAuthChallenge(ivars->convAuthState, out);
+    bool ok = SendXLinkCommandOn(dev, mi, tx, addr, kXLinkCmdAuthStart, 0);
+    for (uint32_t i = 0; ok && i < kConverterAuthBytes; i++)
+        ok = SendXLinkCommandOn(dev, mi, tx, addr, kXLinkCmdAuthWrite, out[i]);
+    for (uint32_t i = 0; ok && i < kConverterAuthBytes; i++)
+        ok = XLinkQueryOn(dev, mi, tx, rx, addr, kXLinkCmdAuthRead, (uint8_t)i, &in[i], ivars->isLegacyPCIe2100);
+    const bool verified = ok && ConverterAuthVerify(out, in, routing);
+    STLOG("Converter: port %d unit %u authentication %{public}s", port, addr,
+          !ok ? "did not complete" : verified ? "verified" : "FAILED (reported, unit kept)");
+    return kSymphonyConvUnitAuthRan | (verified ? kSymphonyConvUnitAuthOK : 0u);
+}
+
+static uint8_t ConverterUnitRouting(uint32_t word)
+{
+    const uint8_t inquire = (uint8_t)(word & kSymphonyConvUnitInquireMask);
+    const uint8_t xtd = (word & kSymphonyConvUnitXtdOK) ? (uint8_t)(word >> kSymphonyConvUnitXtdShift) : 0;
+    return ConverterRouting(inquire, xtd);
+}
+
+// The chain the placement and names follow: port 1's converters, and port 2's
+// while 64 channels run with converters there. Device Type comes from the
+// app's choice (convConfig).
+static void BuildConverterChain(SymphonyThunderbridge_IVars *ivars, ConverterChain &c)
+{
+    c = ConverterChain{};
+    const uint32_t config = __atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE);
+    const uint32_t flags = __atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE);
+    for (uint32_t port = 0; port < 2; port++) {
+        if (port == 0 && !ivars->convPort1) continue;
+        if (port == 1 && !(flags & kSymphonyConvPort2Converters)) continue;
+        for (uint32_t u = 0; u < ivars->convUnitCount[port] && u < kConverterMaxUnitsPerPort; u++) {
+            const bool ddAsDA = (config >> (kSymphonyConvConfigDDAsDAShift + port * 4 + u)) & 1u;
+            c.kind[port][c.count[port]++] = ConverterKindForRouting(ConverterUnitRouting(ivars->convUnit[port][u]), !ddAsDA);
+        }
+    }
+}
+
+// Card routing for converters (routeSymphonyHW): host input h <- XLink RX of its
+// unit channel's slot, XLink TX slot <- host output h (host 1-2 through card
+// mixer 1, as the default routing does today). Host channels and slots with
+// nothing behind them are left disabled. With converters on port 1, port 1's
+// entries are written, and port 2's while 64 channels run with converters
+// there. With a Symphony I/O on port 1 and converters on port 2 (the mix
+// Apogee supported), only port 2's entries are written, its host channels
+// following the Symphony I/O's 32. A Symphony I/O alone never reaches this.
+static void ApplyConverterRouting(SymphonyThunderbridge_IVars *ivars, const char *why)
+{
+    const bool port2 = (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) != 0;
+    if (!ivars->convPort1 && !port2) return;
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    ConverterChain c;
+    BuildConverterChain(ivars, c);
+    const uint32_t hostBase = ivars->convPort1 ? 0 : kConverterChannelsPerPort;
+    const uint32_t first = ivars->convPort1 ? 0 : kConverterChannelsPerPort;
+    const uint32_t last = port2 ? 2 * kConverterChannelsPerPort : kConverterChannelsPerPort;
+    ConverterChannel inMap[kConverterMaxHostChannels], outMap[kConverterMaxHostChannels];
+    const uint32_t hostIn = ConverterHostMap(c, true, inMap);
+    const uint32_t hostOut = ConverterHostMap(c, false, outMap);
+    uint32_t inSrc[64] = {}, outSrc[64] = {};   // by host input / by XLink TX slot; 0 = disabled
+    for (uint32_t h = 0; h < kConverterMaxHostChannels; h++) {
+        const uint32_t host = h + hostBase;
+        if (host >= 64) break;
+        if (inMap[h].valid)
+            inSrc[host] = (kTDM_XLinkRX0 + inMap[h].port * kConverterChannelsPerPort + inMap[h].slot) | kRoutingEnable;
+        if (outMap[h].valid) {
+            const uint32_t xl = outMap[h].port * kConverterChannelsPerPort + outMap[h].slot;
+            outSrc[xl] = ((host < 2) ? (kTDM_Mixer0Out + host) : (kTDM_PCIOut0 + host)) | kRoutingEnable;
+        }
+    }
+    for (uint32_t n = first; n < last; n++) {
+        WriteRegister(dev, mi, kRegInputRouting + n * 4, inSrc[n]);
+        WriteRegister(dev, mi, kRegOutputRouting + n * 4, outSrc[n]);
+    }
+    ivars->convHostIn = hostIn;
+    ivars->convHostOut = hostOut;
+    __atomic_or_fetch(&ivars->convFlags, kSymphonyConvRoutingApplied, __ATOMIC_RELEASE);
+    STLOG("Converter routing (%{public}s): %u host input(s), %u host output(s) placed, entries %u-%u",
+          why, hostIn, hostOut, first, last - 1);
+}
+
+// Converter latency (SymphonyPeripheralDevice::Latency), from the first unit of
+// port 1 as the daemon took it. 0/0 when port 1 is not converters.
+static void ConverterLatencyFor(SymphonyThunderbridge_IVars *ivars, double rate, uint32_t *in, uint32_t *out)
+{
+    *in = *out = 0;
+    if (!ivars || !ivars->convPort1 || ivars->convUnitCount[0] == 0) return;
+    ConverterChain c;
+    BuildConverterChain(ivars, c);
+    *in = ConverterLatency(c.kind[0][0], (uint32_t)(rate + 0.5), true);
+    *out = ConverterLatency(c.kind[0][0], (uint32_t)(rate + 0.5), false);
+}
+
+// Word clock of the first unit (SetWCMaster, XLink.cpp:1263-1270): Internal =
+// SET_EXT_LOCK(addr 1, 0), External = SET_EXT_LOCK(broadcast, 1).
+static void ApplyConverterWordClock(SymphonyThunderbridge_IVars *ivars)
+{
+    const bool external = (__atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE) & kSymphonyConvConfigClockExternal) != 0;
+    const bool ok = external
+        ? SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex, kXLinkCmdAddrAll, kXLinkCmdSetExtLock, 1)
+        : SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex, 1, kXLinkCmdSetExtLock, 0);
+    if (external) __atomic_or_fetch(&ivars->convFlags, kSymphonyConvClockExternal, __ATOMIC_RELEASE);
+    else __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvClockExternal, __ATOMIC_RELEASE);
+    STLOG("Converter: word clock %{public}s%{public}s", external ? "external" : "internal",
+          ok ? "" : " (command timed out)");
+}
+
+// The part of SetSampleRate the converters need after their chain is known:
+// the rate to every unit, wait for lock, check the card's measured rate, then
+// the phase alignment (only with DMA stopped, as AlignXLinkPhase requires; with
+// DMA running the recovery waits for a controlled restart) and, on the PCIe
+// card, the frame-sync pulse.
+static bool ConverterRateAndPhase(SymphonyThunderbridge_IVars *ivars, double rate, uint8_t rateCode,
+                                  const char *why)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    SendXLinkCommand(dev, mi, kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, rateCode);
+    const bool locked = WaitForLock(dev, mi, 1250);
+    const uint32_t actual = GetActualClockRate(dev, mi);
+    STLOG("Converter: rate %u Hz (%{public}s): data link %{public}s, card measures %u Hz",
+          (uint32_t)(rate + 0.5), why, locked ? "LOCKED" : "still slipping", actual);
+    if (!ivars->dmaRunning) {
+        AlignXLinkPhase(ivars);
+        if (ivars->isLegacyPCIe2100)
+            PulseFrameSyncLegacyPCIe(dev, mi, "converter rate set");
+        __atomic_store_n(&ivars->convRecoveryPending, false, __ATOMIC_RELEASE);
+        __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvRecoveryPending, __ATOMIC_RELEASE);
+    } else {
+        __atomic_store_n(&ivars->convRecoveryPending, true, __ATOMIC_RELEASE);
+        __atomic_or_fetch(&ivars->convFlags, kSymphonyConvRecoveryPending, __ATOMIC_RELEASE);
+        STLOG("Converter: phase alignment waits for a controlled restart (audio is running)");
+    }
+    return locked;
+}
+
+// EnableDeviceRouting's UNMUTE to each unit by address (XLink.cpp:1873-1876).
+static void UnmuteConverterUnits(SymphonyThunderbridge_IVars *ivars, uint64_t tx, uint32_t count)
+{
+    for (uint8_t addr = 1; addr <= count && addr <= kXLinkMaxDevices; addr++)
+        if (!SendXLinkCommandOn(ivars->pciDevice, ivars->barMemoryIndex, tx, addr, kXLinkCmdUnmute, 0x80))
+            STERR("Converter: UNMUTE to unit %u timed out", addr);
+}
+
 static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rate,
                                   SymphonyLinkInitResult *out)
 {
@@ -1987,6 +2207,11 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             // A Symphony I/O. Cleared here and not before the read, so the app
             // never sees the answer vanish for the length of a re-init.
             ivars->unitProbeWord = 0;
+            if (ivars->convPort1) {
+                ivars->convPort1 = false;
+                ivars->convUnitCount[0] = 0;
+                __atomic_and_fetch(&ivars->convFlags, ~(kSymphonyConvPort1Converters | kSymphonyConvRoutingApplied), __ATOMIC_RELEASE);
+            }
         } else {
             // The unit did not answer a Symphony I/O vendor read. It may be one
             // of the older converters Apogee's driver also supported on this
@@ -2010,18 +2235,27 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                   (probe & kUnitProbeXtdOK) ? "replied" : "no reply", xtd);
 
             // Converters were normally chained (an AD-16X feeding a DA-16X, and
-            // so on). The original found each further unit the same way it found
-            // the first (Driver/XLink.cpp BusInit :596-660): once a unit is
-            // passing commands on, ask the broadcast address what is next; if
-            // something answers, give it the next address and tell it to pass
-            // commands on too; stop at the first silence. Up to four units
-            // (XLINK_MAX_DEVICES). Unit 1 was already addressed above, so this
-            // continues from address 2, and only when unit 1 identified itself
-            // as one of the older converters.
-            uint32_t extraUnits = 0;
+            // so on). The original found each further unit the way it found the
+            // first (Driver/XLink.cpp BusInit :596-660): once a unit passes
+            // commands on, ask the broadcast address what is next (routing:
+            // INQUIRE + XTD_INQUIRE; firmware: XTD_INQUIRE, INQUIRE; DEVICE_TYPE),
+            // stop at a unit with no channels, else SET_ADDR, DEVICE_TYPE at the
+            // new address, authenticate (AuthenticateConverter) and PASS_COMMANDS.
+            // Up to four units (XLINK_MAX_DEVICES). Unit 1 was addressed above,
+            // so this continues from address 2, and only when unit 1 identified
+            // itself as one of the older converters.
+            uint32_t units[kXLinkMaxDevices] = {};
+            units[0] = (probe & kUnitProbeInquireOK ? (kSymphonyConvUnitInquireOK | inquire) : 0)
+                     | (probe & kUnitProbeXtdOK ? (kSymphonyConvUnitXtdOK | ((uint32_t)xtd << kSymphonyConvUnitXtdShift)) : 0)
+                     | kSymphonyConvUnitAddressed;
+            uint32_t unitCount = (probe & kUnitProbeInquireOK) ? 1 : 0;
+            // The rest of BusInit's per-unit sequence (firmware, DEVICE_TYPE,
+            // authentication) only when unit 1 itself identifies as a converter;
+            // anything else gets the plain walk it always had.
+            const bool unit1Converter = !ivars->symphonyAnsweredSinceStart && UnitProbeIsConvertersOnly(probe);
             if ((probe & kUnitProbeInquireOK) && (inquire >> 4) != 0) {
                 for (uint8_t addr = 2; addr <= kXLinkMaxDevices; addr++) {
-                    uint8_t next = 0;
+                    uint8_t next = 0, nextXtd = 0, scratch = 0;
                     if (!XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
                                       kXLinkCmdAddrAll, kXLinkCmdInquire, &next,
         ivars->isLegacyPCIe2100)
@@ -2029,29 +2263,43 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                         STLOG("Unit probe: no further unit after address %u", addr - 1);
                         break;
                     }
+                    bool nextXtdOK = false;
+                    if (unit1Converter) {
+                        nextXtdOK = XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex,
+                                                 kXLinkCmdAddrAll, kXLinkCmdXtdInquire, &nextXtd,
+                                                 ivars->isLegacyPCIe2100);
+                        XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, kXLinkCmdAddrAll,
+                                     kXLinkCmdXtdInquire, &scratch, ivars->isLegacyPCIe2100);   // major firmware
+                        XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, kXLinkCmdAddrAll,
+                                     kXLinkCmdInquire, &scratch, ivars->isLegacyPCIe2100);      // minor firmware
+                        XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, kXLinkCmdAddrAll,
+                                     kXLinkCmdDeviceType, &scratch, ivars->isLegacyPCIe2100);
+                    }
                     if (!SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
-                                          kXLinkCmdAddrAll, kXLinkCmdSetAddr, addr)
-                        || !SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
-                                             addr, kXLinkCmdPassCommands, 1)) {
+                                          kXLinkCmdAddrAll, kXLinkCmdSetAddr, addr)) {
                         STERR("Unit probe: could not address unit %u", addr);
                         break;
                     }
+                    uint32_t word = kSymphonyConvUnitInquireOK | next
+                                  | (nextXtdOK ? (kSymphonyConvUnitXtdOK | ((uint32_t)nextXtd << kSymphonyConvUnitXtdShift)) : 0);
+                    if (unit1Converter) {
+                        XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, addr,
+                                     kXLinkCmdDeviceType, &scratch, ivars->isLegacyPCIe2100);
+                        word |= AuthenticateConverter(ivars, kRegXLink1TX, kRegXLink1RX, addr,
+                                                      ConverterUnitRouting(word), 1);
+                    }
+                    if (!SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
+                                          addr, kXLinkCmdPassCommands, 1)) {
+                        STERR("Unit probe: could not address unit %u", addr);
+                        units[unitCount++] = word;
+                        break;
+                    }
                     IOSleep(5);
+                    units[unitCount++] = word | kSymphonyConvUnitAddressed;
                     probe |= (uint32_t)(next >> 4) << (16 + 4 * (addr - 2));
-                    extraUnits++;
-                    STLOG("Unit probe: unit %u INQUIRE 0x%02x, addressed", addr, next);
+                    STLOG("Unit probe: unit %u INQUIRE 0x%02x XTD_INQUIRE %{public}s 0x%02x, addressed",
+                          addr, next, nextXtdOK ? "replied" : "no reply", nextXtd);
                 }
-            }
-            if (extraUnits) {
-                // The rate and unmute sent earlier went out before these units
-                // had an address. Send them again so every unit has them, as the
-                // original did after enumerating the whole chain.
-                SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
-                                 kXLinkCmdAddrAll, kXLinkCmdSetSampleRate, rateCode);
-                IOSleep(10);
-                SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
-                                 kXLinkCmdAddrAll, kXLinkCmdUnmute, 0x80);
-                STLOG("Unit probe: %u further unit(s); rate and unmute re-sent", extraUnits);
             }
             ivars->unitProbeWord = probe;
             for (uint32_t n = 0; n < kMaxChannelsPerPort; n += 8) {
@@ -2061,6 +2309,52 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                                                    kRegOutputRouting + (n + k) * 4, &r[k]);
                 STLOG("Unit probe: output routes %u-%u: %03x %03x %03x %03x %03x %03x %03x %03x",
                       n, n + 7, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            }
+
+            // Converters only, positively: never a Symphony I/O since Start(),
+            // the probe word names known converters only, and unit 1 answers
+            // INQUIRE the same way a second time. Anything less keeps the
+            // Symphony I/O behaviour below, and nothing converter-specific is sent.
+            uint8_t again = 0;
+            const bool stable = (probe & kUnitProbeInquireOK) &&
+                XLinkInquire(ivars->pciDevice, ivars->barMemoryIndex, symphonyAddr,
+                             kXLinkCmdInquire, &again, ivars->isLegacyPCIe2100) && again == inquire;
+            if (!ivars->symphonyAnsweredSinceStart && UnitProbeIsConvertersOnly(probe) && stable) {
+                units[0] |= AuthenticateConverter(ivars, kRegXLink1TX, kRegXLink1RX, 1,
+                                                  ConverterUnitRouting(units[0]), 1);
+                ivars->convPort1 = true;
+                ivars->convUnitCount[0] = unitCount;
+                for (uint32_t u = 0; u < kXLinkMaxDevices; u++) ivars->convUnit[0][u] = units[u];
+                __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort1Converters, __ATOMIC_RELEASE);
+                STLOG("Converter: port 1 carries %u converter unit(s); Symphony I/O set-up skipped", unitCount);
+                // SetWCMaster after enumeration, the rate set with lock, actual
+                // rate and phase, EnableDeviceRouting's per-unit unmute, and the
+                // routing layer's placement.
+                ApplyConverterWordClock(ivars);
+                ConverterRateAndPhase(ivars, rate, rateCode, "after enumeration");
+                UnmuteConverterUnits(ivars, kRegXLink1TX, unitCount);
+                ApplyConverterRouting(ivars, "link configured");
+                // No Symphony I/O vendor traffic to a converter (the original sent
+                // its messages to Symphony I/O units only). Monitor state: the
+                // converter trim (ClassifyVolumeTarget).
+                out->lineMonitor = false;
+                out->speakerAttenuation = startupVolume;
+                out->speakerMute = startupMute != 0;
+                out->hp1Attenuation = startupHP1Volume;
+                out->hp1Mute = startupHP1Mute != 0;
+                out->monitorAttenuation = startupVolume;
+                out->monitorMute = startupMute != 0;
+                if (ClassifyVolumeTarget(ivars, false, out)) {
+                    out->monitorAttenuation = ivars->converterTrimAtten;
+                    out->monitorMute = ivars->converterTrimMuted;
+                }
+                return true;
+            }
+            if (ivars->convPort1) {
+                STLOG("Converter: port 1 no longer identifies as converters; Symphony I/O behaviour");
+                ivars->convPort1 = false;
+                ivars->convUnitCount[0] = 0;
+                __atomic_and_fetch(&ivars->convFlags, ~(kSymphonyConvPort1Converters | kSymphonyConvRoutingApplied), __ATOMIC_RELEASE);
             }
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
@@ -2669,7 +2963,28 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                     if (addr == 1 && word != 0) units[unitCount++] = word;
                     break;
                 }
-                if (!SendXLinkCommandOn(dev, mi, kRegXLink2TX, kXLinkCmdAddrAll, kXLinkCmdSetAddr, addr) ||
+                // dext 131: a converter (anything but a Symphony I/O's 0xFF) gets
+                // the rest of BusInit's sequence (:603-654): the firmware and
+                // DEVICE_TYPE queries, DEVICE_TYPE at its address and the
+                // authentication before PASS_COMMANDS.
+                const bool converter = channels != kConverterRoutingSymphony;
+                if (converter) {
+                    uint8_t scratch = 0;
+                    XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, kXLinkCmdAddrAll,
+                                   kXLinkCmdXtdInquire, &scratch, ivars->isLegacyPCIe2100);
+                    XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, kXLinkCmdAddrAll,
+                                   kXLinkCmdInquire, &scratch, ivars->isLegacyPCIe2100);
+                    XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, kXLinkCmdAddrAll,
+                                   kXLinkCmdDeviceType, &scratch, ivars->isLegacyPCIe2100);
+                }
+                const bool addressed = SendXLinkCommandOn(dev, mi, kRegXLink2TX, kXLinkCmdAddrAll, kXLinkCmdSetAddr, addr);
+                if (converter && addressed) {
+                    uint8_t scratch = 0;
+                    XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, addr,
+                                   kXLinkCmdDeviceType, &scratch, ivars->isLegacyPCIe2100);
+                    word |= AuthenticateConverter(ivars, kRegXLink2TX, kRegXLink2RX, addr, channels, 2);
+                }
+                if (!addressed ||
                     !SendXLinkCommandOn(dev, mi, kRegXLink2TX, addr, kXLinkCmdPassCommands, 1)) {
                     flags |= kSymphonyPort2FlagTxTimeout;
                     units[unitCount++] = word;
@@ -2714,6 +3029,8 @@ static void Port2AudioFallBack(SymphonyThunderbridge_IVars *ivars, SymphonyThund
 
 static void ClearPort2Units(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
 {
+    __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
+    ivars->convUnitCount[1] = 0;
     ivars->port2Clocking  = clk;
     ivars->port2UnitCount = 0;
     ivars->port2RateHz    = 0;
@@ -3273,6 +3590,24 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
         if (!SendXLinkCommandOn(dev, mi, kRegXLink2TX, addr, kXLinkCmdUnmute, 0x80))
             STERR("Port 2 audio: UNMUTE to port 2 unit %u timed out", addr);
     }
+    // dext 131: converters on port 2 are placed and named by the routing
+    // layer's rules, after port 1's channels (SymphonyConverters.h). A Symphony
+    // I/O on port 2 keeps the identity routing written above.
+    {
+        uint32_t n = 0;
+        for (uint32_t u = 0; u < ivars->port2UnitCount && u < kXLinkMaxDevices; u++) {
+            const uint32_t w = ivars->port2Unit[u];
+            if (!(w & kSymphonyPort2UnitAddressed) || ConverterUnitRouting(w) == kConverterRoutingSymphony) break;
+            ivars->convUnit[1][n++] = w;
+        }
+        ivars->convUnitCount[1] = n;
+        if (n) {
+            __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
+            ApplyConverterRouting(ivars, "64 channels");
+        } else {
+            __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
+        }
+    }
 
     // Last check before DMA is enabled (the phase queries and unmutes above
     // take time too). Stop() re-clears the DMA bits after draining this queue
@@ -3298,6 +3633,10 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
 // units may be gone). outcome/reason as Port2AudioNote.
 static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outcome, uint32_t reason)
 {
+    // dext 131: port 2's converters stop counting (their routing entries are
+    // disabled with the rest of port 2's below).
+    __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
+    ivars->convUnitCount[1] = 0;
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     const bool wasRunning = Port2StopBothEngines(dev, mi);
@@ -3400,11 +3739,21 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     // Only a channel whose name differs from what Core Audio has is set: each
     // SetElementName notifies every client, and a rate change on a unit with
     // no optical card renames nothing.
+    // dext 131: converter channels are named after the unit channel behind the
+    // host channel (SymphonyConverters.h), port 2's while 64 channels run.
+    const bool convP2 = (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) != 0;
+    ConverterChain conv;
+    BuildConverterChain(ivars, conv);
+    const uint32_t convBase = ivars->convPort1 ? 0 : 32;           // first host channel converters name
+    const char convPrefix = ivars->convPort1 ? 'A' : 'B';         // a Symphony I/O on port 1 is unit A
+    const uint32_t nameCount = convP2 ? 64 : 32;
+    auto convNames = [&](uint32_t n) { return ivars->convPort1 || (convP2 && n >= 32); };
     uint32_t changed = 0;
-    for (uint32_t n = 0; n < 32; n++) {
+    for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedInputName[0])] = {};
-        const uint8_t source = __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE);
-        if (!SymphonyHostInputName(s, source, name, sizeof(name))) name[0] = 0;
+        const uint8_t source = n < 32 ? __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE) : 0;
+        if (convNames(n)) ConverterHostChannelName(conv, true, n - convBase, name, sizeof(name), convPrefix);
+        else if (!SymphonyHostInputName(s, source, name, sizeof(name))) name[0] = 0;
         if (strncmp(name, ivars->publishedInputName[n], sizeof(name)) == 0) continue;
         // A null name removes it, leaving Core Audio's default for that channel.
         OSString *str = name[0] ? OSString::withCString(name) : nullptr;
@@ -3414,9 +3763,10 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
         changed++;
     }
     uint32_t outChanged = 0;
-    for (uint32_t n = 0; n < 32; n++) {
+    for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedOutputName[0])] = {};
-        if (!SymphonyHostOutputName(s, n, name, sizeof(name))) name[0] = 0;
+        if (convNames(n)) ConverterHostChannelName(conv, false, n - convBase, name, sizeof(name), convPrefix);
+        else if (!SymphonyHostOutputName(s, n, name, sizeof(name))) name[0] = 0;
         if (strncmp(name, ivars->publishedOutputName[n], sizeof(name)) == 0) continue;
         OSString *str = name[0] ? OSString::withCString(name) : nullptr;
         ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Output, str);
@@ -3524,6 +3874,29 @@ void SymphonyNoteNominalSampleRate(IOUserAudioDevice *device, double rate)
         STLOG("Channel names: nominal rate %u -> %u Hz", before, hz);
         ScheduleChannelNames(ivars, driver);
     }
+    driver->release();
+}
+
+// dext 131: the converters' latency for the device's timing tuple
+// (SymphonyAudioDevice::HandleChangeSampleRate). 0/0 when the device is not
+// ours or port 1 is not converters, and the Symphony I/O table applies.
+void SymphonyConverterLatencyForDevice(IOUserAudioDevice *device, double rate,
+                                       uint32_t *inLatency, uint32_t *outLatency)
+{
+    *inLatency = *outLatency = 0;
+    IOLock *lock = __atomic_load_n(&sNominalRateLock, __ATOMIC_ACQUIRE);
+    if (!lock || !device) return;
+    SymphonyThunderbridge *driver = nullptr;
+    SymphonyThunderbridge_IVars *ivars = nullptr;
+    IOLockLock(lock);
+    for (auto &o : sNominalRateObservers) {
+        if (o.device == device) { driver = o.driver; ivars = o.ivars; driver->retain(); break; }
+    }
+    IOLockUnlock(lock);
+    if (!driver) return;
+    ConverterLatencyFor(ivars, rate, inLatency, outLatency);
+    ivars->convLatencyIn = *inLatency;
+    ivars->convLatencyOut = *outLatency;
     driver->release();
 }
 
@@ -3665,6 +4038,8 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
                       ivars->cardOutputRouteSet[n] ? ivars->cardOutputRoute[n] : def);
         WriteRegister(dev, mi, kRegInputRouting + n * 4, (kTDM_XLinkRX0 + n) | kRoutingEnable);
     }
+    // dext 131: converters keep the routing layer's placement.
+    ApplyConverterRouting(ivars, "card reprogrammed after reset");
     // Meter DMA registers (buffer retained).
     if (ivars->meterDMAActive) {
         WriteRegister(dev, mi, kRegMeterTimer, kMeterTimerValue);
@@ -3941,6 +4316,105 @@ static void MaybeRecoverSymphonyLink(SymphonyThunderbridge_IVars *ivars, Symphon
 // (2) powering down / endpoint vanished → no BAR access, re-arm; (3) audio wraps
 // advancing → link proven, no bus traffic; (4) otherwise the dext-112 presence
 // proof followed by ONE register read of the card's XLink clock-detect bit.
+// dext 131: converter health, the part of the original's CheckLinkStatus and
+// FrequencyStatus (XLink.cpp:1995-2061, 2427-2512) that the clock and down
+// bits above do not cover. On xlinkQueue, from the link watch, about once a
+// second while converters are on port 1 (the original: every 300 ms), also
+// while audio runs, XLink queries only:
+//   - a broadcast INQUIRE answered = a unit added at the end -> re-initialise;
+//   - each unit's INQUIRE + XTD_INQUIRE: a change or no answer -> re-initialise;
+//   - each unit's WCLK_PHASE twice: more than 2 apart = not locked; either
+//     outside 0x01-0x2F = out of the window where the units play (they mute
+//     themselves) -> the rate transaction with phase alignment.
+// Nothing is jammed or re-initialised under running DMA here: a re-initialise
+// goes through the link recovery, a re-alignment through StartDevice's rate
+// transaction (convRecoveryPending + a configuration change). At most one
+// recovery every 10 s, and none after three in a row that did not help.
+static constexpr uint64_t kConverterHealthNs      = 1000000000ull;
+static constexpr uint64_t kConverterRecoveryGapNs = 10000000000ull;
+static constexpr uint8_t  kXLinkCmdWclkPhaseQuery = 0x09;   // XLINK_CMD_WCLK_PHASE
+static constexpr uint8_t  kConverterPhaseMin = 0x01, kConverterPhaseMax = 0x2F;
+static constexpr int      kConverterPhaseJitter = 2;        // MAX_WCLK_PHASE_DIFF
+
+static bool ConverterHealthCheck(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self)
+{
+    IOPCIDevice *dev = ivars->pciDevice;
+    const uint8_t mi = ivars->barMemoryIndex;
+    const bool pcie = ivars->isLegacyPCIe2100;
+    ivars->convHealthTicks++;
+    bool reinit = false, realign = false;
+    uint8_t extra = 0;
+    if (XLinkInquire(dev, mi, kXLinkCmdAddrAll, kXLinkCmdInquire, &extra, pcie) && (extra >> 4) != 0) {
+        STLOG("Converter health: a unit answers after the last one (INQUIRE 0x%02x) — re-initialising", extra);
+        reinit = true;
+    }
+    const uint32_t ports = (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) ? 2 : 1;
+    for (uint32_t port = 0; port < ports && !reinit; port++) {
+        const uint64_t tx = port ? kRegXLink2TX : kRegXLink1TX;
+        const uint64_t rx = port ? kRegXLink2RX : kRegXLink1RX;
+        uint32_t phases = 0;
+        for (uint32_t u = 0; u < ivars->convUnitCount[port] && u < kXLinkMaxDevices; u++) {
+            const uint8_t addr = (uint8_t)(u + 1);
+            const uint32_t w = ivars->convUnit[port][u];
+            if (port == 0) {
+                uint8_t inq = 0, xtd = 0;
+                const bool inqOK = XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdInquire, &inq, pcie);
+                const bool xtdOK = XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdXtdInquire, &xtd, pcie);
+                const uint8_t was = ConverterUnitRouting(w);
+                const uint8_t now = ConverterRouting(inq, (w & kSymphonyConvUnitXtdOK) && xtdOK ? xtd : 0);
+                if (!inqOK || now != was) {
+                    STLOG("Converter health: port 1 unit %u %{public}s (routing 0x%02x, was 0x%02x) — re-initialising",
+                          addr, inqOK ? "changed" : "does not answer", now, was);
+                    reinit = true;
+                    break;
+                }
+            }
+            uint8_t a = 0, b = 0;
+            const bool aOK = XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhaseQuery, &a, pcie);
+            const bool bOK = aOK && XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhaseQuery, &b, pcie);
+            if (!bOK) continue;   // a unit that does not report its phase is not judged on it
+            phases |= (uint32_t)b << (8 * u);
+            const int diff = (int)a - (int)b;
+            if (diff > kConverterPhaseJitter || diff < -kConverterPhaseJitter) {
+                ivars->convUnlocks++;
+                realign = true;
+                STLOG("Converter health: port %u unit %u not locked (phase 0x%02x then 0x%02x)", port + 1, addr, a, b);
+            } else if (a < kConverterPhaseMin || a > kConverterPhaseMax || b < kConverterPhaseMin || b > kConverterPhaseMax) {
+                ivars->convPhaseErrors++;
+                realign = true;
+                STLOG("Converter health: port %u unit %u phase 0x%02x/0x%02x outside 0x01-0x2F (unit muted)",
+                      port + 1, addr, a, b);
+            }
+        }
+        ivars->convPhase[port] = phases;
+    }
+    if (!reinit && !realign) {
+        __atomic_or_fetch(&ivars->convFlags, kSymphonyConvHealthy, __ATOMIC_RELEASE);
+        ivars->convFailedRecoveries = 0;
+        return false;
+    }
+    __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvHealthy, __ATOMIC_RELEASE);
+    const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+    if (ivars->convFailedRecoveries >= 3) return false;   // logged once below; stop trying
+    if (ivars->convLastRecoveryNs && now - ivars->convLastRecoveryNs < kConverterRecoveryGapNs) return false;
+    ivars->convLastRecoveryNs = now;
+    ivars->convRecoveries++;
+    if (++ivars->convFailedRecoveries == 3)
+        STERR("Converter health: three recoveries in a row did not help — not trying again until it is healthy");
+    if (reinit) return true;   // the caller runs the link recovery (BusInit again)
+    __atomic_store_n(&ivars->convRecoveryPending, true, __ATOMIC_RELEASE);
+    __atomic_or_fetch(&ivars->convFlags, kSymphonyConvRecoveryPending, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE)) {
+        RequestIORestartFromDefaultQueue(ivars, self, "converter phase");
+    } else {
+        // No audio running: re-send the rate and align now (DMA is stopped
+        // only in the rate transaction, so that is where it happens; mark it
+        // for the next IO start as well).
+        STLOG("Converter health: re-alignment waits for the next audio start");
+    }
+    return false;
+}
+
 void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
 {
     if (!ivars) return;
@@ -4093,6 +4567,23 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
         }
         __atomic_store_n(&ivars->linkState, kLinkStateUp, __ATOMIC_RELEASE);
         next = wrapsFlowing ? kLinkWatchStreamNs : kLinkWatchIdleNs;
+        // dext 131: converters are checked about once a second (never a
+        // Symphony I/O). A unit added, changed or gone re-runs the bus init.
+        if (ivars->convPort1) {
+            next = kConverterHealthNs;
+            if (ConverterHealthCheck(ivars, this) &&
+                !__atomic_load_n(&ivars->linkRecoveryInFlight, __ATOMIC_ACQUIRE)) {
+                __atomic_store_n(&ivars->linkRecoveryInFlight, true, __ATOMIC_RELEASE);
+                __atomic_store_n(&ivars->linkState, kLinkStateRecovering, __ATOMIC_RELEASE);
+                this->retain();
+                SymphonyThunderbridge *self = this;
+                ivars->xlinkQueue->DispatchAsync(^{
+                    RunLinkRecoveryOnQueue(ivars, self);
+                    self->release();
+                });
+                break;
+            }
+        }
         // Two-port experiment, 64 channels running: keep the fast interval so a
         // port-2 chain that goes away is noticed within about two seconds.
         if (ivars->portCount == 2 &&
@@ -4159,6 +4650,72 @@ kern_return_t SymphonyThunderbridge::ReadPort2State(uint32_t *outWords)
         outWords[14] = audio;
         outWords[15] = ivars->port2PhaseWord;
     }
+    return kIOReturnSuccess;
+}
+
+// dext 131: kSelectorReadConverters. Driver state only, no bus access.
+kern_return_t SymphonyThunderbridge::ReadConverterState(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    SymphonyConverterStateOutput o = {};
+    o.version = 1;
+    o.flags = __atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE);
+    for (uint32_t p = 0; p < 2; p++) {
+        o.unitCount[p] = ivars->convUnitCount[p];
+        for (uint32_t u = 0; u < 4; u++) {
+            uint32_t w = ivars->convUnit[p][u];
+            if (u < o.unitCount[p]) {
+                const uint32_t bit = p * 4 + u;
+                const uint32_t cfg = __atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE);
+                if (ConverterUnitRouting(w) == kConverterRoutingDD && ((cfg >> (kSymphonyConvConfigDDAsDAShift + bit)) & 1u))
+                    w |= kSymphonyConvUnitTypeIsDA;
+                if (ConverterUnitRouting(w) == kConverterRoutingRosetta && ((cfg >> (kSymphonyConvConfigR200Shift + bit)) & 1u))
+                    w |= kSymphonyConvUnitIsR200;
+            }
+            o.unit[p][u] = w;
+        }
+        o.phase[p] = ivars->convPhase[p];
+    }
+    o.healthTicks = ivars->convHealthTicks;
+    o.phaseErrors = ivars->convPhaseErrors;
+    o.unlocks = ivars->convUnlocks;
+    o.recoveries = ivars->convRecoveries;
+    o.latencyIn = ivars->convLatencyIn;
+    o.latencyOut = ivars->convLatencyOut;
+    o.hostInputs = ivars->convHostIn;
+    o.hostOutputs = ivars->convHostOut;
+    o.config = __atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE);
+    memcpy(outWords, &o, sizeof(o));
+    return kIOReturnSuccess;
+}
+
+// dext 131: kSelectorSetConverterConfig. Records the choice; on the XLink
+// queue, a word clock change is sent to the first unit and followed by the
+// rate set and phase alignment (SetWCMaster -> reconfigure), and a Device Type
+// change re-places and renames the channels. Nothing is sent to a Symphony I/O.
+kern_return_t SymphonyThunderbridge::SetConverterConfig(uint32_t config)
+{
+    if (!ivars || !ivars->xlinkQueue) return kIOReturnNotReady;
+    const uint32_t old = __atomic_exchange_n(&ivars->convConfig, config, __ATOMIC_ACQ_REL);
+    STLOG("Converter config: 0x%08x (was 0x%08x)", config, old);
+    if (old == config) return kIOReturnSuccess;
+    SymphonyThunderbridge *self = this;
+    ivars->xlinkQueue->DispatchAsync(^{
+        const bool converters = ivars->convPort1 ||
+            (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters);
+        if (!converters || !XLinkTxAdmissible(ivars)) return;
+        if (ivars->convPort1 && ((old ^ config) & kSymphonyConvConfigClockExternal)) {
+            ApplyConverterWordClock(ivars);
+            const double rate = ivars->xlinkRate > 0.0 ? ivars->xlinkRate : 44100.0;
+            uint8_t code = SampleRateToXLinkCode(rate);
+            if (code == 0xFF) code = kXLinkSRate44100;
+            ConverterRateAndPhase(ivars, rate, code, "word clock changed");
+            if (__atomic_load_n(&ivars->convRecoveryPending, __ATOMIC_ACQUIRE))
+                RequestIORestartFromDefaultQueue(ivars, self, "converter word clock changed");
+        }
+        ApplyConverterRouting(ivars, "converter config");
+        ScheduleChannelNames(ivars, self);
+    });
     return kIOReturnSuccess;
 }
 
@@ -4816,6 +5373,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     }
     STLOG("Input routing: %u channels mapped (XLink RX → PCI_IN, enabled)",
           kMaxChannelsPerPort);
+    // dext 131: converters found while the link was configured above get the
+    // routing layer's placement instead (nothing is written for a Symphony I/O).
+    ApplyConverterRouting(ivars, "Start");
 
     // ── 21d. Clear mixer coefficients ─────────────────────────────────────
     // Legacy: Mixer::init() — zero all coefficients, select table LOW.
@@ -5613,8 +6173,12 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // at 44.1/48 kHz.
         // Device timing — publish one complete profile tuple, rather than
         // allowing frame and safety values to drift independently.
+        uint32_t convIn = 0, convOut = 0;
+        ConverterLatencyFor(ivars, 44100.0, &convIn, &convOut);
+        ivars->convLatencyIn = convIn;
+        ivars->convLatencyOut = convOut;
         const kern_return_t timingResult =
-            ApplyAudioTimingProfile(ivars->audioDevice, 44100.0);
+            ApplyAudioTimingProfile(ivars->audioDevice, 44100.0, convIn, convOut);
         if (timingResult != kIOReturnSuccess) {
             // Do not publish an audio device with a partially applied timing
             // tuple.  The first rate publication is just as important as a
@@ -5888,11 +6452,13 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // reflect real hardware. Runs on the XLink
         // init path, so ReadVendorRequest's bounded IOSleep polling is safe here.
         // The peripheral prefix the channel names start with (0x37).
-        ReadNamingPrefix(ivars, ivars->runtimeTxSeq);
+        // dext 131: none of these Symphony I/O reads go to converters (the
+        // original sent its vendor messages to Symphony I/O units only).
+        if (!ivars->convPort1) ReadNamingPrefix(ivars, ivars->runtimeTxSeq);
         ivars->numOpticalBoards = 0;
         for (uint32_t b = 0; b < 2; b++) {
             uint8_t bt = kSIOOptionBoard_None;
-            bool ok = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+            bool ok = !ivars->convPort1 && ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                         ivars->symphonyAddr, kSIOCmd_OptionBoardType,
                                         /*nValue=board*/ b, &bt, /*wLength*/1,
                                         ivars->runtimeTxSeq,
@@ -5957,7 +6523,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // polling is safe here (same pattern as WaitForLock earlier in Start()).
         {
             uint8_t boardType = kSIOOptionBoard_None;
-            bool ok = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+            bool ok = !ivars->convPort1 && ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                         ivars->symphonyAddr, kSIOCmd_OptionBoardType,
                                         /*nValue=primary*/0, &boardType, /*wLength*/1,
                                         ivars->runtimeTxSeq,
@@ -5981,7 +6547,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         // against the register-based GetActualClockRate on first hardware run.
         {
             uint8_t clk[5] = { 0, 0, 0, 0, 0 };
-            bool ok = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+            bool ok = !ivars->convPort1 && ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                         ivars->symphonyAddr, kSIOCmd_ClockRateAndLock,
                                         /*nValue*/0, clk, /*wLength*/5,
                                         ivars->runtimeTxSeq,
@@ -6671,6 +7237,14 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     //   2. Calls HandleChangeSampleRate() on the stock device → SetSampleRate()
     //   3. Restarts IO → this StartDevice() fires
     // We detect the rate mismatch and reprogram the hardware.
+    // dext 131: a converter recovery that found audio running (phase out of the
+    // units' window, a unit that lost lock, a word clock change) is done here,
+    // with the rate-change transaction below: mute, stop DMA, the rate to every
+    // unit, lock, verify, phase alignment, restart, unmute.
+    if (ivars->convPort1 && __atomic_load_n(&ivars->convRecoveryPending, __ATOMIC_ACQUIRE)) {
+        STLOG("StartDevice: converter recovery pending — running the rate transaction at the same rate");
+        ivars->lastSampleRate = 0;
+    }
     if (ivars->audioDevice) {
         double requestedRate = ivars->audioDevice->GetSampleRate();
         if (requestedRate != ivars->lastSampleRate) {
@@ -6816,8 +7390,12 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                                ((profile.frameSize - 1) << kClkCtrl_FrameShift) & kClkCtrl_FrameMask,
                                kClkCtrl_FrameMask);
+                uint32_t convIn = 0, convOut = 0;
+                ConverterLatencyFor(ivars, requestedRate, &convIn, &convOut);
+                ivars->convLatencyIn = convIn;
+                ivars->convLatencyOut = convOut;
                 const kern_return_t timingResult =
-                    ApplyAudioTimingProfile(ivars->audioDevice, requestedRate);
+                    ApplyAudioTimingProfile(ivars->audioDevice, requestedRate, convIn, convOut);
                 if (timingResult != kIOReturnSuccess) {
                     // Do not restart DMA or unmute with a partially published
                     // Core Audio timing tuple.  The device stays stopped and
@@ -6900,15 +7478,21 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 // jams the sample-count phase (XLink::SetSampleRate :1074-1150) and
                 // then pulses frame sync on every card (syncComponents), before the
                 // engine starts DMA. Card muted, DMA stopped here.
-                if (ivars->isLegacyPCIe2100) {
+                // dext 131: converters on either card get the same alignment
+                // (the original ran it in every SetSampleRate); a Symphony I/O on
+                // the ThunderBridge is unchanged.
+                if (ivars->isLegacyPCIe2100 || ivars->convPort1) {
                     AlignXLinkPhase(ivars);
+                    __atomic_store_n(&ivars->convRecoveryPending, false, __ATOMIC_RELEASE);
+                    __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvRecoveryPending, __ATOMIC_RELEASE);
                     if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) || !ivars->pciDevice) {
                         aborted = true;
                         STERR("StartDevice: stop began during the phase alignment — leaving DMA "
                               "stopped + muted for teardown");
                         return;
                     }
-                    PulseFrameSyncLegacyPCIe(ivars->pciDevice, ivars->barMemoryIndex, "rate change");
+                    if (ivars->isLegacyPCIe2100)
+                        PulseFrameSyncLegacyPCIe(ivars->pciDevice, ivars->barMemoryIndex, "rate change");
                 }
 
                 // 6. Restart DMA (same sequence as Start() step 29)
@@ -7785,6 +8369,14 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         // (RecomputeCardMixer handles solo globally + SW-Return/Master combine + pan).
         // Mixer 1 and Mixer 2 map to the card's physical mixer banks 0/1 and
         // 2/3 respectively. value=(mixerID<<16)|channel.
+        // dext 131: with converters on port 1 the card routing follows their
+        // placement (ApplyConverterRouting); a Symphony I/O output route from
+        // the app would undo it.
+        if (command == kThunderboltCardOutputRouteCommand && ivars->convPort1) {
+            STLOG("Card output route: not applied — port 1 carries converters (placement kept)");
+            result = kIOReturnUnsupported;
+            return;
+        }
         if (command == kThunderboltCardOutputRouteCommand) {
             if (!payload || payloadLen != 3 ||
                 payload[0] >= kThunderboltCardOutputChannels) {
@@ -7868,6 +8460,13 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             }
         }
 
+        // dext 131: Symphony I/O vendor messages never go to converters (the
+        // original sent them to Symphony I/O units only).
+        if (ivars->convPort1) {
+            STLOG("SendVendorCommand: cmd=0x%02x not sent — port 1 carries converters", command);
+            result = kIOReturnUnsupported;
+            return;
+        }
         bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                     ivars->symphonyAddr, command, value,
                                     payload, payloadLen, ivars->runtimeTxSeq);
@@ -7953,6 +8552,10 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
     q->DispatchSync(^{
         if (!XLinkTxAdmissible(ivars)) {
             result = kIOReturnNotReady;
+            return;
+        }
+        if (ivars->convPort1) {   // dext 131: never a Symphony I/O read to converters
+            result = kIOReturnUnsupported;
             return;
         }
         if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
@@ -8215,7 +8818,16 @@ kern_return_t SymphonyThunderbridge::RequestClockSource(uint32_t source)
             for (;;) {
                 uint32_t gen = __atomic_load_n(&ivars->pendingClockGen, __ATOMIC_ACQUIRE);
                 uint32_t src = __atomic_load_n(&ivars->pendingClockSource, __ATOMIC_RELAXED);
-                if (XLinkTxAdmissible(ivars)) {
+                const bool admissible = XLinkTxAdmissible(ivars);
+                if (admissible && ivars->convPort1) {
+                    // dext 131: converters take no Symphony I/O ClockMode. Their
+                    // word clock is Internal or External (SetWCMaster); any source
+                    // but Internal (1) means External.
+                    const uint32_t cfg = __atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE);
+                    const uint32_t want = src == 1 ? (cfg & ~kSymphonyConvConfigClockExternal)
+                                                   : (cfg | kSymphonyConvConfigClockExternal);
+                    if (want != cfg) SetConverterConfig(want);
+                } else if (admissible) {
                     // ClockMode 0x50: [source, master, loopSync, boardClockSrc].
                     // LoopSync(3) ⇒ slave + loopSync on; all others ⇒ master, loopSync
                     // off. boardClockSrc left 0. (SymphonyIOVendorSpecific.h:222-247;
