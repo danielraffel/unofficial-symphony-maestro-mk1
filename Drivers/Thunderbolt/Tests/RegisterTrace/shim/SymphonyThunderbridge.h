@@ -3,6 +3,7 @@
 // not define is harmless as long as the test does not call it.
 #pragma once
 #include "HostDriverKit.h"
+#define SYMPHONY_REGISTER_TRACE_HOST 1
 
 struct SymphonyThunderbridge_IVars;
 
@@ -46,6 +47,7 @@ public:
     kern_return_t StartDevice(IOUserAudioObjectID in_object_id, IOUserAudioStartStopFlags in_flags) override;
     kern_return_t StopDevice(IOUserAudioObjectID in_object_id, IOUserAudioStartStopFlags in_flags) override;
 
+    kern_return_t SendVendorCommand(uint8_t command, uint32_t value, const uint8_t *payload, uint16_t payloadLen, uint8_t port);
     kern_return_t SendVendorCommand(uint8_t command, uint32_t value, const uint8_t *payload, uint16_t payloadLen);
     kern_return_t ReadMeterBuffer(uint32_t *outWords);
     kern_return_t ReadBoardTypes(uint8_t *outTypes, uint8_t *outValid);
@@ -53,10 +55,12 @@ public:
     kern_return_t ReadLinkState(uint32_t *outWords);
     kern_return_t RetireForUpgrade(uint32_t replacementBuild);
     kern_return_t ReadPort2State(uint32_t *outWords);   // experiment/64ch-port2 only
+    kern_return_t ReadUnitBState(uint32_t *outWords);
     kern_return_t ReadConverterState(uint32_t *outWords);
     kern_return_t SetConverterConfig(uint32_t config);
     kern_return_t RequestPortMode(uint32_t selectorValue);   // experiment, stage 2
     kern_return_t PerformPortModeChange();                   // experiment, stage 2
+    kern_return_t ReadVendorCommand(uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen, uint8_t port);
     kern_return_t ReadVendorCommand(uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen);
     kern_return_t RequestClockSource(uint32_t source);
     kern_return_t RequestPhantom(uint32_t channel, bool on);

@@ -34,10 +34,15 @@
 static_assert(sizeof(SymphonyLinkStateOutput) == 64, "ReadLinkState layout changed");
 #ifdef TRACE_HAVE_PORT2
 static_assert(sizeof(SymphonyPort2StateOutput) == 64, "ReadPort2State is 16 words");
+#if defined(TRACE_HAVE_UNITB)
+static_assert(sizeof(SymphonyUnitBStateOutput) == 40, "Unit B state is 40 bytes");
+static_assert(sizeof(SymphonyVendorCommandInput) == 78 && offsetof(SymphonyVendorCommandInput, port) == 5,
+              "vendor port byte is packed at offset 5");
+#endif
 static_assert(offsetof(SymphonyPort2StateOutput, unit) == 7 * sizeof(uint32_t), "unit[] at word 7");
 static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorRetireForUpgrade == 7 && kSelectorReadPort2State == 8, "selector numbers");
 #ifdef TRACE_HAVE_CONVERTER_PARITY
-static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorCount == 11, "converter selectors");
+static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorReadUnitB == 11 && kSelectorCount == 12, "converter/unit-B selectors");
 static_assert(sizeof(SymphonyConverterStateOutput) == 112 && sizeof(SymphonyConverterConfigInput) == 8, "converter struct sizes");
 #endif
 #endif

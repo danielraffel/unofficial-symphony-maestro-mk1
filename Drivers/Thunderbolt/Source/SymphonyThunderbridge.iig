@@ -54,7 +54,8 @@ public:
         uint8_t         command,
         uint32_t        value,
         const uint8_t  *payload,
-        uint16_t        payloadLen) LOCALONLY;
+        uint16_t        payloadLen,
+        uint8_t         port) LOCALONLY;
 
     // Snapshot the card FPGA meter DMA buffer (256 words) into outWords.
     // Called by SymphonyUserClient::ExternalMethod (kSelectorReadMeters).
@@ -75,6 +76,7 @@ public:
     // EXPERIMENT (64ch, stage 1): what the last XLink port-2 probe found, as
     // the 16 words of SymphonyPort2StateOutput. No bus access.
     virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t ReadUnitBState(uint32_t *outWords) LOCALONLY;
     // dext 131: the older XLink converters (SymphonyConverterStateOutput, 28
     // words; no bus access) and the user's choices for them
     // (SymphonyConverterConfigInput.config: word clock, Device Type).
@@ -102,7 +104,8 @@ public:
         uint8_t command,
         uint32_t value,
         uint8_t *outPayload,
-        uint16_t responseLen) LOCALONLY;
+        uint16_t responseLen,
+        uint8_t port) LOCALONLY;
 
     // Push a clock-source selection (1..5) to the Symphony IO via ClockMode.
     // Called by SymphonyClockSelectorControl::HandleChangeSelectedValues on the

@@ -31,7 +31,8 @@
                                              // no bus access). See SymphonyConverterStateOutput.
 #define kSelectorSetConverterConfig 10       // The user's converter choices: word clock source and
                                              // Device Type (dext 131+). See SymphonyConverterConfigInput.
-#define kSelectorCount          11
+#define kSelectorReadUnitB      11           // 64ch unit-B state (no bus access)
+#define kSelectorCount          12
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type
 #define kSymphonyMeterWordCount 256          // words in the card meter DMA buffer
 
@@ -45,7 +46,8 @@
 typedef struct {
     uint32_t magic;         // kSymphonyUCMagic — validated by dext
     uint8_t  command;       // SymphonyIOCommand opcode (bRequest)
-    uint8_t  reserved[3];   // alignment padding
+    uint8_t  port;           // 0 = XLink port 1 / unit A, 1 = port 2 / unit B
+    uint8_t  reserved[2];   // alignment padding
     uint32_t value;         // nValue = (wValue << 16) | wIndex
     uint16_t payloadLen;    // number of valid bytes in payload[]
     uint8_t  payload[64];   // command data (max USB control transfer size)
@@ -256,7 +258,8 @@ typedef struct {
 typedef struct {
     uint32_t magic;
     uint8_t  command;
-    uint8_t  reserved[3];
+    uint8_t  port;
+    uint8_t  reserved[2];
     uint32_t value;
     uint16_t responseLen;
 } SymphonyVendorReadInput; // 16 bytes
@@ -267,6 +270,19 @@ typedef struct {
     uint8_t  reserved[2];
     uint8_t  payload[64];
 } SymphonyVendorReadOutput; // 72 bytes
+
+typedef struct {
+    uint32_t status;
+    uint32_t present;        // 1 when a Symphony I/O is configured on port 2
+    uint8_t boardType[2];
+    uint8_t boardValid[2];
+    uint8_t prefix;
+    uint8_t clockSource;
+    uint8_t reserved[2];
+    uint32_t setupFlags;
+    uint32_t txErrors;
+    uint32_t reserved2[4];
+} SymphonyUnitBStateOutput; // 40 bytes
 
 
 // ── The older XLink converters (dext 131+) ──────────────────────────────────
