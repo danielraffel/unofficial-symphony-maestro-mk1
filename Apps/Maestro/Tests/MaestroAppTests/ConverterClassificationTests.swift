@@ -1,6 +1,7 @@
 import Testing
 @testable import MaestroApp
 import MaestroCore
+import MaestroDevice
 
 @Suite("Converter classification recovery")
 struct ConverterClassificationTests {
@@ -26,5 +27,18 @@ struct ConverterClassificationTests {
             probeWord: 0)
         #expect(system?.ports[0].isEmpty == true)
         #expect(system?.ports[1].isEmpty == false)
+    }
+}
+
+@Suite("Converter discovery stability")
+struct ConverterDiscoveryStabilityTests {
+    @Test("A converter verdict invalidates identity once, not on every discovery pass")
+    func invalidateOnlyOnVerdictChange() {
+        let first = AppState.converterVerdictNeedsInvalidation(isConverter: true, unitA: .pending, unitB: .pending)
+        let again = AppState.converterVerdictNeedsInvalidation(isConverter: true, unitA: .failed, unitB: .failed)
+        let symphony = AppState.converterVerdictNeedsInvalidation(isConverter: false, unitA: .pending, unitB: .pending)
+        #expect(first)
+        #expect(!again)
+        #expect(!symphony)
     }
 }

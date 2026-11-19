@@ -2133,6 +2133,15 @@ final class AppState {
         }
     }
 
+    /// Converter (or non-Symphony) verdict: identity is invalidated and marked
+    /// failed once, not on every discovery pass. Re-invalidating made a new unit
+    /// generation each pass, rebuilding the pages keyed on it (blank window).
+    nonisolated static func converterVerdictNeedsInvalidation(isConverter: Bool,
+                                                              unitA: UnitIdentityState,
+                                                              unitB: UnitIdentityState) -> Bool {
+        isConverter && (unitA != .failed || unitB != .failed)
+    }
+
     @MainActor
     func readCardTypes() async {
         let generation = unitAGeneration
@@ -2201,7 +2210,11 @@ final class AppState {
                 connectedUnit = connectedUnit ?? system?.connectedUnit
             }
         } else { ownChange { refreshConverterSystem() } }
-        if connectedUnit != nil || converterSystem != nil {
+        // Only when the verdict changes. Re-running this on every pass made a new
+        // unit generation each time, which rebuilt the pages keyed on it on every
+        // health-loop recovery (blank window seen by Daniel, 2026-11-19).
+        if Self.converterVerdictNeedsInvalidation(isConverter: connectedUnit != nil || converterSystem != nil,
+                                                  unitA: unitAIdentityState, unitB: unitBIdentityState) {
             ownChange {
                 invalidateUnitAIdentity()
                 invalidateUnitBIdentity()
