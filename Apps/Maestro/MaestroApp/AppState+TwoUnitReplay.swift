@@ -6,8 +6,9 @@ final class ReplayDeferral: @unchecked Sendable {
     private let lock = NSLock()
     private var recallInFlight = false
     private var requestedDuringRecall = false
+    private var epoch: UInt64 = 0
 
-    func beginRecall() { lock.lock(); defer { lock.unlock() }; recallInFlight = true }
+    func beginRecall() { lock.lock(); defer { lock.unlock() }; epoch &+= 1; recallInFlight = true }
     func request() {
         lock.lock(); defer { lock.unlock() }
         if recallInFlight { requestedDuringRecall = true }
@@ -18,6 +19,11 @@ final class ReplayDeferral: @unchecked Sendable {
         let requested = requestedDuringRecall
         requestedDuringRecall = false
         return requested
+    }
+    func currentEpoch() -> UInt64 { lock.lock(); defer { lock.unlock() }; return epoch }
+    func isValid(_ captured: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return epoch == captured && !recallInFlight
     }
     func isInFlight() -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -64,12 +70,13 @@ extension AppState {
         applyPhantomObservations(link)
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
         let replayDeferral = self.replayDeferral
+        let recallEpoch = replayDeferral.currentEpoch()
         twoUnitReplayNeeded = false
         do {
             try await Task.detached(priority: .utility) {
                 try tb.replayTwoUnits(plan, unitB: b, recoveryCount: link.recoveryCount,
                                       unitBGeneration: bGeneration,
-                                      shouldContinue: { !replayDeferral.isInFlight() })
+                                      shouldContinue: { replayDeferral.isValid(recallEpoch) })
             }.value
             guard device === tb, unitBDevice === b else { return }
             if let mode = tb.settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32 {
@@ -144,7 +151,7 @@ extension AppState {
         // Card coefficients and return selection must recover with pages closed.
         // og_source/maestrolink/Software/SymphonyCard.cpp:1031-1044.
         for mixer in 0..<2 {
-            let a = MixerStateSnapshot(channelCount: cardLayout.mixerChannels.count, mixer: mixer, store: channelStateStore)
+            let a = MixerStateSnapshot(channelCount: cardLayout.mixerChannels.count, mixer: mixer, store: channelStateStore, preferences: mixerPreferences)
             let b = MixerStateSnapshot(channelCount: layoutB.mixerChannels.count, mixer: mixer, store: unitBChannelStateStore)
             let base = UInt32(mixer + 1) << 16
             func put(_ selector: AudioPropertySelector, _ value: PropertyValue, _ channel: Int = 0) {
@@ -156,7 +163,7 @@ extension AppState {
             for (id, state) in zip(ids, channels) {
                 put(.mixerChannelLevel, .float64(state.level), id)
                 put(.mixerChannelPan, .float64(state.pan), id)
-                put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && UserDefaults.standard.integer(forKey: "routingMode") == 0)), id)
+                put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && mixerPreferences.integer(forKey: "routingMode") == 0)), id)
                 put(.mixerChannelSolo, .bool(state.isSoloed), id)
             }
             put(.mixerChannelLevel, .float64(a.masterLevel), 2000)

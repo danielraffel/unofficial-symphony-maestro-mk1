@@ -770,11 +770,18 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// left in the helper is never dropped before the unit holds its value.
     /// Returns whether the restore completed.
     @discardableResult
+    public func restoreReturnAndMaster(helperMixer: Int = 0, defaults: UserDefaults,
+                                      retryDelay: Duration = .milliseconds(150)) async -> Bool {
+        await restoreReturnAndMaster(helperMixer: helperMixer,
+            preferences: MixerPreferences(legacyDefaults: defaults), retryDelay: retryDelay)
+    }
+
+    @discardableResult
     public func restoreReturnAndMaster(
-        helperMixer: Int = 0, defaults: UserDefaults = .standard,
+        helperMixer: Int = 0, preferences: MixerPreferences,
         retryDelay: Duration = .milliseconds(150)
     ) async -> Bool {
-        let state = USBMixerSavedState.load(defaults: defaults)
+        let state = USBMixerSavedState.load(preferences: preferences)
         var unitOK = true
         var helperSteps: [USBMixerRestorePlan.Step] = []
         for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer) {

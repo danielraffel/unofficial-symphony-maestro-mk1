@@ -25,6 +25,45 @@ public enum SymphonyIdentityReader {
         return value == 0 ? nil : value
     }
 
+    /// Total wait for one identity discovery. A transport that never answers
+    /// (an XPC proxy that is alive but silent) resolves as "unknown" instead of
+    /// leaving the caller pending; the read itself may finish later, unused.
+    public static let deadline: Duration = .seconds(3)
+
+    public static func withDeadline(_ limit: Duration = deadline,
+                                    _ operation: @escaping @Sendable () async -> UInt64?) async -> UInt64? {
+        /// Resumes the continuation exactly once, from whichever path is first.
+        final class Once: @unchecked Sendable {
+            private let lock = NSLock()
+            private var continuation: CheckedContinuation<UInt64?, Never>?
+            private var result: UInt64??
+            func install(_ c: CheckedContinuation<UInt64?, Never>) {
+                lock.lock()
+                if let result { lock.unlock(); c.resume(returning: result); return }
+                continuation = c; lock.unlock()
+            }
+            func finish(_ value: UInt64?) {
+                lock.lock()
+                guard result == nil else { lock.unlock(); return }
+                result = .some(value)
+                let c = continuation; continuation = nil
+                lock.unlock()
+                c?.resume(returning: value)
+            }
+        }
+        let once = Once()
+        // A read that was cancelled reports unknown even if it returned a value.
+        let work = Task { let value = await operation(); once.finish(Task.isCancelled ? nil : value) }
+        let timer = Task { try? await Task.sleep(for: limit); once.finish(nil) }
+        let value = await withTaskCancellationHandler {
+            await withCheckedContinuation { once.install($0) }
+        } onCancel: {
+            once.finish(nil)
+        }
+        work.cancel(); timer.cancel()
+        return value
+    }
+
     /// Apply the original ten-read rule without blocking the caller's actor.
     /// A zero identity is retried at most nine times after the first read.
     public static func read(

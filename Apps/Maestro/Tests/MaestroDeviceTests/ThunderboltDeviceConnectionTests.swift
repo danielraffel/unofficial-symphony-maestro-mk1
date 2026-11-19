@@ -117,6 +117,11 @@ struct ThunderboltDeviceConnectionTests {
         #expect(await conn.hasProperty(PropertyAddress(selector: .secondaryBoardType)) == true)
         #expect(await conn.isPropertySettable(PropertyAddress(selector: .primaryBoardType)) == false)
         #expect(await conn.isPropertySettable(PropertyAddress(selector: .secondaryBoardType)) == false)
+
+        // Identify (0x33) is writable on unit A as on unit B; before this the
+        // Output Routing button threw unsupportedProperty and did nothing.
+        let identifySettable = await conn.isPropertySettable(PropertyAddress(selector: .identify))
+        #expect(identifySettable)
     }
 
     /// Clock source is asked of CoreAudio, not refused outright. There is no

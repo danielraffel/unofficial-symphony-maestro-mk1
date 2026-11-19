@@ -23,17 +23,8 @@ private let mixerFaderMeterRowHeight: CGFloat = 220
 struct MixerView: View {
     private let appState: AppState
     @State private var selectedMixer: Int = 0
-    /// Strip state, one entry per entry in `layout.mixerChannels`.
-    /// Restored before the first body evaluation so SW Return and Master never
-    /// render on their own while the input strips are still being prepared.
-    @State private var channels: [MixerChannelState]
-    @State private var masterLevel: Double
-    @State private var masterLeftLevel: Double
-    @State private var masterRightLevel: Double
-    @State private var swReturnChannel: MixerChannelState
-    @State private var swReturnLeftLevel: Double
-    @State private var swReturnRightLevel: Double
-    @State private var softwareReturnSource: UInt32
+    /// Restored together before the first body evaluation; tied to a physical scope.
+    @State private var editor: MixerEditorState
     @State private var errorMessage: String?
     @State private var showMixerResetAlert = false
     /// SwiftUI reports the newly-created scroll view's initial zero offset
@@ -54,29 +45,7 @@ struct MixerView: View {
         let mixer = appState.lastSelectedMixer == 1 ? 1 : 0
         _selectedMixer = State(initialValue: mixer)
         if appState.unitBKnownAbsent { appState.resetSoftwareReturnSourcesBeyondOneUnit() }
-        let snapshot = MixerStateSnapshot(
-            channelCount: appState.cardLayout.mixerChannels.count,
-            mixer: mixer,
-            store: appState.channelStateStore)
-        // With a second Symphony I/O on port 2 (64 channels), its strips
-        // follow unit A's, from unit B's own saved state.
-        _channels = State(initialValue: appState.mixerStripStates(unitA: snapshot.channels, mixer: mixer))
-        // Software Return and Master are each one stereo fader drawn with two
-        // handles that always move together (see MixerPairLink). The saved
-        // left value is that mixer's level for the pair.
-        let swLevel = UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double
-            ?? snapshot.swReturnChannel.level
-        var swReturn = snapshot.swReturnChannel
-        swReturn.level = swLevel
-        _swReturnChannel = State(initialValue: swReturn)
-        _swReturnLeftLevel = State(initialValue: swLevel)
-        _swReturnRightLevel = State(initialValue: swLevel)
-        // A source beyond the pairs on offer (DAW 17-64, unit B's) shows as 1-2.
-        _softwareReturnSource = State(initialValue: TwoUnitMixer.shownSoftwareReturnSource(
-            snapshot.softwareReturnSource, pairCount: appState.softwareReturnPairCount))
-        _masterLevel = State(initialValue: snapshot.masterLevel)
-        _masterLeftLevel = State(initialValue: snapshot.masterLevel)
-        _masterRightLevel = State(initialValue: snapshot.masterLevel)
+        _editor = State(initialValue: MixerEditorState(appState: appState, selectedMixer: mixer))
         let offset = ControlTabScrollPreferences.remembers
             ? appState.controlTabScrollOffset(for: .mixer) : 0
         _scrollPosition = State(initialValue: ScrollPosition(x: offset))
@@ -179,7 +148,7 @@ struct MixerView: View {
                         Task { await syncMixerToHardware(recalling: true) }
                     }
                     .controlSize(.small)
-                    .help(selectedMixer == index
+                    .maestroHelp(selectedMixer == index
                           ? "Showing Mix \(index + 1)" : "Show Mix \(index + 1)")
                     .accessibilityAddTraits(selectedMixer == index ? .isSelected : [])
                     if selectedMixer == index {
@@ -228,17 +197,17 @@ struct MixerView: View {
                     Button("Reset Mixer Defaults") {
                         showMixerResetAlert = true
                     }
-                    .help("Reset this mixer's faders, pans, mute/solo states, and software return to factory defaults")
+                    .maestroHelp("Reset this mixer's faders, pans, mute/solo states, and software return to factory defaults")
                     Divider()
                     Toggle("Pre-Mute Metering", isOn: $preMuteMetering)
-                        .help("When on, mixer meters show input signal even when a channel is muted — useful for seeing signal before unmuting. When off, meters drop to silence on mute (legacy behavior).")
+                        .maestroHelp("When on, mixer meters show input signal even when a channel is muted — useful for seeing signal before unmuting. When off, meters drop to silence on mute (legacy behavior).")
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease")
                         .font(.system(size: 11))
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 24)
-                .help("Channel Visibility")
+                .maestroHelp("Channel Visibility")
 
                 Spacer()
             }
@@ -255,10 +224,10 @@ struct MixerView: View {
                 HStack(alignment: .top, spacing: 0) {
                     Spacer().frame(width: 7)
                     // Input channel strips (filtered by visibility)
-                    ForEach(Array(0..<min(channels.count, channelCount)), id: \.self) { i in
+                    ForEach(Array(0..<min(editor.channels.count, channelCount)), id: \.self) { i in
                         if isChannelVisible(i) {
                             MixerChannelStripView(
-                                channel: $channels[i],
+                                channel: $editor.channels[i],
                                 label: channelLabel(for: i),
                                 appState: appState,
                                 inputMeterIndex: i,
@@ -347,7 +316,7 @@ struct MixerView: View {
 
                         HStack(alignment: .top, spacing: 4) {
                             FaderView(
-                                value: $masterLeftLevel,
+                                value: $editor.masterLeftLevel,
                                 range: -48...6,
                                 step: 0.5,
                                 defaultValue: 0,
@@ -359,7 +328,7 @@ struct MixerView: View {
                             )
 
                             FaderView(
-                                value: $masterRightLevel,
+                                value: $editor.masterRightLevel,
                                 range: -48...6,
                                 step: 0.5,
                                 defaultValue: 0,
@@ -472,6 +441,8 @@ struct MixerView: View {
         } message: {
             Text("This resets Mix \(selectedMixer + 1)'s input faders, pans, mute/solo states, Master, and Software Return. Output Routing and channel labels are not changed.")
         }
+        .disabled(!editor.canEdit(appState))
+        .allowsHitTesting(editor.canEdit(appState))
         .navigationTitle("Mixer \(selectedMixer + 1)")
         .task {
             // Local state is already complete; only hardware synchronization
@@ -498,20 +469,14 @@ struct MixerView: View {
             initializeChannels()
             Task {
                 guard !appState.usesTwoUnitReplay else { return }
-                // On USB this also puts Software Return and Master back, for
-                // the shown mixer, and the helper's stage to neutral.
                 await syncMixerToHardware()
-                if usbDevice == nil {
-                    await writeSWReturnMute(swReturnChannel.isMuted)
-                    await writeSWReturnLevel(swReturnChannel.level)
-                    await writeSWReturnPan(swReturnChannel.pan)
-                    await writeSoftwareReturnSource(softwareReturnSource)
-                }
             }
-            print("[Maestro] MixerView: Re-synced mixer state after USB recovery")
+            print("[Maestro] MixerView: Reloaded mixer state after recovery")
         }
         .onChange(of: appState.routingModeChangeCount) { _, _ in
-            Task { await syncMixerToHardware() }
+            // Routing-mode and hardware-input mutes are serialized by
+            // AppState; reload the snapshot without starting a second writer.
+            initializeChannels()
         }
     }
 
@@ -569,15 +534,16 @@ struct MixerView: View {
 
     private func resetMixerDefaults() {
         let empty = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
-        channels = Array(repeating: empty, count: channels.count)
-        swReturnChannel = empty
-        swReturnLeftLevel = 0
-        swReturnRightLevel = 0
-        softwareReturnSource = 0
-        masterLevel = 0
-        masterLeftLevel = 0
-        masterRightLevel = 0
+        editor.channels = Array(repeating: empty, count: editor.channels.count)
+        editor.swReturnChannel = empty
+        editor.swReturnLeftLevel = 0
+        editor.swReturnRightLevel = 0
+        editor.softwareReturnSource = 0
+        editor.masterLevel = 0
+        editor.masterLeftLevel = 0
+        editor.masterRightLevel = 0
         saveMixerState()
+        initializeChannels()
         Task {
             await syncMixerToHardware()
             await writeSWReturnLevel(0)
@@ -595,36 +561,36 @@ struct MixerView: View {
         if !selectedChannels.isEmpty {
             return selectedChannels.sorted()
         }
-        return (0..<min(channels.count, channelCount)).filter { isChannelVisible($0) }
+        return (0..<min(editor.channels.count, channelCount)).filter { isChannelVisible($0) }
     }
 
     /// Set mute to the same value for all target channels.
     private func batchToggleMute(newValue: Bool) {
         let targets = batchTargetChannels
         for i in targets {
-            guard i < channels.count else { continue }
-            channels[i].isMuted = newValue
+            guard i < editor.channels.count else { continue }
+            editor.channels[i].isMuted = newValue
             Task { await writeMute(channel: i, muted: newValue) }
         }
         // Also mute/unmute SW Return so option+click on any channel
         // includes SW Return, and option+click on SW Return itself
         // actually sends the XPC mute command to hardware.
-        swReturnChannel.isMuted = newValue
+        editor.swReturnChannel.isMuted = newValue
         Task { await writeSWReturnMute(newValue) }
         saveMixerState()
     }
 
     /// Clear all solos across all channels (no selection filter — solos are global).
     private func batchApplySolo(newValue: Bool) {
-        for i in 0..<channels.count {
-            if channels[i].isSoloed != newValue {
-                channels[i].isSoloed = newValue
+        for i in 0..<editor.channels.count {
+            if editor.channels[i].isSoloed != newValue {
+                editor.channels[i].isSoloed = newValue
                 Task { await writeSolo(channel: i, solo: newValue) }
             }
         }
         // Also apply to SW Return solo
-        if swReturnChannel.isSoloed != newValue {
-            swReturnChannel.isSoloed = newValue
+        if editor.swReturnChannel.isSoloed != newValue {
+            editor.swReturnChannel.isSoloed = newValue
             Task { await writeSWReturnSolo(newValue) }
         }
         saveMixerState()
@@ -634,11 +600,11 @@ struct MixerView: View {
     private func beginBatchLevelDrag(fromChannel: Int) {
         batchDragStartLevels = [:]
         for i in batchTargetChannels {
-            guard i < channels.count else { continue }
-            batchDragStartLevels[i] = channels[i].level
+            guard i < editor.channels.count else { continue }
+            batchDragStartLevels[i] = editor.channels[i].level
         }
         // Include SW Return in batch (sentinel key -1)
-        batchDragStartLevels[-1] = swReturnChannel.level
+        batchDragStartLevels[-1] = editor.swReturnChannel.level
     }
 
     /// Apply a delta to all target channel levels (clamped, preserves relative positions).
@@ -647,14 +613,14 @@ struct MixerView: View {
             let newLevel = min(max(startLevel + delta, -48), 0)
             if i == -1 {
                 // SW Return (sentinel key)
-                swReturnChannel.level = newLevel
+                editor.swReturnChannel.level = newLevel
                 // One stereo fader: both handles follow.
-                swReturnLeftLevel = newLevel
-                swReturnRightLevel = newLevel
+                editor.swReturnLeftLevel = newLevel
+                editor.swReturnRightLevel = newLevel
                 Task { await writeSWReturnLevel(newLevel) }
             } else {
-                guard i < channels.count else { continue }
-                channels[i].level = newLevel
+                guard i < editor.channels.count else { continue }
+                editor.channels[i].level = newLevel
                 levelDebounce[i]?.cancel()
                 levelDebounce[i] = Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(25))
@@ -670,11 +636,11 @@ struct MixerView: View {
     private func beginBatchPanDrag(fromChannel: Int) {
         batchDragStartPans = [:]
         for i in batchTargetChannels {
-            guard i < channels.count else { continue }
-            batchDragStartPans[i] = channels[i].pan
+            guard i < editor.channels.count else { continue }
+            batchDragStartPans[i] = editor.channels[i].pan
         }
         // Include SW Return in batch (sentinel key -1)
-        batchDragStartPans[-1] = swReturnChannel.pan
+        batchDragStartPans[-1] = editor.swReturnChannel.pan
     }
 
     /// Apply a delta to all target channel pans (clamped, preserves relative positions).
@@ -683,11 +649,11 @@ struct MixerView: View {
             let newPan = min(max(startPan + delta, -1.0), 1.0)
             if i == -1 {
                 // SW Return (sentinel key)
-                swReturnChannel.pan = newPan
+                editor.swReturnChannel.pan = newPan
                 Task { await writeSWReturnPan(newPan) }
             } else {
-                guard i < channels.count else { continue }
-                channels[i].pan = newPan
+                guard i < editor.channels.count else { continue }
+                editor.channels[i].pan = newPan
                 panDebounce[i]?.cancel()
                 panDebounce[i] = Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(25))
@@ -702,11 +668,11 @@ struct MixerView: View {
     /// Center all pans (including SW Return) — triggered by Option+click on any pan knob.
     private func batchCenterPans() {
         for i in batchTargetChannels {
-            guard i < channels.count else { continue }
-            channels[i].pan = 0
+            guard i < editor.channels.count else { continue }
+            editor.channels[i].pan = 0
             Task { await writePan(channel: i, pan: 0) }
         }
-        swReturnChannel.pan = 0
+        editor.swReturnChannel.pan = 0
         Task { await writeSWReturnPan(0) }
         saveMixerState()
     }
@@ -747,8 +713,8 @@ struct MixerView: View {
     private func channelLabel(for index: Int) -> String {
         // Board-aware default: analog channels get "Line N", digital get the
         // card's own label, both numbered by what the cards actually contribute.
-        let channels = mixerChannels
-        return index < channels.count ? channels[index].label : "Ch \(index + 1)"
+        let layoutChannels = mixerChannels
+        return index < layoutChannels.count ? layoutChannels[index].label : "Ch \(index + 1)"
     }
 
     private func setCustomChannelLabel(_ value: String, for index: Int) {
@@ -807,65 +773,34 @@ struct MixerView: View {
     }
 
     private func initializeChannels() {
-        let snapshot = MixerStateSnapshot(
-            channelCount: appState.cardLayout.mixerChannels.count,
-            mixer: selectedMixer,
-            store: appState.channelStateStore)
-        channels = appState.mixerStripStates(unitA: snapshot.channels, mixer: selectedMixer)
-        softwareReturnSource = TwoUnitMixer.shownSoftwareReturnSource(
-            snapshot.softwareReturnSource, pairCount: appState.softwareReturnPairCount)
-        masterLevel = snapshot.masterLevel
-        masterLeftLevel = snapshot.masterLevel
-        masterRightLevel = snapshot.masterLevel
-        let swLevel = UserDefaults.standard.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") as? Double
-            ?? snapshot.swReturnChannel.level
-        var swReturn = snapshot.swReturnChannel
-        swReturn.level = swLevel
-        swReturnChannel = swReturn
-        swReturnLeftLevel = swLevel
-        swReturnRightLevel = swLevel
+        guard editor.scopes == appState.mixerViewScopes else { return }
+        editor = MixerEditorState(appState: appState, selectedMixer: selectedMixer)
     }
 
-    /// Persist current mixer channel states to UserDefaults.
     private func saveMixerState() {
-        appState.saveMixerStrips(channels, mixer: selectedMixer)
-        if let data = try? JSONEncoder().encode(swReturnChannel) {
-            UserDefaults.standard.set(data, forKey: "mixerState_swReturn")
-        }
-        UserDefaults.standard.set(masterLevel, forKey: "mixerMasterLevel_\(selectedMixer)")
-        UserDefaults.standard.set(masterLeftLevel, forKey: "mixerMasterLeftLevel_\(selectedMixer)")
-        UserDefaults.standard.set(masterRightLevel, forKey: "mixerMasterRightLevel_\(selectedMixer)")
-        UserDefaults.standard.set(swReturnLeftLevel, forKey: "mixerSWReturnLeftLevel_\(selectedMixer)")
-        UserDefaults.standard.set(swReturnRightLevel, forKey: "mixerSWReturnRightLevel_\(selectedMixer)")
-        // The pairs can no longer be unlinked. Older versions read these flags.
-        UserDefaults.standard.set(true, forKey: "mixerSWReturnFadersLinked")
-        UserDefaults.standard.set(true, forKey: "mixerMasterFadersLinked")
-        let sourceKey = "mixerSoftwareReturnSource_\(selectedMixer)"
-        UserDefaults.standard.set(
-            TwoUnitMixer.sourceToSave(shown: softwareReturnSource,
-                                      saved: UInt32(clamping: UserDefaults.standard.integer(forKey: sourceKey)),
-                                      pairCount: appState.softwareReturnPairCount),
-            forKey: sourceKey)
-        // Keep the ThunderBridge SW Return meters in step with the faders/pan/mute.
-        appState.refreshSoftwareReturnMeterGains()
+        editor.save(appState: appState, selectedMixer: selectedMixer)
     }
 
     /// Send all mixer channel states to hardware on startup/mixer switch.
     /// The FPGA doesn't persist mixer state — it powers up with defaults that
     /// may not match the UI, causing silent channels until user interaction.
     private func syncMixerToHardware(recalling: Bool = false) async {
+        guard editor.canEdit(appState) else { return }
         // Two-unit lifecycle recall belongs to AppState even with this page closed.
         if recalling && appState.usesTwoUnitReplay { return }
         guard let device = appState.device else { return }
-        let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
-        for i in 0..<min(channels.count, channelCount) {
-            let ch = channels[i]
+        let loaded = editor
+        let routingMode = appState.mixerPreferences.integer(forKey: "routingMode")
+        for i in 0..<min(editor.loadedChannelCount, min(editor.channels.count, channelCount)) {
+            guard loaded.canEdit(appState), appState.device === device else { return }
+            let ch = loaded.channels[i]
             let elem = mixerElement(channel: i)
             let effectiveMute = (routingMode == 0) ? true : ch.isMuted
             do {
                 try await device.setProperty(
                     PropertyAddress(selector: .mixerChannelLevel, element: elem),
                     value: .float64(ch.level))
+                guard loaded.canEdit(appState), appState.device === device else { return }
                 try await device.setProperty(
                     PropertyAddress(selector: .mixerChannelMute, element: elem),
                     value: .bool(effectiveMute))
@@ -873,21 +808,27 @@ struct MixerView: View {
                 // Non-critical — channel may not exist on this board config
             }
         }
+        guard loaded.canEdit(appState), appState.device === device else { return }
         if usbDevice != nil {
             // USB: the unit's mixer owns Master and Software Return for every
             // source. The helper is written neutral inside writeSoftwareReturnSource.
-            await writeMasterFader()
-            await writeSoftwareReturnSource(softwareReturnSource)
+            // The connection's lifecycle restore already wrote Master and Software
+            // Return for this generation; the strips above are still this page's job.
+            guard appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration else { return }
+            if editor.loadedMaster { await writeMasterFader() }
+            if editor.loadedReturn { await writeSoftwareReturnSource(editor.softwareReturnSource) }
         } else {
             // Master level
-            do {
-                try await device.setProperty(
-                    PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
-                    value: .float64(masterLevel))
-            } catch {}
-            await writeSoftwareReturnSource(softwareReturnSource)
+            if loaded.loadedMaster {
+                do {
+                    try await device.setProperty(
+                        PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
+                        value: .float64(loaded.masterLevel))
+                } catch {}
+            }
+            if editor.loadedReturn { await writeSoftwareReturnSource(editor.softwareReturnSource) }
         }
-        print("[Maestro] syncMixerToHardware: sent \(channels.count) channels + master to mixer \(selectedMixer + 1) (\(routingMode == 0 ? "DAW" : "Direct Monitor"))")
+        print("[Maestro] syncMixerToHardware: sent \(editor.channels.count) channels + master to mixer \(selectedMixer + 1) (\(routingMode == 0 ? "DAW" : "Direct Monitor"))")
     }
 
     /// Encode mixer element: (mixerID << 16) | channelIndex.
@@ -897,8 +838,8 @@ struct MixerView: View {
         // Strip index != hardware channel ID. Each slot owns a fixed 16-channel
         // XLink region whether or not its card fills it, so a card that supplies
         // fewer than 16 channels leaves a gap before the second slot's IDs.
-        let channels = mixerChannels
-        let hardwareIndex = channel < channels.count ? channels[channel].hardwareIndex : channel
+        let layoutChannels = mixerChannels
+        let hardwareIndex = channel < layoutChannels.count ? layoutChannels[channel].hardwareIndex : channel
         return (UInt32(selectedMixer + 1) << 16) | UInt32(hardwareIndex)
     }
 
@@ -923,24 +864,24 @@ struct MixerView: View {
 
     /// A Software Return fader handle moved: both sides follow.
     private func swSideChanged(_ level: Double) {
-        swReturnLeftLevel = level
-        swReturnRightLevel = level
-        swReturnChannel.level = level
+        editor.swReturnLeftLevel = level
+        editor.swReturnRightLevel = level
+        editor.swReturnChannel.level = level
         Task { await writeSWReturnLevel(level) }
         saveMixerState()
     }
 
     /// A Master fader handle moved: both sides follow.
     private func masterSideChanged(_ newLevel: Double) {
-        masterLeftLevel = newLevel
-        masterRightLevel = newLevel
-        masterLevel = newLevel
+        editor.masterLeftLevel = newLevel
+        editor.masterRightLevel = newLevel
+        editor.masterLevel = newLevel
         scheduleMasterWrite(level: newLevel)
     }
 
     private var swReturnStrip: some View {
     MixerChannelStripView(
-        channel: $swReturnChannel,
+        channel: $editor.swReturnChannel,
         label: "SW Return",
         appState: appState,
         mixerMeterBaseIndex: selectedMixer * 2,
@@ -979,12 +920,13 @@ struct MixerView: View {
         onPanOptionClick: {
             batchCenterPans()
         },
-        softwareReturnSource: $softwareReturnSource,
+        softwareReturnSource: $editor.softwareReturnSource,
         softwareReturnPairCount: appState.softwareReturnPairCount,
         onSoftwareReturnSourceChange: { source in
-            softwareReturnSource = source
+            guard editor.canEdit(appState) else { return }
+            editor.softwareReturnSource = source
             // The user's choice is saved as chosen, 1-2 included.
-            UserDefaults.standard.set(source, forKey: "mixerSoftwareReturnSource_\(selectedMixer)")
+            appState.mixerPreferences.set(source, forKey: "mixerSoftwareReturnSource_\(selectedMixer)")
             Task { await writeSoftwareReturnSource(source); saveMixerState() }
         },
         showZoneColoring: appState.showMeterZoneColoring,
@@ -992,8 +934,8 @@ struct MixerView: View {
         // Keep SW Return pan available alongside the stereo fader. The
         // mixer model and ThunderBridge write path both support it.
         showPan: true,
-        stereoLeftLevel: $swReturnLeftLevel,
-        stereoRightLevel: $swReturnRightLevel,
+        stereoLeftLevel: $editor.swReturnLeftLevel,
+        stereoRightLevel: $editor.swReturnRightLevel,
         onStereoLevelChange: { level in swSideChanged(level) }
     )
     }
@@ -1010,11 +952,11 @@ struct MixerView: View {
             // that while keeping the readout display-only until double-clicked.
             EditableLevelReadout(
                 value: Binding(
-                    get: { masterLevel },
+                    get: { editor.masterLevel },
                     set: { newLevel in masterSideChanged(newLevel) }),
                 range: -48...6,
                 step: 0.5)
-            .help("Master fader level: double-click to edit")
+            .maestroHelp("Master fader level: double-click to edit")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
@@ -1025,6 +967,7 @@ struct MixerView: View {
     private var usbDevice: XPCDeviceConnection? { appState.device as? XPCDeviceConnection }
 
     private func writeLevel(channel: Int, level: Double) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         do {
             try await device.setProperty(
@@ -1037,6 +980,7 @@ struct MixerView: View {
     }
 
     private func writePan(channel: Int, pan: Double) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         do {
             try await device.setProperty(
@@ -1049,8 +993,9 @@ struct MixerView: View {
     }
 
     private func writeMute(channel: Int, muted: Bool) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
-        let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
+        let routingMode = appState.mixerPreferences.integer(forKey: "routingMode")
         let effectiveMute = (routingMode == 0) ? true : muted
         do {
             try await device.setProperty(
@@ -1063,6 +1008,7 @@ struct MixerView: View {
     }
 
     private func writeSolo(channel: Int, solo: Bool) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         do {
             try await device.setProperty(
@@ -1075,6 +1021,7 @@ struct MixerView: View {
     }
 
     private func writeMasterLevel(_ level: Double) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         if usbDevice != nil {
             await writeMasterFader()
@@ -1092,10 +1039,11 @@ struct MixerView: View {
 
     /// USB: write the Master strip from the faders as shown.
     private func writeMasterFader() async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         let level = MixerPairLink.usbUnitLevel(
-            left: masterLeftLevel, right: masterRightLevel,
-            savedLinked: true, linkedLevel: masterLevel)
+            left: editor.masterLeftLevel, right: editor.masterRightLevel,
+            savedLinked: true, linkedLevel: editor.masterLevel)
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelLevel, element: masterElement),
@@ -1124,6 +1072,7 @@ struct MixerView: View {
     // ThunderBridge: the Software Return is a real mixer input (id 1000) driven
     // through setProperty with swReturnElement, like any other strip.
     private func writeSWReturnLevel(_ level: Double) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         if usbDevice != nil {
             _ = await writeSWReturnUnitLevel(linkedLevel: level)
@@ -1144,9 +1093,10 @@ struct MixerView: View {
     /// helper's software level is not touched here (it is held neutral by
     /// `writeSoftwareReturnSource`, after the unit has taken its values).
     private func writeSWReturnUnitLevel(linkedLevel: Double) async -> Bool {
+        guard editor.canEdit(appState) else { return false }
         guard let xpcDev = usbDevice else { return false }
         let level = MixerPairLink.usbUnitLevel(
-            left: swReturnLeftLevel, right: swReturnRightLevel,
+            left: editor.swReturnLeftLevel, right: editor.swReturnRightLevel,
             savedLinked: true, linkedLevel: linkedLevel)
         do {
             try await xpcDev.setProperty(
@@ -1160,11 +1110,12 @@ struct MixerView: View {
     }
 
     private func writeSWReturnPan(_ pan: Double) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         if let xpcDev = usbDevice {
             // The unit's Software Return strip has no pan. Over USB the pan is a
             // balance in the helper, which only sees USB playback 1-2.
-            if softwareReturnSource == 0 { xpcDev.setSwReturnPan(pan) }
+            if editor.softwareReturnSource == 0 { xpcDev.setSwReturnPan(pan) }
         } else {
             do {
                 try await device.setProperty(
@@ -1178,6 +1129,7 @@ struct MixerView: View {
     }
 
     private func writeSWReturnMute(_ muted: Bool) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         do {
             try await device.setProperty(
@@ -1190,6 +1142,7 @@ struct MixerView: View {
     }
 
     private func writeSWReturnSolo(_ solo: Bool) async {
+        guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         do {
             try await device.setProperty(
@@ -1204,12 +1157,13 @@ struct MixerView: View {
     /// Route the selected USB playback stereo pair into this mixer's Software
     /// Return input, matching the legacy AEsR property.
     private func writeSoftwareReturnSource(_ source: UInt32) async {
+        guard editor.canEdit(appState) else { return }
         // 8 pairs, or 32 while 64 channels run with unit B (ThunderBridge only).
         guard let device = appState.device,
               source < UInt32(appState.softwareReturnPairCount) else { return }
         // A saved DAW 17-64 shown as 1-2 before unit B is reported is not
         // sent: the card keeps its own source until then.
-        let saved = UInt32(clamping: UserDefaults.standard.integer(forKey: "mixerSoftwareReturnSource_\(selectedMixer)"))
+        let saved = UInt32(clamping: appState.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(selectedMixer)"))
         let held = TwoUnitMixer.isHeld(shown: source, saved: saved, pairCount: appState.softwareReturnPairCount)
         do {
             let element = UInt32(selectedMixer + 1) << 16
@@ -1230,13 +1184,13 @@ struct MixerView: View {
             // unit holds its values. If a unit write fails twice the helper is
             // left as it was.
             let level = MixerPairLink.usbUnitLevel(
-                left: swReturnLeftLevel, right: swReturnRightLevel,
-                savedLinked: true, linkedLevel: swReturnLeftLevel)
+                left: editor.swReturnLeftLevel, right: editor.swReturnRightLevel,
+                savedLinked: true, linkedLevel: editor.swReturnLeftLevel)
             let element = swReturnElement
             let writes: [(AudioPropertySelector, PropertyValue)] = [
                 (.mixerChannelLevel, .float64(level)),
-                (.mixerChannelMute, .bool(swReturnChannel.isMuted)),
-                (.mixerChannelSolo, .bool(swReturnChannel.isSoloed)),
+                (.mixerChannelMute, .bool(editor.swReturnChannel.isMuted)),
+                (.mixerChannelSolo, .bool(editor.swReturnChannel.isSoloed)),
             ]
             var unitOK = true
             for (selector, value) in writes {
@@ -1251,13 +1205,13 @@ struct MixerView: View {
             }
             xpcDev.setHelperNeutral()
             let otherMixer = selectedMixer == 0 ? 1 : 0
-            let otherSource = UInt32(UserDefaults.standard.integer(
-                forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
+            let otherSource = UInt32(appState.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
             xpcDev.setSwReturnProcessing(source == 0 || otherSource == 0)
-            if source == 0 { await writeSWReturnPan(swReturnChannel.pan) }
+            if source == 0 { await writeSWReturnPan(editor.swReturnChannel.pan) }
         } else {
             // ThunderBridge: the FPGA mixer processes every source. Mirror the
             // current persisted state into its software-return input controls.
+            let swReturnChannel = editor.swReturnChannel
             await writeSWReturnLevel(swReturnChannel.level)
             await writeSWReturnPan(swReturnChannel.pan)
             await writeSWReturnMute(swReturnChannel.isMuted)
@@ -1433,7 +1387,7 @@ struct MixerChannelStripView: View {
                     onBatchDragStart: onBatchPanDragStart,
                     onOptionClick: onPanOptionClick
                 )
-                .help("Pan: \(panText) — double-click to center, Option+click center all, Option+drag all")
+                .maestroHelp("Pan: \(panText) — double-click to center, Option+click center all, Option+drag all")
                 .onChange(of: channel.pan) { _, newPan in
                     onPanChange?(newPan)
                 }
@@ -1552,11 +1506,11 @@ struct MixerChannelStripView: View {
                         set: { newValue in onStereoLevelChange?(newValue) }),
                     range: -48...6,
                     step: 0.5)
-                .help("Software Return fader level: double-click to edit")
+                .maestroHelp("Software Return fader level: double-click to edit")
             } else {
                 // dB readout (level) — single readout, no duplicate
                 EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5)
-                    .help("Fader Level: \(String(format: "%.1f", channel.level)) dB — double-click to edit")
+                    .maestroHelp("Fader Level: \(String(format: "%.1f", channel.level)) dB — double-click to edit")
             }
 
             // Mute / Solo buttons — at the very bottom
@@ -1576,7 +1530,7 @@ struct MixerChannelStripView: View {
                         .foregroundStyle(channel.isMuted ? .white : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Mute (Option+Click: all channels)")
+                .maestroHelp("Mute (Option+Click: all channels)")
 
                 Button(action: {
                     channel.isSoloed.toggle()
@@ -1591,7 +1545,7 @@ struct MixerChannelStripView: View {
                         .foregroundStyle(channel.isSoloed ? .black : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Solo (Option+Click: clear all solos)")
+                .maestroHelp("Solo (Option+Click: clear all solos)")
             }
 
             // Mixer Custom Label — a user-editable label distinct from the
@@ -1635,7 +1589,7 @@ struct MixerChannelStripView: View {
                     NSApp.keyWindow?.endEditing(for: nil)
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
-                .help("Mixer Custom Label — names this input channel in both mixers")
+                .maestroHelp("Mixer Custom Label — names this input channel in both mixers")
             }
 
         }

@@ -42,10 +42,10 @@ extension AppState {
             let cardInputs = symphonyCardInputStore?.load() ?? [:]
             seed.cardInputRoutes = (0..<(unitBOnCard ? 64 : 32)).map { cardInputs[$0] ?? $0 }
         }
-        seed.routingMode = UserDefaults.standard.integer(forKey: "routingMode")
+        seed.routingMode = mixerPreferences.integer(forKey: "routingMode")
         seed.mixers = (0..<2).map {
             ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount,
-                                                                 mixer: $0, store: channelStateStore))
+                                                                 mixer: $0, store: channelStateStore, preferences: mixerPreferences))
         }
         let saved = cachedOutputRouteMap()
         seed.outputRoutes = (0..<32).map { channel in
@@ -72,7 +72,7 @@ extension AppState {
                 value.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
             }
             value.outputRoutes = Array(0..<32)
-            value.routingMode = seed.routingMode
+            value.routingMode = store.mixerPreferences.integer(forKey: "routingMode")
             value.mixers = (0..<2).map {
                 ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: bLayout.mixerChannelCount, mixer: $0, store: store))
             }
@@ -125,17 +125,21 @@ extension AppState {
                     try b.withPresetLock {
                         let bWrites = try b.presetWrites(saved, layout: bLayout, cardInputSupported: cardInputSupported,
                                                          onSkipped: recallWarnings.add)
-                        do { try connection.applyPresetWrites(aWrites, layout: layout) }
+                        do { try connection.applyPresetWrites(aWrites, layout: layout,
+                                                               recoveryCount: admissionFence.0) }
                         catch {
                             // Card routing may already have changed B's feed.
                             // Finish both units even when A's recall failed.
-                            try? b.applyPresetWrites([], layout: bLayout) { try connection.writePresetMixer($0, value: $1) }
+                            try? b.applyPresetWrites([], layout: bLayout, cardWrite: { try connection.writePresetMixer($0, value: $1) },
+                                                      unitBGeneration: admissionFence.1)
                             throw error
                         }
-                        try b.applyPresetWrites(bWrites, layout: bLayout) { try connection.writePresetMixer($0, value: $1) }
+                        try b.applyPresetWrites(bWrites, layout: bLayout,
+                                                cardWrite: { try connection.writePresetMixer($0, value: $1) },
+                                                unitBGeneration: admissionFence.1)
                     }
                 } else {
-                    try connection.applyPresetWrites(aWrites, layout: layout)
+                    try connection.applyPresetWrites(aWrites, layout: layout, recoveryCount: admissionFence.0)
                 }
             }
         }.value
@@ -148,13 +152,23 @@ extension AppState {
               !recallB || admissionFence.1 == completionFence.1 else {
             throw ThunderboltPreset.RecallError.failed("the link or unit-B generation changed; recall was only partially applied")
         }
+        // The persistence commit is part of the same ordered transaction: do
+        // not let a recovery or B replacement make the stores newer than the
+        // hardware that was actually recalled.
+        let commitFence = await Task.detached(priority: .utility) {
+            (connection.linkState()?.recoveryCount, connection.readUnitBState()?.generation)
+        }.value
+        guard admissionFence.0 == commitFence.0,
+              !recallB || admissionFence.1 == commitFence.1 else {
+            throw ThunderboltPreset.RecallError.failed("the link or unit-B generation changed before persistence")
+        }
         if recallB, let saved = preset.unitB, let bLayout, unitBDevice === b {
             if !saved.metadata.channelNames.isEmpty {
                 UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: mixerNamesKey(unit: .b))
             }
             bStore.save(saved.metadata.inputChannelStates.enumerated().map { $0.element.recalled(identity: bStore.identity, boardSlot: 1, channel: $0.offset) }, for: ChannelStateStore.inputKey)
             bStore.save(saved.metadata.outputChannelStates, for: ChannelStateStore.outputKey)
-            for (index, mixer) in saved.mixers.enumerated() { bStore.save(mixer.channels, for: ChannelStateStore.mixerKey(index)) }
+            try bStore.saveMixerPreset(saved.mixers, routingMode: saved.routingMode, sourceCount: 32)
             if let bDigitalKey {
                 for digital in PresetDigitalWrites.writes(for: saved.metadata, layout: bLayout) {
                     SlotDigitalSettings.remember(digital.address.selector, slot: Int(digital.address.element), value: digital.value, key: bDigitalKey)
@@ -181,16 +195,9 @@ extension AppState {
         for digital in PresetDigitalWrites.writes(for: meta, layout: cardLayout) {
             rememberDigitalSetting(digital.address.selector, slot: Int(digital.address.element), value: digital.value)
         }
-        for (index, mixer) in preset.mixers.enumerated() {
-            channelStateStore.save(mixer.channels, for: ChannelStateStore.mixerKey(index))
-            if mixer.source < (cardChannels == 64 ? 32 : 8) {
-                UserDefaults.standard.set(mixer.source, forKey: "mixerSoftwareReturnSource_\(index)")
-            }
-            UserDefaults.standard.set(mixer.master, forKey: "mixerMasterLevel_\(index)")
-            UserDefaults.standard.set(try JSONEncoder().encode(mixer.softwareReturn), forKey: "mixerState_swReturn")
-        }
+        try channelStateStore.saveMixerPreset(preset.mixers, routingMode: legacy ? nil : preset.routingMode,
+                                              sourceCount: cardChannels == 64 ? 32 : 8)
         if !legacy {
-            UserDefaults.standard.set(preset.routingMode, forKey: "routingMode")
             persistPresetRoutes(preset, productID: connection.identifier.productID, recalledChannels: cardChannels)
             if let routes = preset.cardInputRoutes {
                 let applied = try ThunderboltPreset.cardTable(routes, channels: cardChannels)

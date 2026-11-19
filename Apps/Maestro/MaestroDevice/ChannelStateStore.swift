@@ -96,6 +96,23 @@ public struct ChannelStateStore {
         }
     }
 
+    public var mixerPreferences: MixerPreferences {
+        if !awaitingIdentity, identity == nil, !isSimulating, permitsLegacyInheritance, unit == .a {
+            if let owner = defaults.string(forKey: "mixerWideState.migratedTo"), !owner.isEmpty {
+                // A crash may leave the ownership marker and receipt before
+                // the destination dictionary is materialized. Finish that
+                // receipt-backed copy before exposing a writable handle;
+                // defaults must never synthesize the destination first.
+                return MixerPreferences(defaults: defaults, scope: owner, migrate: true)
+            }
+            return MixerPreferences(legacyDefaults: defaults)
+        }
+        return MixerPreferences(defaults: defaults,
+            scope: awaitingIdentity ? "pending" : (scope ?? (isSimulating ? "sim:unidentified" : "unidentified")),
+            migrate: identity != nil && !isSimulating && !awaitingIdentity
+                && permitsLegacyInheritance && unit == .a && allowLegacyMigration)
+    }
+
     /// The key a `base` is read from / written to for this scope.
     public func key(_ base: String) -> String {
         if identity == nil, !isSimulating, permitsLegacyInheritance, let legacyScope,

@@ -240,7 +240,9 @@ struct SymphonyThunderbridge_IVars {
     SymphonyPhantomControl *phantomControl[8];      // per-channel phantom ('phan')
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
     uint8_t   pendingPhantom[2][8];   uint32_t pendingPhantomGen[2][8]; bool phantomTxScheduled[2][8];
+    uint8_t   pendingPhantomHost[2][8]; bool pendingPhantomTypeKnown[2][8]; bool pendingPhantomInstrument[2][8];
     uint8_t   pendingMicGain[2][2][8]; uint32_t pendingMicGainGen[2][2][8]; bool micGainTxScheduled[2][2][8];
+    uint8_t   pendingMicGainHost[2][2][8]; bool pendingMicGainTypeKnown[2][2][8]; bool pendingMicGainInstrument[2][2][8];
     bool preampRoutingEdited;
     bool unitBMicPreTypeKnown[8];
     bool unitBMicPreInstrument[8];
@@ -250,6 +252,8 @@ struct SymphonyThunderbridge_IVars {
     bool      micPreGainKnown[2][8];
     bool      micPreInstrument[8];    // atomic type for unit A's HAL controls
     bool      micPreTypeKnown[8];     // a failed read must not guess Mic
+    bool      micPreMic[8];           // known type is Mic (3): HAL phantom ON needs it
+    bool      unitBMicPreMic[8];
     // Separate pending lanes bind each value to its stage across a type switch.
     // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
 
@@ -1784,8 +1788,14 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars);
 static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendorAnswered,
                                  const SymphonyLinkInitResult *symphony)
 {
-    if (vendorAnswered)
+    if (vendorAnswered) {
         ivars->symphonyAnsweredSinceStart = true;
+        // A successful Symphony read is authoritative even when the initial
+        // probe timed out and produced a converter-looking INQUIRE word.
+        // Clear that provisional word on every recovery path, not only the
+        // startup branch that explicitly found convCandidate.
+        ivars->unitProbeWord = 0;
+    }
     const bool converters = !ivars->symphonyAnsweredSinceStart &&
                             (UnitProbeIsConvertersOnly(ivars->unitProbeWord) || __atomic_load_n(&ivars->convPort1, __ATOMIC_ACQUIRE));
     const bool was = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
@@ -2633,6 +2643,11 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             return true;
         } else if (convCandidate || ivars->convPort1) {
             STLOG("Converter: a Symphony I/O read answered after the probe — Symphony I/O behaviour");
+            // The probe is only provisional.  Once any Symphony vendor read
+            // answers, never publish the converter word from the earlier
+            // timeout/INQUIRE race (the app decodes this word independently
+            // of the converter-state selector).
+            ivars->unitProbeWord = 0;
             ConvSetPort(ivars, 0, false, 0, nullptr);
             __atomic_and_fetch(&ivars->convFlags, ~(kSymphonyConvPort1Converters | kSymphonyConvRoutingApplied), __ATOMIC_RELEASE);
         }
@@ -7427,6 +7442,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                                   ivars->symphonyAddr, kSIOCmd_CurrentAnalogInputType,
                                   0x80000000u | ch, &type, 1, ivars->runtimeTxSeq, ivars->isLegacyPCIe2100) && type <= 4) {
                 __atomic_store_n(&ivars->micPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
+                __atomic_store_n(&ivars->micPreMic[ch], type == 3, __ATOMIC_RELEASE);
                 __atomic_store_n(&ivars->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
             }
             // AudioDriverKit has no public range setter after init. Keep the
@@ -9504,6 +9520,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         if (port == 1 && command == kSIOCmd_AnalogReferenceLevel && payload &&
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->unitBMicPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
+            __atomic_store_n(&ivars->unitBMicPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->unitBMicPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             PublishMicGain(ivars, value & 7u, 1);
         }
@@ -9520,6 +9537,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         if (port == 0 && command == kSIOCmd_AnalogReferenceLevel && payload &&
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->micPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
+            __atomic_store_n(&ivars->micPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             PublishMicGain(ivars, value & 7u);
         }
@@ -10112,11 +10130,30 @@ kern_return_t SymphonyThunderbridge::RequestOpticalFormat(uint32_t board, uint32
 // and all XLink TX still serializes (MSG_BYTE frames never interleave). Never
 // call SendVendorRequest from the control/IRQ queue — only from the drain block.
 
+static bool MicPreIsMic(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    return port ? __atomic_load_n(&iv->unitBMicPreMic[ch], __ATOMIC_ACQUIRE) :
+                  __atomic_load_n(&iv->micPreMic[ch], __ATOMIC_ACQUIRE);
+}
+
 kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
 {
     if (!ivars || channel >= 64) return kIOReturnBadArgument;
+    const uint32_t hostChannel = channel;
     uint32_t port = 0, ch = 0;
     if (!ResolveMicPreRoute(ivars, channel, port, ch)) return kIOReturnNotReady;
+    const bool admittedTypeKnown = port ? __atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE) :
+        __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE);
+    const bool admittedInstrument = port ? __atomic_load_n(&ivars->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
+        __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE);
+    // Phantom ON only for a channel known to be in Mic mode; the original
+    // ignores phantom on any other input type
+    // (og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:683-691).
+    // OFF is always allowed.
+    if (on && !(admittedTypeKnown && MicPreIsMic(ivars, port, ch))) {
+        STERR("RequestPhantom: ON refused, ch%u is not known to be in Mic mode", ch);
+        return kIOReturnNotPermitted;
+    }
     IODispatchQueue *txq = ivars->xlinkQueue;
     if (!txq) {
         STERR("RequestPhantom: no XLink queue (setup incomplete)");
@@ -10126,20 +10163,14 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
         STERR("RequestPhantom: TX shut down — not sending");
         return kIOReturnNotReady;
     }
-    // Record the resolved physical target at admission, even if the asynchronous
-    // hardware send later fails. OFF must revoke host restore authority. ON has
-    // no receipt and cannot authorize a future automatic ON. Never infer the
-    // target later from a mutable HAL element. No hardware access here.
-    if (!on) {
-        uint64_t previous = __atomic_load_n(&ivars->halPhantomOff[port * 8 + ch], __ATOMIC_ACQUIRE);
-        uint64_t next;
-        do {
-            const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
-            next = now > previous ? now : previous + 1;
-        } while (!__atomic_compare_exchange_n(&ivars->halPhantomOff[port * 8 + ch], &previous,
-                                             next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
-    }
+    // Keep the admitted physical target with the queued lane. The receipt is
+    // published only after that exact target accepts the OFF send below; an
+    // admission that is later refused must not look like an observed hardware
+    // OFF. ON has no receipt and cannot authorize a future automatic ON.
     __atomic_store_n(&ivars->pendingPhantom[port][ch], on ? 1 : 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->pendingPhantomHost[port][ch], (uint8_t)hostChannel, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->pendingPhantomTypeKnown[port][ch], admittedTypeKnown, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->pendingPhantomInstrument[port][ch], admittedInstrument, __ATOMIC_RELAXED);
     __atomic_fetch_add(&ivars->pendingPhantomGen[port][ch], 1, __ATOMIC_RELEASE);
     bool expected = false;
     if (__atomic_compare_exchange_n(&ivars->phantomTxScheduled[port][ch], &expected, true,
@@ -10148,12 +10179,36 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
             for (;;) {
                 uint32_t gen = __atomic_load_n(&ivars->pendingPhantomGen[port][ch], __ATOMIC_ACQUIRE);
                 uint8_t  val = __atomic_load_n(&ivars->pendingPhantom[port][ch], __ATOMIC_RELAXED);
-                if (XLinkTxAdmissible(ivars) && (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
+                const uint32_t pendingHost = __atomic_load_n(&ivars->pendingPhantomHost[port][ch], __ATOMIC_RELAXED);
+                const bool pendingTypeKnown = __atomic_load_n(&ivars->pendingPhantomTypeKnown[port][ch], __ATOMIC_RELAXED);
+                const bool pendingInstrument = __atomic_load_n(&ivars->pendingPhantomInstrument[port][ch], __ATOMIC_RELAXED);
+                uint32_t resolvedPort = 0, resolvedChannel = 0;
+                const bool routeUnchanged = ResolveMicPreRoute(ivars, pendingHost, resolvedPort, resolvedChannel) &&
+                    resolvedPort == port && resolvedChannel == ch &&
+                    (port ? __atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE) :
+                        __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE)) == pendingTypeKnown &&
+                    (port ? __atomic_load_n(&ivars->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
+                        __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE)) == pendingInstrument;
+                // ON needs the route it was admitted for. OFF is the safe direction:
+                // it still reaches the channel the request was made for, so a route
+                // change can never leave +48 V on a channel the user just switched off.
+                if (XLinkTxAdmissible(ivars) &&
+                    (val == 0 || (routeUnchanged && pendingTypeKnown && MicPreIsMic(ivars, port, ch))) &&
+                    (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // 1=on, 0=off
-                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                    const bool sent = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
                                       port ? kRegXLink2TX : kRegXLink1TX,
                                       port ? 1 : ivars->symphonyAddr, kSIOCmd_PhantomPower,
                                       ch, &pData, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
+                    if (sent && val == 0) {
+                        uint64_t previous = __atomic_load_n(&ivars->halPhantomOff[port * 8 + ch], __ATOMIC_ACQUIRE);
+                        uint64_t next;
+                        do {
+                            const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+                            next = now > previous ? now : previous + 1;
+                        } while (!__atomic_compare_exchange_n(&ivars->halPhantomOff[port * 8 + ch], &previous,
+                                                             next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+                    }
                 }
                 __atomic_store_n(&ivars->phantomTxScheduled[port][ch], false, __ATOMIC_RELEASE);
                 if (__atomic_load_n(&ivars->pendingPhantomGen[port][ch], __ATOMIC_ACQUIRE) == gen)
@@ -10172,6 +10227,7 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
 kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float decibels)
 {
     if (!ivars || channel >= 64) return kIOReturnBadArgument;
+    const uint32_t hostChannel = channel;
     uint32_t port = 0, ch = 0;
     if (!ResolveMicPreRoute(ivars, channel, port, ch)) return kIOReturnNotReady;
     IODispatchQueue *txq = ivars->xlinkQueue;
@@ -10188,9 +10244,10 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
     // the DAW's gain control never goes dead (review 2026-11-19 finding 9).
     // Unit B (new in 132, B10): unknown refuses rather than guessing.
     if (port && !__atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE)) return kIOReturnNotReady;
+    const bool admittedTypeKnown = port ? __atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE) :
+        __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE);
     const bool instrument = port ? __atomic_load_n(&ivars->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
-        (__atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE) &&
-         __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE));
+        (admittedTypeKnown && __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE));
     const uint32_t lane = instrument ? 1 : 0;
     const uint8_t command = instrument ? kSIOCmd_InstrumentGain : kSIOCmd_MicGain;
     const float maxDb = instrument ? 65.0f : kMicGainMaxDb;
@@ -10201,6 +10258,9 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
     if (clamped > maxDb) clamped = maxDb;
     uint8_t gainByte = (uint8_t)(clamped + 0.5f);   // round to nearest dB
     __atomic_store_n(&ivars->pendingMicGain[port][lane][ch], gainByte, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->pendingMicGainHost[port][lane][ch], (uint8_t)hostChannel, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->pendingMicGainTypeKnown[port][lane][ch], admittedTypeKnown, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->pendingMicGainInstrument[port][lane][ch], instrument, __ATOMIC_RELAXED);
     __atomic_fetch_add(&ivars->pendingMicGainGen[port][lane][ch], 1, __ATOMIC_RELEASE);
     bool expected = false;
     if (__atomic_compare_exchange_n(&ivars->micGainTxScheduled[port][lane][ch], &expected, true,
@@ -10209,7 +10269,18 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
             for (;;) {
                 uint32_t gen = __atomic_load_n(&ivars->pendingMicGainGen[port][lane][ch], __ATOMIC_ACQUIRE);
                 uint8_t  val = __atomic_load_n(&ivars->pendingMicGain[port][lane][ch], __ATOMIC_RELAXED);
-                if (XLinkTxAdmissible(ivars) && (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
+                const uint32_t pendingHost = __atomic_load_n(&ivars->pendingMicGainHost[port][lane][ch], __ATOMIC_RELAXED);
+                const bool pendingTypeKnown = __atomic_load_n(&ivars->pendingMicGainTypeKnown[port][lane][ch], __ATOMIC_RELAXED);
+                const bool pendingInstrument = __atomic_load_n(&ivars->pendingMicGainInstrument[port][lane][ch], __ATOMIC_RELAXED);
+                uint32_t resolvedPort = 0, resolvedChannel = 0;
+                const bool routeUnchanged = ResolveMicPreRoute(ivars, pendingHost, resolvedPort, resolvedChannel) &&
+                    resolvedPort == port && resolvedChannel == ch &&
+                    (port ? __atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE) :
+                        __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE)) == pendingTypeKnown &&
+                    (port ? __atomic_load_n(&ivars->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
+                        __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE)) == pendingInstrument;
+                if (XLinkTxAdmissible(ivars) && routeUnchanged &&
+                    (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // gain 0..85
                     if (SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
                                           port ? kRegXLink2TX : kRegXLink1TX,

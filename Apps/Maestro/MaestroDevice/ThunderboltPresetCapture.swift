@@ -62,9 +62,20 @@ extension ThunderboltPreset {
                 }
             }
         }
-        preset.inputRoutes = (0..<32).map {
-            UInt8(read(.routing, element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32($0)))
+        var routeMask = Array(repeating: true, count: 32)
+        preset.inputRoutes = (0..<32).map { index in
+            do {
+                guard let value = try readProperty(PropertyAddress(selector: .routing,
+                        scope: .input, element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(index))).asUInt32,
+                      value <= 255 else { routeMask[index] = false; return SymphonyIORoutingAddress.none }
+                return UInt8(value)
+            } catch {
+                routeMask[index] = false
+                onSkipped("input route \(index)")
+                return SymphonyIORoutingAddress.none
+            }
         }
+        preset.inputRouteMask = routeMask.allSatisfy { $0 } ? nil : routeMask
         if let selection = try? readRaw(0x2A, 0, 1), selection.count == 1 {
             preset.frontPanelSelection = selection[0]
         } else { onSkipped("front panel selection") }

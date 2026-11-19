@@ -31,6 +31,10 @@ import MaestroDevice
 /// Evidence: `og_source/generic/CoreAudio/mAEstro.h` — output properties
 struct OutputControlsView: View {
     private let appState: AppState
+    @State private var loadedScope: PreferenceViewScope
+    private var canEditPreferences: Bool {
+        loadedScope.isWritable && loadedScope == appState.preferenceViewScope(for: appState.activeUnit)
+    }
     // Fixed for this page's lifetime (.id(activeUnit) in AppShell). Queued
     // monitor operations must never follow a later picker selection.
     private let monitorTarget: AppState.UnitWriteTarget
@@ -106,6 +110,7 @@ struct OutputControlsView: View {
 
     init(appState: AppState) {
         self.appState = appState
+        _loadedScope = State(initialValue: appState.preferenceViewScope(for: appState.activeUnit))
         monitorTarget = appState.unitWriteTarget
         bMonitor = appState.unitBMonitor
         let count = max(appState.unitCardLayout.analogOutputStripCount, 1)
@@ -249,7 +254,7 @@ struct OutputControlsView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("Show or hide the Trim faders on every analog output strip.")
+                    .maestroHelp("Show or hide the Trim faders on every analog output strip.")
                     .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                     // NOT gated on the faders being visible — legacy's Reset
@@ -259,7 +264,7 @@ struct OutputControlsView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("Reset Trims — sets every analog output trim to 0.0 dB "
+                    .maestroHelp("Reset Trims — sets every analog output trim to 0.0 dB "
                           + "and changes nothing else.")
                     .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
                 }
@@ -276,7 +281,7 @@ struct OutputControlsView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Restore speaker/headphone levels, mute, dim, sum and speaker mode "
+                .maestroHelp("Restore speaker/headphone levels, mute, dim, sum and speaker mode "
                       + "to the factory defaults. Routing is not touched.")
                 // Unit B reset/replay is a separate plan item.
                 .disabled(appState.activeUnit == .b)
@@ -451,6 +456,8 @@ struct OutputControlsView: View {
                 .padding(.bottom, 8)
             }
         }
+        .disabled(!canEditPreferences)
+        .allowsHitTesting(canEditPreferences)
         .navigationTitle("Output")
         .onAppear {
             scrollRestorationPending = true
@@ -698,7 +705,7 @@ struct OutputControlsView: View {
                         }
                     )
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputLevel)))
-                    .help(appState.converterVolumeKeys ? ConverterMonitorText.volume
+                    .maestroHelp(appState.converterVolumeKeys ? ConverterMonitorText.volume
                           : "Speaker Level — controls the speaker output level. In 2 or 3 "
                           + "Speaker Sets mode every active set is adjusted together. "
                           + "Drag to adjust, double-tap to reset.")
@@ -802,7 +809,7 @@ struct OutputControlsView: View {
                         }
                     )
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Level)))
-                    .help("Headphone Level — controls the output level of Headphone 1. "
+                    .maestroHelp("Headphone Level — controls the output level of Headphone 1. "
                           + "Drag to adjust, double-tap to reset.")
 
                     outputToggle("M", isOn: hp1MutedBinding, tint: .red,
@@ -861,7 +868,7 @@ struct OutputControlsView: View {
                         }
                     )
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Level)))
-                    .help("Headphone Level — controls the output level of Headphone 2. "
+                    .maestroHelp("Headphone Level — controls the output level of Headphone 2. "
                           + "Drag to adjust, double-tap to reset.")
 
                     outputToggle("M", isOn: hp2MutedBinding, tint: .red,
@@ -1058,7 +1065,7 @@ struct OutputControlsView: View {
         .foregroundStyle(isOn ? Color.green : .secondary)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.35)
-        .help("Speaker Select \(index + 1) — switches monitoring to speaker set "
+        .maestroHelp("Speaker Select \(index + 1) — switches monitoring to speaker set "
               + "\(index + 1). Available in 2 and 3 Speaker Sets mode; "
               + "Command-click to engage more than one set.")
     }
@@ -1086,12 +1093,13 @@ struct OutputControlsView: View {
         .foregroundStyle(isOn.wrappedValue ? tint : .secondary)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.35)
-        .help(tooltip)
+        .maestroHelp(tooltip)
     }
 
     // MARK: - Data Loading
 
     private func initializeOutputChannels() {
+        guard canEditPreferences else { return }
         let n = max(analogOutputStripCount, 1)
         // Keyed by the installed card pair — see `ChannelStateStore`.
         if let saved: [OutputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.outputKey),
@@ -1109,6 +1117,7 @@ struct OutputControlsView: View {
     }
 
     private func saveChannelStates() {
+        guard canEditPreferences else { return }
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.outputKey)
     }
 
@@ -1252,6 +1261,7 @@ struct OutputControlsView: View {
     /// The trim byte rides in byte[1] of the packed analog-IO-type command, so
     /// every affected channel re-sends that one command and nothing else.
     private func applyAnalogRefChange(_ index: Int, level: UInt32) {
+        guard canEditPreferences else { return }
         guard channels.indices.contains(index),
               OutputChannelLogic.offersAnalogRef(level) else { return }
         let before = channels[index]
@@ -1286,6 +1296,7 @@ struct OutputControlsView: View {
     /// step 6), so a positive trim is clamped and its packed analog-IO-type
     /// command re-sent alongside the digital-reference command.
     private func applyDigitalRefChange(_ index: Int, level: UInt32) {
+        guard canEditPreferences else { return }
         let trimClamped = OutputChannelLogic.applyDigitalRefChange(
             &channels, channel: index, to: level)
         Task { await writeOutputProperty(index, .digitalRefLevel, value: .uint32(level)) }
@@ -1322,6 +1333,7 @@ struct OutputControlsView: View {
     @discardableResult
     private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
                                      on device: (any DeviceConnection)?) async -> Bool {
+        guard canEditPreferences else { return false }
         guard let device else { return false }
         do {
             let element = UInt32(index)
@@ -1405,6 +1417,7 @@ struct OutputControlsView: View {
     /// controller (`SymphonyIO.cpp:1626-1634`); on this unit that would rewrite
     /// the ADAT output crosspoints. Reset Routing lives on the routing pages.
     private func resetMonitorDefaults(scope: SymphonyIOResetScope) async {
+        guard canEditPreferences else { return }
         // The trims below are saved after several awaits: keep them to this unit.
         let target = appState.unitWriteTarget
         let attenuation = UInt32(SymphonyIOMonitorDefaults.levelAttenuationDB)
@@ -1549,7 +1562,7 @@ struct OutputChannelStripView: View {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color.primary.opacity(0.08))
                 )
-                .help("\(label) — analog output, D/A conversion channel")
+                .maestroHelp("\(label) — analog output, D/A conversion channel")
 
             // Stacked PillMenu dropdowns
             VStack(spacing: 3) {
@@ -1600,7 +1613,7 @@ struct OutputChannelStripView: View {
                         thumbWidth: 18
                     )
                     .transition(.opacity)
-                    .help("Trim Fader — trims the D/A conversion level in 0.1 dB steps "
+                    .maestroHelp("Trim Fader — trims the D/A conversion level in 0.1 dB steps "
                           + "(\(Self.rangeText(trimSpec.range))). The D/A meter shows the "
                           + "signal BEFORE conversion, so calibrate against an external "
                           + "voltmeter on the analog output, not against the meter.")
@@ -1622,7 +1635,7 @@ struct OutputChannelStripView: View {
                     rangeDB: 48,
                     showZoneColoring: showZoneColoring
                 )
-                .help("D/A Meter — the level of this output BEFORE D/A conversion, "
+                .maestroHelp("D/A Meter — the level of this output BEFORE D/A conversion, "
                       + "-48 to 0 dBfs. It does not show the analog output level.")
             }
             .frame(maxWidth: .infinity, alignment: .center)
@@ -1639,7 +1652,7 @@ struct OutputChannelStripView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 2)
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                        .help("Trim: \(String(format: "%.1f", channel.trim)) dB "
+                        .maestroHelp("Trim: \(String(format: "%.1f", channel.trim)) dB "
                               + "(range \(Self.rangeText(trimSpec.range)), 0.1 dB steps)")
                     Text(String(format: "%.0f", resolvedMeterLevel))
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
@@ -1648,7 +1661,7 @@ struct OutputChannelStripView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 2)
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                        .help("Meter Level Readout: \(String(format: "%.1f", resolvedMeterLevel)) dBfs. "
+                        .maestroHelp("Meter Level Readout: \(String(format: "%.1f", resolvedMeterLevel)) dBfs. "
                               + "This reading is pre-Trim, so moving the Trim fader does not "
                               + "change it — calibrate with an external voltmeter.")
                 }

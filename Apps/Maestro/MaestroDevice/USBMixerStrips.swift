@@ -129,10 +129,14 @@ public enum MixerPairLink {
     /// their quieter side, so nothing gets louder. Run once at launch, before
     /// anything reads the saved mixer state. Does nothing when both flags are
     /// already linked (or were never saved).
-    public static func migrateSavedPairs(defaults: UserDefaults = .standard) {
+    public static func migrateSavedPairs(defaults: UserDefaults) {
+        migrateSavedPairs(preferences: MixerPreferences(legacyDefaults: defaults))
+    }
+
+    public static func migrateSavedPairs(preferences defaults: MixerPreferences) {
         if defaults.object(forKey: "mixerMasterFadersLinked") as? Bool == false {
             for m in 0..<2 {
-                let saved = MixerStateSnapshot.savedMasterLevel(mixer: m, defaults: defaults)
+                let saved = MixerStateSnapshot.savedMasterLevel(mixer: m, preferences: defaults)
                 let left = defaults.object(forKey: "mixerMasterLeftLevel_\(m)") as? Double ?? saved
                 let right = defaults.object(forKey: "mixerMasterRightLevel_\(m)") as? Double ?? saved
                 let level = min(left, right)
@@ -143,7 +147,7 @@ public enum MixerPairLink {
             defaults.set(true, forKey: "mixerMasterFadersLinked")
         }
         if defaults.object(forKey: "mixerSWReturnFadersLinked") as? Bool == false {
-            let saved = MixerStateSnapshot.savedSoftwareReturn(defaults: defaults).level
+            let saved = MixerStateSnapshot.savedSoftwareReturn(preferences: defaults).level
             for m in 0..<2 {
                 let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(m)") as? Double ?? saved
                 let right = defaults.object(forKey: "mixerSWReturnRightLevel_\(m)") as? Double ?? saved
@@ -191,10 +195,14 @@ public struct USBMixerSavedState: Equatable, Sendable {
     /// `mixerSWReturnLeftLevel_<n>`/`RightLevel_<n>`, `mixerSWReturnFadersLinked`,
     /// `mixerState_swReturn`, `mixerSoftwareReturnSource_<n>`. Missing keys
     /// default exactly as the page does.
-    public static func load(defaults: UserDefaults = .standard) -> USBMixerSavedState {
-        let swReturn = MixerStateSnapshot.savedSoftwareReturn(defaults: defaults)
+    public static func load(defaults: UserDefaults) -> USBMixerSavedState {
+        load(preferences: MixerPreferences(legacyDefaults: defaults))
+    }
+
+    public static func load(preferences defaults: MixerPreferences) -> USBMixerSavedState {
+        let swReturn = MixerStateSnapshot.savedSoftwareReturn(preferences: defaults)
         let mixes = (0..<2).map { m -> Mix in
-            let master = MixerStateSnapshot.savedMasterLevel(mixer: m, defaults: defaults)
+            let master = MixerStateSnapshot.savedMasterLevel(mixer: m, preferences: defaults)
             return Mix(
                 masterLevel: master,
                 masterLeft: defaults.object(forKey: "mixerMasterLeftLevel_\(m)") as? Double ?? master,

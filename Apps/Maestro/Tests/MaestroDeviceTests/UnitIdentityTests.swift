@@ -301,3 +301,37 @@ struct UnitIdentityTests {
     }
 
 }
+
+@Suite("Identity discovery deadline")
+struct IdentityDeadlineTests {
+    @Test("A transport that never answers resolves as unknown by the deadline")
+    func silentTransportTimesOut() async {
+        let start = ContinuousClock.now
+        let value = await SymphonyIdentityReader.withDeadline(.milliseconds(200)) {
+            try? await Task.sleep(for: .seconds(30))
+            return 42
+        }
+        let elapsed = ContinuousClock.now - start
+        #expect(value == nil)
+        #expect(elapsed < .seconds(5))
+    }
+
+    @Test("A prompt answer is returned unchanged")
+    func promptAnswer() async {
+        let value = await SymphonyIdentityReader.withDeadline(.seconds(5)) { 0xF1501234 }
+        #expect(value == 0xF1501234)
+    }
+
+    @Test("Cancelling the caller resolves immediately")
+    func cancelResolves() async {
+        let task = Task {
+            await SymphonyIdentityReader.withDeadline(.seconds(30)) {
+                try? await Task.sleep(for: .seconds(30))
+                return 7
+            }
+        }
+        task.cancel()
+        let value = await task.value
+        #expect(value == nil)
+    }
+}

@@ -72,7 +72,7 @@ struct StatusBarView: View {
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
-                    .help(appState.portStatusMessage ?? appState.endpointStatusMessage)
+                    .maestroHelp(appState.portStatusMessage ?? appState.endpointStatusMessage)
                 } else {
                     if appState.connectionMode == .hardware {
                         Image(systemName: "cable.connector")
@@ -94,7 +94,7 @@ struct StatusBarView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .help("Clear all peak hold and over indicators (Cmd+K)")
+            .maestroHelp("Clear all peak hold and over indicators (Cmd+K)")
 
         }
         .padding(.leading, 12)
@@ -262,7 +262,7 @@ struct MonitorToolbarView: View {
                     Task { await writeProperty(.outputMute, value: .bool(muted)) }
                     appState.writeASPMute(muted)
                 }
-                .help(convertersOnly ? ConverterMonitorText.mute
+                .maestroHelp(convertersOnly ? ConverterMonitorText.mute
                       : appState.speakerMuted ? "Speaker: Unmute" : "Speaker: Mute")
                 .disabled(!speakerControlsEnabled)
                 .opacity(speakerControlsEnabled ? 1 : 0.4)
@@ -293,7 +293,7 @@ struct MonitorToolbarView: View {
                         appState.writeASPVolume(level)
                     }
                 )
-                .help(convertersOnly ? ConverterMonitorText.volume
+                .maestroHelp(convertersOnly ? ConverterMonitorText.volume
                       : "Speaker level — drag to adjust, double-tap to reset")
                 .disabled(!speakerControlsEnabled)
                 .opacity(speakerControlsEnabled ? 1 : 0.4)
@@ -320,7 +320,7 @@ struct MonitorToolbarView: View {
                     um?.setActionName("Headphone 1 Mute")
                     Task { await writeProperty(.headphone1Mute, value: .bool(muted)) }
                 }
-                .help(appState.hp1Muted ? "HP 1: Unmute" : "HP 1: Mute")
+                .maestroHelp(appState.hp1Muted ? "HP 1: Unmute" : "HP 1: Mute")
 
                 RotaryKnobView(
                     value: $state.hp1Level,
@@ -347,7 +347,7 @@ struct MonitorToolbarView: View {
                         Task { await writeProperty(.headphone1Level, value: .uint32(UInt32(max(0, -level)))) }
                     }
                 )
-                .help("Headphone 1 level — drag to adjust, double-tap to reset")
+                .maestroHelp("Headphone 1 level — drag to adjust, double-tap to reset")
             }
             .symphonyOnly(convertersOnly)
 
@@ -372,7 +372,7 @@ struct MonitorToolbarView: View {
                     um?.setActionName("Headphone 2 Mute")
                     Task { await writeProperty(.headphone2Mute, value: .bool(muted)) }
                 }
-                .help(appState.hp2Muted ? "HP 2: Unmute" : "HP 2: Mute")
+                .maestroHelp(appState.hp2Muted ? "HP 2: Unmute" : "HP 2: Mute")
 
                 RotaryKnobView(
                     value: $state.hp2Level,
@@ -399,7 +399,7 @@ struct MonitorToolbarView: View {
                         Task { await writeProperty(.headphone2Level, value: .uint32(UInt32(max(0, -level)))) }
                     }
                 )
-                .help("Headphone 2 level — drag to adjust, double-tap to reset")
+                .maestroHelp("Headphone 2 level — drag to adjust, double-tap to reset")
             }
             .symphonyOnly(convertersOnly)
         }
@@ -532,7 +532,7 @@ extension View {
         if convertersOnly {
             self.disabled(true)
                 .opacity(0.4)
-                .overlay(Color.clear.contentShape(Rectangle()).help(help))
+                .overlay(Color.clear.contentShape(Rectangle()).maestroHelp(help))
         } else {
             self
         }

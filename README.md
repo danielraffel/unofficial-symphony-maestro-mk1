@@ -8,7 +8,7 @@ Download the latest Installer (.pkg)</a></h1>
 > [!TIP]
 > **If you find this useful please consider making a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org).**
 
-For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
+For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Updates**.
 
 _This software has had limited real-world testing. Please closely read the setup notes and limitations in the installer before deciding whether you want to use it._
 
@@ -128,9 +128,9 @@ The project source is available under the [MIT license](license.md), without war
 
 If you have a Symphony I/O MK I and an Apple Silicon Mac, I’d appreciate hearing how it goes.
 
-**The best way to report a problem is Diagnostics** (Beta channel). Turn it on in **Device Settings › Preferences**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
+**The best way to report a problem is Diagnostics** (Beta channel). Turn it on in **Device Settings › Diagnostics & Feedback**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
 
-**Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and experiments (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **Device Settings › Preferences** at any time.
+**Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and experiments (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **Device Settings › Updates** at any time.
 
 If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">file an issue</a> and include:
 
@@ -169,7 +169,7 @@ Updates are downloaded from this repository; the updater collects no telemetry.
 
 ### Beta versions
 
-From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in Device Settings › Preferences; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page. Bug fixes and new hardware support land on Beta first and move to Stable once they have been tested; Beta also adds Diagnostics, for sending the developer a private report (see Feedback).
+From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in Device Settings › Updates; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page. Bug fixes and new hardware support land on Beta first and move to Stable once they have been tested; Beta also adds Diagnostics, for sending the developer a private report (see Feedback).
 
 <table>
 <tr>

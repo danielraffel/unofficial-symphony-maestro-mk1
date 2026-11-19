@@ -164,7 +164,11 @@ struct InputRoutingView: View {
             }
         } else {
             VStack(spacing: 0) {
-                if appState.symphonyCardInputs.channelCount > 0 {
+                // One grid per routing device, as in Apogee's software
+                // (og_source/maestro2/App/Controllers/APInputRoutingTabViewController.m:96-104).
+                // A single Symphony I/O keeps its own grid only; the card's
+                // cross-unit grid appears with two units at 64 channels.
+                if appState.showsSymphonyCardInputGrid {
                     SymphonyCardInputRoutingView(appState: appState)
                     Divider()
                 }
@@ -184,6 +188,7 @@ struct InputRoutingView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .maestroHelp("Put Input Routing back to the default: each software input records the matching hardware input.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
                 }
@@ -459,7 +464,7 @@ struct InputRoutingView: View {
                 Every software input will be re-pointed to the default:
 
                 \(plan.joined(separator: "\n"))
-                \(appState.symphonyCardInputs.channelCount > 0 ? "The card’s software-input mapping for all connected units will also return to its default." : "")
+                \(appState.showsSymphonyCardInputGrid ? "The card’s software-input mapping for all connected units will also return to its default." : "")
                 """,
             isRefusal: false)
     }
@@ -699,6 +704,7 @@ struct OutputRoutingView: View {
                 Button("Reset Routing") { requestRoutingReset() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .maestroHelp("Put Output Routing back to the default: each software output goes to the matching hardware output.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
                 }
@@ -1458,7 +1464,7 @@ struct RoutingGridView: View {
                         .minimumScaleFactor(0.75)
                         .opacity(row < rowLabels.count && CardLayout.isNotApplicable(rowLabels[row].name)
                                  ? Self.notApplicableOpacity : 1)
-                        .help(row < rowLabels.count ? rowLabels[row].name : "")
+                        .maestroHelp(row < rowLabels.count ? rowLabels[row].name : "")
                         .padding(.trailing, 4)
                         .frame(width: nameWidth, height: cellHeight, alignment: .trailing)
                         .background(row % 2 == 0 ? Color.gray.opacity(0.08) : Color.gray.opacity(0.04))
@@ -1551,7 +1557,7 @@ struct PresetMenuButton: View {
         }
         .menuStyle(.borderlessButton)
         .frame(width: 24)
-        .help("Presets")
+        .maestroHelp("Presets")
         .alert("Save Preset", isPresented: $showSaveAlert) {
             TextField("Preset Name", text: $newPresetName)
             Button("Save") {

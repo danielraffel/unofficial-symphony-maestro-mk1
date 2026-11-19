@@ -61,8 +61,14 @@ echo "[preinstall] No active Apogee drivers found (OK)" >> "$LOG"
 # ── 4. Kill running Maestro app ─────────────────────────────────────────────
 if pgrep -x MaestroApp > /dev/null 2>&1; then
     echo "[preinstall] Killing running Maestro app..." >> "$LOG"
+    # SIGTERM runs Maestro's normal quit (it turns Identify lights off, at most
+    # 1.5 s). Wait for it, bounded, then force it if it is still running.
     pkill -x MaestroApp 2>/dev/null || true
-    sleep 1
+    for _ in 1 2 3 4 5 6; do
+        pgrep -x MaestroApp > /dev/null 2>&1 || break
+        sleep 0.5
+    done
+    pkill -9 -x MaestroApp 2>/dev/null || true
 fi
 
 # ── 5. Stop running proxy (will be restarted by postinstall) ────────────────

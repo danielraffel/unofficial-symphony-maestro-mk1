@@ -30,6 +30,35 @@ private actor SuspendedIdentityRead {
 @Suite("Identity connection boundaries", .serialized)
 @MainActor
 struct IdentityPersistenceTests {
+    @Test func callerCancellationDoesNotCancelIdentity() async {
+        let state = AppState()
+        let connection = SimulatedDevice.symphonyIO32ch()
+        state.device = connection
+        let gate = SuspendedIdentityRead()
+        let operation = Task {
+            await state.resolveUnitIdentity(for: .a, connection: connection) { await gate.read() }
+        }
+        await gate.waitUntilStarted()
+        operation.cancel()
+        await gate.finish(42)
+        await operation.value
+        #expect(state.unitAIdentityState == .known(42))
+    }
+
+    @Test func failedReadRetriesOnlyAtNextRecovery() async {
+        let state = AppState()
+        let connection = SimulatedDevice.symphonyIO32ch()
+        state.device = connection
+        await state.resolveUnitIdentity(for: .a, connection: connection) { nil }
+        state.retryFailedIdentityOnRecovery()
+        #expect(state.unitAIdentityState == .pending)
+        await state.resolveUnitIdentity(for: .a, connection: connection) { nil }
+        state.retryFailedIdentityOnRecovery()
+        #expect(state.unitAIdentityState == .failed)
+        state.device = SimulatedDevice.symphonyIO32ch()
+        #expect(!state.identityRecoveryRetried)
+    }
+
     @Test(arguments: [DeviceUnit.a, .b])
     func replacementDiscardsSuspendedRead(unit: DeviceUnit) async {
         let state = AppState()

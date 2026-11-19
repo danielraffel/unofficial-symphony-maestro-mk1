@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MaestroApp
 import MaestroCore
@@ -115,5 +116,31 @@ struct IdentifyStateTests {
         await cleanup.value
         #expect(!state.isOn)
         #expect(device.writes == [true, false])
+    }
+}
+
+@Suite("Quit paths turn Identify off")
+struct IdentifyQuitPathTests {
+    private func file(_ relative: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
+    }
+
+    @Test("SIGTERM (the installer's pkill) runs the normal quit, which sends Identify OFF")
+    func sigtermRunsNormalQuit() throws {
+        let delegate = try file("MaestroApp/MaestroAppDelegate.swift")
+        #expect(delegate.contains("DispatchSource.makeSignalSource(signal: SIGTERM"))
+        #expect(delegate.contains("NSApp.terminate(nil)"))
+        #expect(delegate.contains("appState.identifyA.reset()"))
+    }
+
+    @Test("The installer waits for Maestro's quit before forcing it")
+    func installerWaitsForQuit() throws {
+        let preinstall = try file("../../Installer/scripts-core/preinstall")
+        let graceful = try #require(preinstall.range(of: "pkill -x MaestroApp"))
+        let forced = try #require(preinstall.range(of: "pkill -9 -x MaestroApp"))
+        #expect(graceful.lowerBound < forced.lowerBound)
+        #expect(preinstall.contains("pgrep -x MaestroApp > /dev/null 2>&1 || break"))
     }
 }

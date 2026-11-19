@@ -15,6 +15,10 @@ import MaestroDevice
 /// Evidence: `og_source/maestro2/App/Controllers/Input/APAnalogInputController.m`
 struct InputControlsView: View {
     private let appState: AppState
+    @State private var loadedScope: PreferenceViewScope
+    private var canEditPreferences: Bool {
+        loadedScope.isWritable && loadedScope == appState.preferenceViewScope(for: appState.activeUnit)
+    }
     /// Seed the persisted strip state before the first body evaluation. The async task below
     /// still performs migration, simulation, and the normal board-count refresh; this seed only
     /// prevents an empty rack from appearing while that task is scheduled.
@@ -48,6 +52,7 @@ struct InputControlsView: View {
 
     init(appState: AppState) {
         self.appState = appState
+        _loadedScope = State(initialValue: appState.preferenceViewScope(for: appState.activeUnit))
         let channels = Self.seedChannels(appState)
         _channels = State(initialValue: channels)
         _appliedGains = State(initialValue: channels.map(\.gain))
@@ -164,7 +169,7 @@ struct InputControlsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Reset Trims — sets every analog input trim to 0.0 dB and nothing else")
+                .maestroHelp("Reset Trims — sets every analog input trim to 0.0 dB and nothing else")
                 .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                 // Two scopes, matching SymphonyIOResetRequestType, and the same
@@ -181,7 +186,7 @@ struct InputControlsView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Restore the input channel settings to the factory defaults. "
+                .maestroHelp("Restore the input channel settings to the factory defaults. "
                       + "Routing is not touched.")
                 .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
@@ -427,6 +432,8 @@ struct InputControlsView: View {
                 .padding(.bottom, 8)
             }
         }
+        .disabled(!canEditPreferences)
+        .allowsHitTesting(canEditPreferences)
         .navigationTitle("Input")
         .onAppear {
             scrollRestorationPending = true
@@ -491,6 +498,7 @@ struct InputControlsView: View {
     }
 
     private func initializeChannels() {
+        guard canEditPreferences else { return }
         // Keyed by the installed card pair — see `ChannelStateStore`.
         if let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey),
            !saved.isEmpty {
@@ -528,6 +536,7 @@ struct InputControlsView: View {
     }
 
     private func saveChannelStates() {
+        guard canEditPreferences else { return }
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
     }
 
@@ -588,6 +597,7 @@ struct InputControlsView: View {
     @discardableResult
     private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
                                       on device: (any DeviceConnection)?) async -> Bool {
+        guard canEditPreferences else { return false }
         guard let device else { return false }
         do {
             let element = UInt32(index)
@@ -623,6 +633,7 @@ struct InputControlsView: View {
     /// never read), so `ApplySettingsToHardware` re-pushed +48 V onto a channel now
     /// set to Instrument or Line. We clear it instead.
     private func applyInputTypeChange(_ index: Int) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         let level = AnalogInputLevel(rawValue: channels[index].inputType) ?? .plus4dBu
         InputChannelLogic.applyLevelChange(&channels[index], to: level)
@@ -682,6 +693,7 @@ struct InputControlsView: View {
     /// Digital Ref change, with legacy's option-click "apply to every channel".
     /// Evidence: APInputTabRowViewController.m:275-283.
     private func applyDigitalRefChange(_ index: Int, level: UInt32) {
+        guard canEditPreferences else { return }
         Task { await writeChannelProperty(index, .digitalRefLevel, value: .uint32(level)) }
         if Self.optionKeyIsDown {
             for i in InputChannelLogic.applyDigitalRefToAll(&channels, to: level, excluding: index) {
@@ -696,6 +708,7 @@ struct InputControlsView: View {
     /// legacy bug 9466's fix, which is not the same as `coerceSoftLimit`.
     /// Evidence: APInputTabRowViewController.m:287-330.
     private func applySoftLimitChange(_ index: Int, mode: UInt32) {
+        guard canEditPreferences else { return }
         Task { await writeChannelProperty(index, .softLimit, value: .uint32(mode)) }
         if Self.optionKeyIsDown {
             let cards = (0..<channels.count).map { cardForStrip($0) }
@@ -723,6 +736,7 @@ struct InputControlsView: View {
     /// group gains down to firmware ... The device is also calculating grouped
     /// gain changes").
     private func applyGainChange(_ index: Int, to requested: Double) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         if index < appliedGains.count {
             channels[index].gain = appliedGains[index]
@@ -746,6 +760,7 @@ struct InputControlsView: View {
     /// Writes `0xC7` for the touched channel only; the firmware derives the rest
     /// of the group from there.
     private func applyGroupChange(_ index: Int, to group: UInt32) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         channels[index].group = group
         Task { await writeChannelProperty(index, .groupID, value: .uint32(group)) }
@@ -755,6 +770,7 @@ struct InputControlsView: View {
     /// Insert assignment. The insert return follows it automatically, so both
     /// are pushed. Evidence: SymphonyIOBoard_MicPre8ch.cpp:608-617.
     private func applyInsertChange(_ index: Int, to insert: UInt32) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         let returnChanged = InputChannelLogic.applyInsertChange(&channels, channel: index, to: insert)
         let returnEnabled = channels[index].insertReturn
@@ -830,6 +846,7 @@ struct InputControlsView: View {
     /// (`SymphonyIOBoard_MicPre8ch.cpp:686-696`), so it can only be trusted once
     /// the level has been established.
     private func resetInputDefaults(scope: SymphonyIOResetScope) async {
+        guard canEditPreferences else { return }
         let result = InputChannelLogic.resetToDefaults(
             &channels,
             includingCalibration: scope.resetsTrims,
@@ -1015,7 +1032,7 @@ struct ADATStereoPairView: View {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color.primary.opacity(0.08))
                 )
-                .help(label)
+                .maestroHelp(label)
 
             // Spacer fills the gap where analog strips have pills — pushes meters to bottom
             if matchHeight != nil {
@@ -1187,7 +1204,7 @@ private struct DisablablePillMenu: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help(toolTip)
+        .maestroHelp(toolTip)
     }
 
     private func showNativeMenu() {
@@ -1451,11 +1468,11 @@ struct InputChannelStripView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 2)
                             .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                            .help("Level Trim — gain of the mic pre, currently \(String(format: "%.0f", channel.gain)) dB (\(level == .instrument ? "0–65 dB at Instrument" : "0–85 dB at Mic")).")
+                            .maestroHelp("Level Trim — gain of the mic pre, currently \(String(format: "%.0f", channel.gain)) dB (\(level == .instrument ? "0–65 dB at Instrument" : "0–85 dB at Mic")).")
                         Spacer(minLength: 0)
                     }
                     .frame(width: 46, height: 200, alignment: .top)
-                    .help("Level Trim — adjusts the gain of the mic pre. "
+                    .maestroHelp("Level Trim — adjusts the gain of the mic pre. "
                           + (level == .instrument ? "0–65 dB at Instrument level." : "0–85 dB at Mic level.")
                           + " When the channel is in a Group, the whole group moves with it and existing offsets between members are preserved.")
                     .transition(.opacity)
@@ -1472,7 +1489,7 @@ struct InputChannelStripView: View {
                         thumbHeight: 20,
                         thumbWidth: 18
                     )
-                    .help("Trim — precisely trims the A/D conversion level once the reference levels have been chosen.")
+                    .maestroHelp("Trim — precisely trims the A/D conversion level once the reference levels have been chosen.")
                     .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
                     .transition(.opacity)
                     .onChange(of: channel.trim) { _, newTrim in
@@ -1512,7 +1529,7 @@ struct InputChannelStripView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 2)
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                        .help("Trim — calibration trim, currently \(String(format: "%.1f", channel.trim)) dB.")
+                        .maestroHelp("Trim — calibration trim, currently \(String(format: "%.1f", channel.trim)) dB.")
                     Text(String(format: "%.0f", resolvedMeterLevel))
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundStyle(.tertiary)
@@ -1520,7 +1537,7 @@ struct InputChannelStripView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 2)
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                        .help("Meter Level: \(String(format: "%.1f", resolvedMeterLevel)) dBFS")
+                        .maestroHelp("Meter Level: \(String(format: "%.1f", resolvedMeterLevel)) dBFS")
                 }
                 .offset(x: 0)
                 .padding(.top, 4)
@@ -1630,7 +1647,7 @@ struct InputChannelStripView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 2))
                         }
                         .buttonStyle(.plain)
-                        .help("Insert In — enables the Insert Return. The Insert Send is always active once an insert is selected, so the send can be used as an analog direct out while In is not engaged.")
+                        .maestroHelp("Insert In — enables the Insert Return. The Insert Send is always active once an insert is selected, so the send can be used as an analog direct out while In is not engaged.")
                     } else {
                         Color.clear.frame(width: 20, height: 14)
                     }
@@ -1675,7 +1692,7 @@ struct InputChannelStripView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 .buttonStyle(.plain)
-                .help("Polarity (Ø) — inverts the polarity of the input signal.")
+                .maestroHelp("Polarity (Ø) — inverts the polarity of the input signal.")
                 .accessibilityLabel("Polarity invert")
 
                 Button {
@@ -1693,7 +1710,7 @@ struct InputChannelStripView: View {
                 .buttonStyle(.plain)
                 .disabled(!phantomEnabled)
                 .opacity(phantomEnabled ? 1 : 0.4)
-                .help(phantomEnabled
+                .maestroHelp(phantomEnabled
                       ? "48V — enables 48 volt phantom power on this Analog IN channel. Condenser mics require it."
                       : "48V — Mic level only. The hardware refuses phantom power on a channel set to any other level, so this is unavailable until Analog Ref is Mic.")
 
@@ -1711,7 +1728,7 @@ struct InputChannelStripView: View {
                 .buttonStyle(.plain)
                 // Fixed corner frequency — the firmware never exposes it; the
                 // Symphony I/O user guide specifies 80 Hz.
-                .help("High Pass — engages a fixed \(InputChannelLogic.highPassFrequencyHz) Hz high-pass filter on the input.")
+                .maestroHelp("High Pass — engages a fixed \(InputChannelLogic.highPassFrequencyHz) Hz high-pass filter on the input.")
             }
             .frame(height: Self.buttonRowHeight)
         } else if rackHasMicPre {

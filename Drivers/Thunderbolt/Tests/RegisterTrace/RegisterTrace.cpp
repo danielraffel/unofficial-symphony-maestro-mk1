@@ -63,6 +63,7 @@ int gHostLocksHeld = 0;
 HostAudioRegistry gHostAudio;
 std::deque<HostBlock> gHostCompletions;
 static std::vector<std::deque<HostBlock> *> gQueues;
+bool gHostDispatchSyncDrain = true;
 static bool gVerbose = false;
 static int gFailures = 0;
 
@@ -645,6 +646,7 @@ static void RunScenario(const Options &o, Run &r)
     if (o.micPreInstrument) {
         card.port[0].stored[(uint64_t(0xA1) << 32) | 0] = {6};
         card.port[0].stored[(uint64_t(0xA1) << 32) | 1] = {1};
+        card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000000u] = {3}; // Mic
         card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000001u] = {4};
         card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000002u] = {0xFF}; // invalid/unknown type
     }
@@ -2706,6 +2708,10 @@ static void RunConverterParityChecks()
         RunScenario(o, r);
         CHECK(!(ConvState(r).flags & kSymphonyConvPort1Converters), "%s: identified as converters (flags 0x%x)",
               o.name, ConvState(r).flags);
+        uint32_t link[16] = {};
+        r.drv->ReadLinkState(link);
+        CHECK(link[15] == 0, "%s: provisional converter probe word leaked after a Symphony read (0x%08x)",
+              o.name, link[15]);
         // Never configured as converters at any point: unit 1 is never
         // authenticated (that happens only once it is taken for a converter).
         CHECK(AfterIdentification(r.card) == r.card.lines.size(), "%s: unit 1 was configured as a converter", o.name);
@@ -3203,6 +3209,18 @@ static void RunPreampHostRoutes()
         uint8_t pl[] = {host, rx, 1};
         return drv->SendVendorCommand(0xB6, 0, pl, sizeof(pl));
     };
+    // HAL phantom ON needs a channel known to be in Mic mode (original:
+    // SymphonyIOBoard_MicPre8ch.cpp:683-691). ch1 is Instrument, ch2 unknown.
+    a.erase(phantom); a.erase(phantom | 1); a.erase(phantom | 2);
+    CHECK(drv->RequestPhantom(1, true) == kIOReturnNotPermitted, "P1: phantom ON refused on Instrument");
+    CHECK(drv->RequestPhantom(2, true) == kIOReturnNotPermitted, "P1: phantom ON refused on unknown type");
+    CHECK(drv->RequestPhantom(2, false) == kIOReturnSuccess, "P1: phantom OFF allowed on unknown type");
+    HostPump();
+    CHECK(!a.count(phantom | 1) && a[phantom | 2] == std::vector<uint8_t>({0}), "P1: only the OFF reached the unit");
+    a.erase(phantom);
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: phantom ON accepted on Mic");
+    HostPump();
+    CHECK(a[phantom] == std::vector<uint8_t>({1}), "P1: Mic channel phantom ON sent");
     CHECK(route(0, 32) == kIOReturnBadArgument, "B10: B route refused at 32");
 #ifdef kSelectorPublishMicGain
     CHECK(drv->PublishObservedMicGain(1, 0, 0, 42) == kIOReturnNotReady,
@@ -3228,7 +3246,8 @@ static void RunPreampHostRoutes()
     uint32_t observed[32] = {};
     drv->ReadPhantomObservations(observed);
     CHECK(observed[0] == 0 && observed[16] == 0, "P2: external ON grants no receipt");
-    drv->RequestPhantom(0, false);
+    CHECK(drv->RequestPhantom(0, false) == kIOReturnSuccess, "P2: queue routed OFF");
+    HostPump();
     const size_t observationMark = r.card.lines.size();
     drv->ReadPhantomObservations(observed);
     CHECK((observed[16] || observed[17]) && !observed[0] && !observed[1],
@@ -3248,11 +3267,63 @@ static void RunPreampHostRoutes()
     drv->ReadPhantomObservations(observed);
     CHECK(memcmp(beforeInvalid, observed, sizeof(observed)) == 0, "P2: ON does not change OFF receipts");
 #endif
+
+    // B11: admission is not permission to use a stale physical route.  Change
+    // the host route while each XLink lane is queued; phantom ON and gain are
+    // dropped; phantom OFF still reaches the admitted channel (safe direction);
+    // nothing touches the newly selected A unit.
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for stale-route checks");
+    const size_t staleOnMark = r.card.lines.size();
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B11: queue phantom ON");
+    gHostDispatchSyncDrain = false;
+    CHECK(route(0, 0) == kIOReturnSuccess, "B11: change route before phantom ON drains");
+    gHostDispatchSyncDrain = true;
+    HostPump();
+    CHECK(Commands(r.card, staleOnMark, kRegXLink1TX, 0x10).empty() &&
+          Commands(r.card, staleOnMark, kRegXLink2TX, 0x10).empty(),
+          "B11: stale phantom ON sends nothing");
+
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for phantom OFF");
+    const size_t staleOffMark = r.card.lines.size();
+    CHECK(drv->RequestPhantom(0, false) == kIOReturnSuccess, "B11: queue phantom OFF");
+    gHostDispatchSyncDrain = false;
+    CHECK(route(0, 0) == kIOReturnSuccess, "B11: change route before phantom OFF drains");
+    gHostDispatchSyncDrain = true;
+    HostPump();
+    CHECK(Commands(r.card, staleOffMark, kRegXLink1TX, 0x10).empty() &&
+          !Commands(r.card, staleOffMark, kRegXLink2TX, 0x10).empty() &&
+          b[phantom] == std::vector<uint8_t>({0}),
+          "B11: phantom OFF still reaches the admitted B channel, never the new A route");
+
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for stale gain");
+    const size_t staleGainMark = r.card.lines.size();
+    CHECK(drv->RequestMicGain(0, 52) == kIOReturnSuccess, "B11: queue gain");
+    gHostDispatchSyncDrain = false;
+    CHECK(route(0, 0) == kIOReturnSuccess, "B11: change route before gain drains");
+    gHostDispatchSyncDrain = true;
+    HostPump();
+    CHECK(Commands(r.card, staleGainMark, kRegXLink1TX, 0x10).empty() &&
+          Commands(r.card, staleGainMark, kRegXLink2TX, 0x10).empty(),
+          "B11: stale gain sends nothing");
+
+    // The unchanged-route path remains the existing positive control above.
+    CHECK(route(0, 32) == kIOReturnSuccess, "B11: restore B route for unchanged control");
+    const size_t unchangedMark = r.card.lines.size();
+    CHECK(drv->RequestMicGain(0, 53) == kIOReturnSuccess, "B11: queue unchanged gain");
+    HostPump();
+    CHECK(!Commands(r.card, unchangedMark, kRegXLink2TX, 0x10).empty() &&
+          b[mic] == std::vector<uint8_t>({53}),
+          "B11: unchanged route still sends B gain");
+
     CHECK(route(8, 0) == kIOReturnSuccess, "B10: A routed to host 9");
 #ifdef kSymphonyPhantomObservationWords
-    drv->RequestPhantom(8, false);
     drv->ReadPhantomObservations(observed);
-    CHECK((observed[0] || observed[1]) && observed[16] == beforeInvalid[16] && observed[17] == beforeInvalid[17],
+    const uint32_t bReceiptBeforeRemappedA = observed[16];
+    const uint32_t bReceiptBeforeRemappedAHi = observed[17];
+    CHECK(drv->RequestPhantom(8, false) == kIOReturnSuccess, "P2: queue remapped A OFF");
+    HostPump();
+    drv->ReadPhantomObservations(observed);
+    CHECK((observed[0] || observed[1]) && observed[16] == bReceiptBeforeRemappedA && observed[17] == bReceiptBeforeRemappedAHi,
           "P2: remapped A OFF leaves B receipt unchanged");
 #endif
     CHECK(drv->RequestPhantom(8, true) == kIOReturnSuccess && drv->RequestMicGain(8, 33) == kIOReturnSuccess,

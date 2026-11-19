@@ -58,6 +58,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         // MicPre module — the Input page never offers the controls, so nothing
         // is ever written for them.
         .groupID, .insertID, .insertReturnEnable,
+        // Front-panel identify lights (0x33), as unit B already allows.
+        .identify,
         // Analog / digital input
         .analogIOType, .digitalRefLevel,
         // Physical unit A output monitoring
@@ -207,10 +209,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return data
     }
 
-    private func checkPresetLayout(_ layout: CardLayout) throws {
+    private func checkPresetLayout(_ layout: CardLayout, recoveryCount: UInt32? = nil) throws {
         guard isConnected, let converters = dextClient.readConverterState(), converters.flags & 3 == 0,
               [32, 64].contains(presetChannelCount()),
               layout.isKnown, layout.converter == nil, layout.converterLayout == nil,
+              recoveryCount.map({ linkState()?.recoveryCount == $0 }) ?? true,
               try readProperty(PropertyAddress(selector: .primaryBoardType)).asUInt32 == UInt32(layout.slot1.rawValue),
               try readProperty(PropertyAddress(selector: .secondaryBoardType)).asUInt32 == UInt32(layout.slot2.rawValue) else {
             throw ThunderboltPreset.RecallError.unsupported("the live card layout could not be verified.")
@@ -272,10 +275,16 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout) throws {
+        try applyPresetWrites(writes, layout: layout, recoveryCount: nil)
+    }
+
+    public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout,
+                                  recoveryCount: UInt32?) throws {
         presetLock.lock()
         defer { presetLock.unlock() }
-        try checkPresetLayout(layout)
+        try checkPresetLayout(layout, recoveryCount: recoveryCount)
         try ThunderboltPreset.recall(writes, send: { write in
+            try self.checkPresetLayout(layout, recoveryCount: recoveryCount)
             switch write {
             case .property(let address, let value):
                 // In Line mode the HAL volume belongs to HP1. A preset's speaker
@@ -291,6 +300,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 try self.dextClient.sendVendorCommand(command: 0x2A, value: 0, payload: Data([selection]))
             }
         }, unlock: {
+            // Preserve the original unlock/read-back even when the recovery
+            // fence changed; topology and connection are still required.
             try self.checkPresetLayout(layout)
             try self.dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
             let reply = try self.dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1)
@@ -307,6 +318,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         presetLock.lock()
         defer { presetLock.unlock() }
         func validate() throws {
+            guard shouldContinue() else { throw DeviceConnectionError.notConnected }
             let link = linkState()
             let stateB = readUnitBState()
             let channels = portSelectionID().flatMap(PortSelection.init(rawValue:))?.channelCount ?? 0
@@ -356,6 +368,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 }
             }
         }, unlock: { unit in
+            // The original unlock/read-back always runs, even after a recall
+            // epoch change stopped the remaining writes.
             if unit == .b { return try unitB.finishRecovery() }
             try self.dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
             return try self.dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1) == Data([0])

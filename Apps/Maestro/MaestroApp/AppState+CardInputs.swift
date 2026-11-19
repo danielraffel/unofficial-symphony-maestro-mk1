@@ -11,6 +11,9 @@ extension AppState {
             unitBConfigured: unitBInputRoutingAllowed), servingBuild: servingDextBuild)
     }
 
+    /// The cross-unit card grid only exists with two units at 64 channels.
+    var showsSymphonyCardInputGrid: Bool { symphonyCardInputs.channelCount == 64 }
+
     var symphonyCardInputStore: SymphonyCardInputStore? {
         guard symphonyCardInputs.channelCount > 0, let scope = cardLayout.savedStateScope else { return nil }
         if connectionMode == .hardware,
@@ -28,10 +31,13 @@ extension AppState {
               let store = symphonyCardInputStore else { return false }
         let previous = symphonyCardInputTail
         let admissionVersion = symphonyCardInputVersion
+        let replayDeferral = self.replayDeferral
+        let admissionEpoch = replayDeferral.currentEpoch()
         let task = Task { @MainActor [weak self] in
             _ = await previous?.value
             guard let self, self.device as? ThunderboltDeviceConnection === tb,
-                  self.symphonyCardInputStore?.key == store.key else { return false }
+                  self.symphonyCardInputStore?.key == store.key,
+                  replayDeferral.isValid(admissionEpoch) else { return false }
             let effectiveEdits = admissionVersion == self.symphonyCardInputVersion ? edits : self.symphonyCardInputEdits
             let routing = self.symphonyCardInputs
             let commands: [ConverterRouting.Command]
@@ -47,8 +53,10 @@ extension AppState {
             nonisolated(unsafe) let lockedStore = store
             let accepted: [ConverterRouting.Command] = await Task.detached(priority: .userInitiated) { () -> [ConverterRouting.Command] in
                 (try? tb.withPresetLock { () throws -> [ConverterRouting.Command] in
+                    guard replayDeferral.isValid(admissionEpoch) else { return [] }
                     var accepted: [ConverterRouting.Command] = []
                     for command in commands {
+                        guard replayDeferral.isValid(admissionEpoch) else { break }
                         do { try tb.sendConverterRouting(command); accepted.append(command) }
                         catch { break }
                     }
