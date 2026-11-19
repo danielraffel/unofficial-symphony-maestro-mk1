@@ -29,6 +29,12 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     public let identifier: USBDeviceIdentifier
     public var isConnected: Bool { connected && transport.isConnected }
+
+    /// Read unit B's identity through the shared vendor-read path (port byte 1).
+    public func readHardwareUniqueID() async -> UInt64? {
+        guard isConnected else { return nil }
+        return await SymphonyIdentityReader.readThunderbolt(transport: transport, port: Self.port)
+    }
     private var connected = true
 
     /// The same driver client unit A uses; every call carries `port`.

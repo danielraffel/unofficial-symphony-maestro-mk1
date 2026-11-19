@@ -44,26 +44,44 @@ public struct ChannelStateStore {
     /// with the same cards as unit A never reads or overwrites unit A's state,
     /// and it never inherits or claims the legacy unscoped key.
     public let unit: DeviceUnit
+    /// Hardware identity when the transport could read it. Unknown keeps the
+    /// historical layout-keyed behaviour.
+    public let identity: UInt64?
+    private let legacyScope: String?
 
     public init(
         defaults: UserDefaults = .standard,
         layout: CardLayout,
         isSimulatingCards: Bool = SimulatedDevice.isSimulatingCards(),
-        unit: DeviceUnit = .a
+        unit: DeviceUnit = .a,
+        identity: UInt64? = nil
     ) {
         self.defaults = defaults
         self.isSimulating = isSimulatingCards
         self.unit = unit
+        self.identity = identity
+        var computedScope: String?
         if unit == .a, let converters = layout.converterLayout {
             let chain = "conv:\(converters.routingSignature)"
-            self.scope = isSimulatingCards ? "sim:\(chain)" : chain
+            computedScope = chain
         } else if let scope = layout.savedStateScope {
             let unitScope = unit == .b ? "unitB:\(scope)" : scope
-            self.scope = isSimulatingCards ? "sim:\(unitScope)" : unitScope
+            computedScope = unitScope
         } else if unit == .b {
-            self.scope = isSimulatingCards ? "sim:unitB" : "unitB"
+            computedScope = "unitB"
         } else {
-            self.scope = nil
+            computedScope = nil
+        }
+        self.legacyScope = computedScope
+        if let identity, !isSimulatingCards {
+            // Identity AND card layout: the strips depend on the fitted cards,
+            // so a card swap in the same unit must not load the other layout's
+            // state (the reason the layout scope exists).
+            let prefix = unit == .a ? "unitA" : "unitB"
+            let layoutPart = computedScope.map { ":\($0)" } ?? ""
+            self.scope = "\(prefix):v2:\(String(identity, radix: 16))\(layoutPart)"
+        } else {
+            self.scope = isSimulatingCards ? computedScope.map { "sim:\($0)" } : computedScope
         }
     }
 
@@ -79,6 +97,15 @@ public struct ChannelStateStore {
     /// Raw saved data for `base`, applying the migration rules above.
     public func loadData(_ base: String) -> Data? {
         if let data = defaults.data(forKey: key(base)) { return data }
+        if identity != nil, let legacyScope, !isSimulating {
+            let legacyKey = "\(base).\(legacyScope)"
+            let marker = "\(legacyKey).migratedTo"
+            if defaults.string(forKey: marker) == nil, let data = defaults.data(forKey: legacyKey) {
+                defaults.set(data, forKey: key(base))
+                defaults.set(scope, forKey: marker)
+                return data
+            }
+        }
         guard let scope else { return nil }                 // unscoped key was already tried
         guard !isSimulating else { return nil }             // never inherit real state
         guard unit == .a else { return nil }                // unit B never inherits unit A's

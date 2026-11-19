@@ -46,6 +46,12 @@ public final class USBDeviceConnection: DeviceConnection, @unchecked Sendable {
         self.transport = transport
     }
 
+    /// Read the Symphony hardware UID through the existing USB vendor path.
+    public func readHardwareUniqueID() async -> UInt64? {
+        guard transport.isConnected else { return nil }
+        return await SymphonyIdentityReader.readUSB(transport: transport)
+    }
+
     /// Get the cached sample rate.
     private func getCachedSampleRate() -> Double {
         lock.lock()

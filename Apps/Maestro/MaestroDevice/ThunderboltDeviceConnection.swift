@@ -540,6 +540,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// channels started (selector 11). Nil from a driver without the selector.
     public func readUnitBState() -> UnitBState? { dextClient.readUnitBState() }
 
+    /// Read unit A's identity through the existing vendor-read path.
+    public func readHardwareUniqueID(port: UInt8 = DeviceUnit.a.portByte) async -> UInt64? {
+        await SymphonyIdentityReader.readThunderbolt(transport: dextClient, port: port)
+    }
+
     /// A connection to unit B through this connection's driver client: the
     /// same calls with port byte 1. Unit A's bytes are not affected.
     public func makeUnitBConnection(settingsStore: DeviceSettingsStore = DeviceSettingsStore()) -> ThunderboltUnitBConnection {
