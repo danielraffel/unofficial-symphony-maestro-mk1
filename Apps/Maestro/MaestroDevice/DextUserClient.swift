@@ -21,6 +21,7 @@ public final class DextUserClient: @unchecked Sendable {
     // Constants matching SymphonyThunderbridgeShared.h
     private static let magic: UInt32 = 0x53594D50  // 'SYMP'
     private static let selectorSendVendor: UInt32 = 0
+    private static let selectorSetMonitorDevice: UInt32 = 12
     // kSymphonyUserClientType ('SYMC'). The dext's NewUserClient routes only this
     // type to SymphonyUserClient; all other types (incl. 0, used by coreaudiod) go
     // to IOUserAudioDriver. Must match SymphonyThunderbridgeShared.h.
@@ -152,6 +153,27 @@ public final class DextUserClient: @unchecked Sendable {
             print("[DextUserClient] Dext returned error: 0x\(String(status, radix: 16)) cmd=0x\(String(command, radix: 16))")
             throw DextUserClientError.dextError(status)
         }
+    }
+
+    /// Select the Symphony I/O that owns the single Core Audio volume/mute
+    /// control. Unit B is accepted only while the driver has configured 64
+    /// channels; older dexts simply reject this selector.
+    @discardableResult
+    public func setMonitorDevice(_ unit: DeviceUnit) -> Bool {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        var input = [UInt32](repeating: 0, count: 2)
+        input[0] = Self.magic
+        input[1] = UInt32(unit.rawValue)
+        var outSize = 0
+        let kr = input.withUnsafeBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorSetMonitorDevice,
+                                      p.baseAddress, input.count * MemoryLayout<UInt32>.size,
+                                      nil, &outSize)
+        }
+        return kr == KERN_SUCCESS
     }
 
     // kSelectorReadMeters — snapshot the card FPGA meter DMA buffer (256 words).

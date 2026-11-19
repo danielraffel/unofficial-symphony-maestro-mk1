@@ -56,6 +56,7 @@ public:
     kern_return_t RetireForUpgrade(uint32_t replacementBuild);
     kern_return_t ReadPort2State(uint32_t *outWords);   // experiment/64ch-port2 only
     kern_return_t ReadUnitBState(uint32_t *outWords);
+    kern_return_t SetMonitorDevice(uint32_t unit);
     kern_return_t ReadConverterState(uint32_t *outWords);
     kern_return_t SetConverterConfig(uint32_t config);
     kern_return_t RequestPortMode(uint32_t selectorValue);   // experiment, stage 2

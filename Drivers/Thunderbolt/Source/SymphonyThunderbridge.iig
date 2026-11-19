@@ -77,6 +77,7 @@ public:
     // the 16 words of SymphonyPort2StateOutput. No bus access.
     virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
     virtual kern_return_t ReadUnitBState(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t SetMonitorDevice(uint32_t unit) LOCALONLY;
     // dext 131: the older XLink converters (SymphonyConverterStateOutput, 28
     // words; no bus access) and the user's choices for them
     // (SymphonyConverterConfigInput.config: word clock, Device Type).

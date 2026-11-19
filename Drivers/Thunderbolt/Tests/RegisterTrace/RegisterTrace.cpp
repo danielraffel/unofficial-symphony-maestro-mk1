@@ -43,7 +43,10 @@ static_assert(sizeof(SymphonyVendorCommandInput) == 78 && offsetof(SymphonyVendo
 static_assert(offsetof(SymphonyPort2StateOutput, unit) == 7 * sizeof(uint32_t), "unit[] at word 7");
 static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorRetireForUpgrade == 7 && kSelectorReadPort2State == 8, "selector numbers");
 #ifdef TRACE_HAVE_CONVERTER_PARITY
-static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorReadUnitB == 11 && kSelectorCount == 12, "converter/unit-B selectors");
+static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorReadUnitB == 11 && kSelectorCount >= 12, "converter/unit-B selectors");
+#ifdef kSelectorSetMonitorDevice
+static_assert(kSelectorSetMonitorDevice == 12 && kSelectorCount == 13, "monitor selector");
+#endif
 static_assert(sizeof(SymphonyConverterStateOutput) == 112 && sizeof(SymphonyConverterConfigInput) == 8, "converter struct sizes");
 #endif
 #endif
@@ -847,6 +850,39 @@ static uint8_t StoredVendor(Run &r, uint8_t cmd)
     auto it = r.card.port[0].stored.find((uint64_t)cmd << 32);
     return (it == r.card.port[0].stored.end() || it->second.empty()) ? 0xFF : it->second[0];
 }
+
+static uint8_t StoredVendorPort(Run &r, uint8_t cmd, uint32_t value = 0)
+{
+    auto it = r.card.port[1].stored.find((uint64_t)cmd << 32 | value);
+    return (it == r.card.port[1].stored.end() || it->second.empty()) ? 0xFF : it->second[0];
+}
+
+#if defined(TRACE_HAVE_PORT2_AUDIO) && defined(kSelectorSetMonitorDevice)
+static size_t Select(Run &r, uint32_t value, const char *phase, bool ioRunning);
+static void RunMonitorDeviceChecks()
+{
+    Options o; o.name = "monitor device: unit B and fallback"; o.port2 = Port::Symphony;
+    o.portCountProperty = 2; o.shortFlow = true;
+    Run r;
+    RunScenario(o, r);
+    Select(r, 1, "select 64 for monitor device", false);
+    r.card.port[0].stored.erase((uint64_t)0x26 << 32);
+    r.card.port[1].stored.erase((uint64_t)0x26 << 32);
+    CHECK(r.drv->SetMonitorDevice(1) == kIOReturnSuccess, "%s: selecting unit B failed", o.name);
+    PressVolume(r, -33.0f);
+    CHECK(StoredVendorPort(r, 0x26) == 33, "%s: volume did not reach unit B speaker target", o.name);
+    CHECK(StoredVendor(r, 0x26) == 0xFF, "%s: unit A received unit B volume", o.name);
+    r.card.port[1] = Port();
+    r.card.port[1].stored.erase((uint64_t)0x26 << 32);
+    r.card.port[0].stored.erase((uint64_t)0x26 << 32);
+    r.drv->LinkWatchTimerOccurred(nullptr, 0);
+    HostPump();
+    PressVolume(r, -21.0f);
+    CHECK(StoredVendor(r, 0x26) == 21, "%s: fallback volume did not reach unit A", o.name);
+    CHECK(StoredVendorPort(r, 0x26) == 0xFF, "%s: fallback rewrote unit B unexpectedly", o.name);
+    Finish(o, r);
+}
+#endif
 
 static void RunVolumeKeyChecks()
 {
@@ -3095,6 +3131,9 @@ int main(int argc, char **argv)
     RunNominalRateNames();
 #ifdef TRACE_HAVE_CONVERTER_VOLUME
     RunVolumeKeyChecks();
+#endif
+#if defined(TRACE_HAVE_PORT2_AUDIO) && defined(kSelectorSetMonitorDevice)
+    RunMonitorDeviceChecks();
 #endif
 #ifdef TRACE_HAVE_CONVERTER_PARITY
     RunConverterParityChecks();
