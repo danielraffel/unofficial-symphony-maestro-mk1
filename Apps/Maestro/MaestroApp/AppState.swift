@@ -3295,8 +3295,18 @@ final class AppState {
         switch change {
         case .micPreGain(let channel, let gain, _):
             guard channel >= 0, channel < InputChannelLogic.micPreChannelCount else { return }
-            // The poll reads unit A. The Input page consumes this state and
-            // persists its own channel store; this path never writes hardware.
+            // The poll reads unit A, so unit A's saved strips take the reading
+            // whatever page or unit is on screen, with the original's group
+            // offset (one common offset limited across the group). State only:
+            // the firmware applies group changes itself and peers are never
+            // sent (SymphonyIOBoard_MicPre8ch.cpp:249-320; SymphonyIO.cpp:6688-6718).
+            var saved = channelStateStore.load(ChannelStateStore.inputKey, as: [InputChannelState].self) ?? []
+            if channel < saved.count,
+               let level = AnalogInputLevel(rawValue: saved[channel].inputType),
+               level == .mic || level == .instrument {
+                InputChannelLogic.applyGainChange(&saved, channel: channel, to: gain)
+                channelStateStore.save(saved, for: ChannelStateStore.inputKey)
+            }
             frontPanelMicPreRevision += 1
             frontPanelMicPreUpdate = FrontPanelMicPreUpdate(
                 channel: channel, gain: gain, revision: frontPanelMicPreRevision)

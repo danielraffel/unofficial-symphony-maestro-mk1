@@ -518,7 +518,9 @@ struct InputControlsView: View {
         let index = update.channel
         let level = AnalogInputLevel(rawValue: channels[index].inputType) ?? .plus4dBu
         guard level == .mic || level == .instrument else { return }
-        channels[index].gain = InputChannelLogic.clampGain(update.gain, level: level)
+        // Group members move by the same limited offset; nothing is written to
+        // the hardware (the firmware groups itself, SymphonyIOBoard_MicPre8ch.cpp:293-299).
+        InputChannelLogic.applyGainChange(&channels, channel: index, to: update.gain)
         syncAppliedGains()
         saveChannelStates()
         lastFrontPanelGainRevision = update.revision
