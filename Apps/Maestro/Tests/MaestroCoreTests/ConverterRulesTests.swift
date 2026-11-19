@@ -239,6 +239,28 @@ struct ConverterSystemTests {
         #expect(ThunderboltWords.channels(system)[23] == 31)
     }
 
+    @Test("routing grid: the generic columns, bytes and indices kept; only the names follow the units")
+    func routingColumnsKeepBytes() throws {
+        let generic = CardLayout(isKnown: false, fallbackChannelCount: 32)
+        let system = try #require(ConverterSystem(simulationName: "rosetta800+da16x"))
+        let layout = CardLayout(isKnown: false, fallbackChannelCount: 32, converters: system)
+        for isInput in [true, false] {
+            let before = generic.routingColumns(isInput: isInput)
+            let after = layout.routingColumns(isInput: isInput)
+            #expect(after.map(\.routingByte) == before.map(\.routingByte))
+            #expect(after.map(\.isDigital) == before.map(\.isDigital))
+            #expect(after.map(\.boardIndex) == before.map(\.boardIndex))
+        }
+        // Rosetta outputs on slots 1-8, the DA-16X on 17-32 (it follows an
+        // 8-output unit), so column 5 (slots 9-10) has nothing and column 9
+        // (slots 17-18, byte 48) is the DA-16X.
+        let outputs = layout.outputRoutingColumns
+        #expect(outputs[0].stereoName == "A Out 1/2")
+        #expect(outputs[4].stereoName == "N.A.")
+        #expect(outputs[8].stereoName == "B Line 1/2" && outputs[8].routingByte == 48)
+        #expect(layout.inputRoutingColumns[0].stereoName == "A In 1/2")
+    }
+
     @Test("Device Type changes the layout and the config word")
     func deviceType() throws {
         let asAD = try #require(ConverterSystem(simulationName: "dd16x"))

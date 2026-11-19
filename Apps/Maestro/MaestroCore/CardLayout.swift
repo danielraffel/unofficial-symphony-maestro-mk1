@@ -713,9 +713,6 @@ public struct CardLayout: Sendable, Equatable {
         ioBoard1Base: UInt8 = 48
     ) -> [RoutingColumn] {
         let bases = [ioBoard0Base, ioBoard1Base]
-        if let system = converterLayout {
-            return Self.converterRoutingColumns(system, isInput: isInput, bases: bases)
-        }
 
         // Per-board analog/digital pair counts. An unknown layout keeps the old
         // "assume a full bus slice" guess so the grid is populated while the
@@ -779,7 +776,11 @@ public struct CardLayout: Sendable, Equatable {
         // Column order is analog (both boards) then digital (both boards), which
         // is the order the grid has always drawn and the order the routing-byte
         // map assumes.
-        return analogColumns + digitalColumns
+        let columns = analogColumns + digitalColumns
+        if let system = converterLayout {
+            return Self.relabel(columns, converters: system, isInput: isInput, bases: bases)
+        }
+        return columns
     }
 
     /// Hardware columns for the input grid.
@@ -891,26 +892,26 @@ extension CardLayout {
         }
     }
 
-    /// Routing grid columns for converters: one per pair of port-1 host
-    /// channels that carry a unit channel, named from the units ("A Line"
-    /// over "1/2"), with the same slot-to-byte scheme as the generic grid
-    /// (board base + slot within the board's 16).
-    static func converterRoutingColumns(_ system: ConverterSystem, isInput: Bool, bases: [UInt8]) -> [RoutingColumn] {
+    /// Routing grid columns for converters: the generic grid's columns, with
+    /// the same order, routing bytes and saved-route indices, each named after
+    /// the port-1 unit channels on its slot pair ("A Line 1/2", "N.A." when
+    /// nothing is there). Port 2 has no columns in this grid.
+    static func relabel(_ columns: [RoutingColumn], converters system: ConverterSystem,
+                        isInput: Bool, bases: [UInt8]) -> [RoutingColumn] {
         let names = system.hostChannelNames(input: isInput)
         let map = isInput ? system.inputMap : system.outputMap
-        var columns: [RoutingColumn] = []
-        var host = 0
-        while host < names.count {
-            defer { host += 2 }
-            guard let left = map[host], left.port == 0 else { continue }
-            let right = host + 1 < names.count ? names[host + 1] : notApplicable
-            let header = headerLines(stereoName(left: names[host], right: right))
-            let pairSlot = left.slot - left.slot % 2
-            columns.append(RoutingColumn(type: header.type, channels: header.channels,
-                                         boardIndex: pairSlot / 16, isDigital: false,
-                                         routingByte: bases[pairSlot / 16] + UInt8(pairSlot % 16)))
+        var slotName = [String](repeating: notApplicable, count: ConverterRules.channelsPerPort)
+        for host in 0..<names.count {
+            if let channel = map[host], channel.port == 0 { slotName[channel.slot] = names[host] }
         }
-        return columns
+        return columns.map { column in
+            let board = column.routingByte >= bases[1] ? 1 : 0
+            let slot = board * 16 + Int(column.routingByte - bases[board])
+            guard slot >= 0, slot + 1 < slotName.count else { return column }
+            let header = headerLines(stereoName(left: slotName[slot], right: slotName[slot + 1]))
+            return RoutingColumn(type: header.type, channels: header.channels, boardIndex: column.boardIndex,
+                                 isDigital: column.isDigital, routingByte: column.routingByte)
+        }
     }
 
     /// Converter host channel pair names for a routing grid's software rows

@@ -2586,6 +2586,13 @@ final class AppState {
                                 from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount)
                             }
                         }
+                        // Converters: 32 to 64 channels can change without a
+                        // reconnect, so the arrays grow to the host channels in use.
+                        if let needed = self.thunderboltInputMeterLayout?.converterLayout?.hostInputCount,
+                           self.inputMeterLevels.count < needed {
+                            self.inputMeterLevels += [Double](repeating: -60.0, count: needed - self.inputMeterLevels.count)
+                            self.inputPeakHold += [Double](repeating: -60.0, count: max(0, needed - self.inputPeakHold.count))
+                        }
                         newInput = ThunderboltInputMeterMap.stripLevels(
                             host: hostInputs, words: meterWords, count: self.inputMeterLevels.count)
                         self.digitalInputMeterLevels = self.smoothMeterLevels(

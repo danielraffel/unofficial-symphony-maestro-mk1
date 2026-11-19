@@ -909,6 +909,12 @@ struct SystemSetupView: View {
         MeterDisplaySettings.OverHoldMode.allCases.map { ($0.wireValue, $0.rawValue) }
     }
 
+    /// Port 2's converters are listed with port 1's (from the driver's
+    /// converter report), so the two-port rows leave their unit lines out.
+    private var port2UnitsListedAbove: Bool {
+        appState.converterSystem?.source == .driver && appState.converterSystem?.port2Counted == true
+    }
+
     /// Is the device in Pro Tools HD mode?
     private var isProToolsMode: Bool { deviceMode == 3 }
     /// Is the device in Standalone mode?
@@ -1199,12 +1205,14 @@ struct SystemSetupView: View {
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            ForEach(Array(shown.rows.enumerated()), id: \.offset) { _, row in
+                            ForEach(Array(shown.rows.filter { !port2UnitsListedAbove || !$0.label.hasPrefix("Port 2 Unit") }
+                                .enumerated()), id: \.offset) { _, row in
                                 LabeledContent(row.label, value: row.value)
                             }
                         } else {
                             // A stage-1 driver (no selector): its rows as before.
-                            ForEach(Array(port2.deviceInfoRows.enumerated()), id: \.offset) { _, row in
+                            ForEach(Array(port2.deviceInfoRows.filter { !port2UnitsListedAbove || !$0.label.hasPrefix("Port 2 Unit") }
+                                .enumerated()), id: \.offset) { _, row in
                                 LabeledContent(row.label, value: row.value)
                             }
                         }
