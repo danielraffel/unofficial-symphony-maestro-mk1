@@ -51,6 +51,21 @@ static constexpr uint32_t kThunderboltCardOutputRoutingRegister = 0x2100;
 static constexpr uint32_t kThunderboltCardOutputChannels        = 32;
 static constexpr uint32_t kThunderboltCardRouteEnable           = 0x100;
 
+// dext 131, converters only (AD-16X, DA-16X, DD-16X, Rosetta): the card's
+// routing is the only router they have, and the original let Maestro edit it
+// in both directions (SymphonyPCIeRoutingController.cpp:1280-1365 ->
+// routeSymphonyHW). With converters on the cable:
+//   0xB5 (above) also takes XLink TX channels 32..63 while port 2 carries
+//        converters (64 channels);
+//   0xB6 sets a host (DAW) input: payload [hostInput 0..63, xlinkRx 0..63,
+//        enable 0/1] -> SM_REG_INPUT_ROUTING entry hostInput <- XLINK_RX xlinkRx;
+//   0xB7 puts both tables back on the default placement (Reset Routing),
+//        no payload.
+// A Symphony I/O refuses 0xB6 and 0xB7: its inputs are routed by the unit.
+static constexpr uint8_t  kThunderboltCardInputRouteCommand       = 0xB6;
+static constexpr uint8_t  kThunderboltConverterRoutingResetCommand = 0xB7;
+static constexpr uint32_t kThunderboltCardInputRoutingRegister    = 0x2000;
+
 static constexpr uint32_t ThunderboltCardOutputRouteRegister(uint8_t channel)
 {
     return kThunderboltCardOutputRoutingRegister + static_cast<uint32_t>(channel) * 4;

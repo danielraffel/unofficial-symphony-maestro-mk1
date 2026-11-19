@@ -2410,6 +2410,17 @@ static Unit U(uint8_t inquire, uint8_t xtd = 0) { Unit u; u.inquire = inquire; u
 // AUTH_START, sent once every Symphony I/O read of the bring-up has gone
 // unanswered (those reads are how a converter is told apart from a Symphony
 // I/O that lost one read; units 2-4 are authenticated earlier, during discovery).
+static std::string VendorMessagePhase(const FakeCard &c, size_t from)
+{
+    for (size_t i = from; i < c.lines.size(); i++) {
+        unsigned long long off = 0; unsigned val = 0;
+        if (sscanf(c.lines[i].c_str(), "W 0x%llx 0x%x", &off, &val) == 2 && off == kRegXLink1TX && ((val >> 9) & 0xFF) == 0x10) {
+            for (size_t j = i; j-- > 0;) if (c.lines[j].rfind("-- ", 0) == 0) return c.lines[j];
+            return "(start)";
+        }
+    }
+    return "";
+}
 static size_t AfterIdentification(const FakeCard &c)
 {
     for (size_t i = 0; i < c.lines.size(); i++) {
@@ -2546,6 +2557,94 @@ static void RunConverterParityChecks()
         CHECK((st.unit[0][1] & kSymphonyConvUnitAuthOK), "%s: DD unit not authenticated (0x%08x)", o.name, st.unit[0][1]);
         Finish(o, r);
     }
+    // 3e. Routing edited in Maestro (the original's routing pages): a host input
+    //     from any converter input, a converter output from any source; kept
+    //     across a card reset; Reset Routing goes back to the placement. A
+    //     Symphony I/O refuses input routes and the reset.
+    {
+        Options o; o.name = "converters: routing edits"; o.port1 = Port::Converters; o.shortFlow = true;
+        o.port1Units = { U(0x37, 0x02), U(0x37, 0x02), U(0xC7, 0x02), U(0xC7, 0x02) };
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        { uint8_t pl[3] = { 0, 20, 1 }; CHECK(r.drv->SendVendorCommand(0xB6, 0, pl, 3) == kIOReturnSuccess, "%s: input route refused", o.name); }
+        { uint8_t pl[3] = { 16, 64 + 3, 1 }; CHECK(r.drv->SendVendorCommand(0xB5, 0, pl, 3) == kIOReturnSuccess, "%s: output route refused", o.name); }
+        HostPump();
+        CHECK(c.reg[kRegInputRouting] == (20 | 0x100), "%s: host input 1 <- 0x%03x (want slot 21)", o.name, c.reg[kRegInputRouting]);
+        CHECK(c.reg[kRegOutputRouting + 16 * 4] == (67 | 0x100), "%s: TX 17 <- 0x%03x", o.name, c.reg[kRegOutputRouting + 16 * 4]);
+        c.phase("FPGA reset with routes edited");
+        r.drv->SetPowerState(kIOServicePowerCapabilityOff);
+        c.powerCycleFPGA();
+        r.drv->SetPowerState(kIOServicePowerCapabilityOn);
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(c.reg[kRegInputRouting] == (20 | 0x100), "%s: edit lost after a card reset (0x%03x)", o.name, c.reg[kRegInputRouting]);
+        CHECK(r.drv->SendVendorCommand(0xB7, 0, nullptr, 0) == kIOReturnSuccess, "%s: reset refused", o.name);
+        HostPump();
+        CHECK(c.reg[kRegInputRouting] == (0 | 0x100) && c.reg[kRegOutputRouting + 16 * 4] == (64 + 16 | 0x100),
+              "%s: Reset Routing left 0x%03x / 0x%03x", o.name, c.reg[kRegInputRouting], c.reg[kRegOutputRouting + 16 * 4]);
+        { uint8_t pl[3] = { 40, 3, 1 }; CHECK(r.drv->SendVendorCommand(0xB6, 0, pl, 3) == kIOReturnBadArgument, "%s: a port-2 entry accepted at 32 channels", o.name); }
+        Finish(o, r);
+    }
+    {
+        Options o; o.name = "converters: a Symphony refuses converter routing"; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        uint8_t pl[3] = { 0, 20, 1 };
+        CHECK(r.drv->SendVendorCommand(0xB6, 0, pl, 3) == kIOReturnUnsupported, "%s: input route accepted", o.name);
+        CHECK(r.drv->SendVendorCommand(0xB7, 0, nullptr, 0) == kIOReturnUnsupported, "%s: reset accepted", o.name);
+        Finish(o, r);
+    }
+    // 3f. A unit that stops reporting its phase on port 1: the chain is
+    //     re-initialised (the original: a command error -> ForceReconfigure).
+    {
+        Options o; o.name = "converters: unit stops reporting its phase"; o.port1 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        c.port[0].units[1].answersPhase = false;
+        const size_t mark = c.lines.size();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(!Commands(c, mark, kRegXLink1TX, 0x01).empty(), "%s: the chain was not re-initialised (no SET_ADDR)", o.name);
+        Finish(o, r);
+    }
+    // 3g. The units never lock at bring-up: no per-unit UNMUTE (kept muted),
+    //     and the health check re-initialises.
+    {
+        Options o; o.name = "converters: the rate never locks"; o.port1 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        c.port[0].slipReads = 1000000;   // every lock wait sees a slip from now on
+        const size_t mark = c.lines.size();
+        r.drv->SetConverterConfig(kSymphonyConvConfigClockExternal);   // a full re-initialisation
+        HostPump();
+        bool unitUnmute = false;
+        for (uint32_t v : Commands(c, mark, kRegXLink1TX, 0x0A)) if ((v >> 8) != 0) unitUnmute = true;
+        CHECK(!unitUnmute, "%s: units unmuted although the rate never locked", o.name);
+        c.port[0].slipReads = 0;
+        const size_t mark2 = c.lines.size();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(!Commands(c, mark2, kRegXLink1TX, 0x01).empty(), "%s: no new attempt once the link is clean", o.name);
+        Finish(o, r);
+    }
+#ifdef TRACE_HAVE_PORT2_AUDIO
+    // 3h. A Symphony I/O on port 1, converters on port 2 at 64 channels: port
+    //     2's units are health-checked too.
+    {
+        Options o; o.name = "converters: port 2 behind a Symphony"; o.port2 = Port::Converters;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        Select(r, 1, "converters: select 64 behind a Symphony");
+        c.port[1].units[0].phase = 0x40;
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(ConvState(r).phaseErrors >= 1, "%s: port 2 phase not checked", o.name);
+        Finish(o, r);
+    }
+#endif
     // 4. A unit whose authentication does not verify is reported and kept.
     {
         Options o; o.name = "converters: failed authentication is reported"; o.port1 = Port::Converters; o.shortFlow = true;
@@ -2619,7 +2718,8 @@ static void RunConverterParityChecks()
         bool internal = false;
         for (uint32_t v : Commands(c, mark, kRegXLink1TX, 0x04)) if (v == 0x0100) internal = true;   // addr 1, data 0
         CHECK(internal, "%s: Internal did not send SET_EXT_LOCK(1, 0)", o.name);
-        CHECK(Commands(c, AfterIdentification(c), kRegXLink1TX, 0x10).empty(), "%s: ClockMode (a vendor message) went to converters", o.name);
+        CHECK(VendorMessagePhase(c, AfterIdentification(c)).empty(), "%s: a vendor message went to converters (phase %s)",
+              o.name, VendorMessagePhase(c, AfterIdentification(c)).c_str());
         Finish(o, r);
     }
     // 8. Device Type: a 0x0F unit used as a DA-16X puts its analog channels on
