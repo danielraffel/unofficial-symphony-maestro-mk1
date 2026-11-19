@@ -1564,7 +1564,7 @@ static void CheckBothPortsRunning(const char *what, Run &r, size_t mark)
             const uint32_t host = h + base;
             if (inMap[h].valid) wantIn[host] = (inMap[h].port * 32 + inMap[h].slot) | 0x100;
             if (outMap[h].valid)
-                wantOut[outMap[h].port * 32 + outMap[h].slot] = ((host < 2) ? (128 + host) : (64 + host)) | 0x100;
+                wantOut[outMap[h].port * 32 + outMap[h].slot] = (64 + host) | 0x100;
         }
     }
 #endif
@@ -2469,7 +2469,7 @@ static void RunConverterParityChecks()
         CHECK(st.hostInputs == 32 && st.hostOutputs == 32, "%s: host %u in / %u out (want 32/32)", o.name, st.hostInputs, st.hostOutputs);
         for (uint32_t n = 0; n < 32; n++) {
             CHECK(c.reg[kRegInputRouting + n * 4] == (n | 0x100), "%s: input route %u = 0x%03x", o.name, n, c.reg[kRegInputRouting + n * 4]);
-            const uint32_t wantOut = ((n < 2) ? (128 + n) : (64 + n)) | 0x100;
+            const uint32_t wantOut = (64 + n) | 0x100;   // direct, as the original's default
             CHECK(c.reg[kRegOutputRouting + n * 4] == wantOut, "%s: output route %u = 0x%03x", o.name, n, c.reg[kRegOutputRouting + n * 4]);
         }
         CHECK(st.latencyIn == 36 && st.latencyOut == 35, "%s: latency %u/%u (want AD 36/35 at 44.1 kHz)", o.name, st.latencyIn, st.latencyOut);

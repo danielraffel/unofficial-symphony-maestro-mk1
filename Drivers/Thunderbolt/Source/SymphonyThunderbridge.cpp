@@ -1913,8 +1913,8 @@ static void BuildConverterChain(SymphonyThunderbridge_IVars *ivars, ConverterCha
 }
 
 // Card routing for converters (routeSymphonyHW): host input h <- XLink RX of its
-// unit channel's slot, XLink TX slot <- host output h (host 1-2 through card
-// mixer 1, as the default routing does today). Host channels and slots with
+// unit channel's slot, XLink TX slot <- host output h (direct, as the original's
+// default; mixers go nowhere until routed). Host channels and slots with
 // nothing behind them are left disabled. With converters on port 1, port 1's
 // entries are written, and port 2's while 64 channels run with converters
 // there. With a Symphony I/O on port 1 and converters on port 2 (the mix
@@ -1942,7 +1942,11 @@ static void ApplyConverterRouting(SymphonyThunderbridge_IVars *ivars, const char
             inSrc[host] = (kTDM_XLinkRX0 + inMap[h].port * kConverterChannelsPerPort + inMap[h].slot) | kRoutingEnable;
         if (outMap[h].valid) {
             const uint32_t xl = outMap[h].port * kConverterChannelsPerPort + outMap[h].slot;
-            outSrc[xl] = ((host < 2) ? (kTDM_Mixer0Out + host) : (kTDM_PCIOut0 + host)) | kRoutingEnable;
+            // Every DAW output straight to its converter output, as the
+            // original's default (ResetRouting cleared both mixers), so nothing
+            // in the card mixer changes what the DAW plays. A mixer reaches an
+            // output only when the user routes it there (0xB5).
+            outSrc[xl] = (kTDM_PCIOut0 + host) | kRoutingEnable;
         }
     }
     // The user's routes (Maestro's routing pages) on top of the default.
@@ -4899,6 +4903,11 @@ kern_return_t SymphonyThunderbridge::SetConverterConfig(uint32_t config)
     const uint32_t old = __atomic_exchange_n(&ivars->convConfig, config, __ATOMIC_ACQ_REL);
     STLOG("Converter config: 0x%08x (was 0x%08x)", config, old);
     if (old == config) return kIOReturnSuccess;
+    // The Core Audio clock selector follows a choice made in Maestro.
+    if (ivars->convPort1 && ivars->clockSourceControl && ((old ^ config) & kSymphonyConvConfigClockExternal)) {
+        IOUserAudioSelectorValue sel = (config & kSymphonyConvConfigClockExternal) ? 2 : 1;
+        ivars->clockSourceControl->SetCurrentSelectedValues(&sel, 1);
+    }
     SymphonyThunderbridge *self = this;
     ivars->xlinkQueue->DispatchAsync(^{
         const bool converters = ivars->convPort1 ||
@@ -6605,8 +6614,13 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                     { 4, OSSharedPtr<OSString>(OSString::withCString("I/O Board 1"), OSNoRetain) },
                     { 5, OSSharedPtr<OSString>(OSString::withCString("I/O Board 2"), OSNoRetain) },
                 };
-                clockCtrl->AddControlValueDescriptions(clockValues, 5);
-                IOUserAudioSelectorValue initSel = 1;  // Internal — matches boot ClockMode
+                // dext 131: converters offer Internal and External (word clock)
+                // only, as the original listed them from unit 0/0/0
+                // (SymphonyPeripheralDevice.cpp:781-820); 2 = External.
+                const bool convClock = ivars->convPort1;
+                clockCtrl->AddControlValueDescriptions(clockValues, convClock ? 2 : 5);
+                IOUserAudioSelectorValue initSel = (convClock &&
+                    (__atomic_load_n(&ivars->convConfig, __ATOMIC_ACQUIRE) & kSymphonyConvConfigClockExternal)) ? 2 : 1;
                 clockCtrl->SetCurrentSelectedValues(&initSel, 1);
                 clockCtrl->SetDriver(this);  // back-pointer for the push callback
 
