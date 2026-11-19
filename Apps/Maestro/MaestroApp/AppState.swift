@@ -1901,6 +1901,19 @@ final class AppState {
         } else {
             return
         }
+        let inputStates: [InputChannelState] = channelStateStore.load(ChannelStateStore.inputKey) ?? []
+        let outputStates: [OutputChannelState] = channelStateStore.load(ChannelStateStore.outputKey) ?? []
+        let channelReplay = await AnalogChannelSettingsReplay.apply(
+            inputs: inputStates,
+            outputs: outputStates,
+            layout: cardLayout,
+            device: device,
+            spacing: device is XPCDeviceConnection ? .milliseconds(25) : nil)
+        if channelReplay.applied > 0 || channelReplay.failed > 0 {
+            print("[Maestro] syncDeviceSettings: re-applied " + String(channelReplay.applied)
+                + " analog channel setting(s)"
+                + (channelReplay.failed == 0 ? "" : ", " + String(channelReplay.failed) + " refused"))
+        }
         // The audible half of a saved headphone source: the crosspoint, taken
         // from the output routing as it stands after the routing replay.
         let store = (device as? ThunderboltDeviceConnection)?.settingsStore
@@ -1916,7 +1929,8 @@ final class AppState {
                                                 transport: transportType ?? .usb)
             }
         }
-        guard replay.applied > 0 || !replay.failed.isEmpty else { return }
+        guard replay.applied > 0 || !replay.failed.isEmpty
+                || channelReplay.applied > 0 || channelReplay.failed > 0 else { return }
         print("[Maestro] syncDeviceSettings: re-applied \(replay.applied) saved setting(s)"
             + (replay.failed.isEmpty ? "" : ", \(replay.failed.count) refused: \(replay.failed)"))
         // On USB the views read these settings from the hardware, and one that

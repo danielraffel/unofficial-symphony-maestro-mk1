@@ -331,10 +331,14 @@ public enum SymphonyIOPropertyMapper {
                 data: Data(count: 1)
             )
         case .analogIOType:
+            let isOutput = address.scope == .output
+            let nValue = USBValueEncoding.channelValue(channel: channel, isOutput: isOutput)
+            let (wValue, wIndex) = USBValueEncoding.split(nValue)
             return USBControlRequest(
                 direction: .read,
                 request: SymphonyIOCommand.currentAnalogInputType.rawValue,
-                index: channel,
+                value: wValue,
+                index: wIndex,
                 data: Data(count: 1)
             )
         case .digitalRefLevel:
