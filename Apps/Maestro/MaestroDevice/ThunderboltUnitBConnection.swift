@@ -54,7 +54,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     /// Unit B's own settings (see `DeviceSettingsStore`), under its own key.
     public let settingsStore: DeviceSettingsStore
 
-    private let headphoneLock = NSLock()
+    private let sequenceLock: NSRecursiveLock
     private var headphoneAssignments: UInt8?
 
     private let listenerLock = NSLock()
@@ -62,6 +62,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     public init(identifier: USBDeviceIdentifier, transport: any VendorTransport,
                 settingsStore: DeviceSettingsStore = DeviceSettingsStore(),
+                sequenceLock: NSRecursiveLock = NSRecursiveLock(),
                 infoRouting: @escaping @Sendable () -> SymphonyRoutingModel = {
                     SymphonyRoutingModel(topology: .unknown, hostChannels: 0)
                 },
@@ -69,6 +70,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         self.identifier = identifier
         self.transport = transport
         self.settingsStore = settingsStore
+        self.sequenceLock = sequenceLock
         self.state = state
         self.infoRouting = infoRouting
     }
@@ -173,7 +175,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     public func getProperty(_ address: PropertyAddress) async throws -> PropertyValue {
         guard isConnected else { throw DeviceConnectionError.notConnected }
         if Self.isHeadphoneSource(address.selector) {
-            return try headphoneLock.withLock {
+            return try sequenceLock.withLock {
                 try requireHeadphoneUnit()
                 let data = try transport.readVendorCommand(command: 0x54, value: 0,
                                                             responseLength: 1, port: Self.port)
@@ -234,10 +236,17 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     }
 
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
+        try writeProperty(address, value: value)
+    }
+
+    func writeProperty(_ address: PropertyAddress, value: PropertyValue) throws {
+        sequenceLock.lock()
+        defer { sequenceLock.unlock() }
+        try requireHeadphoneUnit()
         guard isConnected else { throw DeviceConnectionError.notConnected }
         let selector = address.selector
         if Self.isHeadphoneSource(selector) {
-            try headphoneLock.withLock {
+            try sequenceLock.withLock {
                 try requireHeadphoneUnit()
                 guard let id = value.asUInt32, id < 16 else {
                     throw DeviceConnectionError.typeMismatch(expected: "headphone source 0-15", got: "\(value)")
@@ -382,7 +391,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     /// Evidence: og_source/maestrolink/Software/SymphonyIO.cpp:2716-2737;
     /// og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:1003-1008.
     public func reapplyHeadphoneCrosspoints() async throws {
-        try headphoneLock.withLock { try replayHeadphones() }
+        try sequenceLock.withLock { try replayHeadphones() }
     }
 
     /// Card output reset/preset writes stay on the card; only the following
@@ -392,7 +401,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         guard routes.allSatisfy({ (32..<64).contains($0.channel) }) else {
             throw DeviceConnectionError.transportError("Not a unit B output route")
         }
-        try headphoneLock.withLock {
+        try sequenceLock.withLock {
             for route in routes {
                 try requireHeadphoneUnit()
                 try send(route)
@@ -406,6 +415,27 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         guard let byte = headphoneAssignments else { return }
         try sendHeadphoneCrosspoint(.headphone1, sourceID: UInt32(byte & 15))
         try sendHeadphoneCrosspoint(.headphone2, sourceID: UInt32(byte >> 4))
+    }
+
+    /// Fresh hardware assignment, never a host-saved monitor default.
+    func replayRecoveryHeadphones() throws {
+        try requireHeadphoneUnit()
+        let data = try transport.readVendorCommand(command: 0x54, value: 0,
+                                                    responseLength: 1, port: Self.port)
+        headphoneAssignments = nil
+        guard let byte = data.first, byte != 0xFF else {
+            throw DeviceConnectionError.transportError("Unit B headphone sources are unreadable")
+        }
+        headphoneAssignments = byte
+        try replayHeadphones()
+    }
+
+    func finishRecovery() throws -> Bool {
+        try requireHeadphoneUnit()
+        try transport.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]), port: Self.port)
+        try requireHeadphoneUnit()
+        return try transport.readVendorCommand(command: 0xDD, value: 0, responseLength: 1,
+                                              port: Self.port) == Data([0])
     }
 
     // MARK: - Private

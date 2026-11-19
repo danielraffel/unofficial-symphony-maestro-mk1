@@ -163,7 +163,7 @@ struct MixerView: View {
                         selectedMixer = index
                         appState.lastSelectedMixer = index
                         initializeChannels()
-                        Task { await syncMixerToHardware() }
+                        Task { await syncMixerToHardware(recalling: true) }
                     }
                     .controlSize(.small)
                     .help(selectedMixer == index
@@ -464,7 +464,7 @@ struct MixerView: View {
             // Local state is already complete; only hardware synchronization
             // waits for this task. No partial strip layout is exposed meanwhile.
             ensureNamesAndVisibility()
-            await syncMixerToHardware()
+            await syncMixerToHardware(recalling: true)
             restoreSessionScrollPosition()
         }
         .onAppear { appState.startMeterPolling() }
@@ -476,7 +476,7 @@ struct MixerView: View {
             initializeChannels()
             ensureNamesAndVisibility()
             restoreSessionScrollPosition()
-            Task { await syncMixerToHardware() }
+            Task { await syncMixerToHardware(recalling: true) }
         }
 
         .onChange(of: appState.deviceRecoveryCount) { _, _ in
@@ -484,6 +484,7 @@ struct MixerView: View {
             // Reload persisted mixer state and re-sync to hardware.
             initializeChannels()
             Task {
+                guard !appState.usesTwoUnitReplay else { return }
                 // On USB this also puts Software Return and Master back, for
                 // the shown mixer, and the helper's stage to neutral.
                 await syncMixerToHardware()
@@ -839,7 +840,9 @@ struct MixerView: View {
     /// Send all mixer channel states to hardware on startup/mixer switch.
     /// The FPGA doesn't persist mixer state — it powers up with defaults that
     /// may not match the UI, causing silent channels until user interaction.
-    private func syncMixerToHardware() async {
+    private func syncMixerToHardware(recalling: Bool = false) async {
+        // Two-unit lifecycle recall belongs to AppState even with this page closed.
+        if recalling && appState.usesTwoUnitReplay { return }
         guard let device = appState.device else { return }
         let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
         for i in 0..<min(channels.count, channelCount) {
