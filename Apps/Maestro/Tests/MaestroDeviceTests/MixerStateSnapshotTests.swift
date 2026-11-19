@@ -13,8 +13,29 @@ struct MixerStateSnapshotTests {
         let name = "maestro.tests.mixerSnapshot.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
-        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 1)
         try body(defaults, store)
+    }
+
+    @Test func physicalReplacementDoesNotInheritMixerWideState() throws {
+        try withDefaults { defaults, _ in
+            defaults.set(-19.0, forKey: "mixerMasterLevel_0")
+            defaults.set(3, forKey: "mixerSoftwareReturnSource_0")
+            defaults.set(try JSONEncoder().encode(edited), forKey: "mixerState_swReturn")
+            let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 101)
+            let first = MixerStateSnapshot(channelCount: 1, mixer: 0, store: a, defaults: defaults)
+            #expect(first.masterLevel == -19)
+            #expect(first.swReturnChannel == edited)
+            #expect(first.softwareReturnSource == 3)
+            let replacement = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 202)
+            let second = MixerStateSnapshot(channelCount: 1, mixer: 0, store: replacement, defaults: defaults)
+            #expect(second.masterLevel == 0)
+            #expect(second.swReturnChannel == unity)
+            #expect(second.softwareReturnSource == 0)
+            defaults.set(-1.0, forKey: "mixerMasterLevel_0")
+            let unchanged = MixerStateSnapshot(channelCount: 1, mixer: 0, store: a, defaults: defaults)
+            #expect(unchanged.masterLevel == -19)
+        }
     }
 
     @Test func savedControlsAreAvailableTogetherOnInitialization() throws {

@@ -150,7 +150,7 @@ extension AppState {
         // Card coefficients and return selection must recover with pages closed.
         // og_source/maestrolink/Software/SymphonyCard.cpp:1031-1044.
         for mixer in 0..<2 {
-            let a = MixerStateSnapshot(channelCount: cardLayout.mixerChannels.count, mixer: mixer, store: channelStateStore)
+            let a = MixerStateSnapshot(channelCount: cardLayout.mixerChannels.count, mixer: mixer, store: channelStateStore, preferences: mixerPreferences)
             let b = MixerStateSnapshot(channelCount: layoutB.mixerChannels.count, mixer: mixer, store: unitBChannelStateStore)
             let base = UInt32(mixer + 1) << 16
             func put(_ selector: AudioPropertySelector, _ value: PropertyValue, _ channel: Int = 0) {
@@ -162,7 +162,7 @@ extension AppState {
             for (id, state) in zip(ids, channels) {
                 put(.mixerChannelLevel, .float64(state.level), id)
                 put(.mixerChannelPan, .float64(state.pan), id)
-                put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && UserDefaults.standard.integer(forKey: "routingMode") == 0)), id)
+                put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && mixerPreferences.integer(forKey: "routingMode") == 0)), id)
                 put(.mixerChannelSolo, .bool(state.isSoloed), id)
             }
             put(.mixerChannelLevel, .float64(a.masterLevel), 2000)

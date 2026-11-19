@@ -46,7 +46,10 @@ struct DeviceSettingsView: View {
     @AppStorage("popupsEnabled") private var popupsEnabled = true
     @AppStorage("usbHealthCheckEnabled") private var usbHealthCheckEnabled = false
     @AppStorage("autoRecoverMixerState") private var autoRecoverMixerState = true
-    @AppStorage("routingMode") private var routingMode: Int = 0  // 0=DAW, 1=Direct Monitor
+    private var routingMode: Int {
+        _ = appState.routingModeChangeCount
+        return appState.mixerPreferences.integer(forKey: "routingMode")
+    }
     @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
     @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
     @AppStorage("rememberControlTabScrollPositions") private var rememberControlTabScrollPositions = true
@@ -98,6 +101,39 @@ struct DeviceSettingsView: View {
     private var meterSourceOptions: [(UInt32, String)] {
         let available = allMeterSourceOptions.filter { layout.hasMeterSource($0.0) }
         return available.isEmpty ? allMeterSourceOptions : available
+    }
+
+    private func setRoutingMode(_ newMode: Int) {
+        guard !isLoading else { return }
+        appState.mixerPreferences.set(newMode, forKey: "routingMode")
+        if let xpcDev = appState.device as? XPCDeviceConnection {
+            xpcDev.setRoutingMode(newMode)
+            if newMode == 0 {
+                // DAW: force-mute all HW inputs on both mixers
+                for mixerID: UInt16 in 1...2 {
+                    for ch: UInt16 in 0..<32 {
+                        xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
+                    }
+                }
+            } else {
+                // Direct Monitor: restore persisted mute state
+                for mixerIdx in 0..<2 {
+                    let key = "mixerState_\(mixerIdx)"
+                    let mixerID = UInt16(mixerIdx + 1)
+                    if let data = appState.channelStateStore.loadData(key),
+                       let saved = try? JSONDecoder().decode([MixerChannelState].self, from: data) {
+                        for (ch, state) in saved.enumerated() {
+                            xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: UInt16(ch), value: state.isMuted ? 1 : 0)
+                        }
+                    } else {
+                        for ch: UInt16 in 0..<32 {
+                            xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
+                        }
+                    }
+                }
+            }
+        }
+        appState.routingModeChangeCount += 1
     }
 
     var body: some View {
@@ -338,7 +374,7 @@ struct DeviceSettingsView: View {
                     .help("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
                 }
 
-                Picker("Monitoring Mode", selection: $routingMode) {
+                Picker("Monitoring Mode", selection: Binding(get: { routingMode }, set: { setRoutingMode($0) })) {
                     Text("DAW").tag(0)
                     Text("Direct Monitor").tag(1)
                 }
@@ -346,37 +382,6 @@ struct DeviceSettingsView: View {
                 // Hardware-backed, unlike the rest of this section, so it carries
                 // the load gate itself rather than inheriting one from the Section.
                 .disabled(isLoading)
-                .onChange(of: routingMode) { _, newMode in
-                    guard !isLoading else { return }
-                    if let xpcDev = appState.device as? XPCDeviceConnection {
-                        xpcDev.setRoutingMode(newMode)
-                        if newMode == 0 {
-                            // DAW: force-mute all HW inputs on both mixers
-                            for mixerID: UInt16 in 1...2 {
-                                for ch: UInt16 in 0..<32 {
-                                    xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                                }
-                            }
-                        } else {
-                            // Direct Monitor: restore persisted mute state
-                            for mixerIdx in 0..<2 {
-                                let key = "mixerState_\(mixerIdx)"
-                                let mixerID = UInt16(mixerIdx + 1)
-                                if let data = UserDefaults.standard.data(forKey: key),
-                                   let saved = try? JSONDecoder().decode([MixerChannelState].self, from: data) {
-                                    for (ch, state) in saved.enumerated() {
-                                        xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: UInt16(ch), value: state.isMuted ? 1 : 0)
-                                    }
-                                } else {
-                                    for ch: UInt16 in 0..<32 {
-                                        xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    appState.routingModeChangeCount += 1
-                }
                 .help("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
             }
 

@@ -37,39 +37,66 @@ extension AppState {
                 }
             }
         }
-        let identity = await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            task.cancel()
+        func bindIdentity() async {
+            let identity = await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
+            guard isCurrent() else { return }
+            if Task.isCancelled || task.isCancelled {
+                if unit == .a { unitAIdentityState = .failed; unitAIdentityTask = nil }
+                else { unitBIdentityState = .failed; unitBIdentityTask = nil }
+                return
+            }
+            guard let identity else {
+                if unit == .a { unitAIdentityState = .failed; unitAIdentityTask = nil }
+                else { unitBIdentityState = .failed; unitBIdentityTask = nil }
+                return
+            }
+            let store = (connection as? ThunderboltDeviceConnection)?.settingsStore
+                ?? (connection as? XPCDeviceConnection)?.settingsStore
+                ?? (connection as? ThunderboltUnitBConnection)?.settingsStore
+            let allowMigration = store != nil && claimLegacyUnitState(unit: unit, identity: identity)
+            let prefix = await store?.resolveIdentity(productID: connection.identifier.productID, unit: unit,
+                                         identity: identity, allowLegacyMigration: allowMigration)
+            guard !Task.isCancelled, isCurrent() else { return }
+            if unit == .a {
+                unitAIdentityState = .known(identity)
+                unitAIdentityTask = nil
+            } else {
+                unitBIdentityState = .known(identity)
+                unitBIdentityTask = nil
+                unitBPeripheralPrefix = prefix.map(CardLayout.peripheralPrefix) ?? unitBPeripheralPrefix
+                twoUnitReplayNeeded = true
+            }
+            let preferences = unit == .a ? mixerPreferences : unitBChannelStateStore.mixerPreferences
+            MixerPairLink.migrateSavedPairs(preferences: preferences)
         }
+        await bindIdentity()
         guard isCurrent() else { return }
-        if Task.isCancelled || task.isCancelled {
-            if unit == .a { unitAIdentityState = .failed; unitAIdentityTask = nil }
-            else { unitBIdentityState = .failed; unitBIdentityTask = nil }
-            return
-        }
-        guard let identity else {
-            if unit == .a { unitAIdentityState = .failed; unitAIdentityTask = nil }
-            else { unitBIdentityState = .failed; unitBIdentityTask = nil }
-            return
-        }
-        let store = (connection as? ThunderboltDeviceConnection)?.settingsStore
-            ?? (connection as? XPCDeviceConnection)?.settingsStore
-            ?? (connection as? ThunderboltUnitBConnection)?.settingsStore
-        let allowMigration = store != nil && claimLegacyUnitState(unit: unit, identity: identity)
-        let prefix = await store?.resolveIdentity(productID: connection.identifier.productID, unit: unit,
-                                     identity: identity, allowLegacyMigration: allowMigration)
-        guard !Task.isCancelled, isCurrent() else { return }
-        if unit == .a {
-            unitAIdentityState = .known(identity)
-            unitAIdentityTask = nil
-        } else {
-            unitBIdentityState = .known(identity)
-            unitBIdentityTask = nil
-            unitBPeripheralPrefix = prefix.map(CardLayout.peripheralPrefix) ?? unitBPeripheralPrefix
-            twoUnitReplayNeeded = true
-        }
+        // Finish discovery even when the read or preference binding was cancelled.
+        // The connection/generation fence, not cancellation of the identity read,
+        // decides whether this physical connection still needs its one restore.
+        if unit == .a, unitAIdentityState == .pending { unitAIdentityState = .failed }
+        if unit == .a { refreshSoftwareReturnMeterGains() }
         viewReloadToken = UUID()
+        let preferences = mixerPreferences
+        if unit == .a, let usb = connection as? XPCDeviceConnection {
+            // The first restore must wait for UID/layout migration, otherwise
+            // an unchanged USB unit would receive defaults before its settings.
+            await usb.restoreReturnAndMaster(helperMixer: lastSelectedMixer, preferences: preferences)
+            guard isCurrent() else { return }
+            let mode = preferences.integer(forKey: "routingMode")
+            usb.setRoutingMode(mode)
+            if mode == 0 {
+                for mixer: UInt16 in 1...2 {
+                    for channel: UInt16 in 0..<32 {
+                        usb.sendMixerParam(usbCmd: 0xB3, mixer: mixer, channel: channel, value: 1)
+                    }
+                }
+            }
+        }
     }
 
     func claimLegacyUnitState(unit: DeviceUnit, identity: UInt64) -> Bool {
@@ -101,6 +128,14 @@ extension AppState {
         return UnitStateMigration.key(legacy: legacy, identity: identity,
                                       category: "\(category).\(layout?.savedStateScope ?? "unknown")",
                                       allowMigration: allowsLegacyUnitState(unit: unit))
+    }
+
+    var mixerPreferences: MixerPreferences {
+        if unitAIdentityState == .failed, connectionMode == .hardware, cardSimulation == nil,
+           cardLayout.converter == nil, cardLayout.converterLayout == nil {
+            return MixerPreferences(legacyDefaults: .standard, readOnly: true)
+        }
+        return channelStateStore.mixerPreferences
     }
 
     func mixerNamesKey(unit: DeviceUnit = .a) -> String {
