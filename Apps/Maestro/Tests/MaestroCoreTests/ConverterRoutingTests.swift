@@ -200,6 +200,19 @@ struct ConverterRoutingTests {
         #expect(system.connectedUnit == nil)   // Symphony I/O guards stay as they are
         #expect(!system.layoutKnown)
         #expect(ConverterSystem(state: ConverterState(flags: 0)) == nil)
+
+        // The Symphony I/O routing grids are exactly what they are without
+        // the port-2 converters, on every card pair.
+        for slot1 in IOCardType.allCases {
+            for slot2 in IOCardType.allCases {
+                let plain = CardLayout(slot1: slot1, slot2: slot2)
+                let withPort2 = CardLayout(slot1: slot1, slot2: slot2, converters: system)
+                #expect(withPort2.converterLayout == nil)
+                #expect(withPort2.inputRoutingColumns == plain.inputRoutingColumns)
+                #expect(withPort2.outputRoutingColumns == plain.outputRoutingColumns)
+                #expect(withPort2.converterPairNames(isInput: false, pairCount: 16) == nil)
+            }
+        }
     }
 }
 

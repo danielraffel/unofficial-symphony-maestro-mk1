@@ -453,7 +453,7 @@ final class AppState {
                     // Type change): its saved routes go to the driver.
                     if self.converterRoutingReplayNeeded, self.connectionMode == .hardware {
                         self.converterRoutingReplayNeeded = false
-                        await self.replayConverterRouting()
+                        await self.replayConverterRouting(resetFirst: true)
                     }
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
@@ -798,60 +798,94 @@ final class AppState {
     /// replays this chain's saved routes and clears it.
     @ObservationIgnored var converterRoutingReplayNeeded = false
 
-    /// Send converter routing commands to the driver, off the main thread.
-    /// True when every command was accepted (always in the simulation).
+    /// The last converter routing send. Every send waits for the one before
+    /// it, so the card gets commands in the order they were made (two quick
+    /// clicks, or a click racing a replay); the card has no readback to
+    /// correct a reordered pair.
+    @ObservationIgnored private var converterRoutingTail: Task<Bool, Never>?
+
+    /// Send converter routing commands to the driver, in order, each batch
+    /// off the main thread. True when every command was accepted (always in
+    /// the simulation).
     @MainActor
     func sendConverterRouting(_ commands: [ConverterRouting.Command]) async -> Bool {
         guard !commands.isEmpty else { return true }
-        guard let tb = device as? ThunderboltDeviceConnection else { return connectionMode == .simulated }
-        let failures = await Task.detached(priority: .userInitiated) { () -> [String] in
-            var failed: [String] = []
-            for command in commands {
-                do { try tb.sendConverterRouting(command) } catch { failed.append("\(command): \(error)") }
+        let previous = converterRoutingTail
+        let tb = device as? ThunderboltDeviceConnection
+        let simulated = connectionMode == .simulated
+        let send = Task<Bool, Never> {
+            _ = await previous?.value
+            guard let tb else { return simulated }
+            let failures = await Task.detached(priority: .userInitiated) { () -> [String] in
+                var failed: [String] = []
+                for command in commands {
+                    do { try tb.sendConverterRouting(command) } catch { failed.append("\(command): \(error)") }
+                }
+                return failed
+            }.value
+            if !failures.isEmpty {
+                print("[Maestro] Converter routing: \(failures.count) of \(commands.count) command(s) refused: \(failures)")
             }
-            return failed
-        }.value
-        if !failures.isEmpty {
-            print("[Maestro] Converter routing: \(failures.count) of \(commands.count) command(s) refused: \(failures)")
+            return failures.isEmpty
         }
-        return failures.isEmpty
+        converterRoutingTail = send
+        return await send.value
     }
 
-    /// The user changed converter routes: keep them for this chain and send them.
+    /// The user changed converter routes. The grid shows them at once (so a
+    /// second click on the same cell undoes the first); they are saved for
+    /// this chain only once the driver has accepted every command, and put
+    /// back as they were if it refused (an older driver, or a Symphony I/O).
     @MainActor
-    @discardableResult
-    func applyConverterRouting(_ edits: ConverterRoutingEdits,
-                               commands: [ConverterRouting.Command]) async -> Bool {
+    func changeConverterRouting(_ edits: ConverterRoutingEdits, commands: [ConverterRouting.Command],
+                                completion: @escaping @MainActor (Bool) -> Void = { _ in }) {
+        let previous = converterRoutingEdits
+        let store = converterRoutingStore
         converterRoutingEdits = edits
-        converterRoutingStore?.save(edits)
-        return await sendConverterRouting(commands)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let ok = await self.sendConverterRouting(commands)
+            if ok {
+                store?.save(edits)
+            } else if self.converterRoutingEdits == edits {
+                self.converterRoutingEdits = previous
+            }
+            completion(ok)
+        }
     }
 
     /// Reset Routing for converters: both tables back on the default
-    /// placement (0xB7), and nothing saved for this chain any more.
+    /// placement (0xB7). Nothing stays saved for this chain, once the driver
+    /// has accepted it.
     @MainActor
     @discardableResult
     func resetConverterRouting() async -> Bool {
+        let store = converterRoutingStore
+        guard await sendConverterRouting([ConverterRouting.resetRoutingCommand]) else { return false }
         converterRoutingEdits = ConverterRoutingEdits()
-        converterRoutingStore?.save(ConverterRoutingEdits())
-        return await sendConverterRouting([ConverterRouting.resetRoutingCommand])
+        store?.save(ConverterRoutingEdits())
+        return true
     }
 
     /// Put this chain's saved converter routes on the driver (connect, or a
     /// new chain). The driver keeps them over card resets itself.
+    /// `resetFirst` (a chain change while connected) starts from the default
+    /// placement, so no route made for the previous chain stays on the card,
+    /// whatever the driver kept.
     @MainActor
-    func replayConverterRouting() async {
+    func replayConverterRouting(resetFirst: Bool = false) async {
         guard let layout = converterRoutingLayout, let signature = converterRoutingSignature else { return }
         converterRoutingReplayedSignature = signature
+        converterRoutingReplayNeeded = false
         let edits = converterRoutingStore?.load() ?? ConverterRoutingEdits()
         converterRoutingEdits = edits
-        let commands = layout.replayCommands(edits)
+        let commands = (resetFirst ? [ConverterRouting.resetRoutingCommand] : []) + layout.replayCommands(edits)
         guard !commands.isEmpty else {
             print("[Maestro] Converter routing: default placement (nothing saved for \(signature))")
             return
         }
         let ok = await sendConverterRouting(commands)
-        print("[Maestro] Converter routing: replayed \(commands.count) saved route(s) for \(signature)"
+        print("[Maestro] Converter routing: replayed \(commands.count) command(s) for \(signature)"
               + (ok ? "" : " (some refused)"))
     }
 
@@ -901,7 +935,13 @@ final class AppState {
         // Either port: port-2 converters behind a Symphony I/O need their
         // Device Types too.
         guard let state = tb.converterState(), state.port1Converters || state.port2Converters else { return }
-        let word = ConverterConfig.load().word(currentClockExternal: state.clockExternal)
+        var word = ConverterConfig.load().word(currentClockExternal: state.clockExternal)
+        if !state.port1Converters {
+            // A Symphony I/O on port 1 owns the clock: keep the driver's bit
+            // (it applies the converter clock only with port-1 converters).
+            word = (word & ~ConverterConfig.clockExternalBit)
+                | (state.clockExternal ? ConverterConfig.clockExternalBit : 0)
+        }
         if word != state.config, !tb.setConverterConfig(word) {
             print("[Maestro] Converter config 0x\(String(word, radix: 16)) was not accepted")
         }
@@ -1859,7 +1899,8 @@ final class AppState {
         // Converters: their own routes, kept per chain, never the Symphony
         // I/O table below (same product ID) and never behind the card
         // detection guard (a converter has no option cards).
-        if convertersIdentified {
+        if converterRoutingSurface {
+            // Nothing is replayed while a unit is not identified (no layout).
             await replayConverterRouting()
             return
         }

@@ -80,10 +80,9 @@ struct ConverterOutputRoutingView: View {
                         onCellTap: { row, col in
                             guard let change = layout.toggleOutput(row: row, column: col,
                                                                    edits: appState.converterRoutingEdits) else { return }
-                            Task {
-                                let ok = await appState.applyConverterRouting(change.edits, commands: change.commands)
+                            print("[Maestro] Converter output routing: row \(row) → column \(col): \(change.commands)")
+                            appState.changeConverterRouting(change.edits, commands: change.commands) { ok in
                                 errorMessage = ok ? nil : "The driver did not accept this route"
-                                print("[Maestro] Converter output routing: row \(row) → column \(col): \(change.commands)")
                             }
                         }
                     )
@@ -157,10 +156,9 @@ struct ConverterInputRoutingView: View {
                         onCellTap: { row, col in
                             guard let change = layout.toggleInput(row: row, column: col,
                                                                   edits: appState.converterRoutingEdits) else { return }
-                            Task {
-                                let ok = await appState.applyConverterRouting(change.edits, commands: change.commands)
+                            print("[Maestro] Converter input routing: row \(row) → column \(col): \(change.commands)")
+                            appState.changeConverterRouting(change.edits, commands: change.commands) { ok in
                                 errorMessage = ok ? nil : "The driver did not accept this route"
-                                print("[Maestro] Converter input routing: row \(row) → column \(col): \(change.commands)")
                             }
                         }
                     )
@@ -205,8 +203,7 @@ private struct ConverterRoutingPresetButton: View {
                 var edits = appState.converterRoutingEdits
                 if input { edits.inputs = routes } else { edits.outputs = routes }
                 let commands = input ? layout.fullInputCommands(edits) : layout.fullOutputCommands(edits)
-                Task {
-                    let ok = await appState.applyConverterRouting(edits, commands: commands)
+                appState.changeConverterRouting(edits, commands: commands) { ok in
                     errorMessage = ok ? nil : "The driver did not accept every route in the preset"
                 }
             },
