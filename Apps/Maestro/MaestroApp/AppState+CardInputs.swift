@@ -11,6 +11,9 @@ extension AppState {
             unitBConfigured: unitBInputRoutingAllowed), servingBuild: servingDextBuild)
     }
 
+    /// The cross-unit card grid only exists with two units at 64 channels.
+    var showsSymphonyCardInputGrid: Bool { symphonyCardInputs.channelCount == 64 }
+
     var symphonyCardInputStore: SymphonyCardInputStore? {
         guard symphonyCardInputs.channelCount > 0, let scope = cardLayout.savedStateScope else { return nil }
         if connectionMode == .hardware,

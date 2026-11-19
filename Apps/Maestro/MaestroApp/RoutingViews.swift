@@ -164,7 +164,11 @@ struct InputRoutingView: View {
             }
         } else {
             VStack(spacing: 0) {
-                if appState.symphonyCardInputs.channelCount > 0 {
+                // One grid per routing device, as in Apogee's software
+                // (og_source/maestro2/App/Controllers/APInputRoutingTabViewController.m:96-104).
+                // A single Symphony I/O keeps its own grid only; the card's
+                // cross-unit grid appears with two units at 64 channels.
+                if appState.showsSymphonyCardInputGrid {
                     SymphonyCardInputRoutingView(appState: appState)
                     Divider()
                 }
@@ -459,7 +463,7 @@ struct InputRoutingView: View {
                 Every software input will be re-pointed to the default:
 
                 \(plan.joined(separator: "\n"))
-                \(appState.symphonyCardInputs.channelCount > 0 ? "The card’s software-input mapping for all connected units will also return to its default." : "")
+                \(appState.showsSymphonyCardInputGrid ? "The card’s software-input mapping for all connected units will also return to its default." : "")
                 """,
             isRefusal: false)
     }
