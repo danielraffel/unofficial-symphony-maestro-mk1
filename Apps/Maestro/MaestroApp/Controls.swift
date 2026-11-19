@@ -257,6 +257,8 @@ struct RotaryKnobView: View {
     /// Use this instead of onChange(of: value) to avoid double-writes when the binding
     /// is updated externally (e.g. volume keys changing speakerLevel during a drag).
     var onUserChange: ((Double) -> Void)? = nil
+    /// Reports whether the user is actively dragging this control.
+    var onDragStateChange: ((Bool) -> Void)? = nil
     /// Called with delta when Option+Drag (batch pan mode). Parent applies to all targets.
     var onBatchDrag: ((Double) -> Void)? = nil
     /// Called once at drag start when Option is held (for snapshotting start pans).
@@ -370,6 +372,7 @@ struct RotaryKnobView: View {
                     .onChanged { gesture in
                         if !isDragging {
                             isDragging = true
+                            onDragStateChange?(true)
                             dragStartValue = value
                             // Snapshot batch start pans if Option held
                             if NSEvent.modifierFlags.contains(.option) {
@@ -388,7 +391,10 @@ struct RotaryKnobView: View {
                             batch(value - dragStartValue)
                         }
                     }
-                    .onEnded { _ in isDragging = false }
+                    .onEnded { _ in
+                        isDragging = false
+                        onDragStateChange?(false)
+                    }
             )
             .onTapGesture(count: 2) {
                 // Double-tap knob to reset to default

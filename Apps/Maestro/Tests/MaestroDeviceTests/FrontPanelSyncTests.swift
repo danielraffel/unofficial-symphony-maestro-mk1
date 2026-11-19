@@ -23,12 +23,28 @@ struct FrontPanelSyncTests {
         #expect(!u.metersCleared)
     }
 
+    @Test("an unknown selection index still carries the clock and mute fields")
+    func unknownSelectionKept() throws {
+        let u = try #require(reading("00 00 bb 80 01 02 00 00 0b 14 00 00"))
+        #expect(u.selection == nil)
+        #expect(u.clockSource == 2)
+        #expect(u.externalClockLocked)
+    }
+
     @Test("selection indices are headphone 1, headphone 2, speaker")
     func selections() {
         #expect(reading("00 00 bb 80 01 01 00 00 01 33 01 00")?.selection == .headphone2)
         #expect(reading("00 00 bb 80 01 01 00 00 02 08 01 00")?.selection == .speaker)
-        // A mic pre is selected: a valid reading with nothing to move.
-        #expect(reading("00 00 bb 80 01 01 00 00 03 08 01 00")?.selection == nil)
+        #expect(reading("00 00 bb 80 01 01 00 00 03 08 01 00")?.selection == .micPre1)
+    }
+
+    @Test("follows MicPre encoder gain without treating it as monitor attenuation")
+    func micPreGain() throws {
+        var sync = FrontPanelSync()
+        let turning = try #require(reading("00 00 bb 80 01 01 00 00 05 2a 01 00"))
+        let stopped = try #require(reading("00 00 bb 80 01 01 00 00 05 2a 00 00"))
+        #expect(sync.changes(for: turning) == [.micPreGain(channel: 2, 42, settled: false)])
+        #expect(sync.changes(for: stopped) == [.micPreGain(channel: 2, 42, settled: true)])
     }
 
     @Test("a dead or short reply is not a reading")
