@@ -1082,6 +1082,15 @@ final class AppState {
     /// re-identifies the cable). The probe word is 0 once a Symphony I/O
     /// answers, so a Symphony never gets a converter layout from it.
     static func converterSystem(state: ConverterState?, probeWord: UInt32) -> ConverterSystem? {
+        // A zero probe is the driver's authoritative indication that port 1
+        // answered a Symphony I/O read.  If a stale selector-9 snapshot still
+        // carries the old port-1 converter flag from the same transition,
+        // prefer the Symphony result so the UI leaves converter mode without
+        // requiring a relaunch.  Port-2 converters remain valid because this
+        // only rejects the contradictory port-1 flag.
+        if probeWord == 0, state?.port1Converters == true {
+            return nil
+        }
         if let state, state.port1Converters || state.port2Converters,
            let system = ConverterSystem(state: state) {
             return system
