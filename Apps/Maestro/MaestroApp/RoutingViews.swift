@@ -124,6 +124,21 @@ struct InputRoutingView: View {
     }
 
     var body: some View {
+        // Converters: the card's input routing (0xB6) over their channels.
+        // The Symphony I/O grid below writes the unit's own router (P2P
+        // routes), which a converter does not have.
+        if appState.converterRoutingSurface {
+            if let layout = appState.converterRoutingLayout {
+                ConverterInputRoutingView(appState: appState, layout: layout)
+            } else {
+                ConverterRoutingUnavailableNote(title: "Input Routing")
+            }
+        } else {
+            routingGrid
+        }
+    }
+
+    private var routingGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Button("Reset Routing") {
@@ -582,9 +597,15 @@ struct OutputRoutingView: View {
     }
 
     var body: some View {
-        if appState.convertersIdentified {
-            ConverterOutputRoutingNote()
-                .navigationTitle("Output Routing")
+        // Converters have their own grid (their channels, the card's routing).
+        // The Symphony I/O grid below must never reach them: its clicks would
+        // become converter routes on unrelated channels.
+        if appState.converterRoutingSurface {
+            if let layout = appState.converterRoutingLayout, let system = appState.cardLayout.converterLayout {
+                ConverterOutputRoutingView(appState: appState, layout: layout, system: system)
+            } else {
+                ConverterRoutingUnavailableNote(title: "Output Routing")
+            }
         } else {
             routingGrid
         }
@@ -1378,24 +1399,5 @@ enum HeadphoneCrosspoint {
             await apply(headphone, sourceID: id, device: device, cachedRoutes: cachedRoutes,
                         transport: transport)
         }
-    }
-}
-
-/// With the older converters on the cable, the card's output routing follows the
-/// converters' placement on the bus, as Apogee's software set it by default
-/// (the driver applies it and refuses other output routes). Editing it is not
-/// supported yet.
-struct ConverterOutputRoutingNote: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Outputs follow your converters")
-                .font(.headline)
-            Text("With AD-16X, DA-16X, DD-16X or Rosetta converters connected, each DAW output goes to the converter channel of the same name, the way Apogee's software set them up. Changing output routing for converters isn't supported yet.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

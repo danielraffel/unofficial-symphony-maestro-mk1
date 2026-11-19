@@ -168,7 +168,8 @@ public struct PortSelectionModel: Sendable, Equatable {
     /// The device's current data-source ID (read after a property-listener
     /// callback, or at connect) and the driver's port-2 state. Either can be
     /// nil: no selector, or a driver that does not report the state.
-    public mutating func deviceReported(dataSourceID: UInt32?, state: SecondPortState?) {
+    public mutating func deviceReported(dataSourceID: UInt32?, state: SecondPortState?,
+                                        card: String = PortStatusMessage.defaultCard) {
         selection = PortSelection(dataSourceID: dataSourceID)
         guard let selection else {
             // No selector: back to a model that has seen nothing.
@@ -184,7 +185,7 @@ public struct PortSelectionModel: Sendable, Equatable {
         // The driver's explanation is only worth showing while 32 is what runs,
         // in plain words (the copied details keep the driver's own).
         if selection == .port1, let state, !state.audioActive {
-            let problem = state.plainProblemText
+            let problem = state.plainProblemText(card: card)
             if firstReport, problem != nil, pending == nil { inheritedProblemAudio = state.audio }
             if inheritedProblemAudio != state.audio { inheritedProblemAudio = nil }
             notice = inheritedProblemAudio == nil ? problem : nil

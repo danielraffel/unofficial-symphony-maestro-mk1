@@ -356,11 +356,16 @@ public struct ConverterSystem: Sendable, Equatable {
         self.state = state
     }
 
-    /// From the driver's report. Nil unless port 1 is identified as converters.
+    /// From the driver's report. Nil unless a port is identified as
+    /// converters. With a Symphony I/O on port 1 and converters on port 2,
+    /// port 1 lists no units (the Symphony I/O is not a converter), so
+    /// `connectedUnit` stays nil and everything Symphony I/O keeps working;
+    /// port 2's units get their Device Info rows and Device Type choices.
     public init?(state: ConverterState) {
-        guard state.port1Converters else { return nil }
-        let ports = (0..<2).map { port in
-            (0..<state.unitCount[port]).map { n in
+        guard state.port1Converters || state.port2Converters else { return nil }
+        let ports = (0..<2).map { port -> [ConverterUnit] in
+            if port == 0 && !state.port1Converters { return [] }
+            return (0..<state.unitCount[port]).map { n in
                 ConverterUnit(port: port, address: n + 1, word: state.units[port][n])
             }
         }

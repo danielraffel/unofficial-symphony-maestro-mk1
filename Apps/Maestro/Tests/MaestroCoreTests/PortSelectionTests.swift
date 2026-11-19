@@ -85,7 +85,7 @@ struct PortSelectionTests {
         let refusedWord = stage2Capable | SecondPortState.audioRefusedFlag | (1 << 8)
         model.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
         #expect(model.selection == .port1 && model.pending == nil)
-        #expect(model.notice == "64 channels needs a second unit on port 2, and none was found.")
+        #expect(model.notice == "No hardware has been detected on the secondary port of the ThunderBridge. Verify that the hardware is properly connected and powered on.")
         // The same pick made by accident in Sound settings, while Maestro is
         // open, ends the same way.
         var other = PortSelectionModel()
@@ -112,7 +112,7 @@ struct PortSelectionTests {
         #expect(model.userChose(.ports1And2) == 1)
         model.deviceReported(dataSourceID: 1, state: state(audio: refusedWord))
         model.deviceReported(dataSourceID: 0, state: state(audio: refusedWord))
-        #expect(model.notice == "64 channels needs a second unit on port 2, and none was found.")
+        #expect(model.notice == "No hardware has been detected on the secondary port of the ThunderBridge. Verify that the hardware is properly connected and powered on.")
         // The copied details keep the driver's own words throughout.
         #expect(state(audio: refusedWord).reportLines.contains { $0.contains("64 channels refused") })
     }
@@ -312,7 +312,7 @@ struct PortsWordingTests {
         for code in UInt32(1)...8 {
             let refused = SecondPortState(portCount: 2, audio: 0x11 | (code << 8))
             let plain = refused.plainProblemText ?? ""
-            #expect(plain.hasPrefix(code == 1 ? "64 channels needs" : "64 channels could not start: "))
+            #expect(plain.hasPrefix(code == 1 ? "No hardware has been detected on the secondary port" : "64 channels could not start: "))
             #expect(plain.hasSuffix("."))
             #expect(!plain.contains("reason "))
             // The raw reason stays in the copied details.
@@ -321,7 +321,7 @@ struct PortsWordingTests {
             #expect(fell.plainProblemText == "Back to 32 channels: \(SecondPortState.plainReason(code)).")
         }
         #expect(SecondPortState(portCount: 2, audio: 0x11 | (1 << 8)).plainProblemText
-                == "64 channels needs a second unit on port 2, and none was found.")
+                == "No hardware has been detected on the secondary port of the ThunderBridge. Verify that the hardware is properly connected and powered on.")
         #expect(SecondPortState(portCount: 2, audio: 0x13 | (1 << 8)).plainProblemText == nil)
         #expect(SecondPortState.plainReason(99) == "the driver gave reason 99")
     }
@@ -354,7 +354,7 @@ struct PortsWordingTests {
         var asked = model(0, state(audio: stage2Capable), choose: .ports1And2)
         asked.deviceReported(dataSourceID: 0, state: s)
         let shown = PortsPresentation(model: asked, state: s)
-        #expect(shown.statusLine == "64 channels needs a second unit on port 2, and none was found.")
+        #expect(shown.statusLine == "No hardware has been detected on the secondary port of the ThunderBridge. Verify that the hardware is properly connected and powered on.")
         // Drawn as a warning, not as more grey explanation (rehearsal 2026-11-15).
         #expect(shown.statusIsRefusal)
         #expect(shown.rows.isEmpty)

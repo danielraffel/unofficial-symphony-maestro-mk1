@@ -1,0 +1,244 @@
+import Foundation
+import Testing
+@testable import MaestroCore
+
+/// Editable converter routing: the grid's channels and names, the default
+/// placement, the exact vendor command bytes the driver takes
+/// (`SymphonyCardMixerRouting.h`: 0xB5, 0xB6, 0xB7), and persistence per
+/// chain of units.
+@Suite("Converter routing")
+struct ConverterRoutingTests {
+    private func layout(_ name: String) throws -> (ConverterRoutingLayout, ConverterSystem) {
+        let system = try #require(ConverterSystem(simulationName: name))
+        return (ConverterRoutingLayout(system: system), system)
+    }
+
+    // MARK: Columns, rows and defaults
+
+    @Test func adAdDaDaOnOnePort() throws {
+        let (l, system) = try layout("ad16x+ad16x+da16x+da16x")
+        #expect(l.hostChannels == 32)
+        #expect(l.outputs.count == 32)
+        #expect(l.outputs.first == .init(bus: 0, name: "C Line 1", unit: 2, element: 0))
+        #expect(l.outputs[15].name == "C Line 16")
+        #expect(l.outputs[16] == .init(bus: 16, name: "D Line 1", unit: 3, element: 0))
+        #expect(l.outputs.last == .init(bus: 31, name: "D Line 16", unit: 3, element: 15))
+        #expect(l.inputs.first?.name == "A Line 1")
+        #expect(l.inputs[16] == .init(bus: 16, name: "B Line 1", unit: 1, element: 0))
+        // Pair columns, the grid's style.
+        #expect(l.outputPairs.count == 16)
+        #expect(l.outputPairs[0].name == "C Line 1/2")
+        #expect(l.outputPairs[0].header.type == "C Line" && l.outputPairs[0].header.channels == "1/2")
+        #expect(l.outputPairs[15].name == "D Line 15/16")
+        #expect(l.inputPairs.map(\.name).prefix(2) == ["A Line 1/2", "A Line 3/4"])
+        // Rows: 16 DAW playback pairs, then Mixer 1 and Mixer 2.
+        #expect(l.playbackPairCount == 16)
+        #expect(l.outputRowSource(row: 0) == 64)
+        #expect(l.outputRowSource(row: 15) == 94)
+        #expect(l.outputRowSource(row: 16) == 128)
+        #expect(l.outputRowSource(row: 17) == 130)
+        #expect(l.outputRowSource(row: 18) == nil)
+        #expect(l.playbackRowNames(system: system).first == "C Line 1/2")
+        #expect(l.inputPairCount == 16)
+        // Default: DAW output n straight to the converter output the host map
+        // puts at n, 1-2 included; no mixer anywhere.
+        let out = l.outputSources(ConverterRoutingEdits())
+        #expect(out.count == 32)
+        #expect(out[0] == 64 && out[1] == 65 && out[2] == 66 && out[31] == 95)
+        #expect(!out.values.contains { $0 >= 128 })
+        #expect((0..<16).allSatisfy { l.outputCellActive(row: $0, column: $0, sources: out) })
+        #expect(!l.outputCellActive(row: 16, column: 0, sources: out))
+        // DAW input n from converter input bus n.
+        let inp = l.inputSources(ConverterRoutingEdits())
+        #expect(inp.count == 32 && inp[0] == 0 && inp[31] == 31)
+        #expect(l.inputColumn(row: 8, sources: inp) == 8)
+        #expect(l.inputRowNames(sources: inp)[8] == "B Line 1/2")
+    }
+
+    @Test func adAdDaDaOnTwoPorts() throws {
+        let (l, system) = try layout("ad16x+ad16x+da16x+da16x|ad16x+ad16x+da16x+da16x")
+        #expect(l.hostChannels == 64)
+        #expect(l.playbackPairCount == 32 && l.inputPairCount == 32)
+        #expect(l.outputs.count == 64)
+        #expect(l.outputs[32] == .init(bus: 32, name: "G Line 1", unit: 6, element: 0))
+        #expect(l.outputs.last == .init(bus: 63, name: "H Line 16", unit: 7, element: 15))
+        #expect(l.inputs[32].name == "E Line 1" && l.inputs[32].bus == 32)
+        #expect(l.outputPairs.count == 32)
+        #expect(l.outputRowSource(row: 32) == 128)   // Mixer 1 after 32 DAW pairs
+        let out = l.outputSources(ConverterRoutingEdits())
+        #expect(out[32] == 96 && out[63] == 127)
+        #expect(l.inputSources(ConverterRoutingEdits())[40] == 40)
+        #expect(l.playbackRowNames(system: system)[16] == "G Line 1/2")
+        #expect(system.routingSignature == "p1u1r03-p1u2r03-p1u3r0c-p1u4r0c-p2u1r03-p2u2r03-p2u3r0c-p2u4r0c")
+    }
+
+    @Test func rosettaThenAD() throws {
+        let (l, _) = try layout("rosetta800+ad16x")
+        #expect(l.outputs.map(\.name) == (1...8).map { "A Out \($0)" })
+        #expect(l.outputs.map(\.bus) == Array(0..<8))
+        #expect(l.inputs.prefix(8).map(\.name) == (1...8).map { "A In \($0)" })
+        // The AD after a Rosetta starts on slot 16 (SymphonyConverters.h offsets).
+        #expect(l.inputs[8] == .init(bus: 16, name: "B Line 1", unit: 1, element: 0))
+        #expect(l.outputPairs.map(\.name) == ["A Out 1/2", "A Out 3/4", "A Out 5/6", "A Out 7/8"])
+        let inp = l.inputSources(ConverterRoutingEdits())
+        #expect(inp[7] == 7 && inp[8] == 16 && inp[23] == 31 && inp[24] == nil)
+        let rows = l.inputRowNames(sources: inp)
+        #expect(rows[0] == "A In 1/2" && rows[4] == "B Line 1/2" && rows[12] == CardLayout.notApplicable)
+        // Output hosts past the Rosetta's eight carry nothing.
+        #expect(l.outputSources(ConverterRoutingEdits()).keys.sorted() == Array(0..<8))
+    }
+
+    // MARK: Command bytes
+
+    @Test func commandBytes() {
+        #expect(ConverterRouting.outputCommand(bus: 5, source: 70)
+                == .init(command: 0xB5, payload: [5, 70, 1]))
+        #expect(ConverterRouting.outputCommand(bus: 40, source: 129)
+                == .init(command: 0xB5, payload: [40, 129, 1]))
+        #expect(ConverterRouting.outputCommand(bus: 5, source: nil)
+                == .init(command: 0xB5, payload: [5, 0, 0]))
+        #expect(ConverterRouting.inputCommand(host: 3, bus: 17)
+                == .init(command: 0xB6, payload: [3, 17, 1]))
+        #expect(ConverterRouting.inputCommand(host: 63, bus: nil)
+                == .init(command: 0xB6, payload: [63, 0, 0]))
+        #expect(ConverterRouting.resetRoutingCommand == .init(command: 0xB7, payload: []))
+        #expect(ConverterRouting.mixerSource(mixer: 1, side: 1) == 131)
+        #expect(ConverterRouting.playbackSource(host: 0) == 64)
+    }
+
+    @Test func outputClicksSendBothChannels() throws {
+        let (l, _) = try layout("ad16x+ad16x+da16x+da16x")
+        // Mixer 2 (row 17) to D Line 1/2 (column 8, bus 16/17).
+        let set = try #require(l.toggleOutput(row: 17, column: 8, edits: ConverterRoutingEdits()))
+        #expect(set.commands == [.init(command: 0xB5, payload: [16, 130, 1]),
+                                 .init(command: 0xB5, payload: [17, 131, 1])])
+        #expect(set.edits.outputs == [16: 130, 17: 131])
+        #expect(l.outputCellActive(row: 17, column: 8, sources: l.outputSources(set.edits)))
+        // The same cell again: silent.
+        let cleared = try #require(l.toggleOutput(row: 17, column: 8, edits: set.edits))
+        #expect(cleared.commands == [.init(command: 0xB5, payload: [16, 0, 0]),
+                                     .init(command: 0xB5, payload: [17, 0, 0])])
+        #expect(cleared.edits.outputs == [16: -1, 17: -1])
+        // Back to the default: no edit left to keep.
+        let back = try #require(l.toggleOutput(row: 8, column: 8, edits: cleared.edits))
+        #expect(back.commands == [.init(command: 0xB5, payload: [16, 80, 1]),
+                                  .init(command: 0xB5, payload: [17, 81, 1])])
+        #expect(back.edits.isEmpty)
+    }
+
+    @Test func inputClicksSendBothChannels() throws {
+        let (l, _) = try layout("ad16x+ad16x+da16x+da16x|ad16x+ad16x+da16x+da16x")
+        // DAW inputs 1-2 (row 0) from E Line 1/2 (column 16, bus 32/33).
+        let set = try #require(l.toggleInput(row: 0, column: 16, edits: ConverterRoutingEdits()))
+        #expect(set.commands == [.init(command: 0xB6, payload: [0, 32, 1]),
+                                 .init(command: 0xB6, payload: [1, 33, 1])])
+        #expect(l.inputColumn(row: 0, sources: l.inputSources(set.edits)) == 16)
+        let cleared = try #require(l.toggleInput(row: 0, column: 16, edits: set.edits))
+        #expect(cleared.commands == [.init(command: 0xB6, payload: [0, 0, 0]),
+                                     .init(command: 0xB6, payload: [1, 0, 0])])
+        #expect(l.inputRowNames(sources: l.inputSources(cleared.edits))[0] == "N.A.")
+        // Replay sends each edit once, outputs then inputs, in order.
+        let edits = ConverterRoutingEdits(outputs: [33: -1, 2: 128], inputs: [5: 40])
+        #expect(l.replayCommands(edits) == [.init(command: 0xB5, payload: [2, 128, 1]),
+                                            .init(command: 0xB5, payload: [33, 0, 0]),
+                                            .init(command: 0xB6, payload: [5, 40, 1])])
+        #expect(l.fullOutputCommands(ConverterRoutingEdits()).count == 64)
+        #expect(l.fullInputCommands(ConverterRoutingEdits()).count == 64)
+    }
+
+    // MARK: Persistence per chain
+
+    @Test func routesAreKeptPerChain() throws {
+        let suite = "ConverterRoutingTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let one = try #require(ConverterSystem(simulationName: "ad16x+da16x"))
+        let other = try #require(ConverterSystem(simulationName: "da16x+ad16x"))
+        let wider = try #require(ConverterSystem(simulationName: "ad16x+da16x|ad16x"))
+        #expect(one.routingSignature == "p1u1r03-p1u2r0c")
+        #expect(other.routingSignature != one.routingSignature)
+        #expect(wider.routingSignature != one.routingSignature)
+        // A Device Type change is another chain.
+        var config = ConverterConfig()
+        config.deviceTypes[ConverterDeviceType.defaultsKey(port: 0, address: 1)] = .ddAsDA
+        let asDA = try #require(ConverterSystem(simulationName: "dd16x", config: config))
+        let asAD = try #require(ConverterSystem(simulationName: "dd16x"))
+        #expect(asDA.routingSignature == "p1u1r0fda" && asAD.routingSignature == "p1u1r0f")
+
+        let store = ConverterRoutingStore(signature: one.routingSignature, defaults: defaults)
+        let edits = ConverterRoutingEdits(outputs: [0: 128, 1: 129], inputs: [2: -1])
+        store.save(edits)
+        #expect(ConverterRoutingStore(signature: one.routingSignature, defaults: defaults).load() == edits)
+        #expect(ConverterRoutingStore(signature: other.routingSignature, defaults: defaults).load().isEmpty)
+        #expect(ConverterRoutingStore(signature: wider.routingSignature, defaults: defaults).load().isEmpty)
+        store.save(ConverterRoutingEdits())
+        #expect(defaults.object(forKey: store.key) == nil)
+
+        // Presets: per chain and direction.
+        store.savePreset(name: "Mix", input: false, routes: [0: 130])
+        #expect(store.presetNames(input: false) == ["Mix"])
+        #expect(store.presetNames(input: true).isEmpty)
+        #expect(ConverterRoutingStore(signature: other.routingSignature, defaults: defaults)
+                    .presetNames(input: false).isEmpty)
+        #expect(store.presets(input: false)["Mix"] == [0: 130])
+        store.deletePreset(name: "Mix", input: false)
+        #expect(store.presetNames(input: false).isEmpty)
+    }
+
+    // MARK: A Symphony I/O on port 1, converters on port 2
+
+    @Test func port2ConvertersBehindASymphony() throws {
+        var units: [[UInt32]] = [[0, 0, 0, 0], [0, 0, 0, 0]]
+        // Port 1 answers as a Symphony I/O (routing 0xFF), port 2 an AD-16X.
+        units[0][0] = 0xFF | 0xFF << 8 | ConverterState.unitInquireOK | ConverterState.unitXtdOK
+        units[1][0] = 0x37 | 0x02 << 8 | ConverterState.unitInquireOK | ConverterState.unitXtdOK
+        let state = ConverterState(flags: ConverterState.flagPort2Converters, unitCount: [1, 1], units: units)
+        let system = try #require(ConverterSystem(state: state))
+        #expect(system.ports[0].isEmpty)
+        #expect(system.ports[1].first?.kind == .ad16x)
+        #expect(system.connectedUnit == nil)   // Symphony I/O guards stay as they are
+        #expect(!system.layoutKnown)
+        #expect(ConverterSystem(state: ConverterState(flags: 0)) == nil)
+    }
+}
+
+@Suite("Port status messages")
+struct PortStatusMessageTests {
+    @Test func apogeeWording() {
+        #expect(PortStatusMessage.primary(.noHardware)
+                == "No hardware has been detected on the primary port of the ThunderBridge. "
+                    + "Verify that the hardware is properly connected and powered on.")
+        #expect(PortStatusMessage.primary(.busError)
+                == "A bus error has occurred on the primary port of the ThunderBridge. "
+                    + "Verify that the hardware is properly connected and powered on.")
+        #expect(PortStatusMessage.primary(.other) == nil)
+        let pcie = PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2100")
+        #expect(pcie == "the Symphony 64 PCIe card")
+        #expect(PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2200") == "the ThunderBridge")
+        #expect(PortStatusMessage.cardPhrase(pciIdentifier: nil) == "the ThunderBridge")
+        #expect(PortStatusMessage.primary(.noHardware, card: pcie)
+                == "No hardware has been detected on the primary port of the Symphony 64 PCIe card. "
+                    + "Verify that the hardware is properly connected and powered on.")
+        #expect(PortStatusMessage.headline(PortStatusMessage.busError(port: .primary))
+                == "A bus error has occurred on the primary port of the ThunderBridge.")
+    }
+
+    @Test func secondPortNotFound() {
+        // 64 channels refused because nothing answered on port 2 (reason 1).
+        let refused = SecondPortState(portCount: 2, audio: 0x11 | (1 << 8))
+        #expect(refused.plainProblemText(card: "the Symphony 64 PCIe card")
+                == "No hardware has been detected on the secondary port of the Symphony 64 PCIe card. "
+                    + "Verify that the hardware is properly connected and powered on.")
+        // Other refusals keep their wording.
+        let other = SecondPortState(portCount: 2, audio: 0x11 | (3 << 8))
+        #expect(other.plainProblemText == "64 channels could not start: "
+                + SecondPortState.plainReason(3) + ".")
+        var model = PortSelectionModel()
+        model.deviceReported(dataSourceID: 0, state: SecondPortState(portCount: 2, audio: 0x01),
+                             card: "the Symphony 64 PCIe card")
+        _ = model.userChose(.ports1And2)
+        model.deviceReported(dataSourceID: 0, state: refused, card: "the Symphony 64 PCIe card")
+        #expect(model.notice?.hasPrefix("No hardware has been detected on the secondary port of the Symphony 64 PCIe card.") == true)
+    }
+}

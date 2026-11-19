@@ -468,6 +468,14 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             payload: route.payload)
     }
 
+    /// Send one converter routing command (0xB5 / 0xB6 / 0xB7, see
+    /// ``ConverterRouting``). Handled by the dext (build 131+) when converters
+    /// are on the cable; a Symphony I/O refuses 0xB6 and 0xB7.
+    public func sendConverterRouting(_ command: ConverterRouting.Command) throws {
+        guard isConnected, dextClient.isConnected else { throw DeviceConnectionError.notConnected }
+        try dextClient.sendVendorCommand(command: command.command, value: 0, payload: Data(command.payload))
+    }
+
     private func sendViaDext(_ request: USBControlRequest) throws {
         guard dextClient.isConnected else {
             throw DeviceConnectionError.notConnected

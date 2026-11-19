@@ -17,6 +17,19 @@
 /// og_source/symphonymk1/ext/maestrolink/SymphonyAPI/pci2k5_sys.h:79-99.
 
 import Foundation
+import MaestroCore
+
+extension LinkState.State {
+    /// What the status bar says about port 1 (`PortStatusMessage`): no unit
+    /// clock is "no hardware", a re-initialising bus is a bus error.
+    public var portStatusLink: PortStatusMessage.Link {
+        switch self {
+        case .down: return .noHardware
+        case .recovering: return .busError
+        case .up, .unknown: return .other
+        }
+    }
+}
 
 /// XLink 1 status register (`kRegXLink1Status`, BAR offset 0x40) bits.
 public enum XLinkStatusBit {

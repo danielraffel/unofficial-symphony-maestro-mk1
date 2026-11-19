@@ -180,11 +180,16 @@ public struct SecondPortState: Sendable, Equatable {
 
     /// Why 64 channels are not running, in plain words. Nil when they are
     /// running, or were never asked for.
-    public var plainProblemText: String? {
+    public var plainProblemText: String? { plainProblemText(card: PortStatusMessage.defaultCard) }
+
+    /// The same, naming the card ("the ThunderBridge", "the Symphony 64 PCIe
+    /// card"): a refusal because nothing answered on port 2 is Apogee's own
+    /// sentence for it (`PortStatusMessage`).
+    public func plainProblemText(card: String) -> String? {
         guard !audioActive else { return nil }
         if audioFellBack { return "Back to 32 channels: " + Self.plainReason(audioReason) + "." }
         if audioRefused {
-            if audioReason == 1 { return "64 channels needs a second unit on port 2, and none was found." }
+            if audioReason == 1 { return PortStatusMessage.noHardware(port: .secondary, card: card) }
             return "64 channels could not start: " + Self.plainReason(audioReason) + "."
         }
         return nil
