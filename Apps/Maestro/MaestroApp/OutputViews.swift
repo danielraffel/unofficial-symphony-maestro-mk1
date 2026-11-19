@@ -78,10 +78,24 @@ struct OutputControlsView: View {
     @State private var aHp1Mono: Bool = false
     // Source IDs are output-pair indices 0-15 (see hpSourceOptions), so the first
     // analog pair is 0, not 1. The old default of 1 selected "Line 3-4".
-    @State private var hp1Source: UInt32 = 0
+    @State private var aHp1Source: UInt32 = 0
     @State private var aHp2Dim: Bool = false
     @State private var aHp2Mono: Bool = false
-    @State private var hp2Source: UInt32 = 0
+    @State private var aHp2Source: UInt32 = 0
+    private var hp1Source: UInt32 {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone1RoutingID]?.asUInt32 ?? UInt32.max : aHp1Source }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone1RoutingID] = .uint32(newValue) }
+            else { aHp1Source = newValue }
+        }
+    }
+    private var hp2Source: UInt32 {
+        get { monitorTarget.unit == .b ? bMonitor.values[.headphone2RoutingID]?.asUInt32 ?? UInt32.max : aHp2Source }
+        nonmutating set {
+            if monitorTarget.unit == .b { bMonitor.values[.headphone2RoutingID] = .uint32(newValue) }
+            else { aHp2Source = newValue }
+        }
+    }
     @State private var isMonitorLoading = true
     @State private var scrollPosition: ScrollPosition
     @State private var scrollRestorationPending = true
@@ -810,20 +824,20 @@ struct OutputControlsView: View {
 
                 // HP 1 routing dropdown below knob
                 PillMenu(
-                    text: hpSourceOptions.first(where: { $0.0 == hp1Source })?.1 ?? "Line 1-2",
+                    text: hpSourceOptions.first(where: { $0.0 == hp1Source })?.1 ?? (monitorTarget.unit == .b ? "Unknown" : "Line 1-2"),
                     fontSize: 8,
                     pillHeight: 18,
                     toolTip: "HP 1 Routing — selects the software outputs routed to "
                            + "Headphone Out 1.",
                     options: hpSourceOptions.map { val, name in
                         (name, {
-                            hp1Source = val
+                            if monitorTarget.unit == .a { hp1Source = val }
                             Task { await selectHeadphoneSource(.headphone1, sourceID: val) }
                         })
                     }
                 )
                 .frame(maxWidth: .infinity)
-                .symphonyOnly(monitorTarget.unit == .b)
+                .disabled(monitorTarget.unit == .b && isMonitorLoading)
             }
             .symphonyOnly(appState.converterVolumeKeys)
 
@@ -869,20 +883,20 @@ struct OutputControlsView: View {
 
                 // HP 2 routing dropdown below knob
                 PillMenu(
-                    text: hpSourceOptions.first(where: { $0.0 == hp2Source })?.1 ?? "Line 1-2",
+                    text: hpSourceOptions.first(where: { $0.0 == hp2Source })?.1 ?? (monitorTarget.unit == .b ? "Unknown" : "Line 1-2"),
                     fontSize: 8,
                     pillHeight: 18,
                     toolTip: "HP 2 Routing — selects the software outputs routed to "
                            + "Headphone Out 2.",
                     options: hpSourceOptions.map { val, name in
                         (name, {
-                            hp2Source = val
+                            if monitorTarget.unit == .a { hp2Source = val }
                             Task { await selectHeadphoneSource(.headphone2, sourceID: val) }
                         })
                     }
                 )
                 .frame(maxWidth: .infinity)
-                .symphonyOnly(monitorTarget.unit == .b)
+                .disabled(monitorTarget.unit == .b && isMonitorLoading)
             }
             .symphonyOnly(appState.converterVolumeKeys)
         }
@@ -1358,8 +1372,16 @@ struct OutputControlsView: View {
     ) async {
         let selector: AudioPropertySelector =
             headphone == .headphone1 ? .headphone1RoutingID : .headphone2RoutingID
+        guard appState.isCurrent(monitorTarget), let device = monitorTarget.device else { return }
+        if monitorTarget.unit == .b {
+            do {
+                try await device.setProperty(PropertyAddress(selector: selector), value: .uint32(sourceID))
+                bMonitor.values[selector] = .uint32(sourceID)
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription }
+            return
+        }
         await writeMonitorProperty(selector, value: .uint32(sourceID))
-        guard let device = appState.unitDevice else { return }
         // The crosspoint source is inherited from the app's own output-routing
         // knowledge, never from a 0x31 readback (that returns residue, 0x20 for
         // every destination — Docs/issue-1-research.md).

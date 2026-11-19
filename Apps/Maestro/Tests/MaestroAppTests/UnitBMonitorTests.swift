@@ -26,17 +26,21 @@ struct UnitBMonitorTests {
     @Test func failedFieldsStayUnknownOrUnchanged() async {
         let state = UnitBMonitorState()
         let b = Device()
-        b.values = [.headphone1Level: .uint32(53), .outputMute: .bool(true), .activeSpeakerSet: .uint32(0)]
+        b.values = [.headphone1RoutingID: .uint32(9), .headphone1Level: .uint32(53), .outputMute: .bool(true), .activeSpeakerSet: .uint32(0)]
         await state.refresh(from: b)
         #expect(state.values[.headphone1Level] == .uint32(53))
         #expect(state.values[.outputMute] == .bool(true))
         #expect(state.values[.outputLevel] == nil)
+        #expect(state.values[.headphone1RoutingID] == .uint32(9))
+        #expect(state.values[.headphone2RoutingID] == nil)
         #expect(state.values[.activeSpeakerSet] == nil)
         b.values = [:]
         await state.refresh(from: b)
         #expect(state.values[.headphone1Level] == .uint32(53))
         #expect(state.values[.outputMute] == .bool(true))
         #expect(state.values[.outputLevel] == nil)
+        #expect(state.values[.headphone1RoutingID] == .uint32(9))
+        #expect(state.values[.headphone2RoutingID] == nil)
         #expect(b.writes == 0)
     }
 

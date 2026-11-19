@@ -10,10 +10,12 @@ final class RecordingVendorTransport: VendorTransport, @unchecked Sendable {
     var sent: [Sent] = []
     var reads: [Read] = []
     var reply: [UInt8] = [0x07]
+    var failSendAt: Int?
     var failRead = false
     var emptyRead = false
     var isConnected: Bool { true }
     func sendVendorCommand(command: UInt8, value: UInt32, payload: Data, port: UInt8) throws {
+        if sent.count == failSendAt { throw DeviceConnectionError.notConnected }
         sent.append(Sent(command: command, value: value, payload: payload, port: port))
     }
     func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) throws -> Data {
@@ -399,5 +401,119 @@ struct UnitBPersistenceTests {
                     .value(for: PropertyAddress(selector: .peakHoldMode)) == .uint32(1))
         #expect(DeviceSettingsStore(defaults: defaults, productID: 0x12, unit: .b)
                     .value(for: PropertyAddress(selector: .peakHoldMode)) == .uint32(2))
+    }
+}
+
+
+extension UnitBConnectionTests {
+    @Test("B sources decode separate nibbles and preserve B's sibling, with port byte 1")
+    func headphoneSources() async throws {
+        let t = RecordingVendorTransport()
+        t.reply = [0x92]
+        let b = connection(t)
+        #expect(try await b.getProperty(.init(selector: .headphone1RoutingID)) == .uint32(2))
+        #expect(try await b.getProperty(.init(selector: .headphone2RoutingID)) == .uint32(9))
+        try await b.setProperty(.init(selector: .headphone1RoutingID), value: .uint32(3))
+        try await b.setProperty(.init(selector: .headphone2RoutingID), value: .uint32(10))
+        #expect(t.reads.allSatisfy { $0.command == 0x54 && $0.port == 1 })
+        let expected: [RecordingVendorTransport.Sent] = [
+            .init(command: 0x54, value: 0, payload: Data([0x93]), port: 1),
+            .init(command: 0x31, value: 0, payload: Data([224, 6, 225, 7]), port: 1),
+            .init(command: 0x54, value: 0, payload: Data([0xA3]), port: 1),
+            .init(command: 0x31, value: 0, payload: Data([226, 20, 227, 21]), port: 1)]
+        #expect(t.sent == expected)
+    }
+
+    @Test("Unknown, empty and failed source reads never authorize guessed writes")
+    func unknownHeadphoneSources() async throws {
+        for mode in 0..<4 {
+            let t = RecordingVendorTransport()
+            t.failRead = mode == 1
+            t.emptyRead = mode == 2
+            t.reply = [0xFF]
+            let b = connection(t)
+            if mode != 0 {
+                await #expect(throws: DeviceConnectionError.self) {
+                    _ = try await b.getProperty(.init(selector: .headphone1RoutingID))
+                }
+            }
+            await #expect(throws: DeviceConnectionError.self) {
+                try await b.setProperty(.init(selector: .headphone1RoutingID), value: .uint32(2))
+            }
+            try await b.reapplyHeadphoneCrosspoints()
+            #expect(t.sent.isEmpty)
+        }
+    }
+
+    @Test("B output reset/preset finishes with its recalled headphones, without opening Outputs")
+    func outputReplayHeadphones() async throws {
+        let t = RecordingVendorTransport()
+        t.reply = [0x81]
+        let b = connection(t)
+        _ = try await b.getProperty(.init(selector: .headphone1RoutingID))
+        let routes = [ThunderboltCardRouting.unitBRoute(destination: 32, slot: 96)!,
+                      ThunderboltCardRouting.unitBRoute(destination: 33, slot: 97)!]
+        try await b.applyOutputRouting(routes) { route in
+            try t.sendVendorCommand(command: 0xB5, value: 0, payload: route.payload, port: 0)
+        }
+        #expect(t.sent.prefix(2).map(\.payload) == routes.map(\.payload))
+        #expect(t.sent.suffix(2).map(\.payload) == [Data([224, 2, 225, 3]), Data([226, 16, 227, 17])])
+        #expect(t.sent.suffix(2).allSatisfy { $0.port == 1 && $0.command == 0x31 })
+        #expect(routes.allSatisfy { (32..<64).contains($0.channel) })
+        // A replacement connection has no recalled sources from this B.
+        let replacement = connection(t)
+        try await replacement.reapplyHeadphoneCrosspoints()
+        #expect(t.sent.count == 4)
+        await b.disconnect()
+        await #expect(throws: DeviceConnectionError.self) {
+            try await b.applyOutputRouting(routes) { _ in Issue.record("Disconnected B wrote a card route") }
+        }
+    }
+
+    @Test("Fail each source transaction send; no fallback to A")
+    func headphoneWriteFailures() async throws {
+        for step in 0..<2 {
+            let t = RecordingVendorTransport()
+            t.reply = [0x21]
+            let b = connection(t)
+            _ = try await b.getProperty(.init(selector: .headphone1RoutingID))
+            t.failSendAt = step
+            await #expect(throws: DeviceConnectionError.self) {
+                try await b.setProperty(.init(selector: .headphone2RoutingID), value: .uint32(8))
+            }
+            #expect(t.sent.count == step)
+            #expect(t.sent.allSatisfy { $0.port == 1 })
+        }
+    }
+}
+
+
+extension UnitBConnectionTests {
+    @Test("Output replay fails at each send without writing A, and refuses unconfigured B")
+    func outputReplayFailures() async throws {
+        let routes = [ThunderboltCardRouting.unitBRoute(destination: 32, slot: 96)!,
+                      ThunderboltCardRouting.unitBRoute(destination: 33, slot: 97)!]
+        for step in 0..<4 {
+            let t = RecordingVendorTransport()
+            let b = connection(t)
+            _ = try await b.getProperty(.init(selector: .headphone1RoutingID))
+            t.failSendAt = step
+            await #expect(throws: DeviceConnectionError.self) {
+                try await b.applyOutputRouting(routes) { route in
+                    try t.sendVendorCommand(command: 0xB5, value: 0, payload: route.payload, port: 0)
+                }
+            }
+            #expect(t.sent.count == step)
+            #expect(t.sent.filter { $0.command == 0x31 }.allSatisfy { $0.port == 1 })
+        }
+        let t = RecordingVendorTransport()
+        let absent = connection(t, state: nil)
+        await #expect(throws: DeviceConnectionError.self) {
+            _ = try await absent.getProperty(.init(selector: .headphone1RoutingID))
+        }
+        await #expect(throws: DeviceConnectionError.self) {
+            try await absent.applyOutputRouting(routes) { _ in Issue.record("Absent B wrote routing") }
+        }
+        #expect(t.reads.isEmpty && t.sent.isEmpty)
     }
 }
