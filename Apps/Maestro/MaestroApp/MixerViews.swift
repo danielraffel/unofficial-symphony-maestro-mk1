@@ -448,9 +448,7 @@ struct MixerView: View {
             // Local state is already complete; only hardware synchronization
             // waits for this task. No partial strip layout is exposed meanwhile.
             ensureNamesAndVisibility()
-            if appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration {
-                await syncMixerToHardware(recalling: true)
-            }
+            await syncMixerToHardware(recalling: true)
             restoreSessionScrollPosition()
         }
         .onAppear { appState.startMeterPolling() }
@@ -462,20 +460,16 @@ struct MixerView: View {
             initializeChannels()
             ensureNamesAndVisibility()
             restoreSessionScrollPosition()
-            if appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration {
-                Task { await syncMixerToHardware(recalling: true) }
-            }
+            Task { await syncMixerToHardware(recalling: true) }
         }
 
         .onChange(of: appState.deviceRecoveryCount) { _, _ in
             // USB recovered after power cycle/sleep — FPGA reset to defaults.
             // Reload persisted mixer state and re-sync to hardware.
             initializeChannels()
-            if appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration {
-                Task {
-                    guard !appState.usesTwoUnitReplay else { return }
-                    await syncMixerToHardware()
-                }
+            Task {
+                guard !appState.usesTwoUnitReplay else { return }
+                await syncMixerToHardware()
             }
             print("[Maestro] MixerView: Reloaded mixer state after recovery")
         }
@@ -818,6 +812,9 @@ struct MixerView: View {
         if usbDevice != nil {
             // USB: the unit's mixer owns Master and Software Return for every
             // source. The helper is written neutral inside writeSoftwareReturnSource.
+            // The connection's lifecycle restore already wrote Master and Software
+            // Return for this generation; the strips above are still this page's job.
+            guard appState.usbMixerLifecycleRestoreGeneration != appState.unitAGeneration else { return }
             if editor.loadedMaster { await writeMasterFader() }
             if editor.loadedReturn { await writeSoftwareReturnSource(editor.softwareReturnSource) }
         } else {

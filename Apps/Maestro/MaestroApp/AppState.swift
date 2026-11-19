@@ -147,9 +147,13 @@ final class AppState: @unchecked Sendable {
         // Keep the discovery handle until its task has been cancelled and
         // awaited by the next owner. This prevents a replacement discovery
         // from running concurrently against a retired connection.
-        cardDiscoveryTask?.cancel()
+        // Discovery's own unit/converter findings invalidate identity; that
+        // must not cancel the discovery that made them (it re-captures the
+        // generation and continues).
+        if !discoveryOwnsInvalidation { cardDiscoveryTask?.cancel() }
         unitAIdentityState = .pending
     }
+    @ObservationIgnored var discoveryOwnsInvalidation = false
 
     func invalidateUnitBIdentity() {
         unitBIdentityTask?.cancel()
@@ -2204,7 +2208,8 @@ final class AppState: @unchecked Sendable {
         guard hardwareSleepState != .sleeping else { cardDiscoverySkippedDuringSleep = true; return }
         let generation = unitAGeneration
         let connection = device as AnyObject?
-        if let old = cardDiscoveryTask {
+        // Loop: after each await another caller may have started a newer task.
+        while let old = cardDiscoveryTask {
             if cardDiscoveryTaskGeneration == generation,
                cardDiscoveryTaskConnection === connection {
                 await old.value
@@ -2234,7 +2239,15 @@ final class AppState: @unchecked Sendable {
     @MainActor
     private func discoverCardsAndIdentity() async {
         guard let device = self.device else { return }
-        let generation = unitAGeneration
+        var generation = unitAGeneration
+        /// Apply a finding of this discovery that may invalidate identity,
+        /// then continue under the new generation instead of cancelling.
+        func ownChange(_ change: () -> Void) {
+            discoveryOwnsInvalidation = true
+            change()
+            discoveryOwnsInvalidation = false
+            generation = unitAGeneration
+        }
         // What the driver found on the cable, if it is not a Symphony I/O.
         let probeWord: UInt32
         if let tb = device as? ThunderboltDeviceConnection {
@@ -2242,7 +2255,7 @@ final class AppState: @unchecked Sendable {
             guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         } else { probeWord = 0 }
         connectedUnitProbeWord = probeWord
-        connectedUnit = ConnectedUnit(probeWord: probeWord)
+        ownChange { connectedUnit = ConnectedUnit(probeWord: probeWord) }
         // The converter report (dext 131+): the stored Device Types and clock
         // go to the driver first, then both ports are read. Port-1 converters
         // reported there count as identified even without a probe word, so the
@@ -2254,14 +2267,18 @@ final class AppState: @unchecked Sendable {
             let state = await Task.detached(priority: .utility) { tb.converterState() }.value
             guard self.device === device, !Task.isCancelled else { return }
             let system = Self.converterSystem(state: state, probeWord: probeWord)
-            if system != converterSystem { converterSystem = system }
-            connectedUnit = connectedUnit ?? system?.connectedUnit
-        } else { refreshConverterSystem() }
+            ownChange {
+                if system != converterSystem { converterSystem = system }
+                connectedUnit = connectedUnit ?? system?.connectedUnit
+            }
+        } else { ownChange { refreshConverterSystem() } }
         if connectedUnit != nil || converterSystem != nil {
-            invalidateUnitAIdentity()
-            invalidateUnitBIdentity()
-            unitAIdentityState = .failed
-            unitBIdentityState = .failed
+            ownChange {
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                unitAIdentityState = .failed
+                unitBIdentityState = .failed
+            }
         }
         // Needed before the input routing is laid out (thunderboltCaptureSlot1),
         // so it is awaited here; read off the main thread like every other
