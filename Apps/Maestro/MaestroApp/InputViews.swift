@@ -37,6 +37,8 @@ struct InputControlsView: View {
     /// The gain knob mutates `channels[i].gain` through its binding, so this is
     /// the only way to recover the pre-move value a relative group move needs.
     @State private var appliedGains: [Double] = []
+    @State private var gainDragActive = false
+    @State private var lastFrontPanelGainRevision = 0
     @State private var scrollPosition: ScrollPosition
     @State private var scrollRestorationPending = true
     @State private var scrollObservationEnabled = false
@@ -252,6 +254,7 @@ struct InputControlsView: View {
                             onGainChange: { gain in
                                 applyGainChange(i, to: gain)
                             },
+                            onGainDragChange: { gainDragActive = $0 },
                             onInputTypeChange: { _ in
                                 applyInputTypeChange(i)
                             },
@@ -436,6 +439,9 @@ struct InputControlsView: View {
             initializeChannels()
             restoreSessionScrollPosition()
         }
+        .onChange(of: appState.frontPanelMicPreUpdate) { _, update in
+            applyFrontPanelGain(update)
+        }
     }
 
     /// Channel content is populated asynchronously after the view is created.
@@ -488,11 +494,34 @@ struct InputControlsView: View {
         applySimulatedAnalogLevels()
         syncAppliedGains()
         didInitializeChannels = true
+        // Readings from before the page opened are already in the saved state
+        // (AppState applies them); only follow new ones from here on.
+        lastFrontPanelGainRevision = appState.frontPanelMicPreUpdate?.revision ?? 0
         print("[Maestro] initializeChannels: skipping daemon queries (unsupported on Symphony IO MKI)")
     }
 
     private func saveChannelStates() {
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
+    }
+
+    /// Reflect a gain selected on the physical front panel in the saved strip
+    /// state. This deliberately updates state only; writing the same property
+    /// back would create an encoder feedback loop. Evidence: the original
+    /// parameter loop calls `UpdateMicPreGain` for MicPre1…8
+    /// (`og_source/maestrolink/Software/SymphonyIO.cpp:6688-6718`).
+    private func applyFrontPanelGain(_ update: AppState.FrontPanelMicPreUpdate?) {
+        guard let update, update.revision > lastFrontPanelGainRevision,
+              appState.activeUnit == .a, update.channel < channels.count else { return }
+        // While the user drags a gain knob here, their value wins: the reading
+        // is dropped, not replayed when the drag ends.
+        if gainDragActive { lastFrontPanelGainRevision = update.revision; return }
+        let index = update.channel
+        let level = AnalogInputLevel(rawValue: channels[index].inputType) ?? .plus4dBu
+        guard level == .mic || level == .instrument else { return }
+        channels[index].gain = InputChannelLogic.clampGain(update.gain, level: level)
+        syncAppliedGains()
+        saveChannelStates()
+        lastFrontPanelGainRevision = update.revision
     }
 
     /// Debug: force analog levels from `-MaestroSimulateAnalogLevels` so a Mic or
@@ -1226,6 +1255,8 @@ struct InputChannelStripView: View {
     var onSoftLimitChange: ((UInt32) -> Void)?
     /// Mic/Instrument preamp gain in dB — written to 'AEmg' (0xC3).
     var onGainChange: ((Double) -> Void)?
+    /// True while the user drags this strip's gain knob.
+    var onGainDragChange: ((Bool) -> Void)?
     var onInputTypeChange: ((UInt32) -> Void)?
     var onDigitalRefChange: ((UInt32) -> Void)?
     var onTrimChange: ((Double) -> Void)?
@@ -1422,7 +1453,8 @@ struct InputChannelStripView: View {
                             size: 40,
                             defaultValue: 0,
                             externalReadout: true,  // drawn just below, inside this column
-                            onUserChange: { onGainChange?($0) }
+                            onUserChange: { onGainChange?($0) },
+                            onDragStateChange: { onGainDragChange?($0) }
                         )
                         // The Level Trim value belongs to the knob, so it sits
                         // directly beneath it inside the knob's own column —

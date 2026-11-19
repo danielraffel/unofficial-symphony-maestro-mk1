@@ -90,6 +90,16 @@ enum ConnectionMode: Equatable {
 /// Evidence: `og_source/maestro2/App/Controllers/APApplicationDelegate.m`
 @Observable
 final class AppState {
+    struct FrontPanelMicPreUpdate: Equatable {
+        let channel: Int
+        let gain: Double
+        let revision: Int
+    }
+
+    /// Latest hardware encoder gain, consumed by the Input page. This is a
+    /// state update only: the front-panel path never writes the value back.
+    var frontPanelMicPreUpdate: FrontPanelMicPreUpdate?
+    private var frontPanelMicPreRevision = 0
     /// Currently connected device (real or simulated).
     var device: (any DeviceConnection)?
     /// Currently selected navigation area.
@@ -3254,11 +3264,19 @@ final class AppState {
     @MainActor
     private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
         switch change {
+        case .micPreGain(let channel, let gain, _):
+            guard channel >= 0, channel < InputChannelLogic.micPreChannelCount else { return }
+            // The poll reads unit A. The Input page consumes this state and
+            // persists its own channel store; this path never writes hardware.
+            frontPanelMicPreRevision += 1
+            frontPanelMicPreUpdate = FrontPanelMicPreUpdate(
+                channel: channel, gain: gain, revision: frontPanelMicPreRevision)
         case .level(.speaker, let dB, _):
             if speakerLevel != dB { speakerLevel = dB }
             scheduleSpeakerLevelPush(dB)
         case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
         case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
+        case .level: break   // MicPre selections arrive as .micPreGain
         case .muteAll(let muted):
             speakerMuted = muted
             hp1Muted = muted

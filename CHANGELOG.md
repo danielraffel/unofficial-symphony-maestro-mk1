@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.10 (beta)
+
+The front-panel knob now keeps the selected 8MicPre channel's gain in step with Maestro and your DAW.
+
+- Turning the Symphony's knob on a Mic or Instrument channel updates that channel's gain control without interrupting a gain adjustment in Maestro.
+
 ## 0.9.9 (beta)
 
 Apogee's older converters and a second Symphony I/O now work the way they did with Apogee's software, on the ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.8. With one Symphony I/O, little changes for you; see "Changes that may affect your setup".

@@ -6,7 +6,9 @@ import MaestroCore
 ///
 /// This is how Apogee's daemon kept the Maestro window in step with the encoder.
 /// A thread polled this read and pushed level, mute and clock changes to the UI
-/// (`og_source/maestrolink/Software/SymphonyIO.cpp:6460-6871`); nothing on the
+/// (`og_source/maestrolink/Software/SymphonyIO.cpp:6460-6871`); its gain branch
+/// handles MicPre1…8 and calls `UpdateMicPreGain`
+/// (`og_source/maestrolink/Software/SymphonyIO.cpp:6613-6719`); nothing on the
 /// unit notifies the host. Layout is `SymphonyIOParameterUpdates`
 /// (`SymphonyIOVendorSpecific.h:1036-1046`), 12 bytes, sample rate big-endian.
 ///
@@ -18,6 +20,18 @@ import MaestroCore
 public struct SymphonyIOParameterUpdates: Sendable, Equatable {
     public enum Selection: UInt8, Sendable {
         case headphone1 = 0, headphone2 = 1, speaker = 2
+        case micPre1 = 3, micPre2 = 4, micPre3 = 5, micPre4 = 6
+        case micPre5 = 7, micPre6 = 8, micPre7 = 9, micPre8 = 10
+
+        public var micPreChannel: Int? {
+            switch self {
+            case .micPre1: return 0; case .micPre2: return 1
+            case .micPre3: return 2; case .micPre4: return 3
+            case .micPre5: return 4; case .micPre6: return 5
+            case .micPre7: return 6; case .micPre8: return 7
+            default: return nil
+            }
+        }
     }
 
     public enum MuteAll: UInt8, Sendable {
@@ -29,8 +43,7 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
     public let clockSource: UInt8
     public let boardClockSource: UInt8
     public let muteAll: MuteAll
-    /// What the encoder is controlling. Nil for a mic pre (3-10) or an unknown
-    /// index: there is nothing on screen for this sync to move.
+    /// What the encoder is controlling. Unknown indices are ignored.
     public let selection: Selection?
     /// Attenuation of the selected output in dB, from 0 (loudest) to 64 for the
     /// speaker or 127 for a headphone.
@@ -60,7 +73,7 @@ public struct SymphonyIOParameterUpdates: Sendable, Equatable {
         clockSource = b[5]
         boardClockSource = b[6]
         muteAll = mute
-        selection = Selection(rawValue: b[8])
+        selection = selected
         selectionAttenuation = b[9]
         popupNeedsUpdate = b[10] == 1
         metersCleared = b[11] == 1
@@ -90,6 +103,8 @@ public struct FrontPanelSync: Sendable {
         /// Level in dB for one output, 0 down to -64. `settled` is true for
         /// the value the encoder stopped on, false while it is still turning.
         case level(SymphonyIOParameterUpdates.Selection, Double, settled: Bool)
+        /// Mic/Instrument gain in dB for one of the eight MicPre channels.
+        case micPreGain(channel: Int, Double, settled: Bool)
         case muteAll(Bool)
         /// The meters were cleared from the front panel.
         case metersCleared
@@ -104,12 +119,20 @@ public struct FrontPanelSync: Sendable {
     public mutating func changes(for update: SymphonyIOParameterUpdates) -> [Change] {
         var result: [Change] = []
         if let selection = update.selection, update.popupNeedsUpdate || changeInProgress {
+            if let channel = selection.micPreChannel {
+                // The front-panel register carries the selected preamp gain
+                // directly (0...85 dB for Mic; the app clamps Instrument to
+                // its 0...65 dB range when it knows that channel's type).
+                result.append(.micPreGain(channel: channel, Double(update.selectionAttenuation),
+                                          settled: !update.popupNeedsUpdate))
+            } else {
             // Every monitor output bottoms out at 64 dB of attenuation on the
             // unit's front panel and in the original software, which clamped a
             // headphone there (`SymphonyIO.cpp:5574-5586`) although the wire
             // format allows 127. The on-screen knobs use the same 0 to -64 range.
             result.append(.level(selection, -Double(min(update.selectionAttenuation, 64)),
                                  settled: !update.popupNeedsUpdate))
+            }
         }
         changeInProgress = update.popupNeedsUpdate
         if update.muteAll != lastMuteAll, update.muteAll != .none {
