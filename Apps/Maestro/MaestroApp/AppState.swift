@@ -2136,17 +2136,23 @@ final class AppState {
         } else {
             return
         }
-        let inputStates: [InputChannelState] = channelStateStore.load(ChannelStateStore.inputKey) ?? []
-        let outputStates: [OutputChannelState] = channelStateStore.load(ChannelStateStore.outputKey) ?? []
-        let channelReplay = await AnalogChannelSettingsReplay.apply(
-            inputs: inputStates,
-            outputs: outputStates,
-            layout: cardLayout,
-            device: device,
-            spacing: device is XPCDeviceConnection ? .milliseconds(25) : nil)
+        // `MAESTRO_USB_REPLAY_SETTINGS=0` turns this off over USB too.
+        var channelReplay = AnalogChannelSettingsReplay.Result()
+        if AnalogChannelSettingsReplay.runs(overUSB: device is XPCDeviceConnection,
+                                            usbReplayEnabled: XPCDeviceConnection.replaysOnConnect) {
+            let inputStates: [InputChannelState] = channelStateStore.load(ChannelStateStore.inputKey) ?? []
+            let outputStates: [OutputChannelState] = channelStateStore.load(ChannelStateStore.outputKey) ?? []
+            channelReplay = await AnalogChannelSettingsReplay.apply(
+                inputs: inputStates,
+                outputs: outputStates,
+                layout: cardLayout,
+                device: device,
+                spacing: device is XPCDeviceConnection ? .milliseconds(25) : nil)
+        }
         if channelReplay.applied > 0 || channelReplay.failed > 0 {
             print("[Maestro] syncDeviceSettings: re-applied " + String(channelReplay.applied)
                 + " analog channel setting(s)"
+                + (channelReplay.skipped == 0 ? "" : ", " + String(channelReplay.skipped) + " already set")
                 + (channelReplay.failed == 0 ? "" : ", " + String(channelReplay.failed) + " refused"))
         }
         // The audible half of a saved headphone source: the crosspoint, taken
