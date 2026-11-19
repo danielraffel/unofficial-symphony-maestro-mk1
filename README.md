@@ -1,6 +1,6 @@
-# Unofficial Symphony Maestro<br>for Apogee Symphony I/O MKI
+# Unofficial Symphony Maestro<br>for Apogee Symphony I/O MK I
 
-Apple Silicon support for the Apogee Symphony I/O MKI. Works over **USB and ThunderBridge**, on **macOS 26 (Tahoe) or later**.
+Apple Silicon support for the Apogee Symphony I/O MK I. Works over **USB and ThunderBridge**, on **macOS 26 (Tahoe) or later**.
 
 <h1><a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/latest/download/UnofficialSymphonyMaestro.pkg">
 Download the latest Installer (.pkg)</a></h1>
@@ -80,7 +80,7 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 
 <a href="docs/screenshots/input-micpre.png"><img src="docs/screenshots/input-micpre.png" alt="Mic Pre input channels" width="70%"></a>
 
-> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views. I don't own an 8MicPre and the Mic Pre controls are based on the documented hardware behavior and have been exercised by one tester on real hardware (see [Tested Hardware](#tested-hardware)).
+> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views. I don't own an 8MicPre and the Mic Pre controls are based on the documented hardware behavior and have been exercised by one tester on real hardware (see [Tested Hardware](#tested-hardware)). If you wish to contribute a PR for integrating the 8MicPre into Logic like the original there's a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/29">bug with additional info</a>.
 
 ## Requirements
 
