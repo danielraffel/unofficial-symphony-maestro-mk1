@@ -123,7 +123,9 @@ final class AppState {
     /// Per-channel saved state, scoped to the installed card pair.
     /// See `ChannelStateStore` for the migration rules.
     var channelStateStore: ChannelStateStore {
-        ChannelStateStore(layout: cardLayout, isSimulatingCards: cardSimulation != nil)
+        // The converter simulation keeps its own (`sim:`) state too.
+        ChannelStateStore(layout: cardLayout,
+                          isSimulatingCards: cardSimulation != nil || connectionMode == .simulated)
     }
     /// Whether hardware initialization is complete. Views must wait for this
     /// before reading from the device to avoid racing with initializeDevice().
@@ -767,12 +769,22 @@ final class AppState {
 
     /// The converter channels the routing pages show, nil unless the layout
     /// follows converters.
+    /// Nil too with an older driver (converters from the probe word), which
+    /// cannot route converters: nothing is shown, sent or replayed then.
     var converterRoutingLayout: ConverterRoutingLayout? {
-        cardLayout.converterLayout.map { ConverterRoutingLayout(system: $0) }
+        guard let system = cardLayout.converterLayout, system.driverSupportsConverterControls else { return nil }
+        return ConverterRoutingLayout(system: system)
     }
 
+    /// Kept per chain; the converter simulation keeps its own (`sim:`).
     var converterRoutingStore: ConverterRoutingStore? {
-        converterRoutingSignature.map { ConverterRoutingStore(signature: $0) }
+        converterRoutingSignature.map {
+            ConverterRoutingStore(signature: Self.converterRoutingStoreSignature($0, simulated: connectionMode == .simulated))
+        }
+    }
+
+    static func converterRoutingStoreSignature(_ signature: String, simulated: Bool) -> String {
+        simulated ? "sim:" + signature : signature
     }
 
     private func converterSystemChanged() {
@@ -805,26 +817,33 @@ final class AppState {
     /// the simulation).
     @MainActor
     func sendConverterRouting(_ commands: [ConverterRouting.Command]) async -> Bool {
-        guard !commands.isEmpty else { return true }
+        await sendConverterRoutingRefused(commands).isEmpty
+    }
+
+    /// The same, returning the commands the driver refused (all of them
+    /// without a ThunderBridge, none in the simulation).
+    @MainActor
+    func sendConverterRoutingRefused(_ commands: [ConverterRouting.Command]) async -> [ConverterRouting.Command] {
+        guard !commands.isEmpty else { return [] }
         let previous = converterRoutingTail
         let tb = device as? ThunderboltDeviceConnection
         let simulated = connectionMode == .simulated
-        let send = Task<Bool, Never> {
+        let send = Task<[ConverterRouting.Command], Never> {
             _ = await previous?.value
-            guard let tb else { return simulated }
-            let failures = await Task.detached(priority: .userInitiated) { () -> [String] in
-                var failed: [String] = []
+            guard let tb else { return simulated ? [] : commands }
+            let failures = await Task.detached(priority: .userInitiated) { () -> [(ConverterRouting.Command, String)] in
+                var failed: [(ConverterRouting.Command, String)] = []
                 for command in commands {
-                    do { try tb.sendConverterRouting(command) } catch { failed.append("\(command): \(error)") }
+                    do { try tb.sendConverterRouting(command) } catch { failed.append((command, "\(command): \(error)")) }
                 }
                 return failed
             }.value
             if !failures.isEmpty {
-                print("[Maestro] Converter routing: \(failures.count) of \(commands.count) command(s) refused: \(failures)")
+                print("[Maestro] Converter routing: \(failures.count) of \(commands.count) command(s) refused: \(failures.map(\.1))")
             }
-            return failures.isEmpty
+            return failures.map(\.0)
         }
-        converterRoutingTail = send
+        converterRoutingTail = Task { await send.value.isEmpty }
         return await send.value
     }
 
@@ -840,13 +859,19 @@ final class AppState {
         converterRoutingEdits = edits
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let ok = await self.sendConverterRouting(commands)
-            if ok {
+            let refused = await self.sendConverterRoutingRefused(commands)
+            if refused.isEmpty {
                 store?.save(edits)
-            } else if self.converterRoutingEdits == edits {
-                self.converterRoutingEdits = previous
+            } else {
+                // Only the refused routes go back; the accepted ones stay
+                // and are saved, and a newer change to the same route stays.
+                store?.save(edits.reverting(refused, attempted: edits, previous: previous))
+                if self.converterRoutingStore?.key == store?.key {
+                    self.converterRoutingEdits = self.converterRoutingEdits.reverting(
+                        refused, attempted: edits, previous: previous)
+                }
             }
-            completion(ok)
+            completion(refused.isEmpty)
         }
     }
 
@@ -920,7 +945,9 @@ final class AppState {
            let system = ConverterSystem(state: state) {
             return system
         }
-        return ConverterSystem(probeWord: probeWord, config: ConverterConfig.load())
+        return ConverterSystem.withStoredConfig(simulated: false) {
+            ConverterSystem(probeWord: probeWord, config: $0)
+        }
     }
 
     /// At connect: send the stored Device Types and clock choice before the
@@ -930,8 +957,9 @@ final class AppState {
     func applyStoredConverterConfig(_ tb: ThunderboltDeviceConnection) {
         // Either port: port-2 converters behind a Symphony I/O need their
         // Device Types too.
-        guard let state = tb.converterState(), state.port1Converters || state.port2Converters else { return }
-        var word = ConverterConfig.load().word(currentClockExternal: state.clockExternal)
+        guard let state = tb.converterState(), state.port1Converters || state.port2Converters,
+              let system = ConverterSystem(state: state) else { return }
+        var word = ConverterConfig.load(for: system, simulated: false).word(currentClockExternal: state.clockExternal)
         if !state.port1Converters {
             // A Symphony I/O on port 1 owns the clock: keep the driver's bit
             // (it applies the converter clock only with port-1 converters).
@@ -947,18 +975,26 @@ final class AppState {
     /// config). Never sent as a Symphony I/O ClockMode.
     @discardableResult
     func setConverterClock(external: Bool) -> Bool {
-        ConverterConfig.saveClockExternal(external)
+        if let system = converterSystem {
+            ConverterConfig.saveClockExternal(external, for: system, simulated: connectionMode == .simulated)
+        }
         return sendConverterConfig()
     }
 
     /// The user chose a Device Type for a unit whose routing does not say
     /// what it is (0x0F or 0x05).
     func setConverterDeviceType(_ type: ConverterDeviceType, port: Int, address: Int) {
-        ConverterConfig.saveDeviceType(type, port: port, address: address)
-        if connectionMode == .simulated, let system = converterSystem {
+        guard let system = converterSystem,
+              let unit = (system.ports[0] + system.ports[1]).first(where: { $0.port == port && $0.address == address })
+        else { return }
+        let simulated = connectionMode == .simulated
+        ConverterConfig.saveDeviceType(type, unit: unit, simulated: simulated)
+        if simulated {
             // Rebuild the simulated units with the new choice.
             let name = UserDefaults.standard.string(forKey: ConnectedUnit.simulationKey) ?? ""
-            converterSystem = ConverterSystem(simulationName: name, config: ConverterConfig.load()) ?? system
+            converterSystem = ConverterSystem.withStoredConfig(simulated: true) {
+                ConverterSystem(simulationName: name, config: $0)
+            } ?? system
             return
         }
         sendConverterConfig()
@@ -967,8 +1003,10 @@ final class AppState {
     @discardableResult
     private func sendConverterConfig() -> Bool {
         guard let tb = device as? ThunderboltDeviceConnection else { return connectionMode == .simulated }
-        let current = converterSystem?.clockExternal ?? false
-        let ok = tb.setConverterConfig(ConverterConfig.load().word(currentClockExternal: current))
+        guard let system = converterSystem else { return false }
+        let current = system.clockExternal
+        let ok = tb.setConverterConfig(
+            ConverterConfig.load(for: system, simulated: false).word(currentClockExternal: current))
         refreshConverterSystem()
         return ok
     }
@@ -1637,7 +1675,9 @@ final class AppState {
         // attached. No hardware is discovered or touched.
         if let name = UserDefaults.standard.string(forKey: ConnectedUnit.simulationKey) {
             // One port ("ad16x+da16x") or two ("...|..."), which means 64 channels.
-            guard let system = ConverterSystem(simulationName: name, config: ConverterConfig.load()),
+            guard let system = ConverterSystem.withStoredConfig(simulated: true, {
+                      ConverterSystem(simulationName: name, config: $0)
+                  }),
                   let unit = system.connectedUnit else {
                 print("[Maestro] CONVERTER SIMULATION: invalid request '\(name)'; exiting.")
                 exit(1)
@@ -1940,7 +1980,9 @@ final class AppState {
         // detection guard (a converter has no option cards).
         if converterRoutingSurface {
             // Nothing is replayed while a unit is not identified (no layout).
-            await replayConverterRouting()
+            // From the default placement first, so no route the driver kept
+            // from before stays on the card.
+            await replayConverterRouting(resetFirst: true)
             return
         }
         // The cache is keyed by product ID, so ThunderBridge (0x12) and the USB
@@ -3961,6 +4003,13 @@ final class AppState {
         }
     }
 
+    /// Whether a preset's speaker, headphone and device settings are sent:
+    /// only to a Symphony I/O on port 1 (converters on port 2 behind it do
+    /// not change that).
+    static func presetWritesSymphonySettings(connectedUnit: ConnectedUnit?) -> Bool {
+        connectedUnit == nil
+    }
+
     /// Apply a `MaestroPreset` to the current device and update AppState.
     ///
     /// Writes all preset fields to the device via daemon IPC. Updates AppState speaker
@@ -3982,9 +4031,19 @@ final class AppState {
                     print("[Maestro] applyPreset: \(addr.selector) write failed: \(error)")
                 }
             }
-            // Output
+            // Output (the Mac's volume and mute: on converters the driver
+            // gives these to Mixer 1).
             await write(PropertyAddress(selector: .outputLevel), .uint32(UInt32(max(0, -preset.outputLevel))))
             await write(PropertyAddress(selector: .outputMute), .bool(preset.outputMuted))
+        }
+
+        // The rest are Symphony I/O commands: never to converters on port 1.
+        if let dev = device, Self.presetWritesSymphonySettings(connectedUnit: connectedUnit) {
+            let write: (PropertyAddress, PropertyValue) async -> Void = { addr, value in
+                do { try await dev.setProperty(addr, value: value) } catch {
+                    print("[Maestro] applyPreset: \(addr.selector) write failed: \(error)")
+                }
+            }
             await write(PropertyAddress(selector: .outputDim), .bool(preset.outputDimmed))
             await write(PropertyAddress(selector: .outputSumToMono), .bool(preset.outputSumToMono))
             // HP1

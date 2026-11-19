@@ -2050,7 +2050,15 @@ struct ConverterUnitRows: View {
         ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
             LabeledContent(row.label, value: row.value)
         }
-        ForEach(system.ports[0] + (system.port2Counted ? system.ports[1] : []), id: \.rowID) { unit in
+        // An older driver (the probe word) cannot take a Device Type.
+        if !system.driverSupportsConverterControls,
+           (system.ports[0] + system.ports[1]).contains(where: { !$0.deviceTypeChoices.isEmpty }) {
+            Text(ConverterDriverText.update)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        ForEach(system.driverSupportsConverterControls
+                ? system.ports[0] + (system.port2Counted ? system.ports[1] : []) : [], id: \.rowID) { unit in
             if let current = unit.deviceType, !unit.deviceTypeChoices.isEmpty {
                 Picker("Device Type, port \(unit.port + 1) unit \(unit.address)", selection: Binding(
                     get: { current },

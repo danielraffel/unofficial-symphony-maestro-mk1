@@ -237,12 +237,15 @@ private struct ConverterRoutingErrorLine: View {
 /// nonsense to them).
 struct ConverterRoutingUnavailableNote: View {
     let title: String
+    /// The driver found the converters with its older probe and cannot route them.
+    var driverTooOld = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Routing needs every converter identified")
+            Text(driverTooOld ? ConverterDriverText.routingHeadline : "Routing needs every converter identified")
                 .font(.headline)
-            Text("A unit on the cable did not identify as an AD-16X, DA-16X, DD-16X or Rosetta, so Maestro can't lay out its channels. Device Info lists what each unit answered.")
+            Text(driverTooOld ? ConverterDriverText.update
+                 : "A unit on the cable did not identify as an AD-16X, DA-16X, DD-16X or Rosetta, so Maestro can't lay out its channels. Device Info lists what each unit answered.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -251,4 +254,13 @@ struct ConverterRoutingUnavailableNote: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle(title)
     }
+}
+
+/// What Maestro says when the ThunderBridge driver predates converter
+/// routing and Device Types (it reports converters only through its older
+/// probe).
+enum ConverterDriverText {
+    static let routingHeadline = "Converter routing needs a newer driver"
+    static let update = "The ThunderBridge driver in use cannot route converters or set a Device Type. "
+        + "It needs the driver from this version of Maestro."
 }

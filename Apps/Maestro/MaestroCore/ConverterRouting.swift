@@ -331,6 +331,28 @@ public struct ConverterRoutingEdits: Sendable, Equatable, Codable {
 
     public var isEmpty: Bool { outputs.isEmpty && inputs.isEmpty }
 
+    /// These edits with each entry a refused command named put back to
+    /// `previous`, where it still holds what `attempted` set (a newer change
+    /// to the same entry stays). A refused Reset Routing puts everything back
+    /// unless something changed since.
+    public func reverting(_ refused: [ConverterRouting.Command], attempted: ConverterRoutingEdits,
+                          previous: ConverterRoutingEdits) -> ConverterRoutingEdits {
+        var result = self
+        for command in refused {
+            if command.command == ConverterRouting.resetCommand {
+                if self == attempted { return previous }
+                continue
+            }
+            guard let key = command.payload.first.map(Int.init) else { continue }
+            if command.command == ConverterRouting.outputRouteCommand {
+                if result.outputs[key] == attempted.outputs[key] { result.outputs[key] = previous.outputs[key] }
+            } else if command.command == ConverterRouting.inputRouteCommand {
+                if result.inputs[key] == attempted.inputs[key] { result.inputs[key] = previous.inputs[key] }
+            }
+        }
+        return result
+    }
+
     mutating func setOutput(bus: Int, source: Int?, default fallback: Int?) {
         if source == fallback { outputs.removeValue(forKey: bus) } else { outputs[bus] = source ?? -1 }
     }

@@ -23,6 +23,10 @@ import MaestroCore
 ///
 /// Card simulation never inherits and never claims: its keys carry a `sim:`
 /// scope so a harness run cannot read or write a real unit's state.
+///
+/// Converters have no cards: their state is kept per chain of units
+/// (`conv:<routingSignature>`), and a chain never claims the legacy key,
+/// which was a Symphony I/O's.
 public struct ChannelStateStore {
 
     public static let inputKey = "inputChannelStates"
@@ -50,7 +54,10 @@ public struct ChannelStateStore {
         self.defaults = defaults
         self.isSimulating = isSimulatingCards
         self.unit = unit
-        if let scope = layout.savedStateScope {
+        if unit == .a, let converters = layout.converterLayout {
+            let chain = "conv:\(converters.routingSignature)"
+            self.scope = isSimulatingCards ? "sim:\(chain)" : chain
+        } else if let scope = layout.savedStateScope {
             let unitScope = unit == .b ? "unitB:\(scope)" : scope
             self.scope = isSimulatingCards ? "sim:\(unitScope)" : unitScope
         } else if unit == .b {
@@ -75,6 +82,7 @@ public struct ChannelStateStore {
         guard let scope else { return nil }                 // unscoped key was already tried
         guard !isSimulating else { return nil }             // never inherit real state
         guard unit == .a else { return nil }                // unit B never inherits unit A's
+        guard !scope.hasPrefix("conv:") else { return nil }  // converters never inherit a Symphony I/O's
         guard let legacy = defaults.data(forKey: base) else { return nil }
         let claim = Self.claimKey(base)
         if let owner = defaults.string(forKey: claim), owner != scope { return nil }

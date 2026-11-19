@@ -288,12 +288,56 @@ struct ConverterSystemTests {
         // Stored and read back through UserDefaults.
         let defaults = try #require(UserDefaults(suiteName: "ConverterSystemTests.deviceType"))
         defaults.removePersistentDomain(forName: "ConverterSystemTests.deviceType")
-        ConverterConfig.saveDeviceType(.ddAsDA, port: 0, address: 1, defaults: defaults)
-        ConverterConfig.saveClockExternal(true, defaults: defaults)
-        let loaded = ConverterConfig.load(defaults)
+        let unit = asAD.ports[0][0]
+        ConverterConfig.saveDeviceType(.ddAsDA, unit: unit, simulated: false, defaults: defaults)
+        ConverterConfig.saveClockExternal(true, for: asAD, simulated: false, defaults: defaults)
+        let loaded = ConverterConfig.load(defaults, for: asAD, simulated: false)
         #expect(loaded.deviceType(port: 0, address: 1) == .ddAsDA && loaded.clockExternal == true)
         #expect(loaded.word() == 1 | 1 << 8)
         defaults.removePersistentDomain(forName: "ConverterSystemTests.deviceType")
+    }
+
+    @Test("Device Types are kept per unit, the clock per port-1 chain, simulation apart")
+    func configScopes() throws {
+        let suite = "ConverterSystemTests.scopes"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dd = try #require(ConverterSystem(simulationName: "dd16x"))
+        let unit = dd.ports[0][0]
+        #expect(ConverterConfig.deviceTypeKey(port: 0, address: 1, routing: unit.routing, simulated: false)
+                == "converterDeviceType.p1.u1.r0f")
+        #expect(ConverterConfig.clockKey(for: dd, simulated: true) == "converterClockExternal.sim:p1u1r0f")
+        // A simulation's choice is not a real unit's.
+        ConverterConfig.saveDeviceType(.ddAsDA, unit: unit, simulated: true, defaults: defaults)
+        ConverterConfig.saveClockExternal(true, for: dd, simulated: true, defaults: defaults)
+        #expect(ConverterConfig.load(defaults, for: dd, simulated: false) == ConverterConfig())
+        #expect(ConverterConfig.load(defaults, for: dd, simulated: true).deviceType(port: 0, address: 1) == .ddAsDA)
+        // The older unscoped keys move to the first chain that reads them, once.
+        defaults.set(ConverterDeviceType.ddAsDA.rawValue, forKey: "converterDeviceType.p1.u1")
+        defaults.set(true, forKey: ConverterConfig.clockDefaultsKey)
+        let migrated = ConverterConfig.load(defaults, for: dd, simulated: false)
+        #expect(migrated.deviceType(port: 0, address: 1) == .ddAsDA && migrated.clockExternal == true)
+        #expect(defaults.object(forKey: "converterDeviceType.p1.u1") == nil)
+        #expect(defaults.object(forKey: ConverterConfig.clockDefaultsKey) == nil)
+        // Another chain does not inherit them.
+        let rosetta = try #require(ConverterSystem(simulationName: "rosetta800"))
+        #expect(ConverterConfig.load(defaults, for: rosetta, simulated: false).clockExternal == nil)
+        // Converters only on port 2 (a Symphony I/O on port 1): no converter clock.
+        let state = ConverterState(version: 1, flags: ConverterState.flagPort2Converters, unitCount: [0, 1],
+                                   units: [[0, 0, 0, 0], [0x0000_0F37 | ConverterState.unitInquireOK, 0, 0, 0]],
+                                   phase: [0, 0], healthTicks: 0, phaseErrors: 0, unlocks: 0, recoveries: 0,
+                                   latencyIn: 0, latencyOut: 0, hostInputs: 0, hostOutputs: 0, config: 0)
+        let port2 = try #require(ConverterSystem(state: state))
+        #expect(ConverterConfig.clockKey(for: port2, simulated: false) == nil)
+    }
+
+    @Test("Older drivers (probe word) get no converter routing or Device Type")
+    func olderDriver() throws {
+        let ran: UInt32 = 0x8000_0000, inquireOK: UInt32 = 0x4000_0000
+        let probed = try #require(ConverterSystem(probeWord: ran | inquireOK | 0x31))
+        #expect(!probed.driverSupportsConverterControls)
+        #expect(try #require(ConverterSystem(simulationName: "ad16x")).driverSupportsConverterControls)
     }
 
     @Test("simulator: one or two ports, old form still accepted")

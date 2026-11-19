@@ -104,4 +104,16 @@ struct UnitBAppTests {
         #expect(!text.contains("a Word Clock slave of unit A"))
         #expect(text.contains("a Loop Sync slave of unit A"))
     }
+
+    @Test("Converters: simulation keeps its own routes, presets spare converters, connect resets first")
+    func converterApp() throws {
+        #expect(AppState.converterRoutingStoreSignature("p1u1r03", simulated: true) == "sim:p1u1r03")
+        #expect(AppState.converterRoutingStoreSignature("p1u1r03", simulated: false) == "p1u1r03")
+        #expect(AppState.presetWritesSymphonySettings(connectedUnit: nil))
+        #expect(!AppState.presetWritesSymphonySettings(connectedUnit: .ad16x))
+        let state = try source("AppState.swift")
+        #expect(state.contains("await replayConverterRouting(resetFirst: true)\n            return"))
+        #expect(state.contains("system.driverSupportsConverterControls else { return nil }"))
+        #expect(state.contains("isSimulatingCards: cardSimulation != nil || connectionMode == .simulated"))
+    }
 }

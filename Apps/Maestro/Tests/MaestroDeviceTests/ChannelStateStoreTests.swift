@@ -155,4 +155,28 @@ struct ChannelStateStoreTests {
         d.removePersistentDomain(forName: name)
         #expect(CardSimulation.analogLevelsKey == "MaestroSimulateAnalogLevels")
     }
+
+    @Test func convertersKeepStatePerChainAndNeverClaimTheLegacyKey() throws {
+        let suite = "ChannelStateStoreTests.converters"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data("[1]".utf8), forKey: ChannelStateStore.inputKey)   // a Symphony I/O's
+        let system = try #require(ConverterSystem(simulationName: "ad16x+da16x"))
+        let layout = CardLayout(isKnown: false, converters: system)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
+        #expect(store.scope == "conv:" + system.routingSignature)
+        #expect(store.loadData(ChannelStateStore.inputKey) == nil)
+        #expect(defaults.string(forKey: ChannelStateStore.claimKey(ChannelStateStore.inputKey)) == nil)
+        let simulated = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: true)
+        #expect(simulated.scope == "sim:conv:" + system.routingSignature)
+        // Another chain has its own.
+        let other = try #require(ConverterSystem(simulationName: "ad16x"))
+        #expect(ChannelStateStore(defaults: defaults, layout: CardLayout(isKnown: false, converters: other),
+                                  isSimulatingCards: false).scope != store.scope)
+        // A Symphony I/O with converters on port 2 keeps its cards' scope.
+        let symphony = CardLayout(slot1: .analogADDA16, slot2: .none, converters: system)
+        #expect(ChannelStateStore(defaults: defaults, layout: symphony, isSimulatingCards: false).scope
+                == symphony.savedStateScope)
+    }
 }
