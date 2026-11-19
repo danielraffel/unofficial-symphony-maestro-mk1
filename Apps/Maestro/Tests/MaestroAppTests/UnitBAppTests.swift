@@ -13,6 +13,9 @@ struct UnitBAppTests {
         // DAW 33-34 (grid row 16) to unit B's first pair.
         let daw = try #require(AppState.unitBRoutePair(destLeft: board0, gridRow: 16))
         #expect(daw.map(\.payload) == [Data([32, 96, 1]), Data([33, 97, 1])])
+        // DAW 1-2 crosses to unit B's first output pair without a source offset.
+        #expect(AppState.unitBRoutePair(destLeft: board0, gridRow: 0)?.map(\.payload)
+                == [Data([32, 64, 1]), Data([33, 65, 1])])
         // DAW 1-2 to unit B's slot 2 output 3-4.
         let first = try #require(AppState.unitBRoutePair(destLeft: board1 + 2, gridRow: 0))
         #expect(first.map(\.payload) == [Data([50, 64, 1]), Data([51, 65, 1])])

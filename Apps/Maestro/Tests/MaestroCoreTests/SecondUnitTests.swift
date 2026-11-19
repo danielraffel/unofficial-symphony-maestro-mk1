@@ -154,13 +154,13 @@ struct SecondUnitTests {
         #expect(TwoUnitOutputRouting.gridRow(unitARow: 3, unitAPairs: 16) == 3)
         #expect(TwoUnitOutputRouting.gridRow(unitARow: 16, unitAPairs: 16) == 32)
         #expect(TwoUnitOutputRouting.gridRow(unitARow: 17, unitAPairs: 16) == 33)
-        #expect(TwoUnitOutputRouting.gridRow(unitARow: 18, unitAPairs: 16) == nil)
-        for row in [0, 15, 16, 17] {
+        #expect(TwoUnitOutputRouting.gridRow(unitARow: 18, unitAPairs: 16) == 16)
+        for row in 0..<34 {
             let grid = TwoUnitOutputRouting.gridRow(unitARow: row, unitAPairs: 16)!
             #expect(TwoUnitOutputRouting.unitARow(gridRow: grid, unitAPairs: 16) == row)
         }
-        #expect(TwoUnitOutputRouting.unitARow(gridRow: 20, unitAPairs: 16) == nil)
-        #expect(!TwoUnitOutputRouting.unitAAccepts(gridRow: 16, unitAPairs: 16))
+        #expect(TwoUnitOutputRouting.unitARow(gridRow: 20, unitAPairs: 16) == 22)
+        #expect(TwoUnitOutputRouting.unitAAccepts(gridRow: 16, unitAPairs: 16))
         #expect(TwoUnitOutputRouting.unitAAccepts(gridRow: 33, unitAPairs: 16))
         // Unit B output 1-2 plays DAW 33-34 by default (row 16).
         #expect(TwoUnitOutputRouting.defaultRow(unitBChannel: 0) == 16)

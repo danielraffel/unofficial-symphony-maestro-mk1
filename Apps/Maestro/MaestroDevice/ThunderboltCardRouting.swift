@@ -71,10 +71,12 @@ public enum ThunderboltCardRouting {
 
     /// The TDM slot for a source byte as the app addresses it on ThunderBridge:
     /// XLink 0...31 (DAW playback n) → `PCI_OUT n`; `mixer0Base`/`mixer1Base`
-    /// pairs → card mixer 0/1 outputs. Hardware inputs are not routable to
-    /// outputs from the matrix and return nil.
-    public static func slot(forSource source: UInt8) -> UInt8? {
-        if source < channelCount { return pciOutBase &+ source }
+    /// pairs → card mixer 0/1 outputs. With unit B active, DAW 0...63 are
+    /// available independently of the destination port.
+    /// Evidence: og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:1173-1187.
+    /// Hardware inputs are not routable to outputs from the matrix and return nil.
+    public static func slot(forSource source: UInt8, unitBActive: Bool = false) -> UInt8? {
+        if source < (unitBActive ? 64 : channelCount) { return pciOutBase &+ source }
         let mixer0 = SymphonyIORoutingAddress.mixer0Base
         let mixer1 = SymphonyIORoutingAddress.mixer1Base
         if source == mixer0 || source == mixer0 &+ 1 { return mixerOutBase &+ (source &- mixer0) }
@@ -94,12 +96,12 @@ public enum ThunderboltCardRouting {
     ///   Master and Software Return changed a route the grid showed as direct.
     ///   The mixer is now reached only by choosing a Mixer source, which is also
     ///   what the main pair defaults to (`mainPairDefaultSource`).
-    public static func route(destination: UInt8, source: UInt8) -> Route? {
+    public static func route(destination: UInt8, source: UInt8, unitBActive: Bool = false) -> Route? {
         guard let channel = channel(forDestination: destination) else { return nil }
         if source == SymphonyIORoutingAddress.clearRoute || source == SymphonyIORoutingAddress.none {
             return Route(channel: channel, slot: pciOutBase &+ channel, enabled: false)
         }
-        guard let slot = slot(forSource: source) else { return nil }
+        guard let slot = slot(forSource: source, unitBActive: unitBActive) else { return nil }
         return Route(channel: channel, slot: slot, enabled: true)
     }
 

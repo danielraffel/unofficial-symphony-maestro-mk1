@@ -15,6 +15,8 @@
 
 ### Fixes
 
+- With two Symphony I/Os at 64 channels, Output Routing now lets DAW channels 33–64 feed unit A’s outputs, as in Apogee’s software. All 64 DAW channels and both card mixers can feed either unit.
+
 - **Identify remembers each unit’s lights when you leave Output Routing.** A failed write keeps the button unchanged, and Maestro turns the lights off when disconnecting or quitting if the unit is still reachable.
 
 - **Turning the Symphony's knob on an 8MicPre Mic or Instrument channel now moves that channel's gain in Maestro too,** as Apogee's software did.

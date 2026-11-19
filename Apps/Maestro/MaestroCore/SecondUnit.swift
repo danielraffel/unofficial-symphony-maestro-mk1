@@ -247,7 +247,7 @@ public enum TwoUnitMixer {
 /// playback pairs, then Mixer 1 and Mixer 2; unit B's outputs follow unit A's
 /// as extra columns. Unit A's saved routes keep their single-unit row numbers
 /// (DAW pairs, then the two mixers right after them), so nothing saved for
-/// unit A changes meaning; they are translated on the way in and out.
+/// unit A changes meaning; additional DAW pairs follow those two saved mixer rows.
 public enum TwoUnitOutputRouting {
     /// DAW pairs at 64 channels.
     public static let dawPairCount = 32
@@ -262,22 +262,31 @@ public enum TwoUnitOutputRouting {
         if row >= 0 && row < unitAPairs { return row }
         if row == unitAPairs { return mixer1Row }
         if row == unitAPairs + 1 { return mixer2Row }
+        if row >= unitAPairs + 2 && row < rowCount { return row - 2 }
         return nil
     }
 
-    /// The inverse: a 64-channel grid row in unit A's saved table, nil for a
-    /// DAW pair unit A's table has no row for (33-64).
+    /// The inverse, retaining the existing saved mixer rows before the extra DAW pairs.
     public static func unitARow(gridRow row: Int, unitAPairs: Int) -> Int? {
         if row >= 0 && row < unitAPairs { return row }
         if row == mixer1Row { return unitAPairs }
         if row == mixer2Row { return unitAPairs + 1 }
+        if row >= unitAPairs && row < dawPairCount { return row + 2 }
         return nil
     }
 
-    /// Whether a unit A output may take this row. Unit A's outputs play DAW
-    /// 1-32 or a mixer, as with one unit; DAW 33-64 are unit B's.
+    /// Both ports may select every playback pair and both card mixers.
+    /// Evidence: og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:1173-1187.
     public static func unitAAccepts(gridRow row: Int, unitAPairs: Int) -> Bool {
         unitARow(gridRow: row, unitAPairs: unitAPairs) != nil
+    }
+
+    /// Playback pair in unit A's saved numbering; extra pairs are unavailable
+    /// at 32 channels, and never alias the existing mixer rows.
+    public static func playbackPair(unitARow row: Int, unitAPairs: Int, unitBActive: Bool) -> Int? {
+        if row >= 0 && row < unitAPairs { return row }
+        guard unitBActive, row >= unitAPairs + 2, row < rowCount else { return nil }
+        return row - 2
     }
 
     /// The card's start-up routing for unit B: unit B output channel c

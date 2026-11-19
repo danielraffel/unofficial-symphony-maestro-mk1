@@ -1,4 +1,5 @@
 import Foundation
+import MaestroCore
 
 /// Row numbering for saved output-routing presets.
 ///
@@ -17,21 +18,22 @@ public enum RoutingPresetRows {
     public static let mixer2Sentinel = 1001
 
     /// Grid rows → stored rows.
-    public static func encode(_ routes: [Int: Set<Int>], dawPairCount: Int) -> [Int: Set<Int>] {
+    public static func encode(_ routes: [Int: Set<Int>], dawPairCount: Int, unitBActive: Bool = false) -> [Int: Set<Int>] {
         // Both sentinels are always present (empty when unused) so a preset
         // with no mixer routes is still recognised as sentinel-encoded.
         var out: [Int: Set<Int>] = [mixer1Sentinel: [], mixer2Sentinel: []]
         for (row, cols) in routes {
             if row == dawPairCount { out[mixer1Sentinel] = cols }
             else if row == dawPairCount + 1 { out[mixer2Sentinel] = cols }
-            else if row >= 0 && row < dawPairCount { out[row] = cols }
+            else if let pair = TwoUnitOutputRouting.playbackPair(
+                unitARow: row, unitAPairs: dawPairCount, unitBActive: unitBActive) { out[pair] = cols }
         }
         return out
     }
 
     /// Stored rows → grid rows for a grid with `dawPairCount` playback pairs.
     /// Rows the grid cannot show are dropped.
-    public static func decode(_ stored: [Int: Set<Int>], dawPairCount: Int) -> [Int: Set<Int>] {
+    public static func decode(_ stored: [Int: Set<Int>], dawPairCount: Int, unitBActive: Bool = false) -> [Int: Set<Int>] {
         // A preset written with sentinels never stores a mixer row at its grid
         // index, so any row at or past the DAW pair count is a playback pair
         // this grid cannot show. Only sentinel-free (older) presets get the
@@ -39,6 +41,12 @@ public enum RoutingPresetRows {
         let usesSentinels = stored.keys.contains { $0 == mixer1Sentinel || $0 == mixer2Sentinel }
         var out: [Int: Set<Int>] = [:]
         for (row, cols) in stored {
+            // Sentinel presets store DAW pair numbers, not unit A's saved row
+            // numbers (which keep the original two mixer rows at 16 and 17).
+            if usesSentinels && unitBActive && row >= dawPairCount && row < TwoUnitOutputRouting.dawPairCount {
+                out[row + 2] = cols
+                continue
+            }
             switch row {
             case mixer1Sentinel: out[dawPairCount] = cols
             case mixer2Sentinel: out[dawPairCount + 1] = cols

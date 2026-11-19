@@ -647,13 +647,13 @@ struct OutputRoutingView: View {
                         // survives a change in DAW pair count (USB 8, ThunderBridge 16).
                         PresetManager.saveMultiRoutingPreset(
                             name: name,
-                            routes: RoutingPresetRows.encode(routes, dawPairCount: swOutputPairCount),
+                            routes: RoutingPresetRows.encode(routes, dawPairCount: swOutputPairCount, unitBActive: appState.unitBOnCard),
                             key: presetKey)
                         presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
                     },
                     onLoad: { name in
                         if let stored = PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey)[name] {
-                            let preset = RoutingPresetRows.decode(stored, dawPairCount: swOutputPairCount)
+                            let preset = RoutingPresetRows.decode(stored, dawPairCount: swOutputPairCount, unitBActive: appState.unitBOnCard)
                                 .mapValues { $0.filter { $0 >= 0 && $0 < columns.count } }
                                 .filter { !$0.value.isEmpty }
                             // A preset is the whole table: outputs it does not
@@ -723,10 +723,7 @@ struct OutputRoutingView: View {
                                 tapUnitB(row: gridRow, col: col - hwPairCount)
                                 return
                             }
-                            guard let row = unitARow(gridRow: gridRow) else {
-                                errorMessage = "Unit A's outputs play Software 1-32 or a mixer; 33-64 are unit B's."
-                                return
-                            }
+                            guard let row = unitARow(gridRow: gridRow) else { return }
                             // Toggle: if this (row,col) is active, remove it; otherwise add it.
                             // Each column can only have one source row — clear other rows' claim.
                             let removing = routes[row]?.contains(col) == true
@@ -905,7 +902,9 @@ struct OutputRoutingView: View {
     /// hardware cannot hold. Display only: nothing is written here.
     private func restoredRoutes(_ base: [Int: Set<Int>]) -> [Int: Set<Int>] {
         var routes = base
-        for (row, cols) in routingCache?.loadMulti() ?? [:] where row >= 0 && row < swOutputPairCount {
+        for (row, cols) in routingCache?.loadMulti() ?? [:] where
+            TwoUnitOutputRouting.playbackPair(unitARow: row, unitAPairs: swOutputPairCount,
+                                              unitBActive: appState.unitBOnCard) != nil {
             let live = cols.filter { $0 >= 0 && $0 < columns.count }
             guard !live.isEmpty else { continue }
             // A hardware output carries one source, so claiming it for this row
@@ -1047,10 +1046,11 @@ struct OutputRoutingView: View {
             // rewrote it (2026-10-22 12:10, USB). On ThunderBridge the card
             // path disables the channel for either value.
             srcLeft = SymphonyIORoutingAddress.none
-        } else if row < swOutputPairCount {
+        } else if let pair = TwoUnitOutputRouting.playbackPair(
+            unitARow: row, unitAPairs: swOutputPairCount, unitBActive: appState.unitBOnCard) {
             // DAW playback pair — P2P on USB, XLink RX on ThunderBridge.
             srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: appState.transportType ?? .usb)
-                + UInt8(row * 2)
+                + UInt8(pair * 2)
         } else if row == swOutputPairCount {
             // Mixer 1
             srcLeft = SymphonyIORoutingAddress.mixer0Base

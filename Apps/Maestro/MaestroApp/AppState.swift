@@ -2050,8 +2050,9 @@ final class AppState {
                     col: col, isInput: false, board1: board1, board2: board2
                 ) else { continue }
                 let srcLeft: UInt8
-                if row < swPairs {
-                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(row * 2)
+                if let pair = TwoUnitOutputRouting.playbackPair(
+                    unitARow: row, unitAPairs: swPairs, unitBActive: unitBOnCard) {
+                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(pair * 2)
                 } else if row == swPairs {
                     srcLeft = SymphonyIORoutingAddress.mixer0Base
                 } else if row == swPairs + 1 {
@@ -2157,7 +2158,7 @@ final class AppState {
         if let thunderbolt = device as? ThunderboltDeviceConnection {
             // Converters route through `applyConverterRouting` (their own
             // grid and channels); this path is the Symphony I/O table.
-            guard let route = ThunderboltCardRouting.route(destination: destination, source: source) else {
+            guard let route = ThunderboltCardRouting.route(destination: destination, source: source, unitBActive: unitBOnCard) else {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
             }
@@ -3696,8 +3697,9 @@ final class AppState {
                     col: col, isInput: false, board1: board1, board2: board2
                 ) else { continue }
                 let srcLeft: UInt8
-                if row < swPairs {
-                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(row * 2)
+                if let pair = TwoUnitOutputRouting.playbackPair(
+                    unitARow: row, unitAPairs: swPairs, unitBActive: unitBOnCard) {
+                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(pair * 2)
                 } else if row == swPairs {
                     srcLeft = SymphonyIORoutingAddress.mixer0Base
                 } else if row == swPairs + 1 {
