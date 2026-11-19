@@ -193,18 +193,55 @@ public enum TwoUnitMixer {
     /// Mixer channel of unit B's first input.
     public static let unitBChannelBase = 32
 
+    /// Prefix a channel name exactly as the driver does: unavailable channels
+    /// remain the bare `N.A.` marker, while a real board name carries the
+    /// peripheral's own prefix.  Keep this in one place so mixer strips and
+    /// routing grids cannot drift apart when board/rate settings change.
+    public static func unitChannelName(_ name: String, prefix: String) -> String {
+        name == CardLayout.notApplicable ? name : "\(CardLayout.peripheralPrefix(prefix)) \(name)"
+    }
+
+    /// Unit B's hardware-input strips, moved into the card mixer's 32–63
+    /// channel range.  The underlying layout supplies the board, optical and
+    /// sample-rate names; this method supplies only the unit prefix.
+    public static func unitBChannels(layout: CardLayout, prefix: String) -> [CardLayout.MixerChannel] {
+        layout.mixerChannels.map {
+            CardLayout.MixerChannel(label: unitChannelName($0.label, prefix: prefix),
+                                    hardwareIndex: unitBChannelBase + $0.hardwareIndex,
+                                    boardIndex: $0.boardIndex, channelOnBoard: $0.channelOnBoard)
+        }
+    }
+
+    /// Add a unit prefix to routing-column pair names while preserving the
+    /// routing byte and board metadata.  `N.A.` remains unprefixed, matching
+    /// Core Audio's channel names and the original Maestro grids.
+    public static func unitRoutingColumns(_ columns: [CardLayout.RoutingColumn], prefix: String)
+        -> [CardLayout.RoutingColumn] {
+        columns.map { column in
+            let named = unitChannelName(column.stereoName, prefix: prefix)
+            let header = CardLayout.headerLines(named)
+            return CardLayout.RoutingColumn(type: header.type, channels: header.channels,
+                                            boardIndex: column.boardIndex,
+                                            isDigital: column.isDigital,
+                                            routingByte: column.routingByte)
+        }
+    }
+
+    /// Unit B's input or output columns with the same naming rule used by its
+    /// mixer strips.  This is also the entry point for B1a Input Routing.
+    public static func unitBRoutingColumns(layout: CardLayout, prefix: String, isInput: Bool)
+        -> [CardLayout.RoutingColumn] {
+        unitRoutingColumns(isInput ? layout.inputRoutingColumns : layout.outputRoutingColumns,
+                           prefix: prefix)
+    }
+
     /// Every hardware-input strip: unit A's, then unit B's with their
     /// channel IDs moved up by 32. Unit B's labels carry its prefix letter so
     /// the two "Line 1" strips can be told apart; unit A's keep theirs.
     public static func channels(unitA: CardLayout, unitB: CardLayout?, prefixB: String) -> [CardLayout.MixerChannel] {
         let a = unitA.mixerChannels
         guard let unitB else { return a }
-        let b = unitB.mixerChannels.map {
-            CardLayout.MixerChannel(label: "\(prefixB) \($0.label)",
-                                    hardwareIndex: unitBChannelBase + $0.hardwareIndex,
-                                    boardIndex: $0.boardIndex, channelOnBoard: $0.channelOnBoard)
-        }
-        return a + b
+        return a + unitBChannels(layout: unitB, prefix: prefixB)
     }
 
     /// Software Return source pairs: 8 (the driver's 0-7) with one unit, 32

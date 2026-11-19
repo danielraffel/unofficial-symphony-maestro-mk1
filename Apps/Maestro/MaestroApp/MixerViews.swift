@@ -99,6 +99,8 @@ struct MixerView: View {
 
     // P3F-15: Channel naming — stored in UserDefaults
     @AppStorage("mixerChannelNames") private var channelNamesJSON: String = "[]"
+    /// Unit B labels are indexed within unit B's own peripheral.
+    @AppStorage("mixerChannelNamesUnitB") private var unitBChannelNamesJSON: String = "[]"
 
     // P3F-16: Channel visibility — stored in UserDefaults
     @AppStorage("mixerChannelVisibility") private var channelVisibilityJSON: String = "[]"
@@ -112,9 +114,21 @@ struct MixerView: View {
     private let mixerCount = 2
 
     private var channelNames: [String] {
-        get {
-            (try? JSONDecoder().decode([String].self, from: Data(channelNamesJSON.utf8))) ?? []
-        }
+        decodeNames(channelNamesJSON) + decodeNames(unitBChannelNamesJSON)
+    }
+
+    private func decodeNames(_ json: String) -> [String] {
+        (try? JSONDecoder().decode([String].self, from: Data(json.utf8))) ?? []
+    }
+
+    private var unitACount: Int { appState.cardLayout.mixerChannels.count }
+
+    private func isUnitBChannel(_ index: Int) -> Bool {
+        appState.unitBOnCard && index >= unitACount
+    }
+
+    private func localChannelIndex(_ index: Int) -> Int {
+        isUnitBChannel(index) ? index - unitACount : index
     }
 
     private var channelVisibility: [Bool] {
@@ -192,6 +206,7 @@ struct MixerView: View {
                         // Keep the array empty so newly discovered channels
                         // continue to use their hardware/default names.
                         channelNamesJSON = "[]"
+                        unitBChannelNamesJSON = "[]"
                         NSApp.keyWindow?.endEditing(for: nil)
                         NSApp.keyWindow?.makeFirstResponder(nil)
                     }
@@ -710,8 +725,9 @@ struct MixerView: View {
     }
 
     private func customChannelLabel(for index: Int) -> String {
-        let names = channelNames
-        return index < names.count ? names[index] : ""
+        let names = isUnitBChannel(index) ? decodeNames(unitBChannelNamesJSON) : decodeNames(channelNamesJSON)
+        let local = localChannelIndex(index)
+        return local < names.count ? names[local] : ""
     }
 
     private func channelLabel(for index: Int) -> String {
@@ -722,13 +738,16 @@ struct MixerView: View {
     }
 
     private func setCustomChannelLabel(_ value: String, for index: Int) {
-        var names = channelNames
-        if names.count <= index {
-            names.append(contentsOf: Array(repeating: "", count: index + 1 - names.count))
+        let unitB = isUnitBChannel(index)
+        var names = unitB ? decodeNames(unitBChannelNamesJSON) : decodeNames(channelNamesJSON)
+        let local = localChannelIndex(index)
+        if names.count <= local {
+            names.append(contentsOf: Array(repeating: "", count: local + 1 - names.count))
         }
-        names[index] = value
+        names[local] = value
         if let data = try? JSONEncoder().encode(names) {
-            channelNamesJSON = String(data: data, encoding: .utf8) ?? "[]"
+            let encoded = String(data: data, encoding: .utf8) ?? "[]"
+            if unitB { unitBChannelNamesJSON = encoded } else { channelNamesJSON = encoded }
         }
     }
 
@@ -742,12 +761,25 @@ struct MixerView: View {
 
     private func ensureNamesAndVisibility() {
         // Initialize arrays if they don't match channel count
-        let count = channelCount
-        var names = channelNames
-        if names.count < count {
-            names.append(contentsOf: Array(repeating: "", count: count - names.count))
-            if let data = try? JSONEncoder().encode(names) {
-                channelNamesJSON = String(data: data, encoding: .utf8) ?? "[]"
+        let aCount = unitACount
+        var aNames = decodeNames(channelNamesJSON)
+        var bNames = decodeNames(unitBChannelNamesJSON)
+        // Migrate the pre-two-unit flat array once, preserving existing names
+        // when unit B first appears.
+        if appState.unitBOnCard && bNames.isEmpty && aNames.count > aCount {
+            bNames = Array(aNames.dropFirst(aCount))
+            aNames = Array(aNames.prefix(aCount))
+            if let data = try? JSONEncoder().encode(bNames) {
+                unitBChannelNamesJSON = String(data: data, encoding: .utf8) ?? "[]"
+            }
+        }
+        if aNames.count < aCount, let data = try? JSONEncoder().encode(aNames + Array(repeating: "", count: aCount - aNames.count)) {
+            channelNamesJSON = String(data: data, encoding: .utf8) ?? "[]"
+        }
+        if appState.unitBOnCard {
+            let bCount = max(0, channelCount - aCount)
+            if bNames.count < bCount, let data = try? JSONEncoder().encode(bNames + Array(repeating: "", count: bCount - bNames.count)) {
+                unitBChannelNamesJSON = String(data: data, encoding: .utf8) ?? "[]"
             }
         }
         var vis = channelVisibility

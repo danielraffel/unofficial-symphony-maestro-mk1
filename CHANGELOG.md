@@ -11,6 +11,7 @@
 
 ### New
 
+- **With two Symphony I/Os at 64 channels, Mixer and Output Routing use each unit's own prefix and board names, including optical format and `N.A.` channels; custom mixer labels stay with their unit.**
 - **With two Symphony I/Os at 64 channels, choosing Unit B on the Outputs page shows unit B's own speaker and headphone controls,** as Apogee's software did. The Mac's volume keys still control unit A.
 - **Identify, on the Output Routing page, lights up all of the Symphony I/O's front-panel lights** so you can find the unit, as Apogee's software did; press it again to turn them off. With two units there is one for each.
 
