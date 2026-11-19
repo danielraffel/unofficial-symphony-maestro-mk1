@@ -103,9 +103,37 @@ final class AppState {
     /// Session-only Identify latches, one per unit connection.
     let identifyA = IdentifyState()
     let identifyB = IdentifyState()
-    /// Hardware UIDs read at connect. Nil preserves the legacy layout scope.
-    var unitAIdentity: UInt64?
-    var unitBIdentity: UInt64?
+    /// Identity belongs to the connection generation. Pending/failed discovery
+    /// cannot select a previous occupant's persistence scope.
+    var unitAIdentityState: UnitIdentityState = .pending
+    var unitBIdentityState: UnitIdentityState = .pending
+    var unitAIdentity: UInt64? {
+        get { unitAIdentityState.identity }
+        set { unitAIdentityState = newValue.map(UnitIdentityState.known) ?? .pending }
+    }
+    var unitBIdentity: UInt64? {
+        get { unitBIdentityState.identity }
+        set { unitBIdentityState = newValue.map(UnitIdentityState.known) ?? .pending }
+    }
+    var unitAGeneration = UUID()
+    var unitBGeneration = UUID()
+    var unitAIdentityTask: Task<UInt64?, Never>?
+    var unitBIdentityTask: Task<UInt64?, Never>?
+
+    func invalidateUnitAIdentity() {
+        unitAIdentityTask?.cancel()
+        unitAIdentityTask = nil
+        unitAGeneration = UUID()
+        unitAIdentityState = .pending
+    }
+
+    func invalidateUnitBIdentity() {
+        unitBIdentityTask?.cancel()
+        unitBIdentityTask = nil
+        unitBGeneration = UUID()
+        unitBIdentityState = .pending
+        unitBIdentityAttempted = false
+    }
     /// Latches the single unit-B identity attempt for the current connection.
     var unitBIdentityAttempted = false
 
@@ -115,8 +143,8 @@ final class AppState {
             if device !== newValue {
                 identifyA.reset()
                 identifyB.reset()
-                unitAIdentity = nil
-                unitBIdentity = nil
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
                 unitBIdentityAttempted = false
             }
         }
@@ -136,6 +164,8 @@ final class AppState {
     var connectionMode: ConnectionMode = .disconnected {
         didSet {
             if connectionMode == .disconnected {
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
                 identifyA.reset()
                 identifyB.reset()
             }
@@ -162,7 +192,9 @@ final class AppState {
         // The converter simulation keeps its own (`sim:`) state too.
         ChannelStateStore(layout: cardLayout,
                           isSimulatingCards: cardSimulation != nil || connectionMode == .simulated,
-                          identity: unitAIdentity)
+                          identity: unitAIdentity,
+                          awaitingIdentity: connectionMode == .hardware && unitAIdentity == nil && cardLayout.converterLayout == nil && cardLayout.converter == nil,
+                          allowLegacyMigration: allowsLegacyUnitState(unit: .a))
     }
     /// Whether hardware initialization is complete. Views must wait for this
     /// before reading from the device to avoid racing with initializeDevice().
@@ -718,7 +750,7 @@ final class AppState {
     /// Replaces and Mirrors (see `SlotDigitalSettings`). Per card pair, as the
     /// daemon kept them per board.
     var digitalSettingsKey: String? {
-        cardLayout.savedStateScope.map { "slotDigitalSettings.\($0)" }
+        cardLayout.savedStateScope.map { unitPreferenceKey(legacy: "slotDigitalSettings.\($0)", category: "slotDigitalSettings") }
     }
 
     var rememberedDigitalSettings: SlotDigitalSettings {
@@ -790,7 +822,18 @@ final class AppState {
 
     /// Set when the ThunderBridge driver found something other than a Symphony
     /// I/O on the cable (an older Apogee converter). Nil for a Symphony I/O.
-    var connectedUnit: ConnectedUnit?
+    var connectedUnit: ConnectedUnit? {
+        didSet {
+            if connectedUnit != oldValue {
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                if connectedUnit != nil {
+                    unitAIdentityState = .failed
+                    unitBIdentityState = .failed
+                }
+            }
+        }
+    }
     /// The driver's raw probe word behind `connectedUnit`, for the copied
     /// Device Info. Zero when the driver did not probe.
     var connectedUnitProbeWord: UInt32 = 0
@@ -798,7 +841,17 @@ final class AppState {
     /// from the probe word with an older driver, or the converter simulation.
     /// Nil for a Symphony I/O. Lays out, names and meters converter channels.
     var converterSystem: ConverterSystem? {
-        didSet { if converterSystem != oldValue { converterSystemChanged() } }
+        didSet {
+            if converterSystem != oldValue {
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                if converterSystem != nil {
+                    unitAIdentityState = .failed
+                    unitBIdentityState = .failed
+                }
+                converterSystemChanged()
+            }
+        }
     }
 
     var symphonyCardInputNamingRevision = 0
@@ -1124,7 +1177,10 @@ final class AppState {
     /// Unit B's connection: unit A's driver client with port byte 1.
     var unitBDevice: (any DeviceConnection)? {
         willSet {
-            if unitBDevice !== newValue { identifyB.reset() }
+            if unitBDevice !== newValue {
+                identifyB.reset()
+                invalidateUnitBIdentity()
+            }
         }
     }
     /// The unit the per-unit pages show. Only `.b` while the picker is shown.
@@ -1573,8 +1629,8 @@ final class AppState {
             transportType = nil
             transportPresent = false
             isHardwareInitialized = false
-            unitAIdentity = nil
-            unitBIdentity = nil
+            invalidateUnitAIdentity()
+            invalidateUnitBIdentity()
             unitBIdentityAttempted = false
             viewReloadToken = UUID()
             Task { await reconnectHardware() }
@@ -1933,7 +1989,7 @@ final class AppState {
             if best.transportType == .thunderbolt {
                 // ── Thunderbolt path: standard CoreAudio properties → AudioDriverKit dext
                 let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                 self.device = tbDevice
                 self.connectionMode = .hardware
                 self.transportType = .thunderbolt
@@ -1965,7 +2021,7 @@ final class AppState {
             } else {
                 // ── USB path: XPC proxy → USB vendor EP0 commands
                 let xpcDevice = XPCDeviceConnection(identifier: identifier,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                 self.device = xpcDevice
                 self.connectionMode = .hardware
                 self.transportType = .usb
@@ -2030,37 +2086,18 @@ final class AppState {
     /// keeps converter chains away from the Symphony-only 0xC0 command.
     @MainActor
     private func readUnitAIdentityAfterCapabilities() async {
-        let identity: UInt64?
-        if let tb = device as? ThunderboltDeviceConnection {
-            guard SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .a) else {
-                if unitAIdentity != nil {
-                    unitAIdentity = nil
-                    viewReloadToken = UUID()
-                }
-                return
-            }
-            identity = await tb.readHardwareUniqueID()
-        } else if let usb = device as? XPCDeviceConnection {
-            // The USB discovery path publishes Symphony I/O devices only; a
-            // converter chain exists only behind the ThunderBridge capability matrix.
-            guard cardLayout.converter == nil else {
-                if unitAIdentity != nil {
-                    unitAIdentity = nil
-                    viewReloadToken = UUID()
-                }
-                return
-            }
-            identity = await usb.readHardwareUniqueID()
-        } else {
+        guard let captured = device else { return }
+        guard cardLayout.converter == nil, cardLayout.converterLayout == nil,
+              (captured is XPCDeviceConnection || SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .a)) else {
+            invalidateUnitAIdentity()
+            unitAIdentityState = .failed
+            viewReloadToken = UUID()
             return
         }
-        guard device != nil else { return }
-        // A transient failed read during link recovery must not downgrade a
-        // known identity to the layout/legacy scope. The identity is scoped to
-        // this device connection and is cleared only when that connection ends.
-        if let identity, identity != unitAIdentity {
-            unitAIdentity = identity
-            viewReloadToken = UUID()
+        await resolveUnitIdentity(for: .a, connection: captured) {
+            if let tb = captured as? ThunderboltDeviceConnection { return await tb.readHardwareUniqueID() }
+            if let usb = captured as? XPCDeviceConnection { return await usb.readHardwareUniqueID() }
+            return nil
         }
     }
 
@@ -2078,6 +2115,13 @@ final class AppState {
         loggedConverterNotices = []
         if let tb = device as? ThunderboltDeviceConnection { applyStoredConverterConfig(tb) }
         refreshConverterSystem()
+        if connectedUnit != nil || converterSystem != nil {
+            invalidateUnitAIdentity()
+            invalidateUnitBIdentity()
+            unitAIdentityState = .failed
+            unitBIdentityState = .failed
+        }
+        let generation = unitAGeneration
         // Needed before the input routing is laid out (thunderboltCaptureSlot1),
         // so it is awaited here; read off the main thread like every other
         // user-client call that can wait on the driver.
@@ -2101,6 +2145,7 @@ final class AppState {
             } else {
                 major = nil
             }
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             if slot == 0 { primaryBoardHardwareMajor = major } else { secondaryBoardHardwareMajor = major }
         }
         refreshSecondPortState()
@@ -2116,6 +2161,7 @@ final class AppState {
         if let raw = (try? await device.getProperty(PropertyAddress(selector: .primaryBoardType)))?.asUInt32,
            raw <= UInt32(UInt8.max),
            let card = IOCardType(rawValue: UInt8(raw)) {
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             self.primaryBoardType = card
             // A live read of 0 means "nothing reported", not "measured empty".
             // The secondary path already refuses to record .none for exactly this
@@ -2128,16 +2174,19 @@ final class AppState {
             print("[Maestro] Primary board: \(card.digitalLabel) (raw=\(raw))")
         }
 
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         // Secondary board: retry up to 3 times with increasing delays.
         // The XMOS USB controller may need time between sequential slot reads.
         for attempt in 1...3 {
             if attempt > 1 {
-                try? await Task.sleep(for: .milliseconds(100 * attempt))
+                do { try await Task.sleep(for: .milliseconds(100 * attempt)) } catch { return }
+                guard self.device === device, unitAGeneration == generation else { return }
             }
             if let raw = (try? await device.getProperty(PropertyAddress(selector: .secondaryBoardType)))?.asUInt32,
                raw <= UInt32(UInt8.max),
                let card = IOCardType(rawValue: UInt8(raw)),
                (card != .none || thunderboltReadDistinguishesEmptySlot) {
+                guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
                 self.secondaryBoardType = card
                 self.secondaryBoardSource = .detected
                 print("[Maestro] Secondary board: \(card.digitalLabel) (raw=\(raw)) [attempt \(attempt)]")
@@ -2146,6 +2195,7 @@ final class AppState {
                 return
             }
         }
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         print("[Maestro] Secondary board: not detected after 3 attempts (hardware may have 1 board or slot 1 empty)")
         // Still save whatever we got (primary may have succeeded)
         saveBoardTypeCache()
@@ -2169,6 +2219,7 @@ final class AppState {
             await replayConverterRouting(resetFirst: true)
             return
         }
+        guard connectionMode != .hardware || unitAIdentity != nil else { return }
         // The cache is keyed by product ID, so ThunderBridge (0x12) and the USB
         // modes keep separate tables. On ThunderBridge the dext replays its
         // default routing on every Start and in-place recovery, so without this
@@ -2183,7 +2234,7 @@ final class AppState {
             return
         }
         let id = device.identifier
-        let cache = RoutingStateCache(direction: "output", productID: id.productID)
+        let cache = peripheralRoutingCache(direction: "output")
         if transportType == .thunderbolt {
             Self.migrateMainPairToMixer(cache: cache, mixerRow: id.mode.channelCount / 2,
                                         board1: primaryBoardType, board2: secondaryBoardType)
@@ -2230,6 +2281,7 @@ final class AppState {
     /// once, as evidence of what it really carries.
     @MainActor
     func syncInputRoutingToHardware() async {
+        guard connectionMode != .hardware || unitAIdentity != nil else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
         // Symphony I/O routing. Nothing is sent to a converter unprompted, the
@@ -2250,7 +2302,7 @@ final class AppState {
         if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
             print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
         } else {
-            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            let cache = peripheralRoutingCache(direction: "input")
             if ThunderboltInputRoutingMigration.run(routingKey: cache.key) {
                 print("[Maestro] syncInputRouting: cleared input routing saved before 0.8.40 (made on the old grid); the driver's default stands")
             }
@@ -2345,6 +2397,7 @@ final class AppState {
     /// stored, so a unit nobody has configured here is left alone.
     @MainActor
     func syncDeviceSettingsToHardware() async {
+        guard unitAIdentity != nil else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
         // These are Symphony I/O settings. A converter does not have them, and
@@ -2460,7 +2513,7 @@ final class AppState {
             return discovered.first.map { PreferredDevice(device: $0, tbConnection: nil, tbVerdict: nil) }
         }
         let probe = ThunderboltDeviceConnection(identifier: tb.identifier, audioDeviceID: tb.audioDeviceID,
-                        settingsStore: .persistent(for: tb.identifier))
+                        settingsStore: DeviceSettingsStore())
         let verdict = probe.probeEndpoint()
         if !verdict.isLive, let usb = discovered.first(where: { $0.transportType == .usb }) {
             probe.closeDextClient()
@@ -2547,7 +2600,7 @@ final class AppState {
 
                 if best.transportType == .thunderbolt {
                     let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                     self.device = tbDevice
                     // Probe before declaring the endpoint ready. A powered-off
                     // Symphony can still be discoverable as a ThunderBridge
@@ -2560,8 +2613,8 @@ final class AppState {
                         // recognised as a removal even in this disconnected state.
                         self.activeAudioDeviceID = audioDeviceID
                         self.connectionMode = .disconnected
-                        self.unitAIdentity = nil
-                        self.unitBIdentity = nil
+                        self.invalidateUnitAIdentity()
+                        self.invalidateUnitBIdentity()
                         self.unitBIdentityAttempted = false
                         self.transportType = .thunderbolt
                         self.transportPresent = true
@@ -2599,7 +2652,7 @@ final class AppState {
                     // Nothing is sent to a unit that is still starting up.
                     await waitForUSBUnitToSettle()
                     let xpcDevice = XPCDeviceConnection(identifier: identifier,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                     self.device = xpcDevice
                     self.connectionMode = .hardware
                     self.transportType = .usb
@@ -3832,7 +3885,7 @@ final class AppState {
         }
         var replayed: [SymphonyIODefaultRouting.Route] = []
         if RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil {
-            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            let cache = peripheralRoutingCache(direction: "input")
             replayed = InputRoutingReplay.writes(
                 saved: cache.load() ?? [:], columns: layout.inputRoutingColumns,
                 pairCount: tb.identifier.mode.channelCount / 2)
@@ -3847,7 +3900,7 @@ final class AppState {
     func cachedOutputRouteMap() -> [UInt8: UInt8] {
         guard let device = self.device else { return [:] }
         let id = device.identifier
-        let cache = RoutingStateCache(direction: "output", productID: id.productID)
+        let cache = peripheralRoutingCache(direction: "output")
         guard let routes = cache.loadMulti(), !routes.isEmpty else { return [:] }
         let board1 = self.primaryBoardType
         let board2 = self.secondaryBoardType
@@ -4076,7 +4129,7 @@ final class AppState {
         }
 
         // Mixer channel names (app-side labels, not hardware state — P3F-39)
-        if let str = UserDefaults.standard.string(forKey: "mixerChannelNames"),
+        if let str = UserDefaults.standard.string(forKey: mixerNamesKey()),
            let names = try? JSONDecoder().decode([String].self, from: Data(str.utf8)) {
             preset.channelNames = names
         }
@@ -4194,7 +4247,7 @@ final class AppState {
                 if !meta.channelNames.isEmpty,
                    let encoded = try? JSONEncoder().encode(meta.channelNames),
                    let str = String(data: encoded, encoding: .utf8) {
-                    UserDefaults.standard.set(str, forKey: "mixerChannelNames")
+                    UserDefaults.standard.set(str, forKey: mixerNamesKey())
                 }
             }
             print("[Maestro] loadPresetBundle: bundle loaded from \(url.lastPathComponent)")
@@ -4307,7 +4360,7 @@ final class AppState {
         if !preset.channelNames.isEmpty,
            let data = try? JSONEncoder().encode(preset.channelNames),
            let str = String(data: data, encoding: .utf8) {
-            UserDefaults.standard.set(str, forKey: "mixerChannelNames")
+            UserDefaults.standard.set(str, forKey: mixerNamesKey())
         }
 
         // Trigger view reloads (.task(id: appState.viewReloadToken) re-runs on UUID change)

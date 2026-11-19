@@ -30,10 +30,13 @@ extension AppState {
             ?? Array(repeating: InputChannelState(), count: layout.analogInputStripCount)
         metadata.outputChannelStates = channelStateStore.load(ChannelStateStore.outputKey)
             ?? Array(repeating: OutputChannelState(), count: layout.analogOutputStripCount)
-        if let names = UserDefaults.standard.string(forKey: "mixerChannelNames") {
+        if let names = UserDefaults.standard.string(forKey: mixerNamesKey()) {
             metadata.channelNames = (try? JSONDecoder().decode([String].self, from: Data(names.utf8))) ?? []
         }
         var seed = ThunderboltPreset(layout: layout, metadata: metadata)
+        if channelStateStore.hasVerifiedInputIdentity, let identity = unitAIdentity {
+            seed.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
+        }
         let cardInputs = symphonyCardInputStore?.load() ?? [:]
         seed.cardInputRoutes = (0..<(unitBOnCard ? 64 : 32)).map { cardInputs[$0] ?? $0 }
         seed.routingMode = UserDefaults.standard.integer(forKey: "routingMode")
@@ -53,7 +56,7 @@ extension AppState {
             seed.version = 2
             seed.outputRoutes += unitBOutputSources(layout: bLayout)
             var metadata = MaestroPreset()
-            if let names = UserDefaults.standard.string(forKey: "mixerChannelNamesUnitB") {
+            if let names = UserDefaults.standard.string(forKey: mixerNamesKey(unit: .b)) {
                 metadata.channelNames = (try? JSONDecoder().decode([String].self, from: Data(names.utf8))) ?? []
             }
             let store = unitBChannelStateStore
@@ -62,6 +65,9 @@ extension AppState {
             metadata.outputChannelStates = store.load(ChannelStateStore.outputKey)
                 ?? Array(repeating: OutputChannelState(), count: bLayout.analogOutputStripCount)
             var value = ThunderboltPreset(layout: bLayout, metadata: metadata)
+            if store.hasVerifiedInputIdentity, let identity = unitBIdentity {
+                value.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
+            }
             value.outputRoutes = Array(0..<32)
             value.routingMode = seed.routingMode
             value.mixers = (0..<2).map {
@@ -127,7 +133,7 @@ extension AppState {
         guard device === connection else { throw DeviceConnectionError.notConnected }
         if recallB, let saved = preset.unitB, let bLayout, unitBDevice === b {
             if !saved.metadata.channelNames.isEmpty {
-                UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: "mixerChannelNamesUnitB")
+                UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: mixerNamesKey(unit: .b))
             }
             bStore.save(saved.metadata.inputChannelStates, for: ChannelStateStore.inputKey)
             bStore.save(saved.metadata.outputChannelStates, for: ChannelStateStore.outputKey)
@@ -148,7 +154,7 @@ extension AppState {
         if !meta.inputChannelStates.isEmpty { channelStateStore.save(meta.inputChannelStates, for: ChannelStateStore.inputKey) }
         if !meta.outputChannelStates.isEmpty { channelStateStore.save(meta.outputChannelStates, for: ChannelStateStore.outputKey) }
         if !meta.channelNames.isEmpty {
-            UserDefaults.standard.set(String(data: try JSONEncoder().encode(meta.channelNames), encoding: .utf8), forKey: "mixerChannelNames")
+            UserDefaults.standard.set(String(data: try JSONEncoder().encode(meta.channelNames), encoding: .utf8), forKey: mixerNamesKey())
         }
         for digital in PresetDigitalWrites.writes(for: meta, layout: cardLayout) {
             rememberDigitalSetting(digital.address.selector, slot: Int(digital.address.element), value: digital.value)
@@ -189,9 +195,9 @@ extension AppState {
                 input[pair] = column
             }
         }
-        RoutingStateCache(direction: "input", productID: productID).save(input)
+        peripheralRoutingCache(direction: "input").save(input)
         let channels = unitBOnCard ? 64 : 32
-        RoutingStateCache(direction: "output", productID: productID).save(
+        peripheralRoutingCache(direction: "output").save(
             outputGrid(sources: preset.outputRoutes.prefix(32).map { Int($0) >= recalledChannels && $0 < 64 ? SymphonyIORoutingAddress.none : $0 }, layout: cardLayout, channels: channels, unitA: true))
     }
 

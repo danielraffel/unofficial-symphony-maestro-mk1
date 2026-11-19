@@ -71,7 +71,16 @@ extension ThunderboltPreset {
         if layout.slot2 == .micPre8 {
             if let identity = try? readRaw(0xC0, 0, 8), identity.count == 8,
                identity.contains(where: { $0 != 0 }), identity.contains(where: { $0 != 0xFF }) {
-                preset.unitID = identity
+                // Fresh hardware identity does not establish where the seed's
+                // strips came from: migration cannot authorize phantom ON
+                // (Astra review majors 1/5). Without verified same-unit
+                // provenance the bundle carries no unit ID, so recall never
+                // switches phantom on; the save itself still succeeds.
+                if preset.metadata.inputChannelStates.contains(where: { $0.phantom }), seed.unitID != identity {
+                    onSkipped("phantom power provenance (phantom will not be restored)")
+                } else {
+                    preset.unitID = identity
+                }
             } else {
                 onSkipped("unit identity")
             }

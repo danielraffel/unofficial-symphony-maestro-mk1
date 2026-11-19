@@ -110,7 +110,9 @@ extension AppState {
     var unitBChannelStateStore: ChannelStateStore {
         ChannelStateStore(layout: unitBLayout ?? CardLayout(isKnown: false),
                           isSimulatingCards: cardSimulation != nil || simulatedUnitB != nil, unit: .b,
-                          identity: unitBIdentity)
+                          identity: unitBIdentity,
+                          awaitingIdentity: connectionMode == .hardware && unitBIdentity == nil,
+                          allowLegacyMigration: allowsLegacyUnitState(unit: .b))
     }
     var unitPeripheralPrefix: String {
         get { activeUnit == .b ? unitBPeripheralPrefix : peripheralPrefix }
@@ -160,7 +162,7 @@ extension AppState {
 
     /// Unit B's optical formats, Replaces and Mirrors, under their own key.
     var unitBDigitalSettingsKey: String? {
-        unitBLayout?.savedStateScope.map { "slotDigitalSettings.unitB.\($0)" }
+        unitBLayout?.savedStateScope.map { unitPreferenceKey(legacy: "slotDigitalSettings.unitB.\($0)", category: "slotDigitalSettings", unit: .b) }
     }
 
     var unitBDigitalSettings: SlotDigitalSettings {
@@ -297,11 +299,11 @@ extension AppState {
     }
 
     var unitBInputRoutingCache: RoutingStateCache? {
-        guard let device,
+        guard device != nil,
               let direction = Self.unitBInputRoutingDirection(
                 cardScope: unitBLayout?.savedStateScope,
                 simulating: cardSimulation != nil || simulatedUnitB != nil) else { return nil }
-        return RoutingStateCache(direction: direction, productID: device.identifier.productID)
+        return peripheralRoutingCache(direction: direction.hasPrefix("input") ? "input" : "output", unit: .b)
     }
 
     static func unitBInputRoutingDirection(cardScope: String?, simulating: Bool) -> String? {
@@ -317,11 +319,11 @@ extension AppState {
     /// is: unit A's saved table is never touched, and a unit B with other
     /// cards does not inherit the columns. Nil until unit B's cards are known.
     var unitBOutputRoutingCache: RoutingStateCache? {
-        guard let device,
+        guard device != nil,
               let direction = Self.unitBOutputRoutingDirection(
                 cardScope: unitBLayout?.savedStateScope,
                 simulating: cardSimulation != nil || simulatedUnitB != nil) else { return nil }
-        return RoutingStateCache(direction: direction, productID: device.identifier.productID)
+        return peripheralRoutingCache(direction: direction.hasPrefix("input") ? "input" : "output", unit: .b)
     }
 
     /// The routing cache direction for unit B's outputs with these cards.
@@ -474,19 +476,19 @@ extension AppState {
     @MainActor
     func refreshUnitBOffMain(_ tb: ThunderboltDeviceConnection) async {
         guard simulatedUnitB == nil, !twoUnitSleeping else { return }
+        let parentGeneration = unitAGeneration
+        let initialBGeneration = unitBGeneration
         let state = await Task.detached(priority: .utility) { tb.readUnitBState() }.value
+        guard unitAGeneration == parentGeneration, unitBGeneration == initialBGeneration, !Task.isCancelled else { return }
         guard (device as? ThunderboltDeviceConnection) === tb, connectedUnit == nil else { return }
         applyUnitB(state?.info, from: tb, confirmedAbsent: state?.present == false)
         // Once per unit-B connection: the health loop calls this every few
         // seconds and must not put a vendor read on the bus each time.
         guard state?.present == true, !unitBIdentityAttempted,
               SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .b) else { return }
-        unitBIdentityAttempted = true
-        let identity = await tb.readHardwareUniqueID(port: ThunderboltUnitBConnection.port)
-        guard (device as? ThunderboltDeviceConnection) === tb, connectedUnit == nil else { return }
-        if let identity, identity != unitBIdentity {
-            unitBIdentity = identity
-            viewReloadToken = UUID()
+        guard let captured = unitBDevice as? ThunderboltUnitBConnection else { return }
+        await resolveUnitIdentity(for: .b, connection: captured) {
+            await tb.readHardwareUniqueID(port: ThunderboltUnitBConnection.port)
         }
     }
 
@@ -507,7 +509,7 @@ extension AppState {
         let appeared = info != nil && (unitB == nil || newConnection)
         unitB = info
         guard let info, let tb else {
-            unitBIdentity = nil
+            invalidateUnitBIdentity()
             unitBIdentityAttempted = false
             loopSyncState = nil
             loopSyncError = nil
@@ -531,10 +533,10 @@ extension AppState {
         }
         if newConnection || unitBDevice == nil {
             if newConnection {
-                unitBIdentity = nil
+                invalidateUnitBIdentity()
                 unitBIdentityAttempted = false
             }
-            let connection = tb.makeUnitBConnection(settingsStore: .persistent(for: tb.identifier, unit: .b))
+            let connection = tb.makeUnitBConnection(settingsStore: DeviceSettingsStore())
             let oldDevice = unitBDevice
             (oldDevice as? ThunderboltUnitBConnection)?.invalidate()
             Task { await oldDevice?.disconnect() }

@@ -39,31 +39,43 @@ public struct ChannelStateStore {
     /// True under the card-simulation harness: isolated from real state.
     public let isSimulating: Bool
 
-    /// Which unit the state belongs to. Unit B (the second Symphony I/O on
-    /// ThunderBridge port 2) has its own keys, prefixed `unitB:`, so a unit B
-    /// with the same cards as unit A never reads or overwrites unit A's state,
-    /// and it never inherits or claims the legacy unscoped key.
+    /// Addressing role, used only for historical layout-key migration. Known
+    /// physical UIDs use the same destination on either port. Unit B never
+    /// inherits unit A's unscoped legacy record.
     public let unit: DeviceUnit
-    /// Hardware identity when the transport could read it. Unknown keeps the
-    /// historical layout-keyed behaviour.
+    /// Hardware identity when the transport could read it. Production discovery
+    /// sets awaitingIdentity to keep pending/failed sessions out of legacy state.
     public let identity: UInt64?
     private let legacyScope: String?
+    private let permitsLegacyInheritance: Bool
+    private let layoutScope: String?
+    private let awaitingIdentity: Bool
+    private let allowLegacyMigration: Bool
 
     public init(
         defaults: UserDefaults = .standard,
         layout: CardLayout,
         isSimulatingCards: Bool = SimulatedDevice.isSimulatingCards(),
         unit: DeviceUnit = .a,
-        identity: UInt64? = nil
+        identity: UInt64? = nil,
+        awaitingIdentity: Bool = false,
+        allowLegacyMigration: Bool = true
     ) {
         self.defaults = defaults
+        self.awaitingIdentity = awaitingIdentity
+        self.allowLegacyMigration = allowLegacyMigration
         self.isSimulating = isSimulatingCards
         self.unit = unit
+        let identity = layout.converterLayout == nil && layout.converter == nil ? identity : nil
         self.identity = identity
+        self.layoutScope = layout.savedStateScope
+        self.permitsLegacyInheritance = layout.converterLayout == nil && layout.converter == nil
         var computedScope: String?
         if unit == .a, let converters = layout.converterLayout {
             let chain = "conv:\(converters.routingSignature)"
             computedScope = chain
+        } else if layout.converter != nil {
+            computedScope = "conv:unidentified"
         } else if let scope = layout.savedStateScope {
             let unitScope = unit == .b ? "unitB:\(scope)" : scope
             computedScope = unitScope
@@ -77,9 +89,8 @@ public struct ChannelStateStore {
             // Identity AND card layout: the strips depend on the fitted cards,
             // so a card swap in the same unit must not load the other layout's
             // state (the reason the layout scope exists).
-            let prefix = unit == .a ? "unitA" : "unitB"
-            let layoutPart = computedScope.map { ":\($0)" } ?? ""
-            self.scope = "\(prefix):v2:\(String(identity, radix: 16))\(layoutPart)"
+            let layoutPart = layout.savedStateScope.map { ":\($0)" } ?? ""
+            self.scope = "unit:v3:\(String(identity, radix: 16))\(layoutPart)"
         } else {
             self.scope = isSimulatingCards ? computedScope.map { "sim:\($0)" } : computedScope
         }
@@ -87,7 +98,7 @@ public struct ChannelStateStore {
 
     /// The key a `base` is read from / written to for this scope.
     public func key(_ base: String) -> String {
-        if identity == nil, let legacyScope,
+        if identity == nil, !isSimulating, permitsLegacyInheritance, let legacyScope,
            let migratedScope = defaults.string(forKey: "\(base).\(legacyScope).migratedTo"),
            !migratedScope.isEmpty {
             return "\(base).\(migratedScope)"
@@ -101,24 +112,51 @@ public struct ChannelStateStore {
 
     /// Raw saved data for `base`, applying the migration rules above.
     public func loadData(_ base: String) -> Data? {
+        guard !awaitingIdentity else { return nil }
         if let data = defaults.data(forKey: key(base)) { return data }
-        if identity == nil, let legacyScope,
+        if identity == nil, !isSimulating, permitsLegacyInheritance, let legacyScope,
            defaults.string(forKey: "\(base).\(legacyScope).migratedTo") != nil {
             return nil
         }
-        if identity != nil, let legacyScope, !isSimulating {
-            let legacyKey = "\(base).\(legacyScope)"
-            let marker = "\(legacyKey).migratedTo"
-            if defaults.string(forKey: marker) == nil, let data = defaults.data(forKey: legacyKey) {
-                defaults.set(data, forKey: key(base))
-                defaults.set(scope, forKey: marker)
-                return data
+        if let identity, let scope, !isSimulating, permitsLegacyInheritance {
+            let destination = "\(base).\(scope)"
+            // Previous F2 versions included the port twice for B. Accept both
+            // histories, but never take another physical UID's migrated data.
+            for role in [DeviceUnit.a, .b] {
+                let oldLayout = layoutScope.map { role == .b ? "unitB:\($0)" : $0 }
+                let suffix = oldLayout.map { ":\($0)" } ?? ""
+                let old = "\(base).\(role == .a ? "unitA" : "unitB"):v2:\(String(identity, radix: 16))\(suffix)"
+                if let data = defaults.data(forKey: old) {
+                    defaults.set(data, forKey: destination)
+                    if let oldLayout {
+                        let marker = "\(base).\(oldLayout).migratedTo"
+                        if defaults.string(forKey: marker) == String(old.dropFirst(base.count + 1)) {
+                            defaults.set(scope, forKey: marker)
+                        }
+                    }
+                    return data
+                }
             }
+            guard allowLegacyMigration else { return nil }
+            if let legacyScope {
+                let source = "\(base).\(legacyScope)"
+                let claimed = unit == .a && defaults.string(forKey: Self.claimKey(base)) == legacyScope
+                let unclaimed = unit == .a && defaults.string(forKey: Self.claimKey(base)) == nil
+                let data = defaults.data(forKey: source)
+                    ?? ((claimed || unclaimed) ? defaults.data(forKey: base) : nil)
+                let copied = UnitStateMigration.copyData(defaults: defaults, source: source,
+                                                         destination: destination, owner: scope, data: data)
+                if copied != nil, claimed || unclaimed {
+                    defaults.set(legacyScope, forKey: Self.claimKey(base))
+                }
+                return copied
+            }
+            return nil
         }
         guard let scope else { return nil }                 // unscoped key was already tried
         guard !isSimulating else { return nil }             // never inherit real state
         guard unit == .a else { return nil }                // unit B never inherits unit A's
-        guard !scope.hasPrefix("conv:") else { return nil }  // converters never inherit a Symphony I/O's
+        guard permitsLegacyInheritance else { return nil }  // converters never inherit a Symphony I/O's
         guard let legacy = defaults.data(forKey: base) else { return nil }
         let claim = Self.claimKey(base)
         if let owner = defaults.string(forKey: claim), owner != scope { return nil }
@@ -128,7 +166,21 @@ public struct ChannelStateStore {
 
     /// Store `data` for `base` under this scope.
     public func saveData(_ data: Data, for base: String) {
-        defaults.set(data, forKey: key(base))
+        guard !awaitingIdentity else { return }
+        // Bind verification to the exact saved bytes. A partial save or later
+        // migration cannot turn a separate boolean marker into phantom authority.
+        let destination = key(base)
+        let previous = defaults.data(forKey: destination)
+        let verified = identity != nil && (previous == nil
+            || defaults.data(forKey: destination + ".verifiedIdentity") == previous)
+        defaults.set(data, forKey: destination)
+        if verified { defaults.set(data, forKey: destination + ".verifiedIdentity") }
+    }
+
+    public var hasVerifiedInputIdentity: Bool {
+        guard identity != nil, !awaitingIdentity,
+              let data = defaults.data(forKey: key(Self.inputKey)) else { return false }
+        return defaults.data(forKey: key(Self.inputKey) + ".verifiedIdentity") == data
     }
 
     public func load<T: Decodable>(_ base: String, as type: [T].Type = [T].self) -> [T]? {

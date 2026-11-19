@@ -98,9 +98,22 @@ struct MixerView: View {
     @State private var masterDebounce: Task<Void, Never>?
 
     // P3F-15: Channel naming — stored in UserDefaults
-    @AppStorage("mixerChannelNames") private var channelNamesJSON: String = "[]"
+    private var channelNamesJSON: String {
+        get { _ = namesRevision; return UserDefaults.standard.string(forKey: appState.mixerNamesKey()) ?? "[]" }
+        nonmutating set {
+            UserDefaults.standard.set(newValue, forKey: appState.mixerNamesKey())
+            namesRevision += 1
+        }
+    }
+    @State private var namesRevision = 0
     /// Unit B labels are indexed within unit B's own peripheral.
-    @AppStorage("mixerChannelNamesUnitB") private var unitBChannelNamesJSON: String = "[]"
+    private var unitBChannelNamesJSON: String {
+        get { _ = namesRevision; return UserDefaults.standard.string(forKey: appState.mixerNamesKey(unit: .b)) ?? "[]" }
+        nonmutating set {
+            UserDefaults.standard.set(newValue, forKey: appState.mixerNamesKey(unit: .b))
+            namesRevision += 1
+        }
+    }
 
     // P3F-16: Channel visibility — stored in UserDefaults
     @AppStorage("mixerChannelVisibility") private var channelVisibilityJSON: String = "[]"

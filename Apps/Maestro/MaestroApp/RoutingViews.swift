@@ -126,8 +126,8 @@ struct InputRoutingView: View {
 
     private var routingCache: RoutingStateCache? {
         if unit == .b { return unitBCache }
-        guard let id = device?.identifier else { return nil }
-        let cache = RoutingStateCache(direction: "input", productID: id.productID)
+        guard device != nil, appState.connectionMode != .hardware || appState.unitAIdentity != nil else { return nil }
+        let cache = appState.peripheralRoutingCache(direction: "input")
         // Same one-time clear the connect-time replay runs, in case this page
         // reads the saved choices first.
         if appState.transportType == .thunderbolt {
@@ -658,8 +658,8 @@ struct OutputRoutingView: View {
     @State private var resetTarget: AppState.UnitWriteTarget?
 
     private var routingCache: RoutingStateCache? {
-        guard let id = appState.device?.identifier else { return nil }
-        return RoutingStateCache(direction: "output", productID: id.productID)
+        guard appState.device != nil else { return nil }
+        return appState.peripheralRoutingCache(direction: "output")
     }
 
     /// Pending refusal / confirmation for Reset Routing. See ``RoutingResetPrompt``.

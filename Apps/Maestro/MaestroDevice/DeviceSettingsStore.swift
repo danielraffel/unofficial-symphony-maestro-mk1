@@ -23,8 +23,8 @@ import MaestroCore
 public final class DeviceSettingsStore: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [PropertyAddress: PropertyValue] = [:]
-    private let defaults: UserDefaults?
-    private let key: String?
+    private var defaults: UserDefaults?
+    private var key: String?
 
     /// A store that lives only as long as the connection. Used by tests and
     /// tools, which must not read or leave settings in the user's preferences.
@@ -38,7 +38,7 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     /// Keyed by product ID for the same reason as the routing cache:
     /// ThunderBridge and each USB mode are different devices to the app and
     /// must not replay one another's settings.
-    public init(defaults: UserDefaults, productID: UInt16, unit: DeviceUnit = .a, identity: UInt64? = nil) {
+    public init(defaults: UserDefaults, productID: UInt16, unit: DeviceUnit = .a, identity: UInt64? = nil, allowLegacyMigration: Bool = true) {
         self.defaults = defaults
         let legacyKey = Self.defaultsKey(productID: productID, unit: unit)
         if let identity {
@@ -47,21 +47,28 @@ public final class DeviceSettingsStore: @unchecked Sendable {
             let migrationKey = "\(legacyKey).migratedTo"
             if let data = defaults.data(forKey: identityKey) {
                 self.values = Self.decode(data)
+            } else if let data = ["unitA", "unitB"].compactMap({ role in
+                defaults.data(forKey: "deviceSettings_\(productID)_\(role)_identity_v2_\(String(identity, radix: 16))")
+            }).first {
+                self.values = Self.decode(data)
+                defaults.set(data, forKey: identityKey)
+            } else if !allowLegacyMigration {
+                self.values = [:]
             } else if let owner = defaults.string(forKey: migrationKey), owner != String(identity, radix: 16) {
                 self.values = [:]
             } else {
-                self.values = Self.decode(defaults.data(forKey: legacyKey))
-                if !self.values.isEmpty {
-                    defaults.set(Self.encode(self.values), forKey: identityKey)
-                }
-                defaults.set(String(identity, radix: 16), forKey: migrationKey)
+                let data = UnitStateMigration.copyData(defaults: defaults, source: legacyKey,
+                                                       destination: identityKey, owner: String(identity, radix: 16),
+                                                       data: defaults.data(forKey: legacyKey))
+                self.values = Self.decode(data)
             }
         } else {
             if let marker = defaults.string(forKey: "\(legacyKey).migratedTo"),
                let migratedIdentity = UInt64(marker, radix: 16) {
-                let migratedKey = Self.defaultsKey(productID: productID, unit: unit, identity: migratedIdentity)
-                self.key = migratedKey
-                self.values = Self.decode(defaults.data(forKey: migratedKey))
+                let resolved = DeviceSettingsStore(defaults: defaults, productID: productID,
+                                                   unit: unit, identity: migratedIdentity)
+                self.key = resolved.key
+                self.values = resolved.values
             } else {
                 self.key = legacyKey
                 self.values = Self.decode(defaults.data(forKey: legacyKey))
@@ -78,14 +85,29 @@ public final class DeviceSettingsStore: @unchecked Sendable {
         "deviceSettings_\(productID)_v1"
     }
 
-    /// Unit B (the second Symphony I/O on ThunderBridge port 2) keeps its own
-    /// settings under its own key, so they never replace unit A's.
+    /// Historical role-scoped key, used only as a migration source.
     public static func defaultsKey(productID: UInt16, unit: DeviceUnit) -> String {
         unit == .a ? defaultsKey(productID: productID) : "deviceSettings_\(productID)_unitB_v1"
     }
 
     public static func defaultsKey(productID: UInt16, unit: DeviceUnit, identity: UInt64) -> String {
-        "deviceSettings_\(productID)_\(unit == .a ? "unitA" : "unitB")_identity_v2_\(String(identity, radix: 16))"
+        "deviceSettings_\(productID)_identity_v3_\(String(identity, radix: 16))"
+    }
+
+    /// Resolve a connection's initially empty store before replay. Preference
+    /// decoding and the short state lock execute off the main actor.
+    @discardableResult
+    public func resolveIdentity(productID: UInt16, unit: DeviceUnit, identity: UInt64, allowLegacyMigration: Bool = true) async -> String? {
+        await Task.detached(priority: .utility) { [self] in
+            let resolved = DeviceSettingsStore(defaults: .standard, productID: productID,
+                                               unit: unit, identity: identity, allowLegacyMigration: allowLegacyMigration)
+            lock.withLock {
+                defaults = resolved.defaults
+                key = resolved.key
+                values = resolved.values
+            }
+            return resolved.values[PropertyAddress(selector: .prefix)]?.asString
+        }.value
     }
 
     public func value(for address: PropertyAddress) -> PropertyValue? {

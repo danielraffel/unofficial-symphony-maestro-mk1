@@ -13,9 +13,11 @@ extension AppState {
 
     var symphonyCardInputStore: SymphonyCardInputStore? {
         guard symphonyCardInputs.channelCount > 0, let scope = cardLayout.savedStateScope else { return nil }
+        if connectionMode == .hardware,
+           unitAIdentity == nil || (symphonyCardInputs.channelCount == 64 && unitBIdentity == nil) { return nil }
         let b = symphonyCardInputs.channelCount == 64 ? (unitBLayout?.savedStateScope ?? "unknown") : "none"
         let simulation = connectionMode == .simulated || cardSimulation != nil || simulatedUnitB != nil
-        return SymphonyCardInputStore(scope: (simulation ? "sim:" : "") + "\(scope).\(b).\(symphonyCardInputs.channelCount)")
+        return SymphonyCardInputStore(scope: (simulation ? "sim:" : "") + "\(scope).\(b).\(symphonyCardInputs.channelCount).\(cardIdentityTopology)")
     }
 
     /// Serialize clicks/replay/reset and send off the main actor. Revalidate
@@ -77,7 +79,7 @@ extension AppState {
             return CardLayout.softwareInputRowNames(rowCount: 16, routes: routes,
                                                     columns: layout.inputRoutingColumns, prefix: prefix)
         }
-        let cache = device.map { RoutingStateCache(direction: "input", productID: $0.identifier.productID) }
+        let cache = device.map { _ in peripheralRoutingCache(direction: "input") }
         var result = names(layout: cardLayout, cache: cache, slot1: thunderboltCaptureSlot1, prefix: peripheralPrefix)
         if symphonyCardInputs.channelCount == 64, let layout = unitBLayout {
             result += names(layout: layout, cache: unitBInputRoutingCache, slot1: unitB?.slot1, prefix: unitBPeripheralPrefix)
