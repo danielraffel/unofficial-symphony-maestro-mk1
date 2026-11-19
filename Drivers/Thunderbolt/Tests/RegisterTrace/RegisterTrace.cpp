@@ -2707,7 +2707,7 @@ static void RunConverterParityChecks()
         Select(r, 1, "unit B: select 64");
         CHECK(!Commands(c, mark, kRegXLink2TX, 0x10).empty(), "%s: no vendor message to unit B at 64", o.name);
         r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
-        CHECK(st.present == 1 && st.clockSource == 2, "%s: unit B present=%u clock=%u (want 1, Word Clock)",
+        CHECK(st.present == 1 && st.clockSource == 3, "%s: unit B present=%u clock=%u (want 1, Loop Sync)",
               o.name, st.present, st.clockSource);
         Select(r, 0, "unit B: back to 32");
         r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
