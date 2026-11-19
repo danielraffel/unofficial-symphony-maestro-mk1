@@ -15,6 +15,36 @@ struct MicPreConnectTests {
     func properties(_ writes: [ThunderboltPreset.Write]) -> [(PropertyAddress, PropertyValue)] {
         writes.compactMap { if case .property(let a, let v) = $0 { return (a, v) }; return nil }
     }
+    @Test func refusedPhantomWithConcurrentGainChange() {
+        var request = mic()
+        request.recordPhantomRequest(true, identity: nil, boardSlot: 1, channel: 0)
+        #expect(request.phantomProvenance == nil)
+        var saved = request
+        var visible = request
+        saved.micGain = 37
+        visible.micGain = 37
+        saved.finishPhantomRequest(request, accepted: false, identity: 42, boardSlot: 1, channel: 0)
+        visible.finishPhantomRequest(request, accepted: false, identity: 42, boardSlot: 1, channel: 0)
+        #expect(!saved.phantom)
+        #expect(saved.phantomProvenance == nil)
+        #expect(!visible.phantom)
+        #expect(visible.phantomProvenance == nil)
+        #expect(saved.micGain == 37)
+        #expect(visible.micGain == 37)
+    }
+    @Test func acceptedPhantomPreservesConcurrentGainAndNewerOff() {
+        var request = mic()
+        request.recordPhantomRequest(true, identity: nil, boardSlot: 1, channel: 0)
+        var current = request
+        current.micGain = 37
+        current.finishPhantomRequest(request, accepted: true, identity: 42, boardSlot: 1, channel: 0)
+        #expect(current.restoresPhantom(identity: 42, boardSlot: 1, channel: 0))
+        #expect(current.micGain == 37)
+        current.phantom = false
+        current.finishPhantomRequest(request, accepted: true, identity: 42, boardSlot: 1, channel: 0)
+        #expect(!current.phantom)
+        #expect(current.phantomProvenance == nil)
+    }
     @Test func exactOriginalOrderAndBothGains() {
         let writes = properties(MicPreSettingsReplay.writes(inputs: [mic()], layout: layout, identity: 42))
         let expected: [AudioPropertySelector] = [.analogIOType, .insertReturnEnable]

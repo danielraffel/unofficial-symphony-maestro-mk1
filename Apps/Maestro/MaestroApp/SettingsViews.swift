@@ -709,7 +709,8 @@ struct SystemSetupView: View {
     /// monitor device existed (`og_source/maestro2/App/Controllers/
     /// APSystemKeyboardVolumeControlViewController.m:48-83`).
     private var hasTwoMonitorDevices: Bool {
-        appState.transportType == .thunderbolt
+        SymphonyExtendedSelectors.supported(by: appState.servingDextBuild)
+            && appState.transportType == .thunderbolt
             && appState.portSelection.selection == .ports1And2
             && appState.unitB?.setupComplete == true
     }

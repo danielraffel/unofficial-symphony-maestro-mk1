@@ -32,6 +32,9 @@ public final class DextUserClient: @unchecked Sendable {
     /// IOKit connection to the dext's SymphonyUserClient.
     private var connection: io_connect_t = IO_OBJECT_NULL
     private let lock = NSLock()
+    private var cachedDriverBuild: UInt32?
+    private var driverBuildRead = false
+    private var connectionGeneration: UInt64 = 0
 
     public init() {}
 
@@ -44,6 +47,9 @@ public final class DextUserClient: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        connectionGeneration &+= 1
+        cachedDriverBuild = nil
+        driverBuildRead = false
         // Close any existing connection
         if connection != IO_OBJECT_NULL {
             IOServiceClose(connection)
@@ -81,6 +87,9 @@ public final class DextUserClient: @unchecked Sendable {
     public func disconnect() {
         lock.lock()
         defer { lock.unlock() }
+        connectionGeneration &+= 1
+        cachedDriverBuild = nil
+        driverBuildRead = false
         if connection != IO_OBJECT_NULL {
             IOServiceClose(connection)
             connection = IO_OBJECT_NULL
@@ -157,11 +166,11 @@ public final class DextUserClient: @unchecked Sendable {
 
     /// Select the Symphony I/O that owns the single Core Audio volume/mute
     /// control. Unit B is accepted only while the driver has configured 64
-    /// channels; older dexts simply reject this selector.
+    /// channels; older/unknown dexts never receive this selector.
     @discardableResult
     public func setMonitorDevice(_ unit: DeviceUnit) -> Bool {
         lock.lock()
-        let conn = connection
+        let conn = extendedSelectorConnectionLocked()
         lock.unlock()
         guard conn != IO_OBJECT_NULL else { return false }
         var input = [UInt32](repeating: 0, count: 2)
@@ -262,16 +271,34 @@ public final class DextUserClient: @unchecked Sendable {
     /// or a dext older than 123, which rejects the selector.
     public func readDriverBuild() -> UInt32? {
         lock.lock()
+        guard connection != IO_OBJECT_NULL else { lock.unlock(); return nil }
+        // Only a successful read is cached; a transient failure is retried.
+        if driverBuildRead {
+            let cached = cachedDriverBuild
+            lock.unlock()
+            return cached
+        }
         let conn = connection
+        let generation = connectionGeneration
         lock.unlock()
-        guard conn != IO_OBJECT_NULL else { return nil }
         var out = [UInt32](repeating: 0, count: 2)
         var outSize = out.count * MemoryLayout<UInt32>.size
         let kr = out.withUnsafeMutableBytes { p in
             IOConnectCallStructMethod(conn, Self.selectorReadDriverBuild, nil, 0, p.baseAddress, &outSize)
         }
-        guard kr == KERN_SUCCESS, outSize == 8, out[0] == 0 else { return nil }
-        return out[1]
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == connectionGeneration, kr == KERN_SUCCESS,
+              outSize == 8, out[0] == 0 else { return nil }
+        cachedDriverBuild = out[1]
+        driverBuildRead = true
+        return cachedDriverBuild
+    }
+
+    /// Caller holds lock. Unknown capability never initiates a selector call.
+    private func extendedSelectorConnectionLocked() -> io_connect_t {
+        let build = cachedDriverBuild.map { ServingDextBuild.build($0) }
+        return SymphonyExtendedSelectors.supported(by: build) ? connection : IO_OBJECT_NULL
     }
 
     // kSelectorReadPort2State — EXPERIMENT (64 channels): what is on XLink port 2.
@@ -508,7 +535,7 @@ public final class DextUserClient: @unchecked Sendable {
     public func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool {
         guard port < 2, (0..<8).contains(channel), lane < 2, gain.isFinite,
               gain >= 0, gain <= (lane == 1 ? 65 : 85) else { return false }
-        lock.lock(); let conn = connection; lock.unlock()
+        lock.lock(); let conn = extendedSelectorConnectionLocked(); lock.unlock()
         guard conn != IO_OBJECT_NULL else { return false }
         let input: [UInt32] = [Self.magic, 1, UInt32(port), UInt32(channel), lane, UInt32(gain.rounded())]
         var size = 0
@@ -519,7 +546,7 @@ public final class DextUserClient: @unchecked Sendable {
 
     /// Versioned selector 13; old drivers return unsupported (never emulate writes).
     public func loopSync(_ settings: LoopSyncSettings? = nil) throws -> LoopSyncState {
-        lock.lock(); let conn = connection; lock.unlock()
+        lock.lock(); let conn = extendedSelectorConnectionLocked(); lock.unlock()
         guard conn != IO_OBJECT_NULL else { throw DextUserClientError.notConnected }
         let input: [UInt32] = [Self.magic, 1, settings == nil ? 0 : 1, settings?.word ?? 0]
         var output = [UInt32](repeating: 0, count: 6)

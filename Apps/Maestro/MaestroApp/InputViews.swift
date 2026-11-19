@@ -238,20 +238,21 @@ struct InputControlsView: View {
                             showTrims: appState.showInputTrims,
                             onPhantomChange: { enabled in
                                 let target = appState.unitWriteTarget
-                                channels[i].recordPhantomRequest(enabled, identity: target.channelStore.identity,
+                                channels[i].recordPhantomRequest(enabled, identity: nil,
                                                                  boardSlot: 1, channel: i)
                                 let requested = channels[i]
                                 saveChannelStates()
                                 Task {
                                     let accepted = await writeChannelProperty(i, .phantom, value: .bool(enabled), on: target.device)
-                                    if !accepted {
-                                        var saved: [InputChannelState] = target.channelStore.load(ChannelStateStore.inputKey) ?? []
-                                        if i < saved.count, saved[i] == requested {
-                                            saved[i].phantom = false
-                                            target.channelStore.save(saved, for: ChannelStateStore.inputKey)
-                                        }
-                                        if appState.activeUnit == target.unit, appState.isCurrent(target),
-                                           i < channels.count, channels[i] == requested { channels[i].phantom = false }
+                                    var saved: [InputChannelState] = target.channelStore.load(ChannelStateStore.inputKey) ?? []
+                                    if i < saved.count {
+                                        saved[i].finishPhantomRequest(requested, accepted: accepted,
+                                            identity: target.channelStore.identity, boardSlot: 1, channel: i)
+                                        target.channelStore.save(saved, for: ChannelStateStore.inputKey)
+                                    }
+                                    if appState.activeUnit == target.unit, appState.isCurrent(target), i < channels.count {
+                                        channels[i].finishPhantomRequest(requested, accepted: accepted,
+                                            identity: target.channelStore.identity, boardSlot: 1, channel: i)
                                     }
                                 }
                             },

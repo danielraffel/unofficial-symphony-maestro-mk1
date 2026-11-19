@@ -88,3 +88,12 @@ public struct SymphonyCardInputStore {
         else if let data = try? JSONEncoder().encode(routes) { defaults.set(data, forKey: key) }
     }
 }
+
+/// Selectors 12 (monitor), 13 (Loop Sync), and 14 (observed gain) arrived
+/// together with card-input routing in serving dext build 132.
+public enum SymphonyExtendedSelectors {
+    public static func supported(by servingBuild: ServingDextBuild?) -> Bool {
+        guard case .build(let build) = servingBuild else { return false }
+        return build >= 132
+    }
+}

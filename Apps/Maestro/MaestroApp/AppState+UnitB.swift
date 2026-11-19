@@ -13,7 +13,7 @@ import MaestroDevice
 extension AppState {
 
     var loopSyncVisible: Bool {
-        LoopSyncSettings.available(in: SymphonyRoutingModel(
+        SymphonyExtendedSelectors.supported(by: servingDextBuild) && LoopSyncSettings.available(in: SymphonyRoutingModel(
             topology: converterSystem == nil && connectedUnit == nil && transportType == .thunderbolt
                 ? .symphonyOnly : .unknown,
             hostChannels: portSelection.selection?.channelCount ?? 0,

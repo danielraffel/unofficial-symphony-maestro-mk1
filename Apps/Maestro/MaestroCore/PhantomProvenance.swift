@@ -34,4 +34,22 @@ public extension InputChannelState {
             phantomProvenance = PhantomProvenance(unitID: identity, boardSlot: boardSlot, channel: channel)
         }
     }
+
+    /// Reject only the pending phantom fields; unrelated front-panel edits survive.
+    mutating func rejectPhantomRequest(_ request: Self) {
+        guard phantom == request.phantom, phantomProvenance == request.phantomProvenance else { return }
+        phantom = false
+        phantomProvenance = nil
+    }
+
+    /// Commit authority only after the transport accepts this explicit request.
+    mutating func finishPhantomRequest(_ request: Self, accepted: Bool,
+                                      identity: UInt64?, boardSlot: Int, channel: Int) {
+        guard phantom == request.phantom, phantomProvenance == request.phantomProvenance else { return }
+        if accepted {
+            recordPhantomRequest(request.phantom, identity: identity, boardSlot: boardSlot, channel: channel)
+        } else {
+            rejectPhantomRequest(request)
+        }
+    }
 }

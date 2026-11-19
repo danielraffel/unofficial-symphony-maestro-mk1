@@ -1335,6 +1335,7 @@ final class AppState {
     }
 
     private func requestMonitorDevice(_ unit: DeviceUnit, persist: Bool) {
+        guard SymphonyExtendedSelectors.supported(by: servingDextBuild) else { return }
         guard unit == .a || (unitB?.setupComplete == true &&
                              portSelection.selection == .ports1And2),
               let tb = device as? ThunderboltDeviceConnection else { return }
@@ -1351,7 +1352,8 @@ final class AppState {
             await previous?.value
             guard let self = weakSelf, generation == self.monitorSelectionGeneration else { return }
             defer { if generation == self.monitorSelectionGeneration { self.monitorSelectionTask = nil } }
-            guard self.device === tb, self.unitBDevice === bDevice else { return }
+            guard self.device === tb, self.unitBDevice === bDevice,
+                  SymphonyExtendedSelectors.supported(by: self.servingDextBuild) else { return }
             let accepted = await tb.setMonitorDevice(unit)
             guard accepted, generation == self.monitorSelectionGeneration,
                   self.device === tb, self.unitBDevice === bDevice,
@@ -3556,7 +3558,9 @@ final class AppState {
             frontPanelMicPreUpdate = FrontPanelMicPreUpdate(
                 unit: unit, channel: channel, gain: gain, revision: frontPanelMicPreRevision)
             if let tb = device as? ThunderboltDeviceConnection {
-                await tb.publishObservedMicGains(gains, port: unit.portByte)
+                if SymphonyExtendedSelectors.supported(by: servingDextBuild) {
+                    await tb.publishObservedMicGains(gains, port: unit.portByte)
+                }
             }
         case .level(.speaker, let dB, _):
             if speakerLevel != dB { speakerLevel = dB }
