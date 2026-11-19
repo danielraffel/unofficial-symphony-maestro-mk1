@@ -301,7 +301,7 @@ typedef struct {
     uint8_t reserved[2];
     uint32_t setupFlags;
     uint32_t txErrors;
-    uint32_t reserved2[4];
+    uint32_t reserved2[4]; // reserved2[0] is the driver-visible unit-B generation
 } SymphonyUnitBStateOutput; // 40 bytes
 
 

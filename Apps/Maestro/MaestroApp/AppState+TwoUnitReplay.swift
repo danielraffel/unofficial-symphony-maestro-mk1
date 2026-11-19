@@ -59,13 +59,15 @@ extension AppState {
         twoUnitReplayRunning = true
         defer { twoUnitReplayRunning = false }
         let link = await Task.detached(priority: .utility) { tb.linkState() }.value
-        guard device === tb, unitBDevice === b, let link else { return }
+        let bGeneration = await Task.detached(priority: .utility) { tb.readUnitBState()?.generation }.value
+        guard device === tb, unitBDevice === b, let link, let bGeneration else { return }
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
         let replayDeferral = self.replayDeferral
         twoUnitReplayNeeded = false
         do {
             try await Task.detached(priority: .utility) {
                 try tb.replayTwoUnits(plan, unitB: b, recoveryCount: link.recoveryCount,
+                                      unitBGeneration: bGeneration,
                                       shouldContinue: { !replayDeferral.isInFlight() })
             }.value
             guard device === tb, unitBDevice === b else { return }
