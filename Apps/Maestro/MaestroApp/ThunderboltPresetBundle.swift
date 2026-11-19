@@ -26,6 +26,8 @@ extension AppState {
             metadata.channelNames = (try? JSONDecoder().decode([String].self, from: Data(names.utf8))) ?? []
         }
         var seed = ThunderboltPreset(layout: layout, metadata: metadata)
+        let cardInputs = symphonyCardInputStore?.load() ?? [:]
+        seed.cardInputRoutes = (0..<32).map { cardInputs[$0] ?? $0 }
         seed.routingMode = UserDefaults.standard.integer(forKey: "routingMode")
         seed.mixers = (0..<2).map {
             ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount,
@@ -69,6 +71,10 @@ extension AppState {
         if !legacy {
             UserDefaults.standard.set(preset.routingMode, forKey: "routingMode")
             persistPresetRoutes(preset, productID: connection.identifier.productID)
+            if let routes = preset.cardInputRoutes {
+                symphonyCardInputEdits = Dictionary(uniqueKeysWithValues: routes.enumerated().map { ($0.offset, $0.element) })
+                symphonyCardInputStore?.save(symphonyCardInputEdits)
+            }
         }
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
         if let level = preset.globals[AudioPropertySelector.outputLevel.rawValue] { speakerLevel = -Double(level) }

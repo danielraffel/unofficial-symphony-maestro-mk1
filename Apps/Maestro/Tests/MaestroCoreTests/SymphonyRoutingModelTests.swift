@@ -128,10 +128,10 @@ struct SymphonyRoutingModelTests {
         // Each fixture states allowed endpoint columns: card, A, B. All other
         // unit addresses and every cross-family endpoint must be refused.
         let fixtures: [(M, Bool, Bool, Bool, Bool)] = [
-            (M(topology: .symphonyOnly, hostChannels: 32), true, false, true, false),
-            (M(topology: .symphonyOnly, hostChannels: 32, unitBConfigured: true), true, false, true, false),
-            (M(topology: .symphonyOnly, hostChannels: 64), true, false, true, false),
-            (M(topology: .symphonyOnly, hostChannels: 64, unitBConfigured: true), true, false, true, true),
+            (M(topology: .symphonyOnly, hostChannels: 32), true, true, true, false),
+            (M(topology: .symphonyOnly, hostChannels: 32, unitBConfigured: true), true, true, true, false),
+            (M(topology: .symphonyOnly, hostChannels: 64), true, true, true, false),
+            (M(topology: .symphonyOnly, hostChannels: 64, unitBConfigured: true), true, true, true, true),
             (M(topology: .converterOnly(.init(port1: [.ad16x])), hostChannels: 32), true, true, false, false),
             (M(topology: .converterOnly(.init(port1: [.ad16x], port2: [.da16x])), hostChannels: 64, unitBConfigured: true), true, true, false, false),
             (M(topology: .symphonyAndConverters([.ad16x]), hostChannels: 64, unitBConfigured: true), true, true, true, false),

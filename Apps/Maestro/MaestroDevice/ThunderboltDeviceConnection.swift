@@ -39,6 +39,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     private let listenerLock = NSLock()
     private let presetLock = NSRecursiveLock()
     private var presetOutputRoutes: [UInt8: UInt8] = [:]
+    private var presetCardInputRoutes: [Int: Int] = [:]
     /// Where the clock source answer comes from; see `ThunderboltClockState`.
     let clockState = ThunderboltClockState()
     private var listeners: [AudioPropertySelector: [WeakListener]] = [:]
@@ -184,6 +185,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         for (channel, source) in presetOutputRoutes where channel < 32 && preset.outputRoutes.count == 32 {
             preset.outputRoutes[Int(channel)] = source
         }
+        if preset.cardInputRoutes?.count == 32 {
+            for (host, source) in presetCardInputRoutes where host < 32 {
+                preset.cardInputRoutes?[host] = source
+            }
+        }
         for selector in ThunderboltPreset.monitorOrder + [.headphone1RoutingID, .headphone2RoutingID] {
             let value = try readPresetProperty(PropertyAddress(selector: selector))
             guard let raw = value.asUInt32 ?? value.asBool.map({ $0 ? UInt32(1) : 0 }) else {
@@ -291,6 +297,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                     try self.writeProperty(address, value: value)
                 }
             case .output(let route): try self.setCardOutputRoute(route)
+            case .cardInput(let command): try self.sendConverterRouting(command)
             case .frontPanel(let selection):
                 try self.dextClient.sendVendorCommand(command: 0x2A, value: 0, payload: Data([selection]))
             }
@@ -626,10 +633,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
     /// Send one converter routing command (0xB5 / 0xB6 / 0xB7, see
     /// ``ConverterRouting``). Handled by the dext (build 131+) when converters
-    /// are on the cable; a Symphony I/O refuses 0xB6 and 0xB7.
+    /// are on the cable. B1b also accepts 0xB6/0xB7 for Symphony inputs.
     public func sendConverterRouting(_ command: ConverterRouting.Command) throws {
+        presetLock.lock()
+        defer { presetLock.unlock() }
         guard isConnected, dextClient.isConnected else { throw DeviceConnectionError.notConnected }
         try dextClient.sendVendorCommand(command: command.command, value: 0, payload: Data(command.payload))
+        if command == ConverterRouting.resetRoutingCommand {
+            presetCardInputRoutes = Dictionary(uniqueKeysWithValues: (0..<32).map { ($0, $0) })
+        } else {
+            presetCardInputRoutes = SymphonyCardInputRouting.applying([command], to: presetCardInputRoutes)
+        }
     }
 
     private func sendViaDext(_ request: USBControlRequest) throws {
@@ -863,6 +877,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         presetLock.lock()
         defer { presetLock.unlock() }
         presetOutputRoutes.removeAll()
+        presetCardInputRoutes.removeAll()
         dextClient.disconnect()
         dextClient.connect(audioDeviceID: audioDeviceID)
     }
