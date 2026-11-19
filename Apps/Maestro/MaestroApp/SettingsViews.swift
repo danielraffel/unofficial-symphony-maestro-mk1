@@ -922,14 +922,14 @@ struct SystemSetupView: View {
 
     var body: some View {
         Form {
-            // Unit B (port 2, 64 channels) is a Word Clock slave of unit A:
+            // Unit B (port 2, 64 channels) is a Loop Sync slave of unit A:
             // the driver sets it so when 64 channels start, and its rate is
             // unit A's. Nothing here to choose.
             if appState.activeUnit == .b, let unitB = appState.unitB {
                 Section("Clock") {
                     LabeledContent("Clock Source", value: unitB.clockSourceName)
                     LabeledContent("Sample Rate", value: "Follows unit A")
-                    Text("Unit B takes its clock from unit A through a BNC cable. See Help, \"Can I connect more than one Symphony I/O?\"")
+                    Text("Unit B takes its clock from unit A through the Loop Sync BNC cables. See Help, \"Can I connect more than one Symphony I/O?\"")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

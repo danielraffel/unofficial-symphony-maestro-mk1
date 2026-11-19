@@ -15,7 +15,7 @@ extension AppState {
     // MARK: Which unit
 
     /// Unit B's card layout, from its own board types.
-    /// Its rate is unit A's (Word Clock slave), so names follow unit A's rate.
+    /// Its rate is unit A's (Loop Sync slave), so names follow unit A's rate.
     var unitBLayout: CardLayout? {
         guard let unitB else { return nil }
         var naming = unitBChannelNaming

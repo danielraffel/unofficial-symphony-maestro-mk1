@@ -82,7 +82,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     static let heldUntilDriverKeepsUnitsApart: Set<AudioPropertySelector> = [
         .prefix, .speakerOutputMode, .spdifReplaceID, .spdifMirrorID,
     ]
-    static let driverKeepsUnitsApart = false
+    static let driverKeepsUnitsApart = true   // driver b79f988: port-1 commands leave unit A's state alone
 
     /// Read from unit B with a vendor read on port 2, decoded as USB decodes
     /// it. Each unanswered read holds the driver's command path for its

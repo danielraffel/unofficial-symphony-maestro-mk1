@@ -137,20 +137,19 @@ struct UnitBConnectionTests {
         #expect(t.sent.isEmpty)
     }
 
-    @Test("Prefix, Speaker Mode and the coax settings are held until the driver keeps the units apart")
-    func heldWrites() async throws {
-        #expect(ThunderboltUnitBConnection.driverKeepsUnitsApart == false)
+    @Test("Prefix, Speaker Mode and the coax settings go to unit B now that the driver keeps the units apart")
+    func unitOnlyWrites() async throws {
+        #expect(ThunderboltUnitBConnection.driverKeepsUnitsApart == true)
         let t = RecordingVendorTransport()
         let c = ThunderboltUnitBConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier, transport: t,
                                            settingsStore: DeviceSettingsStore(), state: { Self.state })
-        try await c.setProperty(PropertyAddress(selector: .prefix), value: .string("C"))
-        #expect(try await c.getProperty(PropertyAddress(selector: .prefix)) == .string("C"))
-        for selector in [AudioPropertySelector.speakerOutputMode, .spdifReplaceID, .spdifMirrorID] {
-            await #expect(throws: DeviceConnectionError.self) {
-                try await c.setProperty(PropertyAddress(selector: selector, scope: .input, element: 0), value: .uint32(1))
-            }
+        // Speaker Mode 2 = Stereo (a legal SymphonyIOSpeakerMode); coax 1 = a pair.
+        try await c.setProperty(PropertyAddress(selector: .speakerOutputMode), value: .uint32(2))
+        for selector in [AudioPropertySelector.spdifReplaceID, .spdifMirrorID] {
+            try await c.setProperty(PropertyAddress(selector: selector, scope: .input, element: 0), value: .uint32(1))
         }
-        #expect(t.sent.isEmpty && t.reads.isEmpty)
+        #expect(!t.sent.isEmpty)
+        #expect(t.sent.allSatisfy { $0.port == 1 })
     }
 
     @Test("Owned settings are kept in unit B's store and replayed on port 1")

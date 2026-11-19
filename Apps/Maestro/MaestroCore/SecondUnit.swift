@@ -7,7 +7,7 @@ import Foundation
 // (channels 33-64). The original kept unit B as its own peripheral with its own
 // cards, settings and meters, and named its channels with its own prefix
 // letter (`og_source/maestrolink/Software/SymphonyIOSymphonyPeripheralDevice.cpp`).
-// The driver configures unit B when 64 channels start (Word Clock slave,
+// The driver configures unit B when 64 channels start (Loop Sync slave of unit A,
 // routing, unlock) and reports it through selector 11 (`UnitBState`).
 //
 // Everything here is transport-free so the rules can be tested without a
@@ -45,7 +45,7 @@ public struct SecondUnitInfo: Sendable, Equatable {
     public let slotValid: [Bool]
     /// The letter the unit keeps (0x37), raw. 0 or 0xFF when it has none.
     public let prefixByte: UInt8
-    /// The clock source the driver set (2 = Word Clock).
+    /// The clock source the driver set (3 = Loop Sync; 2 = Word Clock from older builds).
     public let clockSource: UInt8
     /// Bit 0: the set-up completed (the unit unlocked after it).
     public let setupFlags: UInt32
@@ -53,9 +53,10 @@ public struct SecondUnitInfo: Sendable, Equatable {
     public let txErrors: UInt32
 
     public static let clockSourceWordClock: UInt8 = 2
+    public static let clockSourceLoopSync: UInt8 = 3
 
     public init(slot1: IOCardType, slot2: IOCardType, slotValid: [Bool] = [true, true],
-                prefixByte: UInt8 = 0, clockSource: UInt8 = SecondUnitInfo.clockSourceWordClock,
+                prefixByte: UInt8 = 0, clockSource: UInt8 = SecondUnitInfo.clockSourceLoopSync,
                 setupFlags: UInt32 = 1, txErrors: UInt32 = 0) {
         self.slot1 = slot1
         self.slot2 = slot2
@@ -109,8 +110,8 @@ public struct SecondUnitInfo: Sendable, Equatable {
     public var clockSourceName: String {
         switch clockSource {
         case 1: return "Internal"
+        case Self.clockSourceLoopSync: return "Loop Sync (follows unit A)"
         case Self.clockSourceWordClock: return "Word Clock (follows unit A)"
-        case 3: return "Loop Sync"
         case 0: return "Not set"
         default: return "Source \(clockSource)"
         }
@@ -135,17 +136,17 @@ public struct SecondUnitInfo: Sendable, Equatable {
 /// follows Apogee's Symphony I/O User's Guide ("2 Symphony I/Os together with
 /// Symphony 64 Thunderbridge or PCI", p. 87) and the ThunderBridge Quick Start
 /// Guide ("Connecting Multiple Apogee Interfaces", pp. 17-18); the clock line
-/// says what this driver does (`ConfigureUnitB`: Word Clock, slave).
+/// says what this driver does (`ConfigureUnitB`: Loop Sync slave of unit A, as the original by default).
 public enum SecondUnitHelp {
     public static let lines = [
         "**Cabling.** Connect the main port of each Symphony I/O to the ThunderBridge with a PC-32 cable: "
             + "the first unit to port 1 (channels 1–32), the second to port 2 (channels 33–64). "
             + "Apogee allows one Symphony I/O per port, so two is the most. Set both units to Symphony mode "
             + "(SYM AIM) on their front panels.",
-        "**Clock.** The unit on port 2 follows the unit on port 1. Apogee's guide links the two units with BNC "
-            + "cables between their Loop Sync connectors. Maestro sets the second unit to **Word Clock**, which is "
-            + "what Apogee's software chose when Loop Sync was not used, so connect a BNC cable from the first "
-            + "unit's **Word Clock Out** to the second unit's **Word Clock In**.",
+        "**Clock.** The unit on port 2 follows the unit on port 1 through Loop Sync, as in Apogee's guide: "
+            + "connect the two units' **Loop Sync** BNC connectors (Out of the first to In of the second, and "
+            + "back). Maestro makes the first unit the Loop Sync master and the second its slave when 64 "
+            + "channels start; choose the clock source on the first unit.",
         "**In Maestro.** Once 64 channels run and the driver has set up the second unit, Input, Output, "
             + "Device Settings and System Setup show a **Unit A / Unit B** picker at the top; each page then "
             + "shows and sets the chosen unit. The Mixer shows both units' inputs, the second unit's after the "
