@@ -18,6 +18,21 @@ static constexpr uint8_t kSIOOptionBoard_AnalogDA16   = 5;
 static constexpr uint8_t kSIOOptionBoard_AnalogADDA16 = 6;
 static constexpr uint8_t kSIOOptionBoard_TwoBySix     = 7;
 
+// Return the number of MicPre8 channels exposed by the secondary slot. The
+// primary-slot arguments make the invalid slot-1 layout explicit to callers;
+// an unread slot, another board type, or a converter port publishes no controls.
+static constexpr uint32_t MicPreChannelsForSlots(bool primaryReadOK,
+                                                  uint8_t primaryType,
+                                                  bool secondaryReadOK,
+                                                  uint8_t secondaryType,
+                                                  bool converterPort)
+{
+    (void)primaryReadOK;
+    (void)primaryType;
+    return (!converterPort && secondaryReadOK &&
+            secondaryType == kSIOOptionBoard_MicPre8) ? 8u : 0u;
+}
+
 // Option-board types with a selectable optical format (OpticalFormat 0x34).
 // AD16/DA16 and 2x6 also expose optical I/O even though they are not reported
 // as the legacy type-3 Optical board. The format command is direction-agnostic

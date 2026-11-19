@@ -91,6 +91,7 @@ done
 # ── Part 1: host tests of driver headers and sources ────────────────────────
 HOST_TESTS=(
     test-optical-format.sh
+    test-micpre-slot.sh
     test-mixer-route.sh
     test-mixer-pan.sh
     test-timing-profile.sh
@@ -293,7 +294,32 @@ if $USE_REF; then
             fi
             rm -f "$TMP/ref/p1-converters.trace"
         fi
-        compare_dir 'p1-*.trace' "$TMP/ref" "$TMP/work" "driver source at $BASE_REF" || status=1
+        # dext 131: the Mic Pre slot fix (issue 29) drops the duplicate primary-
+        # slot OptionBoardType (0xA1) read in Start(), so against a base without
+        # it every Symphony trace is one vendor message shorter. Only XLink 1
+        # message traffic (TX 0x38, RX 0x3c) may differ; any other register
+        # access that changed still fails.
+        if ! grep -q 'MicPreChannelsForSlots' "$TMP/ref-src/Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp" 2>/dev/null \
+           && grep -q 'MicPreChannelsForSlots' "$TB_DIR/Source/SymphonyThunderbridge.cpp"; then
+            for f in "$TMP/ref"/p1-*.trace; do
+                [[ -e "$f" ]] || continue
+                t="$(basename "$f")"
+                if cmp -s "$f" "$TMP/work/$t"; then rm -f "$f"; continue; fi
+                if diff "$f" "$TMP/work/$t" | grep -E '^[<>]' \
+                        | grep -v -E '^[<>] (R 0x00003c |W 0x00003c |R 0x000038 0x00000000 \| W 0x000038 each of n=)' \
+                        > "$TMP/micpre-extra.txt"; then
+                    echo "[trace] FAIL $t differs from $BASE_REF beyond XLink message traffic:"
+                    head -20 "$TMP/micpre-extra.txt"
+                    status=1
+                else
+                    echo "[trace] ok   $t differs from $BASE_REF only in XLink message traffic (Mic Pre slot fix)"
+                fi
+                rm -f "$f"
+            done
+        fi
+        if compgen -G "$TMP/ref/p1-*.trace" > /dev/null; then
+            compare_dir 'p1-*.trace' "$TMP/ref" "$TMP/work" "driver source at $BASE_REF" || status=1
+        fi
     else
         echo "[trace] note: base ref '$BASE_REF' not available; compared with golden files only"
     fi
