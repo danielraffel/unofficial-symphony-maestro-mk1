@@ -582,6 +582,15 @@ struct OutputRoutingView: View {
     }
 
     var body: some View {
+        if appState.convertersIdentified {
+            ConverterOutputRoutingNote()
+                .navigationTitle("Output Routing")
+        } else {
+            routingGrid
+        }
+    }
+
+    private var routingGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Button("Reset Routing") { requestRoutingReset() }
@@ -1369,5 +1378,24 @@ enum HeadphoneCrosspoint {
             await apply(headphone, sourceID: id, device: device, cachedRoutes: cachedRoutes,
                         transport: transport)
         }
+    }
+}
+
+/// With the older converters on the cable, the card's output routing follows the
+/// converters' placement on the bus, as Apogee's software set it by default
+/// (the driver applies it and refuses other output routes). Editing it is not
+/// supported yet.
+struct ConverterOutputRoutingNote: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Outputs follow your converters")
+                .font(.headline)
+            Text("With AD-16X, DA-16X, DD-16X or Rosetta converters connected, each DAW output goes to the converter channel of the same name, the way Apogee's software set them up. Changing output routing for converters isn't supported yet.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

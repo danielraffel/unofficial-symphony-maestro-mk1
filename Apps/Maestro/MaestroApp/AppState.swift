@@ -1834,6 +1834,13 @@ final class AppState {
     @MainActor
     func writeOutputRoute(destination: UInt8, source: UInt8, device: any DeviceConnection) async throws {
         if let thunderbolt = device as? ThunderboltDeviceConnection {
+            // Converters: the driver keeps the card routing on their placement
+            // (dext 131) and refuses Symphony I/O output routes; saved routes
+            // are not replayed onto them.
+            if convertersIdentified {
+                print("[Maestro] Output routing: not written — converters keep their placement")
+                return
+            }
             guard let route = ThunderboltCardRouting.route(destination: destination, source: source) else {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
