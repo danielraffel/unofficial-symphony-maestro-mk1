@@ -1007,7 +1007,7 @@ struct SystemSetupView: View {
                         Circle()
                             .fill(clockLocked ? .green : .red)
                             .frame(width: 8, height: 8)
-                        Text(clockLocked ? "Locked" : "Unlocked")
+                        Text(clockLocked ? "Ready" : "Clock Mismatch")   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                             .foregroundStyle(.secondary)
                     }
                 }

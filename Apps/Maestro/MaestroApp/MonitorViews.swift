@@ -26,7 +26,7 @@ struct StatusBarView: View {
                 Image(systemName: clockLocked ? "lock.fill" : "lock.open")
                     .foregroundStyle(clockLocked ? .green : .red)
                     .font(.system(size: 11))
-                Text(clockLocked ? "Locked" : "Unlocked")
+                Text(clockLocked ? "Ready" : "Clock Mismatch")   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
