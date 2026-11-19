@@ -72,7 +72,7 @@ struct StatusBarView: View {
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
-                    .help("Click to reconnect to hardware")
+                    .help(appState.portStatusMessage.map { $0 + " Click to reconnect." } ?? "Click to reconnect to hardware")
                 } else {
                     if appState.connectionMode == .hardware {
                         Image(systemName: "cable.connector")
@@ -125,7 +125,7 @@ struct StatusBarView: View {
         appState.statusMessage.contains("not responding")
             || appState.statusMessage.contains("No hardware")
             || appState.statusMessage.contains("error")
-            || appState.endpointStatusMessage == "Symphony Disconnected"
+            || appState.endpointDisconnected
     }
 
     private struct StatusSourceID: Hashable {
@@ -524,8 +524,12 @@ struct MonitorToolbarView: View {
 enum ConverterMonitorText {
     static let unsupported = "Not supported on converters. Speaker and headphone "
         + "controls need a Symphony I/O; these converters have no speaker or headphone outputs."
+    /// Input and output strip settings (reference levels, Soft Limit, trims).
+    static let channelSetting = "Not supported on converters. This is a Symphony I/O setting; "
+        + "set levels on the converter's front panel."
     static let volume = "Volume — what the Mac's volume keys control on converters: "
-        + "the level of Mixer 1, which feeds outputs 1-2 unless you change the routing. "
+        + "the level of Mixer 1, which reaches the converters only where Output Routing sends it "
+        + "(by default every DAW output goes straight to its converter output). "
         + "Outputs routed directly are not affected. Master in the Mixer is separate."
     static let mute = "Mute — silences Mixer 1 (the Mac's mute key does the same)."
 }
@@ -535,11 +539,11 @@ extension View {
     /// only. The tooltip sits on an overlay because macOS does not show the
     /// tooltip of a disabled control. Unchanged on a Symphony I/O.
     @ViewBuilder
-    func symphonyOnly(_ convertersOnly: Bool) -> some View {
+    func symphonyOnly(_ convertersOnly: Bool, help: String = ConverterMonitorText.unsupported) -> some View {
         if convertersOnly {
             self.disabled(true)
                 .opacity(0.4)
-                .overlay(Color.clear.contentShape(Rectangle()).help(ConverterMonitorText.unsupported))
+                .overlay(Color.clear.contentShape(Rectangle()).help(help))
         } else {
             self
         }

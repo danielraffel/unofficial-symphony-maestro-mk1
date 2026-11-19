@@ -152,6 +152,7 @@ struct InputControlsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                 // Reset Trims is NOT gated on trims being visible — legacy only
                 // hides the button when no channel supports trim at all
@@ -162,6 +163,7 @@ struct InputControlsView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("Reset Trims — sets every analog input trim to 0.0 dB and nothing else")
+                .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                 // Two scopes, matching SymphonyIOResetRequestType, and the same
                 // shape as the Output page. The default offered first preserves
@@ -179,6 +181,7 @@ struct InputControlsView: View {
                 .fixedSize()
                 .help("Restore the input channel settings to the factory defaults. "
                       + "Routing is not touched.")
+                .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                 Spacer()
             }
@@ -1227,6 +1230,9 @@ struct InputChannelStripView: View {
     var onInsertReturnChange: ((Bool) -> Void)?
     @Environment(\.colorScheme) private var colorScheme
 
+    /// Converters on port 1: the Symphony I/O channel settings do nothing.
+    private var convertersOnly: Bool { appState?.converterRoutingSurface ?? false }
+
     /// The channel's current analog reference level (wire enum).
     private var level: AnalogInputLevel {
         AnalogInputLevel(rawValue: channel.inputType) ?? .plus4dBu
@@ -1359,6 +1365,8 @@ struct InputChannelStripView: View {
                     )
                 }
             }
+            // Analog Ref, Digital Ref and Soft Limit are Symphony I/O settings.
+            .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
 
             // Constant breathing room so toggling trims doesn't shift vertically
             Spacer().frame(height: 16)
@@ -1420,6 +1428,7 @@ struct InputChannelStripView: View {
                         thumbWidth: 18
                     )
                     .help("Trim — precisely trims the A/D conversion level once the reference levels have been chosen.")
+                    .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
                     .transition(.opacity)
                     .onChange(of: channel.trim) { _, newTrim in
                         onTrimChange?(newTrim)

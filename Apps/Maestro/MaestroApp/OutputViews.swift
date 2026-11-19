@@ -235,6 +235,7 @@ struct OutputControlsView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Show or hide the Trim faders on every analog output strip.")
+                    .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                     // NOT gated on the faders being visible — legacy's Reset
                     // Trims works either way (`:120-129`).
@@ -245,6 +246,7 @@ struct OutputControlsView: View {
                     .controlSize(.small)
                     .help("Reset Trims — sets every analog output trim to 0.0 dB "
                           + "and changes nothing else.")
+                    .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
                 }
 
                 // Two scopes, matching SymphonyIOResetRequestType. The default
@@ -261,6 +263,7 @@ struct OutputControlsView: View {
                 .fixedSize()
                 .help("Restore speaker/headphone levels, mute, dim, sum and speaker mode "
                       + "to the factory defaults. Routing is not touched.")
+                .symphonyOnly(appState.converterRoutingSurface)
 
                 Spacer()
             }
@@ -1258,6 +1261,8 @@ struct OutputChannelStripView: View {
     var onDigitalRefChange: ((UInt32) -> Void)?
     var onTrimChange: ((Double) -> Void)?
     var showZoneColoring: Bool = false
+    /// Converters on port 1: the Symphony I/O channel settings do nothing.
+    private var convertersOnly: Bool { appState?.converterRoutingSurface ?? false }
     @Environment(\.colorScheme) private var colorScheme
 
     private var resolvedMeterLevel: Double {
@@ -1337,6 +1342,8 @@ struct OutputChannelStripView: View {
                     }
                 )
             }
+            // Analog and Digital Ref are Symphony I/O settings.
+            .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
 
             // Constant breathing room (same as input — prevents vertical shift on trim toggle)
             Spacer().frame(height: 16)
@@ -1360,6 +1367,7 @@ struct OutputChannelStripView: View {
                           + "(\(Self.rangeText(trimSpec.range))). The D/A meter shows the "
                           + "signal BEFORE conversion, so calibrate against an external "
                           + "voltmeter on the analog output, not against the meter.")
+                    .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
                     .onChange(of: channel.trim) { _, newTrim in
                         onTrimChange?(newTrim)
                     }

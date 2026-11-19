@@ -180,10 +180,45 @@ final class AppState {
     /// Symphony behind an enumerated ThunderBridge is distinct from a missing
     /// transport, while the existing scanning/error messages remain intact.
     var endpointStatusMessage: String {
-        if connectionMode == .disconnected && transportPresent && transportType != nil {
+        if endpointDisconnected {
+            if let portStatusMessage { return PortStatusMessage.headline(portStatusMessage) }
             return connectionPresentation.endpointLabel
         }
         return statusMessage
+    }
+
+    /// The transport is there but the unit behind it is not answering.
+    var endpointDisconnected: Bool {
+        connectionMode == .disconnected && transportPresent && transportType != nil
+    }
+
+    /// The driver's link watch on port 1, as the status message needs it.
+    /// Updated by the ThunderBridge health loop only when it changes.
+    var thunderboltPortLink: PortStatusMessage.Link = .other
+
+    /// Apogee's wording for why nothing answers on port 1 of the ThunderBridge
+    /// or Symphony 64 PCIe card ("No hardware has been detected on the primary
+    /// port of the ThunderBridge. Verify…"), nil when the driver does not say.
+    var portStatusMessage: String? {
+        guard endpointDisconnected, transportType == .thunderbolt else { return nil }
+        return PortStatusMessage.primary(thunderboltPortLink, card: thunderboltCardPhrase)
+    }
+
+    /// "the ThunderBridge" or "the Symphony 64 PCIe card", looked up by the
+    /// health loop when the link state changes (an IOKit query).
+    var thunderboltCardPhrase: String = PortStatusMessage.defaultCard
+
+    /// The health loop's link reading: store it (and which card it is) only
+    /// when it changes, so the 2 s loop does not churn the views.
+    @MainActor
+    func updateThunderboltPortLink(_ link: PortStatusMessage.Link) {
+        guard link != thunderboltPortLink else { return }
+        if link != .other {
+            let phrase = PortStatusMessage.cardPhrase(
+                pciIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier())
+            if phrase != thunderboltCardPhrase { thunderboltCardPhrase = phrase }
+        }
+        thunderboltPortLink = link
     }
 
     /// Session-only horizontal offsets for the wide Input, Output, and Mixer
@@ -366,6 +401,7 @@ final class AppState {
                       (self.device as? ThunderboltDeviceConnection) === tb else { break }
                 let audioRunning = tb.isAudioRunning
                 let healthy = verdict.isLive
+                self.updateThunderboltPortLink(tb.lastLinkState?.state.portStatusLink ?? .other)
                 // Registrations come from the list AppShell refreshes every two
                 // seconds; populate it once here if nothing has yet, rather
                 // than re-reading sysextd's database every second.
@@ -412,6 +448,12 @@ final class AppState {
                             await self.syncInputRoutingToHardware()
                         }
                         self.thunderboltSeenRecoveryCount = count
+                    }
+                    // A new converter chain (32 <-> 64 channels, a Device
+                    // Type change): its saved routes go to the driver.
+                    if self.converterRoutingReplayNeeded, self.connectionMode == .hardware {
+                        self.converterRoutingReplayNeeded = false
+                        await self.replayConverterRouting(resetFirst: true)
                     }
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
@@ -705,7 +747,148 @@ final class AppState {
     /// Every converter unit on both ports (selector 9, dext 131+), or port 1
     /// from the probe word with an older driver, or the converter simulation.
     /// Nil for a Symphony I/O. Lays out, names and meters converter channels.
-    var converterSystem: ConverterSystem?
+    var converterSystem: ConverterSystem? {
+        didSet { if converterSystem != oldValue { converterSystemChanged() } }
+    }
+
+    // MARK: Converter routing
+
+    /// The chain the converter routes on screen belong to
+    /// (`ConverterSystem.routingSignature`), nil without a converter layout.
+    private(set) var converterRoutingSignature: String?
+    /// The user's converter routes for that chain (both directions), shared
+    /// by the Output and Input Routing pages: Reset Routing (0xB7) clears both.
+    var converterRoutingEdits = ConverterRoutingEdits()
+    /// The chain whose saved routes were last sent to the driver.
+    @ObservationIgnored private var converterRoutingReplayedSignature: String?
+
+    /// Whether the routing pages are the converters' (port 1 carries
+    /// converters, identified or not): the Symphony I/O grids must not show,
+    /// since their writes would land on converter channels.
+    var converterRoutingSurface: Bool {
+        connectedUnit != nil || converterSystem?.ports[0].isEmpty == false
+    }
+
+    /// The converter channels the routing pages show, nil unless the layout
+    /// follows converters.
+    var converterRoutingLayout: ConverterRoutingLayout? {
+        cardLayout.converterLayout.map { ConverterRoutingLayout(system: $0) }
+    }
+
+    var converterRoutingStore: ConverterRoutingStore? {
+        converterRoutingSignature.map { ConverterRoutingStore(signature: $0) }
+    }
+
+    private func converterSystemChanged() {
+        let signature = converterSystem.flatMap { $0.layoutKnown ? $0.routingSignature : nil }
+        guard signature != converterRoutingSignature else { return }
+        converterRoutingSignature = signature
+        converterRoutingEdits = converterRoutingStore?.load() ?? ConverterRoutingEdits()
+        // A new chain while connected (32 <-> 64 channels, a Device Type
+        // change): the driver has dropped the old chain's routes; put this
+        // chain's saved ones on it (the ThunderBridge health loop sends them
+        // on its next pass). The connect-time replay covers connects.
+        if let signature, let replayed = converterRoutingReplayedSignature, replayed != signature,
+           connectionMode == .hardware {
+            converterRoutingReplayNeeded = true
+        }
+    }
+
+    /// Set when the chain changed under a connected session; the health loop
+    /// replays this chain's saved routes and clears it.
+    @ObservationIgnored var converterRoutingReplayNeeded = false
+
+    /// The last converter routing send. Every send waits for the one before
+    /// it, so the card gets commands in the order they were made (two quick
+    /// clicks, or a click racing a replay); the card has no readback to
+    /// correct a reordered pair.
+    @ObservationIgnored private var converterRoutingTail: Task<Bool, Never>?
+
+    /// Send converter routing commands to the driver, in order, each batch
+    /// off the main thread. True when every command was accepted (always in
+    /// the simulation).
+    @MainActor
+    func sendConverterRouting(_ commands: [ConverterRouting.Command]) async -> Bool {
+        guard !commands.isEmpty else { return true }
+        let previous = converterRoutingTail
+        let tb = device as? ThunderboltDeviceConnection
+        let simulated = connectionMode == .simulated
+        let send = Task<Bool, Never> {
+            _ = await previous?.value
+            guard let tb else { return simulated }
+            let failures = await Task.detached(priority: .userInitiated) { () -> [String] in
+                var failed: [String] = []
+                for command in commands {
+                    do { try tb.sendConverterRouting(command) } catch { failed.append("\(command): \(error)") }
+                }
+                return failed
+            }.value
+            if !failures.isEmpty {
+                print("[Maestro] Converter routing: \(failures.count) of \(commands.count) command(s) refused: \(failures)")
+            }
+            return failures.isEmpty
+        }
+        converterRoutingTail = send
+        return await send.value
+    }
+
+    /// The user changed converter routes. The grid shows them at once (so a
+    /// second click on the same cell undoes the first); they are saved for
+    /// this chain only once the driver has accepted every command, and put
+    /// back as they were if it refused (an older driver, or a Symphony I/O).
+    @MainActor
+    func changeConverterRouting(_ edits: ConverterRoutingEdits, commands: [ConverterRouting.Command],
+                                completion: @escaping @MainActor (Bool) -> Void = { _ in }) {
+        let previous = converterRoutingEdits
+        let store = converterRoutingStore
+        converterRoutingEdits = edits
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let ok = await self.sendConverterRouting(commands)
+            if ok {
+                store?.save(edits)
+            } else if self.converterRoutingEdits == edits {
+                self.converterRoutingEdits = previous
+            }
+            completion(ok)
+        }
+    }
+
+    /// Reset Routing for converters: both tables back on the default
+    /// placement (0xB7). Nothing stays saved for this chain, once the driver
+    /// has accepted it.
+    @MainActor
+    @discardableResult
+    func resetConverterRouting() async -> Bool {
+        let store = converterRoutingStore
+        guard await sendConverterRouting([ConverterRouting.resetRoutingCommand]) else { return false }
+        converterRoutingEdits = ConverterRoutingEdits()
+        store?.save(ConverterRoutingEdits())
+        return true
+    }
+
+    /// Put this chain's saved converter routes on the driver (connect, or a
+    /// new chain). The driver keeps them over card resets itself.
+    /// `resetFirst` (a chain change while connected) starts from the default
+    /// placement, so no route made for the previous chain stays on the card,
+    /// whatever the driver kept.
+    @MainActor
+    func replayConverterRouting(resetFirst: Bool = false) async {
+        guard let layout = converterRoutingLayout, let signature = converterRoutingSignature else { return }
+        converterRoutingReplayedSignature = signature
+        converterRoutingReplayNeeded = false
+        let edits = converterRoutingStore?.load() ?? ConverterRoutingEdits()
+        converterRoutingEdits = edits
+        let commands = (resetFirst ? [ConverterRouting.resetRoutingCommand] : []) + layout.replayCommands(edits)
+        guard !commands.isEmpty else {
+            print("[Maestro] Converter routing: default placement (nothing saved for \(signature))")
+            return
+        }
+        let ok = await sendConverterRouting(commands)
+        print("[Maestro] Converter routing: replayed \(commands.count) command(s) for \(signature)"
+              + (ok ? "" : " (some refused)"))
+    }
+
     /// The firmware notices already logged for this connection, so each is
     /// said once.
     private var loggedConverterNotices: Set<String> = []
@@ -749,8 +932,16 @@ final class AppState {
     /// clock choice the driver's current clock is kept. Older drivers reject
     /// the call and nothing changes.
     func applyStoredConverterConfig(_ tb: ThunderboltDeviceConnection) {
-        guard let state = tb.converterState(), state.port1Converters else { return }
-        let word = ConverterConfig.load().word(currentClockExternal: state.clockExternal)
+        // Either port: port-2 converters behind a Symphony I/O need their
+        // Device Types too.
+        guard let state = tb.converterState(), state.port1Converters || state.port2Converters else { return }
+        var word = ConverterConfig.load().word(currentClockExternal: state.clockExternal)
+        if !state.port1Converters {
+            // A Symphony I/O on port 1 owns the clock: keep the driver's bit
+            // (it applies the converter clock only with port-1 converters).
+            word = (word & ~ConverterConfig.clockExternalBit)
+                | (state.clockExternal ? ConverterConfig.clockExternalBit : 0)
+        }
         if word != state.config, !tb.setConverterConfig(word) {
             print("[Maestro] Converter config 0x\(String(word, radix: 16)) was not accepted")
         }
@@ -863,7 +1054,9 @@ final class AppState {
     private func applyPortSelection(id: UInt32?) {
         refreshSecondPortState()
         var model = portSelection
-        model.deviceReported(dataSourceID: id, state: secondPortState)
+        model.deviceReported(dataSourceID: id, state: secondPortState,
+                             card: PortStatusMessage.cardPhrase(
+                                pciIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier()))
         if model != portSelection {
             portSelection = model
             print("[Maestro] Port selection: \(model.selection?.name ?? "none")"
@@ -1703,6 +1896,14 @@ final class AppState {
     @MainActor
     func syncOutputRoutingToHardware() async {
         guard let device = self.device else { return }
+        // Converters: their own routes, kept per chain, never the Symphony
+        // I/O table below (same product ID) and never behind the card
+        // detection guard (a converter has no option cards).
+        if converterRoutingSurface {
+            // Nothing is replayed while a unit is not identified (no layout).
+            await replayConverterRouting()
+            return
+        }
         // The cache is keyed by product ID, so ThunderBridge (0x12) and the USB
         // modes keep separate tables. On ThunderBridge the dext replays its
         // default routing on every Start and in-place recovery, so without this
@@ -1841,13 +2042,8 @@ final class AppState {
     @MainActor
     func writeOutputRoute(destination: UInt8, source: UInt8, device: any DeviceConnection) async throws {
         if let thunderbolt = device as? ThunderboltDeviceConnection {
-            // Converters: the driver keeps the card routing on their placement
-            // (dext 131) and refuses Symphony I/O output routes; saved routes
-            // are not replayed onto them.
-            if convertersIdentified {
-                print("[Maestro] Output routing: not written — converters keep their placement")
-                return
-            }
+            // Converters route through `applyConverterRouting` (their own
+            // grid and channels); this path is the Symphony I/O table.
             guard let route = ThunderboltCardRouting.route(destination: destination, source: source) else {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
