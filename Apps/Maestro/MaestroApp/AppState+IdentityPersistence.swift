@@ -21,7 +21,8 @@ extension AppState {
                 && (unit == .a ? unitAGeneration : unitBGeneration) == generation
         }
         guard isCurrent() else { return }
-        let task = Task { await read() }
+        // Bounded: a transport that never answers resolves as unknown (failed).
+        let task = Task { await SymphonyIdentityReader.withDeadline { await read() } }
         if unit == .a { unitAIdentityTask = task }
         else { unitBIdentityTask = task; unitBIdentityAttempted = true }
         defer {
