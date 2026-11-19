@@ -12,10 +12,65 @@ import MaestroDevice
 /// Output Routing are the card's and show both units at once.
 extension AppState {
 
+    var loopSyncVisible: Bool {
+        LoopSyncSettings.available(in: SymphonyRoutingModel(
+            topology: converterSystem == nil && connectedUnit == nil && transportType == .thunderbolt
+                ? .symphonyOnly : .unknown,
+            hostChannels: portSelection.selection?.channelCount ?? 0,
+            unitBConfigured: unitPickerVisible && unitB?.setupComplete == true))
+    }
+
+    @MainActor
+    func refreshLoopSync(restoring: Bool = false) async {
+        guard loopSyncVisible, !loopSyncBusy, let tb = device as? ThunderboltDeviceConnection else { return }
+        loopSyncBusy = true
+        defer { loopSyncBusy = false }
+        let owner = unitBDevice
+        do {
+            var state = try await tb.loopSync()
+            guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
+            if (restoring || loopSyncNeedsRestore), let saved = LoopSyncSettings.saved(in: .standard), saved != state.settings {
+                state = try await tb.loopSync(saved)
+            }
+            guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
+            loopSyncState = state
+            loopSyncNeedsRestore = false
+            loopSyncError = nil
+            refreshUnitB()
+        } catch {
+            guard device === tb, unitBDevice === owner else { return }
+            loopSyncState = nil
+            loopSyncError = "Loop Sync settings could not be read. They require the driver from this version of Maestro."
+        }
+    }
+
+    @MainActor
+    func setLoopSync(_ settings: LoopSyncSettings) async {
+        guard loopSyncVisible, !loopSyncBusy, loopSyncState != nil,
+              let tb = device as? ThunderboltDeviceConnection else { return }
+        loopSyncBusy = true
+        defer { loopSyncBusy = false }
+        let owner = unitBDevice
+        do {
+            let state = try await tb.loopSync(settings)
+            guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
+            loopSyncState = state
+            if state.valid {
+                settings.save(in: .standard)
+                loopSyncError = nil
+            } else { loopSyncError = "Clock configuration is not confirmed." }
+            refreshUnitB()
+        } catch {
+            guard device === tb, unitBDevice === owner else { return }
+            loopSyncState = nil
+            loopSyncError = "The driver could not complete the clock change."
+        }
+    }
+
     // MARK: Which unit
 
     /// Unit B's card layout, from its own board types.
-    /// Its rate is unit A's (Loop Sync slave), so names follow unit A's rate.
+    /// Both units share the card's nominal sample rate, regardless of clock master.
     var unitBLayout: CardLayout? {
         guard let unitB else { return nil }
         var naming = unitBChannelNaming
@@ -449,6 +504,8 @@ extension AppState {
         unitB = info
         guard let info, let tb else {
             unitBIdentity = nil
+            loopSyncState = nil
+            loopSyncError = nil
             if unitBDevice != nil {
                 print("[Maestro] Unit B: gone (64 channels stopped or port 2 lost)")
                 // The driver puts a Software Return beyond DAW 1-16 back to
@@ -490,11 +547,18 @@ extension AppState {
                 .map(CardLayout.peripheralPrefix) ?? info.prefix(after: peripheralPrefix)
         }
         if appeared {
+            loopSyncNeedsRestore = true
             refreshUnitBNamingFromSaved()
             print("[Maestro] Unit B: " + info.reportLines(unitAPrefix: peripheralPrefix).joined(separator: "; "))
             // One owner: the health loop waits for both configured links and
             // restores tables, card routes/mixers, then names/meters/headphones.
             twoUnitReplayNeeded = true
+            // Loop Sync topology restored on appearance (B9); the replay itself
+            // stays with the health loop (B7).
+            nonisolated(unsafe) let state = self
+            Task { @MainActor in
+                await state.refreshLoopSync(restoring: true)
+            }
         }
     }
 

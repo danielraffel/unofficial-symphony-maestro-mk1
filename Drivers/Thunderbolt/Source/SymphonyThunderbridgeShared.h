@@ -32,7 +32,21 @@
 #define kSelectorSetConverterConfig 10       // The user's converter choices: word clock source and
                                              // Device Type (dext 131+). See SymphonyConverterConfigInput.
 #define kSelectorReadUnitB      11           // 64ch unit-B state (no bus access)
-#define kSelectorCount          12
+// Selector 12 is reserved for B6 device information. Existing ABIs are unchanged.
+#define kSelectorLoopSync       13
+#define kSelectorCount          14
+
+// Version 1: operation 0 reads; 1 applies. config bit 0 = disabled,
+// bit 1 = preferred master B (retained while disabled). Zero is the legacy default.
+typedef struct { uint32_t magic, version, operation, config; } SymphonyLoopSyncInput;
+static inline uint32_t SymphonyLoopSyncInputValid(const SymphonyLoopSyncInput *input) {
+    return input && input->magic == kSymphonyUCMagic && input->version == 1 &&
+        input->operation <= 1 && input->config <= 3;
+}
+// valid means both ClockMode writes succeeded; locks are measured independently:
+// 0 = not read, 1 = unlocked, 2 = locked. sourceA/B hold the preferred master
+// source in bits 7:0 and board input in 15:8. Reads require two configured SIOs at 64.
+typedef struct { uint32_t config, valid, lockA, lockB, sourceA, sourceB; } SymphonyLoopSyncOutput;
 #define kSymphonyUserClientType 0x53594D43u  // 'SYMC' — our custom IOUserClient type
 #define kSymphonyMeterWordCount 256          // words in the card meter DMA buffer
 

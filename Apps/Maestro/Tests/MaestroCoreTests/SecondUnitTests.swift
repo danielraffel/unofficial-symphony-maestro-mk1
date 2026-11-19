@@ -39,9 +39,9 @@ struct SecondUnitTests {
     func report() {
         let info = SecondUnitInfo(slot1: .analogAES, slot2: .none, slotValid: [true, true], prefixByte: 0,
                                   clockSource: 2, setupFlags: 1, txErrors: 4)
-        #expect(info.clockSourceName == "Word Clock (follows unit A)")
+        #expect(info.clockSourceName == "Word Clock")
         let lines = info.reportLines(unitAPrefix: "A")
-        #expect(lines.contains("Unit B clock: Word Clock (follows unit A)"))
+        #expect(lines.contains("Unit B clock: Word Clock"))
         #expect(lines.contains("Unit B set-up: complete"))
         #expect(lines.contains("Unit B message errors: 4"))
         #expect(lines.contains("Unit B IOBoard 1: \(IOCardType.analogAES.productName)"))
@@ -142,14 +142,14 @@ struct SecondUnitTests {
     @Test("Help says how to cable and clock two units")
     func help() {
         let text = SecondUnitHelp.lines.joined(separator: " ")
-        for phrase in ["PC-32", "port 1", "port 2", "**Loop Sync**", "master", "slave",
+        for phrase in ["PC-32", "port 1", "port 2", "Loop Sync", "Use Loop Sync", "master", "Word Clock",
                        "**Unit A / Unit B**", "SYM AIM", "Output Routing"] {
             #expect(text.contains(phrase), "\(phrase)")
         }
         for word in ["beta", "Beta", "test build"] { #expect(!text.contains(word)) }
         // The prefix, Speaker Mode and coax settings are sent to unit B now.
         #expect(!text.contains("Not sent to the second unit"))
-        #expect(text.contains("Loop Sync while the second unit follows it"))
+        #expect(text.contains("The clock master's source cannot be Loop Sync"))
     }
 
     @Test("Software Return beyond DAW 1-16 after unit B goes")
@@ -181,7 +181,7 @@ struct SecondUnitTests {
         report.unitBLines = SecondUnitInfo(slot1: .optical, slot2: .none).reportLines(unitAPrefix: "A")
         #expect(report.clipboardText.hasPrefix(without))
         #expect(report.clipboardText.contains("Unit B (port 2): Symphony I/O"))
-        #expect(report.clipboardText.contains("Unit B clock: Loop Sync (follows unit A)"))
+        #expect(report.clipboardText.contains("Unit B clock: Loop Sync"))
     }
 
     @Test("Output Routing at 64: unit A's saved rows keep their meaning")

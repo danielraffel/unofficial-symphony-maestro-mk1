@@ -1081,6 +1081,11 @@ final class AppState {
     // See AppState+UnitB.swift. All nil / empty with one unit, so nothing
     // about unit A changes then.
 
+    /// Selector 13: requested topology, application validity and measured locks.
+    var loopSyncState: LoopSyncState?
+    var loopSyncNeedsRestore = false
+    var loopSyncBusy = false
+    var loopSyncError: String?
     /// What the driver reports about unit B (selector 11), nil unless it is
     /// configured, which it is only while 64 channels run.
     var unitB: SecondUnitInfo?

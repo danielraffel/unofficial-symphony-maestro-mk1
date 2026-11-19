@@ -43,7 +43,7 @@ static_assert(sizeof(SymphonyVendorCommandInput) == 78 && offsetof(SymphonyVendo
 static_assert(offsetof(SymphonyPort2StateOutput, unit) == 7 * sizeof(uint32_t), "unit[] at word 7");
 static_assert(kSelectorReadLinkState == 5 && kSelectorReadDriverBuild == 6 && kSelectorRetireForUpgrade == 7 && kSelectorReadPort2State == 8, "selector numbers");
 #ifdef TRACE_HAVE_CONVERTER_PARITY
-static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorReadUnitB == 11 && kSelectorCount == 12, "converter/unit-B selectors");
+static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 && kSelectorReadUnitB == 11 && kSelectorCount >= 12, "converter/unit-B selectors");
 static_assert(sizeof(SymphonyConverterStateOutput) == 112 && sizeof(SymphonyConverterConfigInput) == 8, "converter struct sizes");
 #endif
 #endif
@@ -372,6 +372,7 @@ struct FakeCard : HostBackend {
     }
     uint64_t nextDMA = 0x10000000;
     std::vector<std::string> lines;
+    std::function<void(unsigned, uint8_t)> onVendorWrite;
 
     void line(const char *fmt, ...) {
         char buf[160];
@@ -444,6 +445,8 @@ struct FakeCard : HostBackend {
     void MemWrite32(uint8_t, uint64_t off, uint32_t v) override {
         line("W 0x%06llx 0x%08x", (unsigned long long)off, v);
         if (!endpointPresent) return;
+        const unsigned p = off == kRegXLink2TX ? 1 : 0;
+        const auto writesBefore = port[p].vendorWrites.size();
         switch (off) {
         case kRegIntStatus:     intPending &= ~v; break;
         case kRegXLink1TX:      port[0].writeTX(v); break;
@@ -459,6 +462,8 @@ struct FakeCard : HostBackend {
         case kRegH2A2HBA:       reg[off] = dropPort2Addresses ? 0 : v; break;
         default:                reg[off] = v; break;
         }
+        if (onVendorWrite && port[p].vendorWrites.size() != writesBefore)
+            onVendorWrite(p, port[p].vendorWrites.back());
     }
 
     // A scenario can have something happen while the driver sleeps (a
@@ -2730,6 +2735,123 @@ static void RunConverterParityChecks()
     }
 #endif
 #ifdef TRACE_HAVE_UNITB_CONFIG
+    // B9: the original clock topology, independently of measured lock.
+    {
+        Options o; o.name = "Loop Sync topology"; o.port2 = Port::Symphony;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r; RunScenario(o, r);
+        auto change = [&](uint32_t config) {
+#ifdef kSelectorLoopSync
+            uint32_t out[6] = {};
+            return r.drv->LoopSyncConfig(1, config, out);
+#else
+            return kIOReturnUnsupported;
+#endif
+        };
+        CHECK(change(1) != kIOReturnSuccess, "Loop Sync: accepted at 32");
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        Select(r, 1, "Loop Sync: select 64");
+        auto clock = [&](unsigned port, std::vector<uint8_t> want) {
+            return r.card.port[port].stored[(uint64_t)0x50 << 32] == want;
+        };
+        std::vector<unsigned> order;
+        r.card.onVendorWrite = [&](unsigned p, uint8_t cmd) { if (cmd == 0x50) order.push_back(p); };
+        CHECK(change(1) == kIOReturnSuccess, "Loop Sync: off rejected");
+        CHECK(clock(0, {1,1,0,0}) && clock(1, {2,1,0,0}), "Loop Sync: off bytes");
+        CHECK(order == std::vector<unsigned>({0,1}), "Loop Sync: off master-first order");
+        order.clear();
+        CHECK(change(2) == kIOReturnSuccess, "Loop Sync: master B rejected");
+        CHECK(order == std::vector<unsigned>({1,0}), "Loop Sync: B master-first order");
+        order.clear();
+        CHECK(clock(1, {1,1,1,0}) && clock(0, {3,0,1,0}), "Loop Sync: master B bytes");
+        CHECK(change(0) == kIOReturnSuccess, "Loop Sync: master A rejected");
+        CHECK(clock(0, {1,1,1,0}) && clock(1, {3,0,1,0}), "Loop Sync: master A bytes");
+        CHECK(order == std::vector<unsigned>({0,1}), "Loop Sync: A master-first order");
+#ifdef kSelectorLoopSync
+        static_assert(sizeof(SymphonyLoopSyncInput) == 16 && sizeof(SymphonyLoopSyncOutput) == 24, "Loop Sync v1 ABI");
+        SymphonyLoopSyncInput input = {kSymphonyUCMagic, 1, 1, 2};
+        CHECK(SymphonyLoopSyncInputValid(&input), "Loop Sync: valid v1 input refused");
+        input.version = 0;
+        CHECK(!SymphonyLoopSyncInputValid(&input), "Loop Sync: unknown version accepted");
+        input.version = 1; input.operation = 2;
+        CHECK(!SymphonyLoopSyncInputValid(&input), "Loop Sync: unknown operation accepted");
+        input.operation = 1; input.config = 4;
+        CHECK(!SymphonyLoopSyncInputValid(&input), "Loop Sync: unknown config accepted");
+        input.config = 0; input.magic = 0;
+        CHECK(!SymphonyLoopSyncInputValid(&input), "Loop Sync: bad magic accepted");
+        CHECK(!SymphonyLoopSyncInputValid(nullptr), "Loop Sync: missing input accepted");
+        // No BNC loop is not proof of a different role: unlocked/unknown are separate.
+        r.card.port[1].stored[(uint64_t)0x51 << 32] = {0,0,0,0,0};
+        uint32_t status[6] = {};
+        CHECK(r.drv->LoopSyncConfig(0, 0, status) == kIOReturnSuccess && status[1] == 1 && status[3] == 1,
+              "Loop Sync: configured slave incorrectly implies lock");
+        r.card.port[1].stored[(uint64_t)0x51 << 32] = {255,0,0,0,0};
+        CHECK(r.drv->LoopSyncConfig(0, 0, status) == kIOReturnSuccess && status[3] == 0,
+              "Loop Sync: malformed lock byte accepted");
+        r.card.port[1].dropVendorReads = 1;
+        CHECK(r.drv->LoopSyncConfig(0, 0, status) == kIOReturnSuccess && status[3] == 0,
+              "Loop Sync: failed clock read incorrectly implies lock");
+        r.card.port[1].stored.erase((uint64_t)0x51 << 32);
+        // Fail each write; a failed master must never be followed by a slave write.
+        for (unsigned failingPort : {1u, 0u}) {
+            order.clear();
+            r.card.port[failingPort].txBusy = true;
+            CHECK(change(2) == kIOReturnIOError, "Loop Sync: failed write accepted");
+            r.card.port[failingPort].txBusy = false;
+            CHECK(order == (failingPort == 1 ? std::vector<unsigned>{} : std::vector<unsigned>{1}),
+                  "Loop Sync: wrong partial sequence");
+            uint32_t state[6] = {};
+            CHECK(r.drv->LoopSyncConfig(0, 0, state) == kIOReturnSuccess && state[1] == 0,
+                  "Loop Sync: partial change reported valid");
+            CHECK(change(0) == kIOReturnSuccess, "Loop Sync: retry failed");
+        }
+        // Disappearance between the master and slave: stop before the second write.
+        order.clear();
+        r.card.onVendorWrite = [&](unsigned p, uint8_t cmd) {
+            if (cmd == 0x50) { order.push_back(p); r.card.endpointPresent = false; }
+        };
+        CHECK(change(2) != kIOReturnSuccess, "Loop Sync: endpoint loss accepted");
+        CHECK(order == std::vector<unsigned>{1}, "Loop Sync: wrote after endpoint loss");
+        r.card.endpointPresent = true;
+        r.card.onVendorWrite = nullptr;
+        CHECK(change(2) == kIOReturnSuccess, "Loop Sync: reconnect retry failed");
+        // On/off does not discard the selected master; off still makes A master.
+        CHECK(change(3) == kIOReturnSuccess && clock(0, {1,1,0,0}) && clock(1, {2,1,0,0}),
+              "Loop Sync: off after B master");
+        CHECK(change(2) == kIOReturnSuccess, "Loop Sync: re-enable B master");
+        Select(r, 0, "Loop Sync: leave 64");
+        CHECK(clock(0, {1,1,0,0}), "Loop Sync: A not restored on leaving 64");
+        CHECK(change(1) != kIOReturnSuccess, "Loop Sync: accepted after leaving 64");
+        Select(r, 1, "Loop Sync: re-enter 64");
+        CHECK(clock(1, {1,1,1,0}) && clock(0, {3,0,1,0}), "Loop Sync: lost B master on re-entry");
+        gHostAudio.device->SetSampleRate(48000.0);
+        CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess,
+              "Loop Sync: rate change with B master failed");
+        CHECK(clock(1, {1,1,1,0}) && clock(0, {3,0,1,0}), "Loop Sync: rate change lost topology");
+        // A missing master B takes the existing port-loss path back to A alone.
+        r.card.port[1].kind = Port::Empty;
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(change(0) != kIOReturnSuccess, "Loop Sync: master loss left controls admitted");
+
+#endif
+        r.card.onVendorWrite = nullptr;
+        Finish(o, r);
+    }
+#ifdef kSelectorLoopSync
+    for (auto kind : {Port::Converters, Port::Empty}) {
+        Options o; o.name = "Loop Sync: no second Symphony"; o.port2 = kind;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r; RunScenario(o, r);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        Select(r, 1, "Loop Sync: rejected topology");
+        const auto a = r.card.port[0].vendorWrites.size(), b = r.card.port[1].vendorWrites.size();
+        uint32_t out[6] = {};
+        CHECK(r.drv->LoopSyncConfig(1, 2, out) != kIOReturnSuccess, "Loop Sync: non-Symphony accepted");
+        CHECK(a == r.card.port[0].vendorWrites.size() && b == r.card.port[1].vendorWrites.size(),
+              "Loop Sync: clock sent to converter/missing unit");
+        Finish(o, r);
+    }
+#endif
     // 3i. Two Symphony I/Os: selecting 64 configures unit B over XLink 2
     //     (Word Clock slave, routing, unlock), and nothing goes to it at 32.
     {

@@ -481,6 +481,25 @@ public final class DextUserClient: @unchecked Sendable {
         return UnitBState.decode(out)
     }
 
+    /// Versioned selector 13; old drivers return unsupported (never emulate writes).
+    public func loopSync(_ settings: LoopSyncSettings? = nil) throws -> LoopSyncState {
+        lock.lock(); let conn = connection; lock.unlock()
+        guard conn != IO_OBJECT_NULL else { throw DextUserClientError.notConnected }
+        let input: [UInt32] = [Self.magic, 1, settings == nil ? 0 : 1, settings?.word ?? 0]
+        var output = [UInt32](repeating: 0, count: 6)
+        var size = 24
+        let result = input.withUnsafeBytes { i in
+            output.withUnsafeMutableBytes { o in
+                IOConnectCallStructMethod(conn, 13, i.baseAddress, i.count, o.baseAddress, &size)
+            }
+        }
+        guard result == KERN_SUCCESS else { throw DextUserClientError.ipcFailed(result) }
+        guard size == 24, let state = LoopSyncState.decode(output) else {
+            throw DeviceConnectionError.transportError("Invalid Loop Sync reply")
+        }
+        return state
+    }
+
     // MARK: - Packing (pure, so the exact bytes can be tested)
 
     /// The 78-byte `SymphonyVendorCommandInput`: magic, command, port, two
