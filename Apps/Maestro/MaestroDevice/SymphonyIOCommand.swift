@@ -2138,6 +2138,18 @@ public enum ThunderboltInputMeterMap {
         return Words(channels: channels, digital: digital)
     }
 
+    /// Meter words read for converters: both ports' bus slots (port 1 then port 2).
+    public static let converterWordCount = 64
+
+    /// Converters: input strip h (host input h) reads the card's input meter
+    /// word for the bus slot its unit channel is on, `port * 32 + slot`
+    /// (`ConverterRules.hostMap`). Nil for a host channel that carries nothing.
+    public static func converterWords(_ system: ConverterSystem) -> Words {
+        let map = system.inputMap
+        return Words(channels: (0..<system.hostInputCount).map { map[$0]?.meterWord },
+                     digital: Array(repeating: nil, count: digitalSlots))
+    }
+
     /// Strip levels from host-input levels (word n = host input n). With no
     /// layout (`words.channels` empty) strip i keeps host input i, as before.
     public static func stripLevels(host: [Double], words: Words, count: Int) -> [Double] {

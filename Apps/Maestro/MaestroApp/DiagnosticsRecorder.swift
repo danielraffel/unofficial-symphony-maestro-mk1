@@ -236,6 +236,16 @@ final class DiagnosticsRecorder {
                             appState.hp1Level, appState.hp1Muted ? "yes" : "no",
                             appState.hp2Level, appState.hp2Muted ? "yes" : "no",
                             appState.converterVolumeKeys ? "yes" : "no", appState.connectedUnitProbeWord))
+        if let tb = appState.device as? ThunderboltDeviceConnection, appState.connectedUnit != nil {
+            // Converters (dext 131+): flags, phase and health counters, so an
+            // unlock or recovery shows when it happened.
+            if let cs = await Self.withTimeout(2) { tb.converterState() } ?? nil {
+                lines.append(String(format: "converters flags=0x%02x units=%d+%d phase=0x%08x/0x%08x checks=%u phaseErrors=%u unlocks=%u recoveries=%u latency=%u/%u host=%u/%u config=0x%08x",
+                                    cs.flags, cs.unitCount[0], cs.unitCount[1], cs.phase[0], cs.phase[1],
+                                    cs.healthTicks, cs.phaseErrors, cs.unlocks, cs.recoveries,
+                                    cs.latencyIn, cs.latencyOut, cs.hostInputs, cs.hostOutputs, cs.config))
+            }
+        }
         if let tb = appState.device as? ThunderboltDeviceConnection {
             let ls = await Self.withTimeout(2) { tb.linkState() } ?? nil
             if let ls {
@@ -257,8 +267,10 @@ final class DiagnosticsRecorder {
         lines.append(audio)
         // Only record what changed, plus a full line every minute, so a long
         // session stays readable. The irq/wrap counts change every time while
-        // audio runs, so compare without them.
-        let comparable = lines.map { $0.replacingOccurrences(of: #" irq\+\d+ wraps\+\d+"#, with: "", options: .regularExpression) }
+        // audio runs, so compare without them (and without the converter
+        // health check count, which also rises every time).
+        let comparable = lines.map { $0.replacingOccurrences(of: #" irq\+\d+ wraps\+\d+"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #" checks=\d+"#, with: "", options: .regularExpression) }
             .joined(separator: "\n")
         let now = Date()
         let changed = comparable != lastSnapshotText

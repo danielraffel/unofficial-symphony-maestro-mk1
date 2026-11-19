@@ -525,6 +525,13 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// port. Nil from a driver without that selector (every released one).
     public func secondPortState() -> SecondPortState? { dextClient.readPort2State() }
 
+    /// The driver's converter report (dext 131+); nil from older drivers.
+    public func converterState() -> ConverterState? { dextClient.readConverterState() }
+
+    /// Send the converter config word (dext 131+); false from older drivers.
+    @discardableResult
+    public func setConverterConfig(_ config: UInt32) -> Bool { dextClient.setConverterConfig(config) }
+
     /// EXPERIMENT (64 channels, stage 2): the port selector a two-port driver
     /// publishes on the Core Audio device. Nil from every released driver.
     public func portSelectionID() -> UInt32? { PortSelectionProperty.read(deviceID: audioDeviceID) }

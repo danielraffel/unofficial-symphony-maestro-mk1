@@ -152,7 +152,7 @@ public enum ConnectedUnit: Sendable, Equatable {
     /// One-line explanation for Device Info.
     public static let deviceInfoNotice =
         "This is not a Symphony I/O. Support for older Apogee converters is experimental and "
-        + "written without the hardware. Up to four chained units are identified, nearest first."
+        + "written without the hardware. Up to four chained units on each port are identified, nearest first."
 
     public var displayName: String {
         switch self {

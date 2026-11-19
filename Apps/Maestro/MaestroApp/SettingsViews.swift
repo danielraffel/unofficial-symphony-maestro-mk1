@@ -873,7 +873,10 @@ struct SystemSetupView: View {
     // AES pairs, optical), as Apogee's software did in the Symphony mode. The
     // optical row's name follows the rate and the board's optical format.
     private var clockSourceChoices: [ClockSourceChoice] {
-        appState.transportType == .usb
+        // Older converters: their own clock or word clock, as the original
+        // offered, written as the converter config's clock bit.
+        if appState.convertersIdentified { return ClockSourceMenu.converters }
+        return appState.transportType == .usb
             ? ClockSourceMenu.usb
             : ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
                                           slot2: appState.secondaryBoardType,
@@ -904,6 +907,12 @@ struct SystemSetupView: View {
 
     private var overHoldOptions: [(UInt32, String)] {
         MeterDisplaySettings.OverHoldMode.allCases.map { ($0.wireValue, $0.rawValue) }
+    }
+
+    /// Port 2's converters are listed with port 1's (from the driver's
+    /// converter report), so the two-port rows leave their unit lines out.
+    private var port2UnitsListedAbove: Bool {
+        appState.converterSystem?.source == .driver && appState.converterSystem?.port2Counted == true
     }
 
     /// Is the device in Pro Tools HD mode?
@@ -1087,7 +1096,10 @@ struct SystemSetupView: View {
                         LabeledContent("Device Name",
                                        value: appState.connectedUnit?.modelName ?? info.deviceName ?? "Symphony I/O")
                         LabeledContent("Connection", value: appState.connectionLabel)
-                        if let unit = appState.connectedUnit {
+                        if let system = appState.converterSystem {
+                            // One row per unit, by port, in the order they are cabled.
+                            ConverterUnitRows(appState: appState, system: system)
+                        } else if let unit = appState.connectedUnit {
                             // One row per unit, in the order they are cabled.
                             ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
                                 LabeledContent(row.label, value: row.value)
@@ -1122,7 +1134,11 @@ struct SystemSetupView: View {
                         LabeledContent("Firmware Version", value: firmwareVersion)
                     }
 
-                    if let channels = appState.connectedUnit?.channels {
+                    if let system = appState.cardLayout.converterLayout {
+                        // The host channels the converters use, port 1's first.
+                        LabeledContent("Inputs", value: "\(system.hostInputCount)")
+                        LabeledContent("Outputs", value: "\(system.hostOutputCount)")
+                    } else if let channels = appState.connectedUnit?.channels {
                         // The link always carries 32 channels; these are the
                         // ones the converter itself has.
                         LabeledContent("Inputs", value: "\(channels.inputs)")
@@ -1189,12 +1205,14 @@ struct SystemSetupView: View {
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            ForEach(Array(shown.rows.enumerated()), id: \.offset) { _, row in
+                            ForEach(Array(shown.rows.filter { !port2UnitsListedAbove || !$0.label.hasPrefix("Port 2 Unit") }
+                                .enumerated()), id: \.offset) { _, row in
                                 LabeledContent(row.label, value: row.value)
                             }
                         } else {
                             // A stage-1 driver (no selector): its rows as before.
-                            ForEach(Array(port2.deviceInfoRows.enumerated()), id: \.offset) { _, row in
+                            ForEach(Array(port2.deviceInfoRows.filter { !port2UnitsListedAbove || !$0.label.hasPrefix("Port 2 Unit") }
+                                .enumerated()), id: \.offset) { _, row in
                                 LabeledContent(row.label, value: row.value)
                             }
                         }
@@ -1213,13 +1231,20 @@ struct SystemSetupView: View {
                     // Converter simulation: the same rows a real converter gets.
                     LabeledContent("Device Name", value: unit.modelName ?? "Unknown unit")
                     LabeledContent("Connection", value: "Converter simulation — no hardware")
-                    ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
-                        LabeledContent(row.label, value: row.value)
+                    if let system = appState.converterSystem {
+                        ConverterUnitRows(appState: appState, system: system)
+                    } else {
+                        ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
+                            LabeledContent(row.label, value: row.value)
+                        }
                     }
                     Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let channels = unit.channels {
+                    if let system = appState.cardLayout.converterLayout {
+                        LabeledContent("Inputs", value: "\(system.hostInputCount)")
+                        LabeledContent("Outputs", value: "\(system.hostOutputCount)")
+                    } else if let channels = unit.channels {
                         LabeledContent("Inputs", value: "\(channels.inputs)")
                         LabeledContent("Outputs", value: "\(channels.outputs)")
                     }
@@ -1516,7 +1541,9 @@ struct SystemSetupView: View {
             connectedUnit: appState.connectedUnit?.displayName,
             connectedUnitModel: appState.connectedUnit?.modelName
         )
-        report.connectedUnitLines = appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
+        report.connectedUnitLines = appState.converterSystem?.reportLines(
+                twoPortDriver: appState.secondPortState != nil)
+            ?? appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
         if appState.connectedUnit != nil, let raw = ConnectedUnit.rawProbeLine(appState.connectedUnitProbeWord) {
             report.connectedUnitLines.append(raw)
         }
@@ -1622,7 +1649,17 @@ struct SystemSetupView: View {
         // Each slot's optical format names the optical clock row and, on a
         // DA16, picks the input byte that row sends.
         if appState.transportType != .usb { await appState.refreshChannelNaming() }
-        if let reported = (try? await device.getProperty(
+        if appState.convertersIdentified {
+            // Converters: the driver's report says which clock runs. The
+            // Symphony I/O clock control is not asked.
+            appState.refreshConverterSystem()
+            let source = (appState.converterSystem?.clockExternal ?? false)
+                ? ClockSourceMenu.wordClock : ClockSourceMenu.internalClock
+            if source != clockSource {
+                programmaticClockSource = source
+                clockSource = source
+            }
+        } else if let reported = (try? await device.getProperty(
                 PropertyAddress(selector: .clockSource)))?.asUInt32,
            let source = ClockSourceMenu.row(for: reported, in: clockSourceChoices),
            source != clockSource {
@@ -1928,6 +1965,13 @@ struct SystemSetupView: View {
     }
 
     private func writeClockSource(_ source: UInt32) async {
+        // Converters take their clock from the converter config (bit 0). The
+        // Symphony I/O clock control would send them a ClockMode command.
+        if appState.convertersIdentified {
+            errorMessage = appState.setConverterClock(external: source == ClockSourceMenu.wordClock)
+                ? nil : "The driver did not accept the clock source. It needs the driver from this version of Maestro."
+            return
+        }
         guard let device = appState.device else { return }
         do {
             try await device.setProperty(
@@ -1946,4 +1990,40 @@ struct SystemSetupView: View {
         }
         return "\(Int(rate)) Hz"
     }
+}
+
+/// Device Info rows for the older converters: one per unit, by port, with
+/// its X-Symphony firmware; a Device Type picker for a unit whose routing does
+/// not say what it is; and the firmware notice, once, when a unit needs 2.7.
+/// The authentication result is only in the copied details.
+struct ConverterUnitRows: View {
+    let appState: AppState
+    let system: ConverterSystem
+
+    var body: some View {
+        let rows = system.deviceInfoRows(twoPortDriver: appState.secondPortState != nil)
+        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+            LabeledContent(row.label, value: row.value)
+        }
+        ForEach(system.ports[0] + (system.port2Counted ? system.ports[1] : []), id: \.rowID) { unit in
+            if let current = unit.deviceType, !unit.deviceTypeChoices.isEmpty {
+                Picker("Device Type, port \(unit.port + 1) unit \(unit.address)", selection: Binding(
+                    get: { current },
+                    set: { appState.setConverterDeviceType($0, port: unit.port, address: unit.address) })) {
+                    ForEach(unit.deviceTypeChoices) { Text($0.label).tag($0) }
+                }
+                .help("Routing 0x0" + String(unit.routing, radix: 16, uppercase: true)
+                      + " can be more than one unit. Choose the one that is connected.")
+            }
+        }
+        ForEach(system.firmwareNotices, id: \.self) { notice in
+            Label(notice, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+}
+
+private extension ConverterUnit {
+    var rowID: Int { port * 4 + address }
 }
