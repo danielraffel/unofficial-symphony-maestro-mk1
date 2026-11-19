@@ -1082,6 +1082,15 @@ final class AppState {
     /// re-identifies the cable). The probe word is 0 once a Symphony I/O
     /// answers, so a Symphony never gets a converter layout from it.
     static func converterSystem(state: ConverterState?, probeWord: UInt32) -> ConverterSystem? {
+        // A zero probe is the driver's authoritative indication that port 1
+        // answered a Symphony I/O read.  If a stale selector-9 snapshot still
+        // carries the old port-1 converter flag from the same transition,
+        // prefer the Symphony result so the UI leaves converter mode without
+        // requiring a relaunch.  Port-2 converters remain valid because this
+        // only rejects the contradictory port-1 flag.
+        if probeWord == 0, state?.port1Converters == true {
+            return nil
+        }
         if let state, state.port1Converters || state.port2Converters,
            let system = ConverterSystem(state: state) {
             return system
@@ -2124,6 +2133,15 @@ final class AppState {
         }
     }
 
+    /// Converter (or non-Symphony) verdict: identity is invalidated and marked
+    /// failed once, not on every discovery pass. Re-invalidating made a new unit
+    /// generation each pass, rebuilding the pages keyed on it (blank window).
+    nonisolated static func converterVerdictNeedsInvalidation(isConverter: Bool,
+                                                              unitA: UnitIdentityState,
+                                                              unitB: UnitIdentityState) -> Bool {
+        isConverter && (unitA != .failed || unitB != .failed)
+    }
+
     @MainActor
     func readCardTypes() async {
         let generation = unitAGeneration
@@ -2192,7 +2210,11 @@ final class AppState {
                 connectedUnit = connectedUnit ?? system?.connectedUnit
             }
         } else { ownChange { refreshConverterSystem() } }
-        if connectedUnit != nil || converterSystem != nil {
+        // Only when the verdict changes. Re-running this on every pass made a new
+        // unit generation each time, which rebuilt the pages keyed on it on every
+        // health-loop recovery (blank window seen by Daniel, 2026-11-19).
+        if Self.converterVerdictNeedsInvalidation(isConverter: connectedUnit != nil || converterSystem != nil,
+                                                  unitA: unitAIdentityState, unitB: unitBIdentityState) {
             ownChange {
                 invalidateUnitAIdentity()
                 invalidateUnitBIdentity()
