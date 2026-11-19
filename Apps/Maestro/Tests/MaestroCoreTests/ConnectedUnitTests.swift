@@ -89,7 +89,7 @@ struct ConnectedUnitTests {
         #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: "pci19c2,2200") == "Thunderbolt (ThunderBridge)")
         #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: nil) == "Thunderbolt (ThunderBridge)")
         #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: "pci19c2,2100")
-                == "Thunderbolt (Symphony 64 PCIe card, experimental)")
+                == "Thunderbolt (Symphony 64 PCIe card)")
     }
 
     /// The usual rig: an AD-16X and a DA-16X on one cable. Unit 1 in the low

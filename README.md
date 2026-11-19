@@ -63,7 +63,7 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 - A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
 - Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
 - Appearance controls with **Auto**, **Light**, and **Dark** modes
-- Optional in-app updates through Sparkle, with **Stable** and **Beta** channels: stay on a stable build, or choose Beta to try experimental updates (see [Beta versions](#beta-versions))
+- Optional in-app updates through Sparkle, with **Stable** and **Beta** channels: stay on a stable build, or choose Beta to get updates before they reach Stable (see [Beta versions](#beta-versions))
 - **In beta, not yet confirmed on real hardware:** Apogee [AD-16X](https://www.apogeedigital.com/pdf/ad16x_usersguide.pdf), [DA-16X](https://apogeedigital.com/pdf/da16x_usersguide.pdf) and [Rosetta 800](https://apogeedigital.com/pdf/rosetta800_usersguide.pdf) converters, and two Symphony I/O units (64 channels), over [ThunderBridge or the Symphony 64 PCIe card](https://knowledge.apogeedigital.com/symphony64-pcie-thundebridge-users-guide-documentation-and-downloads). Reports are welcome.
 
 ### Connecting over USB and ThunderBridge
@@ -91,7 +91,7 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 ## Known Issues
 _Intel Macs and earlier versions of macOS are not supported._
 
-_The original Symphony 64 PCIe card (in a Thunderbolt chassis) is experimental: the driver attaches to it as of 0.8.36, but it has not been verified on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified; beta 0.9.3 adds the Mac's volume keys for them._
+_The original Symphony 64 PCIe card (in a Thunderbolt chassis): the driver attaches to it as of 0.8.36; it has had little testing on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified; beta 0.9.3 adds the Mac's volume keys for them._
 
 _Converters work as in Apogee's software: up to four units on each port, in cable order with the nearest first. Port 1's units take the first channels and port 2's continue after them while 64 channels run. Channels are named per unit (A Line 1, C Line 1). Each unit needs X-Symphony firmware 2.7 or later. Device Info has a Device Type menu for a DD-16X (or an AD-16X or DA-16X in Advanced Routing) and for a Rosetta 200, and the clock can be internal or external word clock. Output Routing and Input Routing edit the card's routing for converters both ways (any DAW output or mixer to any converter output, any converter input to any DAW input), starting from the default placement; Reset Routing returns both to it, and your routes are remembered per chain of units._
 

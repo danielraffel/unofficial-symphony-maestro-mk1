@@ -151,8 +151,8 @@ public enum ConnectedUnit: Sendable, Equatable {
 
     /// One-line explanation for Device Info.
     public static let deviceInfoNotice =
-        "This is not a Symphony I/O. Support for older Apogee converters is experimental and "
-        + "written without the hardware. Up to four chained units on each port are identified, nearest first."
+        "This is not a Symphony I/O. Support for older Apogee converters "
+        + "has not been tried on the hardware yet. Up to four chained units on each port are identified, nearest first."
 
     public var displayName: String {
         switch self {
@@ -179,7 +179,7 @@ public enum ConnectionLabel {
     public static func text(isThunderbolt: Bool, pciIdentifier: String?) -> String {
         guard isThunderbolt else { return "USB Hardware" }
         if let pciIdentifier, pciIdentifier.lowercased().hasSuffix(",2100") {
-            return "Thunderbolt (Symphony 64 PCIe card, experimental)"
+            return "Thunderbolt (Symphony 64 PCIe card)"
         }
         return "Thunderbolt (ThunderBridge)"
     }
