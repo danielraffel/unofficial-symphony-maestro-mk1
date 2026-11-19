@@ -250,7 +250,7 @@ public enum TwoUnitMixer {
 /// unit A changes meaning; additional DAW pairs follow those two saved mixer rows.
 public enum TwoUnitOutputRouting {
     /// DAW pairs at 64 channels.
-    public static let dawPairCount = 32
+    public static let dawPairCount = SymphonyRoutingModel.hostChannelCount / 2
     /// Grid rows of the mixers at 64 channels.
     public static var mixer1Row: Int { dawPairCount }
     public static var mixer2Row: Int { dawPairCount + 1 }
@@ -298,7 +298,7 @@ public enum TwoUnitOutputRouting {
     }
 
     /// DAW channel (0-based) unit B's first output plays by default.
-    public static let unitBChannelBaseDAW = 32
+    public static let unitBChannelBaseDAW = SymphonyRoutingModel.Port.two.cardBase
 }
 
 /// Debug only: the second-unit simulation's launch argument.
