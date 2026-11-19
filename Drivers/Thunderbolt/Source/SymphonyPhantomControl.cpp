@@ -68,19 +68,13 @@ void SymphonyPhantomControl::SetChannel(uint32_t in_channel)
 
 kern_return_t SymphonyPhantomControl::HandleChangeControlValue(bool in_control_value)
 {
-    // 1. Persist so the toggle sticks. (The base default would do this; our
-    //    override replaces it, so we must.)
-    kern_return_t r = SetControlValue(in_control_value);
-    if (r != kIOReturnSuccess) {
-        PHLOG("SetControlValue failed 0x%x", r);
-        return r;
-    }
-
-    // 2. Push to hardware (non-blocking; driver coalesces + async-sends 0xC6).
+    // Refuse unrouted/non-preamp elements without changing the published value.
+    // AudioDriverKit has no runtime control relocation; the fixed controls are
+    // re-targeted by the driver's host-element route resolver.
     PHLOG("HandleChangeControlValue ch=%u → %{public}s",
           ivars->channel, in_control_value ? "on" : "off");
-    if (ivars->driver)
-        ivars->driver->RequestPhantom(ivars->channel, in_control_value);
-
-    return kIOReturnSuccess;
+    if (!ivars->driver) return kIOReturnNotReady;
+    kern_return_t r = ivars->driver->RequestPhantom(ivars->channel, in_control_value);
+    if (r != kIOReturnSuccess) return r;
+    return SetControlValue(in_control_value);
 }

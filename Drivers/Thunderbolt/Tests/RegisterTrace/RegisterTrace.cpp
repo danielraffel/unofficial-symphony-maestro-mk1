@@ -3096,6 +3096,78 @@ static void RunSymphonyCardInputRoutes()
     Finish(o, r);
 }
 
+// B10: assertions only, so the shipped lifecycle goldens remain immutable.
+static void RunPreampHostRoutes()
+{
+    Options o; o.name = "B10 preamp host routes"; o.shortFlow = true;
+    o.micPreInstrument = true; o.portCountProperty = 2; o.port2 = Port::Symphony;
+    Run r; RunScenario(o, r);
+    auto *drv = r.drv;
+    auto &a = r.card.port[0].stored;
+    auto &b = r.card.port[1].stored;
+    const uint64_t phantom = uint64_t(0xC6) << 32;
+    const uint64_t mic = uint64_t(0xC3) << 32;
+    auto route = [&](uint8_t host, uint8_t rx) {
+        uint8_t pl[] = {host, rx, 1};
+        return drv->SendVendorCommand(0xB6, 0, pl, sizeof(pl));
+    };
+    CHECK(route(0, 32) == kIOReturnBadArgument, "B10: B route refused at 32");
+    b[(uint64_t(0xA1) << 32) | 0] = {6};
+    b[(uint64_t(0xA1) << 32) | 1] = {1};
+    drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    Select(r, 1, "B10 select 64");
+    uint8_t type[] = {3, 127};
+    CHECK(drv->SendVendorCommand(0x20, 0x80000000u, type, 2, 1) == kIOReturnSuccess,
+          "B10: B Mic type tracked");
+    CHECK(route(0, 32) == kIOReturnSuccess, "B10: B routed to host 1");
+    a.erase(phantom); a.erase(mic); b.erase(phantom); b.erase(mic);
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess && drv->RequestMicGain(0, 44) == kIOReturnSuccess,
+          "B10: host 1 accepts B preamp writes");
+    HostPump();
+    CHECK(b[phantom] == std::vector<uint8_t>({1}) && b[mic] == std::vector<uint8_t>({44}) &&
+          !a.count(phantom) && !a.count(mic), "B10: host 1 writes B over port 2 only");
+    CHECK(route(8, 0) == kIOReturnSuccess, "B10: A routed to host 9");
+    CHECK(drv->RequestPhantom(8, true) == kIOReturnSuccess && drv->RequestMicGain(8, 33) == kIOReturnSuccess,
+          "B10: host 9 accepts A preamp writes");
+    HostPump();
+    CHECK(a[phantom] == std::vector<uint8_t>({1}) && a[mic] == std::vector<uint8_t>({33}),
+          "B10: host 9 writes A preamp 1");
+    CHECK(route(1, 32) == kIOReturnSuccess, "B10: duplicate B route");
+    drv->RequestMicGain(0, 45); drv->RequestMicGain(1, 46); HostPump();
+    CHECK(b[mic] == std::vector<uint8_t>({46}) &&
+          gHostAudio.micGains.at(0)->GetDecibelValue() == 46 &&
+          gHostAudio.micGains.at(1)->GetDecibelValue() == 46,
+          "B10: duplicates coalesce and both HAL controls publish B gain");
+    drv->RequestMicGain(0, 47); drv->RequestMicGain(8, 34); HostPump();
+    CHECK(b[mic] == std::vector<uint8_t>({47}) && a[mic] == std::vector<uint8_t>({34}),
+          "B10: pending A and B gains remain independent");
+    type[0] = 4;
+    drv->SendVendorCommand(0x20, 0x80000000u, type, 2, 1);
+    drv->RequestMicGain(0, 99); HostPump();
+    CHECK(b[uint64_t(0xC4) << 32] == std::vector<uint8_t>({65}) &&
+          a[mic] == std::vector<uint8_t>({34}), "B10: B Instrument uses C4 and clamps independently");
+    // Digital AES source replaces host 1, through the peripheral P2P table.
+    CHECK(route(0, 0) == kIOReturnSuccess, "B10: host 1 returns to A RX0");
+    uint8_t digital[] = {192, 40};
+    CHECK(drv->SendVendorCommand(0x31, 0, digital, sizeof(digital)) == kIOReturnSuccess,
+          "B10: digital source replaces preamp");
+    const size_t mark = r.card.lines.size();
+    CHECK(drv->RequestPhantom(0, false) == kIOReturnNotReady &&
+          drv->RequestMicGain(0, 12) == kIOReturnNotReady, "B10: digital route refuses phantom and gain");
+    HostPump();
+    CHECK(Commands(r.card, mark, kRegXLink1TX, 0x10).empty() &&
+          Commands(r.card, mark, kRegXLink2TX, 0x10).empty(), "B10: digital refusal sends nothing");
+    r.card.port[1].kind = Port::Empty;
+    drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+    const size_t removed = r.card.lines.size();
+    CHECK(drv->RequestPhantom(1, false) == kIOReturnNotReady &&
+          drv->RequestMicGain(1, 13) == kIOReturnNotReady, "B10: removed B refuses phantom and gain");
+    HostPump();
+    CHECK(Commands(r.card, removed, kRegXLink1TX, 0x10).empty() &&
+          Commands(r.card, removed, kRegXLink2TX, 0x10).empty(), "B10: removal never falls back to A");
+    Finish(o, r);
+}
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -3107,6 +3179,7 @@ int main(int argc, char **argv)
     if (outDir.empty()) { fprintf(stderr, "--out <dir> is required\n"); return 2; }
 
     RunSymphonyCardInputRoutes();
+    RunPreampHostRoutes();
 
     // A1: exercise new gain behaviour separately from the frozen p1 traces.
     for (bool legacy : {false, true}) {

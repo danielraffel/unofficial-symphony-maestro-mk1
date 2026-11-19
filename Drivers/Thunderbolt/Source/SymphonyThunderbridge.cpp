@@ -228,8 +228,13 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  numMicChannels;                       // 0 unless MicPre8 detected
     SymphonyPhantomControl *phantomControl[8];      // per-channel phantom ('phan')
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
-    uint8_t   pendingPhantom[8];      uint32_t pendingPhantomGen[8];  bool phantomTxScheduled[8];
-    uint8_t   pendingMicGain[2][8];   uint32_t pendingMicGainGen[2][8]; bool micGainTxScheduled[2][8];
+    uint8_t   pendingPhantom[2][8];   uint32_t pendingPhantomGen[2][8]; bool phantomTxScheduled[2][8];
+    uint8_t   pendingMicGain[2][2][8]; uint32_t pendingMicGainGen[2][2][8]; bool micGainTxScheduled[2][2][8];
+    bool preampRoutingEdited;
+    bool unitBMicPreTypeKnown[8];
+    bool unitBMicPreInstrument[8];
+    uint8_t unitBMicPreGain[2][8];
+    bool unitBMicPreGainKnown[2][8];
     uint8_t   micPreGain[2][8];       // successfully sent gains, owned by xlinkQueue
     bool      micPreGainKnown[2][8];
     bool      micPreInstrument[8];    // atomic type for unit A's HAL controls
@@ -3893,6 +3898,9 @@ static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
 {
     const bool was = ivars->unitBConfigured;
     ivars->unitBConfigured = false;
+    for (uint32_t ch = 0; ch < 8; ++ch)
+        __atomic_store_n(&ivars->unitBMicPreTypeKnown[ch], false, __ATOMIC_RELEASE);
+    memset(ivars->unitBMicPreGainKnown, 0, sizeof(ivars->unitBMicPreGainKnown));
     ivars->loopSyncValid = false;
     if (!was) return;
     const bool reachable = touchHardware && ivars->pciDevice && XLinkTxAdmissible(ivars);
@@ -3952,6 +3960,9 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
         return ok;
     };
     ivars->unitBConfigured = false;
+    for (uint32_t ch = 0; ch < 8; ++ch)
+        __atomic_store_n(&ivars->unitBMicPreTypeKnown[ch], false, __ATOMIC_RELEASE);
+    memset(ivars->unitBMicPreGainKnown, 0, sizeof(ivars->unitBMicPreGainKnown));
     ivars->unitBSetupFlags = 0;
     uint32_t failures = 0;
     bool mandatoryOK = true;
@@ -9098,6 +9109,36 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars)
 // Public wrapper around the static SendVendorRequest() for vendor commands.
 // Called by SymphonyUserClient::ExternalMethod.
 
+// MicPre8 is a companion to the analog board, not a capture source of its
+// own. Resolve host -> card RX -> unit P2P -> analog channel without I/O.
+// Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:337-361.
+static bool ResolveMicPreRoute(SymphonyThunderbridge_IVars *iv, uint32_t host,
+                               uint32_t &port, uint32_t &channel)
+{
+    if (!iv || host >= 64) return false;
+    port = 0; channel = host;
+    // Preserve the historical direct entry point when no HAL preamp controls
+    // exist. Once routing is edited it must obey the same resolver as HAL.
+    if (!iv->numMicChannels && !__atomic_load_n(&iv->preampRoutingEdited, __ATOMIC_ACQUIRE) && host < 8) return true;
+    const uint32_t word = __atomic_load_n(&iv->cardInputRoute[host], __ATOMIC_ACQUIRE);
+    const uint32_t rx = word & 0xFFu;
+    if (!(word & kRoutingEnable) || rx >= 64) return false;
+    port = rx / 32;
+    if (port && (!iv->unitBConfigured || !CardMixerUnitBActive(iv))) return false;
+    const uint8_t source = port
+        ? __atomic_load_n(&iv->unitBInputRouteSource[rx % 32], __ATOMIC_ACQUIRE)
+        : __atomic_load_n(&iv->inputRouteSource[rx], __ATOMIC_ACQUIRE);
+    if (source < kSymphonyRoutingSourceIOBoard0 || source >= kSymphonyRoutingSourceIOBoard0 + 8)
+        return false;
+    channel = source - kSymphonyRoutingSourceIOBoard0;
+    const uint8_t board = port ? iv->unitBBoardType[0] : iv->optionBoardType[0];
+    const uint8_t coax = port ? iv->unitBCoaxReplace[0] : iv->namingCoaxReplace[0];
+    if (SymphonyBoardChannels(board, true).coax && coax >= 1 && coax <= 8 &&
+        channel / 2 == static_cast<uint32_t>(coax - 1)) return false;
+    return port ? (iv->unitBBoardValid[1] && iv->unitBBoardType[1] == kSIOOptionBoard_MicPre8)
+                : iv->numMicChannels > channel;
+}
+
 // AudioDriverKit's public IOUserAudioLevelControl API (SDK 25.2) fixes the
 // range at init; there is no range setter. Keep 0..85 so a channel initially
 // in Instrument mode can later reach Mic 85. Clamp the value to its active
@@ -9105,19 +9146,25 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars)
 // This cannot change HAL's advertised range/scalar conversion after a switch.
 // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:797-828.
 // Called only on xlinkQueue; publishing must not send another hardware write.
-static void PublishMicGain(SymphonyThunderbridge_IVars *iv, uint32_t ch)
+static void PublishMicGain(SymphonyThunderbridge_IVars *iv, uint32_t ch, uint32_t port = 0)
 {
-    if (ch >= iv->numMicChannels || !iv->micGainControl[ch] ||
-        !__atomic_load_n(&iv->micPreTypeKnown[ch], __ATOMIC_ACQUIRE)) return;
-    const bool instrument = __atomic_load_n(&iv->micPreInstrument[ch], __ATOMIC_ACQUIRE);
+    if (ch >= 8 || !(port ? __atomic_load_n(&iv->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE) :
+        __atomic_load_n(&iv->micPreTypeKnown[ch], __ATOMIC_ACQUIRE))) return;
+    const bool instrument = port ? __atomic_load_n(&iv->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
+        __atomic_load_n(&iv->micPreInstrument[ch], __ATOMIC_ACQUIRE);
     const uint32_t lane = instrument ? 1 : 0;
-    float gain = iv->micPreGainKnown[lane][ch] ? iv->micPreGain[lane][ch]
-                                             : iv->micGainControl[ch]->GetDecibelValue();
-    const float maximum = instrument ? 65.0f : kMicGainMaxDb;
-    if (gain > maximum) gain = maximum;
-    if (gain < kMicGainMinDb) gain = kMicGainMinDb;
-    kern_return_t ret = iv->micGainControl[ch]->SetDecibelValue(gain);
-    if (ret != kIOReturnSuccess) STERR("PublishMicGain: ch=%u failed 0x%x", ch, ret);
+    for (uint32_t host = 0; host < iv->numMicChannels; ++host) {
+        uint32_t targetPort = 0, targetChannel = 0;
+        if (!iv->micGainControl[host] || !ResolveMicPreRoute(iv, host, targetPort, targetChannel) ||
+            targetPort != port || targetChannel != ch) continue;
+        const bool known = port ? iv->unitBMicPreGainKnown[lane][ch] : iv->micPreGainKnown[lane][ch];
+        float gain = known ? (port ? iv->unitBMicPreGain[lane][ch] : iv->micPreGain[lane][ch])
+                           : iv->micGainControl[host]->GetDecibelValue();
+        const float maximum = instrument ? 65.0f : kMicGainMaxDb;
+        if (gain > maximum) gain = maximum;
+        if (gain < kMicGainMinDb) gain = kMicGainMinDb;
+        iv->micGainControl[host]->SetDecibelValue(gain);
+    }
 }
 
 kern_return_t SymphonyThunderbridge::SendVendorCommand(
@@ -9226,6 +9273,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                         result = kIOReturnBadArgument;
                         return;
                     }
+                    __atomic_store_n(&ivars->preampRoutingEdited, true, __ATOMIC_RELEASE);
                     WriteCardInputRoute(ivars, payload[0], (kTDM_XLinkRX0 + payload[1]) |
                                         (payload[2] ? kRoutingEnable : 0u));
                 } else {
@@ -9420,8 +9468,21 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             result = kIOReturnIOError;
             return;
         }
-        // Unit A owns the existing HAL input controls; unit B's app writes
-        // must not change their type. Only publish a successfully sent type.
+        if (port == 1 && command == kSIOCmd_AnalogReferenceLevel && payload &&
+            payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
+            __atomic_store_n(&ivars->unitBMicPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
+            __atomic_store_n(&ivars->unitBMicPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
+            PublishMicGain(ivars, value & 7u, 1);
+        }
+        if (port == 1 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
+            value < 8 && payload && payloadLen == 1) {
+            const uint32_t lane = command == kSIOCmd_InstrumentGain ? 1 : 0;
+            ivars->unitBMicPreGain[lane][value] = payload[0];
+            ivars->unitBMicPreGainKnown[lane][value] = true;
+            PublishMicGain(ivars, value, 1);
+        }
+        // Each unit owns its preamp state; publish only to HAL elements that
+        // currently resolve to that unit. Only retain successfully sent types.
         // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:797-828.
         if (port == 0 && command == kSIOCmd_AnalogReferenceLevel && payload &&
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
@@ -9446,6 +9507,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 for (uint32_t n = 0; n < 32; n++)
                     sources[n] = __atomic_load_n(&ivars->unitBInputRouteSource[n], __ATOMIC_ACQUIRE);
                 if (SymphonyNoteInputRoutes(sources, payload, payloadLen)) {
+                __atomic_store_n(&ivars->preampRoutingEdited, true, __ATOMIC_RELEASE);
                     for (uint32_t n = 0; n < 32; n++)
                         __atomic_store_n(&ivars->unitBInputRouteSource[n], sources[n], __ATOMIC_RELEASE);
                     namesChanged = true;
@@ -9466,6 +9528,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             for (uint32_t n = 0; n < 32; n++)
                 sources[n] = __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE);
             if (SymphonyNoteInputRoutes(sources, payload, payloadLen)) {
+                __atomic_store_n(&ivars->preampRoutingEdited, true, __ATOMIC_RELEASE);
                 for (uint32_t n = 0; n < 32; n++)
                     __atomic_store_n(&ivars->inputRouteSource[n], sources[n], __ATOMIC_RELEASE);
                 namesChanged = true;
@@ -9944,7 +10007,9 @@ kern_return_t SymphonyThunderbridge::RequestOpticalFormat(uint32_t board, uint32
 
 kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
 {
-    if (!ivars || channel >= kMicPre8NumChannels) return kIOReturnBadArgument;
+    if (!ivars || channel >= 64) return kIOReturnBadArgument;
+    uint32_t port = 0, ch = 0;
+    if (!ResolveMicPreRoute(ivars, channel, port, ch)) return kIOReturnNotReady;
     IODispatchQueue *txq = ivars->xlinkQueue;
     if (!txq) {
         STERR("RequestPhantom: no XLink queue (setup incomplete)");
@@ -9954,28 +10019,27 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
         STERR("RequestPhantom: TX shut down — not sending");
         return kIOReturnNotReady;
     }
-    const uint32_t ch = channel;
-    __atomic_store_n(&ivars->pendingPhantom[ch], on ? 1 : 0, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&ivars->pendingPhantomGen[ch], 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&ivars->pendingPhantom[port][ch], on ? 1 : 0, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&ivars->pendingPhantomGen[port][ch], 1, __ATOMIC_RELEASE);
     bool expected = false;
-    if (__atomic_compare_exchange_n(&ivars->phantomTxScheduled[ch], &expected, true,
+    if (__atomic_compare_exchange_n(&ivars->phantomTxScheduled[port][ch], &expected, true,
                                     false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         txq->DispatchAsync(^{
             for (;;) {
-                uint32_t gen = __atomic_load_n(&ivars->pendingPhantomGen[ch], __ATOMIC_ACQUIRE);
-                uint8_t  val = __atomic_load_n(&ivars->pendingPhantom[ch], __ATOMIC_RELAXED);
-                if (XLinkTxAdmissible(ivars)) {
+                uint32_t gen = __atomic_load_n(&ivars->pendingPhantomGen[port][ch], __ATOMIC_ACQUIRE);
+                uint8_t  val = __atomic_load_n(&ivars->pendingPhantom[port][ch], __ATOMIC_RELAXED);
+                if (XLinkTxAdmissible(ivars) && (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // 1=on, 0=off
-                    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                      ivars->symphonyAddr, kSIOCmd_PhantomPower,
-                                      ch /*nValue = 0-based channel*/,
-                                      &pData, 1, ivars->runtimeTxSeq);
+                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                      port ? kRegXLink2TX : kRegXLink1TX,
+                                      port ? 1 : ivars->symphonyAddr, kSIOCmd_PhantomPower,
+                                      ch, &pData, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
                 }
-                __atomic_store_n(&ivars->phantomTxScheduled[ch], false, __ATOMIC_RELEASE);
-                if (__atomic_load_n(&ivars->pendingPhantomGen[ch], __ATOMIC_ACQUIRE) == gen)
+                __atomic_store_n(&ivars->phantomTxScheduled[port][ch], false, __ATOMIC_RELEASE);
+                if (__atomic_load_n(&ivars->pendingPhantomGen[port][ch], __ATOMIC_ACQUIRE) == gen)
                     break;
                 bool exp2 = false;
-                if (!__atomic_compare_exchange_n(&ivars->phantomTxScheduled[ch], &exp2, true,
+                if (!__atomic_compare_exchange_n(&ivars->phantomTxScheduled[port][ch], &exp2, true,
                                                  false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
                     break;
             }
@@ -9987,7 +10051,9 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
 
 kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float decibels)
 {
-    if (!ivars || channel >= kMicPre8NumChannels) return kIOReturnBadArgument;
+    if (!ivars || channel >= 64) return kIOReturnBadArgument;
+    uint32_t port = 0, ch = 0;
+    if (!ResolveMicPreRoute(ivars, channel, port, ch)) return kIOReturnNotReady;
     IODispatchQueue *txq = ivars->xlinkQueue;
     if (!txq) {
         STERR("RequestMicGain: no XLink queue (setup incomplete)");
@@ -9997,10 +10063,10 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
         STERR("RequestMicGain: TX shut down — not sending");
         return kIOReturnNotReady;
     }
-    const uint32_t ch = channel;
-    if (ivars->numMicChannels > 0 &&
-        !__atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE)) return kIOReturnNotReady;
-    const bool instrument = __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE);
+    if ((port ? !__atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE) : (ivars->numMicChannels > 0 &&
+        !__atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE)))) return kIOReturnNotReady;
+    const bool instrument = port ? __atomic_load_n(&ivars->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
+        __atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE);
     const uint32_t lane = instrument ? 1 : 0;
     const uint8_t command = instrument ? kSIOCmd_InstrumentGain : kSIOCmd_MicGain;
     const float maxDb = instrument ? 65.0f : kMicGainMaxDb;
@@ -10010,32 +10076,38 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
     if (clamped < kMicGainMinDb) clamped = kMicGainMinDb;
     if (clamped > maxDb) clamped = maxDb;
     uint8_t gainByte = (uint8_t)(clamped + 0.5f);   // round to nearest dB
-    __atomic_store_n(&ivars->pendingMicGain[lane][ch], gainByte, __ATOMIC_RELAXED);
-    __atomic_fetch_add(&ivars->pendingMicGainGen[lane][ch], 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&ivars->pendingMicGain[port][lane][ch], gainByte, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&ivars->pendingMicGainGen[port][lane][ch], 1, __ATOMIC_RELEASE);
     bool expected = false;
-    if (__atomic_compare_exchange_n(&ivars->micGainTxScheduled[lane][ch], &expected, true,
+    if (__atomic_compare_exchange_n(&ivars->micGainTxScheduled[port][lane][ch], &expected, true,
                                     false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         txq->DispatchAsync(^{
             for (;;) {
-                uint32_t gen = __atomic_load_n(&ivars->pendingMicGainGen[lane][ch], __ATOMIC_ACQUIRE);
-                uint8_t  val = __atomic_load_n(&ivars->pendingMicGain[lane][ch], __ATOMIC_RELAXED);
-                if (XLinkTxAdmissible(ivars)) {
+                uint32_t gen = __atomic_load_n(&ivars->pendingMicGainGen[port][lane][ch], __ATOMIC_ACQUIRE);
+                uint8_t  val = __atomic_load_n(&ivars->pendingMicGain[port][lane][ch], __ATOMIC_RELAXED);
+                if (XLinkTxAdmissible(ivars) && (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // gain 0..85
-                    if (SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                          ivars->symphonyAddr, command,
-                                          ch /*nValue = 0-based channel*/,
-                                          &pData, 1, ivars->runtimeTxSeq)) {
-                        ivars->micPreGain[lane][ch] = val;
-                        ivars->micPreGainKnown[lane][ch] = true;
-                        if (lane == (__atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE) ? 1u : 0u))
-                            PublishMicGain(ivars, ch);
+                    if (SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                          port ? kRegXLink2TX : kRegXLink1TX,
+                                          port ? 1 : ivars->symphonyAddr, command,
+                                          ch, &pData, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq)) {
+                        if (port == 1) {
+                            ivars->unitBMicPreGain[lane][ch] = val;
+                            ivars->unitBMicPreGainKnown[lane][ch] = true;
+                            PublishMicGain(ivars, ch, 1);
+                        } else {
+                            ivars->micPreGain[lane][ch] = val;
+                            ivars->micPreGainKnown[lane][ch] = true;
+                            if (lane == (__atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE) ? 1u : 0u))
+                                PublishMicGain(ivars, ch);
+                        }
                     }
                 }
-                __atomic_store_n(&ivars->micGainTxScheduled[lane][ch], false, __ATOMIC_RELEASE);
-                if (__atomic_load_n(&ivars->pendingMicGainGen[lane][ch], __ATOMIC_ACQUIRE) == gen)
+                __atomic_store_n(&ivars->micGainTxScheduled[port][lane][ch], false, __ATOMIC_RELEASE);
+                if (__atomic_load_n(&ivars->pendingMicGainGen[port][lane][ch], __ATOMIC_ACQUIRE) == gen)
                     break;
                 bool exp2 = false;
-                if (!__atomic_compare_exchange_n(&ivars->micGainTxScheduled[lane][ch], &exp2, true,
+                if (!__atomic_compare_exchange_n(&ivars->micGainTxScheduled[port][lane][ch], &exp2, true,
                                                  false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
                     break;
             }
