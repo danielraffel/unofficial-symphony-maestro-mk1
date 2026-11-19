@@ -84,6 +84,8 @@ extension AppState {
     func loadThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
         try requireSymphonyPreset()
         let (preset, legacy) = try ThunderboltPreset.loadBundle(from: url, layout: cardLayout)
+        beginRecall()
+        defer { finishRecall() }
         let layout = cardLayout
         let b = unitBOnCard ? unitBDevice as? ThunderboltUnitBConnection : nil
         let bLayout = unitBLayout

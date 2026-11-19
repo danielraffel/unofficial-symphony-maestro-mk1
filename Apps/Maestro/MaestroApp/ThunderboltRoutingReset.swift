@@ -14,6 +14,8 @@ extension AppState {
               let b = unitBDevice as? ThunderboltUnitBConnection, let bLayout = unitBLayout else {
             throw DeviceConnectionError.notConnected
         }
+        beginRecall()
+        defer { finishRecall() }
         let aLayout = cardLayout
         let inputStore = symphonyCardInputStore
         // Older serving drivers still reset the peripheral input tables.

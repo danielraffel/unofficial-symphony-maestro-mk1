@@ -486,13 +486,20 @@ final class AppState {
                             // at Start, or a card swapped while off): read them
                             // too, so the grid and the replay use the same table.
                             await self.readCardTypes()
-                            if self.usesTwoUnitReplay {
+                            if self.recallInFlight {
+                                self.replayDeferral.request()
+                            } else if self.usesTwoUnitReplay {
                                 self.twoUnitReplayNeeded = true
                             } else {
                                 await self.syncInputRoutingToHardware()
                             }
                         }
                         self.thunderboltSeenRecoveryCount = count
+                    }
+                    if self.inputRoutingReplayNeeded, !self.recallInFlight,
+                       self.connectionMode == .hardware {
+                        self.inputRoutingReplayNeeded = false
+                        await self.syncInputRoutingToHardware()
                     }
                     // A new converter chain (32 <-> 64 channels, a Device
                     // Type change): its saved routes go to the driver.
@@ -1097,6 +1104,23 @@ final class AppState {
     @ObservationIgnored var twoUnitReplayNeeded = false
     @ObservationIgnored var twoUnitReplayRunning = false
     @ObservationIgnored var twoUnitSleeping = false
+    @ObservationIgnored var inputRoutingReplayNeeded = false
+    @ObservationIgnored var replayDeferral = ReplayDeferral()
+
+    var recallInFlight: Bool { replayDeferral.isInFlight() }
+
+    @MainActor
+    func beginRecall() { replayDeferral.beginRecall() }
+
+    @MainActor
+    func finishRecall() {
+        guard replayDeferral.finishRecall() else { return }
+        if usesTwoUnitReplay {
+            twoUnitReplayNeeded = true
+        } else {
+            inputRoutingReplayNeeded = true
+        }
+    }
     /// Unit B's connection: unit A's driver client with port byte 1.
     var unitBDevice: (any DeviceConnection)? {
         willSet {
