@@ -110,10 +110,13 @@ public extension XPCTransport {
 public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     private let connection: xpc_connection_t
     private let queue: DispatchQueue
+    public let hardwareWriteGate: HardwareWriteGate
     private var _connected = true
     private let lock = NSLock()
 
-    public init(serviceName: String = "com.danielraffel.Maestro.volumeproxy") {
+    public init(serviceName: String = "com.danielraffel.Maestro.volumeproxy",
+                hardwareWriteGate: HardwareWriteGate = HardwareWriteGate()) {
+        self.hardwareWriteGate = hardwareWriteGate
         self.queue = DispatchQueue(label: "com.danielraffel.Maestro.xpc-transport")
         self.connection = xpc_connection_create_mach_service(
             serviceName, queue, 0)
@@ -143,6 +146,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
+        try hardwareWriteGate.check()
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setProperty")
         xpc_dictionary_set_uint64(msg, "bRequest", UInt64(bRequest))
@@ -267,6 +271,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func setSwReturnMute(_ muted: Bool) {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setSwReturnMute")
         xpc_dictionary_set_int64(msg, "muted", muted ? 1 : 0)
@@ -279,6 +284,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setMixerParam")
         xpc_dictionary_set_uint64(msg, "usbCmd", UInt64(usbCmd))
@@ -297,6 +303,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func setSwReturnLevel(_ dB: Double) {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setSwReturnLevel")
         xpc_dictionary_set_double(msg, "dB", dB)
@@ -308,6 +315,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func setSwReturnChannelLevel(channel: Int, dB: Double) {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setSwReturnChannelLevel")
         xpc_dictionary_set_int64(msg, "channel", Int64(channel == 0 ? 0 : 1))
@@ -320,6 +328,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func setSwReturnPan(_ pan: Double) {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setSwReturnPan")
         xpc_dictionary_set_double(msg, "pan", pan)
@@ -331,6 +340,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func setSwReturnProcessing(_ enabled: Bool) {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setSwReturnProcessing")
         xpc_dictionary_set_int64(msg, "enabled", enabled ? 1 : 0)
@@ -342,6 +352,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func resetAudioOutput() {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "resetAudioOutput")
         xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
@@ -352,6 +363,7 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     }
 
     public func setRoutingMode(_ mode: Int) {
+        guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "setRoutingMode")
         xpc_dictionary_set_int64(msg, "mode", Int64(mode))
@@ -370,6 +382,9 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
 /// Property selectors are mapped to raw USB fields by SymphonyIOPropertyMapper,
 /// then sent as generic setProperty/getProperty XPC commands to the proxy.
 public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
+    private let writeGate = HardwareWriteGate()
+    public var hardwareWriteGate: HardwareWriteGate? { writeGate }
+
     public let identifier: USBDeviceIdentifier
 
     private let transport: XPCTransport
@@ -422,7 +437,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     public init(identifier: USBDeviceIdentifier, transport: XPCTransport? = nil,
                 settingsStore: DeviceSettingsStore = DeviceSettingsStore()) {
         self.identifier = identifier
-        self.transport = transport ?? MachXPCTransport()
+        self.transport = transport ?? MachXPCTransport(hardwareWriteGate: writeGate)
         self.settingsStore = settingsStore
         // Start from what was saved, so a relaunch shows the user's settings
         // instead of the cache's built-in defaults.
@@ -741,6 +756,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// Hold the helper's software stage at 0 dB, unmuted. Send this only after
     /// the unit's own strips have taken their values.
     public func setHelperNeutral() {
+        guard writeGate.allowsWrites else { return }
         transport.setSwReturnLevel(0)
         transport.setSwReturnMute(false)
     }
@@ -800,8 +816,8 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         for step in helperSteps {
             switch step {
             case .helperNeutral: setHelperNeutral()
-            case .helperPan(let pan): transport.setSwReturnPan(pan)
-            case .helperProcessing(let on): transport.setSwReturnProcessing(on)
+            case .helperPan(let pan): setSwReturnPan(pan)
+            case .helperProcessing(let on): setSwReturnProcessing(on)
             case .hardware: break
             }
         }
@@ -850,12 +866,14 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// Hardware mixer mute has no effect because USB audio routes
     /// directly to DAC, bypassing the FPGA mixer.
     public func setSwReturnMute(_ muted: Bool) {
+        guard writeGate.allowsWrites else { return }
         transport.setSwReturnMute(muted)
     }
 
     /// Send a mixer parameter directly via dedicated XPC command.
     /// Bypasses the generic setProperty path which has delivery issues.
     public func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {
+        guard writeGate.allowsWrites else { return }
         // Never put the CoreAudio-level IDs (1000/2000, stereo sides) on the USB
         // wire: the unit numbers Software Return 32 and Master 33.
         var channel = channel
@@ -873,30 +891,36 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     /// Set SW Return fader level in dB (software gain in proxy render callback).
     public func setSwReturnLevel(_ dB: Double) {
+        guard writeGate.allowsWrites else { return }
         transport.setSwReturnLevel(dB)
     }
 
     public func setSwReturnChannelLevel(channel: Int, dB: Double) {
+        guard writeGate.allowsWrites else { return }
         transport.setSwReturnChannelLevel(channel: channel, dB: dB)
     }
 
     /// Set SW Return pan position (software pan in proxy render callback).
     public func setSwReturnPan(_ pan: Double) {
+        guard writeGate.allowsWrites else { return }
         transport.setSwReturnPan(pan)
     }
 
     public func setSwReturnProcessing(_ enabled: Bool) {
+        guard writeGate.allowsWrites else { return }
         transport.setSwReturnProcessing(enabled)
     }
 
     /// Ask the proxy to rebuild its output AudioUnit. See the protocol comment:
     /// this is the audio-path half of "Reconnect Hardware".
     public func resetAudioOutput() {
+        guard writeGate.allowsWrites else { return }
         transport.resetAudioOutput()
     }
 
     /// Set FPGA routing mode: 0 = DAW (null passthrough), 1 = Direct Monitor.
     public func setRoutingMode(_ mode: Int) {
+        guard writeGate.allowsWrites else { return }
         transport.setRoutingMode(mode)
     }
 

@@ -208,18 +208,161 @@ extension AppState {
         return plan
     }
 
-    /// Invalidate synchronously so even an already-running detached plan stops
-    /// at its next write. Wake must obtain a new configured B connection.
+    /// Suspend every app-owned writer while macOS sleeps. Keep the existing
+    /// transport connection; the driver owns link recovery and the health loop
+    /// performs the normal input-routing replay after recovery.
+    /// Evidence: og_source/maestrolink/Software/SymphonyIOSymphonyPeripheralDevice.cpp:247-325;
+    /// og_source/maestrolink/Software/SymphonyController.cpp:3653-3710.
+    @MainActor
     func suspendTwoUnitReplay() {
-        guard usesTwoUnitReplay || unitBDevice is ThunderboltUnitBConnection else { return }
-        twoUnitSleeping = true
+        hardwareSleepState = .sleeping
+        wakeReconnectTask?.cancel()
+        wakeReconnectTask = nil
+        wakeValidationGeneration &+= 1
+        if let tb = device as? ThunderboltDeviceConnection, let link = tb.lastLinkState {
+            wakeBaselineWatchTicks = link.watchTicks
+            wakeBaselineRecoveryCount = link.recoveryCount
+        } else {
+            wakeBaselineWatchTicks = nil
+            wakeBaselineRecoveryCount = nil
+        }
+        wakeStableRecoveryCount = nil
+        wakeStableProbeCount = 0
+        device?.hardwareWriteGate?.holdForValidation()
+        unitBDevice?.hardwareWriteGate?.holdForValidation()
         twoUnitReplayNeeded = true
         (unitBDevice as? ThunderboltUnitBConnection)?.invalidate()
         applyUnitB(nil, from: nil)
+        isHardwareInitialized = false
+        stopMeterPolling()
     }
 
+    @MainActor
     func wakeTwoUnitReplay() {
-        twoUnitSleeping = false
-        if usesTwoUnitReplay { twoUnitReplayNeeded = true }
+        guard hardwareSleepState == .sleeping else { return }
+        hardwareSleepState = .validating
+        retryWakeValidation()
     }
+
+    /// Record all interrupted discovery/reconnect work, including work that spans
+    /// an entire sleep/wake generation. It must restart with a fresh connection.
+    @MainActor
+    func admitConnectionWork(generation: Int? = nil) -> Bool {
+        guard !hardwareWritesSuspended,
+              generation == nil || generation == wakeValidationGeneration else {
+            reconnectRequestedWhileSuspended = true
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    func replaySuspendedReconnectIfNeeded() {
+        guard !hardwareWritesSuspended, !isReconnecting,
+              reconnectRequestedWhileSuspended else { return }
+        reconnectRequestedWhileSuspended = false
+        Task { @MainActor [weak self] in await self?.reconnectHardware() }
+    }
+
+    @MainActor
+    func deferHealthCheckForSleep() -> Bool {
+        guard hardwareWritesSuspended else { return false }
+        if hardwareSleepState == .validating { retryWakeValidation() }
+        return true
+    }
+
+    /// Only cached driver link state is read on ThunderBridge. USB reads have a
+    /// deadline independent of whether the proxy ever replies.
+    @MainActor
+    func retryWakeValidation() {
+        guard wakeReconnectTask == nil, hardwareSleepState == .validating else { return }
+        let generation = wakeValidationGeneration
+        wakeReconnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if self.wakeValidationGeneration == generation { self.wakeReconnectTask = nil } }
+            for _ in 0..<self.wakeRetryLimit {
+                guard !Task.isCancelled, self.hardwareSleepState == .validating,
+                      self.wakeValidationGeneration == generation else { return }
+                if let connection = self.device {
+                    if let tb = connection as? ThunderboltDeviceConnection {
+                        let link: LinkState?
+                        if let probe = self.wakeLinkProbe { link = await probe(tb) }
+                        else {
+                            link = await Task.detached(priority: .utility) {
+                                let verdict = tb.probeEndpoint()
+                                return verdict.isLive ? tb.lastLinkState : nil
+                            }.value
+                        }
+                        guard !Task.isCancelled, self.wakeValidationGeneration == generation else { return }
+                        if self.device !== connection {
+                            self.wakeStableRecoveryCount = nil
+                            self.wakeStableProbeCount = 0
+                            self.reconnectRequestedWhileSuspended = true
+                        } else if let link {
+                            if self.wakeProbeIsStable(link) {
+                                self.finishWakeValidation(connection)
+                                return
+                            }
+                        } else {
+                            self.wakeStableRecoveryCount = nil
+                            self.wakeStableProbeCount = 0
+                        }
+                    } else if await self.validateHardwareAfterWake(connection) { return }
+                }
+                try? await Task.sleep(for: self.wakeRetryInterval)
+            }
+            guard !Task.isCancelled, self.wakeValidationGeneration == generation,
+                  self.hardwareSleepState == .validating else { return }
+            self.markHardwareDisconnected()
+            self.device?.hardwareWriteGate?.retire()
+            self.hardwareSleepState = .awake
+            self.reconnectRequestedWhileSuspended = false
+            // A health loop on the stale client cannot repair a terminated nub.
+            await self.reconnectHardware()
+        }
+    }
+
+    @MainActor
+    func wakeProbeIsStable(_ link: LinkState) -> Bool {
+        guard link.state == .up, !link.hwSuspended, link.linkConfigured, link.clockPresent else {
+            wakeStableRecoveryCount = nil
+            wakeStableProbeCount = 0
+            return false
+        }
+        // != accepts both watch-counter wrap and a restarted driver's counter.
+        if let baseline = wakeBaselineWatchTicks,
+           link.watchTicks == baseline, link.recoveryCount == wakeBaselineRecoveryCount { return false }
+        if wakeStableRecoveryCount == link.recoveryCount { wakeStableProbeCount += 1 }
+        else { wakeStableRecoveryCount = link.recoveryCount; wakeStableProbeCount = 1 }
+        return wakeStableProbeCount >= 2
+    }
+
+    @MainActor
+    func finishWakeValidation(_ connection: any DeviceConnection) {
+        guard hardwareSleepState == .validating, device === connection else { return }
+        hardwareSleepState = .awake
+        // A pinned simulation has no discovery/replay work to restart.
+        if cardSimulation != nil { reconnectRequestedWhileSuspended = false }
+        if reconnectRequestedWhileSuspended || isReconnecting {
+            reconnectRequestedWhileSuspended = true
+            replaySuspendedReconnectIfNeeded()
+            return
+        }
+        connection.hardwareWriteGate?.openAfterValidation()
+        isHardwareInitialized = true
+        twoUnitReplayNeeded = usesTwoUnitReplay
+        startMeterPolling()
+    }
+
+    @MainActor
+    func validateHardwareAfterWake(_ connection: any DeviceConnection) async -> Bool {
+        guard hardwareSleepState == .validating, device === connection else { return false }
+        let generation = wakeValidationGeneration
+        let valid = await WakeReadDeadline.validate(connection, timeout: wakeReadTimeout)
+        guard valid, !Task.isCancelled, hardwareSleepState == .validating,
+              generation == wakeValidationGeneration, device === connection else { return false }
+        finishWakeValidation(connection)
+        return true
+    }
+
 }

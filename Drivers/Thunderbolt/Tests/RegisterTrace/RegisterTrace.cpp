@@ -2109,9 +2109,16 @@ static void RunAudioSleepMidSelect(const Options &o, Run &r)
 
     c.phase("wake with the card intact");
     const size_t wake = c.lines.size();
+    uint32_t wakeState[16] = {};
+    drv->ReadLinkState(wakeState);
+    CHECK(wakeState[1] != 1, "%s: sleeping link reported up", o.name);
     drv->SetPowerState(kIOServicePowerCapabilityOn);
+    drv->ReadLinkState(wakeState);
+    CHECK(wakeState[1] != 1, "%s: wake reported up before link revalidation", o.name);
     drv->LinkWatchTimerOccurred(nullptr, 0);
     HostPump();
+    drv->ReadLinkState(wakeState);
+    CHECK(wakeState[1] == 1, "%s: validated clean wake did not report up", o.name);
     CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort2) != 0,
           "%s: port 2 still enabled at 32 channels after the wake (GCSR2=0x%08x)", o.name, c.reg[kRegGCSR2]);
     CHECK((c.reg[kRegGCSR2] & kGCSR2_DisablePort1) == 0, "%s: port 1 disabled by the clean-up", o.name);

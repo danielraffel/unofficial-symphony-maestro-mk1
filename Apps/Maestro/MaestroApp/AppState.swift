@@ -142,6 +142,12 @@ final class AppState {
     var device: (any DeviceConnection)? {
         willSet {
             if device !== newValue {
+                if hardwareWritesSuspended {
+                    newValue?.hardwareWriteGate?.holdForValidation()
+                    reconnectRequestedWhileSuspended = true
+                    wakeStableRecoveryCount = nil
+                    wakeStableProbeCount = 0
+                }
                 identifyA.reset()
                 identifyB.reset()
                 invalidateUnitAIdentity()
@@ -254,6 +260,8 @@ final class AppState {
     /// Symphony behind an enumerated ThunderBridge is distinct from a missing
     /// transport, while the existing scanning/error messages remain intact.
     var endpointStatusMessage: String {
+        if hardwareSleepState == .validating { return "Validating hardware after wake…" }
+        if hardwareSleepState == .sleeping { return "Hardware sleeping" }
         if endpointDisconnected {
             if let portStatusMessage { return PortStatusMessage.headline(portStatusMessage) }
             return connectionPresentation.endpointLabel
@@ -456,6 +464,10 @@ final class AppState {
             while !Task.isCancelled {
                 guard let self else { break }
                 guard let tb = self.device as? ThunderboltDeviceConnection else { break }
+                if self.deferHealthCheckForSleep() {
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
                 // One read per cycle of the dext's link-watch state (dext 113,
                 // kSelectorReadLinkState): no bus traffic. The driver samples the
                 // card's XLink clock-detect bit itself (2 s while down, 5 s idle,
@@ -473,6 +485,10 @@ final class AppState {
                 // "Symphony disconnected" (2026-10-22 12:59).
                 guard !Task.isCancelled,
                       (self.device as? ThunderboltDeviceConnection) === tb else { break }
+                if self.deferHealthCheckForSleep() {
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
                 let audioRunning = tb.isAudioRunning
                 let healthy = verdict.isLive
                 self.updateThunderboltPortLink(tb.lastLinkState?.state.portStatusLink ?? .other)
@@ -555,7 +571,7 @@ final class AppState {
                         // connected": let the reconnect path auto-switch once
                         // the endpoint is live, like a cable plug-in.
                         self.pendingAutoSwitchAfterReconnect = true
-                        await self.reconnectHardware()
+                        Task { @MainActor [weak self] in await self?.reconnectHardware() }
                         break
                     }
                 } else {
@@ -570,19 +586,7 @@ final class AppState {
                     if failures >= threshold && self.connectionMode == .hardware && !swapGraceActive {
                         print("[Maestro] ThunderBridge health probe failed \(failures) times — marking hardware disconnected")
                         Self.tbLog.notice("marking Symphony disconnected after \(failures) failed probes (\(verdict.label, privacy: .public))")
-                        self.stopMeterPolling()
-                        self.statusMessage = "Symphony disconnected"
-                        self.connectionMode = .disconnected
-                        // Whatever answers next is a Symphony that has just started.
-                        self.awaitingSymphonyReturn = true
-                        // Keep the transport visible in the sidebar. The
-                        // ThunderBridge PCI service is still present; only
-                        // the downstream Symphony endpoint failed its probe.
-                        self.transportPresent = true
-                        self.isHardwareInitialized = false
-                        self.thunderboltHardwareResponsive = false
-                        self.clearMeterState()
-                        self.viewReloadToken = UUID()
+                        self.markHardwareDisconnected()
                         // A powered-off Symphony can leave the PCI/Core Audio
                         // service registered while its existing IOUserClient
                         // has gone stale. Reopen only this private control path;
@@ -599,6 +603,20 @@ final class AppState {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    /// Shared by health failure and wake exhaustion, including the startup settle.
+    @MainActor
+    func markHardwareDisconnected() {
+        stopMeterPolling()
+        statusMessage = "Symphony disconnected"
+        connectionMode = .disconnected
+        awaitingSymphonyReturn = true
+        transportPresent = true
+        isHardwareInitialized = false
+        thunderboltHardwareResponsive = false
+        clearMeterState()
+        viewReloadToken = UUID()
     }
 
     /// Persist each probe to the unified log so a power-cycle test leaves
@@ -635,7 +653,7 @@ final class AppState {
     }
 
     @MainActor
-    private func clearMeterState() {
+    func clearMeterState() {
         inputMeterLevels = Array(repeating: -60.0, count: inputMeterLevels.count)
         outputMeterLevels = Array(repeating: -60.0, count: outputMeterLevels.count)
         mixerMeterLevels = Array(repeating: -60.0, count: mixerMeterLevels.count)
@@ -772,6 +790,7 @@ final class AppState {
     /// at ADAT/SMUX and the firmware starts Replaces Off, Mirrors Analog 1-2.
     @MainActor
     func reapplyDigitalSettings() async {
+        guard !hardwareWritesSuspended else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard let device else { return }
         for write in rememberedDigitalSettings.writes(layout: cardLayout) {
@@ -1006,6 +1025,7 @@ final class AppState {
     /// whatever the driver kept.
     @MainActor
     func replayConverterRouting(resetFirst: Bool = false) async {
+        guard !hardwareWritesSuspended else { return }
         guard let layout = converterRoutingLayout, let signature = converterRoutingSignature else { return }
         converterRoutingReplayedSignature = signature
         converterRoutingReplayNeeded = false
@@ -1158,7 +1178,24 @@ final class AppState {
     var unitB: SecondUnitInfo?
     @ObservationIgnored var twoUnitReplayNeeded = false
     @ObservationIgnored var twoUnitReplayRunning = false
-    @ObservationIgnored var twoUnitSleeping = false
+    enum HardwareSleepState { case awake, sleeping, validating }
+    var hardwareSleepState: HardwareSleepState = .awake
+    var hardwareWritesSuspended: Bool { hardwareSleepState != .awake }
+    var twoUnitSleeping: Bool { hardwareWritesSuspended }
+    @ObservationIgnored var wakeReconnectTask: Task<Void, Never>?
+    @ObservationIgnored var reconnectRequestedWhileSuspended = false
+    @ObservationIgnored var wakeRetryInterval: Duration = .seconds(2)
+    @ObservationIgnored var wakeRetryLimit = 30
+    @ObservationIgnored var wakeReadTimeout: Duration = .seconds(2)
+    // Injectable boundaries let tests exercise the real orchestration without hardware.
+    @ObservationIgnored var launchDiscoveryOperation: (@MainActor () async -> [CoreAudioDeviceConnection.DiscoveredSymphonyIO])?
+    @ObservationIgnored var reconnectOperation: (@MainActor () async -> Void)?
+    @ObservationIgnored var wakeLinkProbe: (@Sendable (ThunderboltDeviceConnection) async -> LinkState?)?
+    @ObservationIgnored var wakeValidationGeneration = 0
+    @ObservationIgnored var wakeBaselineWatchTicks: UInt32?
+    @ObservationIgnored var wakeBaselineRecoveryCount: UInt32?
+    @ObservationIgnored var wakeStableRecoveryCount: UInt32?
+    @ObservationIgnored var wakeStableProbeCount = 0
     @ObservationIgnored var inputRoutingReplayNeeded = false
     @ObservationIgnored var replayDeferral = ReplayDeferral()
 
@@ -1448,7 +1485,7 @@ final class AppState {
     /// Evidence: SymphonyIO.cpp:7029-7052, SymphonyIOMixer.h:18-20.
     var mixerMeterLevels: [Double] = Array(repeating: -60.0, count: 8)
     /// Meter polling task handle.
-    private var meterPollingTask: Task<Void, Never>?
+    var meterPollingTask: Task<Void, Never>?
     /// Whether TDM hardware metering via XPC is available (set false on first failure).
     private var tdmMeteringAvailable: Bool = true
     /// Latched per connection once the output-group TDM payload has been proven
@@ -1554,7 +1591,7 @@ final class AppState {
     /// The active unit went away and has not been seen since. The reconnect loop
     /// can find the returning unit by polling before the device-list callback
     /// has stamped `symphonyAppearedAt`, so it stamps it itself.
-    private var awaitingSymphonyReturn = false
+    var awaitingSymphonyReturn = false
 
     /// How long after its audio device appears a USB unit is left alone.
     static let usbSettleInterval: TimeInterval = 3.0
@@ -1804,12 +1841,18 @@ final class AppState {
                 guard !Task.isCancelled, self.transportType == .usb else { break }
                 if live {
                     Self.tbLog.notice("ThunderBridge endpoint live while on USB — reconnecting to prefer it")
-                    self.pendingAutoSwitchAfterReconnect = true
-                    await self.reconnectHardware()
+                    self.scheduleThunderboltSwitch()
                     break
                 }
             }
         }
+    }
+
+    @MainActor
+    @discardableResult
+    func scheduleThunderboltSwitch() -> Task<Void, Never> {
+        pendingAutoSwitchAfterReconnect = true
+        return Task { @MainActor [weak self] in await self?.reconnectHardware() }
     }
 
     // MARK: - Primary output level helpers
@@ -1947,7 +1990,7 @@ final class AppState {
     }
 
     /// Set by init when Core Audio still has to be asked for the Symphony.
-    private var launchDiscoveryPending = false
+    var launchDiscoveryPending = false
     /// What the launch discovery found, reused by the device-list listener and the
     /// ThunderBridge watch so they do not ask Core Audio again straight away.
     private(set) var lastLaunchDiscovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]?
@@ -1964,6 +2007,7 @@ final class AppState {
     func completeLaunchDiscovery() async {
         guard launchDiscoveryPending else { return }
         launchDiscoveryPending = false
+        let generation = wakeValidationGeneration
         print("[Maestro] Launch: discovering Symphony IO via CoreAudio (background)...")
         let slowNotice = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(3))
@@ -1973,13 +2017,21 @@ final class AppState {
         }
         let delay = Self.launchDiscoveryTestDelay
         let started = Date()
-        let discovered = await Task.detached(priority: .userInitiated) { () -> [CoreAudioDeviceConnection.DiscoveredSymphonyIO] in
-            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
-            return CoreAudioDeviceConnection.discoverAllSymphonyIO()
-        }.value
+        let discovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]
+        if let launchDiscoveryOperation { discovered = await launchDiscoveryOperation() }
+        else {
+            discovered = await Task.detached(priority: .userInitiated) {
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                return CoreAudioDeviceConnection.discoverAllSymphonyIO()
+            }.value
+        }
         slowNotice.cancel()
         lastLaunchDiscovered = discovered
         print(String(format: "[Maestro] Launch: discovery took %.2f s", Date().timeIntervalSince(started)))
+        guard admitConnectionWork(generation: generation) else {
+            replaySuspendedReconnectIfNeeded()
+            return
+        }
         if connectAtLaunch(discovered) {
             viewReloadToken = UUID()
         } else {
@@ -2096,6 +2148,7 @@ final class AppState {
 
     @MainActor
     func readCardTypes() async {
+        guard hardwareSleepState != .sleeping else { return }
         guard let device = self.device else { return }
         // What the driver found on the cable, if it is not a Symphony I/O.
         let probeWord = (device as? ThunderboltDeviceConnection)?.linkState()?.unitProbe ?? 0
@@ -2200,6 +2253,7 @@ final class AppState {
     /// Called after readCardTypes() so board types are available for byte mapping.
     @MainActor
     func syncOutputRoutingToHardware() async {
+        guard !hardwareWritesSuspended else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard let device = self.device else { return }
         // Converters: their own routes, kept per chain, never the Symphony
@@ -2274,7 +2328,7 @@ final class AppState {
     /// once, as evidence of what it really carries.
     @MainActor
     func syncInputRoutingToHardware() async {
-        guard connectionMode != .hardware || unitAIdentity != nil else { return }
+        guard !hardwareWritesSuspended, connectionMode != .hardware || unitAIdentity != nil else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
         // Symphony I/O routing. Nothing is sent to a converter unprompted, the
@@ -2390,6 +2444,7 @@ final class AppState {
     /// stored, so a unit nobody has configured here is left alone.
     @MainActor
     func syncDeviceSettingsToHardware() async {
+        guard !hardwareWritesSuspended else { return }
         guard unitAIdentity != nil else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
@@ -2466,6 +2521,7 @@ final class AppState {
     /// XPC connection is ready immediately — proxy handles USB init on boot.
     @MainActor
     func initializeHardwareIfNeeded() async {
+        guard !hardwareWritesSuspended else { return }
         guard connectionMode == .hardware else { return }
         if transportType == .thunderbolt {
             statusMessage = "Connected via ThunderBridge"
@@ -2479,9 +2535,9 @@ final class AppState {
     /// device-list listener can fire repeatedly during a Thunderbolt flap or a quick unplug/replug,
     /// and two interleaved reconnects would double-install the ASP volume listener and orphan the
     /// software-metering IOProc. The check+set below is atomic (no await between them) on the MainActor.
-    private var isReconnecting = false
+    var isReconnecting = false
 
-    struct PreferredDevice {
+    struct PreferredDevice: Sendable {
         let device: CoreAudioDeviceConnection.DiscoveredSymphonyIO
         /// The ThunderBridge connection and verdict already probed while
         /// choosing, so the caller does not open a second user client and read
@@ -2520,16 +2576,25 @@ final class AppState {
     /// Reconnect to hardware (called after toggle-driver.sh, plug-in, or USB reset).
     @MainActor
     func reconnectHardware() async {
+        guard admitConnectionWork() else { return }
         if cardSimulation != nil {
             print("[Maestro] CARD SIMULATION: reconnect ignored — session pinned to the simulated unit")
             return
         }
         if isReconnecting { return }
         isReconnecting = true
-        defer { isReconnecting = false }
+        let reconnectGeneration = wakeValidationGeneration
+        defer {
+            isReconnecting = false
+            if reconnectGeneration != wakeValidationGeneration {
+                reconnectRequestedWhileSuspended = true
+                replaySuspendedReconnectIfNeeded()
+            }
+        }
         stopThunderboltHealthCheck()
         thunderboltWatchTask?.cancel()
         stopMeterPolling()
+        if let reconnectOperation { await reconnectOperation(); return }
         // Rebuild the AUDIO path too, not just the app's link to the proxy.
         //
         // Reconnecting the app re-establishes app<->proxy and clears stale
@@ -2547,6 +2612,7 @@ final class AppState {
         let identifyBOff = identifyB.reset()
         await identifyAOff.value
         await identifyBOff.value
+        guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
 
         // Close existing connection if any
         if let existing = device {
@@ -2582,11 +2648,15 @@ final class AppState {
 
         // Retry discovery with delays — XMOS firmware needs time to re-enumerate
         for attempt in 1...5 {
+            guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
             // Off the main thread (0.9.8): a slow Core Audio must not freeze the window.
             let discovered = await Task.detached(priority: .userInitiated) {
                 CoreAudioDeviceConnection.discoverAllSymphonyIO()
             }.value
-            if let pref = Self.preferredDevice(in: discovered) {
+            guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+            let preferred = await Task.detached(priority: .utility) { Self.preferredDevice(in: discovered) }.value
+            guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+            if let pref = preferred {
         let best = pref.device
                 let audioDeviceID = best.audioDeviceID
                 let identifier = best.identifier
@@ -2600,7 +2670,10 @@ final class AppState {
                     // Symphony can still be discoverable as a ThunderBridge
                     // Core Audio object, but its dext timing-health selector
                     // now performs the serialized live XLink check.
-                    let reconnectProbe = pref.tbVerdict ?? tbDevice.probeEndpoint()
+                    let reconnectProbe: ThunderboltEndpointVerdict
+                    if let verdict = pref.tbVerdict { reconnectProbe = verdict }
+                    else { reconnectProbe = await Task.detached(priority: .utility) { tbDevice.probeEndpoint() }.value }
+                    guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
                     guard case .live(let health) = reconnectProbe else {
                         Self.tbLog.notice("reconnect: endpoint \(reconnectProbe.label, privacy: .public) — staying disconnected, health loop continues")
                         // Remember the Core Audio object so a later cable pull is
@@ -2628,16 +2701,17 @@ final class AppState {
                     // has already configured the link by the time it reports
                     // the endpoint live.
                     if self.awaitingSymphonyReturn {
-                        self.awaitingSymphonyReturn = false
                         self.statusMessage = "Waiting for the Symphony to finish starting…"
                         try? await Task.sleep(for: Self.thunderboltSettleInterval)
                     }
+                    guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+                    self.awaitingSymphonyReturn = false
                     self.thunderboltHardwareResponsive = true
                     self.connectionMode = .hardware
                     self.transportType = .thunderbolt
                     self.transportPresent = true
                     self.statusMessage = "Connected via ThunderBridge"
-                    self.isHardwareInitialized = true
+                    self.isHardwareInitialized = !hardwareWritesSuspended
                     self.activeAudioDeviceID = audioDeviceID
                     self.aspDeviceID = audioDeviceID
                     print("[Maestro] reconnect TB timing health: rate=\(health.sampleRate) frame=\(health.frameReadback)/\(health.expectedFrame) latency=\(health.inputLatency)/\(health.outputLatency) safety=\(health.inputSafety)/\(health.outputSafety) int=0x\(String(health.intStatus, radix: 16)) xlink=0x\(String(health.xlinkStatus, radix: 16))")
@@ -2645,6 +2719,7 @@ final class AppState {
                 } else {
                     // Nothing is sent to a unit that is still starting up.
                     await waitForUSBUnitToSettle()
+                    guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
                     let xpcDevice = XPCDeviceConnection(identifier: identifier,
                         settingsStore: DeviceSettingsStore())
                     self.device = xpcDevice
@@ -2668,6 +2743,7 @@ final class AppState {
                 await self.syncInputRoutingToHardware()
                 await self.syncDeviceSettingsToHardware()
 
+                guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
                 let meterCA = CoreAudioDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
                 if Self.softwareMeteringOptedIn { meterCA.startSoftwareMetering() }
                 self.meterDevice = meterCA
@@ -2733,6 +2809,7 @@ final class AppState {
     /// Polls input and output meters at ~33ms intervals (~30 fps).
     @MainActor
     func startMeterPolling() {
+        guard !hardwareWritesSuspended else { return }
         meterPollingTask?.cancel()
         refreshSoftwareReturnMeterGains()
         // Use actual stream-derived channel count when available (inputMeterStreamCount × 8).
@@ -3442,7 +3519,7 @@ final class AppState {
             var ownerB: ObjectIdentifier?
             while !Task.isCancelled {
                 guard let self else { return }
-                guard self.connectionMode == .hardware, self.isHardwareInitialized,
+                guard !self.hardwareWritesSuspended, self.connectionMode == .hardware, self.isHardwareInitialized,
                       let device = self.device else {
                     sync.reset(); syncB.reset()
                     try? await Task.sleep(for: .seconds(1))
@@ -3510,6 +3587,7 @@ final class AppState {
 
     @MainActor
     private func applyFrontPanelChange(_ change: FrontPanelSync.Change, unit: DeviceUnit = .a) async {
+        guard !hardwareWritesSuspended else { return }
         switch change {
         case .micPreGain(let channel, let gain, _):
             guard channel >= 0, channel < InputChannelLogic.micPreChannelCount else { return }
@@ -3567,12 +3645,13 @@ final class AppState {
     /// (2026-11-13). Each new front panel reading restarts the wait.
     @MainActor
     private func scheduleSpeakerLevelPush(_ dB: Double) {
+        guard !hardwareWritesSuspended else { return }
         speakerPushGeneration += 1
         let generation = speakerPushGeneration
         let sourceDevice = device
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.frontPanelPushQuietInterval)
-            guard let self, generation == self.speakerPushGeneration, self.device === sourceDevice,
+            guard let self, !self.hardwareWritesSuspended, generation == self.speakerPushGeneration, self.device === sourceDevice,
                   self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
             self.lastFrontPanelSpeakerPush = dB
             if self.transportType != .thunderbolt { self.writeASPVolume(dB) }
@@ -3723,6 +3802,7 @@ final class AppState {
     /// For Thunderbolt: no-op — ThunderboltDeviceConnection already writes VolumeDecibels
     /// directly, and the listener callback keeps the UI in sync.
     func writeASPVolume(_ dB: Double) {
+        guard !hardwareWritesSuspended else { return }
         guard aspDeviceID != kAudioObjectUnknown else { return }
         if transportType == .thunderbolt {
             // ThunderboltDeviceConnection.setProperty already wrote VolumeDecibels
@@ -3732,29 +3812,32 @@ final class AppState {
         aspWriteTimestamp = Date()
         // Convert dB (-64..0) to scalar (0..1): scalar = (dB + 64) / 64
         let scalar = Float32(max(0, min(1, (dB + 64.0) / 64.0)))
+        let targetID = aspDeviceID
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioObjectPropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
         var value = scalar
-        AudioObjectSetPropertyData(aspDeviceID, &addr, 0, nil,
+        AudioObjectSetPropertyData(targetID, &addr, 0, nil,
                                    UInt32(MemoryLayout<Float32>.size), &value)
     }
 
     /// Write mute state to the synced audio device.
     /// For Thunderbolt: no-op (same reason as writeASPVolume).
     func writeASPMute(_ muted: Bool) {
+        guard !hardwareWritesSuspended else { return }
         guard aspDeviceID != kAudioObjectUnknown else { return }
         if transportType == .thunderbolt { return }
         aspWriteTimestamp = Date()
+        let targetID = aspDeviceID
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioObjectPropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
         var value: UInt32 = muted ? 1 : 0
-        AudioObjectSetPropertyData(aspDeviceID, &addr, 0, nil,
+        AudioObjectSetPropertyData(targetID, &addr, 0, nil,
                                    UInt32(MemoryLayout<UInt32>.size), &value)
     }
 
@@ -4213,6 +4296,7 @@ final class AppState {
     ///           ONEv2DeviceController.cpp:3239–3331 — daemon recall implementation
     @MainActor
     func loadPresetBundle(from url: URL) async throws {
+        guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
         if let connection = device as? ThunderboltDeviceConnection {
             try await loadThunderboltPresetBundle(from: url, connection: connection)
             return

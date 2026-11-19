@@ -5278,6 +5278,7 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
             }
         }
         if (revalidate) {
+            __atomic_store_n(&ivars->linkState, kLinkStateRecovering, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->linkNeedsRevalidation, false, __ATOMIC_RELEASE);
             ivars->linkRecoveryNeedsIORestart = false;
             const bool tunnelWasAbsent = __atomic_load_n(&ivars->wakeFoundEndpointAbsent, __ATOMIC_ACQUIRE);
@@ -5353,6 +5354,12 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     const uint64_t wraps = __atomic_load_n(&ivars->audioWrapCount, __ATOMIC_ACQUIRE);
     outWords[0]  = 0;
     outWords[1]  = __atomic_load_n(&ivars->linkState, __ATOMIC_ACQUIRE);
+    // A watch tick may occur while power is off. Never publish the pre-sleep
+    // UP cache as proof that the post-wake link check completed. No bus access.
+    if (__atomic_load_n(&ivars->providerPowerOff, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&ivars->hwSuspended, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&ivars->linkNeedsRevalidation, __ATOMIC_ACQUIRE))
+        outWords[1] = kLinkStateRecovering;
     outWords[2]  = ivars->linkClockPresent ? 1u : 0u;
     outWords[3]  = __atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE) ? 1u : 0u;
     outWords[4]  = (uint32_t)(irq & 0xFFFFFFFFu);
@@ -8869,6 +8876,7 @@ kern_return_t IMPL(SymphonyThunderbridge, SetPowerState)
     if (ivars) {
         if (!on) {
             // SEQ_CST pairs with the Dekker re-check in HardwareReachable().
+            __atomic_store_n(&ivars->linkState, kLinkStateRecovering, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->providerPowerOff, true, __ATOMIC_SEQ_CST);
             __atomic_store_n(&ivars->hwSuspended, true, __ATOMIC_SEQ_CST);
             // Drain both queues that issue BAR loads so nothing is mid-flight when

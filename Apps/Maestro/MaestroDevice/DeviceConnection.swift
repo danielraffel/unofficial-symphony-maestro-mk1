@@ -130,6 +130,8 @@ public enum DeviceConnectionError: Error, Sendable, Equatable {
 /// Evidence: `og_source/generic/CoreAudio/ApogeeCustomProperties.h`
 /// - Property get/set with scope and element qualifiers.
 public protocol DeviceConnection: AnyObject, Sendable {
+    var hardwareWriteGate: HardwareWriteGate? { get }
+
     /// The identity of the connected device.
     var identifier: USBDeviceIdentifier { get }
 
@@ -156,4 +158,8 @@ public protocol DeviceConnection: AnyObject, Sendable {
 
     /// Disconnect from the device.
     func disconnect() async
+}
+
+public extension DeviceConnection {
+    var hardwareWriteGate: HardwareWriteGate? { nil }
 }

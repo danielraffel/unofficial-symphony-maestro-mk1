@@ -24,7 +24,7 @@ extension AppState {
     /// the connection and layout after waiting; never retarget queued work.
     @MainActor
     func applySymphonyCardInputs(_ edits: [Int: Int], reset: Bool = false) async -> Bool {
-        guard let tb = device as? ThunderboltDeviceConnection,
+        guard !hardwareWritesSuspended, let tb = device as? ThunderboltDeviceConnection,
               let store = symphonyCardInputStore else { return false }
         let previous = symphonyCardInputTail
         let admissionVersion = symphonyCardInputVersion
@@ -32,7 +32,7 @@ extension AppState {
         let admissionEpoch = replayDeferral.currentEpoch()
         let task = Task { @MainActor [weak self] in
             _ = await previous?.value
-            guard let self, self.device as? ThunderboltDeviceConnection === tb,
+            guard let self, !self.hardwareWritesSuspended, self.device as? ThunderboltDeviceConnection === tb,
                   self.symphonyCardInputStore?.key == store.key,
                   replayDeferral.isValid(admissionEpoch) else { return false }
             let effectiveEdits = admissionVersion == self.symphonyCardInputVersion ? edits : self.symphonyCardInputEdits

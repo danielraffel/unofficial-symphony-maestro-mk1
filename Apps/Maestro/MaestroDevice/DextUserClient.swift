@@ -36,6 +36,8 @@ public final class DextUserClient: @unchecked Sendable {
     private var driverBuildRead = false
     private var connectionGeneration: UInt64 = 0
 
+    public let hardwareWriteGate = HardwareWriteGate()
+
     public init() {}
 
     // MARK: - Connection
@@ -119,6 +121,7 @@ public final class DextUserClient: @unchecked Sendable {
         payload: Data = Data(),
         port: UInt8 = 0
     ) throws {
+        try hardwareWriteGate.check()
         guard payload.count <= 64 else {
             throw DextUserClientError.payloadTooLarge(payload.count)
         }
@@ -169,6 +172,7 @@ public final class DextUserClient: @unchecked Sendable {
     /// channels; older/unknown dexts never receive this selector.
     @discardableResult
     public func setMonitorDevice(_ unit: DeviceUnit) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
         lock.lock()
         let conn = extendedSelectorConnectionLocked()
         lock.unlock()
@@ -375,6 +379,7 @@ public final class DextUserClient: @unchecked Sendable {
     /// driver has no such selector.
     @discardableResult
     public func setConverterConfig(_ config: UInt32) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
         lock.lock()
         let conn = connection
         lock.unlock()
@@ -533,6 +538,7 @@ public final class DextUserClient: @unchecked Sendable {
     /// Selector 14 v1 updates host controls only. Unsupported drivers fail closed:
     /// never substitute a vendor write or AudioObjectSetPropertyData gain write.
     public func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
         guard port < 2, (0..<8).contains(channel), lane < 2, gain.isFinite,
               gain >= 0, gain <= (lane == 1 ? 65 : 85) else { return false }
         lock.lock(); let conn = extendedSelectorConnectionLocked(); lock.unlock()
@@ -546,6 +552,7 @@ public final class DextUserClient: @unchecked Sendable {
 
     /// Versioned selector 13; old drivers return unsupported (never emulate writes).
     public func loopSync(_ settings: LoopSyncSettings? = nil) throws -> LoopSyncState {
+        if settings != nil { try hardwareWriteGate.check() }
         lock.lock(); let conn = extendedSelectorConnectionLocked(); lock.unlock()
         guard conn != IO_OBJECT_NULL else { throw DextUserClientError.notConnected }
         let input: [UInt32] = [Self.magic, 1, settings == nil ? 0 : 1, settings?.word ?? 0]

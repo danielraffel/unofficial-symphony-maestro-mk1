@@ -27,6 +27,8 @@ import MaestroCore
 
 public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Sendable {
 
+    private let writeGate: HardwareWriteGate
+    public var hardwareWriteGate: HardwareWriteGate? { writeGate }
     public let identifier: USBDeviceIdentifier
     public var isConnected: Bool { infoLock.withLock { connected } && transport.isConnected }
 
@@ -63,10 +65,12 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     public init(identifier: USBDeviceIdentifier, transport: any VendorTransport,
                 settingsStore: DeviceSettingsStore = DeviceSettingsStore(),
                 sequenceLock: NSRecursiveLock = NSRecursiveLock(),
+                writeGate: HardwareWriteGate = HardwareWriteGate(),
                 infoRouting: @escaping @Sendable () -> SymphonyRoutingModel = {
                     SymphonyRoutingModel(topology: .unknown, hostChannels: 0)
                 },
                 state: @escaping @Sendable () -> UnitBState?) {
+        self.writeGate = writeGate
         self.identifier = identifier
         self.transport = transport
         self.settingsStore = settingsStore
@@ -208,6 +212,11 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         }
     }
 
+    private func sendVendorCommand(command: UInt8, value: UInt32, payload: Data, port: UInt8) throws {
+        try writeGate.check()
+        try transport.sendVendorCommand(command: command, value: value, payload: payload, port: port)
+    }
+
     // MARK: - What unit B supports
 
     /// Written to unit B through the property mapper, with port byte 1.
@@ -343,6 +352,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     }
 
     func writeProperty(_ address: PropertyAddress, value: PropertyValue) throws {
+        try writeGate.check()
         sequenceLock.lock()
         defer { sequenceLock.unlock() }
         try requireHeadphoneUnit()
@@ -359,7 +369,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
                 }
                 let headphone: SymphonyIOHeadphoneRouting.Headphone = selector == .headphone1RoutingID ? .headphone1 : .headphone2
                 let byte = headphone == .headphone1 ? (previous & 0xF0) | UInt8(id) : (previous & 15) | UInt8(id << 4)
-                try transport.sendVendorCommand(command: 0x54, value: 0, payload: Data([byte]), port: Self.port)
+                try sendVendorCommand(command: 0x54, value: 0, payload: Data([byte]), port: Self.port)
                 headphoneAssignments = byte
                 try sendHeadphoneCrosspoint(headphone, sourceID: id)
             }
@@ -396,7 +406,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
                 throw DeviceConnectionError.typeMismatch(expected: "a letter A-Z", got: "\(value)")
             }
             remember(value, for: address)
-            try? transport.sendVendorCommand(command: ThunderboltDeviceConnection.prefixCommand, value: 0,
+            try? sendVendorCommand(command: ThunderboltDeviceConnection.prefixCommand, value: 0,
                                              payload: Data([byte]), port: Self.port)
             notifyListeners(for: selector, value: value)
             return
@@ -412,7 +422,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         }
         do {
             let request = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: sent)
-            try transport.sendVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
+            try sendVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
                                             payload: request.data, port: Self.port)
         } catch DeviceConnectionError.cacheOnly {
             // No opcode (or an unsafe one): kept, not sent, as for unit A.
@@ -485,7 +495,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         let left = UInt8(sourceID * 2)
         let request = SymphonyIORequestBuilder.setHeadphoneCrosspoint(
             headphone: headphone, leftSource: left, rightSource: left + 1)
-        try transport.sendVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
+        try sendVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
                                         payload: request.data, port: Self.port)
     }
 
@@ -535,7 +545,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     func finishRecovery() throws -> Bool {
         try requireHeadphoneUnit()
-        try transport.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]), port: Self.port)
+        try sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]), port: Self.port)
         try requireHeadphoneUnit()
         return try transport.readVendorCommand(command: 0xDD, value: 0, responseLength: 1,
                                               port: Self.port) == Data([0])

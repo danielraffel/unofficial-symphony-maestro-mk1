@@ -22,7 +22,7 @@ extension AppState {
 
     @MainActor
     func refreshLoopSync(restoring: Bool = false) async {
-        guard loopSyncVisible, !loopSyncBusy, let tb = device as? ThunderboltDeviceConnection else { return }
+        guard !hardwareWritesSuspended, loopSyncVisible, !loopSyncBusy, let tb = device as? ThunderboltDeviceConnection else { return }
         loopSyncBusy = true
         defer { loopSyncBusy = false }
         let owner = unitBDevice
@@ -476,7 +476,7 @@ extension AppState {
     /// user-client calls can wait behind a link recovery).
     @MainActor
     func refreshUnitBOffMain(_ tb: ThunderboltDeviceConnection) async {
-        guard simulatedUnitB == nil, !twoUnitSleeping else { return }
+        guard simulatedUnitB == nil, !hardwareWritesSuspended else { return }
         let parentGeneration = unitAGeneration
         let initialBGeneration = unitBGeneration
         let state = await Task.detached(priority: .utility) { tb.readUnitBState() }.value

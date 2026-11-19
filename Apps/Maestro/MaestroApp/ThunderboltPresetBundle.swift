@@ -99,6 +99,7 @@ extension AppState {
 
     @MainActor
     func loadThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
+        guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
         try requireSymphonyPreset()
         let (preset, legacy) = try ThunderboltPreset.loadBundle(from: url, layout: cardLayout)
         beginRecall()
@@ -144,11 +145,11 @@ extension AppState {
             }
         }.value
         await refreshAfterRecall()
-        guard device === connection else { throw DeviceConnectionError.notConnected }
+        guard !hardwareWritesSuspended, device === connection else { throw DeviceConnectionError.notConnected }
         let completionFence = await Task.detached(priority: .utility) {
             (connection.linkState()?.recoveryCount, connection.readUnitBState()?.generation)
         }.value
-        guard admissionFence.0 == completionFence.0,
+        guard !hardwareWritesSuspended, device === connection, admissionFence.0 == completionFence.0,
               !recallB || admissionFence.1 == completionFence.1 else {
             throw ThunderboltPreset.RecallError.failed("the link or unit-B generation changed; recall was only partially applied")
         }

@@ -34,6 +34,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
     /// IOUserClient connection for vendor commands (mic gain, phantom, etc.)
     private let dextClient = DextUserClient()
+    public var hardwareWriteGate: HardwareWriteGate? { dextClient.hardwareWriteGate }
 
     /// Listener storage (NSLock-protected, same pattern as XPCDeviceConnection).
     private let listenerLock = NSLock()
@@ -487,8 +488,10 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     private func writeProperty(_ address: PropertyAddress, value: PropertyValue) throws {
+        try dextClient.hardwareWriteGate.check()
         presetLock.lock()
         defer { presetLock.unlock() }
+        try dextClient.hardwareWriteGate.check()
         guard isConnected else { throw DeviceConnectionError.notConnected }
 
         // Physical monitor writes use A's port; HAL is only the converter trim.
@@ -839,6 +842,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return ThunderboltUnitBConnection(identifier: identifier, transport: client,
                                           settingsStore: settingsStore,
                                           sequenceLock: presetLock,
+                                          writeGate: dextClient.hardwareWriteGate,
                                           infoRouting: { [weak self] in
                                               guard let self, let converters = client.readConverterState() else {
                                                   return SymphonyRoutingModel(topology: .unknown, hostChannels: 0)
@@ -864,6 +868,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
 
     /// Ask the device for a port selection, as Audio MIDI Setup does.
     public func setPortSelection(_ selection: PortSelection) throws {
+        try dextClient.hardwareWriteGate.check()
         try PortSelectionProperty.write(deviceID: audioDeviceID, selection: selection)
     }
 
