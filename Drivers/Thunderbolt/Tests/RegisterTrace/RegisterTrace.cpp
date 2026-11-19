@@ -871,6 +871,43 @@ static void RunMonitorDeviceChecks()
     Run r;
     RunScenario(o, r);
     Select(r, 1, "select 64 for monitor device", false);
+    uint8_t quiet = 55;
+    CHECK(r.drv->SendVendorCommand(0x26, 0, &quiet, 1, 1) == kIOReturnSuccess, "seed B");
+    CHECK(r.drv->SetMonitorDevice(1) == kIOReturnSuccess, "select quiet B");
+    Irq(r, 1); HostPump();
+    CHECK(StoredVendorPort(r, 0x26) == 55, "positive control: B must start at -55");
+    uint8_t stereo = 1;
+    CHECK(r.drv->SendVendorCommand(0x25, 0, &stereo, 1) == kIOReturnSuccess, "A speaker mode");
+    CHECK(gHostAudio.volume->GetDecibelValue() == -55.0f, "43 dB regression: A mode published into B HAL");
+    Irq(r, 1); HostPump();
+    CHECK(StoredVendorPort(r, 0x26) == 55, "43 dB regression: interrupt raised B from -55 to -12");
+    uint8_t aLevel = 24;
+    CHECK(r.drv->SendVendorCommand(0x26, 0, &aLevel, 1) == kIOReturnSuccess, "physical A UI/knob write");
+    Irq(r, 1); HostPump();
+    CHECK(gHostAudio.volume->GetDecibelValue() == -55.0f, "A physical write touched B HAL");
+    CHECK(StoredVendorPort(r, 0x26) == 55, "A physical write touched B hardware");
+    // A knob observations update A's cache without any echo, even with B selected.
+    r.card.port[0].stored[(uint64_t(0x28) << 32) | 1] = {0,0,172,68,1,0,0,2,2,29,1,0};
+    uint8_t observation[12] = {};
+    CHECK(r.drv->ReadVendorCommand(0x28, 1, observation, 12) == kIOReturnSuccess, "A knob observation");
+    Irq(r, 1); HostPump();
+    CHECK(StoredVendor(r, 0x26) == 24, "front panel observation echoed a hardware write");
+    CHECK(StoredVendorPort(r, 0x26) == 55, "A knob raised B");
+    CHECK(gHostAudio.volume->GetDecibelValue() == -55.0f, "A knob published into B HAL");
+    CHECK(r.drv->SetMonitorDevice(0) == kIOReturnSuccess, "select A");
+    CHECK(gHostAudio.volume->GetDecibelValue() == -29.0f, "A selection must restore A cache");
+    Irq(r, 1); HostPump();
+    CHECK(gHostAudio.mute->GetControlValue(), "A mute observation not restored");
+    // A pending IRQ sample is consumed for A before B selection, never retargeted.
+    gHostAudio.volume->SetDecibelValue(-30.0f);
+    gHostAudio.mute->SetControlValue(false);
+    Irq(r, 1);
+    CHECK(r.drv->SetMonitorDevice(1) == kIOReturnSuccess, "reselect B");
+    HostPump();
+    CHECK(StoredVendorPort(r, 0x26) == 55, "pending A sample retargeted B");
+    CHECK(StoredVendor(r, 0x26) == 30, "pending A volume did not stay with A");
+    CHECK(StoredVendor(r, 0x27) == 0, "pending A mute did not stay with A");
+    CHECK(!gHostAudio.mute->GetControlValue(), "selection must restore B mute");
     r.card.port[0].stored.erase((uint64_t)0x26 << 32);
     r.card.port[1].stored.erase((uint64_t)0x26 << 32);
     CHECK(r.drv->SetMonitorDevice(1) == kIOReturnSuccess, "%s: selecting unit B failed", o.name);
@@ -882,9 +919,22 @@ static void RunMonitorDeviceChecks()
     r.card.port[0].stored.erase((uint64_t)0x26 << 32);
     r.drv->LinkWatchTimerOccurred(nullptr, 0);
     HostPump();
+    CHECK(gHostAudio.volume->GetDecibelValue() == -30.0f, "B loss must restore A real value");
+    Irq(r, 1); HostPump();
+    CHECK(StoredVendor(r, 0x26) == 0xFF, "fallback must not echo stale B attenuation to A");
     PressVolume(r, -21.0f);
     CHECK(StoredVendor(r, 0x26) == 21, "%s: fallback volume did not reach unit A", o.name);
     CHECK(StoredVendorPort(r, 0x26) == 0xFF, "%s: fallback rewrote unit B unexpectedly", o.name);
+    uint8_t hp = 44, line = 0;
+    CHECK(r.drv->SendVendorCommand(0x23, 0, &hp, 1) == kIOReturnSuccess, "seed A HP1");
+    CHECK(gHostAudio.volume->GetDecibelValue() == -21.0f, "nonselected HP1 changed speaker HAL");
+    CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1) == kIOReturnSuccess, "select A Line/HP1");
+    CHECK(gHostAudio.volume->GetDecibelValue() == -44.0f, "Line mode failed to restore HP1");
+    Irq(r, 1); HostPump();
+    CHECK(StoredVendor(r, 0x26) == 21, "Line transition overwrote speakers");
+    CHECK(StoredVendor(r, 0x23) == 44, "Line transition overwrote HP1");
+    CHECK(r.drv->SendVendorCommand(0x25, 0, &stereo, 1) == kIOReturnSuccess, "restore A speakers");
+    CHECK(gHostAudio.volume->GetDecibelValue() == -21.0f, "Stereo failed to restore speaker level");
     Finish(o, r);
 }
 #endif
