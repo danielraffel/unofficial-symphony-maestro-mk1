@@ -698,7 +698,7 @@ struct OutputRoutingView: View {
                     // Output Routing column headers — board-aware OUTPUT analog/digital split.
                     let colLabels: [(type: String, channels: String)] =
                         columns.map { (type: $0.type, channels: $0.channels) }
-                        + unitBColumns.map { (type: "\(appState.unitBPeripheralPrefix) \($0.type)", channels: $0.channels) }
+                        + unitBColumns.map { (type: $0.type, channels: $0.channels) }
                     let labels = gridRowLabels
                     RoutingGridView(
                         rowCount: labels.count,
@@ -795,7 +795,10 @@ struct OutputRoutingView: View {
 
     /// Unit B's output columns, after unit A's; none with one unit.
     private var unitBColumns: [CardLayout.RoutingColumn] {
-        appState.unitBOnCard ? (appState.unitBLayout?.outputRoutingColumns ?? []) : []
+        guard appState.unitBOnCard, let layout = appState.unitBLayout else { return [] }
+        return TwoUnitMixer.unitBRoutingColumns(layout: layout,
+                                                 prefix: appState.unitBPeripheralPrefix,
+                                                 isInput: false)
     }
 
     /// A grid row in unit A's saved numbering (the grid's own with one unit).

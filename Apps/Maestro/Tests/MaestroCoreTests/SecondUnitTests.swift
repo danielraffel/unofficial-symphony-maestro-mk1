@@ -93,6 +93,33 @@ struct SecondUnitTests {
         #expect(small[16].label.hasPrefix("C "))
     }
 
+    @Test("Unit B names share one prefix rule across mixer and routing columns")
+    func perUnitNamesAndNotApplicable() {
+        let optical = CardLayout(slot1: .optical, slot2: .none, isKnown: true,
+                                 naming: .init(sampleRate: 192000, opticalIsSPDIF: [false, nil]))
+        let strips = TwoUnitMixer.unitBChannels(layout: optical, prefix: "D")
+        #expect(strips.first?.label == "D Line 1")
+        #expect(strips.contains { $0.label == CardLayout.notApplicable })
+
+        let columns = TwoUnitMixer.unitBRoutingColumns(layout: optical, prefix: "D", isInput: false)
+        #expect(columns.first?.stereoName == "D Line 1/2")
+        #expect(columns.contains { $0.stereoName == CardLayout.notApplicable })
+
+        // Changing unit B's prefix never changes unit A's names; changing B's
+        // optical format changes only B's derived digital labels.
+        let a = CardLayout(slot1: .optical, slot2: .none, isKnown: true,
+                           naming: .init(sampleRate: 48000, opticalIsSPDIF: [false, nil]))
+        #expect(a.mixerChannels.first?.label == "Line 1")
+        let adat = TwoUnitMixer.unitBChannels(layout: a, prefix: "Q")
+        let spdif = TwoUnitMixer.unitBChannels(
+            layout: CardLayout(slot1: .optical, slot2: .none, isKnown: true,
+                               naming: .init(sampleRate: 48000, opticalIsSPDIF: [true, nil])),
+            prefix: "Q")
+        #expect(adat[8].label == "Q ADAT 1")
+        #expect(spdif[8].label == "Q SPDIF Opt 1")
+        #expect(a.mixerChannels.first?.label == "Line 1")
+    }
+
     @Test("Software Return: 8 pairs with one unit, 32 with unit B")
     func softwareReturnPairs() {
         #expect(TwoUnitMixer.softwareReturnPairCount(unitBActive: false) == 8)
