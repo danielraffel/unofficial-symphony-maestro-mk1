@@ -18,6 +18,8 @@ The Symphony front-panel mode selects the active transport: Symphony mode for Th
 - **Output:** output reference levels, trims and monitor controls.
 - **Mixer:** hardware monitoring mixes, with channel levels, pan, mute and solo.
 - **Input Routing and Output Routing:** map available hardware and software channels. Verify routing at a low monitoring level before use.
+  - **Reset Routing** puts the page you are on back to its default, after asking: each software input records the matching hardware input, and each software output goes to the matching hardware output.
+  - **Identify** (Output Routing) lights every front-panel light on the Symphony I/O so you can find it; click again to turn them off. Quitting Maestro also turns them off. With two units there is one button for each.
 - **Device Settings:** device preferences and available hardware options.
 - **System Setup:** clock and sample-rate configuration and system information.
 

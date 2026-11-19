@@ -188,6 +188,7 @@ struct InputRoutingView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Put Input Routing back to the default: each software input records the matching hardware input.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
                 }
@@ -703,6 +704,7 @@ struct OutputRoutingView: View {
                 Button("Reset Routing") { requestRoutingReset() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Put Output Routing back to the default: each software output goes to the matching hardware output.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
                 }
