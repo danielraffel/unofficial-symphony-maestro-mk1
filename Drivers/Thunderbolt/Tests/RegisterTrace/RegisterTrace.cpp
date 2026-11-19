@@ -646,6 +646,7 @@ static void RunScenario(const Options &o, Run &r)
     if (o.micPreInstrument) {
         card.port[0].stored[(uint64_t(0xA1) << 32) | 0] = {6};
         card.port[0].stored[(uint64_t(0xA1) << 32) | 1] = {1};
+        card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000000u] = {3}; // Mic
         card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000001u] = {4};
         card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000002u] = {0xFF}; // invalid/unknown type
     }
@@ -3204,6 +3205,18 @@ static void RunPreampHostRoutes()
         uint8_t pl[] = {host, rx, 1};
         return drv->SendVendorCommand(0xB6, 0, pl, sizeof(pl));
     };
+    // HAL phantom ON needs a channel known to be in Mic mode (original:
+    // SymphonyIOBoard_MicPre8ch.cpp:683-691). ch1 is Instrument, ch2 unknown.
+    a.erase(phantom); a.erase(phantom | 1); a.erase(phantom | 2);
+    CHECK(drv->RequestPhantom(1, true) == kIOReturnNotPermitted, "P1: phantom ON refused on Instrument");
+    CHECK(drv->RequestPhantom(2, true) == kIOReturnNotPermitted, "P1: phantom ON refused on unknown type");
+    CHECK(drv->RequestPhantom(2, false) == kIOReturnSuccess, "P1: phantom OFF allowed on unknown type");
+    HostPump();
+    CHECK(!a.count(phantom | 1) && a[phantom | 2] == std::vector<uint8_t>({0}), "P1: only the OFF reached the unit");
+    a.erase(phantom);
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: phantom ON accepted on Mic");
+    HostPump();
+    CHECK(a[phantom] == std::vector<uint8_t>({1}), "P1: Mic channel phantom ON sent");
     CHECK(route(0, 32) == kIOReturnBadArgument, "B10: B route refused at 32");
 #ifdef kSelectorPublishMicGain
     CHECK(drv->PublishObservedMicGain(1, 0, 0, 42) == kIOReturnNotReady,
