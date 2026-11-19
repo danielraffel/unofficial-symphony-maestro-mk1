@@ -999,6 +999,27 @@ public enum SymphonyIORequestBuilder {
         )
     }
 
+    /// Build a "set instrument gain" request (0..65 dB).
+    /// Evidence: `og_source/symphonymk1/ext/Symphony64/generic/Products/SymphonyIO/SymphonyIOVendorSpecific.h:409-445`.
+    public static func setInstrumentGain(channel: UInt16, gain: UInt8) -> USBControlRequest {
+        USBControlRequest(
+            direction: .write,
+            request: SymphonyIOCommand.instrumentGain.rawValue,
+            index: channel,
+            data: Data([min(gain, SymphonyIOConstants.instrumentGainMaximum)])
+        )
+    }
+
+    /// Build a "read instrument gain" request.
+    public static func getInstrumentGain(channel: UInt16) -> USBControlRequest {
+        USBControlRequest(
+            direction: .read,
+            request: SymphonyIOCommand.instrumentGain.rawValue,
+            index: channel,
+            data: Data(count: 1)
+        )
+    }
+
     /// Build a "read mic gain" request.
     public static func getMicGain(channel: UInt16) -> USBControlRequest {
         USBControlRequest(

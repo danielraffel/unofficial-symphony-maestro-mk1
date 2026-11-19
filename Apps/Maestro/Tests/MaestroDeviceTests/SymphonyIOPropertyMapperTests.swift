@@ -200,6 +200,15 @@ struct SymphonyIOPropertyMapperTests {
         #expect(request.direction == .write)
     }
 
+    @Test func instrumentGainWriteUsesC4AndInstrumentRange() throws {
+        let request = try SymphonyIOPropertyMapper.buildWriteRequest(
+            for: PropertyAddress(selector: .instrumentGain, element: 2),
+            value: .uint32(99))
+        #expect(request.request == SymphonyIOCommand.instrumentGain.rawValue)
+        #expect(request.index == 2)
+        #expect(request.data == Data([65]))
+    }
+
     @Test func phantomWrite() throws {
         let address = PropertyAddress(selector: .phantom, element: 0)
         let request = try SymphonyIOPropertyMapper.buildWriteRequest(
@@ -1069,6 +1078,7 @@ struct MicPreGroupInsertWireTests {
     func channelIndexingIsZeroBasedAcrossTheFamily() throws {
         let cases: [(AudioPropertySelector, PropertyValue, UInt8)] = [
             (.micGain,           .uint32(20), SymphonyIOCommand.micGain.rawValue),
+            (.instrumentGain,    .uint32(20), SymphonyIOCommand.instrumentGain.rawValue),
             (.phantom,           .bool(true), SymphonyIOCommand.phantomPower.rawValue),
             (.phaseReverse,      .bool(true), SymphonyIOCommand.phaseInverse.rawValue),
             (.highPassFilter,    .bool(true), SymphonyIOCommand.highPassFilter.rawValue),

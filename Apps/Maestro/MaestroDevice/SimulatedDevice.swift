@@ -103,11 +103,13 @@ public final class SimulatedDevice: DeviceConnection, @unchecked Sendable {
         // channel of the USB mode; re-scope them to the channels a MicPre covers.
         for ch in UInt32(0)..<UInt32(max(identifier.mode.channelCount, configuration.totalInputChannels)) {
             storage.removeValue(for: PropertyAddress(selector: .micGain, scope: .input, element: ch))
+            storage.removeValue(for: PropertyAddress(selector: .instrumentGain, scope: .input, element: ch))
             storage.removeValue(for: PropertyAddress(selector: .phantom, scope: .input, element: ch))
         }
         for ch in 0..<configuration.micPreChannelCount {
             let el = UInt32(ch)
             storage.setValue(.uint32(0), for: PropertyAddress(selector: .micGain, scope: .input, element: el))
+            storage.setValue(.uint32(0), for: PropertyAddress(selector: .instrumentGain, scope: .input, element: el))
             storage.setValue(.bool(false), for: PropertyAddress(selector: .phantom, scope: .input, element: el))
         }
     }

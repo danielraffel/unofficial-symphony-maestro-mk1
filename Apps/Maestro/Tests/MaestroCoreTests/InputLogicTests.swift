@@ -210,8 +210,13 @@ struct InputLogicTests {
         #expect(InputChannelLogic.clampGain(50, level: .plus4dBu) == 0)
     }
 
-    @Test func gainClampedOnLevelChange() {
+    @Test func gainStagesSurviveLevelChanges() {
         var state = InputChannelState(gain: 85, inputType: AnalogInputLevel.mic.rawValue)
+        InputChannelLogic.applyLevelChange(&state, to: .instrument)
+        #expect(state.gain == 0)
+        state.gain = 65
+        InputChannelLogic.applyLevelChange(&state, to: .mic)
+        #expect(state.gain == 85)
         InputChannelLogic.applyLevelChange(&state, to: .instrument)
         #expect(state.gain == 65)
         InputChannelLogic.applyLevelChange(&state, to: .plus4dBu)
@@ -476,6 +481,7 @@ struct MicPreStripLogicTests {
     @Test func groupClampRespectsPerMemberRange() {
         var channels = micChannels([10, 60, 0, 0, 0, 0, 0, 0])
         channels[1].inputType = AnalogInputLevel.instrument.rawValue
+        channels[1].gain = 60 // Instrument has its own stored gain.
         channels[0].group = 2
         channels[1].group = 2
 

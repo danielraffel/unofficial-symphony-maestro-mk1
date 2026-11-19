@@ -282,6 +282,15 @@ struct RequestBuilderTests {
         #expect(req.data == Data([85])) // Clamped to max
     }
 
+    @Test func setInstrumentGainUsesC4AndClampsTo65() {
+        let req = SymphonyIORequestBuilder.setInstrumentGain(channel: 3, gain: 200)
+        #expect(req.direction == .write)
+        #expect(req.request == 0xC4)
+        #expect(req.value == 0)
+        #expect(req.index == 3)
+        #expect(req.data == Data([65]))
+    }
+
     @Test func setPhantomPowerRequest() {
         let req = SymphonyIORequestBuilder.setPhantomPower(channel: 5, enabled: true)
         #expect(req.direction == .write)
@@ -739,6 +748,18 @@ struct USBDeviceConnectionTests {
             PropertyAddress(selector: .micGain, scope: .input, element: 3)
         )
         #expect(value == .uint32(42))
+    }
+
+    @Test func writeInstrumentGain() async throws {
+        let (conn, transport) = makeConnection()
+        try await conn.setProperty(
+            PropertyAddress(selector: .instrumentGain, scope: .input, element: 3),
+            value: .uint32(100))
+        let req = try #require(transport.sentRequests.first)
+        #expect(req.request == 0xC4)
+        #expect(req.value == 0)
+        #expect(req.index == 3)
+        #expect(req.data == Data([65]))
     }
 
     @Test func writeMicGain() async throws {

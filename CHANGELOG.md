@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.10 (beta)
+
+Input gain controls now remember Mic and Instrument settings independently and send each to the matching preamp stage.
+
+- Instrument input gain now reaches the 8MicPre correctly, with its full 0–65 dB range.
+
 ## 0.9.9 (beta)
 
 Apogee's older converters and a second Symphony I/O now work the way they did with Apogee's software, on the ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.8. With one Symphony I/O, little changes for you; see "Changes that may affect your setup".

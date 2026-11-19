@@ -54,6 +54,7 @@ struct UnitBConnectionTests {
     /// One value per mapped selector the pages write.
     static let writes: [(PropertyAddress, PropertyValue)] = [
         (PropertyAddress(selector: .micGain, scope: .input, element: 3), .uint32(40)),
+        (PropertyAddress(selector: .instrumentGain, scope: .input, element: 3), .uint32(90)),
         (PropertyAddress(selector: .phantom, scope: .input, element: 2), .bool(true)),
         (PropertyAddress(selector: .phaseReverse, scope: .input, element: 1), .bool(true)),
         (PropertyAddress(selector: .highPassFilter, scope: .input, element: 0), .bool(true)),

@@ -603,10 +603,7 @@ struct InputControlsView: View {
             if sendsGain {
                 // Re-assert gain: Mic (0-85) and Instrument (0-65) are separate
                 // hardware gain stages, so the value must be re-sent after a swap.
-                // TODO(instrument-gain): Instrument gain is opcode 0xC4
-                // (`SymphonyIOCommand.instrumentGain`), but no property selector maps
-                // to it yet — `.micGain` (0xC3) is all we can address today.
-                await writeChannelProperty(index, .micGain, value: .uint32(gain), on: target.device)
+                await writeChannelProperty(index, InputChannelLogic.gainSelector(for: level), value: .uint32(gain), on: target.device)
             }
             if clearedGroup {
                 await writeChannelProperty(index, .groupID,
@@ -642,18 +639,18 @@ struct InputControlsView: View {
                 let otherGain = UInt32(max(0, channels[i].gain.rounded()))
                 Task {
                     if droppedPhantom {
-                        await writeChannelProperty(i, .phantom, value: .bool(false))
+                        await writeChannelProperty(i, .phantom, value: .bool(false), on: target.device)
                     }
-                    await writeChannelProperty(i, .analogIOType, value: .uint32(otherPacked))
+                    await writeChannelProperty(i, .analogIOType, value: .uint32(otherPacked), on: target.device)
                     if sendsOtherGain {
-                        await writeChannelProperty(i, .micGain, value: .uint32(otherGain))
+                        await writeChannelProperty(i, InputChannelLogic.gainSelector(for: level), value: .uint32(otherGain), on: target.device)
                     }
                     if droppedGroup {
                         await writeChannelProperty(i, .groupID,
-                                                  value: .uint32(InputChannelLogic.groupOff))
+                                                  value: .uint32(InputChannelLogic.groupOff), on: target.device)
                     }
                     if droppedReturn {
-                        await writeChannelProperty(i, .insertReturnEnable, value: .bool(false))
+                        await writeChannelProperty(i, .insertReturnEnable, value: .bool(false), on: target.device)
                     }
                 }
             }
@@ -722,8 +719,9 @@ struct InputControlsView: View {
         syncAppliedGains()
         for i in result.hardwareWrites {
             let value = UInt32(max(0, channels[i].gain.rounded()))
-            // TODO(instrument-gain): Instrument channels need 0xC4, not 0xC3.
-            Task { await writeChannelProperty(i, .micGain, value: .uint32(value)) }
+            let level = AnalogInputLevel(rawValue: channels[i].inputType) ?? .plus4dBu
+            let device = appState.unitDevice
+            Task { await writeChannelProperty(i, InputChannelLogic.gainSelector(for: level), value: .uint32(value), on: device) }
         }
         saveChannelStates()
     }
@@ -839,9 +837,10 @@ struct InputControlsView: View {
                 //    insert rather than channel, so it is one table written once,
                 //    after this loop.
                 await writeChannelProperty(i, .insertReturnEnable, value: .bool(false))
-                // 3. Gain. TODO(instrument-gain): 0xC4 has no selector yet, but
-                //    the default is 0 for both stages, so one write covers it.
+                // 3. Restore both independent MicPre gain stages.
                 await writeChannelProperty(i, .micGain,
+                                           value: .uint32(UInt32(InputResetDefaults.gain)))
+                await writeChannelProperty(i, .instrumentGain,
                                            value: .uint32(UInt32(InputResetDefaults.gain)))
                 // 4. Group.
                 await writeChannelProperty(i, .groupID, value: .uint32(InputResetDefaults.group))
