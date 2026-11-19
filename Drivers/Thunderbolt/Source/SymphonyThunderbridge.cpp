@@ -414,6 +414,13 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  unitBSetupFlags;
     uint32_t  unitBTxErrors;
     bool      unitBConfigured;
+    // dext 131 review: the last full ClockMode (0x50) sent to unit A on any
+    // path, so entering or leaving two-unit mode only changes its Loop Sync
+    // output byte and never the user's source. xlinkQueue only.
+    uint8_t   unitAClock[4];
+    bool      unitAClockKnown;
+    uint8_t   unitBOptical[2];         // unit B's optical format per slot (names 33-64)
+    uint8_t   unitBCoaxReplace[2];     // unit B's S/PDIF Coax Replaces per slot (names 33-64)
 
     // ── EXPERIMENT (64ch, stage 1): second XLink port, discovery only ───────
     // portCount is 1 unless the matched personality carries SymphonyPortCount=2
@@ -2731,6 +2738,8 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_ClockMode,
                                          0, clockData, sizeof(clockData), txSeq);
+            memcpy(ivars->unitAClock, clockData, 4);   // dext 131: unit A's last ClockMode
+            ivars->unitAClockKnown = true;
             STLOG("SymphonyIO: ClockMode(Internal, Master): %{public}s", ok ? "OK" : "FAILED");
             IOSleep(10);
         }
@@ -3247,20 +3256,13 @@ static bool Port2FoundUnit(const SymphonyThunderbridge_IVars *ivars);
 static void RequestPortModeConfigChange(SymphonyThunderbridge_IVars *ivars,
                                         SymphonyThunderbridge *self, const char *why);
 
+static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware);   // below
+
 static void ClearPort2Units(SymphonyThunderbridge_IVars *ivars, uint32_t clk)
 {
     __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
     ConvSetPort(ivars, 1, false, 0, nullptr);
-    if (ivars->unitBConfigured && ivars->pciDevice && XLinkTxAdmissible(ivars)) {
-        // Back to one unit: unit A's clock message without Loop Sync output,
-        // as the single-unit start-up sends it.
-        uint32_t src = __atomic_load_n(&ivars->pendingClockSource, __ATOMIC_ACQUIRE);
-        if (src == 0 || src == 3) src = 1;
-        const uint8_t one[4] = { (uint8_t)src, 0x01, 0x00, 0x00 };
-        SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                          kSIOCmd_ClockMode, 0, one, sizeof(one), ivars->runtimeTxSeq);
-    }
-    ivars->unitBConfigured = false;   // unit B is set up again when 64 starts
+    LeaveTwoUnit(ivars, true);   // unit B is set up again when 64 starts
     ivars->port2Clocking  = clk;
     ivars->port2UnitCount = 0;
     ivars->port2RateHz    = 0;
@@ -3297,8 +3299,10 @@ static void WatchSecondPort(SymphonyThunderbridge_IVars *ivars, SymphonyThunderb
                 }
             } else {
                 ivars->port2ResumeUnitSeen = false;
-                SetPort2Enabled(ivars, false);
             }
+            // dext 131 review: never leave port 2 switched on at 32 channels;
+            // the switch to 64 (EnablePort2Audio) enables it again.
+            SetPort2Enabled(ivars, false);
         } else if (!abandonedSwitch && !clock && __atomic_load_n(&ivars->requestedPortMode, __ATOMIC_ACQUIRE) == 64 &&
                    !__atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE) &&
                    clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) - ivars->port2ResumeProbeNs >= 30000000000ull) {
@@ -3792,6 +3796,52 @@ static void AlignXLinkPhase(SymphonyThunderbridge_IVars *ivars)
 // 32 -> 64. The caller has passed XLinkTxAdmissible; Core Audio has stopped IO.
 // Returns true with both ports running, false with port 1 running alone as
 // before and the reason recorded.
+// Unit A's clock with or without its Loop Sync output, from the last ClockMode
+// it was sent (the user's source is kept). With unit B present unit A must be
+// the Loop Sync master: a recorded Loop Sync slave source becomes Internal.
+static void SendUnitAClock(SymphonyThunderbridge_IVars *ivars, bool loopSyncOut)
+{
+    uint8_t bytes[4] = { 0x01, 0x01, 0x00, 0x00 };
+    if (ivars->unitAClockKnown) memcpy(bytes, ivars->unitAClock, 4);
+    if (loopSyncOut) {
+        if (bytes[0] == 3) { bytes[0] = 1; bytes[3] = 0; }
+        bytes[1] = 1;
+        bytes[2] = 1;
+    }
+    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                      kSIOCmd_ClockMode, 0, bytes, sizeof(bytes), ivars->runtimeTxSeq);
+    STLOG("Unit A clock: source %u, %{public}s, Loop Sync output %{public}s",
+          bytes[0], bytes[1] ? "master" : "slave", bytes[2] ? "on" : "off");
+}
+
+static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, uint16_t mixerID, uint8_t source);
+
+// Every way out of two-unit mode: unit B is no longer configured, unit A's
+// clock gets its single-unit message back (when the card can be reached), and
+// a card-mixer Software Return pointing above DAW 1-16 goes back to 1-2.
+static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
+{
+    const bool was = ivars->unitBConfigured;
+    ivars->unitBConfigured = false;
+    if (!was) return;
+    const bool reachable = touchHardware && ivars->pciDevice && XLinkTxAdmissible(ivars);
+    if (reachable) SendUnitAClock(ivars, false);
+    for (uint16_t m = 1; m <= 2; m++) {
+        if (ivars->mixerSwReturnSource[m - 1] <= 7) continue;
+        ivars->mixerSwReturnSource[m - 1] = 0;
+        if (reachable) ThunderboltWriteSoftwareReturn(ivars, m, 0);
+    }
+    STLOG("Unit B: left two-unit mode%{public}s", reachable ? "" : " (card not reachable; clock left as it was)");
+}
+
+static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, uint16_t mixerID, uint8_t source)
+{
+    for (uint8_t side = 0; side < 2; side++)
+        WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, ThunderboltMixerReturnRegister(mixerID, side),
+                      ThunderboltSoftwareReturnSlot(source, side) | kRoutingEnable);
+    STLOG("Card mixer: mixer %u SW Return source=%u (back within DAW 1-16)", mixerID, source);
+}
+
 // Two units at 64 channels: configure the Symphony I/O on port 2 ("unit B").
 // The original created a full SymphonyIO peripheral for (card, bus 1, device 0)
 // and sent it everything unit A got, over XLink 2 to address 1, with its own
@@ -3836,20 +3886,15 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     // links the units by their Loop Sync BNCs): the master (unit A) first with
     // its Loop Sync output on, then unit B as Loop Sync slave
     // (SymphonyController.cpp:202-235, SymphonyIO.cpp:4752-4767).
-    {
-        uint32_t src = __atomic_load_n(&ivars->pendingClockSource, __ATOMIC_ACQUIRE);
-        if (src == 0 || src == 3) src = 1;
-        const uint8_t masterData[4] = { (uint8_t)src, 0x01, 0x01, 0x00 };   // unit A: master, Loop Sync on
-        SendVendorRequest(dev, mi, ivars->symphonyAddr, kSIOCmd_ClockMode, 0, masterData,
-                          sizeof(masterData), ivars->runtimeTxSeq);
-        IOSleep(10);
-    }
+    SendUnitAClock(ivars, true);   // unit A: master, Loop Sync output on, its own source kept
+    IOSleep(10);
     const uint8_t clockData[4] = { 0x03, 0x00, 0x01, 0x00 };   // unit B: Loop Sync, slave
     if (send(kSIOCmd_ClockMode, 0, clockData, sizeof(clockData))) ivars->unitBClockSource = 3;
     IOSleep(10);
     for (uint32_t b = 0; b < 2; b++) {
         if (!BootSendsOpticalFormat(ivars->unitBBoardValid[b], ivars->unitBBoardType[b])) continue;
         const uint8_t format = 0;   // ADAT/SMUX until Maestro sets unit B's
+        ivars->unitBOptical[b] = 0;
         send(kSIOCmd_OpticalFormat, b, &format, 1);
         IOSleep(10);
     }
@@ -3877,6 +3922,7 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     const bool unlocked = send(kSIOCmd_PreferenceLoadLock, 0, &unlock, 1);
     ivars->unitBSetupFlags = unlocked ? 1u : 0u;
     ivars->unitBConfigured = unlocked;
+    if (!unlocked) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
     STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, Loop Sync slave of unit A, %u message error(s))",
           unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
           ivars->unitBPrefix, ivars->unitBTxErrors);
@@ -3884,6 +3930,8 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
 
 static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
 {
+    // A unit B from an earlier 64 session is set up again below, or not at all.
+    LeaveTwoUnit(ivars, true);
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     if (!ivars->port2AudioReady) {
@@ -4034,16 +4082,7 @@ static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outco
     // disabled with the rest of port 2's below).
     __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvPort2Converters, __ATOMIC_RELEASE);
     ConvSetPort(ivars, 1, false, 0, nullptr);
-    if (ivars->unitBConfigured && ivars->pciDevice && XLinkTxAdmissible(ivars)) {
-        // Back to one unit: unit A's clock message without Loop Sync output,
-        // as the single-unit start-up sends it.
-        uint32_t src = __atomic_load_n(&ivars->pendingClockSource, __ATOMIC_ACQUIRE);
-        if (src == 0 || src == 3) src = 1;
-        const uint8_t one[4] = { (uint8_t)src, 0x01, 0x00, 0x00 };
-        SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                          kSIOCmd_ClockMode, 0, one, sizeof(one), ivars->runtimeTxSeq);
-    }
-    ivars->unitBConfigured = false;   // unit B is set up again when 64 starts
+    LeaveTwoUnit(ivars, true);   // unit B is set up again when 64 starts
     IOPCIDevice *dev = ivars->pciDevice;
     const uint8_t mi = ivars->barMemoryIndex;
     const bool wasRunning = Port2StopBothEngines(dev, mi);
@@ -4092,6 +4131,7 @@ static void Port2AudioFallBack(SymphonyThunderbridge_IVars *ivars, SymphonyThund
     if (touchHardware) {
         DisablePort2Audio(ivars, kSymphonyPort2AudioFellBack, reason);
     } else {
+        LeaveTwoUnit(ivars, false);
         Port2SilenceBuffers(ivars);
         Port2SetCardMode(ivars, 32);
         Port2AudioNote(ivars, kSymphonyPort2AudioFellBack, reason);
@@ -4150,7 +4190,8 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     for (uint32_t b = 0; b < 2; b++) {
         sB.boardKnown[b] = ivars->unitBBoardValid[b] && ivars->unitBConfigured;
         sB.boardType[b] = ivars->unitBBoardType[b];
-        sB.opticalIsSPDIF[b] = s.opticalIsSPDIF[b];
+        sB.opticalIsSPDIF[b] = ivars->unitBOptical[b] != 0;   // unit B's own format
+        sB.coaxReplace[b] = ivars->unitBCoaxReplace[b];
     }
     sB.sampleRate = s.sampleRate;
     sB.prefix = SymphonyIsPrefixLetter(ivars->unitBPrefix)
@@ -4197,6 +4238,20 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
         OSSafeReleaseNULL(str);
         strlcpy(ivars->publishedOutputName[n], name, sizeof(ivars->publishedOutputName[n]));
         outChanged++;
+    }
+    // dext 131 review: names 33-64 published for converters or unit B in an
+    // earlier 64-channel session are removed when that is no longer the case.
+    for (uint32_t n = nameCount; n < 64; n++) {
+        if (ivars->publishedInputName[n][0]) {
+            ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, nullptr);
+            ivars->publishedInputName[n][0] = 0;
+            changed++;
+        }
+        if (ivars->publishedOutputName[n][0]) {
+            ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Output, nullptr);
+            ivars->publishedOutputName[n][0] = 0;
+            outChanged++;
+        }
     }
     if (changed || outChanged)
         STLOG("Channel names: %u input, %u output names changed (prefix %c, boards %u/%u known %u/%u, %u Hz, spdif %u/%u, coax %u/%u)",
@@ -4600,6 +4655,17 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         // ports before resuming the engines.
         if (__atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64 && ivars->port2On) {
             const bool wasRunning = Port2StopBothEngines(ivars->pciDevice, ivars->barMemoryIndex);
+            // dext 131 review: the port-1 bring-up sent unit A a plain master
+            // ClockMode; with unit B following it by Loop Sync, put unit A's
+            // Loop Sync output back on and remind unit B it is the slave.
+            if (ivars->unitBConfigured) {
+                SendUnitAClock(ivars, true);
+                const uint8_t slave[4] = { 0x03, 0x00, 0x01, 0x00 };
+                if (!SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink2TX, 1,
+                                         kSIOCmd_ClockMode, 0, slave, sizeof(slave), ivars->runtimeTxSeq2))
+                    ivars->unitBTxErrors++;
+                IOSleep(10);
+            }
             AlignXLinkPhase(ivars);
             if (wasRunning) Port2StartBothEngines(ivars);
             STLOG("Link recovery: re-aligned phase for both ports while 64 channels ran");
@@ -4813,14 +4879,17 @@ static bool ConverterHealthCheck(SymphonyThunderbridge_IVars *ivars, SymphonyThu
     // tick the rest wait for the next tick, so clock, config and app commands
     // are never held up for long while audio runs.
     uint32_t misses = 0;
+    bool port2Changed = false;
+    ConvSnapshotData snap;
+    ConvSnapshot(ivars, snap);
     for (uint32_t port = 0; port < 2 && !reinit && misses < 2; port++) {
         if ((port == 0 && !p1) || (port == 1 && !p2)) continue;
         const uint64_t tx = port ? kRegXLink2TX : kRegXLink1TX;
         const uint64_t rx = port ? kRegXLink2RX : kRegXLink1RX;
         uint32_t phases = 0;
-        for (uint32_t u = 0; u < ivars->convUnitCount[port] && u < kXLinkMaxDevices && misses < 2; u++) {
+        for (uint32_t u = 0; u < snap.count[port] && u < kXLinkMaxDevices && misses < 2; u++) {
             const uint8_t addr = (uint8_t)(u + 1);
-            const uint32_t w = ivars->convUnit[port][u];
+            const uint32_t w = snap.unit[port][u];
             // Each unit still the same one (CheckLinkStatus compared every unit's
             // routing, XLink.cpp:2018-2061).
             uint8_t inq = 0, xtd = 0;
@@ -4832,9 +4901,12 @@ static bool ConverterHealthCheck(SymphonyThunderbridge_IVars *ivars, SymphonyThu
                 STLOG("Converter health: port %u unit %u %{public}s (routing 0x%02x, was 0x%02x)",
                       port + 1, addr, inqOK ? "changed" : "does not answer", now, was);
                 if (port == 0) { reinit = true; break; }
-                realign = true;   // port 2: its watch handles a chain that went away
-                misses++;
-                continue;
+                // Port 2: a unit replaced, added or gone while 64 runs. Its
+                // placement, names and routes describe the old chain, so go
+                // back to 32 cleanly (the remembered 64 request switches back
+                // once the chain is found again).
+                port2Changed = true;
+                break;
             }
             uint8_t a = 0, b = 0;
             const bool aOK = XLinkInquireOn(dev, mi, tx, rx, addr, kXLinkCmdWclkPhaseQuery, &a, pcie);
@@ -4862,6 +4934,11 @@ static bool ConverterHealthCheck(SymphonyThunderbridge_IVars *ivars, SymphonyThu
             }
         }
         ivars->convPhase[port] = phases;
+    }
+    if (port2Changed) {
+        STLOG("Converter health: port 2's converters changed — back to 32 channels, port 2 is looked at again");
+        Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonClockGone, true);
+        return false;
     }
     if (!reinit && !realign) {
         __atomic_or_fetch(&ivars->convFlags, kSymphonyConvHealthy, __ATOMIC_RELEASE);
@@ -8940,7 +9017,12 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 result = kIOReturnSuccess;
                 return;
             }
-            if (conv && (command == kThunderboltCardOutputRouteCommand || command == kThunderboltCardInputRouteCommand)) {
+            // A Symphony I/O on port 1 with converters on port 2: port 1's output
+            // routes (0-31) are the Symphony grid's and take the normal path below.
+            const bool symphonyEntry = !ivars->convPort1 && command == kThunderboltCardOutputRouteCommand &&
+                                       payload && payloadLen == 3 && payload[0] < 32;
+            if (conv && !symphonyEntry &&
+                (command == kThunderboltCardOutputRouteCommand || command == kThunderboltCardInputRouteCommand)) {
                 const bool in = command == kThunderboltCardInputRouteCommand;
                 // Entries a converter port owns: 0-31 with converters on port 1,
                 // 32-63 while port 2 carries converters.
@@ -9047,8 +9129,33 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 result = kIOReturnSuccess;
                 return;
             }
+            // dext 131 review: a card-mixer command (mixer 1/2) the card does not
+            // take (a unit-B strip 33-64 left over after going back to 32) is
+            // refused, never forwarded to unit A as a vendor message.
+            if ((mixerID == 1 || mixerID == 2) && isMixerCmd) {
+                result = kIOReturnBadArgument;
+                return;
+            }
         }
 
+        // dext 131: a ClockMode for unit A (e.g. a card input as the clock,
+        // sent by the app on this path) keeps its Loop Sync output on while
+        // unit B follows it, and is remembered so leaving two-unit mode keeps
+        // the source. Loop Sync as unit A's source is refused then.
+        uint8_t clockCopy[4];
+        const uint8_t *sendPayload = payload;
+        if (port == 0 && command == kSIOCmd_ClockMode && payload && payloadLen == 4) {
+            if (ivars->unitBConfigured && payload[0] == 3) {
+                STLOG("SendVendorCommand: Loop Sync refused for unit A while unit B follows it");
+                result = kIOReturnUnsupported;
+                return;
+            }
+            memcpy(clockCopy, payload, 4);
+            if (ivars->unitBConfigured && clockCopy[1] == 1) clockCopy[2] = 1;
+            memcpy(ivars->unitAClock, payload, 4);
+            ivars->unitAClockKnown = true;
+            sendPayload = clockCopy;
+        }
         // dext 131: Symphony I/O vendor messages never go to converters (the
         // original sent them to Symphony I/O units only).
         if (port == 0 && ivars->convPort1) {
@@ -9060,7 +9167,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         uint8_t &seq = port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq;
         bool ok = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, tx,
                                       port ? 1 : ivars->symphonyAddr, command, value,
-                                      payload, payloadLen, seq);
+                                      sendPayload, payloadLen, seq);
         if (!ok) {
             STERR("SendVendorCommand: failed cmd=0x%02x value=0x%08x payload=%u",
                   command, value, payloadLen);
@@ -9074,6 +9181,12 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             if (command == kSymphonyCmdPrefix && payload && payloadLen == 1 &&
                 SymphonyIsPrefixLetter(payload[0]) && ivars->unitBPrefix != payload[0]) {
                 ivars->unitBPrefix = payload[0];
+                namesChanged = true;
+            } else if (command == kSIOCmd_OpticalFormat && value < 2 && payload && payloadLen >= 1) {
+                ivars->unitBOptical[value] = payload[0];
+                namesChanged = true;
+            } else if (command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2 && payload && payloadLen >= 1) {
+                ivars->unitBCoaxReplace[value] = payload[0];
                 namesChanged = true;
             }
         } else if (command == kSIOCmd_AudioRouting) {
@@ -9178,7 +9291,12 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
         for (uint16_t i = 0; i < responseLen; i++) outPayload[i] = response[i];
     // The app reads S/PDIF Coax Replaces at connect; the unit keeps it across a
     // driver restart, so this is where the driver learns it.
-    // dext 131: a read from unit B (port 1) only updates unit B's prefix.
+    // dext 131: a read from unit B (port 1) only updates unit B's own naming.
+    if (result == kIOReturnSuccess && port == 1 && command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2 &&
+        ivars->unitBCoaxReplace[value] != outPayload[0]) {
+        ivars->unitBCoaxReplace[value] = outPayload[0];
+        ScheduleChannelNames(ivars, this);
+    }
     if (result == kIOReturnSuccess && port == 1 && command == kSymphonyCmdPrefix && responseLen == 1 &&
         SymphonyIsPrefixLetter(outPayload[0]) && ivars->unitBPrefix != outPayload[0]) {
         ivars->unitBPrefix = outPayload[0];
@@ -9454,6 +9572,10 @@ kern_return_t SymphonyThunderbridge::RequestClockSource(uint32_t source)
                     const uint32_t want = src == 1 ? (cfg & ~kSymphonyConvConfigClockExternal)
                                                    : (cfg | kSymphonyConvConfigClockExternal);
                     if (want != cfg) SetConverterConfig(want);
+                } else if (admissible && ivars->unitBConfigured && src == 3) {
+                    // dext 131: with unit B on port 2, unit A is the Loop Sync
+                    // master; it cannot also be a Loop Sync slave.
+                    STLOG("RequestClockSource: Loop Sync refused for unit A while unit B follows it");
                 } else if (admissible) {
                     // ClockMode 0x50: [source, master, loopSync, boardClockSrc].
                     // LoopSync(3) ⇒ slave + loopSync on; all others ⇒ master, loopSync
@@ -9470,6 +9592,8 @@ kern_return_t SymphonyThunderbridge::RequestClockSource(uint32_t source)
                     SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                       ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
                                       clockData, sizeof(clockData), ivars->runtimeTxSeq);
+                    memcpy(ivars->unitAClock, clockData, 4);
+                    ivars->unitAClockKnown = true;
                 }
                 __atomic_store_n(&ivars->clockTxScheduled, false, __ATOMIC_RELEASE);
                 // Re-arm only if a newer selection arrived AND no producer beat us to it.

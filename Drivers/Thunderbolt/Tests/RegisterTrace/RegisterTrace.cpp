@@ -2709,9 +2709,30 @@ static void RunConverterParityChecks()
         r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
         CHECK(st.present == 1 && st.clockSource == 3, "%s: unit B present=%u clock=%u (want 1, Loop Sync)",
               o.name, st.present, st.clockSource);
+        // Review fixes: unit A's clock from the app (a card input) keeps its
+        // Loop Sync output on; Loop Sync as unit A's source is refused.
+        {
+            const size_t m2 = c.lines.size();
+            uint8_t board[4] = { 0x04, 0x01, 0x00, 0x02 };   // IOBoard 1 input, master
+            CHECK(r.drv->SendVendorCommand(0x50, 0, board, 4) == kIOReturnSuccess, "%s: card-input clock refused", o.name);
+            HostPump();
+            CHECK(!Commands(c, m2, kRegXLink1TX, 0x10).empty(), "%s: the card-input clock was not sent", o.name);
+            uint8_t loop[4] = { 0x03, 0x00, 0x01, 0x00 };
+            CHECK(r.drv->SendVendorCommand(0x50, 0, loop, 4) == kIOReturnUnsupported, "%s: Loop Sync for unit A accepted at 64", o.name);
+        }
         Select(r, 0, "unit B: back to 32");
         r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
         CHECK(st.present == 0, "%s: unit B still marked present at 32", o.name);
+        // Back at 32: Loop Sync is fine for unit A again; a stray card-mixer
+        // command for strip 40 is refused, never sent to unit A.
+        {
+            const size_t m3 = c.lines.size();
+            uint8_t level = 40;
+            CHECK(r.drv->SendVendorCommand(0xB0, (1u << 16) | 40u, &level, 1) == kIOReturnBadArgument,
+                  "%s: mixer strip 40 accepted at 32", o.name);
+            HostPump();
+            CHECK(Commands(c, m3, kRegXLink1TX, 0x10).empty(), "%s: strip 40 went to unit A as a vendor message", o.name);
+        }
         Finish(o, r);
     }
 #endif

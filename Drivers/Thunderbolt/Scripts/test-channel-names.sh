@@ -405,6 +405,10 @@ publish = src[src.index("static void PublishChannelNames"):src.index("static voi
 assert "s.boardKnown[b] = ivars->optionBoardTypeValid[b];" in publish
 assert publish.index("strncmp(name, ivars->publishedInputName[n]") < publish.index("SetElementName(")
 out = publish[publish.index("SymphonyHostOutputName(s, n"):]
+# dext 131: the clean-up of names 33-64 from an earlier 64-channel session
+# follows the output loop and clears both scopes; check only the output loop.
+if "names 33-64 published for converters or unit B" in out:
+    out = out[:out.index("names 33-64 published for converters or unit B")]
 assert out.index("strncmp(name, ivars->publishedOutputName[n]") < out.index("SetElementName(")
 assert "Scope::Output" in out and "Scope::Input" not in out
 # The capture table is laid out from slot 1's type read in the same link

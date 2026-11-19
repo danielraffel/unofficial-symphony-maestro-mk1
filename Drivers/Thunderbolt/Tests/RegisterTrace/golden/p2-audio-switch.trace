@@ -2208,6 +2208,70 @@ H element-name dir=out ch=29 name=A SMUX 5
 H element-name dir=out ch=30 name=A SMUX 6
 H element-name dir=out ch=31 name=A SMUX 7
 H element-name dir=out ch=32 name=A SMUX 8
+H element-name dir=in ch=33 name=(none)
+H element-name dir=out ch=33 name=(none)
+H element-name dir=in ch=34 name=(none)
+H element-name dir=out ch=34 name=(none)
+H element-name dir=in ch=35 name=(none)
+H element-name dir=out ch=35 name=(none)
+H element-name dir=in ch=36 name=(none)
+H element-name dir=out ch=36 name=(none)
+H element-name dir=in ch=37 name=(none)
+H element-name dir=out ch=37 name=(none)
+H element-name dir=in ch=38 name=(none)
+H element-name dir=out ch=38 name=(none)
+H element-name dir=in ch=39 name=(none)
+H element-name dir=out ch=39 name=(none)
+H element-name dir=in ch=40 name=(none)
+H element-name dir=out ch=40 name=(none)
+H element-name dir=in ch=41 name=(none)
+H element-name dir=out ch=41 name=(none)
+H element-name dir=in ch=42 name=(none)
+H element-name dir=out ch=42 name=(none)
+H element-name dir=in ch=43 name=(none)
+H element-name dir=out ch=43 name=(none)
+H element-name dir=in ch=44 name=(none)
+H element-name dir=out ch=44 name=(none)
+H element-name dir=in ch=45 name=(none)
+H element-name dir=out ch=45 name=(none)
+H element-name dir=in ch=46 name=(none)
+H element-name dir=out ch=46 name=(none)
+H element-name dir=in ch=47 name=(none)
+H element-name dir=out ch=47 name=(none)
+H element-name dir=in ch=48 name=(none)
+H element-name dir=out ch=48 name=(none)
+H element-name dir=in ch=49 name=(none)
+H element-name dir=out ch=49 name=(none)
+H element-name dir=in ch=50 name=(none)
+H element-name dir=out ch=50 name=(none)
+H element-name dir=in ch=51 name=(none)
+H element-name dir=out ch=51 name=(none)
+H element-name dir=in ch=52 name=(none)
+H element-name dir=out ch=52 name=(none)
+H element-name dir=in ch=53 name=(none)
+H element-name dir=out ch=53 name=(none)
+H element-name dir=in ch=54 name=(none)
+H element-name dir=out ch=54 name=(none)
+H element-name dir=in ch=55 name=(none)
+H element-name dir=out ch=55 name=(none)
+H element-name dir=in ch=56 name=(none)
+H element-name dir=out ch=56 name=(none)
+H element-name dir=in ch=57 name=(none)
+H element-name dir=out ch=57 name=(none)
+H element-name dir=in ch=58 name=(none)
+H element-name dir=out ch=58 name=(none)
+H element-name dir=in ch=59 name=(none)
+H element-name dir=out ch=59 name=(none)
+H element-name dir=in ch=60 name=(none)
+H element-name dir=out ch=60 name=(none)
+H element-name dir=in ch=61 name=(none)
+H element-name dir=out ch=61 name=(none)
+H element-name dir=in ch=62 name=(none)
+H element-name dir=out ch=62 name=(none)
+H element-name dir=in ch=63 name=(none)
+H element-name dir=out ch=63 name=(none)
+H element-name dir=in ch=64 name=(none)
+H element-name dir=out ch=64 name=(none)
 -- select 64 at 88200
 H device-config-change-request
 CR32 0x00 0x220019c2
@@ -2862,6 +2926,38 @@ H element-name dir=in ch=29 name=A ADAT 5
 H element-name dir=in ch=30 name=A ADAT 6
 H element-name dir=in ch=31 name=A ADAT 7
 H element-name dir=in ch=32 name=A ADAT 8
+H element-name dir=in ch=33 name=B Line 1
+H element-name dir=in ch=34 name=B Line 2
+H element-name dir=in ch=35 name=B Line 3
+H element-name dir=in ch=36 name=B Line 4
+H element-name dir=in ch=37 name=B Line 5
+H element-name dir=in ch=38 name=B Line 6
+H element-name dir=in ch=39 name=B Line 7
+H element-name dir=in ch=40 name=B Line 8
+H element-name dir=in ch=41 name=B Line 9
+H element-name dir=in ch=42 name=B Line 10
+H element-name dir=in ch=43 name=B Line 11
+H element-name dir=in ch=44 name=B Line 12
+H element-name dir=in ch=45 name=B Line 13
+H element-name dir=in ch=46 name=B Line 14
+H element-name dir=in ch=47 name=B Line 15
+H element-name dir=in ch=48 name=B Line 16
+H element-name dir=in ch=49 name=N.A.
+H element-name dir=in ch=50 name=N.A.
+H element-name dir=in ch=51 name=N.A.
+H element-name dir=in ch=52 name=N.A.
+H element-name dir=in ch=53 name=N.A.
+H element-name dir=in ch=54 name=N.A.
+H element-name dir=in ch=55 name=N.A.
+H element-name dir=in ch=56 name=N.A.
+H element-name dir=in ch=57 name=N.A.
+H element-name dir=in ch=58 name=N.A.
+H element-name dir=in ch=59 name=N.A.
+H element-name dir=in ch=60 name=N.A.
+H element-name dir=in ch=61 name=N.A.
+H element-name dir=in ch=62 name=N.A.
+H element-name dir=in ch=63 name=N.A.
+H element-name dir=in ch=64 name=N.A.
 H element-name dir=out ch=25 name=A ADAT 1
 H element-name dir=out ch=26 name=A ADAT 2
 H element-name dir=out ch=27 name=A ADAT 3
@@ -2870,6 +2966,38 @@ H element-name dir=out ch=29 name=A ADAT 5
 H element-name dir=out ch=30 name=A ADAT 6
 H element-name dir=out ch=31 name=A ADAT 7
 H element-name dir=out ch=32 name=A ADAT 8
+H element-name dir=out ch=33 name=C Line 1
+H element-name dir=out ch=34 name=C Line 2
+H element-name dir=out ch=35 name=C Line 3
+H element-name dir=out ch=36 name=C Line 4
+H element-name dir=out ch=37 name=C Line 5
+H element-name dir=out ch=38 name=C Line 6
+H element-name dir=out ch=39 name=C Line 7
+H element-name dir=out ch=40 name=C Line 8
+H element-name dir=out ch=41 name=C Line 9
+H element-name dir=out ch=42 name=C Line 10
+H element-name dir=out ch=43 name=C Line 11
+H element-name dir=out ch=44 name=C Line 12
+H element-name dir=out ch=45 name=C Line 13
+H element-name dir=out ch=46 name=C Line 14
+H element-name dir=out ch=47 name=C Line 15
+H element-name dir=out ch=48 name=C Line 16
+H element-name dir=out ch=49 name=N.A.
+H element-name dir=out ch=50 name=N.A.
+H element-name dir=out ch=51 name=N.A.
+H element-name dir=out ch=52 name=N.A.
+H element-name dir=out ch=53 name=N.A.
+H element-name dir=out ch=54 name=N.A.
+H element-name dir=out ch=55 name=N.A.
+H element-name dir=out ch=56 name=N.A.
+H element-name dir=out ch=57 name=N.A.
+H element-name dir=out ch=58 name=N.A.
+H element-name dir=out ch=59 name=N.A.
+H element-name dir=out ch=60 name=N.A.
+H element-name dir=out ch=61 name=N.A.
+H element-name dir=out ch=62 name=N.A.
+H element-name dir=out ch=63 name=N.A.
+H element-name dir=out ch=64 name=N.A.
 -- configuration change after the fallback
 CR32 0x00 0x220019c2
 CR16 0x04 0x0006
@@ -4856,6 +4984,70 @@ W 0x0000a8 0x00000000
 W 0x0000b0 0x000fff0f
 W 0x0000ac 0xfff0000f
 W 0x0000b4 0x00000000
+H element-name dir=in ch=33 name=(none)
+H element-name dir=out ch=33 name=(none)
+H element-name dir=in ch=34 name=(none)
+H element-name dir=out ch=34 name=(none)
+H element-name dir=in ch=35 name=(none)
+H element-name dir=out ch=35 name=(none)
+H element-name dir=in ch=36 name=(none)
+H element-name dir=out ch=36 name=(none)
+H element-name dir=in ch=37 name=(none)
+H element-name dir=out ch=37 name=(none)
+H element-name dir=in ch=38 name=(none)
+H element-name dir=out ch=38 name=(none)
+H element-name dir=in ch=39 name=(none)
+H element-name dir=out ch=39 name=(none)
+H element-name dir=in ch=40 name=(none)
+H element-name dir=out ch=40 name=(none)
+H element-name dir=in ch=41 name=(none)
+H element-name dir=out ch=41 name=(none)
+H element-name dir=in ch=42 name=(none)
+H element-name dir=out ch=42 name=(none)
+H element-name dir=in ch=43 name=(none)
+H element-name dir=out ch=43 name=(none)
+H element-name dir=in ch=44 name=(none)
+H element-name dir=out ch=44 name=(none)
+H element-name dir=in ch=45 name=(none)
+H element-name dir=out ch=45 name=(none)
+H element-name dir=in ch=46 name=(none)
+H element-name dir=out ch=46 name=(none)
+H element-name dir=in ch=47 name=(none)
+H element-name dir=out ch=47 name=(none)
+H element-name dir=in ch=48 name=(none)
+H element-name dir=out ch=48 name=(none)
+H element-name dir=in ch=49 name=(none)
+H element-name dir=out ch=49 name=(none)
+H element-name dir=in ch=50 name=(none)
+H element-name dir=out ch=50 name=(none)
+H element-name dir=in ch=51 name=(none)
+H element-name dir=out ch=51 name=(none)
+H element-name dir=in ch=52 name=(none)
+H element-name dir=out ch=52 name=(none)
+H element-name dir=in ch=53 name=(none)
+H element-name dir=out ch=53 name=(none)
+H element-name dir=in ch=54 name=(none)
+H element-name dir=out ch=54 name=(none)
+H element-name dir=in ch=55 name=(none)
+H element-name dir=out ch=55 name=(none)
+H element-name dir=in ch=56 name=(none)
+H element-name dir=out ch=56 name=(none)
+H element-name dir=in ch=57 name=(none)
+H element-name dir=out ch=57 name=(none)
+H element-name dir=in ch=58 name=(none)
+H element-name dir=out ch=58 name=(none)
+H element-name dir=in ch=59 name=(none)
+H element-name dir=out ch=59 name=(none)
+H element-name dir=in ch=60 name=(none)
+H element-name dir=out ch=60 name=(none)
+H element-name dir=in ch=61 name=(none)
+H element-name dir=out ch=61 name=(none)
+H element-name dir=in ch=62 name=(none)
+H element-name dir=out ch=62 name=(none)
+H element-name dir=in ch=63 name=(none)
+H element-name dir=out ch=63 name=(none)
+H element-name dir=in ch=64 name=(none)
+H element-name dir=out ch=64 name=(none)
 H device-config-change-request
 CR32 0x00 0x220019c2
 CR16 0x04 0x0006
