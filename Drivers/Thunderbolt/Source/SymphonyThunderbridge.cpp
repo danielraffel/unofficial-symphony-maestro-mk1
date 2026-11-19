@@ -236,6 +236,10 @@ struct SymphonyThunderbridge_IVars {
     // lane's drain block serializes on the shared xlinkQueue (MSG_BYTE frames
     // never interleave; the invariant at the top of this struct holds per lane).
     uint32_t  numMicChannels;                       // 0 unless MicPre8 detected
+    // Physical A0..7, B0..7; host-only OFF receipts. These are volatile dext
+    // memory: an OFF made while Maestro is closed is lost if the dext restarts
+    // before the app reads it. That is the remaining fail-safe gap.
+    uint64_t halPhantomOff[16];
     SymphonyPhantomControl *phantomControl[8];      // per-channel phantom ('phan')
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
     uint8_t   pendingPhantom[2][8];   uint32_t pendingPhantomGen[2][8]; bool phantomTxScheduled[2][8];
@@ -5385,6 +5389,18 @@ kern_return_t SymphonyThunderbridge::ReadLinkState(uint32_t *outWords)
     return kIOReturnSuccess;
 }
 
+// Optional tail of the existing host-only link-state read.
+kern_return_t SymphonyThunderbridge::ReadPhantomObservations(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    for (uint32_t i = 0; i < 16; ++i) {
+        const uint64_t stamp = __atomic_load_n(&ivars->halPhantomOff[i], __ATOMIC_ACQUIRE);
+        outWords[i * 2] = static_cast<uint32_t>(stamp);
+        outWords[i * 2 + 1] = static_cast<uint32_t>(stamp >> 32);
+    }
+    return kIOReturnSuccess;
+}
+
 // ── ReadPort2State (EXPERIMENT, 64ch stage 1) ────────────────────────────────
 // What the last port-2 probe found (SymphonyPort2StateOutput). Reads ivars
 // only, like ReadLinkState, whose 16 words are left exactly as they were. In a
@@ -9504,6 +9520,13 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             result = kIOReturnIOError;
             return;
         }
+        // Maestro's own 0xC6 ON supersedes any older unread HAL OFF receipt on
+        // this same serialized XLink lane. Without this ordering, the next
+        // observation tick could erase the later explicit ON from saved state.
+        if (command == kSIOCmd_PhantomPower && payload && payloadLen == 1 &&
+            payload[0] != 0 && value < 8) {
+            __atomic_store_n(&ivars->halPhantomOff[port * 8 + value], 0, __ATOMIC_RELEASE);
+        }
         if (port == 1 && command == kSIOCmd_AnalogReferenceLevel && payload &&
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->unitBMicPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
@@ -10150,6 +10173,10 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
         STERR("RequestPhantom: TX shut down — not sending");
         return kIOReturnNotReady;
     }
+    // Keep the admitted physical target with the queued lane. The receipt is
+    // published only after that exact target accepts the OFF send below; an
+    // admission that is later refused must not look like an observed hardware
+    // OFF. ON has no receipt and cannot authorize a future automatic ON.
     __atomic_store_n(&ivars->pendingPhantom[port][ch], on ? 1 : 0, __ATOMIC_RELAXED);
     __atomic_store_n(&ivars->pendingPhantomHost[port][ch], (uint8_t)hostChannel, __ATOMIC_RELAXED);
     __atomic_store_n(&ivars->pendingPhantomTypeKnown[port][ch], admittedTypeKnown, __ATOMIC_RELAXED);
@@ -10179,10 +10206,19 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
                     (val == 0 || (routeUnchanged && pendingTypeKnown && MicPreIsMic(ivars, port, ch))) &&
                     (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // 1=on, 0=off
-                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                    const bool sent = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
                                       port ? kRegXLink2TX : kRegXLink1TX,
                                       port ? 1 : ivars->symphonyAddr, kSIOCmd_PhantomPower,
                                       ch, &pData, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
+                    if (sent && val == 0) {
+                        uint64_t previous = __atomic_load_n(&ivars->halPhantomOff[port * 8 + ch], __ATOMIC_ACQUIRE);
+                        uint64_t next;
+                        do {
+                            const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+                            next = now > previous ? now : previous + 1;
+                        } while (!__atomic_compare_exchange_n(&ivars->halPhantomOff[port * 8 + ch], &previous,
+                                                             next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+                    }
                 }
                 __atomic_store_n(&ivars->phantomTxScheduled[port][ch], false, __ATOMIC_RELEASE);
                 if (__atomic_load_n(&ivars->pendingPhantomGen[port][ch], __ATOMIC_ACQUIRE) == gen)

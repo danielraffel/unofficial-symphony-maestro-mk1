@@ -101,6 +101,7 @@ final class AppState {
     /// state update only: the front-panel path never writes the value back.
     var frontPanelMicPreUpdate: FrontPanelMicPreUpdate?
     private var frontPanelMicPreRevision = 0
+    var phantomObservationRevision = 0
     /// Session-only Identify latches, one per unit connection.
     let identifyA = IdentifyState()
     let identifyB = IdentifyState()
@@ -504,6 +505,7 @@ final class AppState {
                 // "Symphony disconnected" (2026-10-22 12:59).
                 guard !Task.isCancelled,
                       (self.device as? ThunderboltDeviceConnection) === tb else { break }
+                self.applyPhantomObservations(tb.lastLinkState)
                 let audioRunning = tb.isAudioRunning
                 let healthy = verdict.isLive
                 self.updateThunderboltPortLink(tb.lastLinkState?.state.portStatusLink ?? .other)
@@ -2516,6 +2518,17 @@ final class AppState {
         }
         let replay: DeviceSettingsReplay
         if let tb = device as? ThunderboltDeviceConnection {
+            if cardLayout.slot2 == .micPre8 {
+                let link = await Task.detached(priority: .utility) { tb.linkState() }.value
+                // The read suspends the main actor. Recheck every admission
+                // guard before applying a single-unit replay; a converter or
+                // two-unit transition must never inherit this target.
+                guard unitAIdentity != nil, connectedUnit == nil,
+                      connectionMode == .hardware, isHardwareInitialized,
+                      !usesTwoUnitReplay, converterSystem == nil,
+                      self.device === tb else { return }
+                applyPhantomObservations(link)
+            }
             replay = await tb.reapplyStoredSettings()
             // The monitor mode is shown outside the Output tab too; start from
             // the saved one rather than the built-in default.
