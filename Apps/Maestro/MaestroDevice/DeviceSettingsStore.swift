@@ -38,19 +38,25 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     /// Keyed by product ID for the same reason as the routing cache:
     /// ThunderBridge and each USB mode are different devices to the app and
     /// must not replay one another's settings.
-    public init(defaults: UserDefaults, productID: UInt16) {
+    public init(defaults: UserDefaults, productID: UInt16, unit: DeviceUnit = .a) {
         self.defaults = defaults
-        self.key = Self.defaultsKey(productID: productID)
-        self.values = Self.decode(defaults.data(forKey: Self.defaultsKey(productID: productID)))
+        self.key = Self.defaultsKey(productID: productID, unit: unit)
+        self.values = Self.decode(defaults.data(forKey: Self.defaultsKey(productID: productID, unit: unit)))
     }
 
     /// The store the app uses for a real device.
-    public static func persistent(for identifier: USBDeviceIdentifier) -> DeviceSettingsStore {
-        DeviceSettingsStore(defaults: .standard, productID: identifier.productID)
+    public static func persistent(for identifier: USBDeviceIdentifier, unit: DeviceUnit = .a) -> DeviceSettingsStore {
+        DeviceSettingsStore(defaults: .standard, productID: identifier.productID, unit: unit)
     }
 
     public static func defaultsKey(productID: UInt16) -> String {
         "deviceSettings_\(productID)_v1"
+    }
+
+    /// Unit B (the second Symphony I/O on ThunderBridge port 2) keeps its own
+    /// settings under its own key, so they never replace unit A's.
+    public static func defaultsKey(productID: UInt16, unit: DeviceUnit) -> String {
+        unit == .a ? defaultsKey(productID: productID) : "deviceSettings_\(productID)_unitB_v1"
     }
 
     public func value(for address: PropertyAddress) -> PropertyValue? {
