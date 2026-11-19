@@ -52,7 +52,8 @@ public enum SymphonyIdentityReader {
             }
         }
         let once = Once()
-        let work = Task { once.finish(await operation()) }
+        // A read that was cancelled reports unknown even if it returned a value.
+        let work = Task { let value = await operation(); once.finish(Task.isCancelled ? nil : value) }
         let timer = Task { try? await Task.sleep(for: limit); once.finish(nil) }
         let value = await withTaskCancellationHandler {
             await withCheckedContinuation { once.install($0) }
