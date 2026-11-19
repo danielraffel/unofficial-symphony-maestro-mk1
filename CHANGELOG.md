@@ -6,6 +6,8 @@
 
 ### Changes that may affect your setup
 
+- Symphony settings, input routes and channel labels now follow the identified physical unit when it moves between ports. Previously saved layout settings are preserved for their first identified owner; replacement units do not inherit them. Saved phantom power from an unverified migration cannot authorize preset recall.
+
 - **Instrument gain on an 8MicPre now reaches the preamp's Instrument stage, with its own 0-65 dB range.** Before, Maestro sent Instrument gain as Mic gain. Mic and Instrument gains are now remembered separately for each channel, as in Apogee's software, so switching a channel between Mic and Instrument brings back the gain you last used for that type.
 - **The connection in Device Info reads "Thunderbolt (Symphony 64 PCIe card)",** without the word "experimental".
 

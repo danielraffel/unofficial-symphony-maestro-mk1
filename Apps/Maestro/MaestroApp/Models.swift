@@ -102,6 +102,12 @@ final class PresetLibrary {
 ///   3. A hardware read, where one ever becomes possible, outranks both
 struct RoutingStateCache {
     let key: String
+    let multiKey: String
+
+    init(key: String, multiKey: String) {
+        self.key = key
+        self.multiKey = multiKey
+    }
 
     /// - Parameters:
     ///   - direction: "input" or "output" — stored separately for independent state.
@@ -109,6 +115,7 @@ struct RoutingStateCache {
     ///     (e.g. 0x0010 = Symphony IO MKI 16-ch, 0x0011 = 8-ch, 0x0012 = 32-ch).
     init(direction: String, productID: UInt16) {
         self.key = "routing_\(direction)_\(productID)_v2"
+        self.multiKey = self.key + "_multi"
         Self.discardPreV2(direction: direction, productID: productID)
     }
 
@@ -135,7 +142,7 @@ struct RoutingStateCache {
     func save(_ routes: [Int: Set<Int>]) {
         // Serialize as [String: [Int]] — each row maps to array of column indices
         let dict = Dictionary(uniqueKeysWithValues: routes.map { (String($0.key), Array($0.value.sorted())) })
-        UserDefaults.standard.set(dict, forKey: key + "_multi")
+        UserDefaults.standard.set(dict, forKey: multiKey)
     }
 
     /// Load the last persisted routing state (single-route, for input routing).
@@ -153,7 +160,7 @@ struct RoutingStateCache {
     /// Falls back to single-route cache and converts to Set if multi cache is empty.
     func loadMulti() -> [Int: Set<Int>]? {
         // Try multi-route cache first
-        if let raw = UserDefaults.standard.dictionary(forKey: key + "_multi") as? [String: [Int]],
+        if let raw = UserDefaults.standard.dictionary(forKey: multiKey) as? [String: [Int]],
            !raw.isEmpty {
             return Dictionary(uniqueKeysWithValues: raw.compactMap { k, v -> (Int, Set<Int>)? in
                 guard let i = Int(k) else { return nil }

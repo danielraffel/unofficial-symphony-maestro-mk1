@@ -14,7 +14,7 @@ extension AppState {
 
     @MainActor
     func replayUnitBSettings() async {
-        guard usesTwoUnitReplay, twoUnitReplayNeeded, !twoUnitReplayRunning,
+        guard unitAIdentity != nil, unitBIdentity != nil, usesTwoUnitReplay, twoUnitReplayNeeded, !twoUnitReplayRunning,
               !twoUnitSleeping, connectionMode == .hardware, isHardwareInitialized,
               let tb = device as? ThunderboltDeviceConnection,
               let b = unitBDevice as? ThunderboltUnitBConnection,
@@ -54,7 +54,7 @@ extension AppState {
                            layoutB: CardLayout) -> TwoUnitReplay {
         var plan = TwoUnitReplay()
         plan.unitBBoards = [layoutB.slot1.rawValue, layoutB.slot2.rawValue]
-        let cacheA = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+        let cacheA = peripheralRoutingCache(direction: "input")
         _ = ThunderboltInputRoutingMigration.run(routingKey: cacheA.key)
         for (unit, layout, cache) in [(DeviceUnit.a, cardLayout, Optional(cacheA)), (.b, layoutB, unitBInputRoutingCache)] {
             let writes = InputRoutingReplay.writes(saved: cache?.load() ?? [:],
@@ -68,7 +68,7 @@ extension AppState {
         for command in symphonyCardInputs.commands(edits: symphonyCardInputStore?.load() ?? [:]) {
             plan.card.append(.card(.cardInput(command)))
         }
-        let outputCache = RoutingStateCache(direction: "output", productID: tb.identifier.productID)
+        let outputCache = peripheralRoutingCache(direction: "output")
         Self.migrateMainPairToMixer(cache: outputCache, mixerRow: tb.identifier.mode.channelCount / 2,
                                    board1: primaryBoardType, board2: secondaryBoardType)
         // A saved grid is a complete assignment: an unowned column is

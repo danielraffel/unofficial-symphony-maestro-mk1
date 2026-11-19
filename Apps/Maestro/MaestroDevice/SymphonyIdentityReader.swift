@@ -34,9 +34,12 @@ public enum SymphonyIdentityReader {
     ) async -> UInt64? {
         guard attempts > 0 else { return nil }
         for attempt in 0..<attempts {
-            if let data = try? await operation(), let id = decode(data) { return id }
+            guard !Task.isCancelled else { return nil }
+            let data = try? await operation()
+            guard !Task.isCancelled else { return nil }
+            if let data, let id = decode(data) { return id }
             if attempt + 1 < attempts {
-                try? await Task.sleep(for: delay)
+                do { try await Task.sleep(for: delay) } catch { return nil }
             }
         }
         return nil

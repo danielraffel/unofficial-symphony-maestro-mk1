@@ -66,6 +66,11 @@ extension ThunderboltPreset {
             guard identity.count == 8, identity.contains(where: { $0 != 0 }), identity.contains(where: { $0 != 0xFF }) else {
                 throw RecallError.unsupported("the unit identity could not be read.")
             }
+            // Fresh hardware identity does not establish where seed strips
+            // came from. In particular, migration cannot authorize phantom ON.
+            if preset.metadata.inputChannelStates.contains(where: { $0.phantom }), seed.unitID != identity {
+                throw RecallError.unsupported("saved phantom state has no verified same-unit provenance.")
+            }
             preset.unitID = identity
         }
         _ = try preset.writes(layout: layout, currentUnitID: preset.unitID, hostChannels: hostChannels, peripheralB: peripheralB)

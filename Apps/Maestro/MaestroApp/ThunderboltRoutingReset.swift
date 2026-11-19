@@ -19,8 +19,8 @@ extension AppState {
         // Older serving drivers still reset the peripheral input tables.
         let cardWrites = input && symphonyCardInputs.channelCount == 0 ? []
             : ThunderboltPreset.cardReset(input: input, layouts: [aLayout, bLayout])
-        let aInputCache = RoutingStateCache(direction: "input", productID: a.identifier.productID)
-        let aOutputCache = RoutingStateCache(direction: "output", productID: a.identifier.productID)
+        let aInputCache = peripheralRoutingCache(direction: "input")
+        let aOutputCache = peripheralRoutingCache(direction: "output")
         let bInputCache = unitBInputRoutingCache, bOutputCache = unitBOutputRoutingCache
         let planned = try await Task.detached {
             try a.withPresetLock {

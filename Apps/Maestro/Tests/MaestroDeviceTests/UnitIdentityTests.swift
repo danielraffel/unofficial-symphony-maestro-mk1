@@ -146,4 +146,157 @@ struct UnitIdentityTests {
         #expect(store.value(for: address) == .string("new"))
         #expect(defaults.data(forKey: migrated) != nil)
     }
+    @Test func claimedUnmaterializedHistoryMigrates() {
+        let suite = "identity.claimed.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let layout = CardLayout(slot1: .analogAD16)
+        let base = ChannelStateStore.inputKey
+        let payload = Data("claimed".utf8)
+        defaults.set(payload, forKey: base)
+        defaults.set(layout.savedStateScope!, forKey: ChannelStateStore.claimKey(base))
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        let loaded = store.loadData(base)
+        #expect(loaded == payload)
+        #expect(defaults.data(forKey: base) == payload)
+        let replacement = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 43)
+        let other = replacement.loadData(base)
+        #expect(other == nil)
+    }
+
+    @Test func physicalUnitMovesBetweenPorts() {
+        let suite = "identity.move.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let layout = CardLayout(slot1: .analogAD16)
+        let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        let b = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, unit: .b, identity: 42)
+        let payload = Data("physical".utf8)
+        a.saveData(payload, for: ChannelStateStore.inputKey)
+        let moved = b.loadData(ChannelStateStore.inputKey)
+        #expect(moved == payload)
+        let address = PropertyAddress(selector: .prefix)
+        let settingsA = DeviceSettingsStore(defaults: defaults, productID: 18, identity: 42)
+        settingsA.record(.string("Mine"), for: address)
+        let settingsB = DeviceSettingsStore(defaults: defaults, productID: 18, unit: .b, identity: 42)
+        #expect(settingsB.value(for: address) == .string("Mine"))
+    }
+
+    @Test func converterRejectsStaleIdentityAndLegacy() {
+        let suite = "identity.converter.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let layout = CardLayout(isKnown: false, converter: ConnectedUnit(probeWord: 0x8000_0000)!)
+        defaults.set(Data("symphony".utf8), forKey: ChannelStateStore.inputKey)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        let loaded = store.loadData(ChannelStateStore.inputKey)
+        #expect(loaded == nil)
+        #expect(store.identity == nil)
+        #expect(defaults.string(forKey: ChannelStateStore.claimKey(ChannelStateStore.inputKey)) == nil)
+    }
+
+    @Test func cancelledReaderNeverRetriesOrAcceptsLateUID() async {
+        let task = Task {
+            await SymphonyIdentityReader.read(attempts: 3, delay: .zero) {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return Data([0, 0, 0, 0, 0, 0, 0, 42])
+            }
+        }
+        let result = await task.value
+        #expect(result == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func historicalFixturesKeepUnknownPhantomProvenance(materialized: Bool) throws {
+        let suite = "identity.history.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let layout = CardLayout(slot1: .analogADDA16, slot2: .micPre8)
+        let base = ChannelStateStore.inputKey
+        let legacyScope = layout.savedStateScope!
+        var inputs = Array(repeating: InputChannelState(), count: layout.analogInputStripCount)
+        inputs[0] = InputChannelState(phantom: true, inputType: AnalogInputLevel.mic.rawValue)
+        let payload = try JSONEncoder().encode(inputs)
+        let source = materialized ? "\(base).\(legacyScope)" : base
+        defaults.set(payload, forKey: source)
+        if !materialized { defaults.set(legacyScope, forKey: ChannelStateStore.claimKey(base)) }
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        let loaded: [InputChannelState]? = store.load(base)
+        #expect(loaded == inputs)
+        #expect(!store.hasVerifiedInputIdentity)
+        store.save(inputs, for: base)
+        #expect(!store.hasVerifiedInputIdentity)
+        #expect(defaults.data(forKey: source) == payload)
+        #expect(defaults.string(forKey: "\(base).\(legacyScope).migratedTo") == store.scope)
+        // Simulate interruption after the receipt but before the destination
+        // copy. The committed receipt owns the intact snapshot.
+        defaults.removeObject(forKey: store.key(base))
+        let recovered = store.loadData(base)
+        #expect(recovered == payload)
+        let replacement = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 43)
+        let replaced = replacement.loadData(base)
+        #expect(replaced == nil)
+    }
+
+    @Test func categoriesShareOwnershipAndPhysicalKeys() {
+        let suite = "identity.categories.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = UnitStateMigration.claim(defaults: defaults, scope: "cards", identity: 42)
+        let second = UnitStateMigration.claim(defaults: defaults, scope: "cards", identity: 43)
+        #expect(first)
+        #expect(!second)
+        for category in ["labels", "digital", "inputRouting"] {
+            let legacy = "old." + category
+            defaults.set("Mine", forKey: legacy)
+            let keyA = UnitStateMigration.key(defaults: defaults, legacy: legacy, identity: 42,
+                                             category: category, allowMigration: first)
+            let keyB = UnitStateMigration.key(defaults: defaults, legacy: "other-port." + category,
+                                             identity: 42, category: category, allowMigration: false)
+            let other = UnitStateMigration.key(defaults: defaults, legacy: legacy, identity: 43,
+                                              category: category, allowMigration: second)
+            #expect(keyA == keyB)
+            #expect(defaults.string(forKey: keyB) == "Mine")
+            #expect(defaults.object(forKey: other) == nil)
+            #expect(defaults.string(forKey: legacy) == "Mine")
+        }
+    }
+
+    @Test func captureCannotBlessMigratedPhantomButVerifiedSeedWorks() throws {
+        let suite = "identity.capture.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let layout = CardLayout(slot1: .analogADDA16, slot2: .micPre8)
+        var metadata = MaestroPreset()
+        metadata.inputChannelStates = Array(repeating: InputChannelState(), count: layout.analogInputStripCount)
+        metadata.inputChannelStates[0] = InputChannelState(phantom: true, inputType: AnalogInputLevel.mic.rawValue)
+        metadata.outputChannelStates = Array(repeating: OutputChannelState(), count: layout.analogOutputStripCount)
+        var seed = ThunderboltPreset(layout: layout, metadata: metadata)
+        seed.outputRoutes = Array(0..<32)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        seed.mixers = (0..<2).map {
+            .init(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: $0, store: store, defaults: defaults))
+        }
+        let identity = Data([0, 0, 0, 0, 0, 0, 0, 42])
+        func capture(_ value: ThunderboltPreset) throws -> ThunderboltPreset {
+            try ThunderboltPreset.capture(value, layout: layout, hostChannels: 32, readProperty: { address in
+                if address.selector == .speakerOutputMode { return .uint32(9) }
+                if address.selector == .clockSource { return .uint32(1) }
+                if address.selector == .routing { return .uint32(32) }
+                if address.selector == .spdifMirrorID { return .uint32(1) }
+                return .uint32(0)
+            }, readRaw: { command, _, _ in command == 0xC0 ? identity : Data([0]) })
+        }
+        var rejected = false
+        do { _ = try capture(seed) } catch { rejected = true }
+        #expect(rejected)
+        store.save(metadata.inputChannelStates, for: ChannelStateStore.inputKey)
+        #expect(store.hasVerifiedInputIdentity)
+        seed.unitID = identity
+        let captured = try capture(seed)
+        #expect(captured.unitID == identity)
+        let writes = try captured.writes(layout: layout, currentUnitID: identity, hostChannels: 32)
+        #expect(!writes.isEmpty)
+    }
+
 }
