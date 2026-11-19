@@ -2890,6 +2890,58 @@ int main(int argc, char **argv)
         auto *drv = r.drv;
         auto &a = r.card.port[0].stored;
         CHECK(drv->RequestMicGain(2, 40.0f) == kIOReturnNotReady, "unknown input type must not guess a gain stage");
+        auto *control = gHostAudio.micGains.at(1);
+        CHECK(control->range_.mMaximum == 85, "fixed SDK range must allow a later Mic 85");
+        control->HandleChangeDecibelValue(80);
+        HostPump();
+        CHECK(control->GetDecibelValue() == 65, "HAL Instrument value is clamped and published");
+        uint8_t halType[2] = {3, 127};
+        drv->SendVendorCommand(0x20, 0x80000001u, halType, 2);
+        control->HandleChangeDecibelValue(80);
+        HostPump();
+        CHECK(control->GetDecibelValue() == 80, "HAL Mic accepts 80");
+        halType[0] = 4;
+        const auto publications = control->valuePublications;
+        drv->SendVendorCommand(0x20, 0x80000001u, halType, 2);
+        CHECK(control->GetDecibelValue() == 65 && control->valuePublications > publications,
+              "type switch restores Instrument value through notifying setter");
+        uint8_t appGain = 20;
+        drv->SendVendorCommand(0xC4, 1, &appGain, 1);
+        CHECK(control->GetDecibelValue() == 20, "app Instrument gain publishes HAL value");
+        appGain = 80;
+        drv->SendVendorCommand(0xC3, 1, &appGain, 1);
+        CHECK(control->GetDecibelValue() == 20, "inactive Mic stage does not move Instrument HAL value");
+        halType[0] = 3;
+        drv->SendVendorCommand(0x20, 0x80000001u, halType, 2);
+        CHECK(control->GetDecibelValue() == 80, "type switch restores independent Mic gain");
+        halType[0] = 4;
+        drv->SendVendorCommand(0x20, 0x80000001u, halType, 2);
+        CHECK(control->GetDecibelValue() == 20, "Mic-Instrument-Mic round trip preserves both stages");
+        CHECK(gHostAudio.micGains.at(2)->HandleChangeDecibelValue(40) == kIOReturnNotReady,
+              "HAL unknown type reports refusal");
+        CHECK(gHostAudio.micGains.at(2)->GetDecibelValue() == 0, "refused gain does not change HAL value");
+        const auto beforeFailure = control->valuePublications;
+        r.card.port[0].txBusy = true;
+        halType[0] = 3;
+        CHECK(drv->SendVendorCommand(0x20, 0x80000001u, halType, 2) == kIOReturnIOError,
+              "failed type write reports failure");
+        appGain = 40;
+        CHECK(drv->SendVendorCommand(0xC4, 1, &appGain, 1) == kIOReturnIOError,
+              "failed app gain write reports failure");
+        control->HandleChangeDecibelValue(50);
+        HostPump();
+        CHECK(control->GetDecibelValue() == 20 && control->valuePublications == beforeFailure,
+              "failed type and gain writes do not publish unaccepted state");
+        r.card.port[0].txBusy = false;
+        control->HandleChangeDecibelValue(85);
+        HostPump();
+        CHECK(control->GetDecibelValue() == 65 &&
+              a[(uint64_t(0xC4) << 32) | 1] == std::vector<uint8_t>({65}),
+              "HAL Instrument request above 65 dB is clamped, sent and published");
+        CHECK(control->HandleChangeDecibelValue(__builtin_nanf("")) == kIOReturnBadArgument,
+              "HAL rejects NaN");
+        CHECK(control->GetDecibelValue() == 65, "NaN does not corrupt HAL value");
+        a.erase((uint64_t(0xC3) << 32) | 1);
         const uint64_t mic = (uint64_t(0xC3) << 32) | 1;
         const uint64_t inst = (uint64_t(0xC4) << 32) | 1;
         drv->RequestMicGain(1, 40.0f);
@@ -2922,8 +2974,10 @@ int main(int argc, char **argv)
         Select(r, 1, "gain checks at 64");
         CHECK(drv->SendVendorCommand(0xC4, 1, &gain, 1, 1) == kIOReturnSuccess, "unit B Instrument gain");
         CHECK(r.card.port[1].stored[inst] == std::vector<uint8_t>({42}), "C4 reaches unit B");
+        CHECK(control->GetDecibelValue() == 0, "unit B gain does not move unit A HAL control");
         type[0] = 3;
         drv->SendVendorCommand(0x20, 0x80000001u, type, 2, 1);
+        CHECK(control->GetDecibelValue() == 0, "unit B type does not move unit A HAL control");
         drv->RequestMicGain(1, 50.0f);
         HostPump();
         CHECK(a[inst] == std::vector<uint8_t>({50}), "unit B type must not change unit A gain stage");

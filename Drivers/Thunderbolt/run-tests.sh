@@ -141,6 +141,9 @@ build_and_run() {
     if grep -q 'CardMixerUnitBActive' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_UNITB_MIXER)
     fi
+    if grep -q 'SymphonyMicGainControl::HandleChangeScalarValue' "$src/SymphonyMicGainControl.cpp"; then
+        defs+=(-DTRACE_HAVE_MIC_GAIN_SCALAR)
+    fi
     # Retire for upgrade (selector 7, release driver 123). It refuses an
     # unstamped build, so the harness stamps one; nothing else reads it.
     # The Symphony 64 PCIe card's own receive order. The check that
@@ -171,6 +174,7 @@ build_and_run() {
         ${defs[@]+"${defs[@]}"} \
         -I "$TEST_DIR/shim" -I "$src" \
         "$TEST_DIR/RegisterTrace.cpp" "$src/SymphonyThunderbridge.cpp" \
+        "$src/SymphonyMicGainControl.cpp" \
         -o "$out/register-trace"
     # A failed check inside the harness is reported with the trace comparisons
     # below rather than instead of them.

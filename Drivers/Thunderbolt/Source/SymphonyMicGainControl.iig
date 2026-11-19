@@ -2,13 +2,9 @@
 //
 // One instance per mic-preamp channel (of an installed MicPre8 option board),
 // on the Input scope, with a 0..85 dB range (kSymphonyIOMicPre8_MicGain*).
-// coreaudiod delivers the user's fader move to HandleChangeDecibelValue on the
-// control's own work queue; we persist it (so the fader sticks) and PUSH the
-// channel + dB to the driver, which coalesces and async-sends MicGain (0xC3) on
-// the serial XLink queue. Because we OVERRIDE (not extend)
-// HandleChangeDecibelValue, the base default (which would call SetDecibelValue)
-// never runs, so we must persist it ourselves — same discipline as the clock
-// and phantom controls.
+// The range is fixed at init by AudioDriverKit. The driver clamps Instrument
+// requests to 65 dB and publishes the accepted stage value with a host
+// notification; HAL's advertised range/scalar conversion remains 0..85.
 
 #ifndef SymphonyMicGainControl_h
 #define SymphonyMicGainControl_h
@@ -36,8 +32,8 @@ public:
     virtual void free() override;
 
     // PUSH entry point — coreaudiod's fader move lands here on the control's own
-    // work queue (neither the IRQ nor the XLink queue). We persist it and hand
-    // the (channel, dB) to the driver, which coalesces + async-sends MicGain.
+    // work queue (neither the IRQ nor the XLink queue). The driver sends and
+    // publishes the accepted value on the XLink queue.
     virtual kern_return_t HandleChangeDecibelValue(float in_decibel_value) override;
 
     // Back-pointer setter, mirrors SymphonyClockSelectorControl::SetDriver.
