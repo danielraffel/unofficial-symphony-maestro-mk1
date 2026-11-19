@@ -230,6 +230,8 @@ struct SymphonyThunderbridge_IVars {
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
     uint8_t   pendingPhantom[8];      uint32_t pendingPhantomGen[8];  bool phantomTxScheduled[8];
     uint8_t   pendingMicGain[2][8];   uint32_t pendingMicGainGen[2][8]; bool micGainTxScheduled[2][8];
+    uint8_t   micPreGain[2][8];       // successfully sent gains, owned by xlinkQueue
+    bool      micPreGainKnown[2][8];
     bool      micPreInstrument[8];    // atomic type for unit A's HAL controls
     bool      micPreTypeKnown[8];     // a failed read must not guess Mic
     // Separate pending lanes bind each value to its stage across a type switch.
@@ -7196,8 +7198,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                 __atomic_store_n(&ivars->micPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
                 __atomic_store_n(&ivars->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
             }
-            // The existing HAL control stays 0..85; its push lane clamps an
-            // Instrument write to 65. App knobs use the stage-specific range.
+            // AudioDriverKit has no public range setter after init. Keep the
+            // full Mic range; PublishMicGain clamps + notifies for Instrument.
             SymphonyMicGainControl* g = OSTypeAlloc(SymphonyMicGainControl);   // +1
             IOUserAudioLevelControlRange gainRange = { kMicGainMinDb, kMicGainMaxDb };
             if (g && g->init(this, /*settable*/true, /*init*/kMicGainMinDb, gainRange,
@@ -8936,6 +8938,28 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars)
 // Public wrapper around the static SendVendorRequest() for vendor commands.
 // Called by SymphonyUserClient::ExternalMethod.
 
+// AudioDriverKit's public IOUserAudioLevelControl API (SDK 25.2) fixes the
+// range at init; there is no range setter. Keep 0..85 so a channel initially
+// in Instrument mode can later reach Mic 85. Clamp the value to its active
+// stage and use SetDecibelValue, whose successful changes notify the host.
+// This cannot change HAL's advertised range/scalar conversion after a switch.
+// Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:797-828.
+// Called only on xlinkQueue; publishing must not send another hardware write.
+static void PublishMicGain(SymphonyThunderbridge_IVars *iv, uint32_t ch)
+{
+    if (ch >= iv->numMicChannels || !iv->micGainControl[ch] ||
+        !__atomic_load_n(&iv->micPreTypeKnown[ch], __ATOMIC_ACQUIRE)) return;
+    const bool instrument = __atomic_load_n(&iv->micPreInstrument[ch], __ATOMIC_ACQUIRE);
+    const uint32_t lane = instrument ? 1 : 0;
+    float gain = iv->micPreGainKnown[lane][ch] ? iv->micPreGain[lane][ch]
+                                             : iv->micGainControl[ch]->GetDecibelValue();
+    const float maximum = instrument ? 65.0f : kMicGainMaxDb;
+    if (gain > maximum) gain = maximum;
+    if (gain < kMicGainMinDb) gain = kMicGainMinDb;
+    kern_return_t ret = iv->micGainControl[ch]->SetDecibelValue(gain);
+    if (ret != kIOReturnSuccess) STERR("PublishMicGain: ch=%u failed 0x%x", ch, ret);
+}
+
 kern_return_t SymphonyThunderbridge::SendVendorCommand(
     uint8_t         command,
     uint32_t        value,
@@ -9205,6 +9229,15 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->micPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
+            PublishMicGain(ivars, value & 7u);
+        }
+        if (port == 0 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
+            value < ivars->numMicChannels && payload && payloadLen == 1) {
+            const uint32_t lane = command == kSIOCmd_InstrumentGain ? 1 : 0;
+            ivars->micPreGain[lane][value] = payload[0];
+            ivars->micPreGainKnown[lane][value] = true;
+            if (lane == (__atomic_load_n(&ivars->micPreInstrument[value], __ATOMIC_ACQUIRE) ? 1u : 0u))
+                PublishMicGain(ivars, value);
         }
         // Host input names follow the capture routes and S/PDIF Coax Replaces.
         // dext 131: all of this is unit A's state; a command to unit B (port
@@ -9781,10 +9814,15 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
                 uint8_t  val = __atomic_load_n(&ivars->pendingMicGain[lane][ch], __ATOMIC_RELAXED);
                 if (XLinkTxAdmissible(ivars)) {
                     uint8_t pData = val;   // gain 0..85
-                    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                      ivars->symphonyAddr, command,
-                                      ch /*nValue = 0-based channel*/,
-                                      &pData, 1, ivars->runtimeTxSeq);
+                    if (SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                          ivars->symphonyAddr, command,
+                                          ch /*nValue = 0-based channel*/,
+                                          &pData, 1, ivars->runtimeTxSeq)) {
+                        ivars->micPreGain[lane][ch] = val;
+                        ivars->micPreGainKnown[lane][ch] = true;
+                        if (lane == (__atomic_load_n(&ivars->micPreInstrument[ch], __ATOMIC_ACQUIRE) ? 1u : 0u))
+                            PublishMicGain(ivars, ch);
+                    }
                 }
                 __atomic_store_n(&ivars->micGainTxScheduled[lane][ch], false, __ATOMIC_RELEASE);
                 if (__atomic_load_n(&ivars->pendingMicGainGen[lane][ch], __ATOMIC_ACQUIRE) == gen)

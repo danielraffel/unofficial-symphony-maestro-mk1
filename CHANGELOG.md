@@ -15,6 +15,8 @@
 
 ### Fixes
 
+- **Core Audio input gain now follows the selected Mic or Instrument gain on an 8MicPre.** Instrument values are limited to 65 dB; macOS still shows the fixed 0–85 dB slider range because AudioDriverKit cannot change it after creation.
+
 - **Identify remembers each unit’s lights when you leave Output Routing.** A failed write keeps the button unchanged, and Maestro turns the lights off when disconnecting or quitting if the unit is still reachable.
 
 - **Turning the Symphony's knob on an 8MicPre Mic or Instrument channel now moves that channel's gain in Maestro too,** as Apogee's software did.

@@ -401,6 +401,7 @@ struct HostAudioRegistry {
     IOUserAudioDevice *device = nullptr;
     IOUserAudioLevelControl *volume = nullptr;
     IOUserAudioBooleanControl *mute = nullptr;
+    std::vector<IOUserAudioLevelControl *> micGains;
     // Two-port experiment (none of these produce trace lines):
     IOUserAudioStream *inStream = nullptr, *outStream = nullptr;
     std::vector<IOUserAudioSelectorControl *> portSources;   // input, output
@@ -424,13 +425,19 @@ public:
         return OSSharedPtr<IOUserAudioLevelControl>(o, OSNoRetain);
     }
     using OSObject::init;
-    virtual bool init(IOUserAudioDriver *, bool, float db, IOUserAudioLevelControlRange,
+    virtual bool init(IOUserAudioDriver *, bool, float db, IOUserAudioLevelControlRange range,
                       IOUserAudioObjectPropertyElement, IOUserAudioObjectPropertyScope, IOUserAudioClassID) {
         db_ = db;
+        range_ = range;
         return true;
     }
     float GetDecibelValue() const { return db_; }
-    kern_return_t SetDecibelValue(float db) { db_ = db; return kIOReturnSuccess; }
+    kern_return_t SetDecibelValue(float db) { db_ = db; ++valuePublications; return kIOReturnSuccess; }
+    virtual kern_return_t HandleChangeDecibelValue(float db) { return SetDecibelValue(db); }
+    virtual kern_return_t HandleChangeScalarValue(float scalar) { return SetDecibelValue(_GetDecibelFromScalarValue(scalar)); }
+    float _GetDecibelFromScalarValue(float scalar) { return range_.mMinimum + scalar * (range_.mMaximum - range_.mMinimum); }
+    uint32_t valuePublications = 0;
+    IOUserAudioLevelControlRange range_{};
 private:
     float db_ = 0;
 };
@@ -664,8 +671,19 @@ public:
     void SetDriver(SymphonyThunderbridge *) {}
     void SetChannel(uint32_t) {}
 };
+struct SymphonyMicGainControl_IVars;
 class SymphonyMicGainControl : public IOUserAudioLevelControl {
+    using super = IOUserAudioLevelControl;
+    SymphonyMicGainControl_IVars *ivars = nullptr;
 public:
-    void SetDriver(SymphonyThunderbridge *) {}
-    void SetChannel(uint32_t) {}
+    SymphonyMicGainControl() { gHostAudio.micGains.push_back(this); }
+    bool init(IOUserAudioDriver *, bool, float, IOUserAudioLevelControlRange,
+              IOUserAudioObjectPropertyElement, IOUserAudioObjectPropertyScope, IOUserAudioClassID) override;
+    void free() override;
+    kern_return_t HandleChangeDecibelValue(float) override;
+#ifdef TRACE_HAVE_MIC_GAIN_SCALAR
+    kern_return_t HandleChangeScalarValue(float) override;
+#endif
+    void SetDriver(SymphonyThunderbridge *);
+    void SetChannel(uint32_t);
 };
