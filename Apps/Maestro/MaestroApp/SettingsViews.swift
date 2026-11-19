@@ -324,13 +324,13 @@ struct DeviceSettingsView: View {
                     DiagnosticsSettingsRow()
                         .unredacted()
                 }
-                HStack(spacing: 12) {
-                    Link("Report a Bug ↗", destination: FeedbackLinks.reportBug)
-                        .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
-                    Link("Discuss on Gearspace ↗", destination: FeedbackLinks.discussion)
-                        .maestroHelp("Open the Symphony I/O thread on Gearspace in your browser to ask questions and share tips.")
-                }
-                .unredacted()
+                // One row each, so the form draws a separator between them.
+                Link("Report a Bug ↗", destination: FeedbackLinks.reportBug)
+                    .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
+                    .unredacted()
+                Link("Discuss on Gearspace ↗", destination: FeedbackLinks.discussion)
+                    .maestroHelp("Open the Symphony I/O thread on Gearspace in your browser to ask questions and share tips.")
+                    .unredacted()
                 Text("This is a community project. Please don't contact Apogee for support with it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
