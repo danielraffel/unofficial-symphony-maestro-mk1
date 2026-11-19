@@ -125,17 +125,21 @@ extension AppState {
                     try b.withPresetLock {
                         let bWrites = try b.presetWrites(saved, layout: bLayout, cardInputSupported: cardInputSupported,
                                                          onSkipped: recallWarnings.add)
-                        do { try connection.applyPresetWrites(aWrites, layout: layout) }
+                        do { try connection.applyPresetWrites(aWrites, layout: layout,
+                                                               recoveryCount: admissionFence.0) }
                         catch {
                             // Card routing may already have changed B's feed.
                             // Finish both units even when A's recall failed.
-                            try? b.applyPresetWrites([], layout: bLayout) { try connection.writePresetMixer($0, value: $1) }
+                            try? b.applyPresetWrites([], layout: bLayout, cardWrite: { try connection.writePresetMixer($0, value: $1) },
+                                                      unitBGeneration: admissionFence.1)
                             throw error
                         }
-                        try b.applyPresetWrites(bWrites, layout: bLayout) { try connection.writePresetMixer($0, value: $1) }
+                        try b.applyPresetWrites(bWrites, layout: bLayout,
+                                                cardWrite: { try connection.writePresetMixer($0, value: $1) },
+                                                unitBGeneration: admissionFence.1)
                     }
                 } else {
-                    try connection.applyPresetWrites(aWrites, layout: layout)
+                    try connection.applyPresetWrites(aWrites, layout: layout, recoveryCount: admissionFence.0)
                 }
             }
         }.value
@@ -147,6 +151,16 @@ extension AppState {
         guard admissionFence.0 == completionFence.0,
               !recallB || admissionFence.1 == completionFence.1 else {
             throw ThunderboltPreset.RecallError.failed("the link or unit-B generation changed; recall was only partially applied")
+        }
+        // The persistence commit is part of the same ordered transaction: do
+        // not let a recovery or B replacement make the stores newer than the
+        // hardware that was actually recalled.
+        let commitFence = await Task.detached(priority: .utility) {
+            (connection.linkState()?.recoveryCount, connection.readUnitBState()?.generation)
+        }.value
+        guard admissionFence.0 == commitFence.0,
+              !recallB || admissionFence.1 == commitFence.1 else {
+            throw ThunderboltPreset.RecallError.failed("the link or unit-B generation changed before persistence")
         }
         if recallB, let saved = preset.unitB, let bLayout, unitBDevice === b {
             if !saved.metadata.channelNames.isEmpty {

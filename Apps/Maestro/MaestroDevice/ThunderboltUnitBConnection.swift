@@ -123,13 +123,14 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     /// A captured B connection never retargets to A. Validate the live topology
     /// and both detected boards before capture/recall and before every send.
-    public func checkPresetLayout(_ layout: CardLayout) throws {
+    public func checkPresetLayout(_ layout: CardLayout, unitBGeneration: UInt32? = nil) throws {
         let live = state()
         guard isConnected, live?.present == true, live?.info?.setupComplete == true,
               infoRouting().allows(.preferenceLock, at: .peripheral(.init(port: .two)!)),
               layout.isKnown, layout.converter == nil, layout.converterLayout == nil,
               live?.info?.slotValid == [true, true],
-              live?.info?.slot1 == layout.slot1, live?.info?.slot2 == layout.slot2 else {
+              live?.info?.slot1 == layout.slot1, live?.info?.slot2 == layout.slot2,
+              unitBGeneration.map({ live?.generation == $0 }) ?? true else {
             throw ThunderboltPreset.RecallError.unsupported("unit B's live card layout could not be verified.")
         }
     }
@@ -176,11 +177,12 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     }
 
     public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout,
-                                  cardWrite: (PropertyAddress, PropertyValue) throws -> Void) throws {
+                                  cardWrite: (PropertyAddress, PropertyValue) throws -> Void,
+                                  unitBGeneration: UInt32? = nil) throws {
         try sequenceLock.withLock {
-            try checkPresetLayout(layout)
+            try checkPresetLayout(layout, unitBGeneration: unitBGeneration)
             try ThunderboltPreset.recall(writes, send: { write in
-                try self.checkPresetLayout(layout)
+                try self.checkPresetLayout(layout, unitBGeneration: unitBGeneration)
                 switch write {
                 case .property(let address, let value):
                     if [.mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo].contains(address.selector) {
@@ -197,6 +199,8 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
                     throw DeviceConnectionError.transportError("Card routing is not a unit B vendor command")
                 }
             }, unlock: {
+                // Always run the original unlock/read-back for the captured
+                // connection, even after a generation fence aborts writes.
                 try self.checkPresetLayout(layout)
                 try self.transport.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]), port: Self.port)
                 return try self.presetRead(0xDD, 0, 1, layout: layout) == Data([0])

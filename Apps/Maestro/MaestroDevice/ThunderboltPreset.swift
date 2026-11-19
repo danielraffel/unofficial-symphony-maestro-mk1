@@ -11,6 +11,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public var metadata: MaestroPreset
     public var globals: [UInt32: UInt32] = [:]
     public var inputRoutes: [UInt8] = []
+    /// Per-route read validity for partial captures; absent/false routes are omitted on recall.
+    public var inputRouteMask: [Bool]?
     /// Optional for older B4a bundles: absence leaves card inputs alone.
     public var cardInputRoutes: [Int]?
     public var outputRoutes: [UInt8] = []
@@ -26,6 +28,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         public var metadata: MaestroPreset
         public var globals: [UInt32: UInt32]
         public var inputRoutes: [UInt8]
+        public var inputRouteMask: [Bool]?
         public var frontPanelSelection: UInt8?
         public var unitID: Data?
         public var mixers: [Mixer]
@@ -33,13 +36,13 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
 
         public init(_ preset: ThunderboltPreset) {
             boards = preset.boards; metadata = preset.metadata; globals = preset.globals
-            inputRoutes = preset.inputRoutes; frontPanelSelection = preset.frontPanelSelection
+            inputRoutes = preset.inputRoutes; inputRouteMask = preset.inputRouteMask; frontPanelSelection = preset.frontPanelSelection
             unitID = preset.unitID; mixers = preset.mixers; routingMode = preset.routingMode
         }
 
         public func preset(layout: CardLayout) -> ThunderboltPreset {
             var value = ThunderboltPreset(layout: layout, metadata: metadata)
-            value.boards = boards; value.globals = globals; value.inputRoutes = inputRoutes
+            value.boards = boards; value.globals = globals; value.inputRoutes = inputRoutes; value.inputRouteMask = inputRouteMask
             value.frontPanelSelection = frontPanelSelection; value.unitID = unitID
             value.mixers = mixers; value.routingMode = routingMode
             value.outputRoutes = Array(0..<32)
@@ -219,6 +222,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             onSkipped?("card input routing not restored: serving driver does not support it")
         }
         for (index, source) in inputRoutes.enumerated() {
+            if let mask = inputRouteMask, (index >= mask.count || !mask[index]) { continue }
             try require((32...63).contains(source) || source == SymphonyIORoutingAddress.none,
                         "unsupported input route.")
             put(.routing, .uint32(UInt32(source)), scope: .input,

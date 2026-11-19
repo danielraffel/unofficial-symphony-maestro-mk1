@@ -177,3 +177,30 @@ struct UnitBAppTests {
         #expect(mixer.contains("let held = TwoUnitMixer.isHeld("))
     }
 }
+
+@Suite("Recall epochs")
+struct RecallEpochTests {
+    @Test("A recall invalidates plans admitted before it, even when it is already finished")
+    func shortRecallInvalidatesEarlierPlan() {
+        let state = ReplayDeferral()
+        let admitted = state.currentEpoch()
+        #expect(state.isValid(admitted))
+        state.beginRecall()
+        let duringRecall = state.isValid(admitted)
+        #expect(!duringRecall)
+        _ = state.finishRecall()
+        let afterRecall = state.isValid(admitted)
+        #expect(!afterRecall)
+        let fresh = state.currentEpoch()
+        #expect(state.isValid(fresh))
+    }
+
+    @Test("A plan admitted during a recall is never valid")
+    func admittedDuringRecall() {
+        let state = ReplayDeferral()
+        state.beginRecall()
+        let admitted = state.currentEpoch()
+        let valid = state.isValid(admitted)
+        #expect(!valid)
+    }
+}

@@ -6,8 +6,9 @@ final class ReplayDeferral: @unchecked Sendable {
     private let lock = NSLock()
     private var recallInFlight = false
     private var requestedDuringRecall = false
+    private var epoch: UInt64 = 0
 
-    func beginRecall() { lock.lock(); defer { lock.unlock() }; recallInFlight = true }
+    func beginRecall() { lock.lock(); defer { lock.unlock() }; epoch &+= 1; recallInFlight = true }
     func request() {
         lock.lock(); defer { lock.unlock() }
         if recallInFlight { requestedDuringRecall = true }
@@ -18,6 +19,11 @@ final class ReplayDeferral: @unchecked Sendable {
         let requested = requestedDuringRecall
         requestedDuringRecall = false
         return requested
+    }
+    func currentEpoch() -> UInt64 { lock.lock(); defer { lock.unlock() }; return epoch }
+    func isValid(_ captured: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return epoch == captured && !recallInFlight
     }
     func isInFlight() -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -63,12 +69,13 @@ extension AppState {
         guard device === tb, unitBDevice === b, let link, let bGeneration else { return }
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
         let replayDeferral = self.replayDeferral
+        let recallEpoch = replayDeferral.currentEpoch()
         twoUnitReplayNeeded = false
         do {
             try await Task.detached(priority: .utility) {
                 try tb.replayTwoUnits(plan, unitB: b, recoveryCount: link.recoveryCount,
                                       unitBGeneration: bGeneration,
-                                      shouldContinue: { !replayDeferral.isInFlight() })
+                                      shouldContinue: { replayDeferral.isValid(recallEpoch) })
             }.value
             guard device === tb, unitBDevice === b else { return }
             if let mode = tb.settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32 {

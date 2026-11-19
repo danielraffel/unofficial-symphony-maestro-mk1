@@ -327,3 +327,59 @@ struct ThunderboltPresetTests {
     }
 
 }
+
+@Suite("Partial preset capture")
+struct PartialPresetCaptureTests {
+    @Test("An unreadable input route is omitted, not saved as route 0")
+    func unreadableRouteIsOmitted() throws {
+        let layout = CardLayout(slot1: .optical, slot2: .optical)
+        var metadata = MaestroPreset()
+        metadata.inputChannelStates = Array(repeating: InputChannelState(), count: layout.analogInputStripCount)
+        metadata.outputChannelStates = Array(repeating: OutputChannelState(), count: layout.analogOutputStripCount)
+        var seed = ThunderboltPreset(layout: layout, metadata: metadata)
+        seed.outputRoutes = Array(0..<32)
+        let suite = "partial.capture.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        seed.mixers = (0..<2).map {
+            .init(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: $0, store: store, defaults: defaults))
+        }
+        let failing = UInt32(SymphonyIORoutingAddress.p2pBase) + 5
+        let captured = try ThunderboltPreset.capture(seed, layout: layout, hostChannels: 32, readProperty: { address in
+            if address.selector == .routing {
+                if address.element == failing { throw DeviceConnectionError.notConnected }
+                return .uint32(40)
+            }
+            if address.selector == .speakerOutputMode { return .uint32(9) }
+            if address.selector == .clockSource { return .uint32(1) }
+            if address.selector == .spdifMirrorID { return .uint32(1) }
+            return .uint32(0)
+        }, readRaw: { _, _, _ in Data([0]) })
+        let mask = try #require(captured.inputRouteMask)
+        #expect(mask.count == 32)
+        #expect(!mask[5])
+        #expect(mask.filter { $0 }.count == 31)
+        let writes = try captured.writes(layout: layout, hostChannels: 32)
+        let routeElements: [UInt32] = writes.compactMap {
+            if case .property(let address, _) = $0, address.selector == .routing, address.scope == .input { return address.element }
+            return nil
+        }
+        #expect(!routeElements.contains(failing))
+        #expect(routeElements.count == 31)
+    }
+
+    @Test("A fully readable capture keeps the old bundle shape")
+    func fullCaptureHasNoMask() throws {
+        let layout = CardLayout(slot1: .optical, slot2: .optical)
+        var metadata = MaestroPreset()
+        metadata.inputChannelStates = Array(repeating: InputChannelState(), count: layout.analogInputStripCount)
+        metadata.outputChannelStates = Array(repeating: OutputChannelState(), count: layout.analogOutputStripCount)
+        var seed = ThunderboltPreset(layout: layout, metadata: metadata)
+        seed.outputRoutes = Array(0..<32)
+        let captured = try ThunderboltPreset.capture(seed, layout: layout, hostChannels: 32, readProperty: { address in
+            address.selector == .routing ? .uint32(40) : .uint32(0)
+        }, readRaw: { _, _, _ in Data([0]) })
+        #expect(captured.inputRouteMask == nil)
+    }
+}
