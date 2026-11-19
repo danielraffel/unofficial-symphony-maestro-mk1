@@ -57,8 +57,15 @@ public final class DeviceSettingsStore: @unchecked Sendable {
                 defaults.set(String(identity, radix: 16), forKey: migrationKey)
             }
         } else {
-            self.key = legacyKey
-            self.values = Self.decode(defaults.data(forKey: legacyKey))
+            if let marker = defaults.string(forKey: "\(legacyKey).migratedTo"),
+               let migratedIdentity = UInt64(marker, radix: 16) {
+                let migratedKey = Self.defaultsKey(productID: productID, unit: unit, identity: migratedIdentity)
+                self.key = migratedKey
+                self.values = Self.decode(defaults.data(forKey: migratedKey))
+            } else {
+                self.key = legacyKey
+                self.values = Self.decode(defaults.data(forKey: legacyKey))
+            }
         }
     }
 

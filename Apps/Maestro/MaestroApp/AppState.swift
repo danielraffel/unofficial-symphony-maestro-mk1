@@ -106,6 +106,8 @@ final class AppState {
     /// Hardware UIDs read at connect. Nil preserves the legacy layout scope.
     var unitAIdentity: UInt64?
     var unitBIdentity: UInt64?
+    /// Latches the single unit-B identity attempt for the current connection.
+    var unitBIdentityAttempted = false
 
     /// Currently connected device (real or simulated).
     var device: (any DeviceConnection)? {
@@ -113,6 +115,9 @@ final class AppState {
             if device !== newValue {
                 identifyA.reset()
                 identifyB.reset()
+                unitAIdentity = nil
+                unitBIdentity = nil
+                unitBIdentityAttempted = false
             }
         }
     }
@@ -1520,6 +1525,9 @@ final class AppState {
             transportType = nil
             transportPresent = false
             isHardwareInitialized = false
+            unitAIdentity = nil
+            unitBIdentity = nil
+            unitBIdentityAttempted = false
             viewReloadToken = UUID()
             Task { await reconnectHardware() }
         }
@@ -1976,18 +1984,36 @@ final class AppState {
     private func readUnitAIdentityAfterCapabilities() async {
         let identity: UInt64?
         if let tb = device as? ThunderboltDeviceConnection {
-            guard SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .a) else { return }
+            guard SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .a) else {
+                if unitAIdentity != nil {
+                    unitAIdentity = nil
+                    viewReloadToken = UUID()
+                }
+                return
+            }
             identity = await tb.readHardwareUniqueID()
         } else if let usb = device as? XPCDeviceConnection {
             // The USB discovery path publishes Symphony I/O devices only; a
             // converter chain exists only behind the ThunderBridge capability matrix.
-            guard cardLayout.converter == nil else { return }
+            guard cardLayout.converter == nil else {
+                if unitAIdentity != nil {
+                    unitAIdentity = nil
+                    viewReloadToken = UUID()
+                }
+                return
+            }
             identity = await usb.readHardwareUniqueID()
         } else {
             return
         }
         guard device != nil else { return }
-        unitAIdentity = identity
+        // A transient failed read during link recovery must not downgrade a
+        // known identity to the layout/legacy scope. The identity is scoped to
+        // this device connection and is cleared only when that connection ends.
+        if let identity, identity != unitAIdentity {
+            unitAIdentity = identity
+            viewReloadToken = UUID()
+        }
     }
 
     @MainActor
@@ -2490,6 +2516,9 @@ final class AppState {
                         // recognised as a removal even in this disconnected state.
                         self.activeAudioDeviceID = audioDeviceID
                         self.connectionMode = .disconnected
+                        self.unitAIdentity = nil
+                        self.unitBIdentity = nil
+                        self.unitBIdentityAttempted = false
                         self.transportType = .thunderbolt
                         self.transportPresent = true
                         self.statusMessage = "Symphony disconnected"

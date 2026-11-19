@@ -479,11 +479,15 @@ extension AppState {
         applyUnitB(state?.info, from: tb, confirmedAbsent: state?.present == false)
         // Once per unit-B connection: the health loop calls this every few
         // seconds and must not put a vendor read on the bus each time.
-        guard state?.present == true, unitBIdentity == nil,
+        guard state?.present == true, !unitBIdentityAttempted,
               SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .b) else { return }
+        unitBIdentityAttempted = true
         let identity = await tb.readHardwareUniqueID(port: ThunderboltUnitBConnection.port)
         guard (device as? ThunderboltDeviceConnection) === tb, connectedUnit == nil else { return }
-        unitBIdentity = identity
+        if let identity, identity != unitBIdentity {
+            unitBIdentity = identity
+            viewReloadToken = UUID()
+        }
     }
 
     /// Follow unit B appearing, changing or going. On appearing (or on a new
@@ -504,6 +508,7 @@ extension AppState {
         unitB = info
         guard let info, let tb else {
             unitBIdentity = nil
+            unitBIdentityAttempted = false
             loopSyncState = nil
             loopSyncError = nil
             if unitBDevice != nil {
@@ -525,6 +530,10 @@ extension AppState {
             return
         }
         if newConnection || unitBDevice == nil {
+            if newConnection {
+                unitBIdentity = nil
+                unitBIdentityAttempted = false
+            }
             let connection = tb.makeUnitBConnection(settingsStore: .persistent(for: tb.identifier, unit: .b))
             let oldDevice = unitBDevice
             (oldDevice as? ThunderboltUnitBConnection)?.invalidate()
