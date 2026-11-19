@@ -182,20 +182,21 @@ struct TwoUnitPresetTests {
         for index in saved.mixers.indices {
             saved.mixers[index].channels = Array(saved.mixers[index].channels.prefix(layout.mixerChannelCount))
         }
-        // Positive control: the same boards, channel and readable identity
-        // authorize the saved Mic phantom value before testing sentinels.
+        // Bundles never switch phantom on (safety departure until C2), even with
+        // the same boards, channel and a readable matching identity.
         saved.unitID = Data(repeating: 17, count: 8)
         let valid = Transport()
         valid.identityByte = 17
         let accepted = try connection(valid, layout: layout).presetWrites(saved, layout: layout)
         let restoresPhantom = accepted.contains(.property(PropertyAddress(selector: .phantom), .bool(true)))
-        #expect(restoresPhantom)
+        #expect(!restoresPhantom)
         for byte: UInt8 in [0, 255] {
             saved.unitID = Data(repeating: byte, count: 8)
             let transport = Transport()
             transport.identityByte = byte
             let b = connection(transport, layout: layout)
-            #expect(throws: (any Error).self) { try b.presetWrites(saved, layout: layout) }
+            let writes = (try? b.presetWrites(saved, layout: layout)) ?? []
+            #expect(!writes.contains(.property(PropertyAddress(selector: .phantom), .bool(true))))
             #expect(transport.sent.isEmpty)
         }
     }

@@ -120,7 +120,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     /// Validate everything before the first write, including data that the wire
     /// mapper would otherwise truncate. Old app-only presets have no routes,
     /// mixer, or extra monitor fields; absence means leave that setting alone.
-    public func writes(layout: CardLayout, legacy: Bool = false, currentUnitID: Data? = nil, hostChannels: Int = 32, peripheralB: Bool = false) throws -> [Write] {
+    public func writes(layout: CardLayout, legacy: Bool = false, currentUnitID: Data? = nil, hostChannels: Int = 32, peripheralB: Bool = false,
+                       cardInputSupported: Bool = true, onSkipped: ((String) -> Void)? = nil) throws -> [Write] {
         func require(_ condition: Bool, _ reason: String) throws {
             if !condition { throw RecallError.unsupported(reason) }
         }
@@ -159,16 +160,6 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             try require(state.micGain.isFinite && (0...85).contains(state.micGain)
                         && state.instrumentGain.isFinite && (0...65).contains(state.instrumentGain)
                         && state.group <= 8 && state.insert <= 8, "invalid preamp settings.")
-            // Original preference identity: parent UID + board slot, with the
-            // channel's Mic type: og_source/maestrolink/Software/
-            // SymphonyIOBoard_MicPre8ch.cpp:135-153,670-699.
-            if state.phantom {
-                try require(!legacy && unitID?.count == 8 && unitID == currentUnitID
-                            && unitID!.contains(where: { $0 != 0 })
-                            && layout.slot2 == .micPre8 && index < 8
-                            && state.inputType == AnalogInputLevel.mic.rawValue,
-                            "phantom power requires the same identified unit, board slot and Mic channel.")
-            }
             if AnalogInputLevel(rawValue: state.inputType)?.isPreampLevel == true {
                 try require(layout.slot2 == .micPre8 && index < 8, "a preamp setting requires an 8MicPre channel.")
             }
@@ -212,7 +203,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         }
         // Card routing precedes peripheral recall: og_source/maestrolink/Software/
         // SymphonyController.cpp:696-704; SymphonyCard.cpp:412-415.
-        if let cardInputRoutes {
+        if let cardInputRoutes, cardInputSupported {
             let table = try Self.cardTable(cardInputRoutes, channels: hostChannels)
             try require(cardInputRoutes.allSatisfy { $0 >= -1 && $0 < cardInputRoutes.count }, "invalid card input source.")
             let routing = SymphonyCardInputRouting(model: .init(topology: .symphonyOnly, hostChannels: hostChannels, unitBConfigured: hostChannels == 64))
@@ -224,6 +215,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                 }
                 result.append(.cardInput(command))
             }
+        } else if cardInputRoutes != nil {
+            onSkipped?("card input routing not restored: serving driver does not support it")
         }
         for (index, source) in inputRoutes.enumerated() {
             try require((32...63).contains(source) || source == SymphonyIORoutingAddress.none,
@@ -301,7 +294,16 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                 put(.instrumentGain, .uint32(UInt32(s.instrumentGain)), element: element)
                 put(.groupID, .uint32(s.group), element: element)
                 put(.phaseReverse, .bool(s.phase), element: element)
-                put(.phantom, .bool(s.phantom), element: element)
+                // Safety departure from the original, which restored phantom ON:
+                // until per-channel provenance exists, bundle state may never
+                // energize a microphone. Capture still records the value; recall
+                // applies OFF and reports that ON was skipped.
+                // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:670-699.
+                if s.phantom {
+                    onSkipped?("phantom power not restored from a bundle")
+                } else {
+                    put(.phantom, .bool(false), element: element)
+                }
                 put(.highPassFilter, .bool(s.hpf), element: element)
             }
         }

@@ -154,16 +154,13 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         }
     }
 
-    public func presetWrites(_ saved: ThunderboltPreset.Peripheral, layout: CardLayout) throws -> [ThunderboltPreset.Write] {
+    public func presetWrites(_ saved: ThunderboltPreset.Peripheral, layout: CardLayout,
+                             cardInputSupported: Bool = true,
+                             onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
-        let identity = saved.metadata.inputChannelStates.contains(where: \.phantom)
-            ? try presetRead(0xC0, 0, 8, layout: layout) : nil
-        if let identity {
-            guard identity.count == 8, identity.contains(where: { $0 != 0 }), identity.contains(where: { $0 != 0xFF }) else {
-                throw ThunderboltPreset.RecallError.unsupported("unit B's identity could not be read.")
-            }
-        }
-        return try saved.preset(layout: layout).writes(layout: layout, currentUnitID: identity, hostChannels: 64, peripheralB: true)
+        return try saved.preset(layout: layout).writes(layout: layout, currentUnitID: nil, hostChannels: 64,
+                                                        peripheralB: true, cardInputSupported: cardInputSupported,
+                                                        onSkipped: onSkipped)
     }
 
     public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout,

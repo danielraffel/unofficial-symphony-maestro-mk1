@@ -246,10 +246,13 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     public func presetWrites(_ preset: ThunderboltPreset, layout: CardLayout, legacy: Bool = false,
-                             channels: Int? = nil) throws -> [ThunderboltPreset.Write] {
+                             channels: Int? = nil, onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
-        let identity = preset.metadata.inputChannelStates.contains(where: \.phantom) ? try readPresetUnitID() : nil
-        return try preset.writes(layout: layout, legacy: legacy, currentUnitID: identity, hostChannels: channels ?? presetChannelCount())
+        let servingBuild = servingDriverBuild()
+        let cardInputSupported = if case .build(let build) = servingBuild { build >= 132 } else { false }
+        return try preset.writes(layout: layout, legacy: legacy, currentUnitID: nil,
+                                 hostChannels: channels ?? presetChannelCount(),
+                                 cardInputSupported: cardInputSupported, onSkipped: onSkipped)
     }
 
     public func writePresetMixer(_ address: PropertyAddress, value: PropertyValue) throws {
