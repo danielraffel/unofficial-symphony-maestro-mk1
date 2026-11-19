@@ -2358,7 +2358,8 @@ public enum RoutingResetGuard {
         board1: IOCardType,
         board2: IOCardType,
         usbChannelCount: Int,
-        routes table: [SymphonyIODefaultRouting.Route]? = nil
+        routes table: [SymphonyIODefaultRouting.Route]? = nil,
+        hostChannelOffset: Int = 0
     ) -> [String] {
         // `table` is the routing the reset will write when it is not the USB
         // default (ThunderBridge writes the driver's board-order table).
@@ -2405,7 +2406,7 @@ public enum RoutingResetGuard {
         }
 
         for route in routes {
-            let usbChannel = Int(route.destination &- SymphonyIORoutingAddress.p2pBase) + 1
+            let usbChannel = Int(route.destination &- SymphonyIORoutingAddress.p2pBase) + 1 + hostChannelOffset
             guard let (grouping, channel) = group(for: route.source) else {
                 flush()
                 silent.append(usbChannel)

@@ -71,12 +71,12 @@ extension AppState {
     var unitPrimaryBoardType: IOCardType { activeUnit == .b ? (unitB?.slot1 ?? .none) : primaryBoardType }
     var unitSecondaryBoardType: IOCardType { activeUnit == .b ? (unitB?.slot2 ?? .none) : secondaryBoardType }
     var unitPrimaryBoardSource: BoardDetectionSource {
-        activeUnit == .b ? unitBSource(slot: 0) : primaryBoardSource
+        activeUnit == .b ? unitBBoardSource(slot: 0) : primaryBoardSource
     }
     var unitSecondaryBoardSource: BoardDetectionSource {
-        activeUnit == .b ? unitBSource(slot: 1) : secondaryBoardSource
+        activeUnit == .b ? unitBBoardSource(slot: 1) : secondaryBoardSource
     }
-    private func unitBSource(slot: Int) -> BoardDetectionSource {
+    func unitBBoardSource(slot: Int) -> BoardDetectionSource {
         if simulatedUnitB != nil { return .simulated }
         return unitB?.slotValid[slot] == true ? .detected : .unknown
     }
@@ -228,6 +228,29 @@ extension AppState {
         let aCount = cardLayout.mixerChannels.count
         channelStateStore.save(Array(channels.prefix(aCount)), for: ChannelStateStore.mixerKey(mixer))
         unitBChannelStateStore.save(Array(channels.dropFirst(aCount)), for: ChannelStateStore.mixerKey(mixer))
+    }
+
+    // MARK: Input Routing (unit B's own P2P table)
+
+    var unitBInputRoutingAllowed: Bool {
+        let model = SymphonyRoutingModel(
+            topology: converterSystem == nil ? .symphonyOnly : .unknown,
+            hostChannels: portSelection.selection?.channelCount ?? 0,
+            unitBConfigured: unitPickerVisible && unitB?.setupComplete == true)
+        return model.allows(.unitRouting, at: .peripheral(.init(port: .two)!))
+    }
+
+    var unitBInputRoutingCache: RoutingStateCache? {
+        guard let device,
+              let direction = Self.unitBInputRoutingDirection(
+                cardScope: unitBLayout?.savedStateScope,
+                simulating: cardSimulation != nil || simulatedUnitB != nil) else { return nil }
+        return RoutingStateCache(direction: direction, productID: device.identifier.productID)
+    }
+
+    static func unitBInputRoutingDirection(cardScope: String?, simulating: Bool) -> String? {
+        guard let cardScope else { return nil }
+        return "input.unitB." + (simulating ? "sim:" : "") + cardScope
     }
 
     // MARK: Output Routing (unit B's outputs, XLink TX 32-63)

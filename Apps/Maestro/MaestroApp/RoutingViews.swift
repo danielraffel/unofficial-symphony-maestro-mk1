@@ -58,6 +58,29 @@ extension View {
 /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
 struct InputRoutingView: View {
     private let appState: AppState
+    // AppShell rebuilds per-unit pages on picker changes. Capture the connection
+    // and cache too: an outstanding write must never follow the picker to A.
+    private let unit: DeviceUnit
+    private let device: (any DeviceConnection)?
+    private let unitBCache: RoutingStateCache?
+    private var prefix: String { unit == .b ? appState.unitBPeripheralPrefix : appState.peripheralPrefix }
+    private var board1: IOCardType { unit == .b ? (appState.unitB?.slot1 ?? .none) : appState.primaryBoardType }
+    private var board2: IOCardType { unit == .b ? (appState.unitB?.slot2 ?? .none) : appState.secondaryBoardType }
+    private var board1Reading: BoardTypeReading {
+        unit == .b ? BoardTypeReading(card: board1, source: appState.unitBBoardSource(slot: 0)) : appState.primaryBoardReading
+    }
+    private var board2Reading: BoardTypeReading {
+        unit == .b ? BoardTypeReading(card: board2, source: appState.unitBBoardSource(slot: 1)) : appState.secondaryBoardReading
+    }
+    private var canWrite: Bool { unit == .a || appState.unitBInputRoutingAllowed }
+    private var unitBResetRoutes: [SymphonyIODefaultRouting.Route] {
+        // Original ResetInputRouting: analog across boards, then AES/optical.
+        // Evidence: og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:714-792.
+        SymphonyIODefaultRouting.inputRoutes(
+            board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
+            board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
+            usbChannelCount: 32)
+    }
     @State private var routes: [Int: Int] = [:] // row → column mapping
     /// Rows the user actually chose, as opposed to rows drawn from the default
     /// table. Only these are persisted — see ``RoutingStateCache``.
@@ -70,11 +93,11 @@ struct InputRoutingView: View {
 
     // Software input row count = USB audio class channels / 2 (stereo pairs).
     private var pairCount: Int {
-        (appState.device?.identifier.mode.channelCount ?? 16) / 2
+        unit == .b ? 16 : (device?.identifier.mode.channelCount ?? 16) / 2
     }
 
     /// The installed cards' layout — the grid's hardware columns come from here.
-    private var layout: CardLayout { appState.cardLayout }
+    private var layout: CardLayout { unit == .b ? (appState.unitBLayout ?? CardLayout(isKnown: false)) : appState.cardLayout }
 
     /// Hardware INPUT columns: one per stereo pair the installed cards actually
     /// provide, analog (both boards) then digital (both boards).
@@ -87,7 +110,7 @@ struct InputRoutingView: View {
     private var columns: [CardLayout.RoutingColumn] { layout.inputRoutingColumns }
 
     private var columnLabels: [(type: String, channels: String)] {
-        columns.map { (type: $0.type, channels: $0.channels) }
+        columns.map { (type: unit == .b ? "\(prefix) \($0.type)" : $0.type, channels: $0.channels) }
     }
 
     /// The grid column a hardware routing byte belongs to, or nil when these
@@ -99,10 +122,11 @@ struct InputRoutingView: View {
 
     // P3C-05: Routing presets
     @State private var presetNames: [String] = []
-    private let presetKey = "inputRoutingPresets"
+    private var presetKey: String { unit == .b ? "inputRoutingPresets.unitB" : "inputRoutingPresets" }
 
     private var routingCache: RoutingStateCache? {
-        guard let id = appState.device?.identifier else { return nil }
+        if unit == .b { return unitBCache }
+        guard let id = device?.identifier else { return nil }
         let cache = RoutingStateCache(direction: "input", productID: id.productID)
         // Same one-time clear the connect-time replay runs, in case this page
         // reads the saved choices first.
@@ -117,6 +141,9 @@ struct InputRoutingView: View {
 
     init(appState: AppState) {
         self.appState = appState
+        unit = appState.activeUnit
+        device = appState.unitDevice
+        unitBCache = appState.unitBInputRoutingCache
         let snapshot = restoredRoutes(defaultRouteGrid())
         _routes = State(initialValue: snapshot)
         _userChosenRows = State(initialValue: Set(routingCache?.load()?.keys.map { $0 } ?? []))
@@ -176,7 +203,7 @@ struct InputRoutingView: View {
                     }
                 )
             }
-            .disabled(isLoadingRoutes)
+            .disabled(isLoadingRoutes || !canWrite)
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
 
@@ -190,9 +217,9 @@ struct InputRoutingView: View {
                     let names = layout.converterPairNames(isInput: true, pairCount: pairCount)
                         ?? CardLayout.softwareInputRowNames(
                             rowCount: pairCount, routes: routes, columns: columns,
-                            prefix: appState.peripheralPrefix)
+                            prefix: prefix)
                     let rowLabels: [(number: String, name: String)] = (0..<pairCount).map { i in
-                        (number: "\(i * 2 + 1)-\(i * 2 + 2)", name: names[i])
+                        (number: "\(i * 2 + 1 + (unit == .b ? 32 : 0))-\(i * 2 + 2 + (unit == .b ? 32 : 0))", name: names[i])
                     }
                     RoutingGridView(
                         rowCount: pairCount,
@@ -205,7 +232,7 @@ struct InputRoutingView: View {
                         hoverRow: $hoverRow,
                         hoverCol: $hoverCol,
                         onCellTap: { row, col in
-                            guard !isLoadingRoutes else { return }
+                            guard !isLoadingRoutes, canWrite else { return }
                             routes[row] = col
                             userChosenRows.insert(row)
                             persistChosenRows()
@@ -238,7 +265,7 @@ struct InputRoutingView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
-        .task(id: "\(appState.viewReloadToken)-\(appState.cardLayoutToken)") {
+        .task(id: "\(appState.viewReloadToken)-\(appState.cardLayoutToken)-\(appState.unitBLayoutToken)-\(prefix)") {
             isLoadingRoutes = true
             showLoadingIndicator = false
             // Only show indicator if loading takes more than 300ms
@@ -289,16 +316,16 @@ struct InputRoutingView: View {
         // digital channels there.
         if appState.transportType == .thunderbolt {
             return SymphonyIODefaultRouting.inputGrid(
-                SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1), columns: columns)
+                SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: unit == .b ? appState.unitB?.slot1 : appState.thunderboltCaptureSlot1), columns: columns)
         }
-        let board1 = appState.primaryBoardType
-        let board2 = appState.secondaryBoardType
+        let board1 = self.board1
+        let board2 = self.board2
         // Same record-channel count Reset Routing writes (the mode's count:
         // 16/8 in the USB modes).
         let routeList = SymphonyIODefaultRouting.inputRoutes(
             board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
             board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
-            usbChannelCount: appState.device?.identifier.mode.channelCount
+            usbChannelCount: device?.identifier.mode.channelCount
                 ?? SymphonyIODefaultRouting.usbChannelCount)
         return SymphonyIODefaultRouting.inputGrid(routeList, columns: columns)
     }
@@ -315,7 +342,7 @@ struct InputRoutingView: View {
 
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:714-792`
     private func loadRoutes() async -> [Int: Int] {
-        guard let device = appState.device else { return [:] }
+        guard let device else { return [:] }
         // ThunderBridge reads through this path always failed until the
         // request-size fix in 0.8.36, so this grid has only ever been built from
         // the default table plus saved choices there. Unchanged until the
@@ -351,12 +378,11 @@ struct InputRoutingView: View {
     /// Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIORouting.h`
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
     private func writeRoute(row: Int, col: Int) async {
-        guard !isLoadingRoutes else { return }
-        guard let device = appState.device else { return }
-        let board1 = appState.primaryBoardType
-        let board2 = appState.secondaryBoardType
+        guard !isLoadingRoutes, canWrite, let device else { return }
+        let board1 = self.board1
+        let board2 = self.board2
 
-        guard col >= 0, col < columns.count else {
+        guard row >= 0, row < pairCount, col >= 0, col < columns.count else {
             print("[Maestro] InputRouting: col \(col) out of range for board types \(board1)/\(board2)")
             errorMessage = "Invalid routing column"
             return
@@ -391,9 +417,9 @@ struct InputRoutingView: View {
     /// confirmation at all, which is how a reset derived from a WRONG card could
     /// run unannounced.
     private func requestRoutingReset() {
-        guard let device = appState.device else { return }
-        let b1 = appState.primaryBoardReading
-        let b2 = appState.secondaryBoardReading
+        guard canWrite, let device else { return }
+        let b1 = board1Reading
+        let b2 = board2Reading
         if let refusal = RoutingResetGuard.refusalReason(board1: b1, board2: b2) {
             resetPrompt = RoutingResetPrompt(
                 title: "Reset Input Routing", message: refusal, isRefusal: true)
@@ -403,8 +429,9 @@ struct InputRoutingView: View {
         let plan = RoutingResetGuard.inputPlanLines(
             board1: b1.card, board2: b2.card,
             usbChannelCount: device.identifier.mode.channelCount,
-            routes: appState.transportType == .thunderbolt
-                ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1) : nil)
+            routes: unit == .b ? unitBResetRoutes : appState.transportType == .thunderbolt
+                ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1) : nil,
+            hostChannelOffset: unit == .b ? 32 : 0)
         resetPrompt = RoutingResetPrompt(
             title: "Reset Input Routing",
             message: """
@@ -428,9 +455,9 @@ struct InputRoutingView: View {
     /// Only reachable through ``requestRoutingReset()``, which refuses unless both
     /// slots were genuinely detected this session.
     private func resetToDefaultRouting() async {
-        guard let device = appState.device else { return }
-        let b1 = appState.primaryBoardReading
-        let b2 = appState.secondaryBoardReading
+        guard canWrite, let device else { return }
+        let b1 = board1Reading
+        let b2 = board2Reading
         // Provenance guard, re-checked at the point of writing. A cached or
         // unknown card is a WRONG card waiting to happen, and the whole table is
         // derived from it — `.none` was never the failure mode to guard.
@@ -450,9 +477,8 @@ struct InputRoutingView: View {
         // never touch a hardware output.
         let usbChannels = device.identifier.mode.channelCount
 
-        // ThunderBridge resets to the driver's own board-order table, the one
-        // it programs at Start, never the USB analog-first one.
-        let routeList = appState.transportType == .thunderbolt
+        // Preserve unit A's ThunderBridge startup table; B uses the original reset order.
+        let routeList = unit == .b ? unitBResetRoutes : appState.transportType == .thunderbolt
             ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1)
             : SymphonyIODefaultRouting.inputRoutes(
                 board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
@@ -462,6 +488,7 @@ struct InputRoutingView: View {
         var newRoutes: [Int: Int] = [:]
         var failures = 0
         for route in routeList {
+            guard !Task.isCancelled, canWrite else { return }
             do {
                 try await device.setProperty(
                     PropertyAddress(selector: .routing, scope: .input, element: UInt32(route.destination)),
@@ -477,11 +504,20 @@ struct InputRoutingView: View {
             newRoutes[Int(route.destination - SymphonyIORoutingAddress.p2pBase) / 2] = col
         }
 
+        // A partial B reset must not discard the choices needed for retry.
+        if unit == .b && failures > 0 {
+            errorMessage = "\(failures) of \(routeList.count) routes failed to write"
+            return
+        }
         routes = newRoutes
-        // A reset writes the default table to the hardware, so there are no
-        // overrides left to remember — clearing is the point of the button.
-        // Keeping them would restore the old picks on the next appearance.
-        userChosenRows.removeAll()
+        // Unit A retains its existing cache-clearing behavior.
+        if unit == .b {
+            // B resets to the original analog-first table, which can differ
+            // from the driver's startup table; remember that explicit choice.
+            userChosenRows = Set(newRoutes.keys)
+        } else {
+            userChosenRows.removeAll()
+        }
         persistChosenRows()
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] InputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")

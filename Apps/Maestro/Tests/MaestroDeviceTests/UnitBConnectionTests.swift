@@ -35,6 +35,67 @@ struct UnitBConnectionTests {
                                    state: { state })
     }
 
+    @Test("Input stereo pairs use unit-local P2P destinations and port byte 1")
+    func inputStereoRouting() async throws {
+        let t = RecordingVendorTransport()
+        let c = connection(t)
+        let layout = CardLayout(slot1: .analogADDA16, slot2: .optical, isKnown: true)
+        let writes = InputRoutingReplay.writes(saved: [15: 0], columns: layout.inputRoutingColumns, pairCount: 16)
+        for route in writes {
+            try await c.setProperty(.init(selector: .routing, scope: .input, element: UInt32(route.destination)),
+                                    value: .uint32(UInt32(route.source)))
+        }
+        #expect(t.sent == [
+            .init(command: 0x31, value: 0, payload: Data([222, 32]), port: 1),
+            .init(command: 0x31, value: 0, payload: Data([223, 33]), port: 1)])
+        await c.disconnect()
+        await #expect(throws: DeviceConnectionError.self) {
+            try await c.setProperty(.init(selector: .routing, scope: .input, element: 192), value: .uint32(32))
+        }
+        #expect(t.sent.count == 2)
+    }
+
+    @Test("Input routing refuses absent or unconfigured B and non-P2P destinations")
+    func inputRoutingRefusals() async {
+        let t = RecordingVendorTransport()
+        let incomplete = UnitBState(present: true, boardType: [7, 0], boardValid: [1, 1],
+                                   prefix: 66, clockSource: 3, setupFlags: 0, txErrors: 0)
+        for state in [nil, incomplete] {
+            let c = connection(t, state: state)
+            await #expect(throws: DeviceConnectionError.self) {
+                try await c.setProperty(.init(selector: .routing, scope: .input, element: 192), value: .uint32(32))
+            }
+        }
+        let c = connection(t)
+        for destination: UInt32 in [32, 191, 224] {
+            await #expect(throws: DeviceConnectionError.self) {
+                try await c.setProperty(.init(selector: .routing, scope: .input, element: destination), value: .uint32(32))
+            }
+        }
+        #expect(t.sent.isEmpty)
+    }
+
+    @Test("B reset sends analog across both boards before digital, only to port 1")
+    func inputResetOrder() async throws {
+        let t = RecordingVendorTransport()
+        let c = connection(t)
+        let routes = SymphonyIODefaultRouting.inputRoutes(
+            board0: .init(analog: 8, digital: 8), board1: .init(analog: 8, digital: 8), usbChannelCount: 32)
+        #expect(routes.map(\.source) == Array(UInt8(32)...39) + Array(UInt8(48)...55)
+                + Array(UInt8(40)...47) + Array(UInt8(56)...63))
+        for route in routes {
+            try await c.setProperty(.init(selector: .routing, scope: .input, element: UInt32(route.destination)),
+                                    value: .uint32(UInt32(route.source)))
+        }
+        #expect(t.sent.count == 32)
+        #expect(t.sent.allSatisfy { $0.command == 0x31 && $0.value == 0 && $0.port == 1 })
+        #expect(t.sent.map { $0.payload.first! } == Array(UInt8(192)...223))
+        let plan = RoutingResetGuard.inputPlanLines(board1: .analogADDA16, board2: .none,
+                                                    usbChannelCount: 32, hostChannelOffset: 32)
+        #expect(plan.first?.hasPrefix("DAW in 33-48") == true)
+
+    }
+
     @Test("The 78-byte command input: unit A port 0, unit B port 1, nothing else differs")
     func packedCommandBytes() {
         let a = DextUserClient.packVendorCommand(command: 0x20, value: 0x0001_0003, payload: Data([0x2A]), port: 0)

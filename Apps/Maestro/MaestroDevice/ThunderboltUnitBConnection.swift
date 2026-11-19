@@ -62,7 +62,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         .groupID, .insertID, .insertReturnEnable,
         .analogIOType, .digitalRefLevel,
         .outputLevel, .outputMute, .outputDim, .outputSumToMono,
-        .identify,
+        .identify, .routing,
         .headphone1Level, .headphone2Level, .headphone1Mute, .headphone2Mute,
         .headphone1Dim, .headphone2Dim, .headphone1SumToMono, .headphone2SumToMono,
         .activeSpeakerSet,
@@ -167,6 +167,17 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
         guard isConnected else { throw DeviceConnectionError.notConnected }
         let selector = address.selector
+        if selector == .routing {
+            // Selector 11 reports only a configured Symphony I/O; the driver
+            // additionally checks 64-channel mode and peripheral identity.
+            let unitState = state()
+            let model = SymphonyRoutingModel(topology: .symphonyOnly, hostChannels: 64,
+                unitBConfigured: unitState?.present == true && unitState?.info?.setupComplete == true)
+            guard model.allows(.unitRouting, at: .peripheral(.init(port: .two)!)),
+                  address.scope == .input, (192..<224).contains(address.element) else {
+                throw DeviceConnectionError.unsupportedProperty(selector)
+            }
+        }
 
         if Self.heldUntilDriverKeepsUnitsApart.contains(selector) && !Self.driverKeepsUnitsApart {
             if selector == .prefix {

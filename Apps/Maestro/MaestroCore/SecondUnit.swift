@@ -173,10 +173,10 @@ public enum UnitPicker {
     }
 
     /// The pages that belong to one unit and follow the picker. The Mixer and
-    /// Output Routing are the card's and show both units at once; Input
-    /// Routing stays with unit A.
+    /// Output Routing are the card's and show both units at once. Input
+    /// Routing edits the chosen unit's own P2P table.
     public static func isPerUnit(page: String) -> Bool {
-        ["Input", "Output", "Device Settings", "System Setup"].contains(page)
+        ["Input", "Output", "Input Routing", "Device Settings", "System Setup"].contains(page)
     }
 
     /// The picker's segment label: the unit and its prefix letter.
