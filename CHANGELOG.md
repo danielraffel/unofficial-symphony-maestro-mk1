@@ -2,13 +2,16 @@
 
 ## 0.9.10 (beta)
 
-(Work in progress; not released. Intro to be written at release.)
+Test build, not released. This beta brings Maestro closer to what Apogee's software supported: Identify, the front-panel MicPre knob, Instrument gain on an 8MicPre, a second Symphony I/O at 64 channels (routing, monitoring, presets, Loop Sync), and settings that stay with each physical unit. Please share diagnostics if anything behaves differently from 0.9.9.
 
 ### Changes that may affect your setup
 
 - Symphony settings, input routes and channel labels now follow the identified physical unit when it moves between ports. Previously saved layout settings are preserved for their first identified owner; replacement units do not inherit them. Saved phantom power from an unverified migration cannot authorize preset recall.
 - 8MicPre Mic and Instrument settings are restored after connection and recovery, including both gain stages. Phantom power is restored only when Maestro recorded it for the same physical unit, board slot and Mic channel. Older or unverified settings restore phantom OFF.
 - Leaving Mic turns phantom power off, including when another setting fails.
+- **Mixer master, Software Return, fader links and routing mode are now saved for each physical Symphony I/O.** Your current mixer settings move to the first unit Maestro identifies after the update. If Maestro cannot read the unit's identity, it keeps using your existing settings as before.
+- On an 8MicPre, phantom power switched from a DAW or Audio MIDI Setup now turns on only for a channel in Mic mode, as in Apogee's software. Switching it off always works.
+- A queued 8MicPre gain or phantom change from a DAW is dropped if the channel's input routing changes before it is sent; switching phantom off still reaches the channel it was meant for.
 - **Instrument gain on an 8MicPre now reaches the preamp's Instrument stage, with its own 0-65 dB range.** Before, Maestro sent Instrument gain as Mic gain. Mic and Instrument gains are now remembered separately for each channel, as in Apogee's software, so switching a channel between Mic and Instrument brings back the gain you last used for that type.
 - **The connection in Device Info reads "Thunderbolt (Symphony 64 PCIe card)",** without the word "experimental".
 
