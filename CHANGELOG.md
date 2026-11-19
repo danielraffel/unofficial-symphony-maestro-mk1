@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.9.9 (beta)
+
+Apogee's older converters and a second Symphony I/O now work the way they did with Apogee's software, on the ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.8. With one Symphony I/O, little changes for you; see "Changes that may affect your setup".
+
+Thanks to the people who reported converters showing only four units, a tone repeating after quitting a DAW on the PCIe card, and input levels that looked reversed.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.5, build 131).** After installing, restart the Mac (or reconnect the ThunderBridge or PCIe chassis) so the new driver takes over.
+- **Maestro sends each input and output channel's level, trim, Digital Ref and Soft Limit to the Symphony when it connects,** as Apogee's software did. Before, Maestro only showed what it had saved, so after using Apogee's software or switching the unit off and on, a page could show a level the unit was not at. Channels on an 8MicPre set to Mic or Instrument are left as they are.
+- **The clock status reads "Ready" or "Clock Mismatch",** Apogee's wording, instead of "Locked" or "Unlocked".
+- **On the PCIe card and the ThunderBridge, audio stops cleanly when your DAW stops.** Before, the card could keep repeating the last fraction of a second it played.
+
+### AD-16X, DA-16X, DD-16X and Rosetta converters
+
+- **Up to four units on each port**, port 1 and, with 64 channels, port 2: eight in all. Maestro lists every unit with its X-Symphony firmware, and warns when one is older than 2.7.
+- **The driver now sets the converters up as Apogee's driver did:** it addresses and checks each unit, sets the rate and word clock, lines up their timing after every rate change, and sends them none of the Symphony I/O's own messages.
+- **Channels are placed and named as in Apogee's software.** Your DAW sees names such as "A Line 1" and "C Line 1", including the gaps Apogee's software left for some mixes of units (a Rosetta followed by an AD-16X, for example).
+- **Input and Output Routing can be changed for converters**, both ways, on both ports. Reset Routing puts back the default layout.
+- **Every DAW output now goes straight to its converter output,** as in Apogee's software, so nothing in the Mixer changes what your DAW plays. The Mac's volume keys still control Mixer 1; you hear them when Mixer 1 is routed to an output in Output Routing.
+- **Clock Source offers Internal and External (word clock)** for converters, in Maestro and in Audio MIDI Setup.
+- **Device Type**, as in Apogee's software, for the units that do not say what they are: choose DD-16X / AD-16X or DA-16X for a unit in Advanced Routing, and Rosetta 800 or Rosetta 200 for a Rosetta.
+- **The driver keeps an eye on the units** about once a second and recovers if one drifts out of time, stops answering, or a unit is added or removed.
+- **The latency your DAW compensates for** is the converters' own.
+- None of this has been tried on real converters yet. If you have them, please send a Diagnostics report (Settings › Diagnostics) after switching them on.
+
+### Two Symphony I/O units (64 channels)
+
+- **The second unit (on port 2) is now set up when 64 channels start,** as Apogee's software did: it follows the first unit's clock through Loop Sync, and its routing and optical format are set. Before, it ran on whatever it had stored.
+- **Connect the two units' Loop Sync connectors with BNC cables,** as Apogee's guide shows, and choose the clock source on the first unit.
+- **A Unit A / Unit B picker** appears in Maestro when the second unit is set up. Inputs, Outputs, Device Settings and System Setup show the chosen unit, with its own saved settings and meters.
+- **The Mixer and Output Routing include the second unit's channels,** and your DAW sees its channel names for 33-64.
+- **The ThunderBridge's port 2 light** is on while port 2 carries audio and flashes when it loses its clock.
+- **64 channels comes back by itself** when the second unit is switched on after the Mac, or returns after a problem.
+- This has not been tried with two units yet. Reports are welcome.
+
+### 8MicPre
+
+- **Phantom power and gain for the 8MicPre now appear in your DAW over ThunderBridge and PCIe.** The driver was looking for the Mic Pre in the wrong slot, so the controls never appeared.
+
+### Release notes
+
+- The driver is 0.11.5, build 131.
+- Some differences from Apogee's software remain on purpose: a converter that fails Apogee's authenticity check is reported, not refused; channels 33-64 start at 33 after a Symphony I/O on port 1; and editing routing for the second Symphony I/O's inputs is not available yet.
+
 ## 0.9.8 (beta)
 
 Maestro opens straight away, even when macOS audio is slow. It contains everything in 0.9.7.
