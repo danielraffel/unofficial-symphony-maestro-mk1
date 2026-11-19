@@ -18,6 +18,7 @@
 ### Fixes
 
 - **Device Info now shows Unit B’s own firmware, board versions and hardware ID with two Symphony I/Os at 64 channels.** Unreadable fields say “Unknown”, and copied diagnostics include both units.
+- **Unit B’s headphone sources now work on the Outputs page**, and stay routed after resetting or loading unit B’s output routing.
 
 - **Input Routing now follows the Unit A / Unit B picker with two Symphony I/Os at 64 channels.** Unit B shows its own inputs and saves its routing choices separately; Reset Routing affects only the chosen unit.
 - **Saving and loading a preset on ThunderBridge or PCIe now restores the Symphony I/O’s routing, mixer, monitor and channel settings.** Previously, loading a bundle restored only its channel names. Presets for a different card layout are refused before any settings change.

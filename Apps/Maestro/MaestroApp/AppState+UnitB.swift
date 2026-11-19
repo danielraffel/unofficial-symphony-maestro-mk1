@@ -309,7 +309,41 @@ extension AppState {
             if simulatedUnitB != nil { return }
             throw DeviceConnectionError.notConnected
         }
+        let b = unitBDevice as? ThunderboltUnitBConnection
         for route in routes { try tb.setCardOutputRoute(route) }
+        try await b?.reapplyHeadphoneCrosspoints()
+    }
+
+    /// A complete B output table, used by Reset Routing and the routing preset.
+    /// The captured connections never follow a later unit-picker change.
+    @MainActor
+    func applyUnitBOutputRouting(_ rows: [Int: Set<Int>], target: UnitWriteTarget) async throws {
+        guard target.unit == .b, isCurrent(target) else { throw DeviceConnectionError.notConnected }
+        guard unitBOnCard, let layout = unitBLayout,
+              unitBBoardSource(slot: 0) == .detected, unitBBoardSource(slot: 1) == .detected,
+              let b = unitBDevice as? ThunderboltUnitBConnection,
+              let card = device as? ThunderboltDeviceConnection else {
+            throw DeviceConnectionError.notConnected
+        }
+        let columns = layout.outputRoutingColumns
+        guard rows.allSatisfy({ row, cols in
+            (0..<TwoUnitOutputRouting.rowCount).contains(row) && cols.allSatisfy { columns.indices.contains($0) }
+        }) else { throw DeviceConnectionError.transportError("Invalid unit B output preset") }
+        var writes: [ThunderboltCardRouting.Route] = []
+        for (col, column) in columns.enumerated() {
+            let owners = rows.filter { $0.value.contains(col) }.map(\.key)
+            guard owners.count <= 1,
+                  let pair = Self.unitBRoutePair(destLeft: column.routingByte, gridRow: owners.first) else {
+                throw DeviceConnectionError.transportError("Invalid unit B output route")
+            }
+            writes += pair
+        }
+        let plannedWrites = writes
+        try await Task.detached {
+            try await b.applyOutputRouting(plannedWrites) { try card.setCardOutputRoute($0) }
+        }.value
+        guard unitBDevice === b else { throw DeviceConnectionError.notConnected }
+        unitBOutputRoutingCache?.save(rows)
     }
 
     /// Put unit B's saved output routes back on the card.
@@ -453,7 +487,11 @@ extension AppState {
             }
             let monitor = UnitBMonitorState()
             unitBMonitor = monitor
-            Task { @MainActor in await monitor.refresh(from: connection) }
+            Task { @MainActor in
+                await monitor.refresh(from: connection)
+                do { try await connection.reapplyHeadphoneCrosspoints() }
+                catch { print("[Maestro] Unit B headphone recall failed: \(error)") }
+            }
             unitBOwner = owner
             unitBPeripheralPrefix = connection.settingsStore.value(for: PropertyAddress(selector: .prefix))?.asString
                 .map(CardLayout.peripheralPrefix) ?? info.prefix(after: peripheralPrefix)

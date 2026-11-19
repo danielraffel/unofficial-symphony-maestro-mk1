@@ -48,6 +48,9 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     /// Unit B's own settings (see `DeviceSettingsStore`), under its own key.
     public let settingsStore: DeviceSettingsStore
 
+    private let headphoneLock = NSLock()
+    private var headphoneAssignments: UInt8?
+
     private let listenerLock = NSLock()
     private var listeners: [AudioPropertySelector: [WeakUnitListener]] = [:]
 
@@ -109,6 +112,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         .identify, .routing,
         .headphone1Level, .headphone2Level, .headphone1Mute, .headphone2Mute,
         .headphone1Dim, .headphone2Dim, .headphone1SumToMono, .headphone2SumToMono,
+        .headphone1RoutingID, .headphone2RoutingID,
         .activeSpeakerSet,
         .frontPanelMeterBank, .metersShowInput, .peakHoldMode, .oversHoldMode, .peaksClear,
         .opticalInFormat, .opticalOutFormat,
@@ -142,6 +146,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         .outputLevel, .outputMute, .outputDim, .outputSumToMono, .speakerOutputMode,
         .headphone1Level, .headphone1Mute, .headphone1Dim, .headphone1SumToMono,
         .headphone2Level, .headphone2Mute, .headphone2Dim, .headphone2SumToMono,
+        .headphone1RoutingID, .headphone2RoutingID,
         .activeSpeakerSet,
     ]
 
@@ -161,6 +166,20 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     public func getProperty(_ address: PropertyAddress) async throws -> PropertyValue {
         guard isConnected else { throw DeviceConnectionError.notConnected }
+        if Self.isHeadphoneSource(address.selector) {
+            return try headphoneLock.withLock {
+                try requireHeadphoneUnit()
+                let data = try transport.readVendorCommand(command: 0x54, value: 0,
+                                                            responseLength: 1, port: Self.port)
+                // 0xFF is also the failed-read sentinel; never turn it into a
+                // guessed 15/15 selection (see the unit A crosspoint policy).
+                guard let byte = data.first, byte != 0xFF else {
+                    throw DeviceConnectionError.transportError("Unit B headphone sources are unreadable")
+                }
+                headphoneAssignments = byte
+                return .uint32(UInt32(address.selector == .headphone1RoutingID ? byte & 15 : byte >> 4))
+            }
+        }
         switch address.selector {
         case .primaryBoardType, .secondaryBoardType:
             guard let s = state(), s.present else { throw DeviceConnectionError.unsupportedProperty(address.selector) }
@@ -211,6 +230,24 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
         guard isConnected else { throw DeviceConnectionError.notConnected }
         let selector = address.selector
+        if Self.isHeadphoneSource(selector) {
+            try headphoneLock.withLock {
+                try requireHeadphoneUnit()
+                guard let id = value.asUInt32, id < 16 else {
+                    throw DeviceConnectionError.typeMismatch(expected: "headphone source 0-15", got: "\(value)")
+                }
+                guard let previous = headphoneAssignments else {
+                    throw DeviceConnectionError.transportError("Unit B headphone sources have not been read")
+                }
+                let headphone: SymphonyIOHeadphoneRouting.Headphone = selector == .headphone1RoutingID ? .headphone1 : .headphone2
+                let byte = headphone == .headphone1 ? (previous & 0xF0) | UInt8(id) : (previous & 15) | UInt8(id << 4)
+                try transport.sendVendorCommand(command: 0x54, value: 0, payload: Data([byte]), port: Self.port)
+                headphoneAssignments = byte
+                try sendHeadphoneCrosspoint(headphone, sourceID: id)
+            }
+            notifyListeners(for: selector, value: value)
+            return
+        }
         if selector == .routing {
             // Selector 11 reports only a configured Symphony I/O; the driver
             // additionally checks 64-channel mode and peripheral identity.
@@ -218,7 +255,8 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
             let model = SymphonyRoutingModel(topology: .symphonyOnly, hostChannels: 64,
                 unitBConfigured: unitState?.present == true && unitState?.info?.setupComplete == true)
             guard model.allows(.unitRouting, at: .peripheral(.init(port: .two)!)),
-                  address.scope == .input, (192..<224).contains(address.element) else {
+                  ((address.scope == .input && (192..<224).contains(address.element)) ||
+                   (address.scope == .output && (224..<228).contains(address.element))) else {
                 throw DeviceConnectionError.unsupportedProperty(selector)
             }
         }
@@ -305,6 +343,63 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
             }
         }
         return replay
+    }
+
+    private static func isHeadphoneSource(_ selector: AudioPropertySelector) -> Bool {
+        selector == .headphone1RoutingID || selector == .headphone2RoutingID
+    }
+
+    private func requireHeadphoneUnit() throws {
+        let s = state()
+        let model = SymphonyRoutingModel(topology: .symphonyOnly, hostChannels: 64,
+            unitBConfigured: s?.present == true && s?.info?.setupComplete == true)
+        guard isConnected, model.allows(.monitor, at: .peripheral(.init(port: .two)!)) else {
+            throw DeviceConnectionError.notConnected
+        }
+    }
+
+    private func sendHeadphoneCrosspoint(_ headphone: SymphonyIOHeadphoneRouting.Headphone,
+                                         sourceID: UInt32) throws {
+        try requireHeadphoneUnit()
+        // The card feeds B's local XLink slots 0-31. Never use card slots 32-63
+        // as peripheral source bytes. The original follows the output pair:
+        // og_source/maestrolink/Software/SymphonyIO_Stream.cpp:773-801.
+        let left = UInt8(sourceID * 2)
+        let request = SymphonyIORequestBuilder.setHeadphoneCrosspoint(
+            headphone: headphone, leftSource: left, rightSource: left + 1)
+        try transport.sendVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
+                                        payload: request.data, port: Self.port)
+    }
+
+    /// Re-run after B's output reset or settings replay, even with Outputs closed.
+    /// Unknown sources cause no writes; this cache belongs to this connection only.
+    /// Evidence: og_source/maestrolink/Software/SymphonyIO.cpp:2716-2737;
+    /// og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:1003-1008.
+    public func reapplyHeadphoneCrosspoints() async throws {
+        try headphoneLock.withLock { try replayHeadphones() }
+    }
+
+    /// Card output reset/preset writes stay on the card; only the following
+    /// headphone replay goes to the peripheral. Refuse A's channels up front.
+    public func applyOutputRouting(_ routes: [ThunderboltCardRouting.Route],
+                                   send: @Sendable (ThunderboltCardRouting.Route) throws -> Void) async throws {
+        guard routes.allSatisfy({ (32..<64).contains($0.channel) }) else {
+            throw DeviceConnectionError.transportError("Not a unit B output route")
+        }
+        try headphoneLock.withLock {
+            for route in routes {
+                try requireHeadphoneUnit()
+                try send(route)
+            }
+            try replayHeadphones()
+        }
+    }
+
+    private func replayHeadphones() throws {
+        try requireHeadphoneUnit()
+        guard let byte = headphoneAssignments else { return }
+        try sendHeadphoneCrosspoint(.headphone1, sourceID: UInt32(byte & 15))
+        try sendHeadphoneCrosspoint(.headphone2, sourceID: UInt32(byte >> 4))
     }
 
     // MARK: - Private

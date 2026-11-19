@@ -164,6 +164,9 @@ struct InputRoutingView: View {
             }
         } else {
             routingGrid
+                .onChange(of: appState.activeUnit) { _, _ in
+                    presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
+                }
         }
     }
 
@@ -621,7 +624,9 @@ struct OutputRoutingView: View {
 
     // P3C-05: Routing presets
     @State private var presetNames: [String] = []
-    private let presetKey = "outputRoutingPresets"
+    private var presetKey: String { appState.activeUnit == .b ? "outputRoutingPresets.unitB" : "outputRoutingPresets" }
+    @State private var resetUnit: DeviceUnit = .a
+    @State private var resetTarget: AppState.UnitWriteTarget?
 
     private var routingCache: RoutingStateCache? {
         guard let id = appState.device?.identifier else { return nil }
@@ -653,6 +658,9 @@ struct OutputRoutingView: View {
             }
         } else {
             routingGrid
+                .onChange(of: appState.activeUnit) { _, _ in
+                    presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
+                }
         }
     }
 
@@ -679,6 +687,11 @@ struct OutputRoutingView: View {
                 PresetMenuButton(
                     presetNames: presetNames,
                     onSave: { name in
+                        if appState.activeUnit == .b {
+                            PresetManager.saveMultiRoutingPreset(name: name, routes: unitBRoutes, key: presetKey)
+                            presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
+                            return
+                        }
                         // Mixer rows are stored under fixed sentinels so a preset
                         // survives a change in DAW pair count (USB 8, ThunderBridge 16).
                         PresetManager.saveMultiRoutingPreset(
@@ -689,6 +702,18 @@ struct OutputRoutingView: View {
                     },
                     onLoad: { name in
                         if let stored = PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey)[name] {
+                            if appState.activeUnit == .b {
+                                let target = appState.unitWriteTarget
+                                Task {
+                                    do {
+                                        try await appState.applyUnitBOutputRouting(stored, target: target)
+                                        unitBRoutes = stored
+                                        unitBChosenRows = Set(stored.keys)
+                                        errorMessage = nil
+                                    } catch { errorMessage = error.localizedDescription }
+                                }
+                                return
+                            }
                             let preset = RoutingPresetRows.decode(stored, dawPairCount: swOutputPairCount, unitBActive: appState.unitBOnCard)
                                 .mapValues { $0.filter { $0 >= 0 && $0 < columns.count } }
                                 .filter { !$0.value.isEmpty }
@@ -1127,6 +1152,22 @@ struct OutputRoutingView: View {
     /// end up carrying — ADAT included, because that is the destination a wrong
     /// card silently re-points.
     private func requestRoutingReset() {
+        resetUnit = appState.activeUnit
+        resetTarget = appState.unitWriteTarget
+        if resetUnit == .b {
+            guard let layout = appState.unitBLayout,
+                  appState.unitBBoardSource(slot: 0) == .detected,
+                  appState.unitBBoardSource(slot: 1) == .detected else {
+                resetPrompt = RoutingResetPrompt(title: "Reset Output Routing", message: "Unit B I/O cards were not detected this session.", isRefusal: true)
+                return
+            }
+            let lines = layout.outputRoutingColumns.map { column in
+                let channel = Int(column.routingByte) - 32
+                return "Output \(channel + 1)-\(channel + 2) ← DAW \(channel + 33)-\(channel + 34)"
+            }
+            resetPrompt = RoutingResetPrompt(title: "Reset Unit B Output Routing", message: lines.joined(separator: "\n"), isRefusal: false)
+            return
+        }
         guard appState.device != nil else { return }
         let b1 = appState.primaryBoardReading
         let b2 = appState.secondaryBoardReading
@@ -1161,6 +1202,21 @@ struct OutputRoutingView: View {
     /// Only reachable through ``requestRoutingReset()``, which refuses unless both
     /// slots were genuinely detected this session.
     private func resetToDefaultRouting() async {
+        if resetUnit == .b {
+            guard let target = resetTarget, appState.isCurrent(target) else { return }
+            var defaults: [Int: Set<Int>] = [:]
+            for (col, column) in unitBColumns.enumerated() {
+                let channel = Int(column.routingByte) - 32
+                defaults[TwoUnitOutputRouting.defaultRow(unitBChannel: channel), default: []].insert(col)
+            }
+            do {
+                try await appState.applyUnitBOutputRouting(defaults, target: target)
+                unitBRoutes = defaults
+                unitBChosenRows = Set(defaults.keys)
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription }
+            return
+        }
         guard let device = appState.device else { return }
         let b1 = appState.primaryBoardReading
         let b2 = appState.secondaryBoardReading
