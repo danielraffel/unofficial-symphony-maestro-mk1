@@ -150,6 +150,9 @@ build_and_run() {
     if grep -q 'RetireForUpgrade' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_RETIRE -DSYMPHONY_DEXT_BUILD=1000)
     fi
+    if grep -q 'ReadUnitBState' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_UNITB)
+    fi
     mkdir -p "$out"
     echo "[trace] compiling the driver source ($label) for the host..."
     clang++ -std=c++17 -fblocks -O1 -Wall -Wno-unused-function -Wno-unused-variable \

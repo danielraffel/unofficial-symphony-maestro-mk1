@@ -282,6 +282,7 @@ struct SymphonyThunderbridge_IVars {
                                // reference on a failed rate change — NOT lastSampleRate,
                                // which lags after a post-broadcast failure (Codex round 4).
     uint8_t   runtimeTxSeq;   // XLink message sequence for runtime commands
+    uint8_t   runtimeTxSeq2;  // independent sequence for unit B on XLink2
     uint8_t   symphonyAddr;   // XLink device address (1 for first Symphony IO)
 
     // In-place Symphony link recovery (see MaybeRecoverSymphonyLink).
@@ -406,6 +407,13 @@ struct SymphonyThunderbridge_IVars {
     char      publishedInputName[64][20]; // what Core Audio has now; "" = no name set
     char      publishedOutputName[64][20]; // same, for the host outputs (33-64: converters on port 2 only)
     uint8_t   namingPrefix;               // unit's peripheral prefix byte (0x37); not A-Z = "A"
+    uint8_t   unitBBoardType[2];
+    bool      unitBBoardValid[2];
+    uint8_t   unitBPrefix;
+    uint8_t   unitBClockSource;
+    uint32_t  unitBSetupFlags;
+    uint32_t  unitBTxErrors;
+    bool      unitBConfigured;
 
     // ── EXPERIMENT (64ch, stage 1): second XLink port, discovery only ───────
     // portCount is 1 unless the matched personality carries SymphonyPortCount=2
@@ -907,7 +915,8 @@ static bool SendXLinkCommand(IOPCIDevice *dev, uint8_t memIndex,
 // Send a vendor write command to a device on the XLink bus.
 // This implements the full SimpleControlProtocolSymphony stack from the legacy daemon.
 // Returns true if all bytes were transmitted successfully.
-static bool SendVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
+static bool SendVendorRequestOn(IOPCIDevice *dev, uint8_t memIndex,
+                              uint64_t txRegister,
                               uint8_t xlinkAddr, uint8_t command,
                               uint32_t value, const uint8_t *payload, uint16_t payloadLen,
                               uint8_t &txSequence)
@@ -948,7 +957,7 @@ static bool SendVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
     // ── Layer 1: XLink MSG_BYTE transport ────────────────────────────────
     // Matches XLink::SendMessageBytes() — each byte via XLINK_CMD_MSG_BYTE.
     for (uint32_t i = 0; i < msgLen; i++) {
-        if (!SendXLinkCommand(dev, memIndex, xlinkAddr,
+        if (!SendXLinkCommandOn(dev, memIndex, txRegister, xlinkAddr,
                                kXLinkCmdMsgByte, message[i])) {
             STERR("VendorRequest: MSG_BYTE timeout at byte %u/%u (cmd=0x%02x)",
                   i, msgLen, command);
@@ -959,6 +968,15 @@ static bool SendVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
     STLOG("VendorRequest: sent cmd=0x%02x, %u payload bytes, %u total MSG_BYTE frames",
           command, payloadLen, msgLen);
     return true;
+}
+
+static bool SendVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
+                              uint8_t xlinkAddr, uint8_t command,
+                              uint32_t value, const uint8_t *payload, uint16_t payloadLen,
+                              uint8_t &txSequence)
+{
+    return SendVendorRequestOn(dev, memIndex, kRegXLink1TX, xlinkAddr, command, value,
+                               payload, payloadLen, txSequence);
 }
 
 // ── XLink RX / SimpleMessageProtocol Response path ───────────────────────────
@@ -1107,7 +1125,8 @@ struct SmpResponseParser {
 // Runs at Start()/board-detect time on the XLink init path — NOT the IRQ queue —
 // so the bounded IOSleep polling here is acceptable (same as WaitForLock).
 // Returns true on a verified response; false on TX failure or timeout.
-static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
+static bool ReadVendorRequestOn(IOPCIDevice *dev, uint8_t memIndex,
+                              uint64_t txRegister, uint64_t rxRegister,
                               uint8_t xlinkAddr, uint8_t command,
                               uint32_t value, uint8_t *outData, uint16_t outLen,
                               uint8_t &txSequence, bool pcieOrder)
@@ -1143,12 +1162,12 @@ static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
     // Drain any stale RX words before issuing the request.
     {
         uint32_t junk = 0;
-        while (ReadXLinkRXWord(dev, memIndex, pcieOrder, &junk)) { /* discard */ }
+        while (ReadXLinkRXWordOn(dev, memIndex, rxRegister, pcieOrder, &junk)) { /* discard */ }
     }
 
     // ── Layer 1: send each byte via MSG_BYTE ──
     for (uint32_t i = 0; i < msgLen; i++) {
-        if (!SendXLinkCommand(dev, memIndex, xlinkAddr,
+        if (!SendXLinkCommandOn(dev, memIndex, txRegister, xlinkAddr,
                                kXLinkCmdMsgByte, message[i])) {
             STERR("ReadVendorRequest: MSG_BYTE timeout at byte %u/%u (cmd=0x%02x)",
                   i, msgLen, command);
@@ -1162,7 +1181,7 @@ static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
     SmpResponseParser parser;
     for (int ms = 0; ms < 200; ms++) {
         uint32_t word = 0;
-        while (ReadXLinkRXWord(dev, memIndex, pcieOrder, &word)) {
+        while (ReadXLinkRXWordOn(dev, memIndex, rxRegister, pcieOrder, &word)) {
             uint8_t cmdField = (uint8_t)((word >> 9) & 0xFF);   // XLINK_DATA_CMD
             if (cmdField != kXLinkCmdMsgByte)
                 continue;                                        // ignore non-message words
@@ -1191,6 +1210,15 @@ static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
     }
     STERR("ReadVendorRequest: cmd=0x%02x TIMEOUT (no valid response in 200 ms)", command);
     return false;
+}
+
+static bool ReadVendorRequest(IOPCIDevice *dev, uint8_t memIndex,
+                              uint8_t xlinkAddr, uint8_t command,
+                              uint32_t value, uint8_t *outData, uint16_t outLen,
+                              uint8_t &txSequence, bool pcieOrder)
+{
+    return ReadVendorRequestOn(dev, memIndex, kRegXLink1TX, kRegXLink1RX, xlinkAddr,
+                               command, value, outData, outLen, txSequence, pcieOrder);
 }
 
 // ── Sample Rate Change ──────────────────────────────────────────────────────
@@ -3691,6 +3719,9 @@ static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)
         STLOG("Port 2 audio: refused — no unit with its data link up on port 2");
         return false;
     }
+
+    // Unit-B vendor bring-up is performed by the dedicated user-client path
+    // once the second bus is carrying audio; discovery remains side-effect free.
     STLOG("Port 2 audio: enabling at %.0f Hz (%u unit(s) on port 2)", rate, ivars->port2UnitCount);
 
     if (!Port2StopBothEngines(dev, mi)) {
@@ -3894,6 +3925,16 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     }
     s.sampleRate = __atomic_load_n(&ivars->namingSampleRate, __ATOMIC_ACQUIRE);
     s.prefix = __atomic_load_n(&ivars->namingPrefix, __ATOMIC_ACQUIRE);
+    SymphonyNamingState sB = {};
+    for (uint32_t b = 0; b < 2; b++) {
+        sB.boardKnown[b] = ivars->unitBBoardValid[b] && ivars->unitBConfigured;
+        sB.boardType[b] = ivars->unitBBoardType[b];
+        sB.opticalIsSPDIF[b] = s.opticalIsSPDIF[b];
+    }
+    sB.sampleRate = s.sampleRate;
+    sB.prefix = SymphonyIsPrefixLetter(ivars->unitBPrefix)
+        ? ivars->unitBPrefix
+        : (uint8_t)(SymphonyPrefixLetter(s.prefix) == 'Z' ? 'A' : SymphonyPrefixLetter(s.prefix) + 1);
 
     // Only a channel whose name differs from what Core Audio has is set: each
     // SetElementName notifies every client, and a rate change on a unit with
@@ -3905,14 +3946,15 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     BuildConverterChain(ivars, conv);
     const uint32_t convBase = ConvPort1(ivars) ? 0 : 32;           // first host channel converters name
     const char convPrefix = ConvPort1(ivars) ? 'A' : 'B';         // a Symphony I/O on port 1 is unit A
-    const uint32_t nameCount = convP2 ? 64 : 32;
+    const uint32_t nameCount = (convP2 || ivars->unitBConfigured) ? 64 : 32;
     auto convNames = [&](uint32_t n) { return ConvPort1(ivars) || (convP2 && n >= 32); };
     uint32_t changed = 0;
     for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedInputName[0])] = {};
-        const uint8_t source = n < 32 ? __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE) : 0;
+        const uint8_t source = n < 32 ? __atomic_load_n(&ivars->inputRouteSource[n], __ATOMIC_ACQUIRE)
+                                      : (uint8_t)(kSymphonyRoutingSourceIOBoard0 + (n - 32));
         if (convNames(n)) ConverterHostChannelName(conv, true, n - convBase, name, sizeof(name), convPrefix);
-        else if (!SymphonyHostInputName(s, source, name, sizeof(name))) name[0] = 0;
+        else if (!SymphonyHostInputName(n < 32 ? s : sB, source, name, sizeof(name))) name[0] = 0;
         if (strncmp(name, ivars->publishedInputName[n], sizeof(name)) == 0) continue;
         // A null name removes it, leaving Core Audio's default for that channel.
         OSString *str = name[0] ? OSString::withCString(name) : nullptr;
@@ -3925,7 +3967,9 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedOutputName[0])] = {};
         if (convNames(n)) ConverterHostChannelName(conv, false, n - convBase, name, sizeof(name), convPrefix);
-        else if (!SymphonyHostOutputName(s, n, name, sizeof(name))) name[0] = 0;
+        else if (n < 32) {
+            if (!SymphonyHostOutputName(s, n, name, sizeof(name))) name[0] = 0;
+        } else if (!SymphonyHostOutputName(sB, n - 32, name, sizeof(name))) name[0] = 0;
         if (strncmp(name, ivars->publishedOutputName[n], sizeof(name)) == 0) continue;
         OSString *str = name[0] ? OSString::withCString(name) : nullptr;
         ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Output, str);
@@ -4855,6 +4899,23 @@ kern_return_t SymphonyThunderbridge::ReadPort2State(uint32_t *outWords)
     return kIOReturnSuccess;
 }
 
+kern_return_t SymphonyThunderbridge::ReadUnitBState(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    SymphonyUnitBStateOutput o = {};
+    o.present = ivars->unitBConfigured ? 1u : 0u;
+    for (uint32_t i = 0; i < 2; i++) {
+        o.boardType[i] = ivars->unitBBoardType[i];
+        o.boardValid[i] = ivars->unitBBoardValid[i] ? 1 : 0;
+    }
+    o.prefix = ivars->unitBPrefix;
+    o.clockSource = ivars->unitBClockSource;
+    o.setupFlags = ivars->unitBSetupFlags;
+    o.txErrors = ivars->unitBTxErrors;
+    memcpy(outWords, &o, sizeof(o));
+    return kIOReturnSuccess;
+}
+
 // dext 131: kSelectorReadConverters. Driver state only, no bus access.
 kern_return_t SymphonyThunderbridge::ReadConverterState(uint32_t *outWords)
 {
@@ -5015,6 +5076,7 @@ kern_return_t SymphonyThunderbridge::PerformPortModeChange()
     // fell back) is left for the configuration change it asked for.
     __atomic_compare_exchange_n(&ivars->requestedPortMode, &want, card,
                                 false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    if (card == 64 && ivars->unitBConfigured) ScheduleChannelNames(ivars, this);
 
     IOLockLock(ivars->portPublishLock);
     if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) &&
@@ -8528,7 +8590,8 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
     uint8_t         command,
     uint32_t        value,
     const uint8_t  *payload,
-    uint16_t        payloadLen)
+    uint16_t        payloadLen,
+    uint8_t         port)
 {
     if (!ivars) {
         STERR("SendVendorCommand: no ivars");
@@ -8557,6 +8620,12 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
     q->DispatchSync(^{
         if (!XLinkTxAdmissible(ivars)) {
             STERR("SendVendorCommand: TX shut down / stopping — not sending");
+            result = kIOReturnNotReady;
+            return;
+        }
+
+        if (port > 1) { result = kIOReturnBadArgument; return; }
+        if (port == 1 && (!ivars->unitBConfigured || ivars->portMode != 64)) {
             result = kIOReturnNotReady;
             return;
         }
@@ -8730,14 +8799,16 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
 
         // dext 131: Symphony I/O vendor messages never go to converters (the
         // original sent them to Symphony I/O units only).
-        if (ivars->convPort1) {
+        if (port == 0 && ivars->convPort1) {
             STLOG("SendVendorCommand: cmd=0x%02x not sent — port 1 carries converters", command);
             result = kIOReturnUnsupported;
             return;
         }
-        bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                    ivars->symphonyAddr, command, value,
-                                    payload, payloadLen, ivars->runtimeTxSeq);
+        const uint64_t tx = port ? kRegXLink2TX : kRegXLink1TX;
+        uint8_t &seq = port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq;
+        bool ok = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, tx,
+                                      port ? 1 : ivars->symphonyAddr, command, value,
+                                      payload, payloadLen, seq);
         if (!ok) {
             STERR("SendVendorCommand: failed cmd=0x%02x value=0x%08x payload=%u",
                   command, value, payloadLen);
@@ -8807,7 +8878,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
 // transaction must share the same queue as writes so a readback cannot race a
 // pending routing or mixer command.
 kern_return_t SymphonyThunderbridge::ReadVendorCommand(
-    uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen)
+    uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen, uint8_t port)
 {
     if (!ivars || !outPayload || responseLen == 0 || responseLen > 64)
         return kIOReturnBadArgument;
@@ -8822,14 +8893,22 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
             result = kIOReturnNotReady;
             return;
         }
-        if (ivars->convPort1) {   // dext 131: never a Symphony I/O read to converters
+        if (port > 1 || (port == 1 && (!ivars->unitBConfigured || ivars->portMode != 64))) {
+            result = port == 1 ? kIOReturnNotReady : kIOReturnBadArgument;
+            return;
+        }
+        if (port == 0 && ivars->convPort1) {   // dext 131: never a Symphony I/O read to converters
             result = kIOReturnUnsupported;
             return;
         }
-        if (ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                              ivars->symphonyAddr, command, value,
-                              response, responseLen, ivars->runtimeTxSeq,
-        ivars->isLegacyPCIe2100)) {
+        uint8_t &seq = port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq;
+        const bool ok = ReadVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                              port ? kRegXLink2TX : kRegXLink1TX,
+                              port ? kRegXLink2RX : kRegXLink1RX,
+                              port ? 1 : ivars->symphonyAddr, command, value,
+                              response, responseLen, seq,
+                              ivars->isLegacyPCIe2100);
+        if (ok) {
             result = kIOReturnSuccess;
         } else {
             result = kIOReturnIOError;
@@ -8851,6 +8930,20 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
     }
     return result;
 }
+
+#if defined(SYMPHONY_REGISTER_TRACE_HOST)
+kern_return_t SymphonyThunderbridge::SendVendorCommand(uint8_t command, uint32_t value,
+                                                        const uint8_t *payload, uint16_t payloadLen)
+{
+    return SendVendorCommand(command, value, payload, payloadLen, 0);
+}
+
+kern_return_t SymphonyThunderbridge::ReadVendorCommand(uint8_t command, uint32_t value,
+                                                       uint8_t *outPayload, uint16_t responseLen)
+{
+    return ReadVendorCommand(command, value, outPayload, responseLen, 0);
+}
+#endif
 
 // ── ReadMeterBuffer ──────────────────────────────────────────────────────────
 // Snapshot the card FPGA meter DMA buffer (256 words) into outWords. Plain read of

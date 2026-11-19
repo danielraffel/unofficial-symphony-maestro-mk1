@@ -113,6 +113,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyRetireOutput),
     },
+    [kSelectorReadUnitB] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = 0,
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyUnitBStateOutput),
+    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -210,7 +218,7 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             input->command,
             input->value,
             input->payload,
-            input->payloadLen);
+            input->payloadLen, input->port);
 
         // Build output
         SymphonyVendorCommandOutput output;
@@ -336,7 +344,7 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         SymphonyVendorReadOutput output = {};
         output.responseLen = input->responseLen;
         kern_return_t r = ivars->driver->ReadVendorCommand(
-            input->command, input->value, output.payload, input->responseLen);
+            input->command, input->value, output.payload, input->responseLen, input->port);
         output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
@@ -349,6 +357,16 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         SymphonyDriverBuildOutput output = {};
         output.status = 0;
         output.build = (uint32_t)SYMPHONY_DEXT_BUILD;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadUnitB) {
+        if (!ivars->driver) return kIOReturnNotReady;
+        SymphonyUnitBStateOutput output = {};
+        kern_return_t r = ivars->driver->ReadUnitBState(reinterpret_cast<uint32_t *>(&output));
+        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;

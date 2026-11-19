@@ -44,7 +44,7 @@ cat > "$TMP/t.cpp" <<'CPP'
 static_assert(kSelectorReadDriverBuild == 6, "app asks selector 6");
 static_assert(kSelectorRetireForUpgrade == 7, "7 is the released retire selector");
 static_assert(kSelectorReadPort2State == 8, "app asks selector 8 for port 2");
-static_assert(kSelectorCount == 11, "dispatch table covers selectors 0-10");
+static_assert(kSelectorReadUnitB == 11 && kSelectorCount == 12, "dispatch table covers selectors 0-11");
 static_assert(sizeof(SymphonyDriverBuildOutput) == 8, "app reads two words");
 // Different output sizes are what make an old/new mismatch fail safe: an exp64
 // 9001-9003 dext answers selector 6 only with 64 bytes, so the app's 8-byte

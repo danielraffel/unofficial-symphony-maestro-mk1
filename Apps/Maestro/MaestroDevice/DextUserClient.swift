@@ -6,7 +6,7 @@
 /// to SendVendorCommand() → XLink → Symphony IO hardware.
 ///
 /// Wire format matches SymphonyThunderbridgeShared.h:
-///   {magic:4, command:1, reserved:3, value:4, payloadLen:2, payload:64} = 78 bytes
+///   {magic:4, command:1, port:1, reserved:2, value:4, payloadLen:2, payload:64} = 78 bytes
 
 import Foundation
 import IOKit
@@ -106,7 +106,8 @@ public final class DextUserClient: @unchecked Sendable {
     public func sendVendorCommand(
         command: UInt8,
         value: UInt32,
-        payload: Data = Data()
+        payload: Data = Data(),
+        port: UInt8 = 0
     ) throws {
         guard payload.count <= 64 else {
             throw DextUserClientError.payloadTooLarge(payload.count)
@@ -126,7 +127,7 @@ public final class DextUserClient: @unchecked Sendable {
             let ptr = buf.baseAddress!
             ptr.storeBytes(of: Self.magic, as: UInt32.self)
             ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
-            // reserved[3] at offsets 5-7 (zeroed by Data init)
+            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
             ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
             let payloadLen = UInt16(payload.count)
             ptr.storeBytes(of: payloadLen, toByteOffset: 12, as: UInt16.self)
@@ -442,7 +443,7 @@ public final class DextUserClient: @unchecked Sendable {
     /// views to distinguish live hardware state from cached/default state.
     static let vendorReadInputSize = 14
 
-    public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int) throws -> Data {
+    public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8 = 0) throws -> Data {
         guard (1...64).contains(responseLength) else { throw DextUserClientError.payloadTooLarge(responseLength) }
         lock.lock()
         let conn = connection
@@ -459,6 +460,7 @@ public final class DextUserClient: @unchecked Sendable {
             let ptr = p.baseAddress!
             ptr.storeBytes(of: Self.magic, as: UInt32.self)
             ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
+            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
             ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
             ptr.storeBytes(of: UInt16(responseLength), toByteOffset: 12, as: UInt16.self)
         }
@@ -476,6 +478,20 @@ public final class DextUserClient: @unchecked Sendable {
         return output.subdata(in: 8..<(8 + responseLength))
     }
 
+    /// Read the configured second Symphony I/O (selector 11), without bus traffic.
+    public func readUnitBState() -> UnitBState? {
+        lock.lock(); let conn = connection; lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        var out = [UInt8](repeating: 0, count: 40)
+        var outSize = out.count
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, 11, nil, 0, p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == 40 else { return nil }
+        func u32(_ off: Int) -> UInt32 { out.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off, as: UInt32.self) } }
+        return UnitBState(present: u32(4) != 0, boardType: [out[8], out[9]], boardValid: [out[10], out[11]], prefix: out[12], clockSource: out[13], setupFlags: u32(16), txErrors: u32(20))
+    }
+
     /// The driver's logical nValue for a request: mixer ID in the high word,
     /// channel in the low word.
     static func nValue(for request: USBControlRequest) -> UInt32 {
@@ -489,6 +505,21 @@ public final class DextUserClient: @unchecked Sendable {
             value: Self.nValue(for: request),
             payload: request.data
         )
+    }
+}
+
+public struct UnitBState: Sendable, Equatable {
+    public let present: Bool
+    public let boardType: [UInt8]
+    public let boardValid: [UInt8]
+    public let prefix: UInt8
+    public let clockSource: UInt8
+    public let setupFlags: UInt32
+    public let txErrors: UInt32
+    public init(present: Bool, boardType: [UInt8], boardValid: [UInt8], prefix: UInt8,
+                clockSource: UInt8, setupFlags: UInt32, txErrors: UInt32) {
+        self.present = present; self.boardType = boardType; self.boardValid = boardValid
+        self.prefix = prefix; self.clockSource = clockSource; self.setupFlags = setupFlags; self.txErrors = txErrors
     }
 }
 
