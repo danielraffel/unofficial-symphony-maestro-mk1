@@ -257,7 +257,7 @@ struct DeviceSettingsView: View {
                 }
             }
 
-// P3F-20: Audio Interface Mode display + device info
+// P3F-20: Audio Interface Mode (read-only; set on the unit)
             Section("Device") {
                 LabeledContent("Audio Interface Mode") {
                     HStack(spacing: 5) {
@@ -288,14 +288,83 @@ struct DeviceSettingsView: View {
                     .foregroundStyle(.secondary)
                 }
 
-                if let device = appState.unitDevice {
-                    LabeledContent("Model", value: device.identifier.displayName)
-                    LabeledContent("Mode", value: device.identifier.mode.displayName)
-                    LabeledContent("Channels", value: "\(device.identifier.mode.channelCount)")
-                }
+                // Model, mode and channel count are in System Setup › Device Info.
             }
 
-            // Auto-launch and notifications
+            // What you hear: hardware input passthrough, not an app preference.
+            Section("Monitoring") {
+                Picker("Monitoring Mode", selection: Binding(get: { routingMode }, set: { setRoutingMode($0) })) {
+                    Text("DAW").tag(0)
+                    Text("Direct Monitor").tag(1)
+                }
+                .pickerStyle(.segmented)
+                // Hardware-backed, so it carries the load gate itself.
+                .disabled(isLoading || !appState.preferenceViewScope(for: .a).isWritable)
+                .maestroHelp("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
+            }
+
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: $updates.automaticallyChecksForUpdates)
+                    .maestroHelp(UpdateChannelCopy.automaticCheckHelp)
+                    .unredacted()
+                Button("Check for Updates…", action: updates.checkForUpdates)
+                    .disabled(!updates.canCheckForUpdates)
+                    .unredacted()
+                UpdateChannelSettings()
+                Text("Updates download from the [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1). Installing an update may briefly interrupt audio and require an administrator password. Updates are never installed automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Diagnostics & Feedback") {
+                // Diagnostics is offered on the Beta channel for now
+                // (DiagnosticsAvailability.showOnStable).
+                if DiagnosticsAvailability.showsSwitch(betaChannel: updates.effectiveChannel == .beta,
+                                                       recording: diagnostics.isRecording) {
+                    DiagnosticsSettingsRow()
+                        .unredacted()
+                }
+                HStack(spacing: 12) {
+                    Link("Report a Bug ↗", destination: FeedbackLinks.reportBug)
+                        .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
+                    Link("Discuss on Gearspace ↗", destination: FeedbackLinks.discussion)
+                        .maestroHelp("Open the Symphony I/O thread on Gearspace in your browser to ask questions and share tips.")
+                }
+                .unredacted()
+                Text("This is a community project. Please don't contact Apogee for support with it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Connection") {
+                Toggle("Launch Maestro automatically when connecting a device", isOn: $autoLaunchEnabled)
+                    .onChange(of: autoLaunchEnabled) { _, enabled in
+                        AutoLaunchManager.shared.setEnabled(enabled)
+                    }
+                    .maestroHelp("Install a LaunchAgent that opens Maestro when a Symphony IO is plugged in")
+
+                Toggle("Automatically switch to Symphony when connected", isOn: $autoSwitchToSymphony)
+                    .maestroHelp("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
+
+                if autoSwitchToSymphony {
+                    Picker("Preferred USB output", selection: $preferredUSBOutput) {
+                        Text("Maestro USB (Recommended)").tag(0)
+                        Text("USB Audio (No Keyboard Volume)").tag(1)
+                    }
+                    .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
+                }
+
+                Toggle("USB connection health check", isOn: $usbHealthCheckEnabled)
+                    .onChange(of: usbHealthCheckEnabled) { _, enabled in
+                        if enabled { appState.startUSBHealthCheck() }
+                        else { appState.stopUSBHealthCheck() }
+                    }
+                    .maestroHelp("Periodically verify USB connectivity and automatically recover stale connections. Enable if your device disconnects during sleep/wake or after cable bumps.")
+
+                Toggle("Auto-recover mixer state on USB reconnect", isOn: $autoRecoverMixerState)
+                    .maestroHelp("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")
+            }
+
             Section("Preferences") {
                 Picker("Appearance", selection: $appearance) {
                     ForEach(AppAppearance.allCases) { option in
@@ -309,66 +378,11 @@ struct DeviceSettingsView: View {
                 Toggle("Show tooltips", isOn: $showTooltips)
                 .maestroHelp("Show short explanations when you hold the pointer over controls.")
 
-                Toggle("Automatically check for updates", isOn: $updates.automaticallyChecksForUpdates)
-                    .maestroHelp(UpdateChannelCopy.automaticCheckHelp)
-                    .unredacted()
-                Button("Check for Updates…", action: updates.checkForUpdates)
-                    .disabled(!updates.canCheckForUpdates)
-                    .unredacted()
-                UpdateChannelSettings()
-                Text("Updates download from the [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1). Installing an update may briefly interrupt audio and require an administrator password. Updates are never installed automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                // Beta only for now (DiagnosticsAvailability.showOnStable).
-                if DiagnosticsAvailability.showsSwitch(betaChannel: updates.effectiveChannel == .beta,
-                                                       recording: diagnostics.isRecording) {
-                    DiagnosticsSettingsRow()
-                        .unredacted()
-                }
-
                 Toggle("Remember Input, Output, and Mixer scroll positions", isOn: $rememberControlTabScrollPositions)
                     .maestroHelp("Keep each wide control tab at its current horizontal position until Maestro quits")
 
-                Toggle("Launch Maestro automatically when connecting a device", isOn: $autoLaunchEnabled)
-                    .onChange(of: autoLaunchEnabled) { _, enabled in
-                        AutoLaunchManager.shared.setEnabled(enabled)
-                    }
-                    .maestroHelp("Install a LaunchAgent that opens Maestro when a Symphony IO is plugged in")
-
                 Toggle("Display pop-ups", isOn: $popupsEnabled)
                     .maestroHelp("Show floating volume overlay when adjusting levels via media keys")
-
-                Toggle("USB connection health check", isOn: $usbHealthCheckEnabled)
-                    .onChange(of: usbHealthCheckEnabled) { _, enabled in
-                        if enabled { appState.startUSBHealthCheck() }
-                        else { appState.stopUSBHealthCheck() }
-                    }
-                    .maestroHelp("Periodically verify USB connectivity and automatically recover stale connections. Enable if your device disconnects during sleep/wake or after cable bumps.")
-
-                Toggle("Auto-recover mixer state on USB reconnect", isOn: $autoRecoverMixerState)
-                    .maestroHelp("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")
-
-                Toggle("Automatically switch to Symphony when connected", isOn: $autoSwitchToSymphony)
-                    .maestroHelp("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
-
-                if autoSwitchToSymphony {
-                    Picker("Preferred USB output", selection: $preferredUSBOutput) {
-                        Text("Maestro USB (Recommended)").tag(0)
-                        Text("USB Audio (No Keyboard Volume)").tag(1)
-                    }
-                    .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
-                }
-
-                Picker("Monitoring Mode", selection: Binding(get: { routingMode }, set: { setRoutingMode($0) })) {
-                    Text("DAW").tag(0)
-                    Text("Direct Monitor").tag(1)
-                }
-                .pickerStyle(.segmented)
-                // Hardware-backed, unlike the rest of this section, so it carries
-                // the load gate itself rather than inheriting one from the Section.
-                .disabled(isLoading || !appState.preferenceViewScope(for: .a).isWritable)
-                .maestroHelp("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
             }
 
             if let error = errorMessage {

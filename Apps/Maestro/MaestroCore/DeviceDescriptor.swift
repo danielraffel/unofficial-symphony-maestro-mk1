@@ -1279,7 +1279,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     /// What the driver serving the ThunderBridge says its build is. Nil when
     /// the app has no ThunderBridge connection open and so did not ask.
     public var servingDextBuild: ServingDextBuild?
-    /// The update channel the app follows (Device Settings › Preferences), so a
+    /// The update channel the app follows (Device Settings › Updates), so a
     /// pasted report says whether the person is on Stable or Beta. Nil when not
     /// known yet; the line is then left out.
     public var updateChannel: UpdateChannel?
