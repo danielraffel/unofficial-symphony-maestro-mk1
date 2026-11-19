@@ -521,16 +521,20 @@ struct InputControlsView: View {
         print("[Maestro] CARD SIMULATION: preset analog levels applied to \(presets.compactMap { $0 }.count) channel(s)")
     }
 
-    private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async {
-        guard let device = appState.device else { return }
+    @discardableResult
+    private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
+        guard let device = appState.device else { return false }
         do {
             let element = UInt32(index)
             try await device.setProperty(
                 PropertyAddress(selector: selector, scope: .input, element: element),
                 value: value
             )
+            return true
         } catch {
             print("[Maestro] Input channel write \(selector) ch\(index) failed: \(error)")
+            errorMessage = "Could not update input channel \(index + 1)."
+            return false
         }
     }
 
@@ -578,7 +582,10 @@ struct InputControlsView: View {
             if clearedPhantom {
                 await writeChannelProperty(index, .phantom, value: .bool(false))
             }
-            await writeChannelProperty(index, .analogIOType, value: .uint32(packed))
+            if !(await writeChannelProperty(index, .analogIOType, value: .uint32(packed))) {
+                channels[index] = before
+                saveChannelStates()
+            }
             if sendsGain {
                 // Re-assert gain: Mic (0-85) and Instrument (0-65) are separate
                 // hardware gain stages, so the value must be re-sent after a swap.

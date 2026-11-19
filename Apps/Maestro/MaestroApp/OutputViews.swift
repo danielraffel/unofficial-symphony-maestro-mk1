@@ -1051,9 +1051,15 @@ struct OutputControlsView: View {
     private func applyAnalogRefChange(_ index: Int, level: UInt32) {
         guard channels.indices.contains(index),
               OutputChannelLogic.offersAnalogRef(level) else { return }
+        let before = channels[index]
         OutputChannelLogic.applyAnalogRefChange(&channels, channel: index, to: level)
-        Task { await writeOutputProperty(index, .analogIOType,
-                                         value: .uint32(outputAnalogIOTypeWithTrim(index))) }
+        Task {
+            if !(await writeOutputProperty(index, .analogIOType,
+                                           value: .uint32(outputAnalogIOTypeWithTrim(index)))) {
+                channels[index] = before
+                saveChannelStates()
+            }
+        }
 
         if Self.optionKeyIsDown {
             for i in OutputChannelLogic.applyAnalogRefToAll(&channels, to: level, excluding: index) {
@@ -1098,16 +1104,20 @@ struct OutputControlsView: View {
 
     // MARK: - Property Writes
 
-    private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async {
-        guard let device = appState.device else { return }
+    @discardableResult
+    private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
+        guard let device = appState.device else { return false }
         do {
             let element = UInt32(index)
             try await device.setProperty(
                 PropertyAddress(selector: selector, scope: .output, element: element),
                 value: value
             )
+            return true
         } catch {
             print("[Maestro] Output channel write \(selector) ch\(index) failed: \(error)")
+            errorMessage = "Could not update output channel \(index + 1)."
+            return false
         }
     }
 
@@ -1116,7 +1126,7 @@ struct OutputControlsView: View {
     private func outputAnalogIOTypeWithTrim(_ index: Int) -> UInt32 {
         guard index < channels.count else { return 1 }
         let type = channels[index].analogRefLevel
-        let trimTenths = Int8(clamping: Int(channels[index].trim * 10))
+        let trimTenths = Int8(clamping: Int((channels[index].trim * 10).rounded()))   // rounded, as the connect replay (0.3 dB is 2.999... tenths)
         let trimByte = UInt32(UInt8(bitPattern: trimTenths))
         return (trimByte << 8) | type
     }

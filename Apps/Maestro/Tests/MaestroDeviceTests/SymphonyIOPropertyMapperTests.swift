@@ -32,6 +32,14 @@ struct SymphonyIOPropertyMapperTests {
         #expect(request.index == 3, "Channel 3 in wIndex")
     }
 
+    @Test func analogInputTypeReadIncludesInputBit() throws {
+        let request = try SymphonyIOPropertyMapper.buildReadRequest(
+            for: PropertyAddress(selector: .analogIOType, scope: .input, element: 3))
+        #expect(request.request == SymphonyIOCommand.currentAnalogInputType.rawValue)
+        #expect(USBValueEncoding.combine(wValue: request.value, wIndex: request.index)
+                 == USBValueEncoding.channelValue(channel: 3, isOutput: false))
+    }
+
     @Test func phantomReadRequest() throws {
         let address = PropertyAddress(selector: .phantom, element: 0)
         let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
