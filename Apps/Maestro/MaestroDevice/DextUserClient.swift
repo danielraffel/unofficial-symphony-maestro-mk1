@@ -597,10 +597,11 @@ public struct UnitBState: Sendable, Equatable {
     public let clockSource: UInt8
     public let setupFlags: UInt32
     public let txErrors: UInt32
+    public let generation: UInt32
     public init(present: Bool, boardType: [UInt8], boardValid: [UInt8], prefix: UInt8,
-                clockSource: UInt8, setupFlags: UInt32, txErrors: UInt32) {
+                clockSource: UInt8, setupFlags: UInt32, txErrors: UInt32, generation: UInt32 = 0) {
         self.present = present; self.boardType = boardType; self.boardValid = boardValid
-        self.prefix = prefix; self.clockSource = clockSource; self.setupFlags = setupFlags; self.txErrors = txErrors
+        self.prefix = prefix; self.clockSource = clockSource; self.setupFlags = setupFlags; self.txErrors = txErrors; self.generation = generation
     }
 
     /// Decode `SymphonyUnitBStateOutput` (40 bytes): status, present, board
@@ -611,7 +612,7 @@ public struct UnitBState: Sendable, Equatable {
         func u32(_ off: Int) -> UInt32 { bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off, as: UInt32.self) } }
         guard u32(0) == 0 else { return nil }
         return UnitBState(present: u32(4) != 0, boardType: [bytes[8], bytes[9]], boardValid: [bytes[10], bytes[11]],
-                          prefix: bytes[12], clockSource: bytes[13], setupFlags: u32(16), txErrors: u32(20))
+                          prefix: bytes[12], clockSource: bytes[13], setupFlags: u32(16), txErrors: u32(20), generation: u32(24))
     }
 
     /// The transport-free view the app works with; nil unless unit B is configured.

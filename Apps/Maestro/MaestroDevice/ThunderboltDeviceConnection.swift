@@ -302,6 +302,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// writes and preset recall. Never hold it across an async suspension.
     public func replayTwoUnits(_ plan: TwoUnitReplay, unitB: ThunderboltUnitBConnection,
                                recoveryCount: UInt32,
+                               unitBGeneration: UInt32,
                                shouldContinue: @Sendable @escaping () -> Bool = { true }) throws {
         presetLock.lock()
         defer { presetLock.unlock() }
@@ -319,6 +320,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                     && model.allows(.monitor, at: .peripheral(.init(port: port)!))
             }), isConnected, unitB.isConnected, link?.recoveryCount == recoveryCount,
                   stateB?.boardType == plan.unitBBoards, stateB?.boardValid == [1, 1],
+                  stateB?.generation == unitBGeneration,
                   TwoUnitReplay.ready(channels: channels, link: link, unitB: stateB,
                                       port2Locked: (secondPortState()?.flags ?? 0) & SecondPortState.flagLocked != 0) else {
                 throw DeviceConnectionError.notConnected
@@ -356,7 +358,6 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         }, unlock: { unit in
             if unit == .b { return try unitB.finishRecovery() }
             try self.dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
-            try validate()
             return try self.dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1) == Data([0])
         })
     }

@@ -424,6 +424,7 @@ struct SymphonyThunderbridge_IVars {
     uint8_t   unitBClockSource;
     uint32_t  unitBSetupFlags;
     uint32_t  unitBTxErrors;
+    uint32_t  unitBGeneration;
     bool      unitBConfigured;
     // Default enabled: og_source/maestrolink/Software/SymphonyController.cpp:2708.
     uint32_t  loopSyncConfig; // xlinkQueue only, default 0 = enabled, master A
@@ -3692,6 +3693,23 @@ static void Port2ProgramRouting(SymphonyThunderbridge_IVars *ivars, bool enable)
     }
 }
 
+// 64→32 policy: B RX slots are invalid once port 2 is stopped. Restore a
+// safe single-unit identity route here; Maestro may then overlay its saved
+// 32-channel scope.
+static void RestorePort1InputRoutesAfter64(SymphonyThunderbridge_IVars *ivars)
+{
+    // Symphony I/O topologies only: converters re-apply their own routing on a
+    // port-mode change (ApplyConverterRouting), and their traces stay unchanged.
+    if (ivars->convPort1 ||
+        (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) != 0)
+        return;
+    for (uint32_t host = 0; host < kMaxChannelsPerPort; ++host) {
+        const uint32_t word = __atomic_load_n(&ivars->cardInputRoute[host], __ATOMIC_ACQUIRE);
+        if ((word & 0xFFu) >= kPort2FirstChannel)
+            WriteCardInputRoute(ivars, host, (kTDM_XLinkRX0 + host) | kRoutingEnable);
+    }
+}
+
 // The four port-2 DMA buffer registers (og cmdSetBuffers). on: sizes in words
 // and the device-visible addresses, then both addresses are read back; returns
 // false if the card did not keep them. off: zero, as the driver has always
@@ -3914,6 +3932,7 @@ static void PublishSelectedMonitor(SymphonyThunderbridge_IVars *ivars)
 
 static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
 {
+    ++ivars->unitBGeneration;
     const bool was = ivars->unitBConfigured;
     ivars->unitBConfigured = false;
     for (uint32_t ch = 0; ch < 8; ++ch)
@@ -3955,6 +3974,7 @@ static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, u
 // and its unit addressed; nothing is sent unless the unit answers a vendor read.
 static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
 {
+    ++ivars->unitBGeneration;
     // setupFlags is already part of selector 11.  Keep bit 0 as the historic
     // "configured" value and expose the first failed mandatory stage in the
     // high byte so the app can report why unit B fell back without an ABI
@@ -4259,6 +4279,7 @@ static void DisablePort2Audio(SymphonyThunderbridge_IVars *ivars, uint32_t outco
     const uint8_t mi = ivars->barMemoryIndex;
     const bool wasRunning = Port2StopBothEngines(dev, mi);
     Port2ProgramRouting(ivars, false);
+    RestorePort1InputRoutesAfter64(ivars);
     Port2ProgramBuffers(ivars, false);
     Port2SilenceBuffers(ivars);
     // Port 2 off again, as the original's SetNumPorts(1) (XLink.cpp:906-907).
@@ -5431,6 +5452,7 @@ kern_return_t SymphonyThunderbridge::ReadUnitBState(uint32_t *outWords)
     o.clockSource = ivars->unitBClockSource;
     o.setupFlags = ivars->unitBSetupFlags;
     o.txErrors = ivars->unitBTxErrors;
+    o.reserved2[0] = ivars->unitBGeneration;
     memcpy(outWords, &o, sizeof(o));
     return kIOReturnSuccess;
 }

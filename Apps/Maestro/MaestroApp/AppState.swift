@@ -856,6 +856,7 @@ final class AppState {
 
     var symphonyCardInputNamingRevision = 0
     var symphonyCardInputEdits: [Int: Int] = [:]
+    @ObservationIgnored var symphonyCardInputVersion: UInt64 = 0
     @ObservationIgnored var symphonyCardInputTail: Task<Bool, Never>?
 
     // MARK: Converter routing
@@ -1271,6 +1272,7 @@ final class AppState {
 
     @MainActor
     private func applyPortSelection(id: UInt32?) {
+        let was64 = portSelection.selection?.channelCount == 64
         let shown = currentSecondPortState()
         if shown != secondPortState { secondPortState = shown }
         var model = portSelection
@@ -1286,6 +1288,13 @@ final class AppState {
             portSelection = model
             print("[Maestro] Port selection: \(model.selection?.name ?? "none")"
                   + (model.notice.map { " (\($0))" } ?? ""))
+        }
+        if was64, model.selection?.channelCount != 64 {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, self.portSelection.selection?.channelCount == 32 else { return }
+                await self.replaySymphonyCardInputs()
+            }
         }
         refreshSecondPortState()
     }

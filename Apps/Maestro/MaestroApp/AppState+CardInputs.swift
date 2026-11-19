@@ -27,32 +27,41 @@ extension AppState {
         guard let tb = device as? ThunderboltDeviceConnection,
               let store = symphonyCardInputStore else { return false }
         let previous = symphonyCardInputTail
+        let admissionVersion = symphonyCardInputVersion
         let task = Task { @MainActor [weak self] in
             _ = await previous?.value
             guard let self, self.device as? ThunderboltDeviceConnection === tb,
                   self.symphonyCardInputStore?.key == store.key else { return false }
+            let effectiveEdits = admissionVersion == self.symphonyCardInputVersion ? edits : self.symphonyCardInputEdits
             let routing = self.symphonyCardInputs
             let commands: [ConverterRouting.Command]
             if reset {
                 guard let command = routing.resetCommand else { return false }
                 commands = [command]
             } else {
-                commands = routing.commands(edits: edits)
-                guard commands.count == edits.count else { return false }
+                commands = routing.commands(edits: effectiveEdits)
+                guard commands.count == effectiveEdits.count else { return false }
             }
-            let accepted = await Task.detached(priority: .userInitiated) {
-                var accepted: [ConverterRouting.Command] = []
-                for command in commands {
-                    do { try tb.sendConverterRouting(command); accepted.append(command) }
-                    catch { break }
-                }
-                return accepted
+            // The store is only touched under the connection's transaction lock
+            // (hardware writes and their persistence commit together).
+            nonisolated(unsafe) let lockedStore = store
+            let accepted: [ConverterRouting.Command] = await Task.detached(priority: .userInitiated) { () -> [ConverterRouting.Command] in
+                (try? tb.withPresetLock { () throws -> [ConverterRouting.Command] in
+                    var accepted: [ConverterRouting.Command] = []
+                    for command in commands {
+                        do { try tb.sendConverterRouting(command); accepted.append(command) }
+                        catch { break }
+                    }
+                    let saved = SymphonyCardInputRouting.applying(accepted, to: lockedStore.load())
+                    lockedStore.save(saved)
+                    return accepted
+                }) ?? []
             }.value
             guard self.device as? ThunderboltDeviceConnection === tb,
                   self.symphonyCardInputStore?.key == store.key else { return false }
             let saved = SymphonyCardInputRouting.applying(accepted, to: store.load())
-            store.save(saved)
             self.symphonyCardInputEdits = saved
+            self.symphonyCardInputVersion &+= 1
             return accepted.count == commands.count
         }
         symphonyCardInputTail = task
@@ -62,7 +71,10 @@ extension AppState {
     @MainActor
     func replaySymphonyCardInputs() async {
         guard let store = symphonyCardInputStore else { return }
-        symphonyCardInputEdits = store.load()
+        let loaded = store.load()
+        symphonyCardInputEdits = symphonyCardInputs.channelCount == 32
+            ? SymphonyCardInputTransitionPolicy.restoreSingleUnitRoutes(loaded)
+            : loaded
         if !(await applySymphonyCardInputs(symphonyCardInputEdits)) {
             print("[Maestro] Card input routing replay refused")
         }

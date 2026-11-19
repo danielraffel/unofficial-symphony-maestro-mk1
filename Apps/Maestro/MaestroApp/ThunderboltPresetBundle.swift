@@ -110,6 +110,9 @@ extension AppState {
         let bDigitalKey = unitBDigitalSettingsKey
         let recallWarnings = PresetCaptureWarnings()
         let cardInputSupported = if case .build(let build) = servingDextBuild { build >= 132 } else { false }
+        let admissionFence = await Task.detached(priority: .utility) {
+            (connection.linkState()?.recoveryCount, connection.readUnitBState()?.generation)
+        }.value
         let skip = preset.unitBSkipReason(layout: bLayout, configured: b != nil && unitBInputRoutingAllowed
             && unitBBoardSource(slot: 0) == .detected && unitBBoardSource(slot: 1) == .detected)
         let recallB = preset.unitB != nil && skip == nil
@@ -138,6 +141,13 @@ extension AppState {
         }.value
         await refreshAfterRecall()
         guard device === connection else { throw DeviceConnectionError.notConnected }
+        let completionFence = await Task.detached(priority: .utility) {
+            (connection.linkState()?.recoveryCount, connection.readUnitBState()?.generation)
+        }.value
+        guard admissionFence.0 == completionFence.0,
+              !recallB || admissionFence.1 == completionFence.1 else {
+            throw ThunderboltPreset.RecallError.failed("the link or unit-B generation changed; recall was only partially applied")
+        }
         if recallB, let saved = preset.unitB, let bLayout, unitBDevice === b {
             if !saved.metadata.channelNames.isEmpty {
                 UserDefaults.standard.set(String(data: try JSONEncoder().encode(saved.metadata.channelNames), encoding: .utf8), forKey: mixerNamesKey(unit: .b))
@@ -159,6 +169,10 @@ extension AppState {
             + (warningText.isEmpty ? "" : " " + warningText.joined(separator: " "))
         // Commit the app's copy only after hardware recall and ready read-back.
         // No view needs to be open for any of the writes above.
+        // Commit the app shadow while holding the same ordered owner as the
+        // hardware writes. A queued replay cannot interleave between recall
+        // completion and persistence.
+        try connection.withPresetLock {
         let meta = preset.metadata
         if !meta.inputChannelStates.isEmpty { channelStateStore.save(meta.inputChannelStates, for: ChannelStateStore.inputKey) }
         if !meta.outputChannelStates.isEmpty { channelStateStore.save(meta.outputChannelStates, for: ChannelStateStore.outputKey) }
@@ -190,6 +204,7 @@ extension AppState {
         if !legacy, cardChannels == 64, let bLayout {
             let sources = try ThunderboltPreset.cardTable(preset.outputRoutes.map(Int.init), channels: 64)
             unitBOutputRoutingCache?.save(outputGrid(sources: Array(sources.dropFirst(32)).map(UInt8.init), layout: bLayout, channels: 64))
+        }
         }
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
         await refreshChannelNaming()

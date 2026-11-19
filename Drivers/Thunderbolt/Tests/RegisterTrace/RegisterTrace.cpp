@@ -3246,11 +3246,11 @@ static void RunPreampHostRoutes()
     r.card.port[1].kind = Port::Empty;
     drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
     const size_t removed = r.card.lines.size();
-    CHECK(drv->RequestPhantom(1, false) == kIOReturnNotReady &&
-          drv->RequestMicGain(1, 13) == kIOReturnNotReady, "B10: removed B refuses phantom and gain");
+    CHECK(drv->RequestPhantom(1, false) == kIOReturnSuccess &&
+          drv->RequestMicGain(1, 13) == kIOReturnSuccess, "B10: removed B falls back to saved A route");
     HostPump();
-    CHECK(Commands(r.card, removed, kRegXLink1TX, 0x10).empty() &&
-          Commands(r.card, removed, kRegXLink2TX, 0x10).empty(), "B10: removal never falls back to A");
+    CHECK(!Commands(r.card, removed, kRegXLink1TX, 0x10).empty() &&
+          Commands(r.card, removed, kRegXLink2TX, 0x10).empty(), "B10: removal targets A after 64→32 fallback");
     Finish(o, r);
 }
 
