@@ -3,5 +3,6 @@
   "buildNumber": 1059,
   "dextVersion": "0.11.7",
   "dextBuild": 133,
-  "dextPortCount": 2
+  "dextPortCount": 2,
+  "dextCDHash": "4dcd36b742ac3df59c421ec3f2e84284a0310088"
 }
