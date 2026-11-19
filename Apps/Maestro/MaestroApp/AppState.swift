@@ -2516,9 +2516,17 @@ final class AppState {
         }
         let replay: DeviceSettingsReplay
         if let tb = device as? ThunderboltDeviceConnection {
-            let link = await Task.detached(priority: .utility) { tb.linkState() }.value
-            guard self.device === tb else { return }
-            applyPhantomObservations(link)
+            if cardLayout.slot2 == .micPre8 {
+                let link = await Task.detached(priority: .utility) { tb.linkState() }.value
+                // The read suspends the main actor. Recheck every admission
+                // guard before applying a single-unit replay; a converter or
+                // two-unit transition must never inherit this target.
+                guard unitAIdentity != nil, connectedUnit == nil,
+                      connectionMode == .hardware, isHardwareInitialized,
+                      !usesTwoUnitReplay, converterSystem == nil,
+                      self.device === tb else { return }
+                applyPhantomObservations(link)
+            }
             replay = await tb.reapplyStoredSettings()
             // The monitor mode is shown outside the Output tab too; start from
             // the saved one rather than the built-in default.

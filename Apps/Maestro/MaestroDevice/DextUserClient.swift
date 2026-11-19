@@ -257,7 +257,9 @@ public final class DextUserClient: @unchecked Sendable {
         guard conn != IO_OBJECT_NULL else { return nil }
         // Negotiate once per connection. The optional tail piggybacks on the
         // existing health read; old drivers still receive their exact ABI.
-        for count in knownCount.map({ [$0] }) ?? [48, 16, 12] {
+        // Retry the optional tail a few times before falling back to the legacy
+        // prefix. A transient first read must not pin this connection to 16 words.
+        for count in knownCount.map({ [$0] }) ?? [48, 48, 48, 16, 12] {
             var out = [UInt32](repeating: 0, count: count)
             var outSize = out.count * MemoryLayout<UInt32>.size
             let kr = out.withUnsafeMutableBytes { p in
@@ -269,7 +271,10 @@ public final class DextUserClient: @unchecked Sendable {
                 let current = connection == conn && connectionGeneration == generation
                 if current { linkStateWordCount = count }
                 lock.unlock()
-                return current ? decoded : nil
+                // A reconnect can race this read. The decoded answer is still
+                // the selector-5 result; only cache negotiation for the live
+                // connection, and let the caller's identity guard discard stale use.
+                return decoded
             }
         }
         return nil

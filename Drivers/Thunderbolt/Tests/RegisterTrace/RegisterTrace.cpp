@@ -3266,6 +3266,12 @@ static void RunPreampHostRoutes()
 #ifdef kSymphonyPhantomObservationWords
     drv->ReadPhantomObservations(observed);
     CHECK(memcmp(beforeInvalid, observed, sizeof(observed)) == 0, "P2: ON does not change OFF receipts");
+    uint8_t phantomOn[] = {1};
+    CHECK(drv->SendVendorCommand(0xC6, 0, phantomOn, sizeof(phantomOn), 1) == kIOReturnSuccess,
+          "P2: Maestro ON accepted on B0");
+    drv->ReadPhantomObservations(observed);
+    CHECK(observed[16] == 0 && observed[17] == 0,
+          "P2: later Maestro ON clears the older unread B0 OFF receipt");
 #endif
 
     // B11: admission is not permission to use a stale physical route.  Change
@@ -3404,6 +3410,19 @@ static void RunPreampHostRoutes()
     HostPump();
     CHECK(!Commands(r.card, removed, kRegXLink1TX, 0x10).empty() &&
           Commands(r.card, removed, kRegXLink2TX, 0x10).empty(), "B10: removal targets A after 64→32 fallback");
+#ifdef kSymphonyPhantomObservationWords
+    // An admitted OFF whose MSG_BYTE send times out must not manufacture a
+    // receipt: the app may clear saved authority only for a confirmed send.
+    uint32_t beforeFailedSend[32];
+    drv->ReadPhantomObservations(beforeFailedSend);
+    r.card.port[0].txBusy = true;
+    CHECK(drv->RequestPhantom(1, false) == kIOReturnSuccess, "P2: admitted OFF queued before TX failure");
+    HostPump();
+    r.card.port[0].txBusy = false;
+    drv->ReadPhantomObservations(observed);
+    CHECK(memcmp(beforeFailedSend, observed, sizeof(observed)) == 0,
+          "P2: failed admitted OFF leaves receipt unchanged");
+#endif
     Finish(o, r);
 }
 

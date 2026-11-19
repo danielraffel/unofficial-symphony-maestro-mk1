@@ -59,4 +59,21 @@ import Testing
         #expect(!saved[0].phantom)
         #expect(saved[0].phantomProvenance == nil)
     }
+
+    @Test func receiptIsAcknowledgedBeforeALaterMaestroOn() throws {
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let store = ChannelStateStore(defaults: defaults,
+            layout: CardLayout(slot1: .analogADDA16, slot2: .micPre8),
+            isSimulatingCards: false, identity: 42)
+        var receipts = Array(repeating: UInt64(0), count: 16)
+        receipts[0] = 77
+        let firstApply = PhantomObservation.apply(receipts, to: store)
+        #expect(!firstApply)
+        var on = InputChannelState(inputType: 3)
+        on.recordPhantomRequest(true, identity: 42, boardSlot: 1, channel: 0)
+        store.save([on], for: ChannelStateStore.inputKey)
+        let secondApply = PhantomObservation.apply(receipts, to: store)
+        #expect(!secondApply)
+        #expect(store.load(ChannelStateStore.inputKey, as: [InputChannelState].self)?[0].phantom == true)
+    }
 }

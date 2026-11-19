@@ -236,7 +236,10 @@ struct SymphonyThunderbridge_IVars {
     // lane's drain block serializes on the shared xlinkQueue (MSG_BYTE frames
     // never interleave; the invariant at the top of this struct holds per lane).
     uint32_t  numMicChannels;                       // 0 unless MicPre8 detected
-    uint64_t halPhantomOff[16]; // physical A0..7, B0..7; host-only OFF receipts
+    // Physical A0..7, B0..7; host-only OFF receipts. These are volatile dext
+    // memory: an OFF made while Maestro is closed is lost if the dext restarts
+    // before the app reads it. That is the remaining fail-safe gap.
+    uint64_t halPhantomOff[16];
     SymphonyPhantomControl *phantomControl[8];      // per-channel phantom ('phan')
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
     uint8_t   pendingPhantom[2][8];   uint32_t pendingPhantomGen[2][8]; bool phantomTxScheduled[2][8];
@@ -9516,6 +9519,13 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                   command, value, payloadLen);
             result = kIOReturnIOError;
             return;
+        }
+        // Maestro's own 0xC6 ON supersedes any older unread HAL OFF receipt on
+        // this same serialized XLink lane. Without this ordering, the next
+        // observation tick could erase the later explicit ON from saved state.
+        if (command == kSIOCmd_PhantomPower && payload && payloadLen == 1 &&
+            payload[0] != 0 && value < 8) {
+            __atomic_store_n(&ivars->halPhantomOff[port * 8 + value], 0, __ATOMIC_RELEASE);
         }
         if (port == 1 && command == kSIOCmd_AnalogReferenceLevel && payload &&
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
