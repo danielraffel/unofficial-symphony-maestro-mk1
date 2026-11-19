@@ -185,6 +185,7 @@ build_and_run() {
     else
         "$out/register-trace" --out "$out" ${VERBOSE[@]+"${VERBOSE[@]}"} > "$out/checks.txt" 2>&1 || true
         echo "[trace] base ref harness checks: $(grep -c '^FAIL' "$out/checks.txt" || true) failing (expected for newer checks; traces compared below)"
+        grep "^FAIL: B10:" "$out/checks.txt" || true
     fi
 }
 
