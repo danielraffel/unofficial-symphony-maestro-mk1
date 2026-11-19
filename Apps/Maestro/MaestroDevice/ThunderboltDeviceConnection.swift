@@ -52,7 +52,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// This covers the full XMOS command surface — matches SymphonyIOPropertyMapper.buildWriteRequest.
     private static let dextSelectors: Set<AudioPropertySelector> = [
         // Mic preamp
-        .micGain, .phantom, .phaseReverse, .highPassFilter, .softLimit,
+        .micGain, .instrumentGain, .phantom, .phaseReverse, .highPassFilter, .softLimit,
         // MicPre8 group / insert (0xC7 / 0xC8 / 0xC9). Inert on a unit with no
         // MicPre module — the Input page never offers the controls, so nothing
         // is ever written for them.

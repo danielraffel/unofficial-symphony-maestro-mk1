@@ -58,7 +58,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     /// Written to unit B through the property mapper, with port byte 1.
     static let mappedWrites: Set<AudioPropertySelector> = [
-        .micGain, .phantom, .phaseReverse, .highPassFilter, .softLimit,
+        .micGain, .instrumentGain, .phantom, .phaseReverse, .highPassFilter, .softLimit,
         .groupID, .insertID, .insertReturnEnable,
         .analogIOType, .digitalRefLevel,
         .outputLevel, .outputMute, .outputDim, .outputSumToMono,

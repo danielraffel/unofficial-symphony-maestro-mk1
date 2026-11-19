@@ -571,6 +571,7 @@ struct Options {
     const char *portCountString = nullptr;
     bool        lateSymphony = false;     // port 1 unit appears after Start
     bool        latePort2 = false;        // port 2 chain appears after Start
+    bool        micPreInstrument = false; // fitted MicPre, channel 1 initially Instrument
     bool        shortFlow = false;        // Start, StartDevice, link watch, Stop only
     uint32_t    dropVendorReads = 0;      // port 1 Symphony: first N vendor reads unanswered
     uint8_t     symphonyInquire = 0;      // port 1 Symphony: INQUIRE reply (0 = none)
@@ -621,6 +622,12 @@ static void RunScenario(const Options &o, Run &r)
     if (!o.port1Units.empty() && o.port1 == Port::Converters) card.port[0].units = o.port1Units;
     card.port[0].dropVendorReads = o.dropVendorReads;
     card.port[0].symphonyInquire = o.symphonyInquire;
+    if (o.micPreInstrument) {
+        card.port[0].stored[(uint64_t(0xA1) << 32) | 0] = {6};
+        card.port[0].stored[(uint64_t(0xA1) << 32) | 1] = {1};
+        card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000001u] = {4};
+        card.port[0].stored[(uint64_t(0x60) << 32) | 0x80000002u] = {0xFF}; // invalid/unknown type
+    }
     if (!o.latePort2) Attach(card.port[1], o.port2);
     if (o.port2 == Port::Symphony) card.port[1].symphonyInquire = 0xFF;
     if (o.dirtyRegisters) {
@@ -2837,6 +2844,58 @@ int main(int argc, char **argv)
         else { fprintf(stderr, "usage: %s --out <dir> [--verbose]\n", argv[0]); return 2; }
     }
     if (outDir.empty()) { fprintf(stderr, "--out <dir> is required\n"); return 2; }
+
+    // A1: exercise new gain behaviour separately from the frozen p1 traces.
+    for (bool legacy : {false, true}) {
+        Options o; o.name = "instrument-gain checks"; o.shortFlow = true; o.micPreInstrument = true;
+        o.legacy2100 = legacy;
+        o.port2 = Port::Symphony; o.portCountProperty = 2;
+        Run r;
+        RunScenario(o, r);
+        auto *drv = r.drv;
+        auto &a = r.card.port[0].stored;
+        CHECK(drv->RequestMicGain(2, 40.0f) == kIOReturnNotReady, "unknown input type must not guess a gain stage");
+        const uint64_t mic = (uint64_t(0xC3) << 32) | 1;
+        const uint64_t inst = (uint64_t(0xC4) << 32) | 1;
+        drv->RequestMicGain(1, 40.0f);
+        HostPump();
+        CHECK(a[inst] == std::vector<uint8_t>({40}), "initial Instrument type read uses C4");
+        uint8_t type[2] = {4, 127};
+        CHECK(drv->SendVendorCommand(0x20, 0x80000001u, type, 2) == kIOReturnSuccess, "set Instrument type");
+        drv->RequestMicGain(1, 90.0f);
+        HostPump();
+        CHECK(a[inst] == std::vector<uint8_t>({65}), "Instrument DAW gain must use C4 and clamp to 65");
+        CHECK(a.count(mic) == 0, "Instrument DAW gain must not write C3");
+        type[0] = 3;
+        drv->SendVendorCommand(0x20, 1, type, 2); // output type must not change input gain
+        drv->RequestMicGain(1, 55.0f);
+        HostPump();
+        CHECK(a[inst] == std::vector<uint8_t>({55}), "output type leaves input Instrument stage alone");
+        drv->SendVendorCommand(0x20, 0x80000001u, type, 2);
+        drv->RequestMicGain(1, 99.0f);
+        HostPump();
+        CHECK(a[mic] == std::vector<uint8_t>({85}), "Mic DAW gain must use C3 and clamp to 85");
+        type[0] = 4;
+        drv->SendVendorCommand(0x20, 0x80000001u, type, 2);
+        drv->RequestMicGain(1, -9.0f);
+        HostPump();
+        CHECK(a[inst] == std::vector<uint8_t>({0}), "Instrument lower clamp");
+#ifdef TRACE_HAVE_PORT2_AUDIO
+        uint8_t gain = 42;
+        CHECK(drv->SendVendorCommand(0xC4, 1, &gain, 1, 1) == kIOReturnNotReady,
+              "unit B gain refused at 32");
+        Select(r, 1, "gain checks at 64");
+        CHECK(drv->SendVendorCommand(0xC4, 1, &gain, 1, 1) == kIOReturnSuccess, "unit B Instrument gain");
+        CHECK(r.card.port[1].stored[inst] == std::vector<uint8_t>({42}), "C4 reaches unit B");
+        type[0] = 3;
+        drv->SendVendorCommand(0x20, 0x80000001u, type, 2, 1);
+        drv->RequestMicGain(1, 50.0f);
+        HostPump();
+        CHECK(a[inst] == std::vector<uint8_t>({50}), "unit B type must not change unit A gain stage");
+        CHECK(a[mic] == std::vector<uint8_t>({85}), "unit A Mic stage preserved");
+#endif
+        Finish(o, r);
+    }
 
     RunNominalRateNames();
 #ifdef TRACE_HAVE_CONVERTER_VOLUME

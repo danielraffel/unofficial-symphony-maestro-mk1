@@ -133,6 +133,8 @@ public enum SymphonyIOPropertyMapper {
         // Mic preamp
         case .micGain:
             return SymphonyIORequestBuilder.getMicGain(channel: channel)
+        case .instrumentGain:
+            return SymphonyIORequestBuilder.getInstrumentGain(channel: channel)
         case .phantom:
             return SymphonyIORequestBuilder.getPhantomPower(channel: channel)
         case .phaseReverse:
@@ -431,6 +433,14 @@ public enum SymphonyIOPropertyMapper {
                 throw DeviceConnectionError.typeMismatch(expected: "UInt32", got: "\(value)")
             }
             return SymphonyIORequestBuilder.setMicGain(channel: channel, gain: UInt8(min(gain, 85)))
+
+        case .instrumentGain:
+            guard let gain = value.asUInt32 else {
+                throw DeviceConnectionError.typeMismatch(expected: "UInt32", got: "\(value)")
+            }
+            return SymphonyIORequestBuilder.setInstrumentGain(
+                channel: channel,
+                gain: UInt8(min(gain, UInt32(SymphonyIOConstants.instrumentGainMaximum))))
 
         case .phantom:
             guard let enabled = value.asBool else {
@@ -924,7 +934,7 @@ public enum SymphonyIOPropertyMapper {
             return .uint32(UInt32(byte & 0x07))
 
         // Single-byte UInt32 values
-        case .micGain, .softLimit, .analogIOType, .digitalRefLevel,
+        case .micGain, .instrumentGain, .softLimit, .analogIOType, .digitalRefLevel,
              .opticalInFormat, .opticalOutFormat, .spdifReplaceID, .spdifMirrorID,
              .deviceMode, .speakerOutputMode, .groupID,
              .primaryBoardType, .secondaryBoardType:

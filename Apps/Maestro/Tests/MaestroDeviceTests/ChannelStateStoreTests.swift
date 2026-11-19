@@ -30,6 +30,15 @@ struct ChannelStateStoreTests {
         #expect(reporterUnit.savedStateScope == "analogADDA16+micPre8")
     }
 
+    @Test func micAndInstrumentGainPersistSeparately() throws {
+        let state = InputChannelState(gain: 12, micGain: 12, instrumentGain: 34,
+                                      inputType: AnalogInputLevel.instrument.rawValue)
+        let roundTrip = try JSONDecoder().decode(InputChannelState.self,
+            from: JSONEncoder().encode(state))
+        #expect(roundTrip.micGain == 12)
+        #expect(roundTrip.instrumentGain == 34)
+    }
+
     @Test func unknownLayoutHasNoScopeAndUsesLegacyKey() {
         let unknown = CardLayout(isKnown: false)
         #expect(unknown.savedStateScope == nil)

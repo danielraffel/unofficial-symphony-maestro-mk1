@@ -34,6 +34,11 @@ extension AudioPropertySelector {
     /// FourCC: `AEmg` — `kmAEstroPropertyMicGain` / `kApogeeCustomProperty_InputGain`
     public static let micGain = AudioPropertySelector("AEmg")
 
+    /// Instrument input gain in dB. Internal selector used to keep the two
+    /// MicPre gain stages distinct; the Core Audio surface still uses `micGain`.
+    /// Evidence: `og_source/symphonymk1/ext/Symphony64/generic/Products/SymphonyIO/SymphonyIOVendorSpecific.h:409-445`.
+    public static let instrumentGain = AudioPropertySelector("AEig")
+
     /// Analog I/O type (line +4dBu, -10dBV, mic, instrument). `mAEstroData{in UInt32}`.
     /// FourCC: `AErl` — `kmAEstroPropertyAnalogIOType` / `kApogeeCustomProperty_AnalogIOTypeID`
     public static let analogIOType = AudioPropertySelector("AErl")
