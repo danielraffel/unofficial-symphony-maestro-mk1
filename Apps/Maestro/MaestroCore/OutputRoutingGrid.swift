@@ -67,9 +67,11 @@ public struct OutputRoutingGrid: Sendable, Equatable {
     }
 
     /// The header over each block, with its width in columns. None with one
-    /// unit, which keeps the grid's single "Hardware Outputs" header.
+    /// unit, which keeps the grid's single "Hardware Outputs" header; none for
+    /// a unit with no outputs (an AD16-only unit, for example).
     public var columnGroups: [(label: String, count: Int)] {
-        isTwoUnits ? blocks.map { (label: $0.title, count: $0.columns.count) } : []
+        guard isTwoUnits else { return [] }
+        return blocks.filter { !$0.columns.isEmpty }.map { (label: $0.title, count: $0.columns.count) }
     }
 
     /// The unit, row and column a grid cell edits, or nil for a cell that

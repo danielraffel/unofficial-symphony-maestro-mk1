@@ -19,10 +19,13 @@ struct OutputRoutingCombinedGridTests {
         #expect(!view.contains("unitWriteTarget"))
         #expect(view.contains("grid.cell(gridRow: row, column: col)"))
         #expect(view.contains("columnGroups: grid.columnGroups"))
-        // A two-unit preset carries both units; delete removes both halves.
-        #expect(view.contains("key: Self.unitBPresetKey)"))
-        #expect(view.contains("PresetManager.deleteRoutingPreset(name: name, key: Self.unitBPresetKey)"))
+        // Save, load and delete follow OutputRoutingPresets' rule (tested in
+        // MaestroCore); unit B is checked before anything is written.
+        #expect(view.contains("presets.save(name: name,"))
+        #expect(view.contains("presets.delete(entry)"))
+        #expect(view.contains("switch presets.loadPlan(entry, unitB: state)"))
         #expect(view.contains("appState.unitBWriteTarget"))
+        #expect(view.contains("\"Unit A loaded; unit B\""))
         // Wide grids scroll rather than squash.
         #expect(view.contains("ScrollView([.horizontal, .vertical])"))
     }
