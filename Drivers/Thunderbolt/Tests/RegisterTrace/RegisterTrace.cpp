@@ -158,6 +158,7 @@ struct Port {
     uint8_t  symphonyXtd = 0;
     uint8_t  symAddr = 0;
     bool     symPassing = false;
+    bool     unitsHoldAddress = false;// converters: keep address and pass-through over a bus reset (hypothetical)
     bool     symHoldsAddress = false; // keeps address and pass-through over a bus reset (the field behaviour)
     uint8_t  symAuthOut[16] = {};
     uint32_t symAuthIdx = 0;
@@ -302,7 +303,7 @@ struct Port {
     void writeTX(uint32_t val) {
         commandsSeen++;
         if (val == kXLinkResetCmd) {
-            for (auto &u : units) { u.addr = 0; u.passing = false; }
+            if (!unitsHoldAddress) for (auto &u : units) { u.addr = 0; u.passing = false; }
             frame.clear();
             dupArmed = false;
             symphonyProbeAnswered = false;
@@ -3166,6 +3167,25 @@ static void RunConverterParityChecks()
             CHECK(pass == 0 || (s.w[7] & kSymphonyPort2UnitKeptAddress), "%s: pass %d: not found at its kept address (0x%08x)", o.name, pass, s.w[7]);
             Select(r, 0, "kept address: back to 32");
         }
+        Finish(o, r);
+    }
+    // A converter chain that kept its addresses is not taken at address 1
+    // (it would be found one unit short): refused, as before this change.
+    {
+        Options o; o.name = "unit B: converters that keep their addresses are not half-found"; o.port2 = Port::Converters;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        r.card.port[1].unitsHoldAddress = true;
+        Select(r, 1, "kept converters: select 64");
+        Port2State s = ReadPort2(r);
+        CHECK((s.w[14] & kSymphonyPort2AudioActive) != 0 && s.w[6] == 2, "%s: first select: audio 0x%x units %u", o.name, s.w[14], s.w[6]);
+        Select(r, 0, "kept converters: back to 32");
+        Select(r, 1, "kept converters: select 64 again");
+        s = ReadPort2(r);
+        CHECK((s.w[14] & kSymphonyPort2AudioActive) == 0 && s.w[6] == 0, "%s: second select: audio 0x%x units %u (want refused, none)",
+              o.name, s.w[14], s.w[6]);
         Finish(o, r);
     }
     // A real DD-16X (no DEVICE_TYPE answer) stays a converter.

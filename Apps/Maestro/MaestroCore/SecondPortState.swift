@@ -41,7 +41,7 @@ public struct SecondPortState: Sendable, Equatable {
     public static func unitIsSymphonyIO(_ word: UInt32) -> Bool {
         let groups = UInt8((word >> 8) & 0xF0) | UInt8((word & 0xF0) >> 4)
         if groups == 0xFF { return true }
-        return word & unitTypeOK != 0 && (word >> 24) & deviceTypeSymphonyIO != 0
+        return word & unitTypeOK != 0 && (word >> 24) == deviceTypeSymphonyIO
     }
 
     // SymphonyPort2StateOutput.audio (kSymphonyPort2Audio*), stage 2. Zero from
@@ -284,7 +284,7 @@ public struct SecondPortState: Sendable, Equatable {
         let groups = (xtd & 0xF0) | (inquire >> 4)
         var text: String
         let typeOK = word & unitTypeOK != 0
-        if typeOK, (word >> 24) & deviceTypeSymphonyIO != 0 {
+        if typeOK, (word >> 24) == deviceTypeSymphonyIO {
             // One 16-channel card answers the same banks as a DD-16X; the
             // device type is what says it is a Symphony I/O.
             text = groups == 0xFF ? "Symphony I/O (32 inputs, 32 outputs)"

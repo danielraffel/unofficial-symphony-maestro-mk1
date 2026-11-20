@@ -3262,7 +3262,7 @@ static bool Port2UnitIsSymphony(uint32_t word)
 {
     if (ConverterUnitRouting(word) == kConverterRoutingSymphony) return true;
     return (word & kSymphonyPort2UnitTypeOK) != 0 &&
-           ((word >> kSymphonyPort2UnitTypeShift) & kSymphonyXLinkDeviceTypeSymphonyIO) != 0;
+           (word >> kSymphonyPort2UnitTypeShift) == kSymphonyXLinkDeviceTypeSymphonyIO;
 }
 
 static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, const char *why,
@@ -3342,7 +3342,10 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                 // the broadcast address, as BusInit did, and then address 1,
                 // as the original's link check asked a unit it already knew
                 // (CheckLinkStatus, XLink.cpp:2025-2031).
-                const int rounds = addr == 1 ? 5 : 1;
+                // The waiting rounds only while no audio runs (a switch to 64);
+                // the link watch's look with port 1 streaming asks once, so this
+                // queue is held about 80 ms longer there, not over a second.
+                const int rounds = (addr == 1 && !__atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE)) ? 5 : 1;
                 for (int round = 0; round < rounds; round++) {
                     if (round) IOSleep(250);
                     word = 0; inquire = 0; xtd = 0;
@@ -3363,7 +3366,14 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                     if (XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1, kXLinkCmdXtdInquire, &x1,
                                        ivars->isLegacyPCIe2100))
                         w1 |= kSymphonyPort2UnitXtdOK | ((uint32_t)x1 << 8);
-                    if (((x1 & 0xF0) | ((i1 & 0xF0) >> 4)) != 0) {
+                    // Only a Symphony I/O is taken this way (the unit this was
+                    // seen on). A converter chain in that state would be found
+                    // one unit short, so it is left as "no unit", as before.
+                    uint8_t t1 = 0;
+                    if (((x1 & 0xF0) | ((i1 & 0xF0) >> 4)) != 0 &&
+                        XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1, kXLinkCmdDeviceType, &t1,
+                                       ivars->isLegacyPCIe2100) &&
+                        t1 == kSymphonyXLinkDeviceTypeSymphonyIO) {
                         inquire = i1; xtd = x1; word = w1 | kSymphonyPort2UnitKeptAddress;
                         keptAddress = true;
                         STLOG("Port 2 probe: unit 1 answers at address 1, not the broadcast address — kept from an earlier probe");
@@ -3404,8 +3414,12 @@ static void ProbeSecondPort(SymphonyThunderbridge_IVars *ivars, double rate, con
                     SendXLinkCommandOn(dev, mi, kRegXLink2TX, kXLinkCmdAddrAll, kXLinkCmdSetAddr, addr);
                 bool typeOK = false;
                 if (addressed) {
-                    typeOK = XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, addr,
-                                            kXLinkCmdDeviceType, &type, ivars->isLegacyPCIe2100);
+                    // Asked up to three times: one lost answer would make a
+                    // Symphony I/O a converter until the next probe. (The
+                    // original asked again on every link check, XLink.cpp:2031.)
+                    for (int attempt = 0; attempt < 3 && !typeOK; attempt++)
+                        typeOK = XLinkInquireOn(dev, mi, kRegXLink2TX, kRegXLink2RX, addr,
+                                                kXLinkCmdDeviceType, &type, ivars->isLegacyPCIe2100);
                     if (typeOK) word |= kSymphonyPort2UnitTypeOK | ((uint32_t)type << kSymphonyPort2UnitTypeShift);
                     word |= AuthenticateConverter(ivars, kRegXLink2TX, kRegXLink2RX, addr, channels, inquire, 2);
                 }
