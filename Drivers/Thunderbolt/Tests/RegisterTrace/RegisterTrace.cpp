@@ -1058,6 +1058,28 @@ static void RunClockReapplyChecks()
               o.name, internal, word);
         Finish(o, r);
     }
+    // Cold start (issue 31): Core Audio restores Word Clock while the hardware
+    // is at 44.1 kHz; the first rate change must send the source again, at the
+    // new rate. Internal sends nothing extra.
+    for (uint32_t source : { 2u, 1u }) {
+        Options o; o.name = source == 2 ? "clock: Word Clock sent again after the first rate change"
+                                        : "clock: Internal is not sent again after a rate change";
+        o.shortFlow = true;
+        Run r; RunScenario(o, r);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        r.drv->RequestClockSource(source); HostPump();
+        r.card.port[0].clockModes.clear();
+        gHostAudio.device->SetSampleRate(96000.0);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        HostPump();
+        const auto &sent = r.card.port[0].clockModes;
+        if (source == 2)
+            CHECK(sent.size() == 1 && sent[0] == 2, "%s: %zu ClockMode message(s) after the rate change", o.name, sent.size());
+        else
+            CHECK(sent.empty(), "%s: %zu ClockMode message(s) after the rate change", o.name, sent.size());
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        Finish(o, r);
+    }
     {
         Options o; o.name = "clock: nothing chosen stays Internal"; o.shortFlow = true;
         Run r; RunScenario(o, r);

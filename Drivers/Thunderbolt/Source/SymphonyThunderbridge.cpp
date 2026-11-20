@@ -8540,6 +8540,38 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                     return;
                 }
 
+                // 3b. dext 140: an external clock source is sent again once the
+                // units run at the new rate. On a cold start Core Audio restores
+                // the saved source (Word Clock, say) through the selector while
+                // the hardware is still at its start-up 44.1 kHz, and this is
+                // the first moment it is at the rate the external clock runs at;
+                // without it the unit kept blinking until the source was
+                // switched away and back by hand (issue 31). The original tied
+                // the two together from the other side: changing external lock
+                // forced a full rate re-sync, and a rate set that had trouble
+                // re-set the word-clock setting (Symphony64 Driver/XLink.cpp
+                // :149-160, :352-356). DMA is stopped and the card muted here.
+                // Internal (the default) sends nothing: unchanged traces.
+                if (!ivars->convPort1 && ivars->unitAClockKnown &&
+                    ivars->unitAClock[0] >= 2 && ivars->unitAClock[0] <= 5) {
+                    uint8_t clockData[4];
+                    memcpy(clockData, ivars->unitAClock, 4);
+                    const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                      ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
+                                                      clockData, sizeof(clockData), ivars->runtimeTxSeq);
+                    IOSleep(10);
+                    uint8_t clk[5] = {};
+                    const bool read = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                        ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, clk, 5,
+                                                        ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
+                    const uint32_t measured = ((uint32_t)clk[1] << 24) | ((uint32_t)clk[2] << 16) |
+                                              ((uint32_t)clk[3] << 8) | clk[4];
+                    STLOG("StartDevice: ClockMode(source %u) sent again after the rate change to %.0f Hz: %{public}s; "
+                          "unit reports %{public}s, measured %u Hz",
+                          clockData[0], requestedRate, ok ? "OK" : "FAILED",
+                          !read ? "nothing" : clk[0] ? "locked" : "not locked", read ? measured : 0u);
+                }
+
                 // 4. Reprogram ClkCtrl frame size (legacy does this in every
                 // StartDMA).  The legacy High Performance profile changes the
                 // FPGA period with sample-rate tier: 4, 8, then 32 frames.
