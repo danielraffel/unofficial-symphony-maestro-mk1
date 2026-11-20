@@ -198,6 +198,8 @@ struct DeviceInfoVersionTests {
         #expect(!unit.isNotInUse(sixtyFourSelected: false))
         let running = SecondPortState(portCount: 2, audio: SecondPortState.audioActiveFlag)
         #expect(!running.isNotInUse(sixtyFourSelected: false))
+        #expect(running.reportLines(sixtyFourSelected: true).prefix(2)
+                == ["Port 1: in use (channels 1–32)", "Port 2: in use (channels 33–64)"])
         let off = SecondPortState(portCount: 1)
         #expect(!off.isNotInUse(sixtyFourSelected: false))
         #expect(off.reportLines(sixtyFourSelected: false).isEmpty)

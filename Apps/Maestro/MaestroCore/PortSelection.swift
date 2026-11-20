@@ -252,6 +252,9 @@ public struct PortsPresentation: Sendable, Equatable {
             statusLine = nil
             statusIsRefusal = false
         }
-        rows = running ? state.port2DetailRows.map { Row(label: $0.label, value: $0.value) } : []
+        rows = running
+            ? [Row(label: SecondPortState.notInUseLabel, value: SecondPortState.port2InUseValue)]
+                + state.port2DetailRows.map { Row(label: $0.label, value: $0.value) }
+            : []
     }
 }
