@@ -2,10 +2,14 @@
 
 ## 0.9.10 (beta)
 
-Test build, not released. This beta brings Maestro closer to what Apogee's software supported: Identify, the front-panel MicPre knob, Instrument gain on an 8MicPre, a second Symphony I/O at 64 channels (routing, monitoring, presets, Loop Sync), and settings that stay with each physical unit. Please share diagnostics if anything behaves differently from 0.9.9.
+This beta brings Maestro closer to what Apogee's software did: a second Symphony I/O at 64 channels gets its own input routing, outputs, mixer, Loop Sync and presets; an 8MicPre's polarity, high-pass and input type can be set from your DAW; Identify; and settings that stay with each physical unit. Maestro now also behaves when the Mac sleeps, restores the card mixer after the driver restarts, and fixes Software Return mute over USB. Settings are reorganised into Device Settings and App Settings. It contains everything in 0.9.9; please share diagnostics if anything behaves differently.
+
+Thanks to the people who reported Software Return mute not working over USB, and who confirmed the 8MicPre controls in Reaper and Pro Tools on the PCIe card.
 
 ### Changes that may affect your setup
 
+- **This beta updates the ThunderBridge and PCIe driver (0.11.12, build 138).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **While the Mac sleeps and for a few seconds after it wakes, Maestro does not write to the Symphony I/O,** and the Input, Output, Mixer and routing controls are locked until it has checked the hardware. The status bar says "Hardware sleeping" or "Validating hardware after wake…".
 - Settings are on two pages: Device Settings (the Symphony I/O) and App Settings (Maestro itself).
 - Symphony settings, input routes and channel labels now follow the identified physical unit when it moves between ports. Previously saved layout settings are preserved for their first identified owner; replacement units do not inherit them. Saved phantom power from an unverified migration cannot authorize preset recall.
 - 8MicPre Mic and Instrument settings are restored after connection and recovery, including both gain stages. Phantom power is restored only when Maestro recorded it for the same physical unit, board slot and Mic channel. Older or unverified settings restore phantom OFF.
@@ -18,6 +22,11 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 
 ### New
 
+- **Help menu: Report a Bug… and Discuss on Gearspace…,** also in App Settings › Diagnostics & Feedback.
+- **Tooltips explain the controls,** including the status bar's clock status, sample rate and clock source; turn them off with Show tooltips in App Settings › General.
+- **On ThunderBridge, Device Settings › Info shows which ports are in use:** Port 1 (channels 1–32) and Port 2 (channels 33–64 at 64 channels, otherwise "not in use").
+- **After the ThunderBridge or PCIe driver restarts (a replug, power cycle or driver update), Maestro restores your saved card mixer by itself,** even if the Mixer page is never opened. It writes only settings you saved, and nothing when the driver kept its state (a reconnect or link recovery).
+
 - **On ThunderBridge and PCIe, a DAW or Audio MIDI Setup can set an 8MicPre channel's polarity, 80 Hz high-pass and input type, and Maestro's Inputs page follows those changes and DAW gain moves, on unit A or B.** Polarity and high-pass apply to Mic and Instrument only, as in Apogee's software. Switching to a line type turns phantom power and the insert off first, and the type does not change if that fails. After a channel is switched to Mic from a DAW, phantom power can be turned on from the DAW after two seconds, so Core Audio replaying saved settings when the Symphony I/O appears cannot turn +48 V on by itself. For 5 seconds after the Symphony I/O appears, after the Mac wakes, after the driver reconfigures the device (a port change or link recovery) and after Core Audio connects to the driver, a DAW cannot change the input type, polarity or high-pass or turn phantom power on; this is how Maestro ignores Core Audio replaying saved settings, as Apogee's software did. The controls keep showing the real values, Maestro's own changes are not affected, and switching phantom off always works.
 - With two Symphony I/Os at 64 channels, Device Settings › Clock now offers Use Loop Sync and a choice of Loop Sync Master. Turning Loop Sync off puts unit B on Word Clock. Clock roles and measured lock are shown separately.
 - **With two Symphony I/Os at 64 channels, Device Settings › Volume Keys lets you choose which unit receives the Mac's volume keys and Core Audio mute control.** It remembers the choice and returns to unit A if unit B is disconnected.
@@ -26,10 +35,16 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 - **With two Symphony I/Os at 64 channels, choosing Unit B on the Outputs page shows unit B's own speaker and headphone controls,** as Apogee's software did. The Mac's volume keys still control unit A.
 - **Identify, on the Output Routing page, lights up all of the Symphony I/O's front-panel lights** so you can find the unit, as Apogee's software did; press it again to turn them off. With two units there is one for each.
 
-### Fixes
+### Fixed
+
+- **Software Return mute over USB now works when you play through "Maestro USB".** That device is rendered by Maestro's USB helper, and the mute only reached the Symphony's own mixer. Now it reaches both, and a saved mute is no longer undone when the unit reconnects or the Software Return source changes. Solo stays on the Symphony's mixer. Diagnostics now record whether each mute and solo asked for on or off.
+- **A DD-16X is no longer shown as connected when a Symphony I/O starts up slowly** (for example right after it is switched on), which left the sidebar empty until a replug.
+- **8MicPre phantom power switched off on the unit or by another app is tracked,** so Maestro no longer turns it back on when it restores settings.
+- **With an older driver still serving after updating, front-panel volume and Mute All still reach the Mac's volume.**
+- The status bar shows the sample rate before the clock source, in the same order as Device Settings › Clock, and the sidebar icons no longer touch their labels.
 
 - Device Settings › Info shows “Unknown” for unreadable firmware components and no longer labels the USB daemon’s software version as hardware firmware. Port errors use the original Maestro wording.
-- **Over ThunderBridge, Device Settings › Info now shows the Symphony I/O’s firmware, FPGA and each card’s FPGA and hardware versions,** read from the unit when the page opens, as Apogee’s software read them. It also shows the unit’s Hardware ID. The XMOS row is gone there, because it repeated the firmware version. Device Model, Mode and Channel Count no longer repeat the device name, and with one unit at 32 channels Port 2 is one line, “not in use”. The About box copy lists the device first (name, connection, hardware ID, firmware, FPGA, cards, unit B, port 2), then the software, with the app path last.
+- **Over ThunderBridge, Device Settings › Info now shows the Symphony I/O’s firmware, FPGA and each card’s FPGA and hardware versions,** read from the unit when the page opens, as Apogee’s software read them. It also shows the unit’s Hardware ID. The XMOS row is gone there, because it repeated the firmware version. Device Model, Mode and Channel Count no longer repeat the device name. The About box copy lists the device first (name, connection, hardware ID, firmware, FPGA, cards, unit B, port 2), then the software, with the app path last.
 
 - Keep each Symphony I/O’s speaker controls and front-panel changes on that unit when Mac volume keys target the other unit. Switching the keyboard-volume target, or losing unit B, restores the selected unit’s own level and mute without a volume jump. Monitor selection no longer waits for the hardware on the app’s main thread.
 
@@ -50,6 +65,20 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 - **Identify stays on when you leave Output Routing, and Maestro turns the lights off when it disconnects or quits.**
 - **Turning the Symphony's knob on an 8MicPre Mic or Instrument channel now moves that channel's gain in Maestro too,** as Apogee's software did.
 - **Choosing 64 channels with nothing on port 2 no longer flickers.** The Ports menu stays at 32 channels with a small spinner while Maestro looks for a unit on port 2, then shows 64 or the warning.
+
+### Please test
+
+If you have any of these, a Diagnostics report helps a lot (turn on **Diagnostics** in **App Settings › Diagnostics & Feedback**, reproduce the problem, then press **Stop Diagnostics** and send the file).
+
+- **USB with Software Return:** does muting Software Return silence playback through "Maestro USB" and through "USB Audio"? Please say which output device your DAW uses, and whether Direct Monitor is on (it passes live inputs through).
+- **An 8MicPre over ThunderBridge or PCIe in Logic, Pro Tools or Audio MIDI Setup:** do polarity, high-pass and input type appear and work, does Maestro's Inputs page follow them, and does anything change by itself when the device appears or the Mac wakes?
+- **Two Symphony I/Os at 64 channels:** unit B's Input Routing, outputs, headphones, presets and Device Settings › Info.
+- **Sleep and wake:** does audio come back, with your mixer and routing as you left them?
+
+### Release notes
+
+- The driver is 0.11.12, build 138.
+- The 8MicPre DAW controls, two Symphony I/Os at 64 channels and AD-16X / DA-16X / DD-16X / Rosetta converters are written from Apogee's original software and pass Maestro's driver tests, but have not been tried on that hardware yet.
 
 ## 0.9.9 (beta)
 
