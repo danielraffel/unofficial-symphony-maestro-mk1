@@ -348,12 +348,15 @@ struct DeviceSettingsView: View {
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            // System Settings can present Driver Extensions as a sheet without
-            // deactivating this window. Keep the foreground status live with a tiny
-            // plist read, and stop immediately when Maestro is no longer active.
+            // Loop Sync's measured lock has to be asked for: each read is a
+            // ClockRateAndLock query to both units, and it is also the retry for
+            // restoring saved Loop Sync settings. Only with two Symphony I/Os at
+            // 64 channels, and only while this page is in front.
+            // The driver list is not refreshed here: the app-wide loop in
+            // AppShell already does that every two seconds whatever is on
+            // screen, including while System Settings shows its sheet.
             while !Task.isCancelled {
-                appState.refreshInstalledDexts()
-                await appState.refreshLoopSync()
+                if appState.loopSyncVisible { await appState.refreshLoopSync() }
                 try? await Task.sleep(for: .seconds(2))
             }
         }
@@ -1985,7 +1988,6 @@ struct AppSettingsView: View {
     @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
     @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
     @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
-    @AppStorage("usbHealthCheckEnabled") private var usbHealthCheckEnabled = false
     @AppStorage("autoRecoverMixerState") private var autoRecoverMixerState = true
     /// Separate from Device Settings › Info's Copy so the two buttons never flash
     /// each other's checkmark.
@@ -2034,13 +2036,6 @@ struct AppSettingsView: View {
                     }
                     .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
                 }
-
-                Toggle("USB connection health check", isOn: $usbHealthCheckEnabled)
-                    .onChange(of: usbHealthCheckEnabled) { _, enabled in
-                        if enabled { appState.startUSBHealthCheck() }
-                        else { appState.stopUSBHealthCheck() }
-                    }
-                    .maestroHelp("Periodically verify USB connectivity and automatically recover stale connections. Enable if your device disconnects during sleep/wake or after cable bumps.")
 
                 Toggle("Restore my mixer after a USB reconnect", isOn: $autoRecoverMixerState)
                     .maestroHelp("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")

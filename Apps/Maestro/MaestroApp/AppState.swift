@@ -396,7 +396,6 @@ final class AppState: @unchecked Sendable {
 
     /// Periodic USB health check task. Sends a lightweight read every 30s to detect
     /// stale connections. If the read fails, the proxy's recovery logic fires automatically.
-    private var healthCheckTask: Task<Void, Never>?
     /// ThunderBridge remains enumerated when the interface loses power, so its
     /// PCI/Core Audio presence cannot drive lifecycle state. This task polls the
     /// dext's FPGA-backed health probe and reconnects only after it recovers.
@@ -480,30 +479,12 @@ final class AppState: @unchecked Sendable {
     /// leave that registration around for much longer than the actual handoff.
     private let thunderboltExtensionSwapGraceInterval: TimeInterval = 15
 
-    func startUSBHealthCheck() {
-        healthCheckTask?.cancel()
-        guard let xpcDev = device as? XPCDeviceConnection else { return }
-        healthCheckTask = Task.detached(priority: .low) {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled else { break }
-                do {
-                    // Lightweight probe — deviceMode is a small read, no side effects.
-                    // EP0 control transfers don't interfere with isochronous audio stream.
-                    _ = try await xpcDev.getProperty(PropertyAddress(selector: .deviceMode))
-                } catch {
-                    // Read failed → proxy's usb_vendor_read recovery will fire automatically.
-                    // No action needed here — recovery is proxy-side.
-                    print("[Maestro] USB health check: read failed (\(error)) — proxy recovery should fire")
-                }
-            }
-        }
-    }
-
-    func stopUSBHealthCheck() {
-        healthCheckTask?.cancel()
-        healthCheckTask = nil
-    }
+    // No separate USB health check. The optional 30-second probe that was here
+    // was redundant and broken: the front panel sync already reads the unit
+    // through the same helper every 300 ms for the life of the app (a failed
+    // read is what makes the helper reopen a stale connection), and the probe
+    // kept using the connection it started with after a reconnect, and never
+    // started unless Maestro launched on USB.
 
     @MainActor
     func startThunderboltHealthCheck() {
