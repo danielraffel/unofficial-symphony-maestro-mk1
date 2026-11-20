@@ -161,15 +161,13 @@ struct SecondPortStateTests {
         #expect(before == """
         Device Name: Symphony I/O
         Connection: Thunderbolt (ThunderBridge)
+        Mode: 32-Channel
+        Hardware ID: ABC123
         Firmware: 1.6.72
         FPGA version: v73
-        Hardware ID: ABC123
         IOBoard1: 8x8 OPT (detected), Version: v33
         IOBoard2: 16 Analog In / 16 Digital Out (detected), Version: v12
         XMOS Version: 5.4c
-        Device Model: Symphony I/O
-        Mode: 32-Channel
-        Channel Count: 32
         """)
 
         // A driver without the selector: the app has no state.

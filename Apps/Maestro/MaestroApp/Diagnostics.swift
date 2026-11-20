@@ -105,16 +105,28 @@ extension AppState {
             report = deviceInfoSnapshot
         } else {
             guard let device else { return nil }
+            // Over ThunderBridge the USB channel mode says nothing; the Ports
+            // selection says how many channels run.
+            let thunderbolt = transportType == .thunderbolt
             report = DeviceInfoReport(
-                deviceName: device.identifier.displayName,
+                deviceName: thunderbolt ? "Symphony I/O" : device.identifier.displayName,
                 connection: connectionLabel,
                 board1: primaryBoardReading,
                 board2: secondaryBoardReading,
                 deviceModel: device.identifier.displayName,
-                mode: device.identifier.mode.displayName,
-                channelCount: device.identifier.mode.channelCount
+                mode: thunderbolt ? nil : device.identifier.mode.displayName,
+                channelCount: thunderbolt ? (portSelection.selection?.channelCount ?? 32)
+                    : device.identifier.mode.channelCount
             )
+            if thunderbolt {
+                report.showsXMOS = false
+                report.board1HardwareVersion = DeviceInfoReport.hardwareVersionText(primaryBoardReading)
+                report.board2HardwareVersion = DeviceInfoReport.hardwareVersionText(secondaryBoardReading)
+            }
         }
+        // The identity read at connect, whichever source the report came from:
+        // the snapshot can predate it.
+        if let id = unitAHardwareIDText, connectedUnit == nil { report.hardwareID = id }
         // Whichever source the report came from, say what is on the cable when
         // it is not a Symphony I/O. This is the block testers paste to us, and
         // it must carry the unit list even if Device Settings was never opened.
@@ -138,13 +150,17 @@ extension AppState {
         // EXPERIMENT (64 channels): read now, not from the snapshot, so the copy
         // carries what the driver knows at this moment. Empty unless the driver
         // reports the two-port experiment on.
-        report.port2Lines = currentSecondPortState()?.reportLines ?? []
+        report.port2Lines = currentSecondPortState()?.reportLines(
+            sixtyFourSelected: portSelection.sixtyFourSelected) ?? []
         // A second Symphony I/O (unit B) on port 2, as the driver reports it now.
         report.unitBLines = unitBDeviceInfoReportLines
         return report
     }
 
-    /// Hardware then software, in the shape someone can paste into a bug report.
+    /// Hardware then software, in the shape someone can paste into a bug report:
+    /// Device (name, connection, hardware ID, firmware, FPGA, cards, unit B,
+    /// port 2), then Software (Maestro, macOS, audio path, driver extension,
+    /// app path).
     var diagnosticsText: String {
         var blocks: [String] = []
         if let hardware = deviceInfoReportForDiagnostics {

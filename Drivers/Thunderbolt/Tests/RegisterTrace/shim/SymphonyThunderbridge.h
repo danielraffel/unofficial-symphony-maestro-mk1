@@ -54,6 +54,7 @@ public:
     kern_return_t ReadTimingHealth(uint32_t *outWords);
     kern_return_t ReadLinkState(uint32_t *outWords);
     kern_return_t ReadPhantomObservations(uint32_t *outWords);
+    kern_return_t ReadMixerInstance(uint32_t *outWords);
     kern_return_t ReadMicPreEdits(uint32_t *outWords);
     kern_return_t RetireForUpgrade(uint32_t replacementBuild);
     kern_return_t ReadPort2State(uint32_t *outWords);   // experiment/64ch-port2 only

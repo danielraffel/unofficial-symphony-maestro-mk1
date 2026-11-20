@@ -933,6 +933,12 @@ public struct DeviceInfoReport: Sendable, Equatable {
     /// A second Symphony I/O on port 2 while 64 channels run
     /// (`SecondUnitInfo.reportLines`). Empty with one unit.
     public var unitBLines: [String] = []
+    /// False over ThunderBridge: the XMOS version is the unit's Overall
+    /// firmware reading, which the Firmware line already shows there.
+    public var showsXMOS = true
+    /// Each slot's board hardware version (0xA0 types 5 and 6), when read.
+    public var board1HardwareVersion: String?
+    public var board2HardwareVersion: String?
 
     public init(
         deviceName: String = "Symphony I/O",
@@ -972,35 +978,59 @@ public struct DeviceInfoReport: Sendable, Equatable {
         return value
     }
 
-    public static func boardLine(_ reading: BoardTypeReading, version: String?) -> String {
-        "\(reading.displayText), Version: \(versionText(version))"
+    public static func boardLine(_ reading: BoardTypeReading, version: String?,
+                                 hardwareVersion: String? = nil) -> String {
+        let hardware = hardwareVersion.map { ", Hardware Version: \($0)" } ?? ""
+        return "\(reading.displayText), Version: \(versionText(version))\(hardware)"
     }
 
-    /// The exact text the Device Info Copy button places on the clipboard.
-    public var clipboardText: String {
-        var lines: [String] = []
-        lines.append("Device Name: \(deviceName)")
-        lines.append("Connection: \(connection)")
-        if connectedUnit == nil { lines.append("Firmware: \(Self.versionText(firmwareVersion))") }
-        if connectedUnit == nil { lines.append("FPGA version: \(Self.versionText(fpgaVersion))") }
-        if let hardwareID { lines.append("Hardware ID: \(hardwareID)") }
-        if connectedUnit == nil {
-            lines.append("IOBoard1: \(DeviceInfoReport.boardLine(board1, version: board1Version))")
-            lines.append("IOBoard2: \(DeviceInfoReport.boardLine(board2, version: board2Version))")
+    /// A slot's hardware version (0xA0 type 5 or 6, read at connect) as shown,
+    /// only for a board that is there: the firmware answers zeros for an
+    /// empty slot (SymphonyIOMainController.cpp:459-481).
+    public static func hardwareVersionText(_ reading: BoardTypeReading) -> String? {
+        guard reading.source == .detected || reading.source == .cached, reading.card != .none,
+              let major = reading.hardwareMajor else { return nil }
+        return SymphonyVersionComponent.primaryBoardHardware.displayText(
+            SymphonyVersionReply(major: major, minor: 0, build: 0))
+    }
+
+    /// Device Name, Connection, then Mode and Channel Count only when the
+    /// line above does not already say them. Device Model is the product name,
+    /// which Device Name always starts with, so it is never repeated.
+    public var identityRows: [(label: String, value: String)] {
+        var rows: [(label: String, value: String)] = [("Device Name", deviceName), ("Connection", connection)]
+        if let mode, !deviceName.contains(mode) { rows.append(("Mode", mode)) }
+        if let channelCount {
+            let said = "\(channelCount)-Channel"
+            if !deviceName.contains(said), !(mode?.contains(said) ?? false) {
+                rows.append(("Channel Count", "\(channelCount)"))
+            }
         }
-        // A converter has no option cards, so those lines are left out; "not
-        // detected" would read as a fault.
-        if connectedUnit == nil { lines.append("XMOS Version: \(Self.versionText(xmosVersion))") }
-        if let deviceModel { lines.append("Device Model: \(deviceModel)") }
-        if let mode { lines.append("Mode: \(mode)") }
-        if let channelCount { lines.append("Channel Count: \(channelCount)") }
+        return rows
+    }
+
+    /// The exact text the Device Info Copy button places on the clipboard:
+    /// identity, hardware ID, firmware, FPGA, cards with their versions, any
+    /// converters, unit B, then port 2.
+    public var clipboardText: String {
+        var lines = identityRows.map { "\($0.label): \($0.value)" }
+        if let hardwareID { lines.append("Hardware ID: \(hardwareID)") }
+        // A converter has no option cards, firmware or FPGA lines of this kind;
+        // "not detected" would read as a fault.
+        if connectedUnit == nil {
+            lines.append("Firmware: \(Self.versionText(firmwareVersion))")
+            lines.append("FPGA version: \(Self.versionText(fpgaVersion))")
+            lines.append("IOBoard1: \(Self.boardLine(board1, version: board1Version, hardwareVersion: board1HardwareVersion))")
+            lines.append("IOBoard2: \(Self.boardLine(board2, version: board2Version, hardwareVersion: board2HardwareVersion))")
+            if showsXMOS { lines.append("XMOS Version: \(Self.versionText(xmosVersion))") }
+        }
         if !connectedUnitLines.isEmpty {
             lines.append(contentsOf: connectedUnitLines)
         } else if let connectedUnit {
             lines.append("Connected Unit: \(connectedUnit)")
         }
-        lines.append(contentsOf: port2Lines)
         lines.append(contentsOf: unitBLines)
+        lines.append(contentsOf: port2Lines)
         return lines.joined(separator: "\n")
     }
 
@@ -1568,12 +1598,13 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         lines.append("Maestro: \(versionLine)")
         if let updateChannel { lines.append("Update channel: \(updateChannel == .beta ? "Beta" : "Stable")") }
         lines.append("macOS: \(osVersion)")
-        lines.append("App path: \(appPath)")
         lines.append("Audio path: \(audioPath)")
         if let pciDeviceIdentifier { lines.append("PCI device: \(pciDeviceIdentifier)") }
         lines.append("Driver extension: \(dextLine)")
         if let serving = servingDextBuildDescription { lines.append("Serving driver extension: \(serving)") }
         if let bundledDextBuild { lines.append("Bundled driver extension: build \(bundledDextBuild)") }
+        // Last: the one line a reader skips unless the install location matters.
+        lines.append("App path: \(appPath)")
         return lines.joined(separator: "\n")
     }
 }

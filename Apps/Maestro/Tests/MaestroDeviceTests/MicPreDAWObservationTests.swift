@@ -26,23 +26,28 @@ import Testing
         Array(repeating: MicPreEditRecord(stamp: 0, fields: 0), count: 16)
     }
 
-    @Test func linkStateDecodesTheEditTailAndKeepsOlderSizes() throws {
-        var words = [UInt32](repeating: 0, count: 96)
+    @Test func linkStateDecodesEditsAfterTheMixerInstance() throws {
+        var words = [UInt32](repeating: 0, count: 100)
         words[1] = 1
         words[16] = 5                       // A0 phantom OFF receipt
-        words[48 + 9 * 3] = 77              // B1 edit stamp, low word
-        words[48 + 9 * 3 + 1] = 1           // high word
-        words[48 + 9 * 3 + 2] = 3 | MicPreEditRecord.typeValid
+        words[48] = DriverMixerInstance.magic   // MIXS at 48-51
+        words[50] = 9
+        words[52 + 9 * 3] = 77              // B1 edit stamp, low word
+        words[52 + 9 * 3 + 1] = 1           // high word
+        words[52 + 9 * 3 + 2] = 3 | MicPreEditRecord.typeValid
         let state = try #require(LinkState.decode(words))
         #expect(state.phantomOffReceipts[0] == 5)
         #expect(state.micPreEdits.count == 16)
         #expect(state.micPreEdits[9].stamp == (UInt64(1) << 32 | 77))
         #expect(state.micPreEdits[9].inputType == .mic)
         #expect(state.micPreEdits[0].stamp == 0 && state.micPreEdits[0].inputType == nil)
+        #expect(state.mixerInstance?.nonce == 9)
+        let d5Only = try #require(LinkState.decode(Array(words.prefix(52))))
+        #expect(d5Only.micPreEdits.isEmpty && d5Only.mixerInstance?.nonce == 9)
         let receiptsOnly = try #require(LinkState.decode(Array(words.prefix(48))))
         #expect(receiptsOnly.micPreEdits.isEmpty)
         #expect(receiptsOnly.phantomOffReceipts[0] == 5)
-        #expect(LinkState.decode(Array(words.prefix(95))) == nil)
+        #expect(LinkState.decode(Array(words.prefix(99))) == nil)
     }
 
     @Test func typeChangeAppliesMaestroLevelRules() {

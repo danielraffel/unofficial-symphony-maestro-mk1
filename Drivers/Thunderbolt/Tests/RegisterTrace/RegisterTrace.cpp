@@ -726,8 +726,31 @@ static void RunScenario(const Options &o, Run &r)
         card.phase("app commands");
         { uint8_t p = 3;  drv->SendVendorCommand(0xB4, (1u << 16), &p, 1); }
         { uint8_t p[3] = { 5, 70, 1 }; drv->SendVendorCommand(0xB5, 0, p, 3); }
+#ifdef kSymphonyMixerInstanceWords
+        // D5: a fresh instance reports a nonce and no app mixer state; reading
+        // it is host only. B4 (source) is not mixer state; B0-B3 set it per mixer.
+        uint32_t mixerInstance[4] = {};
+        const size_t instanceMark = card.lines.size();
+        CHECK(drv->ReadMixerInstance(mixerInstance) == kIOReturnSuccess &&
+              mixerInstance[0] == kSymphonyMixerInstanceMagic &&
+              (mixerInstance[2] || mixerInstance[3]) && mixerInstance[1] == 0,
+              "%s: fresh instance reports a nonce and no app mixer state", o.name);
+        CHECK(card.lines.size() == instanceMark, "%s: mixer instance read has no bus traffic", o.name);
+        const uint32_t nonceLo = mixerInstance[2], nonceHi = mixerInstance[3];
+#endif
         { uint8_t p = 40; drv->SendVendorCommand(0xB0, (1u << 16) | 1000, &p, 1); }
+#ifdef kSymphonyMixerInstanceWords
+        drv->ReadMixerInstance(mixerInstance);
+        CHECK(mixerInstance[1] == kSymphonyMixerInstanceMixer1Valid,
+              "%s: mixer 1 command marks mixer 1 only", o.name);
+#endif
         { uint8_t p = 0;  drv->SendVendorCommand(0xB3, (2u << 16) | 4, &p, 1); }
+#ifdef kSymphonyMixerInstanceWords
+        drv->ReadMixerInstance(mixerInstance);
+        CHECK(mixerInstance[1] == (kSymphonyMixerInstanceMixer1Valid | kSymphonyMixerInstanceMixer2Valid) &&
+              mixerInstance[2] == nonceLo && mixerInstance[3] == nonceHi,
+              "%s: both mixers marked, nonce unchanged", o.name);
+#endif
         { uint8_t p = 0;  drv->SendVendorCommand(0x25, 0, &p, 1); }
         { uint8_t p = 50; drv->SendVendorCommand(0xC3, 2, &p, 1); }
         { uint8_t out[4] = {}; drv->ReadVendorCommand(0xA1, 1, out, 1); }
@@ -3530,6 +3553,13 @@ static void RunMicPreDAWControls()
     CHECK(phases[2]->GetControlValue() && a[key(0xC5, 2)] == std::vector<uint8_t>({1}),
           "B12: polarity on an unknown type reaches the unit");
 
+    // One selector-5 layout: receipts 16-47, MIXS 48-51, edits 52-99.
+#ifdef kSymphonyMixerInstanceWords
+    CHECK(kSymphonyMixerInstanceWords == kSymphonyPhantomObservationWords + 4 &&
+          kSymphonyMicPreEditOffset == kSymphonyMixerInstanceWords &&
+          kSymphonyMicPreEditWords == kSymphonyMicPreEditOffset + 16 * 3,
+          "B12: edits follow the D5 mixer instance in a 100-word read");
+#endif
     // Finding 5/10: host-originated edits recorded per physical channel.
     uint32_t edits[48] = {};
     const size_t readMark = r.card.lines.size();

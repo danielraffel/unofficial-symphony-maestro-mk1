@@ -255,29 +255,24 @@ public final class DextUserClient: @unchecked Sendable {
         let knownCount = linkStateWordCount
         lock.unlock()
         guard conn != IO_OBJECT_NULL else { return nil }
-        // Negotiate once per connection. The optional tail piggybacks on the
+        // Negotiate once per connection. The optional tails piggyback on the
         // existing health read; old drivers still receive their exact ABI.
-        // Retry the optional tail a few times before falling back to the legacy
-        // prefix. A transient first read must not pin this connection to 16 words.
-        for count in knownCount.map({ [$0] }) ?? [96, 96, 96, 48, 48, 16, 12] {
+        guard let (decoded, count) = LinkState.negotiate(known: knownCount, read: { count in
             var out = [UInt32](repeating: 0, count: count)
             var outSize = out.count * MemoryLayout<UInt32>.size
             let kr = out.withUnsafeMutableBytes { p in
                 IOConnectCallStructMethod(conn, 5, nil, 0, p.baseAddress, &outSize)
             }
-            if kr == KERN_SUCCESS, outSize == count * MemoryLayout<UInt32>.size,
-               let decoded = LinkState.decode(out) {
-                lock.lock()
-                let current = connection == conn && connectionGeneration == generation
-                if current { linkStateWordCount = count }
-                lock.unlock()
-                // A reconnect can race this read. The decoded answer is still
-                // the selector-5 result; only cache negotiation for the live
-                // connection, and let the caller's identity guard discard stale use.
-                return decoded
-            }
-        }
-        return nil
+            return kr == KERN_SUCCESS && outSize == count * MemoryLayout<UInt32>.size ? out : nil
+        }) else { return nil }
+        lock.lock()
+        let current = connection == conn && connectionGeneration == generation
+        if current { linkStateWordCount = count }
+        lock.unlock()
+        // A reconnect can race this read. The decoded answer is still
+        // the selector-5 result; only cache negotiation for the live
+        // connection, and let the caller's identity guard discard stale use.
+        return decoded
     }
 
     // kSelectorReadDriverBuild — the serving dext's CFBundleVersion (dext 123+).
@@ -709,6 +704,9 @@ public struct LinkState: Sendable, Equatable {
     public let unitProbe: UInt32
     /// Optional host-only OFF receipts, physical A0...7 then B0...7.
     public let phantomOffReceipts: [UInt64]
+    /// D5: which driver instance answered and whether the app has set each
+    /// card mixer on it. `nil` from a driver without the 52-word tail.
+    public let mixerInstance: DriverMixerInstance?
     /// Optional host-originated MicPre edits (a DAW through Core Audio),
     /// physical A0...7 then B0...7. Empty from drivers without the tail.
     public let micPreEdits: [MicPreEditRecord]
@@ -718,8 +716,10 @@ public struct LinkState: Sendable, Equatable {
                 lastClockReg: UInt32, watchTicks: UInt32, audioWraps: UInt32,
                 lastGcsr: UInt32 = 0, lastXlinkStatus: UInt32 = 0, cardReinitCount: UInt32 = 0,
                 unitProbe: UInt32 = 0, phantomOffReceipts: [UInt64] = [],
+                mixerInstance: DriverMixerInstance? = nil,
                 micPreEdits: [MicPreEditRecord] = []) {
         self.phantomOffReceipts = phantomOffReceipts
+        self.mixerInstance = mixerInstance
         self.micPreEdits = micPreEdits
         self.unitProbe = unitProbe
         self.state = state; self.clockPresent = clockPresent; self.ioRunning = ioRunning
@@ -729,21 +729,39 @@ public struct LinkState: Sendable, Equatable {
         self.lastGcsr = lastGcsr; self.lastXlinkStatus = lastXlinkStatus; self.cardReinitCount = cardReinitCount
     }
 
-    /// Decode 96 words (OFF receipts + MicPre host edits), 48 (optional OFF
+    /// Sizes asked for, largest first. Each optional tail is tried three times
+    /// so a transient first read does not pin the connection to a shorter ABI;
+    /// a driver without a tail refuses that exact size and the next is tried.
+    public static let negotiationOrder = [100, 100, 100, 52, 52, 52, 48, 48, 48, 16, 12]
+
+    /// One selector-5 negotiation. `read` returns the words for a size, or
+    /// `nil` when the driver refused it. Returns the decoded state and the size
+    /// to keep using on this connection.
+    public static func negotiate(known: Int?, read: (Int) -> [UInt32]?) -> (LinkState, Int)? {
+        for count in known.map({ [$0] }) ?? negotiationOrder {
+            if let words = read(count), words.count == count, let decoded = decode(words) {
+                return (decoded, count)
+            }
+        }
+        return nil
+    }
+
+    /// Decode 100 words (OFF receipts, D5 mixer instance at 48-51, MicPre host
+    /// edits at 52-99), 52 (receipts + mixer instance), 48 (optional OFF
     /// receipts), 16 (dext 117+), or 12 (113–116). `nil` when the status word is
     /// nonzero or the size is wrong, both of which mean the selector did not answer.
     public static func decode(_ words: [UInt32]) -> LinkState? {
-        guard [12, 16, 48, 96].contains(words.count), words[0] == 0 else { return nil }
+        guard [12, 16, 48, 52, 100].contains(words.count), words[0] == 0 else { return nil }
         let ext = words.count >= 16
         var receipts: [UInt64] = []
         if words.count >= 48 {
             receipts = (0..<16).map { UInt64(words[16 + $0 * 2]) | (UInt64(words[17 + $0 * 2]) << 32) }
         }
         var edits: [MicPreEditRecord] = []
-        if words.count == 96 {
+        if words.count == 100 {
             edits = (0..<16).map { (i: Int) -> MicPreEditRecord in
-                let stamp = UInt64(words[48 + i * 3]) | (UInt64(words[49 + i * 3]) << 32)
-                return MicPreEditRecord(stamp: stamp, fields: words[50 + i * 3])
+                let stamp = UInt64(words[52 + i * 3]) | (UInt64(words[53 + i * 3]) << 32)
+                return MicPreEditRecord(stamp: stamp, fields: words[54 + i * 3])
             }
         }
         return LinkState(state: State(rawValue: words[1]) ?? .unknown,
@@ -756,7 +774,31 @@ public struct LinkState: Sendable, Equatable {
                          cardReinitCount: ext ? words[14] : 0,
                          unitProbe: ext ? words[15] : 0,
                          phantomOffReceipts: receipts,
+                         mixerInstance: words.count >= 52 ? DriverMixerInstance(words: Array(words[48..<52])) : nil,
                          micPreEdits: edits)
+    }
+}
+
+/// SymphonyThunderbridgeShared.h kSymphonyMixerInstance*: words 48-51 of the
+/// 52- or 100-word link-state read. Host only; the driver sets a flag the first time
+/// the app sends that mixer a 0xB0-0xB3 command (`mixerStateValid`), and an
+/// in-place recovery keeps it (the driver recomputes from its cache).
+public struct DriverMixerInstance: Sendable, Equatable {
+    public static let magic: UInt32 = 0x4D49_5853   // 'MIXS'
+    public let nonce: UInt64
+    /// Mixer 1 and Mixer 2: the driver holds state the app sent.
+    public let holdsAppState: [Bool]
+
+    public init(nonce: UInt64, holdsAppState: [Bool]) {
+        self.nonce = nonce
+        self.holdsAppState = holdsAppState
+    }
+
+    public init?(words: [UInt32]) {
+        guard words.count == 4, words[0] == Self.magic else { return nil }
+        let nonce = UInt64(words[2]) | (UInt64(words[3]) << 32)
+        guard nonce != 0 else { return nil }
+        self.init(nonce: nonce, holdsAppState: [words[1] & 1 != 0, words[1] & 2 != 0])
     }
 }
 

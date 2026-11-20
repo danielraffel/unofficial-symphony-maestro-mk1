@@ -28,7 +28,8 @@ struct StatusFirmwareParityTests {
             let bytes = Data([UInt8(index), 0, 255])
             let decoded = info.decode(command: 0xA0, value: UInt32(index), data: bytes)
             #expect(decoded)
-            let expected = "\(index).0.255"
+            // As the original showed each (SymphonyIO.cpp:1436-1445; BCD 0xFF reads 165).
+            let expected = ["0.0.165", "v1", "v2", "v3", "4", "5", "6"][index]
             #expect(info.rows.first { $0.label == label }?.value == expected)
         }
         for index: UInt32 in 0...6 {

@@ -345,6 +345,22 @@ public struct SecondPortState: Sendable, Equatable {
         return deviceInfoRows.map { "\($0.label): \($0.value)" } + ["Port 2 Raw: \(rawText)"]
     }
 
+    /// The one line that stands for port 2 while it has nothing to report.
+    public static let notInUseLabel = "Port 2"
+    public static let notInUseValue = "not in use (32 channels)"
+    public static var notInUseLine: String { "\(notInUseLabel): \(notInUseValue)" }
+
+    /// One unit at 32 channels: 64 is neither selected nor being tried, and
+    /// nothing was found or runs on port 2.
+    public func isNotInUse(sixtyFourSelected: Bool) -> Bool {
+        experimentOn && !sixtyFourSelected && units.isEmpty && !audioActive
+    }
+
+    /// `reportLines`, folded into `notInUseLine` when port 2 is not in use.
+    public func reportLines(sixtyFourSelected: Bool) -> [String] {
+        isNotInUse(sixtyFourSelected: sixtyFourSelected) ? [Self.notInUseLine] : reportLines
+    }
+
     private static func hex(_ value: UInt32, digits: Int = 8) -> String {
         let text = String(value, radix: 16)
         return "0x" + String(repeating: "0", count: max(0, digits - text.count)) + text

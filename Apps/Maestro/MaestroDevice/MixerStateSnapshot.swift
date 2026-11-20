@@ -6,6 +6,8 @@ import MaestroCore
 public struct MixerStateSnapshot: Sendable {
     public let channels: [MixerChannelState]
     public let swReturnChannel: MixerChannelState
+    public let swReturnLeftLevel: Double
+    public let swReturnRightLevel: Double
     public let softwareReturnSource: UInt32
     public let masterLevel: Double
 
@@ -28,8 +30,12 @@ public struct MixerStateSnapshot: Sendable {
             channels = Array(repeating: empty, count: count)
         }
 
-        // Software return is shared by both mixers because it is one USB path.
-        swReturnChannel = Self.savedSoftwareReturn(preferences: defaults)
+        let savedReturn = Self.savedSoftwareReturn(preferences: defaults)
+        swReturnLeftLevel = defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? savedReturn.level
+        swReturnRightLevel = defaults.object(forKey: "mixerSWReturnRightLevel_\(mixer)") as? Double ?? swReturnLeftLevel
+        var softwareReturn = savedReturn
+        softwareReturn.level = swReturnLeftLevel
+        swReturnChannel = softwareReturn
         softwareReturnSource = UInt32(clamping: defaults.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))
         masterLevel = Self.savedMasterLevel(mixer: mixer, preferences: defaults)
     }
