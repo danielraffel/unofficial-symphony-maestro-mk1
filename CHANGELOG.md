@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.15 (beta)
+
+This beta makes Clock Status tell the truth on ThunderBridge and PCIe. It contains everything in 0.9.14.
+
+### Changes that may affect your setup
+
+- **Clock Status can now read "Clock Mismatch" where it used to read "Ready".** With Word Clock or a digital input chosen as the clock source and no usable signal on it, the Symphony I/O is not locked, and Maestro now says so, in the status bar and in Device Settings › Clock. On Internal clock it always reads "Ready", as in Apogee's software.
+
+### Fixed
+
+- **Clock Status follows the Symphony I/O's own lock indicator on ThunderBridge and PCIe.** Before, it compared two sample rates that are always equal on those connections, so it could not show an unlocked external clock.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
+
 ## 0.9.14 (beta)
 
 This beta makes Maestro show the clock source the Symphony I/O is actually using, and removes two controls that did nothing. It contains everything in 0.9.13.
