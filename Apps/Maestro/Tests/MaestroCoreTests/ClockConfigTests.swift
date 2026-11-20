@@ -152,4 +152,14 @@ struct ClockConfigTests {
         #expect(ClockSourceMenu.statusName(for: 0) == nil)
         #expect(ClockSourceMenu.statusName(for: 9) == nil)
     }
+
+    @Test("Locked as the original decided: Internal always, otherwise the unit's external-lock flag")
+    func lockRule() {
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.internalClock, externalClockLocked: false))
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.internalClock, externalClockLocked: true))
+        #expect(!ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.wordClock, externalClockLocked: false))
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.wordClock, externalClockLocked: true))
+        #expect(!ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.key(source: 5, boardInput: 6), externalClockLocked: false))
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.loopSync, externalClockLocked: true))
+    }
 }

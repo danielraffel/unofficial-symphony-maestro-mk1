@@ -794,6 +794,14 @@ final class AppState: @unchecked Sendable {
     /// the bar always read "Internal", and the menu kept its last value.
     /// Nil until read, and while converters own the clock.
     var reportedClockSource: UInt32?
+    /// Whether the unit is locked to its clock source, by the original's rule
+    /// (`ClockSourceMenu.isLocked`): Internal always, otherwise the unit's own
+    /// "external clock locked" flag from the front panel sync's reading.
+    /// ThunderBridge and PCIe only; nil elsewhere and until the first reading,
+    /// where the views keep their Core Audio rate comparison. That comparison
+    /// can never report an unlocked external clock there: the card keeps
+    /// running at the nominal rate whatever the unit's clock input is doing.
+    var reportedClockLocked: Bool?
 
     /// The build the driver serving the ThunderBridge reports for itself (nil
     /// when no ThunderBridge connection is open). Differs from what sysextd
@@ -3801,7 +3809,10 @@ final class AppState: @unchecked Sendable {
                     interval = Self.thunderboltFrontPanelSyncInterval
                 } else {
                     sync.reset(); syncB.reset()
-                    await MainActor.run { if self.reportedClockSource != nil { self.reportedClockSource = nil } }
+                    await MainActor.run {
+                        if self.reportedClockSource != nil { self.reportedClockSource = nil }
+                        if self.reportedClockLocked != nil { self.reportedClockLocked = nil }
+                    }
                     try? await Task.sleep(for: .seconds(1))
                     continue
                 }
@@ -3815,8 +3826,12 @@ final class AppState: @unchecked Sendable {
                 if device === self.device {
                     let reported = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32
                     let key = reported.flatMap { ClockSourceMenu.decode($0) != nil ? $0 : nil }
+                    let flag = (device as? ThunderboltDeviceConnection)?.lastExternalClockLocked
+                    let locked = key.flatMap { k in flag.map { ClockSourceMenu.isLocked(sourceKey: k, externalClockLocked: $0) } }
                     await MainActor.run {
-                        if device === self.device, self.reportedClockSource != key { self.reportedClockSource = key }
+                        guard device === self.device else { return }
+                        if self.reportedClockSource != key { self.reportedClockSource = key }
+                        if self.reportedClockLocked != locked { self.reportedClockLocked = locked }
                     }
                 }
                 guard let update else {

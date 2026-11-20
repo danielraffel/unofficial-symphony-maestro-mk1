@@ -223,6 +223,12 @@ struct DeviceSettingsView: View {
     // Over ThunderBridge each fitted board is offered as its own inputs (coax,
     // AES pairs, optical), as Apogee's software did in the Symphony mode. The
     // optical row's name follows the rate and the board's optical format.
+    /// As the status bar's: the unit's own lock state where it reports one.
+    private var shownClockLocked: Bool {
+        if appState.clockLockSuppressed { return true }
+        return appState.reportedClockLocked ?? clockLocked
+    }
+
     private var clockSourceChoices: [ClockSourceChoice] {
         appState.clockSourceChoices(sampleRate: sampleRate > 0 ? sampleRate : nil)
     }
@@ -481,9 +487,9 @@ struct DeviceSettingsView: View {
                             Spacer()
                             HStack(spacing: 4) {
                                 Circle()
-                                    .fill(clockLocked ? .green : .red)
+                                    .fill(shownClockLocked ? .green : .red)
                                     .frame(width: 8, height: 8)
-                                Text(PortStatusMessage.clock(locked: clockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                                Text(PortStatusMessage.clock(locked: shownClockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                                     .foregroundStyle(.secondary)
                             }
                         }
