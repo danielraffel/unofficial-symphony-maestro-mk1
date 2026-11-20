@@ -2888,14 +2888,29 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         //   loopSync: 0=off, 1=on
         //   boardClockSrc: 0=SPDIFCoax, 1=Optical1-2, etc.
         // Evidence: MaestroVolumeProxy.c:811-818 configure_fpga_routing() step 3.
+        // dext 140: when this set-up runs again in the same session (link
+        // recovery, wake, a card reset), the clock source chosen since Start()
+        // is sent, not Internal: the original applied the saved source in this
+        // same step every time (SymphonyIO::ApplySettingsToHardware ->
+        // SetClockSource(m_nCurrentClockSourceID, true), SymphonyIO.cpp:4660-4695).
+        // Before, a recovery put the unit on Internal while the Clock Source
+        // menu still read Word Clock. The first set-up after Start() knows no
+        // choice yet and sends Internal, as before; Core Audio then restores
+        // the saved source through the selector.
         {
             uint8_t clockData[4] = { 0x01, 0x01, 0x00, 0x00 };  // Internal, Master
+            const bool chosen = ivars->unitAClockKnown && ivars->unitAClock[0] >= 1 && ivars->unitAClock[0] <= 5;
+            if (chosen) memcpy(clockData, ivars->unitAClock, 4);
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_ClockMode,
                                          0, clockData, sizeof(clockData), txSeq);
             memcpy(ivars->unitAClock, clockData, 4);   // dext 131: unit A's last ClockMode
             ivars->unitAClockKnown = true;
-            STLOG("SymphonyIO: ClockMode(Internal, Master): %{public}s", ok ? "OK" : "FAILED");
+            if (chosen && clockData[0] != 1)
+                STLOG("SymphonyIO: ClockMode(source %u, master %u, loop sync %u) re-applied: %{public}s",
+                      clockData[0], clockData[1], clockData[2], ok ? "OK" : "FAILED");
+            else
+                STLOG("SymphonyIO: ClockMode(Internal, Master): %{public}s", ok ? "OK" : "FAILED");
             IOSleep(10);
         }
 

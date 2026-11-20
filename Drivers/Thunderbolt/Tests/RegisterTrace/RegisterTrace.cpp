@@ -180,6 +180,7 @@ struct Port {
     std::map<uint64_t, std::vector<uint8_t>> stored;   // Symphony: written values
     std::vector<uint8_t> vendorWrites;                // command IDs, for fault-path assertions
     std::vector<uint8_t> vendorReads;
+    std::vector<uint8_t> clockModes;                  // source byte of every ClockMode (0x50) written
     uint64_t commandsSeen = 0;        // anything written to the TX register
 
     bool present() const { return kind != Empty; }
@@ -286,6 +287,7 @@ struct Port {
         const uint16_t len = (uint16_t)(c[6] | (c[7] << 8));
         if (c[0] == 0x40) {
             vendorWrites.push_back(cmd);
+            if (cmd == 0x50 && len >= 1) clockModes.push_back(c[8]);
             stored[((uint64_t)cmd << 32) | nValue] = std::vector<uint8_t>(c + 8, c + 8 + len);
             return;
         }
@@ -1033,6 +1035,47 @@ static void RunMonitorDeviceChecks()
     Finish(o, r);
 }
 #endif
+
+// dext 140: a clock source chosen since Start() is what a later set-up sends
+// (wake, an FPGA reset, a power-cycled unit, a failed health probe), as the
+// original re-applied its saved source (SymphonyIO.cpp:4660-4695). The first
+// set-up sends Internal.
+static void RunClockReapplyChecks()
+{
+    {
+        Options o; o.name = "clock: Word Clock survives every re-initialisation";
+        Run r; RunScenario(o, r);   // the full flow selects source 2, then sleeps, resets and recovers
+        auto it = r.card.port[0].stored.find((uint64_t)0x50 << 32);
+        const bool ok = it != r.card.port[0].stored.end() && it->second.size() == 4 &&
+                        it->second[0] == 2 && it->second[1] == 1;
+        CHECK(ok, "%s: the unit's last ClockMode is source %u (want Word Clock, master)", o.name,
+              it == r.card.port[0].stored.end() || it->second.empty() ? 0xFFu : it->second[0]);
+        // Internal was sent exactly once: by the first set-up.
+        size_t internal = 0, word = 0;
+        for (size_t i = 0; i + 0 < r.card.port[0].clockModes.size(); i++)
+            (r.card.port[0].clockModes[i] == 1 ? internal : word)++;
+        CHECK(internal == 1 && word >= 2, "%s: ClockMode sent Internal %zu time(s), other %zu (want 1, several)",
+              o.name, internal, word);
+        Finish(o, r);
+    }
+    {
+        Options o; o.name = "clock: nothing chosen stays Internal"; o.shortFlow = true;
+        Run r; RunScenario(o, r);
+        // The short flow ends after the selection of source 2; drop back to
+        // Internal and recover: Internal is what is re-applied.
+        r.drv->RequestClockSource(1); HostPump();
+        Port saved = r.card.port[0];
+        r.card.port[0] = Port();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.card.port[0] = saved;
+        r.card.port[0].clockModes.clear();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        CHECK(!r.card.port[0].clockModes.empty() && r.card.port[0].clockModes.back() == 1,
+              "%s: recovery sent source %u", o.name,
+              r.card.port[0].clockModes.empty() ? 0xFFu : r.card.port[0].clockModes.back());
+        Finish(o, r);
+    }
+}
 
 static void RunVolumeKeyChecks()
 {
@@ -4206,6 +4249,7 @@ int main(int argc, char **argv)
     RunNominalRateNames();
 #ifdef TRACE_HAVE_CONVERTER_VOLUME
     RunVolumeKeyChecks();
+    RunClockReapplyChecks();
 #endif
 #if defined(TRACE_HAVE_PORT2_AUDIO) && defined(kSelectorSetMonitorDevice)
     RunMonitorDeviceChecks();
