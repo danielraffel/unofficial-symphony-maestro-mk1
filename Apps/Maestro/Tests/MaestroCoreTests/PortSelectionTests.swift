@@ -394,7 +394,7 @@ struct PortsWordingTests {
                                 phase: 0x8001_010B)
         let shown = PortsPresentation(model: model(1, s), state: s)
         #expect(shown.statusLine == nil)
-        #expect(shown.rows.map { $0.label } == ["Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Phase"])
+        #expect(shown.rows.map { $0.label } == ["Port 2", "Port 2 Link", "Port 2 Clock", "Port 2 Unit 1", "Port 2 Phase"])
         #expect(shown.shownSelection == .ports1And2 && !shown.isChecking)
         // Back to 32: the rows go again.
         let back = state(audio: stage2Capable)

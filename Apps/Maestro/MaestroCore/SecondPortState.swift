@@ -346,9 +346,20 @@ public struct SecondPortState: Sendable, Equatable {
     }
 
     /// The one line that stands for port 2 while it has nothing to report.
+    /// Channel Count above already says 32.
     public static let notInUseLabel = "Port 2"
-    public static let notInUseValue = "not in use (32 channels)"
+    public static let notInUseValue = "not in use"
     public static var notInUseLine: String { "\(notInUseLabel): \(notInUseValue)" }
+
+    /// ThunderBridge port 1 always carries the connected Symphony I/O (or
+    /// port 1's converters): channels 1-32, whether or not port 2 is used.
+    public static let port1Label = "Port 1"
+    public static let port1Value = "in use (channels 1–32)"
+    public static var port1Line: String { "\(port1Label): \(port1Value)" }
+
+    /// Port 2 while 64 channels run on it; its link, clock and units follow.
+    public static let port2InUseValue = "in use (channels 33–64)"
+    public static var port2InUseLine: String { "\(notInUseLabel): \(port2InUseValue)" }
 
     /// One unit at 32 channels: 64 is neither selected nor being tried, and
     /// nothing was found or runs on port 2.
@@ -356,9 +367,12 @@ public struct SecondPortState: Sendable, Equatable {
         experimentOn && !sixtyFourSelected && units.isEmpty && !audioActive
     }
 
-    /// `reportLines`, folded into `notInUseLine` when port 2 is not in use.
+    /// Port 1, then `reportLines`, folded into `notInUseLine` when port 2
+    /// is not in use. Empty when the experiment is off (one-port driver).
     public func reportLines(sixtyFourSelected: Bool) -> [String] {
-        isNotInUse(sixtyFourSelected: sixtyFourSelected) ? [Self.notInUseLine] : reportLines
+        guard experimentOn else { return [] }
+        if isNotInUse(sixtyFourSelected: sixtyFourSelected) { return [Self.port1Line, Self.notInUseLine] }
+        return [Self.port1Line] + (audioActive ? [Self.port2InUseLine] : []) + reportLines
     }
 
     private static func hex(_ value: UInt32, digits: Int = 8) -> String {

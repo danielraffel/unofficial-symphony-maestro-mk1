@@ -188,9 +188,9 @@ struct DeviceInfoVersionTests {
         let idle = SecondPortState(portCount: 2, flags: 0x0F)
         #expect(idle.reportLines.count >= 5)
         let folded = idle.reportLines(sixtyFourSelected: false)
-        #expect(folded == ["Port 2: not in use (32 channels)"])
+        #expect(folded == ["Port 1: in use (channels 1–32)", "Port 2: not in use"])
         let detailed = idle.reportLines(sixtyFourSelected: true)
-        #expect(detailed == idle.reportLines)
+        #expect(detailed == ["Port 1: in use (channels 1–32)"] + idle.reportLines)
     }
 
     @Test func port2DetailsWhenSomethingIsOnIt() {
@@ -198,6 +198,8 @@ struct DeviceInfoVersionTests {
         #expect(!unit.isNotInUse(sixtyFourSelected: false))
         let running = SecondPortState(portCount: 2, audio: SecondPortState.audioActiveFlag)
         #expect(!running.isNotInUse(sixtyFourSelected: false))
+        #expect(running.reportLines(sixtyFourSelected: true).prefix(2)
+                == ["Port 1: in use (channels 1–32)", "Port 2: in use (channels 33–64)"])
         let off = SecondPortState(portCount: 1)
         #expect(!off.isNotInUse(sixtyFourSelected: false))
         #expect(off.reportLines(sixtyFourSelected: false).isEmpty)
@@ -218,10 +220,10 @@ struct DeviceInfoVersionTests {
     @Test func copyOrderIsIdentityIDFirmwareFPGACardsUnitBPort2() {
         var report = thunderboltReport()
         report.unitBLines = ["Unit B Firmware: 1.6.72"]
-        report.port2Lines = [SecondPortState.notInUseLine]
+        report.port2Lines = [SecondPortState.port1Line, SecondPortState.notInUseLine]
         let lines = report.clipboardText.split(separator: "\n").map(String.init)
         let prefixes = ["Device Name", "Connection", "Channel Count", "Hardware ID", "Firmware", "FPGA version",
-                        "IOBoard1", "IOBoard2", "Unit B", "Port 2"]
+                        "IOBoard1", "IOBoard2", "Unit B", "Port 1", "Port 2"]
         let found = prefixes.map { prefix in lines.firstIndex { $0.hasPrefix(prefix) } ?? -1 }
         #expect(!found.contains(-1))
         #expect(found == found.sorted())

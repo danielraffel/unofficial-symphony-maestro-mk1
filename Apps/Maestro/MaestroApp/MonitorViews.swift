@@ -30,6 +30,23 @@ struct StatusBarView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+            .contentShape(Rectangle())
+            .maestroHelp(clockLocked
+                ? "Clock Status: the Symphony I/O is locked to its clock source."
+                : "Clock Status: the Symphony I/O is not locked to its clock source. Check Clock Source in Device Settings > Clock.")
+
+            Divider().frame(height: 14)
+
+            // Sample rate, then clock source: the order of Device Settings > Clock
+            HStack(spacing: 4) {
+                Image(systemName: "waveform.badge.microphone")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(formatSampleRate(sampleRate))
+                    .font(.system(size: 11, design: .monospaced))
+            }
+            .contentShape(Rectangle())
+            .maestroHelp("Sample Rate. Change it in Device Settings > Clock.")
 
             Divider().frame(height: 14)
 
@@ -41,17 +58,8 @@ struct StatusBarView: View {
                 Text(clockSourceDisplayName)
                     .font(.system(size: 11))
             }
-
-            Divider().frame(height: 14)
-
-            // Sample rate
-            HStack(spacing: 4) {
-                Image(systemName: "waveform.badge.microphone")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(formatSampleRate(sampleRate))
-                    .font(.system(size: 11, design: .monospaced))
-            }
+            .contentShape(Rectangle())
+            .maestroHelp("Clock Source: where the Symphony I/O takes its clock from. Change it in Device Settings > Clock.")
 
             Spacer()
 
