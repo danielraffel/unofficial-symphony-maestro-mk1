@@ -257,6 +257,10 @@ public final class CoreAudioDeviceConnection: DeviceConnection, @unchecked Senda
         try NominalSampleRateObservation(deviceID: audioDeviceID)
     }
 
+    public func observeClockSource() throws -> ClockSourceObservation {
+        try ClockSourceObservation(deviceID: audioDeviceID)
+    }
+
     /// The nominal sample rate of any CoreAudio device, by ID.
     ///
     /// Exposed statically so a caller can check a device it has no connection

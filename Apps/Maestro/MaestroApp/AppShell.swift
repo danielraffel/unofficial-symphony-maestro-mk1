@@ -209,10 +209,6 @@ struct ContentView: View {
                 appState.startThunderboltWatchWhileOnUSB(
                     appState.lastLaunchDiscovered ?? CoreAudioDeviceConnection.discoverAllSymphonyIO())
             }
-            // Start USB health check if user previously enabled it
-            if UserDefaults.standard.bool(forKey: "usbHealthCheckEnabled") {
-                appState.startUSBHealthCheck()
-            }
         }
         .task(id: appState.connectionMode) {
             while !Task.isCancelled {

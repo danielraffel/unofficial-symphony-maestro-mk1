@@ -117,11 +117,15 @@ struct SettingsPagesTests {
         let text = try source("MaestroApp/SettingsViews.swift")
         let view = String(try declaration("struct DeviceSettingsView: View {", in: text))
         for selector in [".deviceMode", ".peakHoldMode", ".oversHoldMode", ".prefix", ".clockSource",
-                         ".wordClockDivide", ".versionString"] {
+                         ".versionString"] {
             let reads = view.components(separatedBy: "readSetting(\(selector)").count - 1
                 + view.components(separatedBy: "PropertyAddress(selector: \(selector)))").count - 1
             #expect(reads == 1, "\(selector) is read \(reads) times")
         }
+        // Word Clock Divide was an Ensemble setting; the Symphony I/O has none,
+        // so the page neither shows nor reads it.
+        #expect(!view.contains("Word Clock Divide"))
+        #expect(!view.contains("PropertyAddress(selector: .wordClockDivide)"))
         let tasks = view.components(separatedBy: ".task(id: settingsLoadID)").count - 1
         #expect(tasks == 1)
         let propertyTasks = view.components(separatedBy: ".task(id: appState.viewReloadToken)").count - 1

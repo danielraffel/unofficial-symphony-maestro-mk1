@@ -77,7 +77,6 @@ struct DeviceSettingsView: View {
     @State private var showDextActionAlert = false
     @State private var dextAlertTitle = "ThunderBridge Driver"
     @State private var dextAlertMessage = ""
-    @State private var wordClockOut: UInt32 = 0 // P3D-03: 0=normal, 1=divide-by-2
     /// Set for the whole duration of a rate write, including the windows that wait
     /// for the virtual device to follow and for a DAW to take the rate back, so the
     /// reconcile loop leaves the picker alone until the write has resolved.
@@ -349,12 +348,15 @@ struct DeviceSettingsView: View {
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            // System Settings can present Driver Extensions as a sheet without
-            // deactivating this window. Keep the foreground status live with a tiny
-            // plist read, and stop immediately when Maestro is no longer active.
+            // Loop Sync's measured lock has to be asked for: each read is a
+            // ClockRateAndLock query to both units, and it is also the retry for
+            // restoring saved Loop Sync settings. Only with two Symphony I/Os at
+            // 64 channels, and only while this page is in front.
+            // The driver list is not refreshed here: the app-wide loop in
+            // AppShell already does that every two seconds whatever is on
+            // screen, including while System Settings shows its sheet.
             while !Task.isCancelled {
-                appState.refreshInstalledDexts()
-                await appState.refreshLoopSync()
+                if appState.loopSyncVisible { await appState.refreshLoopSync() }
                 try? await Task.sleep(for: .seconds(2))
             }
         }
@@ -448,6 +450,15 @@ struct DeviceSettingsView: View {
                             programmaticClockSource = nil
                             Task { await writeClockSource(newSource) }
                         }
+                        // The source changed outside this menu (Audio MIDI Setup, a
+                        // DAW, the driver): show it, and do not send it back.
+                        .onChange(of: appState.reportedClockSource) { _, reported in
+                            guard !isLoading, !appState.convertersIdentified, let reported,
+                                  let row = ClockSourceMenu.row(for: reported, in: clockSourceChoices),
+                                  row != clockSource else { return }
+                            programmaticClockSource = row
+                            clockSource = row
+                        }
                         // The rows change when the board types arrive or a card
                         // changes. Keep the selection on the row for the same source
                         // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and
@@ -484,34 +495,6 @@ struct DeviceSettingsView: View {
                                 Text(PortStatusMessage.clock(locked: clockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                                     .foregroundStyle(.secondary)
                             }
-                        }
-                    }
-                }
-                .disabled(isLoading)
-            }
-
-            // P3D-03: Word clock output config
-            if !isProToolsMode {
-                Picker("Word Clock Divide", selection: $wordClockOut) {
-                    Text("1:1 (Normal)").tag(UInt32(0))
-                    Text("1:2 (Divide)").tag(UInt32(1))
-                }
-                .pickerStyle(.menu)
-                // Disabled: 'AEwd' word-clock divide was an Ensemble-only HAL property
-                // (mAEstro.h:1036-1039); there is no vendor EP0 opcode for it on Symphony IO
-                // MKI, so setProperty(.wordClockDivide) throws .unsupportedProperty and the
-                // control never reaches hardware. Inert until a real mechanism is found.
-                .disabled(true)
-                .onChange(of: wordClockOut) { _, newValue in
-                    guard !isLoading else { return }
-                    Task {
-                        do {
-                            try await appState.device?.setProperty(
-                                PropertyAddress(selector: .wordClockDivide),
-                                value: .uint32(newValue)
-                            )
-                        } catch {
-                            print("[Maestro] ERROR: wordClockDivide setProperty failed: \(error)")
                         }
                     }
                 }
@@ -1692,14 +1675,11 @@ struct DeviceSettingsView: View {
         appState.refreshSecondPortState()
         await appState.refreshLoopSync()
         appState.deviceInfoSnapshot = currentDeviceReport()
-        do {
-            if let wc = (try await device.getProperty(PropertyAddress(selector: .wordClockDivide))).asUInt32 {
-                wordClockOut = min(wc, 1) // Clamp to 0=normal, 1=divide
-                print("[Maestro] loadProperties: wordClockDivide raw=\(wc) → \(wordClockOut)")
-            }
-        } catch {
-            print("[Maestro] ERROR: loadProperties wordClockDivide failed: \(error)")
-        }
+        // No word clock divide control: 'AEwd' was an Ensemble setting (mAEstro.h, "exists
+        // for Ensemble"; handled only by ensembleController.cpp). The Symphony
+        // I/O has no command for it, its firmware sets the Loop Sync divider
+        // from the sample rate by itself (SymphonyIOMainBoard.cpp
+        // applyCorrespondingWordClockDivider), and the converters have none.
         errorMessage = nil
     }
 
@@ -1931,6 +1911,9 @@ struct DeviceSettingsView: View {
                 PropertyAddress(selector: .clockSource),
                 value: .uint32(source)
             )
+            // The status bar shows this; a board input and USB send no Core
+            // Audio notification of their own.
+            if ClockSourceMenu.decode(source) != nil { appState.reportedClockSource = source }
             errorMessage = nil
         } catch {
             errorMessage = unitBFollows
@@ -2005,7 +1988,6 @@ struct AppSettingsView: View {
     @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
     @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
     @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
-    @AppStorage("usbHealthCheckEnabled") private var usbHealthCheckEnabled = false
     @AppStorage("autoRecoverMixerState") private var autoRecoverMixerState = true
     /// Separate from Device Settings › Info's Copy so the two buttons never flash
     /// each other's checkmark.
@@ -2054,13 +2036,6 @@ struct AppSettingsView: View {
                     }
                     .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
                 }
-
-                Toggle("USB connection health check", isOn: $usbHealthCheckEnabled)
-                    .onChange(of: usbHealthCheckEnabled) { _, enabled in
-                        if enabled { appState.startUSBHealthCheck() }
-                        else { appState.stopUSBHealthCheck() }
-                    }
-                    .maestroHelp("Periodically verify USB connectivity and automatically recover stale connections. Enable if your device disconnects during sleep/wake or after cable bumps.")
 
                 Toggle("Restore my mixer after a USB reconnect", isOn: $autoRecoverMixerState)
                     .maestroHelp("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")

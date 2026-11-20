@@ -118,6 +118,20 @@ public enum ClockSourceMenu {
         return (source, UInt8(high - 1))
     }
 
+    /// The short name the status bar shows for a reported clock source key.
+    /// Nil when the key is not a source (0 from a transport that cannot say).
+    public static func statusName(for key: UInt32) -> String? {
+        guard let decoded = decode(key) else { return nil }
+        switch UInt32(decoded.source) {
+        case internalClock: return "Internal"
+        case wordClock: return "Word Clock"
+        case loopSync: return "Loop Sync"
+        case ioBoard1: return "I/O Board 1"
+        case ioBoard2: return "I/O Board 2"
+        default: return nil
+        }
+    }
+
     /// The older converters (AD-16X, DA-16X, DD-16X, Rosetta) on a
     /// ThunderBridge: their own clock or word clock, nothing else, as the
     /// original offered for them. Sent to the driver as the converter config's
