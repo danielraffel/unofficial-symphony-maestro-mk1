@@ -161,10 +161,11 @@ struct ApogeeStillThereSteps: View {
         DisclosureGroup(OriginalApogeeDrivers.stillThereTitle, isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(OriginalApogeeDrivers.stillThereIntro)
-                Text(OriginalApogeeDrivers.clearStagingCommand)
-                    .font(.callout.monospaced())
-                    .textSelection(.enabled)
-                    .padding(.vertical, 2)
+                ForEach(OriginalApogeeDrivers.stillThereCommands, id: \.self) { command in
+                    Text(command)
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+                }
                 ForEach(Array(OriginalApogeeDrivers.stillThereSteps.enumerated()), id: \.offset) { index, step in
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text("\(index + 1).")
@@ -175,6 +176,7 @@ struct ApogeeStillThereSteps: View {
                 Text(OriginalApogeeDrivers.stillThereCaveat)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Link("Read the user's report", destination: OriginalApogeeDrivers.userReportURL)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 4)
