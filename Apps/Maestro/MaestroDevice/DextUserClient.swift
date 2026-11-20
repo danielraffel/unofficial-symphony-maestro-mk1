@@ -56,6 +56,7 @@ public final class DextUserClient: @unchecked Sendable {
         if connection != IO_OBJECT_NULL {
             IOServiceClose(connection)
             connection = IO_OBJECT_NULL
+            linkStateWordCount = nil
         }
 
         // Find the ThunderBridge dext using IOServiceNameMatching
@@ -81,6 +82,7 @@ public final class DextUserClient: @unchecked Sendable {
             return
         }
 
+        linkStateWordCount = nil
         connection = conn
         print("[DextUserClient] Connected to dext via IOUserClient (connection=\(conn))")
     }
@@ -95,6 +97,7 @@ public final class DextUserClient: @unchecked Sendable {
         if connection != IO_OBJECT_NULL {
             IOServiceClose(connection)
             connection = IO_OBJECT_NULL
+            linkStateWordCount = nil
             print("[DextUserClient] Disconnected")
         }
     }
@@ -245,22 +248,38 @@ public final class DextUserClient: @unchecked Sendable {
         return false
     }
 
+    private var linkStateWordCount: Int?
+
     /// Read the dext's link-watch state (selector 5). No PCI transaction: this is
     /// what the app's 2 s presence loop calls. `nil` = the user client did not answer.
     public func readLinkState() -> LinkState? {
         lock.lock()
         let conn = connection
+        let generation = connectionGeneration
+        let knownCount = linkStateWordCount
         lock.unlock()
         guard conn != IO_OBJECT_NULL else { return nil }
-        // The dext checks the output size exactly: 16 words from dext 117 on, 12
-        // before. Try the current size first, then the older one.
-        for count in [16, 12] {
+        // Negotiate once per connection. The optional tail piggybacks on the
+        // existing health read; old drivers still receive their exact ABI.
+        // Retry the optional tail a few times before falling back to the legacy
+        // prefix. A transient first read must not pin this connection to 16 words.
+        for count in knownCount.map({ [$0] }) ?? [48, 48, 48, 16, 12] {
             var out = [UInt32](repeating: 0, count: count)
             var outSize = out.count * MemoryLayout<UInt32>.size
             let kr = out.withUnsafeMutableBytes { p in
                 IOConnectCallStructMethod(conn, 5, nil, 0, p.baseAddress, &outSize)
             }
-            if kr == KERN_SUCCESS { return LinkState.decode(out) }
+            if kr == KERN_SUCCESS, outSize == count * MemoryLayout<UInt32>.size,
+               let decoded = LinkState.decode(out) {
+                lock.lock()
+                let current = connection == conn && connectionGeneration == generation
+                if current { linkStateWordCount = count }
+                lock.unlock()
+                // A reconnect can race this read. The decoded answer is still
+                // the selector-5 result; only cache negotiation for the live
+                // connection, and let the caller's identity guard discard stale use.
+                return decoded
+            }
         }
         return nil
     }
@@ -695,12 +714,15 @@ public struct LinkState: Sendable, Equatable {
     /// dext 120+: identification of a unit that did not answer as a Symphony
     /// I/O; decode with `ConnectedUnit(probeWord:)`. Zero when not probed.
     public let unitProbe: UInt32
+    /// Optional host-only OFF receipts, physical A0...7 then B0...7.
+    public let phantomOffReceipts: [UInt64]
 
     public init(state: State, clockPresent: Bool, ioRunning: Bool, irqCount: UInt64,
                 recoveryCount: UInt32, hwSuspended: Bool, linkConfigured: Bool,
                 lastClockReg: UInt32, watchTicks: UInt32, audioWraps: UInt32,
                 lastGcsr: UInt32 = 0, lastXlinkStatus: UInt32 = 0, cardReinitCount: UInt32 = 0,
-                unitProbe: UInt32 = 0) {
+                unitProbe: UInt32 = 0, phantomOffReceipts: [UInt64] = []) {
+        self.phantomOffReceipts = phantomOffReceipts
         self.unitProbe = unitProbe
         self.state = state; self.clockPresent = clockPresent; self.ioRunning = ioRunning
         self.irqCount = irqCount; self.recoveryCount = recoveryCount; self.hwSuspended = hwSuspended
@@ -709,12 +731,12 @@ public struct LinkState: Sendable, Equatable {
         self.lastGcsr = lastGcsr; self.lastXlinkStatus = lastXlinkStatus; self.cardReinitCount = cardReinitCount
     }
 
-    /// Decode the dext's output: 16 words (dext 117+) or 12 (dext 113–116). `nil`
+    /// Decode 48 words (optional OFF receipts), 16 (dext 117+), or 12 (113–116). `nil`
     /// when the status word is nonzero or the size is wrong, both of which mean
     /// the selector did not answer.
     public static func decode(_ words: [UInt32]) -> LinkState? {
-        guard words.count == 12 || words.count == 16, words[0] == 0 else { return nil }
-        let ext = words.count == 16
+        guard [12, 16, 48].contains(words.count), words[0] == 0 else { return nil }
+        let ext = words.count >= 16
         return LinkState(state: State(rawValue: words[1]) ?? .unknown,
                          clockPresent: words[2] != 0, ioRunning: words[3] != 0,
                          irqCount: UInt64(words[4]) | (UInt64(words[5]) << 32),
@@ -723,7 +745,10 @@ public struct LinkState: Sendable, Equatable {
                          watchTicks: words[10], audioWraps: words[11],
                          lastGcsr: ext ? words[12] : 0, lastXlinkStatus: ext ? words[13] : 0,
                          cardReinitCount: ext ? words[14] : 0,
-                         unitProbe: ext ? words[15] : 0)
+                         unitProbe: ext ? words[15] : 0,
+                         phantomOffReceipts: words.count == 48 ? (0..<16).map {
+                             UInt64(words[16 + $0 * 2]) | (UInt64(words[17 + $0 * 2]) << 32)
+                         } : [])
     }
 }
 

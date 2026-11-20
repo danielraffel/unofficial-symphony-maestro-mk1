@@ -19,8 +19,12 @@ enum NavigationArea: String, CaseIterable, Identifiable {
     case mixer = "Mixer"
     case inputRouting = "Input Routing"
     case outputRouting = "Output Routing"
+    /// The Symphony I/O hardware: clock, connection, monitoring, front panel,
+    /// cards, naming and device info. Replaces the old Device Settings and
+    /// System Setup pages.
     case deviceSettings = "Device Settings"
-    case systemSetup = "System Setup"
+    /// Maestro itself: appearance, connect behaviour, updates, diagnostics, about.
+    case appSettings = "App Settings"
 
     var id: String { rawValue }
 
@@ -37,11 +41,23 @@ enum NavigationArea: String, CaseIterable, Identifiable {
     /// keeps the normal default. Nothing in the UI writes this key.
     static var launchDefault: NavigationArea {
         guard let raw = UserDefaults.standard.string(forKey: "MaestroInitialArea") else { return .input }
+        return named(raw) ?? .input
+    }
+
+    /// The area a launch argument names, accepting the pages' former names:
+    /// System Setup (and the interim Hardware) open Device Settings, and
+    /// Preferences opens App Settings.
+    static func named(_ raw: String) -> NavigationArea? {
         let want = raw.lowercased().replacingOccurrences(of: " ", with: "")
-        return allCases.first { area in
+        if let area = allCases.first(where: { area in
             "\(area)".lowercased() == want
                 || area.rawValue.lowercased().replacingOccurrences(of: " ", with: "") == want
-        } ?? .input
+        }) { return area }
+        switch want {
+        case "systemsetup", "hardware": return .deviceSettings
+        case "preferences": return .appSettings
+        default: return nil
+        }
     }
 
     var systemImage: String {
@@ -51,8 +67,8 @@ enum NavigationArea: String, CaseIterable, Identifiable {
         case .mixer:          return "slider.horizontal.3"
         case .inputRouting:   return "arrow.right.arrow.left"
         case .outputRouting:  return "arrow.triangle.branch"
-        case .deviceSettings: return "gearshape"
-        case .systemSetup:    return "clock"
+        case .deviceSettings: return "hifireceiver"
+        case .appSettings:    return "gearshape"
         }
     }
 }
@@ -456,7 +472,7 @@ struct DetailView: View {
     @Environment(AppState.self) private var appState
     let area: NavigationArea
 
-    /// Input, Output, Device Settings and System Setup belong to one unit:
+    /// Input, Output, Input Routing and Device Settings belong to one unit:
     /// with a second Symphony I/O on port 2 they follow the unit picker, and
     /// are rebuilt when it changes.
     private var isPerUnit: Bool { UnitPicker.isPerUnit(page: area.rawValue) }
@@ -484,7 +500,7 @@ struct DetailView: View {
         case .inputRouting:   InputRoutingView(appState: appState)
         case .outputRouting:  OutputRoutingView(appState: appState)
         case .deviceSettings: DeviceSettingsView()
-        case .systemSetup:    SystemSetupView()
+        case .appSettings:    AppSettingsView()
         }
     }
 }

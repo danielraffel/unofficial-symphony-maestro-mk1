@@ -20,8 +20,8 @@ The Symphony front-panel mode selects the active transport: Symphony mode for Th
 - **Input Routing and Output Routing:** map available hardware and software channels. Verify routing at a low monitoring level before use.
   - **Reset Routing** puts the page you are on back to its default, after asking: each software input records the matching hardware input, and each software output goes to the matching hardware output.
   - **Identify** (Output Routing) lights every front-panel light on the Symphony I/O so you can find it; click again to turn them off. Quitting Maestro also turns them off. With two units there is one button for each.
-- **Device Settings:** device preferences and available hardware options.
-- **System Setup:** clock and sample-rate configuration and system information.
+- **Device Settings:** the Symphony I/O itself, in the sections **Clock** (sample rate, clock source, Loop Sync, Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, Rescan), **Input Monitoring** (DAW or Direct Monitor), **Volume Keys** (with two units), **Front Panel** (meter banks, Peak Hold, Over Hold), **Cards** (Optical Format, Insert Labels with an 8MicPre), **Naming** (Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards, the ThunderBridge driver extension).
+- **App Settings:** Maestro itself, in the sections **General** (appearance, tooltips, meter zone coloring, scroll positions, pop-ups), **When a Device Connects**, **Updates**, **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).
 
 Controls depend on installed modules and the selected transport. The app's built-in Help provides contextual guidance. A **Simulated** or **no hardware** indicator means the view represents a simulated configuration, not confirmation of connected hardware operation.
 
@@ -37,7 +37,7 @@ Optical channels are named after the card's optical format and the sample rate:
 
 N.A. channels stay in place but are faded, as in Apogee's original Maestro.
 
-Every name starts with the unit's peripheral prefix letter, set in Device Settings ("A Line 1"). The letter is stored in the Symphony.
+Every name starts with the unit's peripheral prefix letter, set in Device Settings › Naming ("A Line 1"). The letter is stored in the Symphony.
 
 Over ThunderBridge, Mac inputs follow the cards in slot order by default: the inputs of the card in slot 1 first, then those of slot 2. Slot 2 starts at Mac input 17, or at 13 behind a 2x6 card, which has 12 inputs. Each Mac input is named after what feeds it, so a change on Input Routing renames it.
 
@@ -51,13 +51,13 @@ This is a test build; two units have not been tried on hardware yet. Connect the
 
 Audio MIDI Setup shows a **Source** menu for the ThunderBridge, on the Input and Output tabs, with two entries: **Symphony I/O: ThunderBridge** (32 channels, the default) and **Symphony I/O: ThunderBridge 64** (64 channels; 33-64 are the unit on port 2). The macOS Sound menu in the menu bar shows the selected entry's name in place of the device name, which is why the default entry reads like the device name. Apogee's software called these "Port 1: 32ch" and "Port 1-2: 64ch".
 
-In Maestro the same setting is **Ports** in System Setup › Device Info, with the choices **32 channels** and **64 channels (two units)**. If no second unit is found on port 2, 64 channels is refused, the device stays at 32 and Device Info says why. Your DAW should keep the device selected when you switch.
+In Maestro the same setting is **Ports** in Device Settings › Connection, with the choices **32 channels** and **64 channels (two units)**. If no second unit is found on port 2, 64 channels is refused, the device stays at 32 and Device Settings › Connection says why. Your DAW should keep the device selected when you switch.
 
 ## Appearance and updates
 
-Choose Auto, Light or Dark appearance in Device Settings. In **Device Settings › Preferences**, **Show tooltips** controls the short explanations shown when you hold the pointer over a control; it is on by default. Software updates use Sparkle and the configured project update feed. An available update is not installed merely by opening this guide; follow the updater's prompts and save audio work before installing.
+In **App Settings › General**, choose Auto, Light or Dark appearance; **Show tooltips** there controls the short explanations shown when you hold the pointer over a control; it is on by default. Software updates use Sparkle and the configured project update feed. An available update is not installed merely by opening this guide; follow the updater's prompts and save audio work before installing.
 
-**Update channels.** Maestro normally offers stable versions only. In **Device Settings › Updates** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.
+**Update channels.** Maestro normally offers stable versions only. In **App Settings › Updates** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.
 
 ## Remove the software
 

@@ -247,7 +247,7 @@ struct ConverterRoutingUnavailableNote: View {
             Text(driverTooOld ? ConverterDriverText.routingHeadline : "Routing needs every converter identified")
                 .font(.headline)
             Text(driverTooOld ? ConverterDriverText.update
-                 : "A unit on the cable did not identify as an AD-16X, DA-16X, DD-16X or Rosetta, so Maestro can't lay out its channels. Device Info lists what each unit answered.")
+                 : "A unit on the cable did not identify as an AD-16X, DA-16X, DD-16X or Rosetta, so Maestro can't lay out its channels. Device Settings › Info lists what each unit answered.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

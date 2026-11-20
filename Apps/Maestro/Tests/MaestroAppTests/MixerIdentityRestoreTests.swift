@@ -68,6 +68,29 @@ struct MixerIdentityRestoreTests {
         #expect(result.mutes.last?.3 == 0)
     }
 
+    @Test func lifecycleSyncCarriesExplicitDirectMonitorMutes() async throws {
+        let state = AppState()
+        state.connectionMode = .hardware
+        let transport = MixerRestoreTransport()
+        transport.sendDelay = 2_000_000
+        let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "fix21-carry-mutes"))
+        let usb = XPCDeviceConnection(identifier: id, transport: transport)
+        state.device = usb
+        state.unitAIdentity = 42
+        state.unitAIdentityState = .known(42)
+        state.mixerPreferences.set(1, forKey: "routingMode")
+        let explicit = Task {
+            await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
+                                                  preferences: state.mixerPreferences, applyInputMutes: true)
+        }
+        try await Task.sleep(for: .milliseconds(3))
+        await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
+                                              preferences: state.mixerPreferences, applyInputMutes: false)
+        await explicit.value
+        #expect(transport.snapshot.mutes.count >= 64)
+    }
+
     @Test func cancelledViewStillDiscoversCards() async {
         let defaults = UserDefaults.standard
         let before = defaults.dictionaryRepresentation()

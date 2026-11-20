@@ -138,19 +138,20 @@ public struct SecondUnitInfo: Sendable, Equatable {
 /// follows Apogee's Symphony I/O User's Guide ("2 Symphony I/Os together with
 /// Symphony 64 Thunderbridge or PCI", p. 87) and the ThunderBridge Quick Start
 /// Guide ("Connecting Multiple Apogee Interfaces", pp. 17-18); the clock line
-/// describes the default and the original's System Setup clocking choices.
+/// describes the default and the original's System Setup clocking choices,
+/// which Maestro keeps in Device Settings › Clock.
 public enum SecondUnitHelp {
     public static let lines = [
         "**Cabling.** Connect the main port of each Symphony I/O to the ThunderBridge with a PC-32 cable: "
             + "the first unit to port 1 (channels 1–32), the second to port 2 (channels 33–64). "
             + "Apogee allows one Symphony I/O per port, so two is the most. Set both units to Symphony mode "
             + "(SYM AIM) on their front panels.",
-        "**Clock.** In System Setup, Use Loop Sync is on by default, with Unit A as Loop Sync Master. "
+        "**Clock.** In Device Settings › Clock, Use Loop Sync is on by default, with Unit A as Loop Sync Master. "
             + "Connect the units' Loop Sync BNC connectors (Out to In, and back). You can choose either unit "
             + "as master and set its clock source on that unit's page. With Use Loop Sync off, unit B uses "
             + "Word Clock and unit A's Loop Sync output is off.",
         "**In Maestro.** Once 64 channels run and the driver has set up the second unit, Input, Output, "
-            + "Device Settings and System Setup show a **Unit A / Unit B** picker at the top; each page then "
+            + "Input Routing and Device Settings show a **Unit A / Unit B** picker at the top; each page then "
             + "shows and sets the chosen unit. The Mixer shows both units' inputs, the second unit's after the "
             + "first's and named with its prefix letter, and Output Routing adds the second unit's outputs as "
             + "more columns. Software 33–64 play on the second unit until you route them elsewhere.",
@@ -176,7 +177,7 @@ public enum UnitPicker {
     /// Output Routing are the card's and show both units at once. Input
     /// Routing edits the chosen unit's own P2P table.
     public static func isPerUnit(page: String) -> Bool {
-        ["Input", "Output", "Input Routing", "Device Settings", "System Setup"].contains(page)
+        ["Input", "Output", "Input Routing", "Device Settings"].contains(page)
     }
 
     /// The picker's segment label: the unit and its prefix letter.

@@ -101,6 +101,7 @@ final class AppState: @unchecked Sendable {
     /// state update only: the front-panel path never writes the value back.
     var frontPanelMicPreUpdate: FrontPanelMicPreUpdate?
     private var frontPanelMicPreRevision = 0
+    var phantomObservationRevision = 0
     /// Session-only Identify latches, one per unit connection.
     let identifyA = IdentifyState()
     let identifyB = IdentifyState()
@@ -129,6 +130,8 @@ final class AppState: @unchecked Sendable {
     private weak var cardDiscoveryTaskConnection: AnyObject?
     var routingModeEpoch: UInt64 = 0
     var routingModeTask: Task<Void, Never>?
+    var routingModeTaskAppliesInputMutes = false
+    var routingModeTaskMode: Int?
     var usbMixerLifecycleRestoreGeneration: UUID?
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
 
@@ -518,6 +521,7 @@ final class AppState: @unchecked Sendable {
                     try? await Task.sleep(for: .seconds(2))
                     continue
                 }
+                self.applyPhantomObservations(tb.lastLinkState)
                 let audioRunning = tb.isAudioRunning
                 let healthy = verdict.isLive
                 self.updateThunderboltPortLink(tb.lastLinkState?.state.portStatusLink ?? .other)
@@ -714,9 +718,9 @@ final class AppState: @unchecked Sendable {
     /// Where `secondaryBoardType` came from. See `primaryBoardSource`.
     var secondaryBoardSource: BoardDetectionSource = .unknown
 
-    /// The Device Info panel's last assembled content, published by System Setup when it
+    /// The Device Info panel's last assembled content, published by Device Settings when it
     /// loads. The About box copies it so a bug report is one Copy button, not two pages;
-    /// nil until System Setup has been opened once, and the About box falls back to what
+    /// nil until Device Settings has been opened once, and the About box falls back to what
     /// this object knows on its own.
     var deviceInfoSnapshot: DeviceInfoReport?
 
@@ -2596,6 +2600,17 @@ final class AppState: @unchecked Sendable {
         }
         let replay: DeviceSettingsReplay
         if let tb = device as? ThunderboltDeviceConnection {
+            if cardLayout.slot2 == .micPre8 {
+                let link = await Task.detached(priority: .utility) { tb.linkState() }.value
+                // The read suspends the main actor. Recheck every admission
+                // guard before applying a single-unit replay; a converter or
+                // two-unit transition must never inherit this target.
+                guard unitAIdentity != nil, connectedUnit == nil,
+                      connectionMode == .hardware, isHardwareInitialized,
+                      !usesTwoUnitReplay, converterSystem == nil,
+                      self.device === tb else { return }
+                applyPhantomObservations(link)
+            }
             replay = await tb.reapplyStoredSettings()
             // The monitor mode is shown outside the Output tab too; start from
             // the saved one rather than the built-in default.
@@ -3121,11 +3136,16 @@ final class AppState: @unchecked Sendable {
                                 Task { @MainActor [weak self] in
                                     guard let self, self.device === xpcDev else { return }
                                     let generation = self.unitAGeneration
+                                    let restoreGenerationAtStart = self.usbIdentityRestoreGeneration
                                     // A failed connect already consumed its initial restore.
                                     // Retry identity before this ordinary recovery restore.
                                     self.retryFailedIdentityOnRecovery()
                                     if self.unitAIdentityState == .pending { await self.readCardTypes() }
                                     guard self.device === xpcDev, self.unitAGeneration == generation else { return }
+                                    // Identity discovery owns the first restore. If this
+                                    // recovery joined that pending discovery, do not replay
+                                    // Master/Return (or DAW mutes) a second time.
+                                    if restoreGenerationAtStart != self.usbIdentityRestoreGeneration { return }
                                     do {
                                         let wait = Self.usbSettleRemaining(
                                             appearedAt: self.symphonyAppearedAt, now: Date())

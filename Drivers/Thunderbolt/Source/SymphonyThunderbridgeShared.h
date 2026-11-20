@@ -369,3 +369,7 @@ typedef struct {
 } SymphonyConverterConfigInput; // 8 bytes
 
 #pragma pack(pop)
+
+// Optional selector-5 output tail: last HAL OFF timestamp for A0..7, B0..7.
+// No hardware reads; old 64-byte clients retain the original ABI.
+#define kSymphonyPhantomObservationWords 48u

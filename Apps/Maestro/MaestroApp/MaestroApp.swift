@@ -299,6 +299,9 @@ struct MaestroApp: App {
                 }
                 .keyboardShortcut("?", modifiers: .command)
 
+                Button("Report a Bug…") { NSWorkspace.shared.open(FeedbackLinks.reportBug) }
+                Button("Discuss on Gearspace…") { NSWorkspace.shared.open(FeedbackLinks.discussion) }
+
                 Divider()
 
                 Button("Terms of Service") {

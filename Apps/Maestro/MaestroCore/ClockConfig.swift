@@ -127,7 +127,7 @@ public enum ClockSourceMenu {
         ClockSourceChoice(id: wordClock, name: "External (Word Clock)", source: 2, boardInput: nil),
     ]
 
-    /// Over USB: Internal only (see `SystemSetupView.clockSourceChoices`).
+    /// Over USB: Internal only (see `DeviceSettingsView.clockSourceChoices`).
     public static let usb: [ClockSourceChoice] = [
         ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
     ]

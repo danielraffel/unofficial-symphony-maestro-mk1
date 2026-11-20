@@ -93,7 +93,7 @@ extension AppState {
 
     /// The hardware half of the report.
     ///
-    /// System Setup publishes the real thing into ``deviceInfoSnapshot`` when it loads,
+    /// Device Settings publishes the real thing into ``deviceInfoSnapshot`` when it loads,
     /// because that page resolves board provenance against the firmware XML and knows
     /// the firmware, FPGA and XMOS versions. Before that page has been opened, fall back
     /// to what this object knows first-hand — identity, transport and the two board
@@ -117,7 +117,7 @@ extension AppState {
         }
         // Whichever source the report came from, say what is on the cable when
         // it is not a Symphony I/O. This is the block testers paste to us, and
-        // it must carry the unit list even if System Setup was never opened.
+        // it must carry the unit list even if Device Settings was never opened.
         if let unit = connectedUnit {
             report.deviceName = unit.modelName ?? report.deviceName
             report.connection = connectionLabel

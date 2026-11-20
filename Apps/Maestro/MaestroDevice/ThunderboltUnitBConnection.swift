@@ -7,7 +7,7 @@
 /// original kept one protocol object per peripheral
 /// (`og_source/maestrolink/Software/ControlProtocol/SimpleControlProtocolSymphony.cpp:34-48`).
 /// This connection sends every request with that byte, so the Input, Output,
-/// Device Settings and System Setup pages can point at unit B without knowing
+/// Input Routing and Device Settings pages can point at unit B without knowing
 /// about ports. Unit A's `ThunderboltDeviceConnection` is not changed by it.
 ///
 /// What differs from unit A:

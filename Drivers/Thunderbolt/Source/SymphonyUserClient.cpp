@@ -201,8 +201,14 @@ kern_return_t SymphonyUserClient::ExternalMethod(
     // genuinely different error (a real size-check failure). H2/#7: the previous
     // `ret != kIOReturnSuccess` test returned kIOReturnNoCompletion for EVERY valid
     // call, so the vendor path was dead — no command ever reached the handler below.
+    auto method = sMethods[selector];
+    // Preserve exact-size validation for the legacy ABI and the optional
+    // host-only phantom tail. No arbitrary-sized outputs are accepted.
+    if (selector == kSelectorReadLinkState && arguments &&
+        arguments->structureOutputMaximumSize == kSymphonyPhantomObservationWords * sizeof(uint32_t))
+        method.checkStructureOutputSize = kSymphonyPhantomObservationWords * sizeof(uint32_t);
     kern_return_t ret = super::ExternalMethod(selector, arguments,
-                                               &sMethods[selector], this, nullptr);
+                                               &method, this, nullptr);
     if (ret != kIOReturnSuccess && ret != kIOReturnNoCompletion) {
         UCLOG("ExternalMethod: dispatch validation failed 0x%x", ret);
         return ret;
@@ -319,10 +325,13 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             UCLOG("ExternalMethod: no driver (link state)");
             return kIOReturnNotReady;
         }
-        SymphonyLinkStateOutput output = {};
-        kern_return_t r = ivars->driver->ReadLinkState(reinterpret_cast<uint32_t *>(&output));
-        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
-        auto outputData = OSData::withBytes(&output, sizeof(output));
+        uint32_t output[kSymphonyPhantomObservationWords] = {};
+        kern_return_t r = ivars->driver->ReadLinkState(output);
+        const bool extended = method.checkStructureOutputSize == sizeof(output);
+        if (r == kIOReturnSuccess && extended)
+            r = ivars->driver->ReadPhantomObservations(output + 16);
+        output[0] = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(output, extended ? sizeof(output) : sizeof(SymphonyLinkStateOutput));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;
     }

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Where the Diagnostics switch appears in Device Settings › Diagnostics & Feedback.
+/// Where the Diagnostics switch appears in App Settings › Diagnostics & Feedback.
 ///
 /// Decision (2026-11-18): Beta only for now. Revisit when the next beta is
 /// promoted to Stable: AGENTS.md › Release channels › "Decisions for the next
@@ -38,7 +38,7 @@ enum DiagnosticsCopy {
     }
 }
 
-/// Device Settings › Diagnostics & Feedback: the on/off switch.
+/// App Settings › Diagnostics & Feedback: the on/off switch.
 struct DiagnosticsSettingsRow: View {
     @Environment(DiagnosticsRecorder.self) private var diagnostics
     @State private var askConsent = false

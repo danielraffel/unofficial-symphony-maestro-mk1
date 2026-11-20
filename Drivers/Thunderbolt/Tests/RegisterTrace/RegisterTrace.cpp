@@ -3248,11 +3248,38 @@ static void RunPreampHostRoutes()
           "B10: B Mic type tracked");
     CHECK(route(0, 32) == kIOReturnSuccess, "B10: B routed to host 1");
     a.erase(phantom); a.erase(mic); b.erase(phantom); b.erase(mic);
+    // P-2: host 1 maps to B0, host 9 to A0. ON never creates an OFF receipt.
+#ifdef kSymphonyPhantomObservationWords
+    uint32_t observed[32] = {};
+    drv->ReadPhantomObservations(observed);
+    CHECK(observed[0] == 0 && observed[16] == 0, "P2: external ON grants no receipt");
+    CHECK(drv->RequestPhantom(0, false) == kIOReturnSuccess, "P2: queue routed OFF");
+    HostPump();
+    const size_t observationMark = r.card.lines.size();
+    drv->ReadPhantomObservations(observed);
+    CHECK((observed[16] || observed[17]) && !observed[0] && !observed[1],
+          "P2: routed OFF recorded for B0 only");
+    CHECK(r.card.lines.size() == observationMark, "P2: reading observations has no bus traffic");
+    uint32_t beforeInvalid[32]; memcpy(beforeInvalid, observed, sizeof(observed));
+    drv->RequestPhantom(64, false);
+    drv->ReadPhantomObservations(observed);
+    CHECK(memcmp(beforeInvalid, observed, sizeof(observed)) == 0, "P2: unmapped element records nothing");
+#endif
     CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess && drv->RequestMicGain(0, 44) == kIOReturnSuccess,
           "B10: host 1 accepts B preamp writes");
     HostPump();
     CHECK(b[phantom] == std::vector<uint8_t>({1}) && b[mic] == std::vector<uint8_t>({44}) &&
           !a.count(phantom) && !a.count(mic), "B10: host 1 writes B over port 2 only");
+#ifdef kSymphonyPhantomObservationWords
+    drv->ReadPhantomObservations(observed);
+    CHECK(memcmp(beforeInvalid, observed, sizeof(observed)) == 0, "P2: ON does not change OFF receipts");
+    uint8_t phantomOn[] = {1};
+    CHECK(drv->SendVendorCommand(0xC6, 0, phantomOn, sizeof(phantomOn), 1) == kIOReturnSuccess,
+          "P2: Maestro ON accepted on B0");
+    drv->ReadPhantomObservations(observed);
+    CHECK(observed[16] == 0 && observed[17] == 0,
+          "P2: later Maestro ON clears the older unread B0 OFF receipt");
+#endif
 
     // B11: admission is not permission to use a stale physical route.  Change
     // the host route while each XLink lane is queued; phantom ON and gain are
@@ -3302,6 +3329,16 @@ static void RunPreampHostRoutes()
           "B11: unchanged route still sends B gain");
 
     CHECK(route(8, 0) == kIOReturnSuccess, "B10: A routed to host 9");
+#ifdef kSymphonyPhantomObservationWords
+    drv->ReadPhantomObservations(observed);
+    const uint32_t bReceiptBeforeRemappedA = observed[16];
+    const uint32_t bReceiptBeforeRemappedAHi = observed[17];
+    CHECK(drv->RequestPhantom(8, false) == kIOReturnSuccess, "P2: queue remapped A OFF");
+    HostPump();
+    drv->ReadPhantomObservations(observed);
+    CHECK((observed[0] || observed[1]) && observed[16] == bReceiptBeforeRemappedA && observed[17] == bReceiptBeforeRemappedAHi,
+          "P2: remapped A OFF leaves B receipt unchanged");
+#endif
     CHECK(drv->RequestPhantom(8, true) == kIOReturnSuccess && drv->RequestMicGain(8, 33) == kIOReturnSuccess,
           "B10: host 9 accepts A preamp writes");
     HostPump();
@@ -3355,9 +3392,16 @@ static void RunPreampHostRoutes()
     uint8_t digital[] = {192, 40};
     CHECK(drv->SendVendorCommand(0x31, 0, digital, sizeof(digital)) == kIOReturnSuccess,
           "B10: digital source replaces preamp");
+#ifdef kSymphonyPhantomObservationWords
+    drv->ReadPhantomObservations(beforeInvalid);
+#endif
     const size_t mark = r.card.lines.size();
     CHECK(drv->RequestPhantom(0, false) == kIOReturnNotReady &&
           drv->RequestMicGain(0, 12) == kIOReturnNotReady, "B10: digital route refuses phantom and gain");
+#ifdef kSymphonyPhantomObservationWords
+    drv->ReadPhantomObservations(observed);
+    CHECK(memcmp(beforeInvalid, observed, sizeof(observed)) == 0, "P2: digital element records nothing");
+#endif
     HostPump();
     CHECK(Commands(r.card, mark, kRegXLink1TX, 0x10).empty() &&
           Commands(r.card, mark, kRegXLink2TX, 0x10).empty(), "B10: digital refusal sends nothing");
@@ -3373,6 +3417,19 @@ static void RunPreampHostRoutes()
     HostPump();
     CHECK(!Commands(r.card, removed, kRegXLink1TX, 0x10).empty() &&
           Commands(r.card, removed, kRegXLink2TX, 0x10).empty(), "B10: removal targets A after 64→32 fallback");
+#ifdef kSymphonyPhantomObservationWords
+    // An admitted OFF whose MSG_BYTE send times out must not manufacture a
+    // receipt: the app may clear saved authority only for a confirmed send.
+    uint32_t beforeFailedSend[32];
+    drv->ReadPhantomObservations(beforeFailedSend);
+    r.card.port[0].txBusy = true;
+    CHECK(drv->RequestPhantom(1, false) == kIOReturnSuccess, "P2: admitted OFF queued before TX failure");
+    HostPump();
+    r.card.port[0].txBusy = false;
+    drv->ReadPhantomObservations(observed);
+    CHECK(memcmp(beforeFailedSend, observed, sizeof(observed)) == 0,
+          "P2: failed admitted OFF leaves receipt unchanged");
+#endif
     Finish(o, r);
 }
 

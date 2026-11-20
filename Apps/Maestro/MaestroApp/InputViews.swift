@@ -462,6 +462,17 @@ struct InputControlsView: View {
             initializeChannels()
             restoreSessionScrollPosition()
         }
+        .onChange(of: appState.phantomObservationRevision) { _, _ in
+            let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey) ?? []
+            for index in channels.indices where index < saved.count {
+                // Observation is an external OFF authority. It may clear a
+                // visible ON, but must never create one from a stale saved bit.
+                if !saved[index].phantom {
+                    channels[index].phantom = false
+                    channels[index].phantomProvenance = nil
+                }
+            }
+        }
         .onChange(of: appState.frontPanelMicPreUpdate) { _, update in
             applyFrontPanelGain(update)
         }

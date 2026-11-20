@@ -68,6 +68,11 @@ struct SecondUnitTests {
         #expect(!UnitPicker.isVisible(transport: nil, unitB: b, portSelection: nil, convertersPresent: false))
         #expect(!UnitPicker.isVisible(transport: .thunderbolt, unitB: b, portSelection: .ports1And2, convertersPresent: true))
         #expect(UnitPicker.isPerUnit(page: "Input") && UnitPicker.isPerUnit(page: "Output"))
+        #expect(UnitPicker.isPerUnit(page: "Input Routing") && UnitPicker.isPerUnit(page: "Device Settings"))
+        // App Settings is Maestro's own, never one unit's; the retired page names are gone.
+        for page in ["App Settings", "System Setup", "Hardware", "Preferences"] {
+            #expect(!UnitPicker.isPerUnit(page: page), "\(page)")
+        }
         #expect(!UnitPicker.isPerUnit(page: "Mixer") && !UnitPicker.isPerUnit(page: "Output Routing"))
         #expect(UnitPicker.label(.b, prefix: "B") == "Unit B (B)")
         #expect(DeviceUnit.a.portByte == 0 && DeviceUnit.b.portByte == 1)

@@ -16,13 +16,14 @@ struct MonitorDeviceSelectionTests {
         #expect(MonitorDeviceSelectionStore.load(productID: 2100, defaults: defaults) == .a)
     }
 
-    @Test("System Setup only offers the original keyboard volume control for dual 64-channel units")
+    @Test("Device Settings only offers the original keyboard volume control for dual 64-channel units")
     func placementAndGate() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("MaestroApp/SettingsViews.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
-        #expect(source.contains("Section(\"Keyboard Volume Control\")"))
+        #expect(source.contains("Text(\"Volume Keys\")"))
+        #expect(source.contains("if hasTwoMonitorDevices { volumeKeysSection }"))
         #expect(source.contains("appState.portSelection.selection == .ports1And2"))
         #expect(source.contains("appState.unitB?.setupComplete == true"))
     }

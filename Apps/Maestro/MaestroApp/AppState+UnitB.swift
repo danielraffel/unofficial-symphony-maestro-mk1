@@ -5,7 +5,7 @@ import MaestroDevice
 /// Two Symphony I/Os on ThunderBridge: unit A on port 1 (channels 1-32) and,
 /// while 64 channels run, unit B on port 2 (channels 33-64).
 ///
-/// The per-unit pages (Input, Output, Device Settings, System Setup) read the
+/// The per-unit pages (Input, Output, Input Routing, Device Settings) read the
 /// `unit…` members below instead of `device`, `cardLayout` and the meter
 /// arrays. Each returns exactly what it did before unless unit B is present
 /// and chosen in the picker, so with one unit nothing changes. The Mixer and
@@ -451,7 +451,7 @@ extension AppState {
         unitBOutputPeakHold = advancePeakHold(unitBOutputPeakHold, levels: unitBOutputMeterLevels)
     }
 
-    /// Both copy paths use the live connection's cache, even before System Setup opens.
+    /// Both copy paths use the live connection's cache, even before Device Settings opens.
     var unitBDeviceInfoReportLines: [String] {
         guard let unitB, unitBDevice != nil else { return [] }
         return unitB.reportLines(unitAPrefix: peripheralPrefix) + unitBDeviceInfo.reportLines
