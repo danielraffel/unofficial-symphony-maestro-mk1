@@ -672,15 +672,44 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     }
 
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
+        try await setProperty(address, value: value, mirrorSoftwareReturnMute: true)
+    }
+
+    /// - Parameter mirrorSoftwareReturnMute: a Software Return mute that lands
+    ///   on the unit is also given to the helper's software stage, in the same
+    ///   call and under the same sequence owner, so the two never disagree.
+    ///   Over USB the "Maestro USB" device is rendered by the helper, and the
+    ///   unit's 0xB3 alone was not heard there (tester report 2026-11-20). The
+    ///   connect/recovery restore and the Software Return source change pass
+    ///   `false`: they write the unit first and give the helper the saved mute
+    ///   afterwards, in `setHelperNeutral(muted:)`.
+    ///
+    /// Only mute is mirrored. Solo stays the unit's 0xB2 alone: the helper has
+    /// no solo, and the unit's mixer is what silences the other strips.
+    private func setProperty(_ address: PropertyAddress, value: PropertyValue,
+                             mirrorSoftwareReturnMute: Bool) async throws {
         await sequenceOwner.acquire()
         do {
             try await setOwnedProperty(address, value: value)
+            if mirrorSoftwareReturnMute, let muted = Self.softwareReturnMute(address, value) {
+                transport.setSwReturnMute(muted)
+            }
             await sequenceOwner.release()
         } catch {
             await sequenceOwner.release()
             throw error
         }
         await listenerStorage.notifyListeners(for: address, change: PropertyChange(address: address, value: value))
+    }
+
+    /// The requested state when `address` is a Software Return mute (strip 32,
+    /// or its CoreAudio-level ID 1000, on either mixer); otherwise nil.
+    static func softwareReturnMute(_ address: PropertyAddress, _ value: PropertyValue) -> Bool? {
+        guard address.selector == .mixerChannelMute else { return nil }
+        let strip = UInt16(address.element & 0xFFFF)
+        guard strip == USBMixerStrip.softwareReturn || strip == USBMixerStrip.softwareReturnLogicalID
+        else { return nil }
+        return value.asBool
     }
 
     private func setOwnedProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
@@ -738,11 +767,17 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         // listener may write another property without waiting on itself.
     }
 
-    /// Hold the helper's software stage at 0 dB, unmuted. Send this only after
+    /// Hold the helper's software level at 0 dB (the unit's mixer owns the
+    /// fader) and give it the saved Software Return mute. Send this only after
     /// the unit's own strips have taken their values.
-    public func setHelperNeutral() {
+    ///
+    /// The mute is not neutral: over USB the "Maestro USB" device is rendered
+    /// by the helper, so Software Return mute is applied there as well as by
+    /// the unit's 0xB3. Forcing it off here undid a saved mute on every
+    /// connect and source change. There is no `muted` default on purpose.
+    public func setHelperNeutral(muted: Bool) {
         transport.setSwReturnLevel(0)
-        transport.setSwReturnMute(false)
+        transport.setSwReturnMute(muted)
     }
 
     /// One write to the unit's mixer, tried again once after a short delay.
@@ -752,7 +787,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         retryDelay: Duration = .milliseconds(150)
     ) async -> Bool {
         for attempt in 0..<2 {
-            do { try await setProperty(address, value: value); return true } catch {
+            do {
+                try await setProperty(address, value: value, mirrorSoftwareReturnMute: false)
+                return true
+            } catch {
                 if attempt == 0 { try? await Task.sleep(for: retryDelay) }
             }
         }
@@ -799,7 +837,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         }
         for step in helperSteps {
             switch step {
-            case .helperNeutral: setHelperNeutral()
+            case .helperNeutral(let muted): setHelperNeutral(muted: muted)
             case .helperPan(let pan): transport.setSwReturnPan(pan)
             case .helperProcessing(let on): transport.setSwReturnProcessing(on)
             case .hardware: break
@@ -846,9 +884,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         listenerStorage.removeListener(listener, for: address)
     }
 
-    /// Mute/unmute the SW Return audio path in software.
-    /// Hardware mixer mute has no effect because USB audio routes
-    /// directly to DAC, bypassing the FPGA mixer.
+    /// Mute/unmute the helper's software stage only (USB channels 1-2 of the
+    /// "Maestro USB" device, while a mixer uses the default 1-2 pair). The
+    /// Mixer page does not call this directly: a Software Return mute written
+    /// with `setProperty` reaches the unit (0xB3) and this stage together.
     public func setSwReturnMute(_ muted: Bool) {
         transport.setSwReturnMute(muted)
     }

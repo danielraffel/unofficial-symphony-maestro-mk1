@@ -184,8 +184,20 @@ static void check_optical_format_gate(void)
             CHECK(proxy_boot_sends_optical_format(t), "every other card, and a failed read, unchanged");
 }
 
+static void check_mixer_toggle_payload(void)
+{
+    const uint8_t on = 1, off = 0, odd = 7;
+    CHECK(mixer_toggle_payload(0xB3, &on, 1) == 1, "mute payload 1 is logged as 1");
+    CHECK(mixer_toggle_payload(0xB3, &off, 1) == 0, "mute payload 0 is logged as 0");
+    CHECK(mixer_toggle_payload(0xB2, &on, 1) == 1, "solo payload 1 is logged as 1");
+    CHECK(mixer_toggle_payload(0xB2, &odd, 1) == 1, "any non-zero solo byte is on");
+    CHECK(mixer_toggle_payload(0xB0, &on, 1) == -1, "fader writes keep the old log line");
+    CHECK(mixer_toggle_payload(0xB3, NULL, 0) == -1, "empty mute payload is not logged as a state");
+}
+
 int main(void)
 {
+    check_mixer_toggle_payload();
     check_optical_format_gate();
     check_digital_settings();
     check_reconfigure_holdoff();

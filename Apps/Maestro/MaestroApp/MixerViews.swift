@@ -1128,6 +1128,9 @@ struct MixerView: View {
         }
     }
 
+    /// Over USB the connection sends the unit's 0xB3 to strip 32 and, when it
+    /// lands, mutes the helper's software stage too (the "Maestro USB" device
+    /// is rendered there). ThunderBridge: the driver's mixer alone, unchanged.
     private func writeSWReturnMute(_ muted: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
@@ -1141,6 +1144,10 @@ struct MixerView: View {
         }
     }
 
+    /// Solo is the unit's 0xB2 to strip 32 only, on every connection. The USB
+    /// helper has no solo and none is invented here: soloing Software Return
+    /// silences the other strips in the unit's mixer, as in the original
+    /// (og_source/maestrolink/Software/SymphonyIOMixer.cpp:305-315).
     private func writeSWReturnSolo(_ solo: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
@@ -1203,7 +1210,9 @@ struct MixerView: View {
                 print("[Maestro] SW Return write to the unit failed twice; the helper was left as it was")
                 return
             }
-            xpcDev.setHelperNeutral()
+            // Level neutral (the unit owns the fader); mute follows the strip,
+            // as the unit's 0xB3 above does. Solo stays on the unit only.
+            xpcDev.setHelperNeutral(muted: editor.swReturnChannel.isMuted)
             let otherMixer = selectedMixer == 0 ? 1 : 0
             let otherSource = UInt32(appState.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
             xpcDev.setSwReturnProcessing(source == 0 || otherSource == 0)

@@ -343,7 +343,9 @@ struct USBMixerRestoreTests {
             [0xB0, 2, 33, 42], [0xB0, 2, 32, 28], [0xB3, 2, 32, 1], [0xB2, 2, 32, 1],
         ])
         #expect(transport.swReturnLevelCalls == [0])
-        #expect(transport.swReturnMuteCalls == [false])
+        // The saved mute reaches the helper too (once, after the unit), not false.
+        let savedMute: [Bool] = [true]
+        #expect(transport.swReturnMuteCalls == savedMute)
         #expect(transport.swReturnPanCalls == [0.5])
         // On because mixer 2 uses the default pair.
         #expect(transport.swReturnProcessingCalls == [true])
@@ -422,7 +424,7 @@ struct USBMixerRestoreTests {
     func nothingSaved() {
         let d = defaults("USBMixerRestoreTests.empty")
         let steps = USBMixerRestorePlan.steps(for: .load(defaults: d))
-        #expect(steps.contains(.helperNeutral))
+        #expect(steps.contains(.helperNeutral(muted: false)))
         #expect(steps.contains(.helperPan(0)))
         let hardware = steps.compactMap { step -> (UInt32, PropertyValue)? in
             if case .hardware(let a, let v) = step { return (a.element, v) } else { return nil }
@@ -516,5 +518,153 @@ struct MixerPairLinkTests {
             let shown = MixerPairLink.shown(left: l, right: r, savedLinked: linked, linkedLevel: l)
             #expect(MixerPairLink.usbUnitLevel(left: l, right: r, savedLinked: linked, linkedLevel: l) == shown.left)
         }
+    }
+}
+
+/// Over USB "Maestro USB" is rendered by the helper, so a Software Return mute
+/// must reach the unit (0xB3, strip 32) and the helper's software stage alike;
+/// solo stays on the unit only (tester report 2026-11-20).
+@Suite("USB Software Return mute on both paths")
+struct USBSoftwareReturnMuteTests {
+
+    private func makeConn() -> (XPCDeviceConnection, MockXPCTransport) {
+        let transport = MockXPCTransport()
+        return (XPCDeviceConnection(
+            identifier: USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+                productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "swreturn-mute")!,
+            transport: transport), transport)
+    }
+
+    private func defaults(_ name: String) -> UserDefaults {
+        let d = UserDefaults(suiteName: name)!
+        d.removePersistentDomain(forName: name)
+        return d
+    }
+
+    private static func swReturn(_ selector: AudioPropertySelector, mixer: UInt32 = 1,
+                                 strip: UInt16 = USBMixerStrip.softwareReturn) -> PropertyAddress {
+        PropertyAddress(selector: selector, element: (mixer << 16) | UInt32(strip))
+    }
+
+    private func wire(_ transport: MockXPCTransport) -> [[UInt16]] {
+        transport.setPropertyCalls.map { [UInt16($0.bRequest), $0.wValue, $0.wIndex, UInt16($0.data[0])] }
+    }
+
+    @Test("mute sends 0xB3 to strip 32 and mutes the helper; unmute clears both")
+    func muteBothPaths() async throws {
+        let (conn, transport) = makeConn()
+        try await conn.setProperty(Self.swReturn(.mixerChannelMute), value: .bool(true))
+        let afterMute = wire(transport)
+        let muteWire: [[UInt16]] = [[0xB3, 1, 32, 1]]
+        #expect(afterMute == muteWire)
+        let helperMuted: [Bool] = [true]
+        #expect(transport.swReturnMuteCalls == helperMuted)
+        // Unit first, then helper, in the same call.
+        let order = transport.events
+        let unitThenHelper = ["unit:b3:1:32", "helperMute:true"]
+        #expect(order == unitThenHelper)
+
+        try await conn.setProperty(Self.swReturn(.mixerChannelMute), value: .bool(false))
+        let afterUnmute = wire(transport)
+        let unmuteWire: [[UInt16]] = [[0xB3, 1, 32, 1], [0xB3, 1, 32, 0]]
+        #expect(afterUnmute == unmuteWire)
+        let helperCleared: [Bool] = [true, false]
+        #expect(transport.swReturnMuteCalls == helperCleared)
+    }
+
+    @Test("the CoreAudio-level ID 1000 and mixer 2 mirror the same way")
+    func logicalIDAndMixer2() async throws {
+        let (conn, transport) = makeConn()
+        try await conn.setProperty(
+            Self.swReturn(.mixerChannelMute, mixer: 2, strip: USBMixerStrip.softwareReturnLogicalID),
+            value: .bool(true))
+        let sent = wire(transport)
+        let expected: [[UInt16]] = [[0xB3, 2, 32, 1]]
+        #expect(sent == expected)
+        let helper: [Bool] = [true]
+        #expect(transport.swReturnMuteCalls == helper)
+    }
+
+    @Test("solo stays the unit's 0xB2 only; the helper is not touched")
+    func soloUnitOnly() async throws {
+        let (conn, transport) = makeConn()
+        try await conn.setProperty(Self.swReturn(.mixerChannelSolo), value: .bool(true))
+        let sent = wire(transport)
+        let expected: [[UInt16]] = [[0xB2, 1, 32, 1]]
+        #expect(sent == expected)
+        #expect(transport.swReturnMuteCalls.isEmpty)
+        #expect(transport.swReturnLevelCalls.isEmpty)
+    }
+
+    @Test("input-strip and Master mutes never reach the helper")
+    func otherStripsNotMirrored() async throws {
+        let (conn, transport) = makeConn()
+        try await conn.setProperty(Self.swReturn(.mixerChannelMute, strip: 0), value: .bool(true))
+        try await conn.setProperty(Self.swReturn(.mixerChannelMute, strip: 31), value: .bool(true))
+        try await conn.setProperty(Self.swReturn(.mixerChannelMute, strip: USBMixerStrip.master), value: .bool(true))
+        let unitWrites = transport.setPropertyCalls.count
+        #expect(unitWrites == 3)
+        #expect(transport.swReturnMuteCalls.isEmpty)
+    }
+
+    @Test("a mute the unit refuses is not given to the helper")
+    func failedUnitMuteNotMirrored() async {
+        let (conn, transport) = makeConn()
+        transport.failWIndex = 32
+        await #expect(throws: DeviceConnectionError.self) {
+            try await conn.setProperty(Self.swReturn(.mixerChannelMute), value: .bool(true))
+        }
+        #expect(transport.swReturnMuteCalls.isEmpty)
+    }
+
+    @Test("helper neutral keeps the saved mute and holds the level at 0 dB")
+    func neutralKeepsMute() {
+        let (conn, transport) = makeConn()
+        conn.setHelperNeutral(muted: true)
+        let level: [Double] = [0]
+        let muted: [Bool] = [true]
+        #expect(transport.swReturnLevelCalls == level)
+        #expect(transport.swReturnMuteCalls == muted)
+        conn.setHelperNeutral(muted: false)
+        let cleared: [Bool] = [true, false]
+        #expect(transport.swReturnMuteCalls == cleared)
+    }
+
+    @Test("restore with a saved mute: one helper mute, after every unit write")
+    func restoreKeepsSavedMute() async throws {
+        let d = defaults("USBSoftwareReturnMuteTests.restore")
+        let saved = MixerChannelState(level: 0, pan: 0, isMuted: true, isSoloed: false)
+        d.set(try JSONEncoder().encode(saved), forKey: "mixerState_swReturn")
+        let (conn, transport) = makeConn()
+        let done = await conn.restoreReturnAndMaster(defaults: d)
+        #expect(done)
+        let helperMutes = transport.events.filter { $0.hasPrefix("helperMute") }
+        let oneMute = ["helperMute:true"]
+        #expect(helperMutes == oneMute)
+        let lastUnit = transport.events.lastIndex { $0.hasPrefix("unit") } ?? Int.max
+        let mutePosition = transport.events.firstIndex(of: "helperMute:true") ?? -1
+        #expect(lastUnit < mutePosition)
+        // Solo is restored to the unit only.
+        let soloWrites = transport.setPropertyCalls.filter { $0.bRequest == 0xB2 }.count
+        #expect(soloWrites == 2)
+    }
+
+    @Test("restore with nothing saved leaves the helper unmuted")
+    func restoreUnmutedByDefault() async {
+        let d = defaults("USBSoftwareReturnMuteTests.empty")
+        let (conn, transport) = makeConn()
+        await conn.restoreReturnAndMaster(defaults: d)
+        let unmuted: [Bool] = [false]
+        #expect(transport.swReturnMuteCalls == unmuted)
+    }
+
+    @Test("the plan carries the saved mute into its helper step")
+    func planCarriesMute() throws {
+        let d = defaults("USBSoftwareReturnMuteTests.plan")
+        let saved = MixerChannelState(level: 0, pan: 0, isMuted: true, isSoloed: true)
+        d.set(try JSONEncoder().encode(saved), forKey: "mixerState_swReturn")
+        let steps = USBMixerRestorePlan.steps(for: .load(defaults: d))
+        #expect(steps.contains(.helperNeutral(muted: true)))
+        #expect(!steps.contains(.helperNeutral(muted: false)))
     }
 }
