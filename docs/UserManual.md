@@ -65,7 +65,7 @@ Maestro isn't supported alongside Apogee's original Symphony I/O drivers: the tw
 
 To remove them:
 
-1. Download Apogee's latest installer, [Symphony I/O Release 5.5](https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open the disk image and choose **Uninstall**. Use this one even if you installed from an older release: older uninstallers leave parts behind.
+1. Download Apogee's latest installer, [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open the disk image and choose **Uninstall**. Use this one even if you installed from an older release: older uninstallers leave parts behind.
 2. Restart your Mac.
 3. Reinstall Maestro, then restart once more.
 

@@ -151,7 +151,7 @@ fi
 if [ "$RESTORED" -gt 0 ]; then
     echo "The original Apogee HAL plugin has been restored."
     echo "You may need to reinstall Apogee software for full functionality:"
-    echo "  https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg"
+    echo "  https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg"
 fi
 echo ""
 echo "Log: /tmp/maestro-installer.log"
