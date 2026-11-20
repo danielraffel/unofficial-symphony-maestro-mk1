@@ -33,6 +33,17 @@ struct StatusBarView: View {
 
             Divider().frame(height: 14)
 
+            // Sample rate, then clock source: the order of Device Settings > Clock
+            HStack(spacing: 4) {
+                Image(systemName: "waveform.badge.microphone")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(formatSampleRate(sampleRate))
+                    .font(.system(size: 11, design: .monospaced))
+            }
+
+            Divider().frame(height: 14)
+
             // Clock source
             HStack(spacing: 4) {
                 Image(systemName: "clock")
@@ -40,17 +51,6 @@ struct StatusBarView: View {
                     .foregroundStyle(.secondary)
                 Text(clockSourceDisplayName)
                     .font(.system(size: 11))
-            }
-
-            Divider().frame(height: 14)
-
-            // Sample rate
-            HStack(spacing: 4) {
-                Image(systemName: "waveform.badge.microphone")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(formatSampleRate(sampleRate))
-                    .font(.system(size: 11, design: .monospaced))
             }
 
             Spacer()
