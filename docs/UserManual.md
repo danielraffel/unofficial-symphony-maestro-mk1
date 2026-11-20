@@ -17,6 +17,9 @@ The Symphony front-panel mode selects the active transport: Symphony mode for Th
 - **Input:** channel reference levels, trims and available input options. A compatible microphone-preamp module adds its corresponding controls.
 - **Output:** output reference levels, trims and monitor controls.
 - **Mixer:** hardware monitoring mixes, with channel levels, pan, mute and solo.
+  - **The Mixer only changes outputs that are fed from a mixer.** In Output Routing, an output fed straight from a software pair (for example 1-2 → Line 1/2) plays your Mac's audio directly, and Software Return, Master and the input strips do nothing to it. Route Mixer 1 or Mixer 2 to that output and that mixer's controls apply.
+  - **Mixer 1 and Mixer 2 are separate.** A control on Mixer 2 changes only outputs fed from Mixer 2.
+  - **Over USB,** only channels 1-2 of your Mac's playback pass through the mixer, and Software Return pan works only when your audio plays through "Symphony I/O : Maestro USB", not "Symphony I/O : USB Audio". Maestro's Help has the details under "The Mixer over USB".
 - **Input Routing and Output Routing:** map available hardware and software channels. Verify routing at a low monitoring level before use.
   - **Reset Routing** puts the page you are on back to its default, after asking: each software input records the matching hardware input, and each software output goes to the matching hardware output.
   - **Identify** (Output Routing) lights every front-panel light on the Symphony I/O so you can find it; click again to turn them off. Quitting Maestro also turns them off. With two units there is one button for each.
