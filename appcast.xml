@@ -7,6 +7,41 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.13</title>
+      <pubDate>Fri, 20 Nov 2026 20:51:24 GMT</pubDate>
+      <sparkle:version>0.9.13</sparkle:version>
+      <sparkle:shortVersionString>0.9.13</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.13</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta keeps your chosen clock source through restarts and reconnects, and makes it easier to get past a blocked install. It contains everything in 0.9.12.
+
+Thanks to the tester who reported Word Clock blinking after every restart.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.14, build 140).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **With Word Clock or a digital input as the clock source, the Symphony I/O is now told its clock source again each time the sample rate changes,** and audio starts up to a second later while it locks. With Internal clock nothing changes.
+
+### Fixed
+
+- **A clock source other than Internal now survives a restart of the Mac.** Before, the Symphony's clock could blink after a restart until you switched to Internal and back in Maestro. This is new and has not been tried with an external clock yet, so please tell us whether it works for you.
+- **The clock source also survives sleep, a reconnect and a link recovery.** Before, the Symphony went back to Internal while Maestro still showed your choice.
+
+### New
+
+- **If the installer stops because Apogee's original drivers are present, its message now has an Open Removal Guide button,** and shows the guide's address and Apogee's download address, for when the uninstall steps didn't clear it or Apogee's uninstaller won't run.
+- **The warning about Apogee's original drivers gives numbered steps,** and, set apart below a line, a macOS command you can try if the warning is still there after uninstalling and restarting. Most people will never need that part.
+
+### Please test
+
+- **Word Clock or a digital input as clock source:** after restarting the Mac, or unplugging and replugging the ThunderBridge, does the Symphony lock by itself? If not, a Diagnostics report started before the replug shows us why (turn on **Diagnostics** in **App Settings › Diagnostics & Feedback**, replug, wait 20 seconds, then press **Stop Diagnostics**).
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.13/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="wJlqPM37caIhx6jT0jXTR74ETgonilILrCGTWYnHb1JKEcIPZVhN6R7UNjkaUBC9nQPj8RCe8hVIfUsNfiP7Cg==" length="5434052" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.12</title>
       <pubDate>Fri, 20 Nov 2026 19:48:17 GMT</pubDate>
       <sparkle:version>0.9.12</sparkle:version>
@@ -1074,6 +1109,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 4isunUTUww80HxyRp8V7vFiCOznN9NNB0LBMUiNsz+5OM03CusVGHY1LhWlQsvlvf287i4urrEE0EjkJmeJhBw==
-length: 106142
+edSignature: Htcu19y86MtVlpG8e9j/YInoI5YUKKOqJq7Exu36ayV/CuKvvNTHD9fq7AsUjNemsTpZ0oWnx3l+/4R3ljGKAw==
+length: 109325
 -->
