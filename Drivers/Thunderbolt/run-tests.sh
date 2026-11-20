@@ -144,6 +144,9 @@ build_and_run() {
     if grep -q 'SymphonyMicGainControl::HandleChangeScalarValue' "$src/SymphonyMicGainControl.cpp"; then
         defs+=(-DTRACE_HAVE_MIC_GAIN_SCALAR)
     fi
+    if grep -q 'RequestPhaseInvert' "$src/SymphonyThunderbridge.cpp"; then
+        defs+=(-DTRACE_HAVE_MIC_PRE_DAW)
+    fi
     # Retire for upgrade (selector 7, release driver 123). It refuses an
     # unstamped build, so the harness stamps one; nothing else reads it.
     # The Symphony 64 PCIe card's own receive order. The check that

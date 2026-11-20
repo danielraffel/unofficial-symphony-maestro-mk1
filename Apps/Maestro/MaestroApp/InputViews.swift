@@ -473,6 +473,9 @@ struct InputControlsView: View {
                 }
             }
         }
+        .onChange(of: appState.micPreObservationRevision) { _, _ in
+            initializeChannels()
+        }
         .onChange(of: appState.frontPanelMicPreUpdate) { _, update in
             applyFrontPanelGain(update)
         }

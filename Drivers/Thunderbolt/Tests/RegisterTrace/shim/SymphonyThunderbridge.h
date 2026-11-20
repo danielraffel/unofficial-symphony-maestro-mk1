@@ -69,5 +69,8 @@ public:
     kern_return_t RequestClockSource(uint32_t source);
     kern_return_t RequestPhantom(uint32_t channel, bool on);
     kern_return_t RequestMicGain(uint32_t channel, float decibels);
+    kern_return_t RequestPhaseInvert(uint32_t channel, bool on);
+    kern_return_t RequestHighPass(uint32_t channel, bool on);
+    kern_return_t RequestInputType(uint32_t channel, uint32_t type);
     kern_return_t RequestOpticalFormat(uint32_t board, uint32_t fmt);
 };

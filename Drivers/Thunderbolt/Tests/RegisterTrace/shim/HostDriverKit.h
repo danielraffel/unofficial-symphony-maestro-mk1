@@ -358,7 +358,8 @@ static constexpr IOUserAudioObjectPropertyElement IOUserAudioObjectPropertyEleme
 enum class IOUserAudioStartStopFlags : uint64_t { None = 0 };
 enum class IOUserAudioObjectPropertyScope : uint32_t { Global, Input, Output };
 enum class IOUserAudioClassID : uint32_t {
-    VolumeControl, MuteControl, ClockSourceControl, DataSourceControl, PhantomPowerControl
+    VolumeControl, MuteControl, ClockSourceControl, DataSourceControl, PhantomPowerControl,
+    PhaseInvertControl, HighPassFilterControl, SelectorControl
 };
 enum class IOUserAudioTransportType : uint32_t { Thunderbolt };
 enum class IOUserAudioStreamDirection : uint32_t { Output, Input };

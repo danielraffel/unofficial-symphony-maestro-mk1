@@ -147,6 +147,11 @@ $IIG --def "$SOURCE_DIR/SymphonyMicGainControl.iig" \
 
 echo "[TB] iig generated SymphonyMicGainControl.h and SymphonyMicGainControl.iig.cpp"
 
+for control in SymphonyPhaseControl SymphonyHighPassControl SymphonyInputTypeControl; do
+    echo "[TB] Running iig on ${control}.iig..."
+    $IIG --def "$SOURCE_DIR/${control}.iig" --header "$IIG_DIR/${control}.h" --impl "$IIG_DIR/${control}.iig.cpp" --deployment-target 25.2 -- -isysroot "$SDK" -x c++ -std=c++17 -D__IIG=1 -iframework "$FRAMEWORK_DIR"
+done
+
 echo "[TB] Running iig on SymphonyOpticalControl.iig..."
 $IIG --def "$SOURCE_DIR/SymphonyOpticalControl.iig" \
      --header "$IIG_DIR/SymphonyOpticalControl.h" \
@@ -259,6 +264,11 @@ $CLANG -c "${COMMON_FLAGS[@]}" \
     -o "$BUILD_DIR/SymphonyMicGainControl.o" \
     "$SOURCE_DIR/SymphonyMicGainControl.cpp"
 
+for control in SymphonyPhaseControl SymphonyHighPassControl SymphonyInputTypeControl; do
+    $CLANG -c "${COMMON_FLAGS[@]}" -o "$BUILD_DIR/${control}.iig.o" "$IIG_DIR/${control}.iig.cpp"
+    $CLANG -c "${COMMON_FLAGS[@]}" -o "$BUILD_DIR/${control}.o" "$SOURCE_DIR/${control}.cpp"
+done
+
 echo "[TB] Compiling SymphonyOpticalControl.iig.cpp..."
 $CLANG -c "${COMMON_FLAGS[@]}" \
     -o "$BUILD_DIR/SymphonyOpticalControl.iig.o" \
@@ -303,6 +313,12 @@ $CLANG \
     "$BUILD_DIR/SymphonyPhantomControl.iig.o" \
     "$BUILD_DIR/SymphonyMicGainControl.o" \
     "$BUILD_DIR/SymphonyMicGainControl.iig.o" \
+    "$BUILD_DIR/SymphonyPhaseControl.o" \
+    "$BUILD_DIR/SymphonyPhaseControl.iig.o" \
+    "$BUILD_DIR/SymphonyHighPassControl.o" \
+    "$BUILD_DIR/SymphonyHighPassControl.iig.o" \
+    "$BUILD_DIR/SymphonyInputTypeControl.o" \
+    "$BUILD_DIR/SymphonyInputTypeControl.iig.o" \
     "$BUILD_DIR/SymphonyOpticalControl.o" \
     "$BUILD_DIR/SymphonyOpticalControl.iig.o" \
     "$BUILD_DIR/SymphonyPortSourceControl.o" \

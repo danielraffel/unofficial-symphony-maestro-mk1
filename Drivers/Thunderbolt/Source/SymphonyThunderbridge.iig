@@ -126,6 +126,9 @@ public:
     // the control's work queue. Coalesces + async-sends per-channel on the serial
     // XLink queue.
     virtual kern_return_t RequestMicGain(uint32_t channel, float decibels) LOCALONLY;
+    virtual kern_return_t RequestPhaseInvert(uint32_t channel, bool on) LOCALONLY;
+    virtual kern_return_t RequestHighPass(uint32_t channel, bool on) LOCALONLY;
+    virtual kern_return_t RequestInputType(uint32_t channel, uint32_t type) LOCALONLY;
 
     // Push an optical output format (0=ADAT/SMUX, 1=S/PDIF) for a 0-based option
     // board to the Symphony IO via OpticalFormat (0x34). Called by

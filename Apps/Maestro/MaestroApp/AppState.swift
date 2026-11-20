@@ -50,6 +50,21 @@ private func aspMuteChanged(
     return noErr
 }
 
+private func micPreDAWPropertyChanged(
+    _ objectID: AudioObjectID,
+    _ numberAddresses: UInt32,
+    _ addresses: UnsafePointer<AudioObjectPropertyAddress>,
+    _ clientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    guard let clientData, numberAddresses > 0 else { return noErr }
+    nonisolated(unsafe) let appState = Unmanaged<AppState>.fromOpaque(clientData).takeUnretainedValue()
+    let address = addresses.pointee
+    DispatchQueue.main.async {
+        appState.readMicPreDAWProperty(objectID: objectID, address: address)
+    }
+    return noErr
+}
+
 /// CoreAudio listener: fires when the system audio device list changes (a device is plugged in
 /// or removed). Drives "auto-switch to Symphony when connected."
 private func hardwareDevicesChanged(
@@ -1529,6 +1544,8 @@ final class AppState {
     /// AudioDeviceID of the ASP "Symphony I/O : Maestro USB" virtual device.
     /// Used to listen for volume/mute changes from media keys.
     private var aspDeviceID: AudioDeviceID = kAudioObjectUnknown
+    private var micPreDAWListenerAddresses: [AudioObjectPropertyAddress] = []
+    private(set) var micPreObservationRevision = 0
     /// Timestamp of last ASP write from this app. Used to suppress feedback
     /// loops when our own writes trigger the listener callback.
     private var aspWriteTimestamp: Date = .distantPast
@@ -2171,6 +2188,7 @@ final class AppState {
         cardDiscoveryTaskGeneration = generation
         cardDiscoveryTaskConnection = connection
         await task.value
+        startMicPreDAWSync()
         if cardDiscoveryTaskGeneration == generation {
             cardDiscoveryTask = nil
             cardDiscoveryTaskGeneration = nil
@@ -2680,6 +2698,7 @@ final class AppState {
             await existing.disconnect()
         }
         stopASPVolumeSync()
+        stopMicPreDAWSync()
         meterDevice = nil
 
         statusMessage = "Scanning for hardware..."
@@ -3793,6 +3812,69 @@ final class AppState {
         )
         AudioObjectAddPropertyListener(
             aspDeviceID, &muteAddr, aspMuteChanged, Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    /// Observe the standard HAL controls that a DAW edits on an installed 8MicPre.
+    /// The listener is installed only for the fitted board, so rigs without it add
+    /// no reads or app traffic. A notification reads the value once and updates the
+    /// identity-scoped channel store; it never grants phantom ON authority.
+    @MainActor
+    func startMicPreDAWSync() {
+        stopMicPreDAWSync()
+        guard transportType == .thunderbolt, cardLayout.slot2 == .micPre8,
+              aspDeviceID != kAudioObjectUnknown else { return }
+        let selectors: [AudioObjectPropertySelector] = [
+            kAudioDevicePropertyPhaseInvert,
+            kAudioDevicePropertyHighPassFilterSetting,
+            kAudioDevicePropertyChannelNominalLineLevel,
+        ]
+        for element in 1...8 {
+            for selector in selectors {
+                var address = AudioObjectPropertyAddress(mSelector: selector,
+                    mScope: kAudioObjectPropertyScopeInput,
+                    mElement: AudioObjectPropertyElement(element))
+                if AudioObjectAddPropertyListener(aspDeviceID, &address, micPreDAWPropertyChanged,
+                    Unmanaged.passUnretained(self).toOpaque()) == noErr {
+                    micPreDAWListenerAddresses.append(address)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func stopMicPreDAWSync() {
+        guard aspDeviceID != kAudioObjectUnknown else { micPreDAWListenerAddresses.removeAll(); return }
+        for var address in micPreDAWListenerAddresses {
+            AudioObjectRemovePropertyListener(aspDeviceID, &address, micPreDAWPropertyChanged,
+                Unmanaged.passUnretained(self).toOpaque())
+        }
+        micPreDAWListenerAddresses.removeAll()
+    }
+
+    @MainActor
+    func readMicPreDAWProperty(objectID: AudioObjectID, address: AudioObjectPropertyAddress) {
+        guard objectID == aspDeviceID, cardLayout.slot2 == .micPre8,
+              (1...8).contains(Int(address.mElement)) else { return }
+        let channel = Int(address.mElement) - 1
+        var address = address
+        var raw: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &raw) == noErr else { return }
+        var states: [InputChannelState] = channelStateStore.load(ChannelStateStore.inputKey) ?? []
+        guard states.indices.contains(channel) else { return }
+        switch address.mSelector {
+        case kAudioDevicePropertyPhaseInvert: states[channel].phase = raw != 0
+        case kAudioDevicePropertyHighPassFilterSetting: states[channel].hpf = raw != 0
+        case kAudioDevicePropertyChannelNominalLineLevel:
+            guard raw <= 4 else { return }
+            // CoreAudio selector IDs (+4, -10, Variable, Mic, Instrument)
+            // differ from the Symphony wire enum persisted by Maestro
+            // (Variable, +4, -10, Mic, Instrument).
+            states[channel].inputType = raw == 0 ? 1 : raw == 1 ? 2 : raw == 2 ? 0 : raw
+        default: return
+        }
+        channelStateStore.save(states, for: ChannelStateStore.inputKey)
+        micPreObservationRevision &+= 1
     }
 
     /// Read current volume from the synced audio device and update speakerLevel.

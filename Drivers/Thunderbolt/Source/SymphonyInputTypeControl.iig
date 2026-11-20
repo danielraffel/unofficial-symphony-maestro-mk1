@@ -1,0 +1,14 @@
+#ifndef SymphonyInputTypeControl_h
+#define SymphonyInputTypeControl_h
+#include <AudioDriverKit/IOUserAudioSelectorControl.iig>
+class SymphonyThunderbridge;
+class LOCALONLY SymphonyInputTypeControl : public IOUserAudioSelectorControl
+{
+public:
+    virtual bool init(IOUserAudioDriver*, bool, IOUserAudioObjectPropertyElement, IOUserAudioObjectPropertyScope, IOUserAudioClassID) override;
+    virtual void free() override;
+    virtual kern_return_t HandleChangeSelectedValues(const IOUserAudioSelectorValue*, size_t) override;
+    virtual void SetDriver(SymphonyThunderbridge*);
+    virtual void SetChannel(uint32_t);
+};
+#endif

@@ -29,6 +29,9 @@
 #include "SymphonyClockSelectorControl.h"
 #include "SymphonyPhantomControl.h"
 #include "SymphonyMicGainControl.h"
+#include "SymphonyPhaseControl.h"
+#include "SymphonyHighPassControl.h"
+#include "SymphonyInputTypeControl.h"
 #include "SymphonyOpticalControl.h"
 #include "SymphonyPortSourceControl.h"
 #include "SymphonyThunderbridgeShared.h"
@@ -242,6 +245,9 @@ struct SymphonyThunderbridge_IVars {
     uint64_t halPhantomOff[16];
     SymphonyPhantomControl *phantomControl[8];      // per-channel phantom ('phan')
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
+    SymphonyPhaseControl *phaseControl[8];
+    SymphonyHighPassControl *highPassControl[8];
+    SymphonyInputTypeControl *inputTypeControl[8];
     uint8_t   pendingPhantom[2][8];   uint32_t pendingPhantomGen[2][8]; bool phantomTxScheduled[2][8];
     uint8_t   pendingPhantomHost[2][8]; bool pendingPhantomTypeKnown[2][8]; bool pendingPhantomInstrument[2][8];
     uint8_t   pendingMicGain[2][2][8]; uint32_t pendingMicGainGen[2][2][8]; bool micGainTxScheduled[2][2][8];
@@ -256,6 +262,9 @@ struct SymphonyThunderbridge_IVars {
     bool      micPreInstrument[8];    // atomic type for unit A's HAL controls
     bool      micPreTypeKnown[8];     // a failed read must not guess Mic
     bool      micPreMic[8];           // known type is Mic (3): HAL phantom ON needs it
+    bool      micPrePhase[2][8];
+    bool      micPreHighPass[2][8];
+    uint8_t   micPreType[2][8];
     bool      unitBMicPreMic[8];
     // Separate pending lanes bind each value to its stage across a type switch.
     // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
@@ -835,6 +844,16 @@ static constexpr uint16_t kMixerChMasterRight         = 0x2002;
 static constexpr uint8_t kSIOCmd_MicGain               = 0xC3;  // 1 byte: gain 0..85. nValue=0-based mic channel.
 static constexpr uint8_t kSIOCmd_InstrumentGain        = 0xC4;  // 1 byte: gain 0..65. nValue=0-based mic channel.
 static constexpr uint8_t kSIOCmd_CurrentAnalogInputType = 0x60;
+// CoreAudio's selector IDs are ordered +4, -10, Variable, Mic, Instrument;
+// Symphony's 0x20 wire enum is Variable, +4, -10, Mic, Instrument.
+static constexpr uint8_t CoreInputTypeToWire(uint32_t type)
+{
+    return type == 0 ? 1 : type == 1 ? 2 : type == 2 ? 0 : static_cast<uint8_t>(type);
+}
+static constexpr uint8_t WireInputTypeToCore(uint8_t type)
+{
+    return type == 1 ? 0 : type == 2 ? 1 : type == 0 ? 2 : type;
+}
 static constexpr uint8_t kSIOCmd_AnalogReferenceLevel  = 0x20;  // payload[0] = wire input type.
 static constexpr uint8_t kSIOCmd_PhantomPower          = 0xC6;  // 1 byte: 0=off, 1=on. nValue=0-based mic channel.
 static constexpr uint8_t kSIOCmd_ResetDefaultRouting   = 0xC2;  // no payload
@@ -4129,6 +4148,23 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     require(unlocked, kUnitBFailUnlock, "preference unlock/read-back");
     ivars->unitBSetupFlags = unlocked && mandatoryOK ? kUnitBSetupOK : failures;
     ivars->unitBConfigured = unlocked && mandatoryOK;
+    // A MicPre companion owns its selector state on unit B.  Read it once at
+    // configuration so the published selectors and gain lane start from the
+    // hardware value; rigs without the option board take no extra traffic.
+    if (ivars->unitBConfigured && ivars->unitBBoardValid[1] &&
+        ivars->unitBBoardType[1] == kSIOOptionBoard_MicPre8) {
+        for (uint32_t ch = 0; ch < 8; ++ch) {
+            uint8_t type = 0;
+            if (!ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1,
+                                     kSIOCmd_CurrentAnalogInputType,
+                                     0x80000000u | ch, &type, 1, seq, pcie) || type > 4)
+                continue;
+            ivars->unitBMicPreInstrument[ch] = type == 4;
+            ivars->unitBMicPreMic[ch] = type == 3;
+            ivars->unitBMicPreTypeKnown[ch] = true;
+            ivars->micPreType[1][ch] = type;
+        }
+    }
     if (!ivars->unitBConfigured) {
         ivars->loopSyncValid = false;
         __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
@@ -7446,6 +7482,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                                   0x80000000u | ch, &type, 1, ivars->runtimeTxSeq, ivars->isLegacyPCIe2100) && type <= 4) {
                 __atomic_store_n(&ivars->micPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
                 __atomic_store_n(&ivars->micPreMic[ch], type == 3, __ATOMIC_RELEASE);
+                ivars->micPreType[0][ch] = type;
                 __atomic_store_n(&ivars->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
             }
             // AudioDriverKit has no public range setter after init. Keep the
@@ -7469,6 +7506,49 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                 STERR("Audio: SymphonyMicGainControl alloc/init failed (ch%u)", ch);
             }
             OSSafeReleaseNULL(g);
+
+            SymphonyPhaseControl *pc = OSTypeAlloc(SymphonyPhaseControl);
+            if (pc && pc->init(this, true, false, ch + 1, IOUserAudioObjectPropertyScope::Input,
+                               IOUserAudioClassID::PhaseInvertControl)) {
+                pc->SetChannel(ch); pc->SetDriver(this);
+                ret = ivars->audioDevice->AddControl(pc);
+                if (ret == kIOReturnSuccess) { ivars->phaseControl[ch] = pc; pc->retain(); }
+            }
+            OSSafeReleaseNULL(pc);
+
+            SymphonyHighPassControl *hc = OSTypeAlloc(SymphonyHighPassControl);
+            if (hc && hc->init(this, true, ch + 1, IOUserAudioObjectPropertyScope::Input,
+                               IOUserAudioClassID::HighPassFilterControl)) {
+                IOUserAudioSelectorValueDescription values[2] = {
+                    { 0, OSSharedPtr<OSString>(OSString::withCString("Off"), OSNoRetain) },
+                    { 1, OSSharedPtr<OSString>(OSString::withCString("On"), OSNoRetain) },
+                };
+                hc->AddControlValueDescriptions(values, 2);
+                IOUserAudioSelectorValue initial = 0; hc->SetCurrentSelectedValues(&initial, 1);
+                hc->SetChannel(ch); hc->SetDriver(this);
+                ret = ivars->audioDevice->AddControl(hc);
+                if (ret == kIOReturnSuccess) { ivars->highPassControl[ch] = hc; hc->retain(); }
+            }
+            OSSafeReleaseNULL(hc);
+
+            SymphonyInputTypeControl *tc = OSTypeAlloc(SymphonyInputTypeControl);
+            if (tc && tc->init(this, true, ch + 1, IOUserAudioObjectPropertyScope::Input,
+                               IOUserAudioClassID::SelectorControl)) {
+                IOUserAudioSelectorValueDescription types[5] = {
+                    { 0, OSSharedPtr<OSString>(OSString::withCString("+4 dBu"), OSNoRetain) },
+                    { 1, OSSharedPtr<OSString>(OSString::withCString("-10 dBV"), OSNoRetain) },
+                    { 2, OSSharedPtr<OSString>(OSString::withCString("Variable"), OSNoRetain) },
+                    { 3, OSSharedPtr<OSString>(OSString::withCString("Mic"), OSNoRetain) },
+                    { 4, OSSharedPtr<OSString>(OSString::withCString("Instrument"), OSNoRetain) },
+                };
+                tc->AddControlValueDescriptions(types, ch < 4 ? 5 : 4);
+                IOUserAudioSelectorValue initial = WireInputTypeToCore(ivars->micPreType[0][ch]);
+                tc->SetCurrentSelectedValues(&initial, 1);
+                tc->SetChannel(ch); tc->SetDriver(this);
+                ret = ivars->audioDevice->AddControl(tc);
+                if (ret == kIOReturnSuccess) { ivars->inputTypeControl[ch] = tc; tc->retain(); }
+            }
+            OSSafeReleaseNULL(tc);
         }
         if (ivars->numMicChannels > 0)
             STLOG("Audio: MicPre8 phantom+gain controls added (%u channels)",
@@ -8638,6 +8718,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                     for (uint32_t ch = 0; ch < 8; ch++) {
                         if (iv->phantomControl[ch]) iv->audioDevice->RemoveControl(iv->phantomControl[ch]);
                         if (iv->micGainControl[ch]) iv->audioDevice->RemoveControl(iv->micGainControl[ch]);
+                        if (iv->phaseControl[ch]) iv->audioDevice->RemoveControl(iv->phaseControl[ch]);
+                        if (iv->highPassControl[ch]) iv->audioDevice->RemoveControl(iv->highPassControl[ch]);
+                        if (iv->inputTypeControl[ch]) iv->audioDevice->RemoveControl(iv->inputTypeControl[ch]);
                     }
                     if (iv->vendorProperty)      iv->audioDevice->RemoveCustomProperty(iv->vendorProperty);
                     // Two-port experiment only (both null otherwise): the port
@@ -8662,6 +8745,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 for (uint32_t ch = 0; ch < 8; ch++) {
                     OSSafeReleaseNULL(iv->phantomControl[ch]);
                     OSSafeReleaseNULL(iv->micGainControl[ch]);
+                    OSSafeReleaseNULL(iv->phaseControl[ch]);
+                    OSSafeReleaseNULL(iv->highPassControl[ch]);
+                    OSSafeReleaseNULL(iv->inputTypeControl[ch]);
                 }
                 OSSafeReleaseNULL(iv->inputStream);
                 OSSafeReleaseNULL(iv->outputStream);
@@ -9187,6 +9273,25 @@ static void PublishMicGain(SymphonyThunderbridge_IVars *iv, uint32_t ch, uint32_
     }
 }
 
+static void PublishMicPreControls(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    if (!iv || ch >= 8 || !iv->audioDevice) return;
+    const uint32_t count = iv->numMicChannels;
+    for (uint32_t host = 0; host < count; ++host) {
+        uint32_t p = 0, c = 0;
+        if (!ResolveMicPreRoute(iv, host, p, c) || p != port || c != ch) continue;
+        if (iv->phaseControl[host]) iv->phaseControl[host]->SetControlValue(iv->micPrePhase[port][ch]);
+        if (iv->highPassControl[host]) {
+            IOUserAudioSelectorValue v = iv->micPreHighPass[port][ch] ? 1 : 0;
+            iv->highPassControl[host]->SetCurrentSelectedValues(&v, 1);
+        }
+        if (iv->inputTypeControl[host]) {
+            IOUserAudioSelectorValue v = WireInputTypeToCore(iv->micPreType[port][ch]);
+            iv->inputTypeControl[host]->SetCurrentSelectedValues(&v, 1);
+        }
+    }
+}
+
 // Host-only observation entry. No vendor command fallback on older drivers.
 kern_return_t SymphonyThunderbridge::PublishObservedMicGain(
     uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain)
@@ -9328,10 +9433,16 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                     __atomic_store_n(&ivars->preampRoutingEdited, true, __ATOMIC_RELEASE);
                     WriteCardInputRoute(ivars, payload[0], (kTDM_XLinkRX0 + payload[1]) |
                                         (payload[2] ? kRoutingEnable : 0u));
+                    for (uint32_t p = 0; p < 2; ++p)
+                        for (uint32_t ch = 0; ch < 8; ++ch)
+                            PublishMicPreControls(ivars, p, ch);
                 } else {
                     for (uint32_t n = 0; n < 64; n++)
                         WriteCardInputRoute(ivars, n, (kTDM_XLinkRX0 + n) |
                                             (n < channels ? kRoutingEnable : 0u));
+                    for (uint32_t p = 0; p < 2; ++p)
+                        for (uint32_t ch = 0; ch < 8; ++ch)
+                            PublishMicPreControls(ivars, p, ch);
                 }
                 namesChanged = true;
                 result = kIOReturnSuccess;
@@ -9532,7 +9643,9 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             __atomic_store_n(&ivars->unitBMicPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->unitBMicPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->unitBMicPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
+            ivars->micPreType[1][value & 7u] = payload[0];
             PublishMicGain(ivars, value & 7u, 1);
+            PublishMicPreControls(ivars, 1, value & 7u);
         }
         if (port == 1 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
             value < 8 && payload && payloadLen == 1) {
@@ -9549,7 +9662,17 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             __atomic_store_n(&ivars->micPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
+            ivars->micPreType[0][value & 7u] = payload[0];
             PublishMicGain(ivars, value & 7u);
+            PublishMicPreControls(ivars, 0, value & 7u);
+        }
+        if (command == 0xC5 && payload && payloadLen == 1 && value < 8) {
+            ivars->micPrePhase[port][value] = payload[0] != 0;
+            PublishMicPreControls(ivars, port, value);
+        }
+        if (command == 0xCA && payload && payloadLen == 1 && value < 8) {
+            ivars->micPreHighPass[port][value] = payload[0] != 0;
+            PublishMicPreControls(ivars, port, value);
         }
         if (port == 0 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
             value < ivars->numMicChannels && payload && payloadLen == 1) {
@@ -10319,5 +10442,97 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
         });
     }
     STLOG("RequestMicGain: ch=%u gain=%u [coalesced]", ch, gainByte);
+    return kIOReturnSuccess;
+}
+
+static bool MicPreRouteStillBound(SymphonyThunderbridge_IVars *iv, uint32_t host,
+                                  uint32_t port, uint32_t ch)
+{
+    uint32_t p = 0, c = 0;
+    return ResolveMicPreRoute(iv, host, p, c) && p == port && c == ch &&
+           (!port || (iv->unitBConfigured && CardMixerUnitBActive(iv)));
+}
+
+kern_return_t SymphonyThunderbridge::RequestPhaseInvert(uint32_t channel, bool on)
+{
+    if (!ivars || channel >= 64) return kIOReturnBadArgument;
+    uint32_t port = 0, ch = 0;
+    if (!ResolveMicPreRoute(ivars, channel, port, ch) || !ivars->xlinkQueue) return kIOReturnNotReady;
+    ivars->xlinkQueue->DispatchAsync(^{
+        if (!XLinkTxAdmissible(ivars) || !MicPreRouteStillBound(ivars, channel, port, ch)) return;
+        uint8_t v = on ? 1 : 0;
+        if (!SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                 port ? kRegXLink2TX : kRegXLink1TX,
+                                 port ? 1 : ivars->symphonyAddr, 0xC5, ch, &v, 1,
+                                 port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq)) return;
+        ivars->micPrePhase[port][ch] = on;
+        PublishMicPreControls(ivars, port, ch);
+    });
+    return kIOReturnSuccess;
+}
+
+kern_return_t SymphonyThunderbridge::RequestHighPass(uint32_t channel, bool on)
+{
+    if (!ivars || channel >= 64) return kIOReturnBadArgument;
+    uint32_t port = 0, ch = 0;
+    if (!ResolveMicPreRoute(ivars, channel, port, ch) || !ivars->xlinkQueue) return kIOReturnNotReady;
+    ivars->xlinkQueue->DispatchAsync(^{
+        if (!XLinkTxAdmissible(ivars) || !MicPreRouteStillBound(ivars, channel, port, ch)) return;
+        uint8_t v = on ? 1 : 0;
+        if (!SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                 port ? kRegXLink2TX : kRegXLink1TX,
+                                 port ? 1 : ivars->symphonyAddr, 0xCA, ch, &v, 1,
+                                 port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq)) return;
+        ivars->micPreHighPass[port][ch] = on;
+        PublishMicPreControls(ivars, port, ch);
+    });
+    return kIOReturnSuccess;
+}
+
+kern_return_t SymphonyThunderbridge::RequestInputType(uint32_t channel, uint32_t type)
+{
+    if (!ivars || channel >= 64 || type > 4) return kIOReturnBadArgument;
+    uint32_t port = 0, ch = 0;
+    if (!ResolveMicPreRoute(ivars, channel, port, ch) || !ivars->xlinkQueue) return kIOReturnNotReady;
+    if (ch >= 4 && type == 4) return kIOReturnBadArgument;
+    const uint8_t wireType = CoreInputTypeToWire(type);
+    ivars->xlinkQueue->DispatchAsync(^{
+        if (!XLinkTxAdmissible(ivars) || !MicPreRouteStillBound(ivars, channel, port, ch)) return;
+        const uint8_t old = ivars->micPreType[port][ch];
+        uint8_t payload[2] = { wireType, 0x7F };
+        if (!SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                 port ? kRegXLink2TX : kRegXLink1TX,
+                                 port ? 1 : ivars->symphonyAddr, kSIOCmd_AnalogReferenceLevel,
+                                 0x80000000u | ch, payload, 2,
+                                 port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq)) return;
+        // Match the original's safety cleanup: leaving Mic turns phantom off;
+        // leaving either preamp mode releases the insert return.
+        if (old == 3 && wireType != 3) {
+            uint8_t off = 0;
+            SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                port ? kRegXLink2TX : kRegXLink1TX,
+                                port ? 1 : ivars->symphonyAddr, kSIOCmd_PhantomPower,
+                                ch, &off, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
+        }
+        if ((old == 3 || old == 4) && wireType != 3 && wireType != 4) {
+            uint8_t off = 0;
+            SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                                port ? kRegXLink2TX : kRegXLink1TX,
+                                port ? 1 : ivars->symphonyAddr, 0xC9,
+                                ch, &off, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
+        }
+        ivars->micPreType[port][ch] = wireType;
+        if (port) {
+            ivars->unitBMicPreInstrument[ch] = wireType == 4;
+            ivars->unitBMicPreMic[ch] = wireType == 3;
+            ivars->unitBMicPreTypeKnown[ch] = true;
+        } else {
+            ivars->micPreInstrument[ch] = wireType == 4;
+            ivars->micPreMic[ch] = wireType == 3;
+            ivars->micPreTypeKnown[ch] = true;
+        }
+        PublishMicGain(ivars, ch, port);
+        PublishMicPreControls(ivars, port, ch);
+    });
     return kIOReturnSuccess;
 }

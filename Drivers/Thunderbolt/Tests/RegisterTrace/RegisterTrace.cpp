@@ -3221,6 +3221,37 @@ static void RunPreampHostRoutes()
     CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: phantom ON accepted on Mic");
     HostPump();
     CHECK(a[phantom] == std::vector<uint8_t>({1}), "P1: Mic channel phantom ON sent");
+
+    // B12: the three DAW-facing MicPre controls use the original wire
+    // selectors, publish only for a fitted MicPre route, and retain the
+    // fail-safe phantom/insert cleanup when leaving Mic/Instrument.
+    uint8_t micType[] = {3, 127};
+#ifdef TRACE_HAVE_MIC_PRE_DAW
+    CHECK(drv->SendVendorCommand(0x20, 0x80000000u, micType, sizeof(micType)) == kIOReturnSuccess,
+          "B12: Mic type accepted before DAW control writes");
+    a.erase(uint64_t(0xC5) << 32); a.erase(uint64_t(0xCA) << 32);
+    CHECK(drv->RequestPhaseInvert(0, true) == kIOReturnSuccess &&
+          drv->RequestHighPass(0, true) == kIOReturnSuccess,
+          "B12: phase and high-pass requests accepted");
+    HostPump();
+    CHECK(a[uint64_t(0xC5) << 32] == std::vector<uint8_t>({1}) &&
+          a[uint64_t(0xCA) << 32] == std::vector<uint8_t>({1}),
+          "B12: phase 0xC5 and high-pass 0xCA reached MicPre");
+    a.erase((uint64_t(0x20) << 32) | 0x80000000u); a.erase(uint64_t(0xC6) << 32);
+    a.erase((uint64_t(0xC9) << 32) | 0);
+    CHECK(drv->RequestInputType(0, 2) == kIOReturnSuccess, "B12: input type request accepted");
+    HostPump();
+    CHECK(a[(uint64_t(0x20) << 32) | 0x80000000u] == std::vector<uint8_t>({0, 127}) &&
+          a[uint64_t(0xC6) << 32] == std::vector<uint8_t>({0}) &&
+          a[(uint64_t(0xC9) << 32) | 0] == std::vector<uint8_t>({0}),
+          "B12: leaving Mic sends type plus phantom and insert OFF");
+    CHECK(drv->RequestInputType(4, 4) == kIOReturnBadArgument &&
+          drv->RequestPhaseInvert(32, true) == kIOReturnNotReady,
+          "B12: Instrument and unrouted controls refuse safely");
+    // Keep the pre-existing positive route checks below on a Mic stage.
+    CHECK(drv->SendVendorCommand(0x20, 0x80000000u, micType, sizeof(micType)) == kIOReturnSuccess,
+          "B12: restore Mic stage for route checks");
+#endif
     CHECK(route(0, 32) == kIOReturnBadArgument, "B10: B route refused at 32");
 #ifdef kSelectorPublishMicGain
     CHECK(drv->PublishObservedMicGain(1, 0, 0, 42) == kIOReturnNotReady,
