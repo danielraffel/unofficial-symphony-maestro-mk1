@@ -20,6 +20,7 @@ This beta makes Clock Status tell the truth on ThunderBridge and PCIe. It contai
 ### Release notes
 
 - The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
+- Diagnostics reports now record the clock source, the Symphony I/O's lock indicator and the Clock Status shown, each time they change, and list any of Apogee's original drivers that macOS still keeps, even when they are not loaded.
 
 ## 0.9.14 (beta)
 
