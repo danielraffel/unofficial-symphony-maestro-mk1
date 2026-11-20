@@ -105,6 +105,7 @@ struct OriginalApogeeDriversWarning: View {
                     if finding.isAwaitingRestartOnly {
                         Text(OriginalApogeeDrivers.restartAdvice)
                             .fontWeight(.semibold)
+                        Text(OriginalApogeeDrivers.stillLoadedAdvice)
                     } else {
                         Text(.init(OriginalApogeeDrivers.removalAdvice))
                         Link(destination: OriginalApogeeDrivers.releaseDMGURL) {
@@ -112,6 +113,9 @@ struct OriginalApogeeDriversWarning: View {
                         }
                         .buttonStyle(.bordered)
                         .padding(.top, 2)
+                    }
+                    if finding.hasStagedCopy {
+                        Text(OriginalApogeeDrivers.stagedAdvice)
                     }
                     DisclosureGroup("What was found", isExpanded: $showFound) {
                         VStack(alignment: .leading, spacing: 3) {

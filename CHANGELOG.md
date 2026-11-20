@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.12 (beta)
+
+This beta makes the warning about Apogee's original drivers accurate when macOS has kept its own copy of them. It contains everything in 0.9.11.
+
+Thanks to the tester who found Apogee's kernel extensions still loading from a folder Maestro wasn't checking.
+
+### Fixed
+
+- **Maestro now finds Apogee's original kernel extensions in /Library/StagedExtensions,** where macOS can keep its own copy after the originals are gone. Before, Maestro saw only that one was still loaded and said a restart would finish removing it, which wasn't true when a copy there loaded it again. The warning in Device Settings now lists the copy and says what to do; the installer finds it too.
+- When the warning says a restart is all that's left and it is still there after restarting, it now asks for a Diagnostics report.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.11 (0.11.13, build 139), so there is no need to reconnect anything after updating.
+
 ## 0.9.11 (beta)
 
 This beta fixes a second Symphony I/O being mistaken for a DD-16X converter. It contains everything in 0.9.10.

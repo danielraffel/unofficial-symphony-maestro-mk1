@@ -65,6 +65,8 @@ Maestro isn't supported alongside Apogee's original Symphony I/O drivers: the tw
 
 To remove them, download Apogee's [Symphony I/O Release 5.5](https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open the disk image and choose **Uninstall**, restart your Mac, then reinstall Maestro. Apogee's Uninstall also removes Maestro and Apogee Maestro 2, and resets macOS's audio device settings. If you use Apogee Maestro 2 with another Apogee interface, reinstall it from Apogee afterwards.
 
+macOS can keep its own copy of Apogee's kernel extensions in **/Library/StagedExtensions**, which Apogee's Uninstall doesn't remove, and that copy can load again after a restart. Maestro's warning says when it finds one. If the warning is still there after you uninstall and restart, send a Diagnostics report from **App Settings › Diagnostics & Feedback** and we'll help.
+
 <details>
 <summary>If you can't run Apogee's uninstaller</summary>
 

@@ -39,6 +39,13 @@ find_original_apogee() {
             if [ -f "$dir/$item/Contents/Info.plist" ]; then echo "Kernel extension: $dir/$item"; fi
         done
     done
+    # macOS's own copy of an approved kext. Apogee's Uninstall does not look
+    # here, and the copy can load again after a restart (GitHub issue 31).
+    for item in "${APOGEE_KEXTS[@]}"; do
+        if [ -f "$root/Library/StagedExtensions/Library/Extensions/$item/Contents/Info.plist" ]; then
+            echo "Kernel extension (copy kept by macOS): $root/Library/StagedExtensions/Library/Extensions/$item"
+        fi
+    done
     for item in "${APOGEE_DAEMONS[@]}"; do
         if [ -f "$root/Library/LaunchDaemons/$item" ]; then echo "Launch daemon: $root/Library/LaunchDaemons/$item"; fi
     done

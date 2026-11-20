@@ -58,12 +58,15 @@ public struct OriginalApogeeComponent: Sendable, Equatable, Hashable {
     public let checkPath: String
     /// The kernel extension's bundle identifier, when known.
     public let bundleID: String?
+    /// macOS's own copy of a kernel extension, in /Library/StagedExtensions.
+    public let staged: Bool
 
-    public init(kind: Kind, path: String, checkPath: String? = nil, bundleID: String? = nil) {
+    public init(kind: Kind, path: String, checkPath: String? = nil, bundleID: String? = nil, staged: Bool = false) {
         self.kind = kind
         self.path = path
         self.checkPath = checkPath ?? path
         self.bundleID = bundleID
+        self.staged = staged
     }
 }
 
@@ -76,18 +79,23 @@ public struct OriginalApogeeDriverFinding: Sendable, Equatable {
         public let path: String?
         public let bundleID: String?
         public let loaded: Bool
+        /// macOS's staged copy (see `OriginalApogeeDrivers.stagedExtensionsDirectory`).
+        public let staged: Bool
 
-        public init(kind: OriginalApogeeComponent.Kind, path: String?, bundleID: String?, loaded: Bool) {
+        public init(kind: OriginalApogeeComponent.Kind, path: String?, bundleID: String?, loaded: Bool,
+                    staged: Bool = false) {
             self.kind = kind
             self.path = path
             self.bundleID = bundleID
             self.loaded = loaded
+            self.staged = staged
         }
 
         /// One line for the disclosure and the report.
         public var line: String {
             var detail: [String] = []
             if let bundleID, path != nil { detail.append(bundleID) }
+            if staged { detail.append("copy kept by macOS") }
             if loaded { detail.append(path == nil ? "loaded; restart to unload" : "loaded") }
             let subject = path ?? bundleID ?? "?"
             return "\(kind.rawValue): \(subject)" + (detail.isEmpty ? "" : " (\(detail.joined(separator: ", ")))")
@@ -105,6 +113,10 @@ public struct OriginalApogeeDriverFinding: Sendable, Equatable {
     public var isAwaitingRestartOnly: Bool {
         !items.isEmpty && items.allSatisfy { $0.path == nil && $0.loaded }
     }
+    /// macOS is keeping its own copy of one of the kernel extensions. Apogee's
+    /// Uninstall does not look there, and the copy can load again after a
+    /// restart (GitHub issue 31, 2026-11-20).
+    public var hasStagedCopy: Bool { items.contains { $0.staged } }
     public var lines: [String] { items.map(\.line) }
 
     /// The block the diagnostics text carries, found or not.
@@ -134,6 +146,11 @@ public enum OriginalApogeeDrivers {
         ("SymphonyMobile.kext", nil),
     ]
 
+    /// Where macOS keeps its own copy of third-party kernel extensions it has
+    /// approved. A tester found Apogee's three kexts here, still loading, with
+    /// nothing left in /Library/Extensions (GitHub issue 31, 2026-11-20).
+    public static let stagedExtensionsDirectory = "/Library/StagedExtensions/Library/Extensions"
+
     /// The bundle identifiers to look for among the loaded kernel extensions.
     public static var kernelExtensionBundleIDs: [String] { kernelExtensions.compactMap(\.bundleID) }
 
@@ -158,6 +175,11 @@ public enum OriginalApogeeDrivers {
                                   checkPath: "\(path)/Contents/Info.plist", bundleID: kext.bundleID))
             }
         }
+        for kext in kernelExtensions {
+            let path = "\(stagedExtensionsDirectory)/\(kext.file)"
+            list.append(.init(kind: .kernelExtension, path: path,
+                              checkPath: "\(path)/Contents/Info.plist", bundleID: kext.bundleID, staged: true))
+        }
         for plist in ["com.SymphonyDaemon.plist", "com.SymphonyIOUSBDaemon.plist"] {
             list.append(.init(kind: .launchDaemon, path: "/Library/LaunchDaemons/\(plist)"))
         }
@@ -173,6 +195,15 @@ public enum OriginalApogeeDrivers {
 
     /// What the warning says when only a restart is left (`isAwaitingRestartOnly`).
     public static let restartAdvice = "They have been removed, but one is still loaded. Restart your Mac to finish."
+
+    /// Added under `restartAdvice`: a restart does not always unload it.
+    public static let stillLoadedAdvice = "If this warning is still here after a restart, please send a "
+        + "Diagnostics report (App Settings › Diagnostics & Feedback) so we can see what is loading it."
+
+    /// Added under `removalAdvice` when `hasStagedCopy`.
+    public static let stagedAdvice = "macOS is also keeping its own copy of an Apogee kernel extension in "
+        + "/Library/StagedExtensions, which Apogee's Uninstall can leave behind. If this warning is still here "
+        + "after you uninstall and restart, please send a Diagnostics report (App Settings › Diagnostics & Feedback)."
 
     /// The last resort, for a Mac that cannot run Apogee's uninstaller: what has
     /// to go, in general terms, not a procedure. Always behind a collapsed
@@ -211,7 +242,7 @@ public enum OriginalApogeeDrivers {
             let loaded = component.bundleID.map { loadedBundleIDs.contains($0) } ?? false
             if loaded, let id = component.bundleID { reportedLoaded.insert(id) }
             items.append(.init(kind: component.kind, path: component.path,
-                               bundleID: component.bundleID, loaded: loaded))
+                               bundleID: component.bundleID, loaded: loaded, staged: component.staged))
         }
         // Loaded with its file already gone: Apogee's Uninstall ran, but the
         // kext stays in the kernel until the Mac restarts.

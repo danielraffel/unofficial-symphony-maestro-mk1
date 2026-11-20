@@ -36,6 +36,25 @@ struct OriginalApogeeDriversTests {
         }
     }
 
+    @Test("macOS's staged copy is found, named as such, and is not a restart-only case (issue 31)")
+    func stagedCopy() {
+        let id = "com.apogeedigital.driver.Symphony64ThunderBridge"
+        let path = "/Library/StagedExtensions/Library/Extensions/Symphony64Thunderbridge.kext"
+        let finding = detect(["\(path)/Contents/Info.plist"], loaded: [id])
+        #expect(finding.items == [.init(kind: .kernelExtension, path: path, bundleID: id, loaded: true, staged: true)])
+        #expect(finding.lines == ["Kernel extension: \(path) (\(id), copy kept by macOS, loaded)"])
+        #expect(finding.hasStagedCopy)
+        #expect(!finding.isAwaitingRestartOnly)
+        // Every kext name is looked for there, loaded or not.
+        for kext in OriginalApogeeDrivers.kernelExtensions {
+            let staged = detect(["/Library/StagedExtensions/Library/Extensions/\(kext.file)/Contents/Info.plist"])
+            #expect(staged.hasStagedCopy && staged.items.count == 1)
+        }
+        // Nothing staged: unchanged.
+        #expect(!detect(["/Library/Extensions/Symphony64.kext/Contents/Info.plist"]).hasStagedCopy)
+        #expect(detect(loaded: [id]).isAwaitingRestartOnly)
+    }
+
     @Test("The ThunderBridge kext from issue 31: on disk and loaded, one line")
     func thunderBridgeInstalledAndLoaded() {
         let path = "/Library/Extensions/Symphony64Thunderbridge.kext"

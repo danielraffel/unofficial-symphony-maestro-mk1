@@ -288,6 +288,17 @@ if ! grep -q '^if \[ "${BASH_SOURCE\[0\]}" = "\$0" \]; then' "$PRE"; then
 fi
 ok "preinstall: nothing flagged for Maestro's own driver, Apogee Maestro 2, ApogeePopup or ApogeeServices"
 
+C="$WORK/apogee-staged"
+mkbundle "$C/root/Library/StagedExtensions/Library/Extensions/Symphony64Thunderbridge.kext"
+OUT="$(run_find "$C" "    9  0 0 0 0 com.apogeedigital.driver.Symphony64ThunderBridge (5.5) XYZ <8 6>")"
+WANT="Kernel extension (copy kept by macOS): $C/root/Library/StagedExtensions/Library/Extensions/Symphony64Thunderbridge.kext
+Loaded kernel extension: com.apogeedigital.driver.Symphony64ThunderBridge"
+[ "$OUT" = "$WANT" ] || fail "staged kext copy: $OUT"
+# Not the restart-only case: a restart loads the staged copy again.
+( . "$PRE"; [ "$(MAESTRO_APP_PATH=/nonexistent original_apogee_decision "$OUT" 2>/dev/null)" != "restart" ] ) \
+    || fail "a staged kext copy was treated as restart-only"
+ok "preinstall: macOS's staged copy of an Apogee kext is found and is not a restart-only case"
+
 C="$WORK/apogee-hal"
 mkbundle "$C/root/$HAL_DIR/SymphonyPlugin.bundle"
 mkdir -p "$C/root/$HAL_DIR/SymphonyIOUSBPlugIn.bundle/Contents"
