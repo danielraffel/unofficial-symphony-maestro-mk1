@@ -774,6 +774,13 @@ final class AppState: @unchecked Sendable {
     var originalApogeeDrivers: OriginalApogeeDriverFinding?
     @ObservationIgnored
     var originalApogeeDriverCheckInFlight = false
+    /// The clock source the connection reports now, as a `ClockSourceMenu`
+    /// key, refreshed every two seconds by the status bar. It follows changes
+    /// made outside Maestro (Audio MIDI Setup, a DAW) and by the driver, which
+    /// the status bar and the Clock Source menu both showed stale before:
+    /// the bar always read "Internal", and the menu kept its last value.
+    /// Nil until read, and while converters own the clock.
+    var reportedClockSource: UInt32?
 
     /// The build the driver serving the ThunderBridge reports for itself (nil
     /// when no ThunderBridge connection is open). Differs from what sysextd

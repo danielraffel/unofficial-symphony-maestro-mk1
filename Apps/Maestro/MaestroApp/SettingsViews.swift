@@ -448,6 +448,15 @@ struct DeviceSettingsView: View {
                             programmaticClockSource = nil
                             Task { await writeClockSource(newSource) }
                         }
+                        // The source changed outside this menu (Audio MIDI Setup, a
+                        // DAW, the driver): show it, and do not send it back.
+                        .onChange(of: appState.reportedClockSource) { _, reported in
+                            guard !isLoading, !appState.convertersIdentified, let reported,
+                                  let row = ClockSourceMenu.row(for: reported, in: clockSourceChoices),
+                                  row != clockSource else { return }
+                            programmaticClockSource = row
+                            clockSource = row
+                        }
                         // The rows change when the board types arrive or a card
                         // changes. Keep the selection on the row for the same source
                         // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and

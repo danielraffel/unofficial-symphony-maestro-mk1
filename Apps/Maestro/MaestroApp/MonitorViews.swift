@@ -55,7 +55,7 @@ struct StatusBarView: View {
                 Image(systemName: "clock")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Text(clockSourceDisplayName)
+                Text(shownClockSourceName)
                     .font(.system(size: 11))
             }
             .contentShape(Rectangle())
@@ -109,6 +109,7 @@ struct StatusBarView: View {
         .padding(.trailing, 20)
         .padding(.vertical, 6)
         .background(.bar)
+        .task(id: statusSourceID) { await followClockSource() }
         .task(id: statusSourceID) {
             await observeStatus()
         }
@@ -139,6 +140,31 @@ struct StatusBarView: View {
                        ready: appState.isHardwareInitialized,
                        disconnected: appState.connectionMode == .disconnected,
                        reload: appState.viewReloadToken)
+    }
+
+    /// The reported source when the connection can say; otherwise what the
+    /// bar showed before ("Internal" once connected, a dash while not).
+    private var shownClockSourceName: String {
+        guard clockSourceDisplayName != "—" else { return clockSourceDisplayName }
+        return appState.reportedClockSource.flatMap(ClockSourceMenu.statusName(for:)) ?? clockSourceDisplayName
+    }
+
+    /// Keep `AppState.reportedClockSource` current. The read costs no hardware
+    /// traffic: ThunderBridge answers from the driver's clock control and what
+    /// the front panel poller last saw, USB from what this session wrote.
+    private func followClockSource() async {
+        appState.reportedClockSource = nil
+        while !Task.isCancelled {
+            if appState.isHardwareInitialized, appState.connectionMode != .disconnected,
+               !appState.convertersIdentified, let device = appState.device,
+               let key = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32,
+               ClockSourceMenu.decode(key) != nil {
+                if appState.reportedClockSource != key { appState.reportedClockSource = key }
+            } else if appState.reportedClockSource != nil {
+                appState.reportedClockSource = nil
+            }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+        }
     }
 
     private var statusConnection: CoreAudioDeviceConnection? {

@@ -141,4 +141,15 @@ struct ClockConfigTests {
         #expect(ClockSourceMenu.unitAMaySend(ClockSourceMenu.loopSync, unitBFollows: false))
         #expect(ClockSourceMenu.unitAMaySend(ClockSourceMenu.wordClock, unitBFollows: true))
     }
+
+    @Test("The status bar names the reported clock source, and says nothing for a key that is not one")
+    func statusNames() {
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.internalClock) == "Internal")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.wordClock) == "Word Clock")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.loopSync) == "Loop Sync")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.key(source: 4, boardInput: 0)) == "I/O Board 1")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.ioBoard2) == "I/O Board 2")
+        #expect(ClockSourceMenu.statusName(for: 0) == nil)
+        #expect(ClockSourceMenu.statusName(for: 9) == nil)
+    }
 }
