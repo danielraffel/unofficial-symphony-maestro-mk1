@@ -392,10 +392,6 @@ final class AppState: @unchecked Sendable {
     /// Debounce guard — prevents rapid recovery events from triggering multiple re-syncs.
     private var lastRecoveryTime: Date = .distantPast
 
-    // MARK: - USB Health Check
-
-    /// Periodic USB health check task. Sends a lightweight read every 30s to detect
-    /// stale connections. If the read fails, the proxy's recovery logic fires automatically.
     /// ThunderBridge remains enumerated when the interface loses power, so its
     /// PCI/Core Audio presence cannot drive lifecycle state. This task polls the
     /// dext's FPGA-backed health probe and reconnects only after it recovers.
