@@ -657,9 +657,23 @@ struct OutputRoutingView: View {
 
     // P3C-05: Routing presets
     @State private var presetNames: [String] = []
-    private var presetKey: String { appState.activeUnit == .b ? "outputRoutingPresets.unitB" : "outputRoutingPresets" }
-    @State private var resetUnit: DeviceUnit = .a
-    @State private var resetTarget: AppState.UnitWriteTarget?
+    /// Unit A's presets (the only unit's with one Symphony I/O). With two
+    /// units a preset is both tables: unit A's here, unit B's under the same
+    /// name in ``unitBPresetKey``. The grid is the card's, so this never
+    /// follows the Unit A / Unit B picker of the other pages.
+    private static let presetKey = "outputRoutingPresets"
+    private static let unitBPresetKey = "outputRoutingPresets.unitB"
+    private var presetKey: String { Self.presetKey }
+
+    /// Preset names: unit A's, and with two units also those saved for unit B
+    /// alone (by the per-unit grid of earlier versions).
+    private func loadPresetNames() -> [String] {
+        var names = Set(PresetManager.loadMultiRoutingPresetsAsSet(key: Self.presetKey).keys)
+        if appState.unitBOnCard {
+            names.formUnion(PresetManager.loadMultiRoutingPresetsAsSet(key: Self.unitBPresetKey).keys)
+        }
+        return names.sorted()
+    }
 
     private var routingCache: RoutingStateCache? {
         guard appState.device != nil else { return nil }
@@ -674,7 +688,7 @@ struct OutputRoutingView: View {
         let snapshot = restoredRoutes(defaultRouteGrid())
         _routes = State(initialValue: snapshot)
         _userChosenRows = State(initialValue: Set(routingCache?.loadMulti()?.keys.map { $0 } ?? []))
-        _presetNames = State(initialValue: Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted()))
+        _presetNames = State(initialValue: loadPresetNames())
     }
 
     var body: some View {
@@ -691,9 +705,7 @@ struct OutputRoutingView: View {
             }
         } else {
             routingGrid
-                .onChange(of: appState.activeUnit) { _, _ in
-                    presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
-                }
+                .onChange(of: appState.unitBOnCard) { _, _ in presetNames = loadPresetNames() }
         }
     }
 
@@ -721,10 +733,8 @@ struct OutputRoutingView: View {
                 PresetMenuButton(
                     presetNames: presetNames,
                     onSave: { name in
-                        if appState.activeUnit == .b {
-                            PresetManager.saveMultiRoutingPreset(name: name, routes: unitBRoutes, key: presetKey)
-                            presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
-                            return
+                        if appState.unitBOnCard {
+                            PresetManager.saveMultiRoutingPreset(name: name, routes: unitBRoutes, key: Self.unitBPresetKey)
                         }
                         // Mixer rows are stored under fixed sentinels so a preset
                         // survives a change in DAW pair count (USB 8, ThunderBridge 16).
@@ -732,22 +742,19 @@ struct OutputRoutingView: View {
                             name: name,
                             routes: RoutingPresetRows.encode(routes, dawPairCount: swOutputPairCount, unitBActive: appState.unitBOnCard),
                             key: presetKey)
-                        presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
+                        presetNames = loadPresetNames()
                     },
                     onLoad: { name in
-                        if let stored = PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey)[name] {
-                            if appState.activeUnit == .b {
-                                let target = appState.unitWriteTarget
-                                Task {
-                                    do {
-                                        try await appState.applyUnitBOutputRouting(stored, target: target)
-                                        unitBRoutes = stored
-                                        unitBChosenRows = Set(stored.keys)
-                                        errorMessage = nil
-                                    } catch { errorMessage = error.localizedDescription }
-                                }
-                                return
-                            }
+                        // Unit B's half, when this preset has one; a preset saved
+                        // with one unit leaves unit B's outputs as they are.
+                        let storedB = appState.unitBOnCard
+                            ? PresetManager.loadMultiRoutingPresetsAsSet(key: Self.unitBPresetKey)[name] : nil
+                        let targetB = appState.unitBWriteTarget
+                        guard let stored = PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey)[name] else {
+                            if let storedB { Task { await applyUnitBPreset(storedB, target: targetB) } }
+                            return
+                        }
+                        do {
                             let preset = RoutingPresetRows.decode(stored, dawPairCount: swOutputPairCount, unitBActive: appState.unitBOnCard)
                                 .mapValues { $0.filter { $0 >= 0 && $0 < columns.count } }
                                 .filter { !$0.value.isEmpty }
@@ -775,12 +782,14 @@ struct OutputRoutingView: View {
                                         device: device, cachedRoutes: appState.cachedOutputRouteMap(),
                                         transport: appState.transportType ?? .usb)
                                 }
+                                if let storedB { await applyUnitBPreset(storedB, target: targetB) }
                             }
                         }
                     },
                     onDelete: { name in
                         PresetManager.deleteRoutingPreset(name: name, key: presetKey)
-                        presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
+                        PresetManager.deleteRoutingPreset(name: name, key: Self.unitBPresetKey)
+                        presetNames = loadPresetNames()
                     }
                 )
             }
@@ -791,34 +800,34 @@ struct OutputRoutingView: View {
             GeometryReader { geo in
                 ScrollView([.horizontal, .vertical]) {
                     // Output Routing column headers — board-aware OUTPUT analog/digital split.
+                    // With two units, unit A's block then unit B's, each headed by its unit.
+                    let grid = self.grid
                     let colLabels: [(type: String, channels: String)] =
-                        columns.map { (type: $0.type, channels: $0.channels) }
-                        + unitBColumns.map { (type: $0.type, channels: $0.channels) }
+                        grid.columns.map { (type: $0.type, channels: $0.channels) }
                     let labels = gridRowLabels
                     RoutingGridView(
                         rowCount: labels.count,
-                        columnCount: hwPairCount + unitBColumns.count,
+                        columnCount: colLabels.count,
                         rowLabels: labels,
                         columnLabels: colLabels,
                         rowGroupLabel: "Software Outputs",
                         colGroupLabel: "Hardware Outputs",
                         isActiveCell: { row, col in
-                            if col >= hwPairCount {
-                                return unitBRoutes[row]?.contains(col - hwPairCount) == true
-                            }
-                            guard let aRow = unitARow(gridRow: row) else { return false }
-                            return routes[aRow]?.contains(col) == true
+                            guard let cell = grid.cell(gridRow: row, column: col) else { return false }
+                            return (cell.unit == .b ? unitBRoutes : routes)[cell.row]?.contains(cell.column) == true
                         },
                         hoverRow: $hoverRow,
                         hoverCol: $hoverCol,
                         columnMeterLevels: [],
-                        onCellTap: { gridRow, col in
-                            guard !isLoadingRoutes else { return }
-                            if col >= hwPairCount {
-                                tapUnitB(row: gridRow, col: col - hwPairCount)
+                        columnGroups: grid.columnGroups,
+                        onCellTap: { gridRow, gridCol in
+                            guard !isLoadingRoutes, let cell = grid.cell(gridRow: gridRow, column: gridCol) else { return }
+                            if cell.unit == .b {
+                                tapUnitB(row: cell.row, col: cell.column)
                                 return
                             }
-                            guard let row = unitARow(gridRow: gridRow) else { return }
+                            let row = cell.row
+                            let col = cell.column
                             // Toggle: if this (row,col) is active, remove it; otherwise add it.
                             // Each column can only have one source row — clear other rows' claim.
                             let removing = routes[row]?.contains(col) == true
@@ -879,7 +888,7 @@ struct OutputRoutingView: View {
             routes = restoredRoutes(measured.isEmpty ? defaultRouteGrid() : measured)
             userChosenRows = Set(routingCache?.loadMulti()?.keys.map { $0 } ?? [])
             loadUnitBRoutes()
-            presetNames = Array(PresetManager.loadMultiRoutingPresetsAsSet(key: presetKey).keys.sorted())
+            presetNames = loadPresetNames()
             isLoadingRoutes = false
             showLoadingIndicator = false
             indicatorTask.cancel()
@@ -888,18 +897,28 @@ struct OutputRoutingView: View {
 
     // MARK: Unit B's outputs (64 channels)
 
-    /// Unit B's output columns, after unit A's; none with one unit.
-    private var unitBColumns: [CardLayout.RoutingColumn] {
-        guard appState.unitBOnCard, let layout = appState.unitBLayout else { return [] }
-        return TwoUnitMixer.unitBRoutingColumns(layout: layout,
-                                                 prefix: appState.unitBPeripheralPrefix,
-                                                 isInput: false)
+    /// The grid's columns: this unit's alone, or with two units unit A's
+    /// block then unit B's (``OutputRoutingGrid``).
+    private var grid: OutputRoutingGrid {
+        guard appState.unitBOnCard, let layoutB = appState.unitBLayout else {
+            return .singleUnit(columns: columns, unitAPairs: swOutputPairCount)
+        }
+        return .twoUnits(unitA: columns, prefixA: appState.peripheralPrefix,
+                         unitB: layoutB, prefixB: appState.unitBPeripheralPrefix,
+                         unitAPairs: swOutputPairCount)
     }
 
-    /// A grid row in unit A's saved numbering (the grid's own with one unit).
-    private func unitARow(gridRow: Int) -> Int? {
-        guard appState.unitBOnCard else { return gridRow }
-        return TwoUnitOutputRouting.unitARow(gridRow: gridRow, unitAPairs: swOutputPairCount)
+    /// Unit B's output columns, after unit A's; none with one unit.
+    private var unitBColumns: [CardLayout.RoutingColumn] { grid.columns(of: .b) }
+
+    /// Unit B's half of a two-unit preset, written as one table.
+    private func applyUnitBPreset(_ stored: [Int: Set<Int>], target: AppState.UnitWriteTarget) async {
+        do {
+            try await appState.applyUnitBOutputRouting(stored, target: target)
+            unitBRoutes = stored
+            unitBChosenRows = Set(stored.keys)
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
     }
 
     /// Row labels: with unit B, the 64 DAW channels (33-64 named after unit
@@ -1205,22 +1224,6 @@ struct OutputRoutingView: View {
                     : (refusal ?? "Unit B I/O cards were not detected this session."), isRefusal: !ready)
             return
         }
-        resetUnit = appState.activeUnit
-        resetTarget = appState.unitWriteTarget
-        if resetUnit == .b {
-            guard let layout = appState.unitBLayout,
-                  appState.unitBBoardSource(slot: 0) == .detected,
-                  appState.unitBBoardSource(slot: 1) == .detected else {
-                resetPrompt = RoutingResetPrompt(title: "Reset Output Routing", message: "Unit B I/O cards were not detected this session.", isRefusal: true)
-                return
-            }
-            let lines = layout.outputRoutingColumns.map { column in
-                let channel = Int(column.routingByte) - 32
-                return "Output \(channel + 1)-\(channel + 2) ← DAW \(channel + 33)-\(channel + 34)"
-            }
-            resetPrompt = RoutingResetPrompt(title: "Reset Unit B Output Routing", message: lines.joined(separator: "\n"), isRefusal: false)
-            return
-        }
         guard appState.device != nil else { return }
         let b1 = appState.primaryBoardReading
         let b2 = appState.secondaryBoardReading
@@ -1258,21 +1261,6 @@ struct OutputRoutingView: View {
         if appState.unitBOnCard {
             do {
                 try await appState.resetTwoUnitRouting(input: false)
-                errorMessage = nil
-            } catch { errorMessage = error.localizedDescription }
-            return
-        }
-        if resetUnit == .b {
-            guard let target = resetTarget, appState.isCurrent(target) else { return }
-            var defaults: [Int: Set<Int>] = [:]
-            for (col, column) in unitBColumns.enumerated() {
-                let channel = Int(column.routingByte) - 32
-                defaults[TwoUnitOutputRouting.defaultRow(unitBChannel: channel), default: []].insert(col)
-            }
-            do {
-                try await appState.applyUnitBOutputRouting(defaults, target: target)
-                unitBRoutes = defaults
-                unitBChosenRows = Set(defaults.keys)
                 errorMessage = nil
             } catch { errorMessage = error.localizedDescription }
             return
@@ -1369,6 +1357,9 @@ struct RoutingGridView: View {
     @Binding var hoverCol: Int?
     /// Per-column dBFS meter level (-60..0). Empty array = no meters shown.
     var columnMeterLevels: [Double] = []
+    /// Headers over runs of columns (two Symphony I/Os: one per unit), in
+    /// place of the single `colGroupLabel` header. Empty: the single header.
+    var columnGroups: [(label: String, count: Int)] = []
     let onCellTap: (Int, Int) -> Void
 
     private let cellSize: CGFloat = 40
@@ -1392,12 +1383,28 @@ struct RoutingGridView: View {
             // Same height as colHeaderHeight so both header cells are the same visual weight.
             HStack(spacing: 0) {
                 Color.clear.frame(width: labelWidth, height: colHeaderHeight)
-                Text(colGroupLabel)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.leading, 6)
-                    .frame(width: CGFloat(columnCount) * cellSize, height: colHeaderHeight, alignment: .leading)
-                    .background(Color.gray.opacity(0.35))
+                if columnGroups.isEmpty {
+                    Text(colGroupLabel)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.leading, 6)
+                        .frame(width: CGFloat(columnCount) * cellSize, height: colHeaderHeight, alignment: .leading)
+                        .background(Color.gray.opacity(0.35))
+                } else {
+                    // One header per device, as the original's routing card
+                    // headed each device's column block.
+                    ForEach(Array(columnGroups.enumerated()), id: \.offset) { _, group in
+                        Text("\(colGroupLabel) · \(group.label)")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .padding(.leading, 6)
+                            .frame(width: CGFloat(group.count) * cellSize, height: colHeaderHeight, alignment: .leading)
+                            .background(Color.gray.opacity(0.35))
+                            .border(Color.gray.opacity(0.5), width: 0.5)
+                    }
+                }
             }
 
             // ── Row 2: "Software Inputs/Outputs" label | column type headers ────
