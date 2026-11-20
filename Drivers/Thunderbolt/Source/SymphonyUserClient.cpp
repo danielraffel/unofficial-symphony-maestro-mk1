@@ -207,6 +207,10 @@ kern_return_t SymphonyUserClient::ExternalMethod(
     if (selector == kSelectorReadLinkState && arguments &&
         arguments->structureOutputMaximumSize == kSymphonyPhantomObservationWords * sizeof(uint32_t))
         method.checkStructureOutputSize = kSymphonyPhantomObservationWords * sizeof(uint32_t);
+    // D5: the mixer-instance tail, also exact-size only.
+    if (selector == kSelectorReadLinkState && arguments &&
+        arguments->structureOutputMaximumSize == kSymphonyMixerInstanceWords * sizeof(uint32_t))
+        method.checkStructureOutputSize = kSymphonyMixerInstanceWords * sizeof(uint32_t);
     kern_return_t ret = super::ExternalMethod(selector, arguments,
                                                &method, this, nullptr);
     if (ret != kIOReturnSuccess && ret != kIOReturnNoCompletion) {
@@ -325,13 +329,18 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             UCLOG("ExternalMethod: no driver (link state)");
             return kIOReturnNotReady;
         }
-        uint32_t output[kSymphonyPhantomObservationWords] = {};
+        uint32_t output[kSymphonyMixerInstanceWords] = {};
         kern_return_t r = ivars->driver->ReadLinkState(output);
-        const bool extended = method.checkStructureOutputSize == sizeof(output);
+        const size_t phantomSize = kSymphonyPhantomObservationWords * sizeof(uint32_t);
+        const bool instance = method.checkStructureOutputSize == sizeof(output);
+        const bool extended = instance || method.checkStructureOutputSize == phantomSize;
         if (r == kIOReturnSuccess && extended)
             r = ivars->driver->ReadPhantomObservations(output + 16);
+        if (r == kIOReturnSuccess && instance)
+            r = ivars->driver->ReadMixerInstance(output + kSymphonyPhantomObservationWords);
         output[0] = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
-        auto outputData = OSData::withBytes(output, extended ? sizeof(output) : sizeof(SymphonyLinkStateOutput));
+        auto outputData = OSData::withBytes(output, instance ? sizeof(output)
+                                            : extended ? phantomSize : sizeof(SymphonyLinkStateOutput));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;
     }

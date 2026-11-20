@@ -1,56 +1,205 @@
 import Foundation
 import MaestroCore
 
-/// Card coefficients are restored independently of the Mixer view.
-/// Evidence: og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:248-302,680-784.
+/// D5: the card mixer is restored once on a driver instance that holds no app
+/// mixer state. The original restored the card mixer from its saved settings
+/// with card register writes only: SetSettingsFromDictionary, then
+/// ApplySettingsToHardware = UpdateSoftwareReturnID + UpdateLLMHardware
+/// (og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:1479-1604,
+/// 1750-1755). No unit (XLink) command, no preference lock or ready pair.
 public enum CardMixerReplay {
+    /// Gap between two commands. Each 0xB0-0xB3 makes the driver recompute
+    /// the whole mixer, 66 card register writes at 32 channels
+    /// (SymphonyThunderbridge.cpp RecomputeCardMixer); 0xB4 makes 2. At 20 ms
+    /// that is at most 50 commands, about 3,300 register writes, a second.
+    public static let commandGap: Duration = .milliseconds(20)
+    /// 21 samples 250 ms apart: 5.0 s of a stable link before the first write.
+    public static let stableSamples = 21
+    public static let stableInterval: Duration = .milliseconds(250)
+    /// Edits must have stopped this long before a plan is rebuilt from the
+    /// store: the Mixer page writes first and saves after the write returns.
+    public static let quietWindow: Duration = .seconds(1)
+    /// Restarts after an edit or a recall. A restart skips every address the
+    /// run already sent, so the total stays within one plan; this is only a
+    /// safety stop.
+    public static let maxRebuilds = 50
+    /// Runs started on one driver instance (launch or reconnect, identity, and
+    /// a healthy health-loop cycle while the restore is still pending).
+    public static let maxAttempts = 3
+
     public static func supportsSingleUnit(channelCount: Int, converterFlags: UInt32) -> Bool {
         channelCount == 32 && (converterFlags & 3) == 0
     }
 
-    public static func stableRecoveryCount(_ samples: [LinkState], requiredSamples: Int = 21) -> UInt32? {
-        guard samples.count >= requiredSamples, let first = samples.first,
-              first.state == .up, first.clockPresent, first.linkConfigured, !first.hwSuspended else { return nil }
-        let recovery = first.recoveryCount
-        guard samples.prefix(requiredSamples).allSatisfy({
-            $0.state == .up && $0.clockPresent && $0.linkConfigured && !$0.hwSuspended
-                && $0.recoveryCount == recovery
-        }) else { return nil }
-        return recovery
+    // MARK: - Stability
+
+    public static func isUsable(_ link: LinkState) -> Bool {
+        link.state == .up && link.clockPresent && link.linkConfigured && !link.hwSuspended
+    }
+
+    public enum Stability: Equatable, Sendable {
+        case pending
+        case stable(recoveryCount: UInt32)
+        case unstable
+    }
+
+    /// Accepts samples one at a time and gives up on the first bad one.
+    public struct StabilityGate: Sendable {
+        public let requiredSamples: Int
+        private var recovery: UInt32?
+        public private(set) var accepted = 0
+
+        public init(requiredSamples: Int = CardMixerReplay.stableSamples) {
+            self.requiredSamples = requiredSamples
+        }
+
+        public mutating func add(_ sample: LinkState?) -> Stability {
+            guard let sample, CardMixerReplay.isUsable(sample),
+                  recovery.map({ $0 == sample.recoveryCount }) ?? true else { return .unstable }
+            recovery = sample.recoveryCount
+            accepted += 1
+            return accepted >= requiredSamples ? .stable(recoveryCount: sample.recoveryCount) : .pending
+        }
+    }
+
+    /// The 5 s wait. Returns the recovery count it held at, or `nil` on the
+    /// first bad sample, a failed or cancelled sleep. `samples` is the number
+    /// of link reads made (host only).
+    public static func waitForStableLink(requiredSamples: Int = stableSamples,
+                                         interval: Duration = stableInterval,
+                                         sample: () async -> LinkState?,
+                                         sleep: (Duration) async throws -> Void,
+                                         isolation: isolated (any Actor)? = #isolation) async -> (recovery: UInt32?, samples: Int) {
+        var gate = StabilityGate(requiredSamples: requiredSamples)
+        var samples = 0
+        while true {
+            if Task.isCancelled { return (nil, samples) }
+            let link = await sample()
+            samples += 1
+            switch gate.add(link) {
+            case .stable(let recovery): return (recovery, samples)
+            case .unstable: return (nil, samples)
+            case .pending: break
+            }
+            do { try await sleep(interval) } catch { return (nil, samples) }
+        }
+    }
+
+    // MARK: - Plan
+
+    /// Only what was saved for this mixer, as the Mixer page's own sync does
+    /// (MixerViews.swift syncMixerToHardware): per-mixer keys only, strips only
+    /// for the saved count, Master and the return only when their keys exist,
+    /// and a held Software Return source (8 or more at 32 channels) not sent.
+    /// The shared `mixerState_swReturn` strip does not make a mixer "saved";
+    /// it only supplies the return's pan, mute and solo once the mixer's own
+    /// return level was saved (MixerEditorState.save writes both together).
+    public static func savedWrites(mixer: Int, layout: CardLayout, store: ChannelStateStore,
+                                   preferences: MixerPreferences? = nil,
+                                   pairCount: Int = 8) -> [ThunderboltPreset.Write] {
+        let defaults = preferences ?? store.mixerPreferences
+        let saved: [MixerChannelState] = store.load(ChannelStateStore.mixerKey(mixer)) ?? []
+        let strips = Array(saved.prefix(layout.mixerChannels.count))
+        let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double
+        let right = defaults.object(forKey: "mixerSWReturnRightLevel_\(mixer)") as? Double
+        let master = defaults.object(forKey: "mixerMasterLevel_\(mixer)") as? Double
+        let sourceKey = "mixerSoftwareReturnSource_\(mixer)"
+        let savedSource: UInt32? = defaults.object(forKey: sourceKey) != nil
+            ? UInt32(clamping: defaults.integer(forKey: sourceKey)) : nil
+        let directMonitor = defaults.integer(forKey: "routingMode") != 0
+
+        var writes: [ThunderboltPreset.Write] = []
+        let base = UInt32(mixer + 1) << 16
+        func put(_ selector: AudioPropertySelector, _ value: PropertyValue, _ channel: Int = 0) {
+            writes.append(.property(PropertyAddress(selector: selector, element: base | UInt32(channel)), value))
+        }
+        if let savedSource {
+            let shown = TwoUnitMixer.shownSoftwareReturnSource(savedSource, pairCount: pairCount)
+            if !TwoUnitMixer.isHeld(shown: shown, saved: savedSource, pairCount: pairCount) {
+                put(.mixerSoftwareReturnID, .uint32(shown))
+            }
+        }
+        for (strip, state) in zip(layout.mixerChannels, strips) {
+            let id = strip.hardwareIndex
+            // Level, pan, mute: never an unmute before its level.
+            put(.mixerChannelLevel, .float64(state.level), id)
+            put(.mixerChannelPan, .float64(state.pan), id)
+            put(.mixerChannelMute, .bool(state.isMuted || !directMonitor), id)
+            put(.mixerChannelSolo, .bool(state.isSoloed), id)
+        }
+        if let left {
+            // 1000 sets both sides; the right fader follows on its own ID.
+            put(.mixerChannelLevel, .float64(left), 1000)
+            if defaults.object(forKey: "mixerState_swReturn") != nil {
+                let shared = MixerStateSnapshot.savedSoftwareReturn(preferences: defaults)
+                put(.mixerChannelPan, .float64(shared.pan), 1000)
+                put(.mixerChannelMute, .bool(shared.isMuted), 1000)
+                put(.mixerChannelSolo, .bool(shared.isSoloed), 1000)
+            }
+        }
+        // SymphonyPCIeCardMixer uses a distinct right-side return ID.
+        // Evidence: og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:27-46,249-261.
+        if let right { put(.mixerChannelLevel, .float64(right), 0x1002) }
+        if let master { put(.mixerChannelLevel, .float64(master), 2000) }
+        return writes
+    }
+
+    /// One group per mixer the driver reported empty, rebuilt from the store
+    /// each time it is called.
+    public static func plan(mixers: [Int], layout: CardLayout, store: ChannelStateStore,
+                            preferences: MixerPreferences? = nil) -> [[ThunderboltPreset.Write]] {
+        mixers.map { savedWrites(mixer: $0, layout: layout, store: store, preferences: preferences) }
+            .filter { !$0.isEmpty }
     }
 
     public static func commandCount(_ groups: [[ThunderboltPreset.Write]]) -> Int {
         groups.reduce(0) { $0 + $1.count }
     }
 
-    /// Full layout validation once per group; lightweight live fences before
-    /// every write and every unlock attempt. The caller holds the bus owner.
-    public static func run(_ groups: [[ThunderboltPreset.Write]],
-                           validateMixer: () throws -> Void, validate: () throws -> Void,
-                           send: (ThunderboltPreset.Write) throws -> Void,
-                           unlock: () throws -> Bool,
-                           pace: () -> Void = { Thread.sleep(forTimeInterval: 0.005) },
-                           delay: () -> Void = { Thread.sleep(forTimeInterval: 0.005) }) throws {
-        var writes: [ThunderboltPreset.Write] = []
-        var boundaries: Set<Int> = []
-        for group in groups where !group.isEmpty {
-            boundaries.insert(writes.count)
-            writes += group
+    /// Card register writes the driver makes for a plan at 32 channels.
+    public static func registerWrites(_ groups: [[ThunderboltPreset.Write]]) -> Int {
+        groups.joined().reduce(0) { total, write in
+            guard case .property(let address, _) = write else { return total }
+            return total + (address.selector == .mixerSoftwareReturnID ? 2 : 66)
         }
-        var index = 0
-        try ThunderboltPreset.recall(writes, send: { write in
-            if boundaries.contains(index) { try validateMixer() }
-            // Full validation may take time; check the edit fence afterwards.
-            try validate()
-            index += 1
-            try send(write)
-            // Keep the XLink lane at most 20 commands per 100 ms. The caller
-            // owns the serial lock; this sleep is deliberately off MainActor.
-            if index < writes.count { pace() }
-        }, unlock: {
-            try validate()
-            return try unlock()
-        }, retryDelay: delay)
+    }
+
+    /// Addresses a run has sent, across rebuilds. Filled from the transaction
+    /// (off the main actor), read by the runner.
+    public final class Progress: @unchecked Sendable {
+        private let lock = NSLock()
+        private var addresses: Set<PropertyAddress> = []
+        public init() {}
+        public func sent(_ address: PropertyAddress) { lock.withLock { _ = addresses.insert(address) } }
+        public var count: Int { lock.withLock { addresses.count } }
+        public func remaining(_ groups: [[ThunderboltPreset.Write]]) -> [[ThunderboltPreset.Write]] {
+            let done = lock.withLock { addresses }
+            return groups.map { $0.filter {
+                guard case .property(let address, _) = $0 else { return true }
+                return !done.contains(address)
+            } }.filter { !$0.isEmpty }
+        }
+    }
+
+    /// Full layout check once per group, then each write; the caller's `send`
+    /// takes the serial owner, checks the live fences and writes. `pace` runs
+    /// between writes outside that owner, so other writes are never held up by
+    /// the pacing. No unlock or ready command: see the type's comment.
+    public static func run(_ groups: [[ThunderboltPreset.Write]],
+                           validateMixer: () throws -> Void,
+                           send: (ThunderboltPreset.Write) throws -> Void,
+                           pace: () async throws -> Void,
+                           isolation: isolated (any Actor)? = #isolation) async throws {
+        let total = commandCount(groups)
+        var sent = 0
+        for group in groups where !group.isEmpty {
+            try validateMixer()
+            for write in group {
+                try send(write)
+                sent += 1
+                if sent < total { try await pace() }
+            }
+        }
     }
 
     public static func outputWrites(_ routes: [UInt8: UInt8]) -> [ThunderboltPreset.Write] {
@@ -59,21 +208,6 @@ public enum CardMixerReplay {
                 ThunderboltPreset.Write.output($0)
             }
         }
-    }
-
-    public static func savedWrites(mixer: Int, layout: CardLayout, store: ChannelStateStore) -> [ThunderboltPreset.Write] {
-        let defaults = store.mixerPreferences
-        let saved: [MixerChannelState]? = store.load(ChannelStateStore.mixerKey(mixer))
-        let hasReturn = defaults.object(forKey: "mixerState_swReturn") != nil
-            || defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") != nil
-            || defaults.object(forKey: "mixerSWReturnRightLevel_\(mixer)") != nil
-            || defaults.object(forKey: "mixerSoftwareReturnSource_\(mixer)") != nil
-            || defaults.object(forKey: "mixerMasterLevel_\(mixer)") != nil
-        guard saved != nil || hasReturn else { return [] }
-        let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: mixer,
-                                          store: store, preferences: defaults)
-        return writes(mixer: mixer, layout: layout, snapshot: snapshot,
-                      directMonitor: defaults.integer(forKey: "routingMode") != 0)
     }
 
     public static func writes(mixer: Int, layout: CardLayout, snapshot: MixerStateSnapshot,
@@ -96,10 +230,238 @@ public enum CardMixerReplay {
             put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && !directMonitor)), id)
             put(.mixerChannelSolo, .bool(state.isSoloed), id)
         }
-        // SymphonyPCIeCardMixer uses a distinct right-side return ID.
-        // Evidence: og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:27-46,249-261.
         put(.mixerChannelLevel, .float64(snapshot.swReturnRightLevel), 0x1002)
         put(.mixerChannelLevel, .float64(snapshot.masterLevel), 2000)
         return writes
+    }
+}
+
+/// Which mixers D5 restores on which driver instance, decided from the
+/// driver's own report (`DriverMixerInstance`), never from a Swift connection
+/// object. Pure; AppState owns one.
+///
+/// - The instance's flags are latched the first time it is seen: a mixer the
+///   driver held no app state for at that moment is D5's to restore, even if
+///   an edit later sets the driver's flag (the restore then carries the edit,
+///   rebuilt from the store).
+/// - The baseline is the recovery and re-init counts at the first sighting
+///   with the link up. If either moves on this instance, an in-place recovery
+///   has happened (the driver recomputed from its cache) and D5 never runs on
+///   it again.
+/// - A driver without the report: nothing is restored, the page behaves as before.
+public struct CardMixerRestoreLedger: Sendable, Equatable {
+    public enum Decision: Equatable, Sendable {
+        /// Old driver: no instance report.
+        case unsupported
+        /// Link not up yet; nothing latched as a baseline.
+        case notReady
+        /// The driver held both mixers at first sight, or the restore finished.
+        case nothingToDo
+        /// An in-place recovery or too many interruptions on this instance.
+        case gaveUp
+        case restore(mixers: [Int], recoveryCount: UInt32)
+    }
+
+    public private(set) var nonce: UInt64?
+    public private(set) var needs: [Bool] = [false, false]
+    public private(set) var baselineRecovery: UInt32?
+    public private(set) var baselineReinit: UInt32?
+    public private(set) var completed = false
+    public private(set) var gaveUp = false
+    public private(set) var attempts = 0
+
+    public init() {}
+
+    /// Latch a newly seen instance; record the baseline at first link-up.
+    public mutating func observe(_ link: LinkState?) {
+        guard let link, let instance = link.mixerInstance else { return }
+        if nonce != instance.nonce {
+            self = CardMixerRestoreLedger()
+            nonce = instance.nonce
+            needs = instance.holdsAppState.prefix(2).map { !$0 }
+        }
+        if baselineRecovery == nil, CardMixerReplay.isUsable(link) {
+            baselineRecovery = link.recoveryCount
+            baselineReinit = link.cardReinitCount
+        }
+    }
+
+    public mutating func decide(_ link: LinkState?) -> Decision {
+        observe(link)
+        guard let link, let instance = link.mixerInstance, instance.nonce == nonce else { return .unsupported }
+        if gaveUp { return .gaveUp }
+        if completed || !needs.contains(true) { return .nothingToDo }
+        guard let recovery = baselineRecovery, let reinit = baselineReinit else { return .notReady }
+        guard link.recoveryCount == recovery, link.cardReinitCount == reinit else {
+            gaveUp = true
+            return .gaveUp
+        }
+        guard CardMixerReplay.isUsable(link) else { return .notReady }
+        return .restore(mixers: (0..<2).filter { needs[$0] }, recoveryCount: recovery)
+    }
+
+    public mutating func complete() { completed = true }
+    public mutating func giveUp() { gaveUp = true }
+
+    /// A run is about to wait on this instance. False (and given up) once
+    /// `CardMixerReplay.maxAttempts` runs have started without finishing.
+    public mutating func beginAttempt() -> Bool {
+        attempts += 1
+        if attempts > CardMixerReplay.maxAttempts { gaveUp = true }
+        return !gaveUp
+    }
+
+    /// Latched, owned by D5, not finished: a healthy cycle may start a run.
+    public var isPending: Bool {
+        nonce != nil && needs.contains(true) && !completed && !gaveUp
+            && attempts < CardMixerReplay.maxAttempts
+    }
+
+    /// Whether the Mixer page's own recall-time sync must leave `mixer` to D5.
+    /// D5 owns a mixer the driver reported empty on this instance, from the
+    /// moment that is known until the instance goes away (pending, running,
+    /// finished or given up), and only while D5 can run here at all
+    /// (`eligible`: one Symphony I/O at 32 channels, no converters, identity
+    /// known, ...). An undecided instance is judged from its flags. Otherwise
+    /// (old driver, ineligible path, or the driver held that mixer) the page
+    /// syncs as it always did.
+    public func pageDefersSync(mixer: Int, instance: DriverMixerInstance?, eligible: Bool) -> Bool {
+        guard eligible, let instance, (0..<2).contains(mixer) else { return false }
+        if instance.nonce == nonce { return needs[mixer] }
+        return !instance.holdsAppState[mixer]
+    }
+}
+
+/// The D5 restore task's body, with every outside effect injected so each
+/// step can be tested: the host-only link read, sleeping, the ledger, the
+/// connection/eligibility check, the recall and edit fences, the plan built
+/// from the store, and the paced transaction.
+///
+/// Order: decide from the driver report; wait 5 s of stable link (first bad
+/// sample ends it); wait until no recall is running and edits have been quiet
+/// for `quietWindow`; decide again (an in-place recovery since the baseline
+/// gives up); rebuild the plan from the store; run it. An edit or recall that
+/// lands during the run makes it start over from the store (at most
+/// `maxRebuilds` times); a link, layout or connection fence ends it.
+public enum CardMixerRestoreRunner {
+    public enum Outcome: Equatable, Sendable {
+        case unsupported, notReady, nothingToDo, gaveUp
+        case unstable(samples: Int)
+        case cancelled, superseded, failed
+        /// `commands`: distinct addresses written over the whole run.
+        case restored(commands: Int, rebuilds: Int)
+    }
+
+    public struct Environment {
+        public var readLink: @MainActor () async -> LinkState?
+        public var sleep: @MainActor (Duration) async throws -> Void
+        public var decide: @MainActor (LinkState?) -> CardMixerRestoreLedger.Decision
+        public var complete: @MainActor () -> Void
+        public var giveUp: @MainActor () -> Void
+        /// Same connection, still eligible (single unit, identity known, ...).
+        public var isCurrent: @MainActor () -> Bool
+        public var recallInFlight: @MainActor () -> Bool
+        public var epoch: @MainActor () -> UInt64
+        public var epochValid: @MainActor (UInt64) -> Bool
+        public var editGeneration: @MainActor () -> UInt64
+        public var beginAttempt: @MainActor () -> Bool
+        public var plan: @MainActor ([Int]) -> [[ThunderboltPreset.Write]]
+        /// Runs the transaction; must stop at the first write after the
+        /// captured epoch or edit generation stops being current, and report
+        /// each address it wrote to `Progress`.
+        public var replay: @MainActor ([[ThunderboltPreset.Write]], UInt32, UInt64, UInt64, CardMixerReplay.Progress) async throws -> Void
+
+        public init(readLink: @escaping @MainActor () async -> LinkState?,
+                    sleep: @escaping @MainActor (Duration) async throws -> Void,
+                    decide: @escaping @MainActor (LinkState?) -> CardMixerRestoreLedger.Decision,
+                    complete: @escaping @MainActor () -> Void,
+                    giveUp: @escaping @MainActor () -> Void,
+                    isCurrent: @escaping @MainActor () -> Bool,
+                    recallInFlight: @escaping @MainActor () -> Bool,
+                    epoch: @escaping @MainActor () -> UInt64,
+                    epochValid: @escaping @MainActor (UInt64) -> Bool,
+                    editGeneration: @escaping @MainActor () -> UInt64,
+                    beginAttempt: @escaping @MainActor () -> Bool,
+                    plan: @escaping @MainActor ([Int]) -> [[ThunderboltPreset.Write]],
+                    replay: @escaping @MainActor ([[ThunderboltPreset.Write]], UInt32, UInt64, UInt64, CardMixerReplay.Progress) async throws -> Void) {
+            self.readLink = readLink; self.sleep = sleep; self.decide = decide
+            self.complete = complete; self.giveUp = giveUp; self.isCurrent = isCurrent
+            self.recallInFlight = recallInFlight; self.epoch = epoch; self.epochValid = epochValid
+            self.editGeneration = editGeneration; self.beginAttempt = beginAttempt
+            self.plan = plan; self.replay = replay
+        }
+    }
+
+    static func outcome(_ decision: CardMixerRestoreLedger.Decision) -> Outcome {
+        switch decision {
+        case .unsupported: .unsupported
+        case .notReady: .notReady
+        case .nothingToDo: .nothingToDo
+        case .gaveUp: .gaveUp
+        case .restore: .failed
+        }
+    }
+
+    @MainActor
+    public static func run(_ env: Environment) async -> Outcome {
+        let first = env.decide(await env.readLink())
+        guard case .restore(_, let recovery) = first else { return outcome(first) }
+        guard env.beginAttempt() else { return .gaveUp }
+        let progress = CardMixerReplay.Progress()
+        let generationAtStart = env.editGeneration()
+        let wait = await CardMixerReplay.waitForStableLink(sample: { await env.readLink() },
+                                                           sleep: { try await env.sleep($0) })
+        if Task.isCancelled { return .cancelled }
+        guard wait.recovery == recovery else { return .unstable(samples: wait.samples) }
+        let quietTicks = Int(CardMixerReplay.quietWindow / CardMixerReplay.stableInterval)
+        var quiet = !env.recallInFlight() && env.editGeneration() == generationAtStart
+        var rebuilds = 0
+        while true {
+            var lastGeneration = env.editGeneration()
+            var ticks = 0
+            while !quiet {
+                do { try await env.sleep(CardMixerReplay.stableInterval) } catch { return .cancelled }
+                if Task.isCancelled { return .cancelled }
+                guard env.isCurrent() else { return .superseded }
+                let generation = env.editGeneration()
+                if env.recallInFlight() || generation != lastGeneration {
+                    lastGeneration = generation
+                    ticks = 0
+                } else {
+                    ticks += 1
+                }
+                quiet = ticks >= quietTicks
+            }
+            if Task.isCancelled { return .cancelled }
+            guard env.isCurrent() else { return .superseded }
+            let decision = env.decide(await env.readLink())
+            guard case .restore(let mixers, let current) = decision, current == recovery else {
+                return outcome(decision)
+            }
+            let epoch = env.epoch()
+            let generation = env.editGeneration()
+            // Rebuilt from the store; what this run already wrote is not sent
+            // again (an edit to it went to the driver with the user's write).
+            let plan = progress.remaining(env.plan(mixers))
+            guard !plan.isEmpty else {
+                env.complete()
+                return progress.count == 0 ? .nothingToDo : .restored(commands: progress.count, rebuilds: rebuilds)
+            }
+            do {
+                try await env.replay(plan, recovery, epoch, generation, progress)
+                guard env.isCurrent() else { return .superseded }
+                env.complete()
+                return .restored(commands: progress.count, rebuilds: rebuilds)
+            } catch {
+                if Task.isCancelled { return .cancelled }
+                guard !env.epochValid(epoch) || env.editGeneration() != generation else { return .failed }
+                rebuilds += 1
+                guard rebuilds <= CardMixerReplay.maxRebuilds else {
+                    env.giveUp()
+                    return .gaveUp
+                }
+                quiet = false
+            }
+        }
     }
 }

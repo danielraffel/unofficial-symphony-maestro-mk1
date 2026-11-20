@@ -3,70 +3,146 @@ import MaestroCore
 import MaestroDevice
 
 extension AppState {
-    /// Reconnect owns the card mixer even if MixerView was never opened.
-    /// Initial single-unit startup does not call this path. The driver already restores
-    /// its in-session coefficients on recovery, but not after endpoint replacement.
-    /// Evidence: og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:248-302,680-784.
+    /// D5: restore the saved card mixer once on a driver instance that holds no
+    /// app mixer state (a fresh dext), even if the Mixer page is never opened.
+    /// Launch and reconnect call this after the ThunderBridge health check has
+    /// started; identity resolving later calls it again. It only starts a
+    /// stored task and returns: nothing in either pipeline waits for it.
+    ///
+    /// "Fresh" comes from the driver (the 52-word link-state read,
+    /// `DriverMixerInstance`), not from a new Swift connection object: an
+    /// in-place recovery keeps the driver's state and its flags, so it is never
+    /// followed by a restore. A driver without that report gets no restore.
+    /// The original's restore was card registers only:
+    /// og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:1479-1604,1750-1755.
     @MainActor
-    func syncCardMixerToHardware() async {
-        guard !recallInFlight, !twoUnitSleeping, !usesTwoUnitReplay,
-              connectionMode == .hardware, isHardwareInitialized,
-              unitAIdentity != nil, connectedUnit == nil, converterSystem == nil,
-              let tb = device as? ThunderboltDeviceConnection,
-              RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil else { return }
-        let endpoint = tb.endpointGeneration
-        guard cardMixerReplayEndpoint != endpoint, mixerPageSyncedEndpoint != endpoint else { return }
-        let generation = replayDeferral.currentEpoch()
-        let edits = tb.mixerEdits
-        let editGeneration = edits.capture()
-        let layout = cardLayout
-        // Reapply only destinations in this identity/layout's saved table.
-        // The default routes stay with the driver when no output was edited.
-        // Reconnect's normal routing phase already writes saved output pairs;
-        // including them here would send every route twice.
-        var groups: [[ThunderboltPreset.Write]] = []
-        for mixer in 0..<2 {
-            groups.append(CardMixerReplay.savedWrites(mixer: mixer, layout: layout, store: channelStateStore))
+    func syncCardMixerToHardware() {
+        guard let tb = device as? ThunderboltDeviceConnection else { return }
+        cardMixerRestoreRequested = true
+        if let run = cardMixerRestoreRun, run.connection === tb { return }
+        cancelCardMixerRestore()
+        guard cardMixerRestoreEligible(tb) else {
+            // Re-armed when unit A's identity resolves (pending now, or a
+            // failed read retried after a recovery); eligibility is checked again.
+            cardMixerRestoreAwaitingIdentity = unitAIdentity == nil
+            return
         }
-        guard groups.contains(where: { !$0.isEmpty }) else { return }
-        let plan = groups
-        let deferral = replayDeferral
-        do {
-            // A new user client must be live and unchanged for five seconds.
-            // This deliberately does not run for in-place recovery.
-            guard let recovery = await Self.waitForStableMixerEndpoint(tb) else { return }
-            guard device === tb, cardMixerReplayEndpoint != endpoint,
-                  mixerPageSyncedEndpoint != endpoint,
-                  deferral.isValid(generation), edits.isCurrent(editGeneration) else { return }
-            let started = Date()
-            try await Task.detached(priority: .utility) {
-                try tb.replayCardMixer(plan, layout: layout, recoveryCount: recovery,
-                    shouldContinue: { deferral.isValid(generation) && edits.isCurrent(editGeneration) })
-            }.value
-            guard device === tb else { return }
-            cardMixerReplayEndpoint = endpoint
-            refreshSoftwareReturnMeterGains()
-            print(String(format: "[Maestro] D5 card mixer replay: %d commands, %.3f s (paced 20/100 ms)",
-                         CardMixerReplay.commandCount(plan), Date().timeIntervalSince(started)))
-        } catch {
-            // Leave the endpoint unclaimed so a later fresh connection can
-            // retry. A dropped link never gets a partial replay retried in place.
-            print("[Maestro] Card mixer replay refused: \(error)")
+        cardMixerRestoreAwaitingIdentity = false
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let outcome = await CardMixerRestoreRunner.run(self.cardMixerRestoreEnvironment(tb))
+            print("[Maestro] D5 card mixer restore: \(outcome)")
+            if case .restored = outcome { self.refreshSoftwareReturnMeterGains() }
+            if self.cardMixerRestoreRun?.token == token { self.cardMixerRestoreRun = nil }
         }
+        cardMixerRestoreRun = CardMixerRestoreRun(token: token, connection: tb, task: task)
     }
 
-    nonisolated private static func waitForStableMixerEndpoint(_ tb: ThunderboltDeviceConnection) async -> UInt32? {
-        await Task.detached(priority: .utility) {
-            guard let first = tb.linkState(), first.state == .up,
-                  first.clockPresent, first.linkConfigured, !first.hwSuspended else { return nil }
-            var samples = [first]
-            for _ in 1..<21 {
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled else { return nil }
-                guard let current = tb.linkState() else { return nil }
-                samples.append(current)
-            }
-            return CardMixerReplay.stableRecoveryCount(samples)
-        }.value
+    /// Disconnect, replacement, or a link drop seen by the health loop.
+    @MainActor
+    func cancelCardMixerRestore() {
+        cardMixerRestoreRun?.task.cancel()
+        cardMixerRestoreRun = nil
     }
+
+    /// Identity resolved after launch or reconnect asked for the restore.
+    @MainActor
+    func rearmCardMixerRestoreAfterIdentity() {
+        guard cardMixerRestoreAwaitingIdentity else { return }
+        syncCardMixerToHardware()
+    }
+
+    /// A healthy health-loop cycle: start another run if launch or reconnect
+    /// asked for the restore, none is running, and the ledger still has it
+    /// pending (a run that ended not ready, unstable without a recovery,
+    /// superseded or failed). The ledger still refuses after an in-place
+    /// recovery, and `CardMixerReplay.maxAttempts` bounds the runs.
+    @MainActor
+    func rearmCardMixerRestoreIfPending() {
+        guard cardMixerRestoreRequested, cardMixerRestoreRun == nil, cardMixerLedger.isPending,
+              let tb = device as? ThunderboltDeviceConnection, cardMixerRestoreEligible(tb) else { return }
+        syncCardMixerToHardware()
+    }
+
+    /// Latch a driver instance as soon as it is seen, so an edit made before
+    /// the restore task runs cannot hide that the driver started empty.
+    @MainActor
+    func observeCardMixerInstance(_ link: LinkState?) {
+        cardMixerLedger.observe(link)
+    }
+
+    /// The Mixer page's recall-time sync leaves a mixer to D5 when D5 owns it
+    /// on the serving driver instance (see `CardMixerRestoreLedger.pageDefersSync`).
+    @MainActor
+    func mixerPageDefersToCardMixerRestore(mixer: Int) async -> Bool {
+        guard let tb = device as? ThunderboltDeviceConnection else { return false }
+        let link = await Task.detached(priority: .utility) { tb.linkState() }.value
+        guard device === tb else { return true }
+        observeCardMixerInstance(link)
+        return cardMixerLedger.pageDefersSync(mixer: mixer, instance: link?.mixerInstance,
+                                              eligible: cardMixerRestoreEligible(tb))
+    }
+
+    @MainActor
+    private func cardMixerRestoreEligible(_ tb: ThunderboltDeviceConnection) -> Bool {
+        device === tb && !twoUnitSleeping && !usesTwoUnitReplay
+            && connectionMode == .hardware && isHardwareInitialized
+            && unitAIdentity != nil && connectedUnit == nil && converterSystem == nil
+            && mixerPreferences.isWritable
+            && portSelection.selection?.channelCount != 64
+            && RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil
+    }
+
+    @MainActor
+    private func cardMixerRestoreEnvironment(_ tb: ThunderboltDeviceConnection) -> CardMixerRestoreRunner.Environment {
+        let deferral = replayDeferral
+        let edits = tb.mixerEdits
+        let layout = cardLayout
+        let preferencesKey = mixerPreferences.storageKey
+        return CardMixerRestoreRunner.Environment(
+            readLink: { await Task.detached(priority: .utility) { tb.linkState() }.value },
+            sleep: { try await Task.sleep(for: $0) },
+            decide: { [weak self] link in self?.cardMixerLedger.decide(link) ?? .unsupported },
+            complete: { [weak self] in self?.cardMixerLedger.complete() },
+            giveUp: { [weak self] in self?.cardMixerLedger.giveUp() },
+            isCurrent: { [weak self] in
+                guard let self else { return false }
+                return self.cardMixerRestoreEligible(tb) && self.cardLayout == layout
+                    && self.mixerPreferences.storageKey == preferencesKey
+            },
+            recallInFlight: { deferral.isInFlight() },
+            epoch: { deferral.currentEpoch() },
+            epochValid: { deferral.isValid($0) },
+            editGeneration: { edits.capture() },
+            beginAttempt: { [weak self] in self?.cardMixerLedger.beginAttempt() ?? false },
+            plan: { [weak self] mixers in
+                guard let self else { return [] }
+                return CardMixerReplay.plan(mixers: mixers, layout: layout, store: self.channelStateStore,
+                                            preferences: self.mixerPreferences)
+            },
+            replay: { plan, recovery, epoch, generation, progress in
+                let started = Date()
+                let transaction = Task.detached(priority: .utility) {
+                    try await tb.replayCardMixer(plan, layout: layout, recoveryCount: recovery,
+                        shouldContinue: { deferral.isValid(epoch) && edits.isCurrent(generation) },
+                        progress: progress)
+                }
+                try await withTaskCancellationHandler {
+                    try await transaction.value
+                } onCancel: {
+                    transaction.cancel()
+                }
+                print(String(format: "[Maestro] D5 card mixer replay: %d commands, %d card register writes, %.3f s",
+                             CardMixerReplay.commandCount(plan), CardMixerReplay.registerWrites(plan),
+                             Date().timeIntervalSince(started)))
+            })
+    }
+}
+
+/// The stored D5 task and the connection it was started for.
+struct CardMixerRestoreRun {
+    let token: UUID
+    let connection: ThunderboltDeviceConnection
+    let task: Task<Void, Never>
 }

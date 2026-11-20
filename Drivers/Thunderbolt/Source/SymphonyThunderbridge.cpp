@@ -386,6 +386,9 @@ struct SymphonyThunderbridge_IVars {
     // Until it has, a re-init must write Start()'s unity defaults, not the
     // all-zero cached state (which silenced outputs 1-2 after wake, 12:18).
     bool      mixerStateValid[2];
+    // D5: identifies this driver instance for the app (ReadMixerInstance).
+    // Set once in init(); never touches a register.
+    uint64_t  startNonce;
     // dext 117: last registers the watch sampled + re-init count, for ReadLinkState.
     uint32_t  lastWatchGcsr;
     uint32_t  lastWatchXlinkStatus;
@@ -5401,6 +5404,23 @@ kern_return_t SymphonyThunderbridge::ReadPhantomObservations(uint32_t *outWords)
     return kIOReturnSuccess;
 }
 
+// D5: the optional tail after the phantom words. Reads ivars only, no bus
+// access. The app restores its saved card mixer only on an instance that
+// reports no app mixer state (a fresh driver); an in-place recovery keeps
+// both flags, since ReprogramCardAfterReset recomputes from the cache.
+kern_return_t SymphonyThunderbridge::ReadMixerInstance(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    uint32_t flags = 0;
+    if (__atomic_load_n(&ivars->mixerStateValid[0], __ATOMIC_ACQUIRE)) flags |= kSymphonyMixerInstanceMixer1Valid;
+    if (__atomic_load_n(&ivars->mixerStateValid[1], __ATOMIC_ACQUIRE)) flags |= kSymphonyMixerInstanceMixer2Valid;
+    outWords[0] = kSymphonyMixerInstanceMagic;
+    outWords[1] = flags;
+    outWords[2] = static_cast<uint32_t>(ivars->startNonce);
+    outWords[3] = static_cast<uint32_t>(ivars->startNonce >> 32);
+    return kIOReturnSuccess;
+}
+
 // ── ReadPort2State (EXPERIMENT, 64ch stage 1) ────────────────────────────────
 // What the last port-2 probe found (SymphonyPort2StateOutput). Reads ivars
 // only, like ReadLinkState, whose 16 words are left exactly as they were. In a
@@ -5824,6 +5844,7 @@ bool SymphonyThunderbridge::init()
         return false;
     }
     ivars->convLock = IOLockAlloc();
+    ivars->startNonce = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) | 1u;
     STLOG("init()");
     return true;
 }
@@ -9448,7 +9469,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 // Recompute only the selected physical stereo mixer; the two
                 // logical banks must remain independent like the legacy PCIe
                 // driver.
-                ivars->mixerStateValid[mixerID - 1] = true;
+                __atomic_store_n(&ivars->mixerStateValid[mixerID - 1], true, __ATOMIC_RELEASE);
                 RecomputeCardMixer(ivars, ivars->pciDevice,
                                    ivars->barMemoryIndex, mixerID);
                 STLOG("Card mixer: mixer=%u ch=%u cmd=0x%02x val=%u → recomputed",

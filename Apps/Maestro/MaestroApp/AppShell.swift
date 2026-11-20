@@ -186,9 +186,6 @@ struct ContentView: View {
                 await appState.syncInputRoutingToHardware()
                 // Then the settings this Mac owns (peak hold, monitor mode, ...).
                 await appState.syncDeviceSettingsToHardware()
-                // D5: after a fresh ThunderBridge endpoint, restore the card
-                // mixer even when the Mixer page has never been opened.
-                await appState.syncCardMixerToHardware()
                 // And the names that follow them (prefix, optical format, Replaces).
                 await appState.refreshChannelNaming()
             }
@@ -204,6 +201,9 @@ struct ContentView: View {
             // when launch correctly classified the endpoint as disconnected.
             if appState.transportType == .thunderbolt {
                 appState.startThunderboltHealthCheck()
+                // D5: restore the card mixer on a fresh driver even when the
+                // Mixer page is never opened. A stored task: launch goes on.
+                if appState.connectionMode == .hardware { appState.syncCardMixerToHardware() }
             }
             // Connected over USB with a ThunderBridge also present: keep probing
             // it so a dext that comes back (same Core Audio ID, no device-list

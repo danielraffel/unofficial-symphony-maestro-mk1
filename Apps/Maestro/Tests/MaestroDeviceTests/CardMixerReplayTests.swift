@@ -5,15 +5,8 @@ import MaestroCore
 
 @Suite("D5 page-closed card mixer replay")
 struct CardMixerReplayTests {
-    @Test("Stable endpoint seam rejects recovery changes and 64-channel paths")
-    func stableEndpointAndCapabilityGate() {
-        func link(_ recovery: UInt32) -> LinkState {
-            LinkState(state: .up, clockPresent: true, ioRunning: true, irqCount: 0,
-                      recoveryCount: recovery, hwSuspended: false, linkConfigured: true,
-                      lastClockReg: 0, watchTicks: 0, audioWraps: 0)
-        }
-        #expect(CardMixerReplay.stableRecoveryCount((0..<21).map { _ in link(4) }) == 4)
-        #expect(CardMixerReplay.stableRecoveryCount((0..<20).map { _ in link(4) } + [link(5)]) == nil)
+    @Test("Capability gate keeps 64-channel and converter paths out")
+    func capabilityGate() {
         #expect(CardMixerReplay.supportsSingleUnit(channelCount: 32, converterFlags: 0))
         #expect(!CardMixerReplay.supportsSingleUnit(channelCount: 64, converterFlags: 0))
         #expect(!CardMixerReplay.supportsSingleUnit(channelCount: 32, converterFlags: 1))
@@ -194,47 +187,39 @@ extension CardMixerReplayTests {
 }
 
 extension CardMixerReplayTests {
-    @Test("An edit before, during, or just after replay stops every later write and unlock")
-    func editsInvalidateEveryBoundary() throws {
+    @Test("An edit before or during the replay stops every later write; no unlock is sent")
+    func editsInvalidateEveryBoundary() async throws {
         let writes: [ThunderboltPreset.Write] = (0..<4).map {
             .property(.init(selector: .mixerChannelLevel, element: UInt32(0x10000 + $0)), .float64(-18))
         }
-        for editAfter in 0...writes.count {
+        for editAfter in 0..<writes.count {
             let edits = MixerEditGeneration()
             let captured = edits.capture()
             var sent = 0
-            var unlocked = 0
             var refused = false
             if editAfter == 0 { edits.invalidate() }
             do {
-                try CardMixerReplay.run([Array(writes.prefix(2)), Array(writes.suffix(2))],
-                    validateMixer: {}, validate: {
+                try await CardMixerReplay.run([Array(writes.prefix(2)), Array(writes.suffix(2))],
+                    validateMixer: {}, send: { _ in
                         guard edits.isCurrent(captured) else { throw DeviceConnectionError.notConnected }
-                    }, send: { _ in
                         sent += 1
                         if sent == editAfter { edits.invalidate() }
-                    }, unlock: { unlocked += 1; return true }, delay: {})
+                    }, pace: {})
             } catch { refused = true }
             #expect(refused)
             #expect(sent == editAfter)
-            #expect(unlocked == 0)
         }
     }
 
-    @Test("Unchanged replay validates each mixer once, every write, and unlock")
-    func liveFenceAndGroupCounts() throws {
+    @Test("Unchanged replay validates each mixer once, paces between writes, sends no 0xDD")
+    func liveFenceAndGroupCounts() async throws {
         let write = ThunderboltPreset.Write.property(.init(selector: .mixerChannelLevel, element: 0x10000), .float64(-9))
-        var groups = 0, validations = 0, sends = 0, unlocks = 0
-        var paced = 0
-        try CardMixerReplay.run([[write, write], [], [write, write]],
-            validateMixer: { groups += 1 }, validate: { validations += 1 },
-            send: { _ in sends += 1 }, unlock: { unlocks += 1; return true },
-            pace: { paced += 1 }, delay: {})
+        var groups = 0, sends = 0, paced = 0
+        try await CardMixerReplay.run([[write, write], [], [write, write]],
+            validateMixer: { groups += 1 }, send: { _ in sends += 1 }, pace: { paced += 1 })
         #expect(groups == 2)
         #expect(sends == 4)
-        #expect(validations == 5)
         #expect(paced == 3)
-        #expect(unlocks == 1)
     }
 
     @Test("B7 also refuses unlock after a mixer edit")

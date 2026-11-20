@@ -789,9 +789,11 @@ struct MixerView: View {
         // Two-unit lifecycle recall belongs to AppState even with this page closed.
         if recalling && appState.usesTwoUnitReplay { return }
         guard let device = appState.device else { return }
-        if let tb = device as? ThunderboltDeviceConnection {
-            appState.mixerPageSyncedEndpoint = tb.endpointGeneration
-        }
+        // D5 owns a mixer the serving ThunderBridge driver started empty: the
+        // restore writes all of it, paced, after 5 s of stable link. This
+        // partial, unpaced copy would mark the driver's mixer as set and race
+        // it. A reset (recalling == false) is an edit and is always written.
+        if recalling, await appState.mixerPageDefersToCardMixerRestore(mixer: selectedMixer) { return }
         let loaded = editor
         let routingMode = appState.mixerPreferences.integer(forKey: "routingMode")
         for i in 0..<min(editor.loadedChannelCount, min(editor.channels.count, channelCount)) {

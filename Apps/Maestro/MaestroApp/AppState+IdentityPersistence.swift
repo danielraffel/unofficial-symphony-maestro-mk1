@@ -92,6 +92,9 @@ extension AppState {
         // decides whether this physical connection still needs its one restore.
         if unit == .a, unitAIdentityState == .pending { unitAIdentityState = .failed }
         if unit == .a { refreshSoftwareReturnMeterGains() }
+        // D5: launch or reconnect asked for the card mixer restore while this
+        // identity was pending.
+        if unit == .a, connection is ThunderboltDeviceConnection { rearmCardMixerRestoreAfterIdentity() }
         viewReloadToken = UUID()
         let preferences = mixerPreferences
         if unit == .a, let usb = connection as? XPCDeviceConnection,

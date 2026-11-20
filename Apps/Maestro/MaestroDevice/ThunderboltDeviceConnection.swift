@@ -19,8 +19,6 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     private static let mixerSoftwareReturnSourceCommand: UInt8 = 0xB4
 
     public let identifier: USBDeviceIdentifier
-    /// Changes whenever Maestro opens a fresh user-client connection.
-    public let endpointGeneration = UUID()
     public private(set) var isConnected: Bool = true
 
     /// CoreAudio device ID for the ThunderBridge dext audio device.
@@ -311,35 +309,43 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         })
     }
 
-    /// Restores the card mixer only for a fresh 32-channel endpoint. In-place
-    /// link recovery remains driver-owned.
+    /// D5: restores saved card mixer state on a driver instance that reported
+    /// none. Each write takes the serial owner on its own and re-checks the
+    /// live fences inside it; the pacing sleep runs outside it, so UI writes,
+    /// reads and recalls are never queued behind the restore. Card registers
+    /// only (0xB0-0xB4); nothing is sent to the unit.
     public func replayCardMixer(_ groups: [[ThunderboltPreset.Write]], layout: CardLayout,
                                 recoveryCount: UInt32,
-                                shouldContinue: @Sendable () -> Bool) throws {
-        try withPresetLock {
-            func validate() throws {
-                guard shouldContinue(), isConnected,
-                      converterState().map({ CardMixerReplay.supportsSingleUnit(channelCount: presetChannelCount(), converterFlags: $0.flags) }) == true,
-                      let boards = dextClient.readBoardTypes(),
-                      boards.primary == layout.slot1.rawValue, boards.secondary == layout.slot2.rawValue,
-                      let link = linkState(), link.state == .up, !link.hwSuspended,
-                      link.recoveryCount == recoveryCount else { throw DeviceConnectionError.notConnected }
-            }
-            try CardMixerReplay.run(groups,
-                validateMixer: { try checkPresetLayout(layout, recoveryCount: recoveryCount) },
-                validate: validate,
-                send: { write in
-                    switch write {
-                    case .property(let address, let value): try writeProperty(address, value: value)
-                    case .output(let route): try setCardOutputRoute(route)
-                    default: throw DeviceConnectionError.notConnected
-                    }
-                },
-                unlock: {
-                    try dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
-                    return try dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1) == Data([0])
-                }, delay: {})
+                                shouldContinue: @escaping @Sendable () -> Bool,
+                                progress: CardMixerReplay.Progress = .init(),
+                                gap: Duration = CardMixerReplay.commandGap) async throws {
+        func validate() throws {
+            guard shouldContinue(), isConnected,
+                  converterState().map({ CardMixerReplay.supportsSingleUnit(channelCount: presetChannelCount(), converterFlags: $0.flags) }) == true,
+                  let boards = dextClient.readBoardTypes(),
+                  boards.primary == layout.slot1.rawValue, boards.secondary == layout.slot2.rawValue,
+                  let link = linkState(), CardMixerReplay.isUsable(link),
+                  link.recoveryCount == recoveryCount else { throw DeviceConnectionError.notConnected }
         }
+        try await CardMixerReplay.run(groups,
+            validateMixer: {
+                try withPresetLock {
+                    try validate()
+                    try checkPresetLayout(layout, recoveryCount: recoveryCount)
+                }
+            },
+            send: { write in
+                try withPresetLock {
+                    try validate()
+                    guard case .property(let address, let value) = write,
+                          Self.mixerEditSelectors.contains(address.selector) else {
+                        throw DeviceConnectionError.notConnected
+                    }
+                    try writeProperty(address, value: value)
+                    progress.sent(address)
+                }
+            },
+            pace: { try await Task.sleep(for: gap) })
     }
 
     /// Both connections share this recursive serial owner, also used by UI
@@ -519,9 +525,15 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         throw DeviceConnectionError.unsupportedProperty(address.selector)
     }
 
+    /// Card mixer controls. A write of one of these from anywhere but D5 is a
+    /// mixer edit and makes D5 rebuild its plan from the store. Routing is not
+    /// mixer state and leaves a restore alone.
+    public static let mixerEditSelectors: Set<AudioPropertySelector> = [
+        .mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo, .mixerSoftwareReturnID,
+    ]
+
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
-        if [.mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo,
-            .mixerSoftwareReturnID, .routing].contains(address.selector) {
+        if Self.mixerEditSelectors.contains(address.selector) {
             mixerEdits.invalidate()
         }
         try await Task.detached { try self.writeProperty(address, value: value) }.value
