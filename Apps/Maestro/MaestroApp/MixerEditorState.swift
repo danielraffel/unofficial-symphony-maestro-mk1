@@ -25,7 +25,7 @@ struct MixerEditorState {
         let saved: [MixerChannelState]? = appState.channelStateStore.load(ChannelStateStore.mixerKey(selectedMixer))
         loadedChannelCount = saved?.count ?? 0
         loadedMaster = appState.mixerPreferences.object(forKey: "mixerMasterLevel_\(selectedMixer)") != nil
-        loadedReturn = appState.mixerPreferences.object(forKey: "mixerState_swReturn") != nil
+        loadedReturn = MixerStateSnapshot.hasSavedSoftwareReturn(mixer: selectedMixer, preferences: appState.mixerPreferences)
             || appState.mixerPreferences.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") != nil
         let snapshot = MixerStateSnapshot(
             channelCount: appState.cardLayout.mixerChannels.count,
@@ -62,9 +62,7 @@ struct MixerEditorState {
         }
         guard canEdit(appState) else { return }
         appState.saveMixerStrips(channels, mixer: selectedMixer)
-        if let data = try? JSONEncoder().encode(swReturnChannel) {
-            appState.mixerPreferences.set(data, forKey: "mixerState_swReturn")
-        }
+        MixerStateSnapshot.saveSoftwareReturn(swReturnChannel, mixer: selectedMixer, preferences: appState.mixerPreferences)
         appState.mixerPreferences.set(masterLevel, forKey: "mixerMasterLevel_\(selectedMixer)")
         appState.mixerPreferences.set(masterLeftLevel, forKey: "mixerMasterLeftLevel_\(selectedMixer)")
         appState.mixerPreferences.set(masterRightLevel, forKey: "mixerMasterRightLevel_\(selectedMixer)")

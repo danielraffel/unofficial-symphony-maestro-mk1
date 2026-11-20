@@ -630,6 +630,24 @@ struct USBSoftwareReturnMuteTests {
         #expect(transport.swReturnMuteCalls == cleared)
     }
 
+    @Test("a per-mixer mute sends the helper the combined mute, not this mixer's own")
+    func perMixerMuteUsesCombinedHelperMute() async throws {
+        let (conn, transport) = makeConn()
+        try await conn.setSoftwareReturnMute(Self.swReturn(.mixerChannelMute), muted: true, helperMuted: false)
+        let helper: [Bool] = [false]
+        #expect(transport.swReturnMuteCalls == helper)
+    }
+
+    @Test("a per-mixer mute that fails on the unit leaves the helper alone")
+    func perMixerMuteFailureLeavesHelper() async {
+        let (conn, transport) = makeConn()
+        transport.failWIndex = 32
+        await #expect(throws: DeviceConnectionError.self) {
+            try await conn.setSoftwareReturnMute(Self.swReturn(.mixerChannelMute), muted: true, helperMuted: true)
+        }
+        #expect(transport.swReturnMuteCalls.isEmpty)
+    }
+
     @Test("restore with a saved mute: one helper mute, after every unit write")
     func restoreKeepsSavedMute() async throws {
         let d = defaults("USBSoftwareReturnMuteTests.restore")

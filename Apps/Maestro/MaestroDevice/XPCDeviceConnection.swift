@@ -701,12 +701,22 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     ///
     /// Only mute is mirrored. Solo stays the unit's 0xB2 alone: the helper has
     /// no solo, and the unit's mixer is what silences the other strips.
+    /// A Software Return mute on one mixer: the unit's own mute for that
+    /// mixer, then the helper's single software mute set to `helperMuted`
+    /// (see `USBMixerSavedState.helperMuted`), not to this mixer's mute. Both
+    /// happen in one turn of the write sequence, as the mirrored mute does.
+    public func setSoftwareReturnMute(_ address: PropertyAddress, muted: Bool, helperMuted: Bool) async throws {
+        try await setProperty(address, value: .bool(muted), mirrorSoftwareReturnMute: false, helperMuted: helperMuted)
+    }
+
     private func setProperty(_ address: PropertyAddress, value: PropertyValue,
-                             mirrorSoftwareReturnMute: Bool) async throws {
+                             mirrorSoftwareReturnMute: Bool, helperMuted: Bool? = nil) async throws {
         await sequenceOwner.acquire()
         do {
             try await setOwnedProperty(address, value: value)
-            if mirrorSoftwareReturnMute, let muted = Self.softwareReturnMute(address, value) {
+            if let helperMuted {
+                transport.setSwReturnMute(helperMuted)
+            } else if mirrorSoftwareReturnMute, let muted = Self.softwareReturnMute(address, value) {
                 transport.setSwReturnMute(muted)
             }
             await sequenceOwner.release()

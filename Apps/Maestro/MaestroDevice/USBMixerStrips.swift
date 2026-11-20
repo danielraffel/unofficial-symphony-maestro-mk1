@@ -147,8 +147,8 @@ public enum MixerPairLink {
             defaults.set(true, forKey: "mixerMasterFadersLinked")
         }
         if defaults.object(forKey: "mixerSWReturnFadersLinked") as? Bool == false {
-            let saved = MixerStateSnapshot.savedSoftwareReturn(preferences: defaults).level
             for m in 0..<2 {
+                let saved = MixerStateSnapshot.savedSoftwareReturn(mixer: m, preferences: defaults).level
                 let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(m)") as? Double ?? saved
                 let right = defaults.object(forKey: "mixerSWReturnRightLevel_\(m)") as? Double ?? saved
                 let level = min(left, right)
@@ -182,26 +182,52 @@ public struct USBMixerSavedState: Equatable, Sendable {
         public var softwareReturnLeft: Double
         public var softwareReturnRight: Double
         public var softwareReturnSource: UInt32
+        /// This mixer's own Software Return mute and solo (level unused here).
+        public var softwareReturn: MixerChannelState
+
+        public init(masterLevel: Double, masterLeft: Double, masterRight: Double,
+                    softwareReturnLeft: Double, softwareReturnRight: Double, softwareReturnSource: UInt32,
+                    softwareReturn: MixerChannelState = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)) {
+            self.masterLevel = masterLevel; self.masterLeft = masterLeft; self.masterRight = masterRight
+            self.softwareReturnLeft = softwareReturnLeft; self.softwareReturnRight = softwareReturnRight
+            self.softwareReturnSource = softwareReturnSource; self.softwareReturn = softwareReturn
+        }
     }
+
+    /// Whether the helper's one software mute should be on. The helper renders
+    /// "Maestro USB" into USB playback 1-2 before either mixer, so it may only
+    /// mute when every mixer that takes that pair is muted; a mixer on another
+    /// source does not hear the helper at all.
+    public var helperMuted: Bool {
+        Self.helperMuted(mixes.map { (source: $0.softwareReturnSource, muted: $0.softwareReturn.isMuted) })
+    }
+
+    public static func helperMuted(_ mixers: [(source: UInt32, muted: Bool)]) -> Bool {
+        let onDefaultPair = mixers.filter { $0.source == 0 }
+        return !onDefaultPair.isEmpty && onDefaultPair.allSatisfy { $0.muted }
+    }
+
+    /// The one Software Return pan (shared by both mixers).
+    public var softwareReturnPan: Double { mixes.first?.softwareReturn.pan ?? 0 }
 
     public var mixes: [Mix]
     public var masterLinked: Bool
     public var softwareReturnLinked: Bool
-    /// Level (unused here), pan, mute and solo are shared by both mixers.
-    public var softwareReturn: MixerChannelState
+
 
     /// Read the keys the page writes: `mixerMasterLevel_<n>`,
     /// `mixerMasterLeftLevel_<n>`/`RightLevel_<n>`, `mixerMasterFadersLinked`,
     /// `mixerSWReturnLeftLevel_<n>`/`RightLevel_<n>`, `mixerSWReturnFadersLinked`,
-    /// `mixerState_swReturn`, `mixerSoftwareReturnSource_<n>`. Missing keys
+    /// `mixerState_swReturn_<n>` (or the older shared `mixerState_swReturn`),
+    /// `mixerSoftwareReturnSource_<n>`. Missing keys
     /// default exactly as the page does.
     public static func load(defaults: UserDefaults) -> USBMixerSavedState {
         load(preferences: MixerPreferences(legacyDefaults: defaults))
     }
 
     public static func load(preferences defaults: MixerPreferences) -> USBMixerSavedState {
-        let swReturn = MixerStateSnapshot.savedSoftwareReturn(preferences: defaults)
         let mixes = (0..<2).map { m -> Mix in
+            let swReturn = MixerStateSnapshot.savedSoftwareReturn(mixer: m, preferences: defaults)
             let master = MixerStateSnapshot.savedMasterLevel(mixer: m, preferences: defaults)
             return Mix(
                 masterLevel: master,
@@ -209,13 +235,13 @@ public struct USBMixerSavedState: Equatable, Sendable {
                 masterRight: defaults.object(forKey: "mixerMasterRightLevel_\(m)") as? Double ?? master,
                 softwareReturnLeft: defaults.object(forKey: "mixerSWReturnLeftLevel_\(m)") as? Double ?? swReturn.level,
                 softwareReturnRight: defaults.object(forKey: "mixerSWReturnRightLevel_\(m)") as? Double ?? swReturn.level,
-                softwareReturnSource: UInt32(clamping: defaults.integer(forKey: "mixerSoftwareReturnSource_\(m)")))
+                softwareReturnSource: UInt32(clamping: defaults.integer(forKey: "mixerSoftwareReturnSource_\(m)")),
+                softwareReturn: swReturn)
         }
         return USBMixerSavedState(
             mixes: mixes,
             masterLinked: defaults.object(forKey: "mixerMasterFadersLinked") as? Bool ?? true,
-            softwareReturnLinked: defaults.object(forKey: "mixerSWReturnFadersLinked") as? Bool ?? true,
-            softwareReturn: swReturn)
+            softwareReturnLinked: defaults.object(forKey: "mixerSWReturnFadersLinked") as? Bool ?? true)
     }
 }
 
@@ -258,13 +284,13 @@ public enum USBMixerRestorePlan {
                     savedLinked: state.softwareReturnLinked, linkedLevel: mix.softwareReturnLeft))))
             steps.append(.hardware(
                 at(.mixerChannelMute, USBMixerStrip.softwareReturn),
-                .bool(state.softwareReturn.isMuted)))
+                .bool(mix.softwareReturn.isMuted)))
             steps.append(.hardware(
                 at(.mixerChannelSolo, USBMixerStrip.softwareReturn),
-                .bool(state.softwareReturn.isSoloed)))
+                .bool(mix.softwareReturn.isSoloed)))
         }
-        steps.append(.helperNeutral(muted: state.softwareReturn.isMuted))
-        steps.append(.helperPan(state.softwareReturn.pan))
+        steps.append(.helperNeutral(muted: state.helperMuted))
+        steps.append(.helperPan(state.softwareReturnPan))
         // Same rule as the Mixer page: on when either mixer uses the default pair.
         steps.append(.helperProcessing(state.mixes.contains { $0.softwareReturnSource == 0 }))
         return steps

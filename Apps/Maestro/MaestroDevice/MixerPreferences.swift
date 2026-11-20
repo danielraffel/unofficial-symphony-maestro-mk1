@@ -18,7 +18,8 @@ public struct MixerPreferences: @unchecked Sendable {
     public static let legacyKeys = ["mixerState_swReturn", "routingMode",
         "mixerMasterFadersLinked", "mixerSWReturnFadersLinked"] + (0..<2).flatMap { mixer in
         ["mixerMasterLevel", "mixerMasterLeftLevel", "mixerMasterRightLevel",
-         "mixerSWReturnLeftLevel", "mixerSWReturnRightLevel", "mixerSoftwareReturnSource"].map { "\($0)_\(mixer)" }
+         "mixerSWReturnLeftLevel", "mixerSWReturnRightLevel", "mixerSoftwareReturnSource",
+         "mixerState_swReturn"].map { "\($0)_\(mixer)" }
     }
 
     /// Legacy adapter for old-format tools and read-only failed-identity restore.

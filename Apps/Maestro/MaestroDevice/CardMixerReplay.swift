@@ -91,8 +91,8 @@ public enum CardMixerReplay {
     /// (MixerViews.swift syncMixerToHardware): per-mixer keys only, strips only
     /// for the saved count, Master and the return only when their keys exist,
     /// and a held Software Return source (8 or more at 32 channels) not sent.
-    /// The shared `mixerState_swReturn` strip does not make a mixer "saved";
-    /// it only supplies the return's pan, mute and solo once the mixer's own
+    /// The mixer's Software Return strip does not make a mixer "saved";
+    /// it only supplies the return's mute and solo once the mixer's own
     /// return level was saved (MixerEditorState.save writes both together).
     public static func savedWrites(mixer: Int, layout: CardLayout, store: ChannelStateStore,
                                    preferences: MixerPreferences? = nil,
@@ -130,11 +130,11 @@ public enum CardMixerReplay {
         if let left {
             // 1000 sets both sides; the right fader follows on its own ID.
             put(.mixerChannelLevel, .float64(left), 1000)
-            if defaults.object(forKey: "mixerState_swReturn") != nil {
-                let shared = MixerStateSnapshot.savedSoftwareReturn(preferences: defaults)
-                put(.mixerChannelPan, .float64(shared.pan), 1000)
-                put(.mixerChannelMute, .bool(shared.isMuted), 1000)
-                put(.mixerChannelSolo, .bool(shared.isSoloed), 1000)
+            if MixerStateSnapshot.hasSavedSoftwareReturn(mixer: mixer, preferences: defaults) {
+                let own = MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: defaults)
+                put(.mixerChannelPan, .float64(own.pan), 1000)
+                put(.mixerChannelMute, .bool(own.isMuted), 1000)
+                put(.mixerChannelSolo, .bool(own.isSoloed), 1000)
             }
         }
         // SymphonyPCIeCardMixer uses a distinct right-side return ID.
