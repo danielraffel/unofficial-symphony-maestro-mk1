@@ -7,6 +7,31 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.12</title>
+      <pubDate>Fri, 20 Nov 2026 19:48:17 GMT</pubDate>
+      <sparkle:version>0.9.12</sparkle:version>
+      <sparkle:shortVersionString>0.9.12</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.12</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta makes the warning about Apogee's original drivers accurate when macOS has kept its own copy of them. It contains everything in 0.9.11.
+
+Thanks to the tester who found Apogee's kernel extensions still loading from a folder Maestro wasn't checking.
+
+### Fixed
+
+- **Maestro now finds Apogee's original kernel extensions in /Library/StagedExtensions,** where macOS can keep its own copy after the originals are gone. Before, Maestro saw only that one was still loaded and said a restart would finish removing it, which wasn't true when a copy there loaded it again. The warning in Device Settings now lists the copy and says what to do; the installer finds it too.
+- When the warning says a restart is all that's left and it is still there after restarting, it now asks for a Diagnostics report.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.11 (0.11.13, build 139), so there is no need to reconnect anything after updating.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.12/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="ug2e1qjfz/Pi0clHJNb252X08TcvN3OMRbQe1keuOZ7ZcJ9U9e28XXwP8Q/3VBqQbIVsow/mzo/Z5ibCszp9Cw==" length="5425175" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.11</title>
       <pubDate>Fri, 20 Nov 2026 18:43:28 GMT</pubDate>
       <sparkle:version>0.9.11</sparkle:version>
@@ -1049,6 +1074,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: XFYybTfHfM518ndb27WL/+acWXv4tV/pA8tkWfq5kdoxuIulmNPakdCaJ8BCxqf8URlUZKDYV3UKgkNXYn05DA==
-length: 104174
+edSignature: 4isunUTUww80HxyRp8V7vFiCOznN9NNB0LBMUiNsz+5OM03CusVGHY1LhWlQsvlvf287i4urrEE0EjkJmeJhBw==
+length: 106142
 -->
