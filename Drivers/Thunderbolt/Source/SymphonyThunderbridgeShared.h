@@ -373,3 +373,13 @@ typedef struct {
 // Optional selector-5 output tail: last HAL OFF timestamp for A0..7, B0..7.
 // No hardware reads; old 64-byte clients retain the original ABI.
 #define kSymphonyPhantomObservationWords 48u
+
+// Optional selector-5 output tail after the phantom words (D5): which driver
+// instance answers and whether the app has set each card mixer on it. Host
+// only, no register access. Words 48-51: magic, flags, start nonce lo/hi.
+// Old clients asking for 16 or 48 words receive exactly what they did before;
+// an old driver refuses 52 and the app treats the instance as unknown.
+#define kSymphonyMixerInstanceWords       52u
+#define kSymphonyMixerInstanceMagic       0x4D495853u  // 'MIXS'
+#define kSymphonyMixerInstanceMixer1Valid 0x00000001u  // mixerStateValid[0]
+#define kSymphonyMixerInstanceMixer2Valid 0x00000002u  // mixerStateValid[1]

@@ -28,6 +28,7 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 ### Fixes
 
 - Device Settings › Info shows “Unknown” for unreadable firmware components and no longer labels the USB daemon’s software version as hardware firmware. Port errors use the original Maestro wording.
+- **Over ThunderBridge, Device Settings › Info now shows the Symphony I/O’s firmware, FPGA and each card’s FPGA and hardware versions,** read from the unit when the page opens, as Apogee’s software read them. It also shows the unit’s Hardware ID. The XMOS row is gone there, because it repeated the firmware version. Device Model, Mode and Channel Count no longer repeat the device name, and with one unit at 32 channels Port 2 is one line, “not in use”. The About box copy lists the device first (name, connection, hardware ID, firmware, FPGA, cards, unit B, port 2), then the software, with the app path last.
 
 - Keep each Symphony I/O’s speaker controls and front-panel changes on that unit when Mac volume keys target the other unit. Switching the keyboard-volume target, or losing unit B, restores the selected unit’s own level and mute without a volume jump. Monitor selection no longer waits for the hardware on the app’s main thread.
 

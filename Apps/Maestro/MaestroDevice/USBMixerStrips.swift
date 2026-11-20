@@ -224,8 +224,10 @@ public enum USBMixerRestorePlan {
     public enum Step: Equatable, Sendable {
         /// A write to the unit's mixer, addressed with the real strip numbers.
         case hardware(PropertyAddress, PropertyValue)
-        /// The helper's software stage to 0 dB, unmuted.
-        case helperNeutral
+        /// The helper's software level to 0 dB, with the saved Software
+        /// Return mute (the helper renders "Maestro USB", so a mute applies
+        /// there as well as on the unit). Solo has no helper step.
+        case helperNeutral(muted: Bool)
         case helperPan(Double)
         case helperProcessing(Bool)
     }
@@ -261,7 +263,7 @@ public enum USBMixerRestorePlan {
                 at(.mixerChannelSolo, USBMixerStrip.softwareReturn),
                 .bool(state.softwareReturn.isSoloed)))
         }
-        steps.append(.helperNeutral)
+        steps.append(.helperNeutral(muted: state.softwareReturn.isMuted))
         steps.append(.helperPan(state.softwareReturn.pan))
         // Same rule as the Mixer page: on when either mixer uses the default pair.
         steps.append(.helperProcessing(state.mixes.contains { $0.softwareReturnSource == 0 }))

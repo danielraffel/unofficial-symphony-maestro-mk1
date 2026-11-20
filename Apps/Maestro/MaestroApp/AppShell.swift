@@ -195,6 +195,9 @@ struct ContentView: View {
             // when launch correctly classified the endpoint as disconnected.
             if appState.transportType == .thunderbolt {
                 appState.startThunderboltHealthCheck()
+                // D5: restore the card mixer on a fresh driver even when the
+                // Mixer page is never opened. A stored task: launch goes on.
+                if appState.connectionMode == .hardware { appState.syncCardMixerToHardware() }
             }
             // Connected over USB with a ThunderBridge also present: keep probing
             // it so a dext that comes back (same Core Audio ID, no device-list
@@ -400,7 +403,14 @@ struct SidebarView: View {
 
             Section("Controls") {
                 ForEach(NavigationArea.allCases) { area in
-                    Label(area.rawValue, systemImage: area.systemImage)
+                    // Every icon gets the same centred slot so the labels line up;
+                    // hifireceiver is much wider than the other symbols.
+                    Label {
+                        Text(area.rawValue)
+                    } icon: {
+                        Image(systemName: area.systemImage)
+                            .frame(width: 26, alignment: .center)
+                    }
                         .tag(area)
                 }
             }

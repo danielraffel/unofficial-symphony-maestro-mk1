@@ -310,6 +310,47 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         })
     }
 
+    /// D5: restores saved card mixer state on a driver instance that reported
+    /// none. Each write takes the serial owner on its own and re-checks the
+    /// live fences inside it; the pacing sleep runs outside it, so UI writes,
+    /// reads and recalls are never queued behind the restore. Card registers
+    /// only (0xB0-0xB4); nothing is sent to the unit.
+    public func replayCardMixer(_ groups: [[ThunderboltPreset.Write]], layout: CardLayout,
+                                recoveryCount: UInt32,
+                                nonce: UInt64? = nil,
+                                shouldContinue: @escaping @Sendable () -> Bool,
+                                progress: CardMixerReplay.Progress = .init(),
+                                gap: Duration = CardMixerReplay.commandGap) async throws {
+        func validate() throws {
+            guard shouldContinue(), isConnected,
+                  converterState().map({ CardMixerReplay.supportsSingleUnit(channelCount: presetChannelCount(), converterFlags: $0.flags) }) == true,
+                  let boards = dextClient.readBoardTypes(),
+                  boards.primary == layout.slot1.rawValue, boards.secondary == layout.slot2.rawValue,
+                  let link = linkState(), CardMixerReplay.isUsable(link),
+                  link.recoveryCount == recoveryCount,
+                  nonce == nil || link.mixerInstance?.nonce == nonce else { throw DeviceConnectionError.notConnected }
+        }
+        try await CardMixerReplay.run(groups,
+            validateMixer: {
+                try withPresetLock {
+                    try validate()
+                    try checkPresetLayout(layout, recoveryCount: recoveryCount)
+                }
+            },
+            send: { write in
+                try withPresetLock {
+                    try validate()
+                    guard case .property(let address, let value) = write,
+                          Self.mixerEditSelectors.contains(address.selector) else {
+                        throw DeviceConnectionError.notConnected
+                    }
+                    try writeProperty(address, value: value)
+                    progress.sent(address)
+                }
+            },
+            pace: { try await Task.sleep(for: gap) })
+    }
+
     /// Both connections share this recursive serial owner, also used by UI
     /// writes and preset recall. Never hold it across an async suspension.
     public func replayTwoUnits(_ plan: TwoUnitReplay, unitB: ThunderboltUnitBConnection,
@@ -382,6 +423,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     public func getProperty(_ address: PropertyAddress) async throws -> PropertyValue {
         try await Task.detached { try self.readProperty(address) }.value
     }
+
+    public let mixerEdits = MixerEditGeneration()
 
     private func readProperty(_ address: PropertyAddress) throws -> PropertyValue {
         presetLock.lock()
@@ -485,7 +528,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         throw DeviceConnectionError.unsupportedProperty(address.selector)
     }
 
+    /// Card mixer controls. A write of one of these from anywhere but D5 is a
+    /// mixer edit and makes D5 rebuild its plan from the store. Routing is not
+    /// mixer state and leaves a restore alone.
+    public static let mixerEditSelectors: Set<AudioPropertySelector> = [
+        .mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo, .mixerSoftwareReturnID,
+    ]
+
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
+        if Self.mixerEditSelectors.contains(address.selector) {
+            mixerEdits.invalidate()
+        }
         try await Task.detached { try self.writeProperty(address, value: value) }.value
     }
 
@@ -946,6 +999,35 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                   data.count >= 3 else { return nil }
             return data[0]
         }.value
+    }
+
+    /// Unit A's component versions (0xA0, `SymphonyVersionComponent` as nValue),
+    /// through the driver's general vendor read, for Device Settings › Info only.
+    /// Off the caller's thread, one read at a time; each is bounded by the
+    /// driver's vendor-read timeout. Before every read: still connected, the
+    /// cable carries Symphony I/Os only (converters get no Symphony vendor
+    /// reads), and the link is up with hardware access not suspended (sleep,
+    /// recovery). The first refusal or failure ends the attempt.
+    public func readSymphonyVersions(_ components: [SymphonyVersionComponent]) async -> SymphonyVersions {
+        guard isConnected, dextClient.isConnected, !components.isEmpty else { return SymphonyVersions() }
+        let client = dextClient
+        return await Task.detached(priority: .utility) { [self] in
+            SymphonyVersions.read(components, allowed: {
+                guard self.isConnected, client.isConnected,
+                      let converters = client.readConverterState(), converters.flags & 3 == 0,
+                      let link = client.readLinkState() else { return false }
+                return Self.versionReadAllowed(link: link)
+            }, read: { component in
+                try client.readVendorCommand(command: SymphonyIOCommand.symphonyIOVersion.rawValue,
+                                             value: component.rawValue,
+                                             responseLength: SymphonyVersionReply.byteCount)
+            })
+        }.value
+    }
+
+    /// A version read waits for a link that is up and not suspended.
+    static func versionReadAllowed(link: LinkState) -> Bool {
+        link.state == .up && !link.hwSuspended
     }
 
     /// SymphonyIOCommands_Prefix: the unit's peripheral prefix letter, one byte.

@@ -134,6 +134,13 @@ final class AppState: @unchecked Sendable {
     var routingModeTaskMode: Int?
     var usbMixerLifecycleRestoreGeneration: UUID?
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
+    /// D5: which mixers are restored on which driver instance (keyed by the
+    /// driver's own nonce), the stored restore task, and whether launch or
+    /// reconnect asked for it while unit A's identity was still pending.
+    @ObservationIgnored var cardMixerLedger = CardMixerRestoreLedger()
+    @ObservationIgnored var cardMixerRestoreRun: CardMixerRestoreRun?
+    @ObservationIgnored var cardMixerRestoreAwaitingIdentity = false
+    @ObservationIgnored var cardMixerRestoreRequested = false
 
     func retryFailedIdentityOnRecovery() {
         guard unitAIdentityState == .failed, !identityRecoveryRetried,
@@ -178,6 +185,11 @@ final class AppState: @unchecked Sendable {
                     wakeStableRecoveryCount = nil
                     wakeStableProbeCount = 0
                 }
+                // D5: the restore belongs to the connection it started on.
+                cardMixerRestoreRun?.task.cancel()
+                cardMixerRestoreRun = nil
+                cardMixerRestoreAwaitingIdentity = false
+                cardMixerRestoreRequested = false
                 identifyA.reset()
                 identifyB.reset()
                 invalidateUnitAIdentity()
@@ -522,6 +534,9 @@ final class AppState: @unchecked Sendable {
                     continue
                 }
                 self.applyPhantomObservations(tb.lastLinkState)
+                // D5: latch the driver instance from the read just made, before
+                // anything could edit a mixer on it.
+                self.observeCardMixerInstance(tb.lastLinkState)
                 let audioRunning = tb.isAudioRunning
                 let healthy = verdict.isLive
                 self.updateThunderboltPortLink(tb.lastLinkState?.state.portStatusLink ?? .other)
@@ -563,6 +578,8 @@ final class AppState: @unchecked Sendable {
                         if let seen = self.thunderboltSeenRecoveryCount, count != seen,
                            self.connectionMode == .hardware {
                             print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying input routing")
+                            // D5 never runs across an in-place recovery.
+                            self.cancelCardMixerRestore()
                             // The driver lays its capture table out from the
                             // cards it read during the recovery (a Symphony off
                             // at Start, or a card swapped while off): read them
@@ -594,6 +611,8 @@ final class AppState: @unchecked Sendable {
                     // channels start, and forgotten when port 2 stops.
                     await self.refreshUnitBOffMain(tb)
                     await self.replayUnitBSettings()
+                    // D5: a restore still pending on this driver instance.
+                    self.rearmCardMixerRestoreIfPending()
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
                         Self.tbLog.notice("probe recovered after \(failures) failures")
@@ -620,6 +639,7 @@ final class AppState: @unchecked Sendable {
                     if failures >= threshold && self.connectionMode == .hardware && !swapGraceActive {
                         print("[Maestro] ThunderBridge health probe failed \(failures) times — marking hardware disconnected")
                         Self.tbLog.notice("marking Symphony disconnected after \(failures) failed probes (\(verdict.label, privacy: .public))")
+                        self.cancelCardMixerRestore()
                         self.markHardwareDisconnected()
                         // A powered-off Symphony can leave the PCI/Core Audio
                         // service registered while its existing IOUserClient
@@ -723,6 +743,10 @@ final class AppState: @unchecked Sendable {
     /// nil until Device Settings has been opened once, and the About box falls back to what
     /// this object knows on its own.
     var deviceInfoSnapshot: DeviceInfoReport?
+    /// ThunderBridge component versions a Device Settings load read, kept for
+    /// the connection and identity generation they were read on. See
+    /// AppState+DeviceVersions.swift.
+    @ObservationIgnored var deviceInfoVersionsCache: DeviceInfoVersionsCache?
 
     /// What `sysextd` reports about the ThunderBridge driver extension, fetched once at
     /// launch. Empty means nothing is registered; nil means the query itself failed,
@@ -1381,6 +1405,15 @@ final class AppState: @unchecked Sendable {
                   + (model.notice.map { " (\($0))" } ?? ""))
         }
         if was64, model.selection?.channelCount != 64 {
+            // No card mixer replay here (D5 runs only on a fresh driver). The
+            // driver keeps both mixers across 64 -> 32: DisablePort2Audio,
+            // Port2AudioFallBack and LeaveTwoUnit leave mixer[2] and
+            // mixerStateValid alone (LeaveTwoUnit resets only a Software Return
+            // source above 7, as this app's display does), and the coefficient
+            // table is cleared only at Start and card re-init
+            // (SymphonyThunderbridge.cpp, step 21d and ReprogramCardAfterReset).
+            // Known driver gap: a unit-B strip soloed at 64 keeps unit A's
+            // inputs muted until the next mixer command recomputes at 32.
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(100))
                 guard let self, self.portSelection.selection?.channelCount == 32 else { return }
@@ -2916,6 +2949,8 @@ final class AppState: @unchecked Sendable {
                 startMeterPolling()
                 if transportType == .thunderbolt {
                     startThunderboltHealthCheck()
+                    // D5: a stored task; this pipeline does not wait for it.
+                    syncCardMixerToHardware()
                 }
 
                 // Every value the panels are showing was read over the connection we
