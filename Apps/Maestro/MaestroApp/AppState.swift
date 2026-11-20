@@ -752,8 +752,11 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored
     var originalApogeeDriverCheckInFlight = false
     /// The clock source the connection reports now, as a `ClockSourceMenu`
-    /// key, kept current by the status bar from Core Audio's change
-    /// notifications (no polling) and by Device Settings when it writes one.
+    /// key, kept current by the front panel sync from the reading it already
+    /// takes of the unit (the unit's own answer, no extra traffic) and by
+    /// Device Settings when it writes one. A Core Audio change notification
+    /// was tried first and showed the old source: it arrives before the unit
+    /// reports the change, and nothing re-read it afterwards (2026-11-20).
     /// It follows changes
     /// made outside Maestro (Audio MIDI Setup, a DAW) and by the driver, which
     /// the status bar and the Clock Source menu both showed stale before:
@@ -3767,6 +3770,7 @@ final class AppState: @unchecked Sendable {
                     interval = Self.thunderboltFrontPanelSyncInterval
                 } else {
                     sync.reset(); syncB.reset()
+                    await MainActor.run { if self.reportedClockSource != nil { self.reportedClockSource = nil } }
                     try? await Task.sleep(for: .seconds(1))
                     continue
                 }
@@ -3778,6 +3782,15 @@ final class AppState: @unchecked Sendable {
                 // The connection may have been replaced while the read was out.
                 if device === self.device {
                     (device as? XPCDeviceConnection)?.seedClockSource(reported: update.clockSource)
+                    // The unit's own answer for its clock source came with this
+                    // read (no extra traffic): show it. Asked of the connection
+                    // rather than taken from `update`, so a board input keeps
+                    // its row and USB's cached value is used.
+                    let reported = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32
+                    let key = reported.flatMap { ClockSourceMenu.decode($0) != nil ? $0 : nil }
+                    await MainActor.run {
+                        if device === self.device, self.reportedClockSource != key { self.reportedClockSource = key }
+                    }
                     for change in sync.changes(for: update) {
                         guard device === self.device, !Task.isCancelled else { break }
                         await self.applyFrontPanelChange(change)

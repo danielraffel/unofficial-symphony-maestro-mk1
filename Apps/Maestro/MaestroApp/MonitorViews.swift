@@ -109,7 +109,6 @@ struct StatusBarView: View {
         .padding(.trailing, 20)
         .padding(.vertical, 6)
         .background(.bar)
-        .task(id: statusSourceID) { await followClockSource() }
         .task(id: statusSourceID) {
             await observeStatus()
         }
@@ -142,47 +141,12 @@ struct StatusBarView: View {
                        reload: appState.viewReloadToken)
     }
 
-    /// The reported source when the connection can say; otherwise what the
-    /// bar showed before ("Internal" once connected, a dash while not).
+    /// The source the unit reports (`AppState.reportedClockSource`, from the
+    /// front panel sync); otherwise what the bar showed before ("Internal" once
+    /// connected, a dash while not).
     private var shownClockSourceName: String {
         guard clockSourceDisplayName != "—" else { return clockSourceDisplayName }
         return appState.reportedClockSource.flatMap(ClockSourceMenu.statusName(for:)) ?? clockSourceDisplayName
-    }
-
-    /// Keep `AppState.reportedClockSource` current, without polling.
-    ///
-    /// On ThunderBridge and PCIe the clock source is a Core Audio property of
-    /// the driver's device, so Core Audio pushes every change, whoever made it
-    /// (`ClockSourceObservation`); each push is followed by one read of the
-    /// connection, which costs no hardware traffic. Other transports cannot
-    /// report a change made elsewhere, so they are read once here and updated
-    /// when Maestro writes the source (Device Settings).
-    private func followClockSource() async {
-        appState.reportedClockSource = nil
-        guard appState.isHardwareInitialized, appState.connectionMode != .disconnected,
-              let device = appState.device,
-              // The legacy daemon connection would query its socket for a read.
-              !(device is CoreAudioDeviceConnection) else { return }
-        if device is ThunderboltDeviceConnection, let conn = statusConnection,
-           let observation = try? conn.observeClockSource() {
-            defer { observation.stop() }
-            for await _ in observation.changes {
-                guard !Task.isCancelled else { return }
-                await readClockSource(from: device)
-            }
-        } else {
-            await readClockSource(from: device)
-        }
-    }
-
-    private func readClockSource(from device: any DeviceConnection) async {
-        guard !appState.convertersIdentified,
-              let key = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32,
-              ClockSourceMenu.decode(key) != nil else {
-            if appState.reportedClockSource != nil { appState.reportedClockSource = nil }
-            return
-        }
-        if appState.reportedClockSource != key { appState.reportedClockSource = key }
     }
 
     private var statusConnection: CoreAudioDeviceConnection? {
