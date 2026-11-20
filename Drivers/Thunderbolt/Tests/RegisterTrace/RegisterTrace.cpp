@@ -3889,6 +3889,7 @@ static void RunMicPreDAWControls()
     pa = Port();
     drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
     Attach(pa, Port::Symphony);          // the new unit reads Variable (0) everywhere
+    pa.stored[key(0x60, 0x80000001u)] = {0xFF};   // except MicPre 2, whose read is invalid
     drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
     PastMicPreSettle();
     CHECK(ReadsSince(pa, 0, 0x60) >= 1, "B12: the MicPre types are read again after the recovery");
@@ -3897,6 +3898,18 @@ static void RunMicPreDAWControls()
     drv->ReadMicPreEdits(edits);
     CHECK(edits[0] == unreadLo && edits[1] == unreadHi && edits[2] == unreadFields,
           "B12: a link recovery keeps the unread DAW edits");
+    // W2: MicPre 2's type is unknown after the recovery. A DAW gain, then a
+    // front-panel gain the driver cannot place on a stage: the DAW gain bit
+    // must still go, or the stale gain comes back to the app (N2).
+    CHECK(drv->RequestMicGain(1, 50) == kIOReturnSuccess, "B12: DAW gain on the unknown-type MicPre 2");
+    HostPump();
+    drv->ReadMicPreEdits(edits);
+    CHECK((edits[3 + 2] & kMicPreEditGainValid) && pa.stored[key(0xC3, 1)] == std::vector<uint8_t>({50}),
+          "B12: DAW gain on an unknown type goes to the Mic stage and is recorded");
+    drv->PublishObservedMicGain(0, 1, 0, 20);
+    drv->ReadMicPreEdits(edits);
+    CHECK(!(edits[3 + 2] & kMicPreEditGainValid),
+          "B12: a front-panel gain clears the DAW gain bit even with the type unknown");
     Finish(o, r);
 }
 #endif

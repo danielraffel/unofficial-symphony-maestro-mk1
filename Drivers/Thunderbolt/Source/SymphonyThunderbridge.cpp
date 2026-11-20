@@ -9498,13 +9498,14 @@ kern_return_t SymphonyThunderbridge::PublishObservedMicGain(
             (port && (!ivars->unitBConfigured || !CardMixerUnitBActive(ivars)))) return;
         if (port ? (!ivars->unitBBoardValid[1] || ivars->unitBBoardType[1] != kSIOOptionBoard_MicPre8)
                  : channel >= ivars->numMicChannels) return;
+        // The front panel moved this gain: an unread DAW gain is now stale,
+        // whether or not the driver knows the stage (a failed 0x60 read).
+        ClearHalMicPreEdit(ivars, port, channel, kMicPreEditGainValid);
         const bool known = port ? ivars->unitBMicPreTypeKnown[channel] : ivars->micPreTypeKnown[channel];
         const bool instrument = port ? ivars->unitBMicPreInstrument[channel] : ivars->micPreInstrument[channel];
         if (!known || lane != (instrument ? 1u : 0u)) return;
         (port ? ivars->unitBMicPreGain[lane][channel] : ivars->micPreGain[lane][channel]) = gain;
         (port ? ivars->unitBMicPreGainKnown[lane][channel] : ivars->micPreGainKnown[lane][channel]) = true;
-        // The front panel moved this gain: an unread DAW gain is now stale.
-        ClearHalMicPreEdit(ivars, port, channel, kMicPreEditGainValid);
         // Routed aliases receive SetDecibelValue only, never HandleChange or TX.
         // og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:246,323.
         PublishMicGain(ivars, channel, port);
@@ -10601,8 +10602,11 @@ static void ReadMicPreSwitches(SymphonyThunderbridge_IVars *iv, uint32_t port, u
 static void RereadMicPreTypesA(SymphonyThunderbridge_IVars *iv)
 {
     for (uint32_t ch = 0; ch < iv->numMicChannels && ch < 8; ++ch) {
+        // Unknown means no stage flags either: a stale Instrument flag would
+        // make an unknown channel drop its Mic-lane gain.
         __atomic_store_n(&iv->micPreTypeKnown[ch], false, __ATOMIC_RELEASE);
         __atomic_store_n(&iv->micPreMic[ch], false, __ATOMIC_RELEASE);
+        __atomic_store_n(&iv->micPreInstrument[ch], false, __ATOMIC_RELEASE);
         uint8_t type = 0;
         if (ReadVendorRequest(iv->pciDevice, iv->barMemoryIndex, iv->symphonyAddr,
                               kSIOCmd_CurrentAnalogInputType, 0x80000000u | ch, &type, 1,
