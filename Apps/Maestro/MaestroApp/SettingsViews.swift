@@ -1672,7 +1672,7 @@ struct DeviceSettingsView: View {
         appState.refreshSecondPortState()
         await appState.refreshLoopSync()
         appState.deviceInfoSnapshot = currentDeviceReport()
-        // No Word Clock Divide: 'AEwd' was an Ensemble setting (mAEstro.h, "exists
+        // No word clock divide control: 'AEwd' was an Ensemble setting (mAEstro.h, "exists
         // for Ensemble"; handled only by ensembleController.cpp). The Symphony
         // I/O has no command for it, its firmware sets the Loop Sync divider
         // from the sample rate by itself (SymphonyIOMainBoard.cpp
