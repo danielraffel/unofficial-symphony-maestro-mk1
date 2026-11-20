@@ -2721,6 +2721,9 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ConvSetPort(ivars, 0, true, unitCount, units);
             __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort1Converters, __ATOMIC_RELEASE);
             STLOG("Converter: port 1 carries %u converter unit(s); Symphony I/O set-up skipped", unitCount);
+            // A Symphony I/O's clock choice does not outlive the unit: one
+            // plugged in after these converters starts on Internal again.
+            ivars->unitAClockKnown = false;
             // SetWCMaster after enumeration, the rate set with lock, actual
             // rate and phase, EnableDeviceRouting's per-unit unmute, and the
             // routing layer's placement.
@@ -8552,18 +8555,30 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                 // re-set the word-clock setting (Symphony64 Driver/XLink.cpp
                 // :149-160, :352-356). DMA is stopped and the card muted here.
                 // Internal (the default) sends nothing: unchanged traces.
-                if (!ivars->convPort1 && ivars->unitAClockKnown &&
+                // Not with unit B set up: there unit A's ClockMode carries the
+                // Loop Sync output and master choice, which SendUnitAClock and
+                // the Loop Sync configuration own, and the recorded bytes do
+                // not include them.
+                if (!ivars->convPort1 && !ivars->unitBConfigured && ivars->unitAClockKnown &&
                     ivars->unitAClock[0] >= 2 && ivars->unitAClock[0] <= 5) {
                     uint8_t clockData[4];
                     memcpy(clockData, ivars->unitAClock, 4);
                     const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                                       ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
                                                       clockData, sizeof(clockData), ivars->runtimeTxSeq);
-                    IOSleep(10);
+                    // Give the unit up to a second to lock to its external
+                    // clock before DMA restarts and the card is unmuted (it
+                    // goes on either way, as before this change).
                     uint8_t clk[5] = {};
-                    const bool read = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                                        ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, clk, 5,
-                                                        ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
+                    bool read = false;
+                    for (int poll = 0; ok && poll < 10; poll++) {
+                        IOSleep(100);
+                        memset(clk, 0, sizeof(clk));
+                        read = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                 ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, clk, 5,
+                                                 ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
+                        if (!read || clk[0]) break;
+                    }
                     const uint32_t measured = ((uint32_t)clk[1] << 24) | ((uint32_t)clk[2] << 16) |
                                               ((uint32_t)clk[3] << 8) | clk[4];
                     STLOG("StartDevice: ClockMode(source %u) sent again after the rate change to %.0f Hz: %{public}s; "

@@ -1083,8 +1083,8 @@ static void RunClockReapplyChecks()
     {
         Options o; o.name = "clock: nothing chosen stays Internal"; o.shortFlow = true;
         Run r; RunScenario(o, r);
-        // The short flow ends after the selection of source 2; drop back to
-        // Internal and recover: Internal is what is re-applied.
+        // The short flow selects nothing. Choose Internal and recover:
+        // Internal is what is re-applied.
         r.drv->RequestClockSource(1); HostPump();
         Port saved = r.card.port[0];
         r.card.port[0] = Port();
@@ -3251,6 +3251,29 @@ static void RunConverterParityChecks()
         s = ReadPort2(r);
         CHECK((s.w[14] & kSymphonyPort2AudioActive) == 0 && s.w[6] == 0, "%s: second select: audio 0x%x units %u (want refused, none)",
               o.name, s.w[14], s.w[6]);
+        Finish(o, r);
+    }
+    // With unit B set up, unit A's ClockMode belongs to the Loop Sync logic:
+    // a rate change at 64 sends unit A no ClockMode of its own (the recorded
+    // bytes would switch its Loop Sync output off under unit B).
+    {
+        Options o; o.name = "clock: no re-send to unit A after a rate change while unit B follows it";
+        o.port2 = Port::Symphony; o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        r.drv->RequestClockSource(2); HostPump();
+        Select(r, 1, "clock at 64: select 64");
+        SymphonyUnitBStateOutput st = {};
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 1, "%s: unit B not set up", o.name);
+        r.card.port[0].clockModes.clear();
+        gHostAudio.device->SetSampleRate(96000.0);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        HostPump();
+        CHECK(r.card.port[0].clockModes.empty(), "%s: %zu ClockMode message(s) to unit A",
+              o.name, r.card.port[0].clockModes.size());
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
         Finish(o, r);
     }
     // A real DD-16X (no DEVICE_TYPE answer) stays a converter.
