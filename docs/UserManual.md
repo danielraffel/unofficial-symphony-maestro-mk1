@@ -92,6 +92,8 @@ sudo kmutil clear-staging
 
 This is a suggestion, not a guaranteed fix: we haven't been able to test it on a Mac in this state, and Maestro can't do it for you. Leave System Integrity Protection on.
 
+One user found that this command alone was not enough on their Mac, worked out where macOS was still keeping the old drivers and how they cleared them, and wrote it up in detail: [their report](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371). It is one person's experience on their own Mac, shared in case it helps, and not a procedure we have tested.
+
 </details>
 
 <details>
