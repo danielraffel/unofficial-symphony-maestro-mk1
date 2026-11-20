@@ -103,20 +103,16 @@ public enum MicPreDAWObservation {
     /// even when nothing changed, so an old edit cannot later undo a newer
     /// choice made in Maestro.
     ///
-    /// A store that has never acknowledged a record (a unit Maestro has not
-    /// seen with this driver feature, for example one swapped in while the
-    /// driver kept running) takes the records it finds as its baseline and
-    /// applies none of them: they may belong to the unit that was there before.
-    /// The driver also clears its records when a unit is set up again.
+    /// A store with no acknowledged stamps yet applies what it finds: the
+    /// first DAW edit after an update or on a new unit is a real edit. Records
+    /// cannot belong to an earlier unit: the driver clears them when a unit is
+    /// set up again, and its stamps start over with each driver instance.
     @discardableResult
     public static func apply(_ records: [MicPreEditRecord], to store: ChannelStateStore) -> Bool {
         guard records.count == 16, store.identity != nil, !store.isSimulating else { return false }
         let offset = store.unit == .b ? 8 : 0
         let unitRecords = records[offset..<offset + 8]
-        guard var seen: [UInt64] = store.load(seenKey), seen.count == 8 else {
-            store.save(unitRecords.map(\.stamp), for: seenKey)
-            return false
-        }
+        var seen: [UInt64] = store.load(seenKey) ?? []
         let before = seen
         guard unitRecords.enumerated().contains(where: { index, record in
             record.stamp != 0 && (seen.count != 8 || record.stamp != seen[index])

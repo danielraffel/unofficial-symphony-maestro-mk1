@@ -3597,16 +3597,28 @@ static void RunMicPreDAWControls()
     drv->ReadMicPreEdits(edits);
     CHECK(r.card.lines.size() == readMark, "B12: reading edits has no bus traffic");
     CHECK((edits[0] || edits[1]) &&
-          edits[2] == (kMicPreEditHighPass | kMicPreEditHighPassValid) &&
+          edits[2] == (kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid) &&
           (edits[8] & (kMicPreEditPhase | kMicPreEditPhaseValid)) == (kMicPreEditPhase | kMicPreEditPhaseValid) &&
           edits[9 * 3] == 0 && edits[9 * 3 + 2] == 0,
-          "B12: A1 and A3 HAL edits recorded, each stamp with its own edit only; others empty");
+          "B12: A1 and A3 HAL edits recorded, cumulative per channel; others empty");
     uint8_t one[] = {1};
     const uint32_t stampLo = edits[0], stampHi = edits[1];
     CHECK(drv->SendVendorCommand(0xCA, 0, one, 1) == kIOReturnSuccess, "B12: Maestro high-pass write");
     drv->ReadMicPreEdits(edits);
-    CHECK(edits[0] == stampLo && edits[1] == stampHi && !(edits[2] & kMicPreEditHighPassValid),
-          "B12: a Maestro write clears its field, the stamp stays");
+    CHECK(edits[0] == stampLo && edits[1] == stampHi && !(edits[2] & kMicPreEditHighPassValid) &&
+          (edits[2] & kMicPreEditPhaseValid), "B12: a Maestro write clears only its field, the stamp stays");
+    // V1: a DAW burst on one channel (as a session recall sends) all survives
+    // until the app reads it.
+    phases[2]->HandleChangeControlValue(false);
+    hpfs[2]->HandleChangeSelectedValues(&on, 1);
+    CHECK(drv->RequestMicGain(2, 30) == kIOReturnSuccess, "B12: burst gain queued");
+    HostPump();
+    drv->ReadMicPreEdits(edits);
+    CHECK((edits[8] & (kMicPreEditPhase | kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid |
+                       kMicPreEditGainValid)) ==
+              (kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid | kMicPreEditGainValid) &&
+          ((edits[8] & kMicPreEditGainMask) >> kMicPreEditGainShift) == 30,
+          "B12: polarity, high-pass and gain of one burst are all in the record");
     CHECK(drv->RequestMicGain(0, 40) == kIOReturnSuccess, "B12: DAW gain queued");
     HostPump();
     drv->ReadMicPreEdits(edits);
@@ -3619,13 +3631,12 @@ static void RunMicPreDAWControls()
     CHECK(drv->PublishObservedMicGain(0, 0, 0, 20) == kIOReturnSuccess, "B12: front panel gain 20");
     drv->ReadMicPreEdits(edits);
     CHECK(!(edits[2] & kMicPreEditGainValid), "B12: a front-panel gain clears the unread DAW gain");
-    CHECK(drv->RequestMicGain(0, 60) == kIOReturnSuccess, "B12: DAW gain 60 again");
-    HostPump();
     phases[0]->HandleChangeControlValue(true);
     HostPump();
     drv->ReadMicPreEdits(edits);
-    CHECK(edits[2] == (kMicPreEditPhase | kMicPreEditPhaseValid),
-          "B12: the polarity stamp carries polarity only, never the older 60 dB");
+    CHECK(!(edits[2] & kMicPreEditGainValid) &&
+          (edits[2] & (kMicPreEditPhase | kMicPreEditPhaseValid)) == (kMicPreEditPhase | kMicPreEditPhaseValid),
+          "B12: the later polarity stamp carries polarity, never the older 60 dB");
     phases[0]->HandleChangeControlValue(false);
     HostPump();
     CHECK(drv->RequestMicGain(0, 40) == kIOReturnSuccess, "B12: DAW gain back to 40");
@@ -3775,6 +3786,15 @@ static void RunMicPreDAWControls()
     CHECK(WritesSince(pa, w) == std::vector<uint8_t>({0xC6, 0xC8, 0xC9}) && types[0]->selected == mic &&
           (edits[2] & kMicPreEditInsertOff) && !(edits[2] & kMicPreEditTypeValid),
           "B12: a failed 0x20 after the insert release is reported (insert off, type unchanged)");
+    // V1: the insert-off bit stays until Maestro writes the insert itself.
+    phases[0]->HandleChangeControlValue(false);
+    HostPump();
+    drv->ReadMicPreEdits(edits);
+    CHECK(edits[2] & kMicPreEditInsertOff, "B12: insert-off survives a later DAW edit");
+    const uint8_t returnOff[] = {0};
+    CHECK(drv->SendVendorCommand(0xC9, 0, returnOff, 1) == kIOReturnSuccess, "B12: Maestro insert return write");
+    drv->ReadMicPreEdits(edits);
+    CHECK(!(edits[2] & kMicPreEditInsertOff), "B12: Maestro's 0xC9 clears insert-off");
     // Instrument choice follows the route (finding 10).
     CHECK(route(4, 0) == kIOReturnSuccess && types[4]->values.size() == 5 &&
           types[4]->HandleChangeSelectedValues(&instrument, 1) == kIOReturnSuccess,
@@ -3845,6 +3865,38 @@ static void RunMicPreDAWControls()
     CHECK(phases[0]->HandleChangeControlValue(true) == kIOReturnNotPermitted,
           "B12: polarity refused just after a wake");
     PastMicPreSettle();
+    // V3: so does coreaudiod connecting (cold boot, coreaudiod restart).
+    IOUserClient *client = nullptr;
+    drv->NewUserClient(0, &client);
+    CHECK(types[0]->HandleChangeSelectedValues(&plus4, 1) == kIOReturnNotPermitted,
+          "B12: type refused just after coreaudiod connects");
+    PastMicPreSettle();
+
+    // V4: unit A comes back from a link recovery as a unit whose MicPre 1 is
+    // Variable. Before: MicPre 1 was a HAL Mic, armed, with an unread edit.
+    drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    Select(r, 0, "B12 back to 32 for the recovery");
+    PastMicPreSettle();
+    CHECK(route(0, 0) == kIOReturnSuccess, "B12: host 1 on A MicPre 1");
+    types[0]->HandleChangeSelectedValues(&mic, 1);
+    HostPump();
+    gHostMicPreClockOffsetNs += 3000000000ull;
+    phases[0]->HandleChangeControlValue(true);
+    HostPump();
+    drv->ReadMicPreEdits(edits);
+    const uint32_t unreadLo = edits[0], unreadHi = edits[1], unreadFields = edits[2];
+    CHECK(unreadLo || unreadHi, "B12: an unread A1 edit before the recovery");
+    pa = Port();
+    drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+    Attach(pa, Port::Symphony);          // the new unit reads Variable (0) everywhere
+    drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+    PastMicPreSettle();
+    CHECK(ReadsSince(pa, 0, 0x60) >= 1, "B12: the MicPre types are read again after the recovery");
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted && types[0]->selected == variable,
+          "B12: after the recovery a cached Mic does not admit HAL phantom ON");
+    drv->ReadMicPreEdits(edits);
+    CHECK(edits[0] == unreadLo && edits[1] == unreadHi && edits[2] == unreadFields,
+          "B12: a link recovery keeps the unread DAW edits");
     Finish(o, r);
 }
 #endif

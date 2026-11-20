@@ -160,20 +160,30 @@ import Testing
         #expect(b.load(ChannelStateStore.inputKey, as: [InputChannelState].self)?[0].phase == false)
     }
 
-    /// N6: a store that never acknowledged a record (a unit swapped in while the
-    /// driver kept running) takes the current records as its baseline.
-    @Test func aNewUnitAdoptsTheRecordsItFindsWithoutApplyingThem() throws {
+    /// V2: the first DAW edit a store ever sees (just after the update, or on
+    /// a new unit) is applied, not taken as a baseline.
+    @Test func theFirstDAWEditAfterAnUpdateIsApplied() throws {
         let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
         let fresh = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: false, identity: 77)
-        fresh.save([InputChannelState()], for: ChannelStateStore.inputKey)
+        fresh.save([InputChannelState(inputType: AnalogInputLevel.mic.rawValue)], for: ChannelStateStore.inputKey)
+        #expect(fresh.load(MicPreDAWObservation.seenKey, as: [UInt64].self) == nil)
         var records = Self.empty()
-        records[0] = Self.record(12, type: .mic)               // left by the previous unit
-        #expect(!MicPreDAWObservation.apply(records, to: fresh))
-        #expect(fresh.load(ChannelStateStore.inputKey, as: [InputChannelState].self) == [InputChannelState()])
-        #expect(fresh.load(MicPreDAWObservation.seenKey, as: [UInt64].self)?[0] == 12)
-        records[0] = Self.record(13, phase: true)              // a later edit on this unit
+        records[0] = Self.record(12, phase: true)
         #expect(MicPreDAWObservation.apply(records, to: fresh))
         #expect(fresh.load(ChannelStateStore.inputKey, as: [InputChannelState].self)?[0].phase == true)
+        #expect(fresh.load(MicPreDAWObservation.seenKey, as: [UInt64].self)?[0] == 12)
+    }
+
+    /// V1: a cumulative record (a DAW recall burst, or edits while Maestro was
+    /// closed) brings every field across in one read.
+    @Test func aBurstRecordAppliesEveryField() {
+        var states = [InputChannelState(gain: 50, inputType: AnalogInputLevel.mic.rawValue)]
+        var seen = [UInt64](repeating: 0, count: 8)
+        var records = Self.empty()
+        records[0] = Self.record(6, type: .plus4dBu, phase: true, highPass: true, gain: (25, false))
+        #expect(MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states))
+        #expect(states[0].inputType == AnalogInputLevel.plus4dBu.rawValue && states[0].phase && states[0].hpf)
+        #expect(states[0].micGain == 25)
     }
 
     @Test func clearedRecordsUnknownIdentityAndSimulationChangeNothing() throws {
