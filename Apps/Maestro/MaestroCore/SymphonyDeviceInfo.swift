@@ -15,16 +15,18 @@ public struct SymphonyDeviceInfo: Sendable, Equatable {
         let bytes = Array(data)
         switch command {
         case 0xA0:
-            guard bytes.count == 3, value <= 6 else { return false }
-            versions[value] = bytes.map(String.init).joined(separator: ".")
+            // Shown as the original showed each component (`SymphonyVersionComponent`).
+            guard let component = SymphonyVersionComponent(rawValue: value),
+                  let reply = SymphonyVersionReply(data: data) else { return false }
+            versions[value] = component.displayText(reply)
         case 0xA1:
             guard bytes.count == 1, value < 2 else { return false }
             boards[value] = IOCardType(rawValue: bytes[0])
         case 0xC0:
             guard bytes.count == 8, value == 0 else { return false }
             // The original converts big endian to host and masks the top byte.
-            let id = bytes.dropFirst().reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
-            uniqueID = String(id, radix: 16, uppercase: true)
+            let id = bytes.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+            uniqueID = SymphonyHardwareID.text(id)
         default: return false
         }
         return true

@@ -36,16 +36,20 @@ struct UnitBDeviceInfoTests {
                                 clockSource: 3, setupFlags: configured ? 1 : 0, txErrors: 0) })
     }
 
+    /// Each component as the original showed it: Overall in BCD, an FPGA as
+    /// `v%X` of its major byte, a hardware version as its major byte
+    /// (og_source/maestrolink/Software/SymphonyIO.cpp:1436-1445, 1483-1487;
+    /// SymphonyIOMainController.cpp:459-481).
     @Test func fullReplyAndOncePerConnection() async {
         let t = Transport()
         let b = connection(t)
         let info = await b.readDeviceInfo()
         #expect(info.uniqueID == "1020304050607")
         #expect(info.versions[0] == "0.2.3")
-        #expect(info.versions[1] == "1.2.3")
-        #expect(info.versions[4] == "4.2.3")
-        #expect(info.versions[2] == "2.2.3")
-        #expect(info.versions[5] == "5.2.3")
+        #expect(info.versions[1] == "v1")
+        #expect(info.versions[4] == "4")
+        #expect(info.versions[2] == "v2")
+        #expect(info.versions[5] == "5")
         #expect(info.boards[1] == IOCardType.none)
         #expect(t.reads.map { $0.0 } == [0xC0, 0xA1, 0xA1, 0xA0, 0xA0, 0xA0, 0xA0, 0xA0])
         #expect(t.reads.map { $0.1 } == [0, 0, 1, 0, 1, 4, 2, 5])
@@ -61,9 +65,9 @@ struct UnitBDeviceInfoTests {
         t.board2Type = IOCardType.micPre8.rawValue
         let info = await connection(t).readDeviceInfo()
         #expect(info.versions.count == 7)
-        #expect(info.versions[3] == "3.2.3")
-        #expect(info.versions[6] == "6.2.3")
-        #expect(info.reportLines.contains("Unit B IOBoard 2 Version: 3.2.3"))
+        #expect(info.versions[3] == "v3")
+        #expect(info.versions[6] == "6")
+        #expect(info.reportLines.contains("Unit B IOBoard 2 Version: v3"))
         #expect(t.reads.count == 10)
     }
 
@@ -125,7 +129,7 @@ struct UnitBDeviceInfoTests {
         #expect(!shortID)
         #expect(!shortTuple)
         #expect(!emptyBoard)
-        #expect(info.versions == [6: "6.7.8"])
+        #expect(info.versions == [6: "6"])
         #expect(info.rows.first?.value == "Unknown")
     }
 
