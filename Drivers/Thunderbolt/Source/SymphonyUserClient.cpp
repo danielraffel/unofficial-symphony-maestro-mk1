@@ -205,8 +205,9 @@ kern_return_t SymphonyUserClient::ExternalMethod(
     // Preserve exact-size validation for the legacy ABI and the optional
     // host-only phantom tail. No arbitrary-sized outputs are accepted.
     if (selector == kSelectorReadLinkState && arguments &&
-        arguments->structureOutputMaximumSize == kSymphonyPhantomObservationWords * sizeof(uint32_t))
-        method.checkStructureOutputSize = kSymphonyPhantomObservationWords * sizeof(uint32_t);
+        (arguments->structureOutputMaximumSize == kSymphonyPhantomObservationWords * sizeof(uint32_t) ||
+         arguments->structureOutputMaximumSize == kSymphonyMicPreEditWords * sizeof(uint32_t)))
+        method.checkStructureOutputSize = static_cast<uint32_t>(arguments->structureOutputMaximumSize);
     kern_return_t ret = super::ExternalMethod(selector, arguments,
                                                &method, this, nullptr);
     if (ret != kIOReturnSuccess && ret != kIOReturnNoCompletion) {
@@ -325,13 +326,22 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             UCLOG("ExternalMethod: no driver (link state)");
             return kIOReturnNotReady;
         }
-        uint32_t output[kSymphonyPhantomObservationWords] = {};
+        // 16 words (legacy), 48 (+ phantom OFF receipts) or 96 (+ MicPre
+        // host edits). Each tail is a pure ivar read.
+        uint32_t output[kSymphonyMicPreEditWords] = {};
         kern_return_t r = ivars->driver->ReadLinkState(output);
-        const bool extended = method.checkStructureOutputSize == sizeof(output);
-        if (r == kIOReturnSuccess && extended)
+        const size_t words = method.checkStructureOutputSize / sizeof(uint32_t);
+        const bool receipts = words == kSymphonyPhantomObservationWords || words == kSymphonyMicPreEditWords;
+        const bool edits = words == kSymphonyMicPreEditWords;
+        if (r == kIOReturnSuccess && receipts)
             r = ivars->driver->ReadPhantomObservations(output + 16);
+        if (r == kIOReturnSuccess && edits)
+            r = ivars->driver->ReadMicPreEdits(output + kSymphonyPhantomObservationWords);
         output[0] = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
-        auto outputData = OSData::withBytes(output, extended ? sizeof(output) : sizeof(SymphonyLinkStateOutput));
+        const size_t bytes = edits ? kSymphonyMicPreEditWords * sizeof(uint32_t)
+                         : receipts ? kSymphonyPhantomObservationWords * sizeof(uint32_t)
+                                    : sizeof(SymphonyLinkStateOutput);
+        auto outputData = OSData::withBytes(output, bytes);
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;
     }

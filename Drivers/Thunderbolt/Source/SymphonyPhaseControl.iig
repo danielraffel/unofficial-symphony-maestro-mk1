@@ -1,17 +1,39 @@
+// SymphonyPhaseControl.iig — push-model MicPre polarity (phase invert) control.
+//
+// One instance per host input of an installed MicPre8 ('phsi', Input scope).
+// coreaudiod delivers the DAW's toggle to HandleChangeControlValue on the
+// control's own work queue; we hand (host input, value) to the driver, which
+// resolves the MicPre route, coalesces and sends PhaseInverse (0xC5) on the
+// serial XLink queue, and publishes the value only after the unit took it.
+
 #ifndef SymphonyPhaseControl_h
 #define SymphonyPhaseControl_h
+
 #include <AudioDriverKit/IOUserAudioBooleanControl.iig>
+
 class SymphonyThunderbridge;
+
+// LOCALONLY like SymphonyPhantomControl: the base class is LOCALONLY.
 class LOCALONLY SymphonyPhaseControl : public IOUserAudioBooleanControl
 {
 public:
-    virtual bool init(IOUserAudioDriver*, bool, bool,
-                      IOUserAudioObjectPropertyElement,
-                      IOUserAudioObjectPropertyScope,
-                      IOUserAudioClassID) override;
+    // Signature mirrors the base 6-arg init (IOUserAudioBooleanControl.h).
+    virtual bool init(IOUserAudioDriver* in_driver,
+                      bool in_is_settable,
+                      bool in_control_value,
+                      IOUserAudioObjectPropertyElement in_control_element,
+                      IOUserAudioObjectPropertyScope in_control_scope,
+                      IOUserAudioClassID in_control_class_id) override;
+
     virtual void free() override;
-    virtual kern_return_t HandleChangeControlValue(bool) override;
-    virtual void SetDriver(SymphonyThunderbridge*);
-    virtual void SetChannel(uint32_t);
+
+    // PUSH entry point. Does not publish: the driver does after the send.
+    virtual kern_return_t HandleChangeControlValue(bool in_control_value) override;
+
+    virtual void SetDriver(SymphonyThunderbridge* in_driver);
+
+    // 0-based host input this control belongs to.
+    virtual void SetChannel(uint32_t in_channel);
 };
-#endif
+
+#endif /* SymphonyPhaseControl_h */

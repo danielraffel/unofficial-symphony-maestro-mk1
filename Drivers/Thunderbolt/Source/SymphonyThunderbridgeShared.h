@@ -373,3 +373,20 @@ typedef struct {
 // Optional selector-5 output tail: last HAL OFF timestamp for A0..7, B0..7.
 // No hardware reads; old 64-byte clients retain the original ABI.
 #define kSymphonyPhantomObservationWords 48u
+
+// Optional selector-5 tail after the phantom receipts (dext with MicPre DAW
+// controls): host-originated MicPre edits per physical channel A0..7, B0..7,
+// three words each (stamp low, stamp high, fields). The stamp moves after each
+// HAL edit the unit took; a Maestro write of a field clears that field's
+// valid bit. No hardware reads. The type is the 0x20 wire enum.
+#define kSymphonyMicPreEditWords 96u
+#define kMicPreEditTypeMask           0x7u
+#define kMicPreEditTypeValid          (1u << 3)
+#define kMicPreEditPhase              (1u << 4)
+#define kMicPreEditPhaseValid         (1u << 5)
+#define kMicPreEditHighPass           (1u << 6)
+#define kMicPreEditHighPassValid      (1u << 7)
+#define kMicPreEditGainShift          8u          // 7 bits, 0..85 dB
+#define kMicPreEditGainMask           (0x7Fu << kMicPreEditGainShift)
+#define kMicPreEditGainValid          (1u << 15)
+#define kMicPreEditGainInstrument     (1u << 16)  // the gain is the Instrument stage's

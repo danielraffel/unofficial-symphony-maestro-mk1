@@ -259,7 +259,7 @@ public final class DextUserClient: @unchecked Sendable {
         // existing health read; old drivers still receive their exact ABI.
         // Retry the optional tail a few times before falling back to the legacy
         // prefix. A transient first read must not pin this connection to 16 words.
-        for count in knownCount.map({ [$0] }) ?? [48, 48, 48, 16, 12] {
+        for count in knownCount.map({ [$0] }) ?? [96, 96, 96, 48, 48, 16, 12] {
             var out = [UInt32](repeating: 0, count: count)
             var outSize = out.count * MemoryLayout<UInt32>.size
             let kr = out.withUnsafeMutableBytes { p in
@@ -709,13 +709,18 @@ public struct LinkState: Sendable, Equatable {
     public let unitProbe: UInt32
     /// Optional host-only OFF receipts, physical A0...7 then B0...7.
     public let phantomOffReceipts: [UInt64]
+    /// Optional host-originated MicPre edits (a DAW through Core Audio),
+    /// physical A0...7 then B0...7. Empty from drivers without the tail.
+    public let micPreEdits: [MicPreEditRecord]
 
     public init(state: State, clockPresent: Bool, ioRunning: Bool, irqCount: UInt64,
                 recoveryCount: UInt32, hwSuspended: Bool, linkConfigured: Bool,
                 lastClockReg: UInt32, watchTicks: UInt32, audioWraps: UInt32,
                 lastGcsr: UInt32 = 0, lastXlinkStatus: UInt32 = 0, cardReinitCount: UInt32 = 0,
-                unitProbe: UInt32 = 0, phantomOffReceipts: [UInt64] = []) {
+                unitProbe: UInt32 = 0, phantomOffReceipts: [UInt64] = [],
+                micPreEdits: [MicPreEditRecord] = []) {
         self.phantomOffReceipts = phantomOffReceipts
+        self.micPreEdits = micPreEdits
         self.unitProbe = unitProbe
         self.state = state; self.clockPresent = clockPresent; self.ioRunning = ioRunning
         self.irqCount = irqCount; self.recoveryCount = recoveryCount; self.hwSuspended = hwSuspended
@@ -724,12 +729,23 @@ public struct LinkState: Sendable, Equatable {
         self.lastGcsr = lastGcsr; self.lastXlinkStatus = lastXlinkStatus; self.cardReinitCount = cardReinitCount
     }
 
-    /// Decode 48 words (optional OFF receipts), 16 (dext 117+), or 12 (113–116). `nil`
-    /// when the status word is nonzero or the size is wrong, both of which mean
-    /// the selector did not answer.
+    /// Decode 96 words (OFF receipts + MicPre host edits), 48 (optional OFF
+    /// receipts), 16 (dext 117+), or 12 (113–116). `nil` when the status word is
+    /// nonzero or the size is wrong, both of which mean the selector did not answer.
     public static func decode(_ words: [UInt32]) -> LinkState? {
-        guard [12, 16, 48].contains(words.count), words[0] == 0 else { return nil }
+        guard [12, 16, 48, 96].contains(words.count), words[0] == 0 else { return nil }
         let ext = words.count >= 16
+        var receipts: [UInt64] = []
+        if words.count >= 48 {
+            receipts = (0..<16).map { UInt64(words[16 + $0 * 2]) | (UInt64(words[17 + $0 * 2]) << 32) }
+        }
+        var edits: [MicPreEditRecord] = []
+        if words.count == 96 {
+            edits = (0..<16).map { (i: Int) -> MicPreEditRecord in
+                let stamp = UInt64(words[48 + i * 3]) | (UInt64(words[49 + i * 3]) << 32)
+                return MicPreEditRecord(stamp: stamp, fields: words[50 + i * 3])
+            }
+        }
         return LinkState(state: State(rawValue: words[1]) ?? .unknown,
                          clockPresent: words[2] != 0, ioRunning: words[3] != 0,
                          irqCount: UInt64(words[4]) | (UInt64(words[5]) << 32),
@@ -739,9 +755,8 @@ public struct LinkState: Sendable, Equatable {
                          lastGcsr: ext ? words[12] : 0, lastXlinkStatus: ext ? words[13] : 0,
                          cardReinitCount: ext ? words[14] : 0,
                          unitProbe: ext ? words[15] : 0,
-                         phantomOffReceipts: words.count == 48 ? (0..<16).map {
-                             UInt64(words[16 + $0 * 2]) | (UInt64(words[17 + $0 * 2]) << 32)
-                         } : [])
+                         phantomOffReceipts: receipts,
+                         micPreEdits: edits)
     }
 }
 

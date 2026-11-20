@@ -56,11 +56,12 @@ private func micPreDAWPropertyChanged(
     _ addresses: UnsafePointer<AudioObjectPropertyAddress>,
     _ clientData: UnsafeMutableRawPointer?
 ) -> OSStatus {
+    // A trigger only: the values come from the driver's per-unit, per-channel
+    // records (see scheduleMicPreDAWRefresh), not from this HAL element.
     guard let clientData, numberAddresses > 0 else { return noErr }
     nonisolated(unsafe) let appState = Unmanaged<AppState>.fromOpaque(clientData).takeUnretainedValue()
-    let address = addresses.pointee
     DispatchQueue.main.async {
-        appState.readMicPreDAWProperty(objectID: objectID, address: address)
+        appState.scheduleMicPreDAWRefresh(objectID: objectID)
     }
     return noErr
 }
@@ -1545,7 +1546,8 @@ final class AppState {
     /// Used to listen for volume/mute changes from media keys.
     private var aspDeviceID: AudioDeviceID = kAudioObjectUnknown
     private var micPreDAWListenerAddresses: [AudioObjectPropertyAddress] = []
-    private(set) var micPreObservationRevision = 0
+    private var micPreDAWRefreshTask: Task<Void, Never>?
+    var micPreObservationRevision = 0
     /// Timestamp of last ASP write from this app. Used to suppress feedback
     /// loops when our own writes trigger the listener callback.
     private var aspWriteTimestamp: Date = .distantPast
@@ -3814,19 +3816,25 @@ final class AppState {
             aspDeviceID, &muteAddr, aspMuteChanged, Unmanaged.passUnretained(self).toOpaque())
     }
 
-    /// Observe the standard HAL controls that a DAW edits on an installed 8MicPre.
-    /// The listener is installed only for the fitted board, so rigs without it add
-    /// no reads or app traffic. A notification reads the value once and updates the
-    /// identity-scoped channel store; it never grants phantom ON authority.
+    /// Observe the standard HAL controls that a DAW edits on an installed 8MicPre
+    /// (polarity, high-pass, input type and the input-scope gain). Installed only
+    /// when a unit has the board, so rigs without it add no listeners or reads.
+    /// A notification is only a prompt to read the driver's host-edit records
+    /// sooner than the next health poll: the HAL element is a host input whose
+    /// MicPre (unit A or B, any channel) depends on routing, so its value is
+    /// never written to a strip here. The records are already resolved to a
+    /// physical unit and channel by the driver (`MicPreDAWObservation`).
     @MainActor
     func startMicPreDAWSync() {
         stopMicPreDAWSync()
-        guard transportType == .thunderbolt, cardLayout.slot2 == .micPre8,
+        guard transportType == .thunderbolt,
+              cardLayout.slot2 == .micPre8 || unitBLayout?.slot2 == .micPre8,
               aspDeviceID != kAudioObjectUnknown else { return }
         let selectors: [AudioObjectPropertySelector] = [
             kAudioDevicePropertyPhaseInvert,
             kAudioDevicePropertyHighPassFilterSetting,
             kAudioDevicePropertyChannelNominalLineLevel,
+            kAudioDevicePropertyVolumeDecibels,
         ]
         for element in 1...8 {
             for selector in selectors {
@@ -3843,6 +3851,8 @@ final class AppState {
 
     @MainActor
     func stopMicPreDAWSync() {
+        micPreDAWRefreshTask?.cancel()
+        micPreDAWRefreshTask = nil
         guard aspDeviceID != kAudioObjectUnknown else { micPreDAWListenerAddresses.removeAll(); return }
         for var address in micPreDAWListenerAddresses {
             AudioObjectRemovePropertyListener(aspDeviceID, &address, micPreDAWPropertyChanged,
@@ -3851,30 +3861,20 @@ final class AppState {
         micPreDAWListenerAddresses.removeAll()
     }
 
+    /// Coalesce a burst of HAL notifications (a fader drag, a DAW recall) into
+    /// one selector-5 read, made off the main actor, then apply the records.
     @MainActor
-    func readMicPreDAWProperty(objectID: AudioObjectID, address: AudioObjectPropertyAddress) {
-        guard objectID == aspDeviceID, cardLayout.slot2 == .micPre8,
-              (1...8).contains(Int(address.mElement)) else { return }
-        let channel = Int(address.mElement) - 1
-        var address = address
-        var raw: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &raw) == noErr else { return }
-        var states: [InputChannelState] = channelStateStore.load(ChannelStateStore.inputKey) ?? []
-        guard states.indices.contains(channel) else { return }
-        switch address.mSelector {
-        case kAudioDevicePropertyPhaseInvert: states[channel].phase = raw != 0
-        case kAudioDevicePropertyHighPassFilterSetting: states[channel].hpf = raw != 0
-        case kAudioDevicePropertyChannelNominalLineLevel:
-            guard raw <= 4 else { return }
-            // CoreAudio selector IDs (+4, -10, Variable, Mic, Instrument)
-            // differ from the Symphony wire enum persisted by Maestro
-            // (Variable, +4, -10, Mic, Instrument).
-            states[channel].inputType = raw == 0 ? 1 : raw == 1 ? 2 : raw == 2 ? 0 : raw
-        default: return
+    func scheduleMicPreDAWRefresh(objectID: AudioObjectID) {
+        guard objectID == aspDeviceID, micPreDAWRefreshTask == nil,
+              let tb = device as? ThunderboltDeviceConnection else { return }
+        micPreDAWRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            let link = await Task.detached(priority: .utility) { tb.linkState() }.value
+            guard let self else { return }
+            self.micPreDAWRefreshTask = nil
+            guard !Task.isCancelled, (self.device as? ThunderboltDeviceConnection) === tb else { return }
+            self.applyPhantomObservations(link)
         }
-        channelStateStore.save(states, for: ChannelStateStore.inputKey)
-        micPreObservationRevision &+= 1
     }
 
     /// Read current volume from the synced audio device and update speakerLevel.

@@ -170,6 +170,12 @@ build_and_run() {
     if grep -q 'ReadUnitBState' "$src/SymphonyThunderbridge.cpp"; then
         defs+=(-DTRACE_HAVE_UNITB)
     fi
+    # The MicPre DAW controls' own sources, where the ref has them, so their
+    # HandleChange paths run in the harness rather than as stubs.
+    local controls=()
+    for control in SymphonyPhaseControl SymphonyHighPassControl SymphonyInputTypeControl; do
+        if [[ -f "$src/$control.cpp" ]]; then controls+=("$src/$control.cpp"); fi
+    done
     mkdir -p "$out"
     echo "[trace] compiling the driver source ($label) for the host..."
     clang++ -std=c++17 -fblocks -O1 -Wall -Wno-unused-function -Wno-unused-variable \
@@ -177,7 +183,7 @@ build_and_run() {
         ${defs[@]+"${defs[@]}"} \
         -I "$TEST_DIR/shim" -I "$src" \
         "$TEST_DIR/RegisterTrace.cpp" "$src/SymphonyThunderbridge.cpp" \
-        "$src/SymphonyMicGainControl.cpp" \
+        "$src/SymphonyMicGainControl.cpp" ${controls[@]+"${controls[@]}"} \
         -o "$out/register-trace"
     # A failed check inside the harness is reported with the trace comparisons
     # below rather than instead of them.

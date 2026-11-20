@@ -18,6 +18,7 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 
 ### New
 
+- **On ThunderBridge and PCIe, a DAW or Audio MIDI Setup can set an 8MicPre channel's polarity, 80 Hz high-pass and input type, and Maestro's Inputs page follows those changes and DAW gain moves, on unit A or B.** Polarity and high-pass apply to Mic and Instrument only, as in Apogee's software. Switching to a line type turns phantom power and the insert off first, and the type does not change if that fails. After a channel is switched to Mic from a DAW, phantom power can be turned on from the DAW after two seconds, so Core Audio replaying saved settings when the Symphony I/O appears cannot turn +48 V on by itself.
 - With two Symphony I/Os at 64 channels, Device Settings › Clock now offers Use Loop Sync and a choice of Loop Sync Master. Turning Loop Sync off puts unit B on Word Clock. Clock roles and measured lock are shown separately.
 - **With two Symphony I/Os at 64 channels, Device Settings › Volume Keys lets you choose which unit receives the Mac's volume keys and Core Audio mute control.** It remembers the choice and returns to unit A if unit B is disconnected.
 - **With two Symphony I/Os at 64 channels, Mixer and Output Routing use each unit's own prefix and board names, including optical format and `N.A.` channels; custom mixer labels stay with their unit.**

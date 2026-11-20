@@ -49,6 +49,11 @@ void HostLog(const char *fmt, ...);
 
 static inline void IOSleep(uint64_t ms) { gHostBackend->Sleep(ms); }
 
+// The MicPre HAL Mic arm delay reads this clock; a test steps it forward
+// instead of sleeping (see SYMPHONY_MICPRE_NOW_NS in the driver).
+extern uint64_t gHostMicPreClockOffsetNs;
+#define SYMPHONY_MICPRE_NOW_NS() (clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + gHostMicPreClockOffsetNs)
+
 // IOLock: the host test is single-threaded; count the holds so a test can see
 // an unbalanced lock.
 struct IOLock { int held = 0; };
@@ -359,7 +364,7 @@ enum class IOUserAudioStartStopFlags : uint64_t { None = 0 };
 enum class IOUserAudioObjectPropertyScope : uint32_t { Global, Input, Output };
 enum class IOUserAudioClassID : uint32_t {
     VolumeControl, MuteControl, ClockSourceControl, DataSourceControl, PhantomPowerControl,
-    PhaseInvertControl, HighPassFilterControl, SelectorControl
+    PhaseInvertControl, HighPassFilterControl, SelectorControl, LineLevelControl
 };
 enum class IOUserAudioTransportType : uint32_t { Thunderbolt };
 enum class IOUserAudioStreamDirection : uint32_t { Output, Input };
@@ -404,6 +409,11 @@ struct HostAudioRegistry {
     IOUserAudioLevelControl *volume = nullptr;
     IOUserAudioBooleanControl *mute = nullptr;
     std::vector<IOUserAudioLevelControl *> micGains;
+    std::vector<IOUserAudioBooleanControl *> phantoms;
+    // MicPre DAW controls, in creation order (host input 0, 1, ...).
+    std::vector<IOUserAudioBooleanControl *> micPrePhases;
+    std::vector<IOUserAudioSelectorControl *> micPreHighPasses;
+    std::vector<IOUserAudioSelectorControl *> micPreInputTypes;
     // Two-port experiment (none of these produce trace lines):
     IOUserAudioStream *inStream = nullptr, *outStream = nullptr;
     std::vector<IOUserAudioSelectorControl *> portSources;   // input, output
@@ -455,12 +465,16 @@ public:
     }
     using OSObject::init;
     virtual bool init(IOUserAudioDriver *, bool, bool v, IOUserAudioObjectPropertyElement,
-                      IOUserAudioObjectPropertyScope, IOUserAudioClassID) {
+                      IOUserAudioObjectPropertyScope, IOUserAudioClassID c) {
         v_ = v;
+        classID = c;
         return true;
     }
+    IOUserAudioClassID classID{};
     bool GetControlValue() const { return v_; }
-    kern_return_t SetControlValue(bool v) { v_ = v; return kIOReturnSuccess; }
+    kern_return_t SetControlValue(bool v) { v_ = v; ++valuePublications; return kIOReturnSuccess; }
+    virtual kern_return_t HandleChangeControlValue(bool v) { return SetControlValue(v); }
+    uint32_t valuePublications = 0;
 private:
     bool v_ = false;
 };
@@ -469,7 +483,8 @@ class IOUserAudioSelectorControl : public IOUserAudioControl {
 public:
     using OSObject::init;
     virtual bool init(IOUserAudioDriver *, bool, IOUserAudioObjectPropertyElement,
-                      IOUserAudioObjectPropertyScope, IOUserAudioClassID) { return true; }
+                      IOUserAudioObjectPropertyScope, IOUserAudioClassID c) { classID = c; return true; }
+    IOUserAudioClassID classID{};
     // Appends, like AudioDriverKit: a rename that forgets to remove the old
     // entries shows up as four.
     kern_return_t AddControlValueDescriptions(const IOUserAudioSelectorValueDescription *d, size_t n) {
@@ -508,6 +523,9 @@ public:
         if (n) selected = v[0];
         sets++;
         return kIOReturnSuccess;
+    }
+    virtual kern_return_t HandleChangeSelectedValues(const IOUserAudioSelectorValue *v, size_t n) {
+        return SetCurrentSelectedValues(v, n);
     }
     // Host-test state (no trace lines).
     IOUserAudioSelectorValue selected = 0;
@@ -670,8 +688,49 @@ public:
 };
 class SymphonyPhantomControl : public IOUserAudioBooleanControl {
 public:
+    SymphonyPhantomControl() { gHostAudio.phantoms.push_back(this); }
     void SetDriver(SymphonyThunderbridge *) {}
     void SetChannel(uint32_t) {}
+};
+// The MicPre DAW controls: the real Source/*.cpp is compiled when present.
+struct SymphonyPhaseControl_IVars;
+class SymphonyPhaseControl : public IOUserAudioBooleanControl {
+    using super = IOUserAudioBooleanControl;
+    SymphonyPhaseControl_IVars *ivars = nullptr;
+public:
+    SymphonyPhaseControl() { gHostAudio.micPrePhases.push_back(this); }
+    bool init(IOUserAudioDriver *, bool, bool, IOUserAudioObjectPropertyElement,
+              IOUserAudioObjectPropertyScope, IOUserAudioClassID) override;
+    void free() override;
+    kern_return_t HandleChangeControlValue(bool) override;
+    void SetDriver(SymphonyThunderbridge *);
+    void SetChannel(uint32_t);
+};
+struct SymphonyHighPassControl_IVars;
+class SymphonyHighPassControl : public IOUserAudioSelectorControl {
+    using super = IOUserAudioSelectorControl;
+    SymphonyHighPassControl_IVars *ivars = nullptr;
+public:
+    SymphonyHighPassControl() { gHostAudio.micPreHighPasses.push_back(this); }
+    bool init(IOUserAudioDriver *, bool, IOUserAudioObjectPropertyElement,
+              IOUserAudioObjectPropertyScope, IOUserAudioClassID) override;
+    void free() override;
+    kern_return_t HandleChangeSelectedValues(const IOUserAudioSelectorValue *, size_t) override;
+    void SetDriver(SymphonyThunderbridge *);
+    void SetChannel(uint32_t);
+};
+struct SymphonyInputTypeControl_IVars;
+class SymphonyInputTypeControl : public IOUserAudioSelectorControl {
+    using super = IOUserAudioSelectorControl;
+    SymphonyInputTypeControl_IVars *ivars = nullptr;
+public:
+    SymphonyInputTypeControl() { gHostAudio.micPreInputTypes.push_back(this); }
+    bool init(IOUserAudioDriver *, bool, IOUserAudioObjectPropertyElement,
+              IOUserAudioObjectPropertyScope, IOUserAudioClassID) override;
+    void free() override;
+    kern_return_t HandleChangeSelectedValues(const IOUserAudioSelectorValue *, size_t) override;
+    void SetDriver(SymphonyThunderbridge *);
+    void SetChannel(uint32_t);
 };
 struct SymphonyMicGainControl_IVars;
 class SymphonyMicGainControl : public IOUserAudioLevelControl {
