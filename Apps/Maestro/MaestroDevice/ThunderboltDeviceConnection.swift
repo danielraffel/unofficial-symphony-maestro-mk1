@@ -97,7 +97,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// the Mac, not the unit, owns them.
     ///
     /// Without this every such read threw `unsupportedProperty`, so a view that
-    /// re-reads the device each time it appears (System Setup, Device Settings,
+    /// re-reads the device each time it appears (Device Settings,
     /// the Output tab's monitor section) fell back to its hard-coded defaults:
     /// the user set Peak Hold or Line output mode, switched tabs, and came back
     /// to the default on screen while the hardware kept what they had chosen.

@@ -6,6 +6,7 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 
 ### Changes that may affect your setup
 
+- Settings are on two pages: Device Settings (the Symphony I/O) and App Settings (Maestro itself).
 - Symphony settings, input routes and channel labels now follow the identified physical unit when it moves between ports. Previously saved layout settings are preserved for their first identified owner; replacement units do not inherit them. Saved phantom power from an unverified migration cannot authorize preset recall.
 - 8MicPre Mic and Instrument settings are restored after connection and recovery, including both gain stages. Phantom power is restored only when Maestro recorded it for the same physical unit, board slot and Mic channel. Older or unverified settings restore phantom OFF.
 - Leaving Mic turns phantom power off, including when another setting fails.
@@ -13,12 +14,12 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 - On an 8MicPre, phantom power switched from a DAW or Audio MIDI Setup now turns on only for a channel in Mic mode, as in Apogee's software. Switching it off always works.
 - A queued 8MicPre gain or phantom change from a DAW is dropped if the channel's input routing changes before it is sent; switching phantom off still reaches the channel it was meant for.
 - **Instrument gain on an 8MicPre now reaches the preamp's Instrument stage, with its own 0-65 dB range.** Before, Maestro sent Instrument gain as Mic gain. Mic and Instrument gains are now remembered separately for each channel, as in Apogee's software, so switching a channel between Mic and Instrument brings back the gain you last used for that type.
-- **The connection in Device Info reads "Thunderbolt (Symphony 64 PCIe card)",** without the word "experimental".
+- **The connection in Device Settings › Info reads "Thunderbolt (Symphony 64 PCIe card)",** without the word "experimental".
 
 ### New
 
-- With two Symphony I/Os at 64 channels, System Setup now offers Use Loop Sync and a choice of Loop Sync Master. Turning Loop Sync off puts unit B on Word Clock. Clock roles and measured lock are shown separately.
-- **With two Symphony I/Os at 64 channels, System Setup lets you choose which unit receives the Mac's volume keys and Core Audio mute control.** It remembers the choice and returns to unit A if unit B is disconnected.
+- With two Symphony I/Os at 64 channels, Device Settings › Clock now offers Use Loop Sync and a choice of Loop Sync Master. Turning Loop Sync off puts unit B on Word Clock. Clock roles and measured lock are shown separately.
+- **With two Symphony I/Os at 64 channels, Device Settings › Volume Keys lets you choose which unit receives the Mac's volume keys and Core Audio mute control.** It remembers the choice and returns to unit A if unit B is disconnected.
 - **With two Symphony I/Os at 64 channels, Mixer and Output Routing use each unit's own prefix and board names, including optical format and `N.A.` channels; custom mixer labels stay with their unit.**
 - **With two Symphony I/Os at 64 channels, Input Routing on ThunderBridge and PCIe can map either unit’s input streams to any software input.** With one unit, Input Routing shows a single grid, as before. Card input choices are remembered on reconnect, included in single-unit preset bundles, and cleared by Reset Routing.
 - **With two Symphony I/Os at 64 channels, choosing Unit B on the Outputs page shows unit B's own speaker and headphone controls,** as Apogee's software did. The Mac's volume keys still control unit A.
@@ -26,7 +27,7 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 
 ### Fixes
 
-- Device Info shows “Unknown” for unreadable firmware components and no longer labels the USB daemon’s software version as hardware firmware. Port errors use the original Maestro wording.
+- Device Settings › Info shows “Unknown” for unreadable firmware components and no longer labels the USB daemon’s software version as hardware firmware. Port errors use the original Maestro wording.
 
 - Keep each Symphony I/O’s speaker controls and front-panel changes on that unit when Mac volume keys target the other unit. Switching the keyboard-volume target, or losing unit B, restores the selected unit’s own level and mute without a volume jump. Monitor selection no longer waits for the hardware on the app’s main thread.
 
@@ -36,7 +37,7 @@ Test build, not released. This beta brings Maestro closer to what Apogee's softw
 - **With two Symphony I/Os at 64 channels, Reset Routing resets the selected routing direction across the whole card and both units.**
 - **Settings bundles now save and restore both Symphony I/Os.** Older bundles restore unit A only. If unit B is absent or has different cards, Maestro restores unit A and reports that unit B was skipped.
 
-- **Device Info now shows Unit B’s own firmware, board versions and hardware ID with two Symphony I/Os at 64 channels.** Unreadable fields say “Unknown”, and copied diagnostics include both units.
+- **Device Settings › Info now shows Unit B’s own firmware, board versions and hardware ID with two Symphony I/Os at 64 channels.** Unreadable fields say “Unknown”, and copied diagnostics include both units.
 - **Unit B’s headphone sources now work on the Outputs page**, and stay routed after resetting or loading unit B’s output routing.
 
 - **Input Routing now follows the Unit A / Unit B picker with two Symphony I/Os at 64 channels.** Unit B shows its own inputs and saves its routing choices separately.
@@ -79,7 +80,7 @@ Thanks to the people who reported converters showing only four units, a tone rep
 
 - **The second unit (on port 2) is now set up when 64 channels start,** as Apogee's software did: it follows the first unit's clock through Loop Sync, and its routing and optical format are set. Before, it ran on whatever it had stored.
 - **Connect the two units' Loop Sync connectors with BNC cables,** as Apogee's guide shows, and choose the clock source on the first unit.
-- **A Unit A / Unit B picker** appears in Maestro when the second unit is set up. Inputs, Outputs, Device Settings and System Setup show the chosen unit, with its own saved settings and meters.
+- **A Unit A / Unit B picker** appears in Maestro when the second unit is set up. Inputs, Outputs, Input Routing and Device Settings show the chosen unit, with its own saved settings and meters.
 - **The Mixer and Output Routing include the second unit's channels,** and your DAW sees its channel names for 33-64.
 - **The ThunderBridge's port 2 light** is on while port 2 carries audio and flashes when it loses its clock.
 - **64 channels comes back by itself** when the second unit is switched on after the Mac, or returns after a problem.
@@ -91,7 +92,7 @@ Thanks to the people who reported converters showing only four units, a tone rep
 
 ### Please test
 
-If you have any of these, a Diagnostics report helps a lot: in **Device Settings › Preferences**, turn on **Diagnostics**, switch your units off and on, use them for a few minutes, then press **Stop Diagnostics** and send the report.
+If you have any of these, a Diagnostics report helps a lot: in **App Settings › Diagnostics & Feedback**, turn on **Diagnostics**, switch your units off and on, use them for a few minutes, then press **Stop Diagnostics** and send the report.
 
 - **AD-16X, DA-16X, DD-16X or Rosetta converters,** on port 1, port 2 or both: do all your units appear, with the right names and channels in your DAW, and do routing changes and rate changes work? Please say which units are on which port, in cable order.
 - **Two Symphony I/Os at 64 channels:** does the second unit appear, follow the first unit's clock over Loop Sync, and play and record on channels 33-64?
@@ -102,7 +103,7 @@ If you have any of these, a Diagnostics report helps a lot: in **Device Settings
 
 More is on the way in the following betas:
 
-- **Second Symphony I/O:** editing its Input Routing, its headphone and monitor controls, its firmware and serial in Device Info, and Reset Routing and presets that cover its outputs.
+- **Second Symphony I/O:** editing its Input Routing, its headphone and monitor controls, its firmware and serial in Device Settings › Info, and Reset Routing and presets that cover its outputs.
 - **8MicPre:** Mic and Instrument settings sent to the unit when Maestro connects, as line levels already are.
 - Fixes for whatever the reports above turn up.
 
@@ -171,7 +172,7 @@ Thanks to the testers with Symphony 64 PCIe cards whose careful reports, and who
 
 ### What's new
 
-- **Diagnostics, for testers on the Beta channel.** Turn it on in Device Settings › Preferences, do what causes the problem, then press Stop Diagnostics. Maestro saves a file to your Desktop and offers to email it privately to the developer, with optional details about your setup and the problem. Nothing is sent until you press Agree and Send, and it is never posted publicly. Help › "When and how should I use diagnostics?" explains when it is useful.
+- **Diagnostics, for testers on the Beta channel.** Turn it on in App Settings › Diagnostics & Feedback, do what causes the problem, then press Stop Diagnostics. Maestro saves a file to your Desktop and offers to email it privately to the developer, with optional details about your setup and the problem. Nothing is sent until you press Agree and Send, and it is never posted publicly. Help › "When and how should I use diagnostics?" explains when it is useful.
 
 ### What's better
 
@@ -188,7 +189,7 @@ Small changes that make it easier to tell which version you are on. It contains 
 ### What's new
 
 - **About Maestro says whether you are on Stable or Beta.** The version reads, for example, "Version 0.9.4 (Beta)".
-- **The copied details include your update channel.** The copy button in About Maestro and in Device Info now adds a line such as "Update channel: Beta", so a pasted report shows which channel you follow.
+- **The copied details include your update channel.** The copy button in About Maestro and in App Settings › About now adds a line such as "Update channel: Beta", so a pasted report shows which channel you follow.
 
 ### What's better
 
@@ -256,15 +257,15 @@ The first beta, for people helping to test two Symphony I/O units on one Thunder
 
 ### New
 
-- **64 channels with two Symphony I/O units.** Connect the second unit to ThunderBridge port 2, then choose 64 channels (two units) under Ports in System Setup › Device Info, or pick "Symphony I/O: ThunderBridge 64" as the Source. Channels 33-64 are the unit on port 2. If no second unit is found, the driver stays at 32 channels and Device Info says why. This has not yet been confirmed on real hardware.
+- **64 channels with two Symphony I/O units.** Connect the second unit to ThunderBridge port 2, then choose 64 channels (two units) under Ports in Device Settings › Connection, or pick "Symphony I/O: ThunderBridge 64" as the Source. Channels 33-64 are the unit on port 2. If no second unit is found, the driver stays at 32 channels and Device Settings › Connection says why. This has not yet been confirmed on real hardware.
 - **A Symphony I/O on a Symphony 64 PCIe card should now be recognised (experimental).** With the PCIe card in a Thunderbolt chassis, Maestro showed the Symphony I/O as an "Apogee DD-16X" and none of Maestro's settings reached it. It should now appear as a Symphony I/O with its option cards. This has not yet been confirmed on real hardware.
 
 ### For testers
 
 - Please report whether 64 channels work with two units, and whether 32 channels still work as before with one.
-- If you use the Symphony 64 PCIe card: please report whether Device Info now lists your option cards, whether Maestro's controls work, and whether audio plays and records. If it still shows a different unit, press Copy next to Device Info and send the text.
+- If you use the Symphony 64 PCIe card: please report whether Device Settings › Info now lists your option cards, whether Maestro's controls work, and whether audio plays and records. If it still shows a different unit, press Copy next to Device Settings › Info and send the text.
 - If you have one of the 64-channel test builds (9004-9006), install this package by hand once. When Maestro next checks for updates it sets the update channel to Beta, and you keep getting betas.
-- To leave the beta, choose Stable under Update channel in Device Settings › Preferences; Maestro offers to reinstall the latest stable version.
+- To leave the beta, choose Stable under Update channel in App Settings › Updates; Maestro offers to reinstall the latest stable version.
 
 ## 0.8.40
 

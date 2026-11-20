@@ -83,12 +83,12 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
         [
             "Two-unit (64-channel) support is new. Reports from people using it are welcome.",
             "Connect the first Symphony I/O to ThunderBridge port 1 and the second unit to port 2. "
-                + "Choose **64 channels (two units)** under **Ports** in System Setup › Device Info, "
+                + "Choose **64 channels (two units)** under **Ports** in Device Settings › Connection, "
                 + "or pick **\(PortSelection.ports1And2.name)** in Audio MIDI Setup's **Source** menu "
                 + "or the macOS Sound menu. **\(PortSelection.port1.name)** is the usual 32 channels. "
                 + "Channels 33–64 are the unit on port 2. \(apogeeNamesSentence)",
             "If no second unit is found on port 2, the driver refuses 64 channels and stays at 32; "
-                + "Device Info says why. Your DAW should keep the same device either way.",
+                + "Device Settings › Connection says why. Your DAW should keep the same device either way.",
         ]
     }
 
@@ -198,7 +198,7 @@ public struct PortSelectionModel: Sendable, Equatable {
     }
 }
 
-/// What Device Info shows around the Ports picker. At 32 channels port 2 is
+/// What Device Settings › Connection shows around the Ports picker. At 32 channels port 2 is
 /// off and nothing is looked at, so there is nothing to report about it: the
 /// picker, its explanation and, after a refused request, the plain reason once
 /// under the picker. The port-2 detail rows

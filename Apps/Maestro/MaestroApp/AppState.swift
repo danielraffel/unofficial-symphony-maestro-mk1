@@ -700,9 +700,9 @@ final class AppState {
     /// Where `secondaryBoardType` came from. See `primaryBoardSource`.
     var secondaryBoardSource: BoardDetectionSource = .unknown
 
-    /// The Device Info panel's last assembled content, published by System Setup when it
+    /// The Device Info panel's last assembled content, published by Device Settings when it
     /// loads. The About box copies it so a bug report is one Copy button, not two pages;
-    /// nil until System Setup has been opened once, and the About box falls back to what
+    /// nil until Device Settings has been opened once, and the About box falls back to what
     /// this object knows on its own.
     var deviceInfoSnapshot: DeviceInfoReport?
 
