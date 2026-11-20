@@ -1134,9 +1134,6 @@ struct MixerView: View {
         }
     }
 
-    /// Over USB the connection sends the unit's 0xB3 to strip 32 and, when it
-    /// lands, mutes the helper's software stage too (the "Maestro USB" device
-    /// is rendered there). ThunderBridge: the driver's mixer alone, unchanged.
     /// What the helper's one software mute should be when this mixer's
     /// Software Return has `muted` and `source`: the other mixer counts too.
     private func helperMute(muted: Bool, source: UInt32) -> Bool {
@@ -1149,6 +1146,10 @@ struct MixerView: View {
         ])
     }
 
+    /// Over USB the connection sends the unit's 0xB3 to strip 32 of this mixer
+    /// and, when it lands, sets the helper's software mute by `helperMute`
+    /// (the "Maestro USB" device is rendered there). ThunderBridge: the
+    /// driver's mixer alone, unchanged.
     private func writeSWReturnMute(_ muted: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }

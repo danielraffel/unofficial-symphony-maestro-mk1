@@ -38,6 +38,21 @@ struct SoftwareReturnPerMixerTests {
         #expect(MixerStateSnapshot.savedSoftwareReturn(mixer: 1, preferences: p).isMuted)
     }
 
+    @Test("each mixer's strip moves with the unit's settings when its identity is learned")
+    func perMixerKeysMigrate() {
+        #expect(MixerPreferences.legacyKeys.contains(MixerStateSnapshot.softwareReturnKey(mixer: 0)))
+        #expect(MixerPreferences.legacyKeys.contains(MixerStateSnapshot.softwareReturnKey(mixer: 1)))
+    }
+
+    @Test("ThunderBridge replay gives each mixer its own mute and solo")
+    func cardReplayPerMixer() {
+        let (_, p, done) = prefs(); defer { done() }
+        MixerStateSnapshot.saveSoftwareReturn(strip(muted: true), mixer: 0, preferences: p)
+        MixerStateSnapshot.saveSoftwareReturn(strip(muted: false, solo: true), mixer: 1, preferences: p)
+        #expect(MixerStateSnapshot.savedSoftwareReturn(mixer: 0, preferences: p) == strip(muted: true))
+        #expect(MixerStateSnapshot.savedSoftwareReturn(mixer: 1, preferences: p) == strip(muted: false, solo: true))
+    }
+
     @Test("pan is one value for both mixers")
     func panShared() {
         let (_, p, done) = prefs(); defer { done() }

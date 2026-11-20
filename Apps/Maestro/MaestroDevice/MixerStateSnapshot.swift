@@ -47,7 +47,7 @@ public struct MixerStateSnapshot: Sendable {
     /// SymphonyPCIeCardMixer.cpp:46-47), and Apogee's Maestro had one Software
     /// Return model per mixer (maestro2/App/Model/APAudioMixerSoftwareReturnModel.h).
     public static func softwareReturnKey(mixer: Int) -> String { "mixerState_swReturn_\(mixer)" }
-    /// Before 0.9.16 one strip was saved for both mixers under this key; it is
+    /// Before 0.9.17 one strip was saved for both mixers under this key; it is
     /// what a mixer starts from until its own is saved.
     public static let sharedSoftwareReturnKey = "mixerState_swReturn"
 
