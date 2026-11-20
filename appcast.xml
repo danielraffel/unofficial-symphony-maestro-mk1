@@ -7,6 +7,32 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.16</title>
+      <pubDate>Fri, 20 Nov 2026 22:59:15 GMT</pubDate>
+      <sparkle:version>0.9.16</sparkle:version>
+      <sparkle:shortVersionString>0.9.16</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.16</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta fixes a crash when stopping a diagnostics recording. It contains everything in 0.9.15.
+
+### Fixed
+
+- **Maestro no longer crashes when you press Stop Diagnostics.** It could quit at that moment if it was still writing to its log, and the report was then finished the next time Maestro opened. Thanks to the person who reported it.
+
+### New
+
+- **Help says more plainly when the Mixer's Software Return and Master controls can be heard:** only on outputs fed from that mixer in Output Routing, with Mixer 1 and Mixer 2 each affecting only their own outputs. It is under "Why doesn't the Software Return fader, pan or mute, or Master, change what I hear?", and in the user guide.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.16/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="momy8WXuAGg2U93YZpq3BaSEEkHOn+17rJmIpA0PpzI3aFFKK/6o4qzwFh86NeaS0GPC0F4Q+CNCAStyckKaBg==" length="5448229" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.15</title>
       <pubDate>Fri, 20 Nov 2026 22:21:46 GMT</pubDate>
       <sparkle:version>0.9.15</sparkle:version>
@@ -1171,6 +1197,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: YXVqt6aZoKt/RFbIQuv5i7I2sicaQ6SRr5/ImUgOVFB3dHyUHnQznKpxx6mvqOgOd8NCAe8gIg3LFnHZCqZ6Cw==
-length: 114451
+edSignature: 1GdSSfOXCdLr3ZAluNn04NCqeqJLkUYgymvd8udZQFrmaXm5YBtz0IblqppxpRK9wSAISlhXsmEKgnZMY7QXDA==
+length: 116303
 -->
