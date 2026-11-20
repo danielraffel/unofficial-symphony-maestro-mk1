@@ -72,6 +72,7 @@ struct DeviceSettingsView: View {
     @State private var board2Reading: BoardTypeReading = .unknown
     @State private var showCopied: Bool = false
     @State private var showPortsInfo = false
+    @State private var showClockStatusInfo = false
     @State private var dextActionInFlight = false
     @State private var dextActionStatus: String?
     @State private var showDextActionAlert = false
@@ -491,6 +492,29 @@ struct DeviceSettingsView: View {
                                     .frame(width: 8, height: 8)
                                 Text(PortStatusMessage.clock(locked: shownClockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                                     .foregroundStyle(.secondary)
+                                Button { showClockStatusInfo.toggle() } label: {
+                                    Image(systemName: "info.circle")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("About Clock Status")
+                                .maestroHelp("Explain Ready and Clock Mismatch.")
+                                // Same look as the Ports and Audio Interface
+                                // Mode pop-ups: left-aligned (the row's trailing
+                                // alignment would otherwise carry into it).
+                                .popover(isPresented: $showClockStatusInfo, arrowEdge: .bottom) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        ForEach(PortStatusMessage.clockInfoParagraphs, id: \.self) { paragraph in
+                                            Text(LocalizedStringKey(paragraph))
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                    }
+                                    .font(.callout)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(width: 340, alignment: .leading)
+                                    .padding(14)
+                                }
                             }
                         }
                     }

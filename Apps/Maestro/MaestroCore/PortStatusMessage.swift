@@ -27,6 +27,16 @@ public enum PortStatusMessage {
         return locked ? "Ready" : "Clock Mismatch"
     }
 
+    /// The Clock Status info pop-up in Device Settings › Clock. The two states
+    /// are the original's (`SymphonyIO.cpp:2961-2968`); when each is shown is
+    /// `ClockSourceMenu.isLocked`.
+    public static let clockInfoParagraphs: [String] = [
+        "Clock Status shows whether the Symphony I/O is locked to the clock source chosen above.",
+        "**Ready**: the clock source is Internal, or the Symphony I/O has locked to the external source you chose.",
+        "**Clock Mismatch**: the source you chose has no usable signal, or it runs at a different sample rate "
+            + "from the one set here. Check the cable and the source's sample rate, or choose Internal.",
+    ]
+
     public static let verify = "Verify that the hardware is properly connected and powered on."
     public static let defaultCard = "the ThunderBridge"
 

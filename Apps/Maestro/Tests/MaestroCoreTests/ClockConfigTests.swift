@@ -162,4 +162,12 @@ struct ClockConfigTests {
         #expect(!ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.key(source: 5, boardInput: 6), externalClockLocked: false))
         #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.loopSync, externalClockLocked: true))
     }
+
+    @Test("The Clock Status pop-up explains both states in the original's words")
+    func clockStatusInfo() {
+        let text = PortStatusMessage.clockInfoParagraphs.joined(separator: " ")
+        #expect(text.contains("**" + PortStatusMessage.clock(locked: true) + "**"))
+        #expect(text.contains("**" + PortStatusMessage.clock(locked: false) + "**"))
+        #expect(text.contains("Internal"))
+    }
 }
