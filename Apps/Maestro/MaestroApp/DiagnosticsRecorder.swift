@@ -782,32 +782,51 @@ final class DiagnosticsRecorder {
 
 /// Copies Maestro's own output (its `print` lines) into the diagnostics folder
 /// while recording, and still to wherever it went before.
+///
+/// The copy runs on Foundation's file-handle queue while `stop()` runs on the
+/// main actor. They share the two descriptors, so both go through one lock and
+/// the copy does nothing once stopped. The file is written with `write(2)`,
+/// not `FileHandle.write`: on a closed handle that raises an Objective-C
+/// exception, which `try?` does not catch, and it aborted Maestro when Stop
+/// Diagnostics was pressed while output was in flight (report 04CB0C0D,
+/// 2026-11-21: `closure #1 in StdoutTee.init(file:)` under
+/// `_NSFileHandleRaiseOperationExceptionWhileReading`).
 private final class StdoutTee: @unchecked Sendable {
-    private let original: Int32
     private let pipe = Pipe()
-    private let file: FileHandle?
+    private let lock = NSLock()
+    private var original: Int32
+    private var fileFD: Int32
+    private var stopped = false
 
     init(file url: URL) {
-        file = try? FileHandle(forWritingTo: url)
-        _ = try? file?.seekToEnd()
+        fileFD = open(url.path, O_WRONLY | O_APPEND)
         original = dup(STDOUT_FILENO)
         dup2(pipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO)
-        let original = self.original
-        let file = self.file
-        pipe.fileHandleForReading.readabilityHandler = { h in
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             let data = h.availableData
-            guard !data.isEmpty else { return }
-            data.withUnsafeBytes { _ = write(original, $0.baseAddress, data.count) }
-            try? file?.write(contentsOf: data)
+            guard !data.isEmpty, let self else { return }
+            self.copy(data)
+        }
+    }
+
+    private func copy(_ data: Data) {
+        lock.lock(); defer { lock.unlock() }
+        guard !stopped else { return }
+        data.withUnsafeBytes { bytes in
+            if original >= 0 { _ = write(original, bytes.baseAddress, bytes.count) }
+            if fileFD >= 0 { _ = write(fileFD, bytes.baseAddress, bytes.count) }
         }
     }
 
     func stop() {
         fflush(stdout)
-        dup2(original, STDOUT_FILENO)
-        close(original)
         pipe.fileHandleForReading.readabilityHandler = nil
+        lock.lock()
+        guard !stopped else { lock.unlock(); return }
+        stopped = true
+        if original >= 0 { dup2(original, STDOUT_FILENO); close(original); original = -1 }
+        if fileFD >= 0 { close(fileFD); fileFD = -1 }
+        lock.unlock()
         try? pipe.fileHandleForWriting.close()
-        try? file?.close()
     }
 }
