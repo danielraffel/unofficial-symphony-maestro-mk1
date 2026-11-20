@@ -4315,9 +4315,9 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     }
     if (!ivars->unitBConfigured) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
     PublishAllMicPreControls(ivars);   // host inputs routed to unit B resolve again (or no longer)
-    STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, %u message error(s))",
+    STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, %u message error(s), set-up 0x%05x)",
           unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
-          ivars->unitBPrefix, ivars->unitBTxErrors);
+          ivars->unitBPrefix, ivars->unitBTxErrors, ivars->unitBSetupFlags);
 }
 
 static bool EnablePort2Audio(SymphonyThunderbridge_IVars *ivars)

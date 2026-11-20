@@ -128,7 +128,7 @@ public struct SecondUnitInfo: Sendable, Equatable {
             "Unit B IOBoard 2: \(slot(slot2, slotValid[1]))",
             "Unit B prefix: \(prefix(after: unitAPrefix))" + (prefixLetter == nil ? " (none kept on the unit)" : ""),
             "Unit B clock: \(clockSourceName)",
-            "Unit B set-up: \(setupComplete ? "complete" : "incomplete")",
+            "Unit B set-up: \(setupComplete ? "complete" : "incomplete (0x" + String(setupFlags, radix: 16) + ")")",
             "Unit B message errors: \(txErrors)",
         ]
     }

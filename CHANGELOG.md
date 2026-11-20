@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.11 (beta)
+
+This beta fixes a second Symphony I/O being mistaken for a DD-16X converter. It contains everything in 0.9.10.
+
+Thanks to the tester with two Symphony I/Os who sent the diagnostics report that showed this.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver.** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **A second Symphony I/O with one 16-channel I/O card is now recognised as a Symphony I/O.** Before, Maestro showed it as a DD-16X and treated it as a converter. If you used it that way, its channels are now named and routed as unit B's, and it follows the clock settings in Device Settings › Clock (Loop Sync by default).
+
+### Fixed
+
+- **With two Symphony I/Os, the second unit is recognised whatever I/O cards it has.** A unit with a single 16-channel card (for example 16 Analog In / 16 Optical Out, or 16x16 Analog) was taken for a DD-16X, so it got none of unit B's set-up: no Loop Sync, no outputs above 16, and none of its own routing, mixer or Device Info. Maestro now asks the unit what it is, the way Apogee's software did.
+- **Choosing 64 channels no longer drops back to 32 over and over with a second Symphony I/O connected.** After Maestro had found the second unit once, later checks could miss it and report nothing on port 2.
+
+### Please test
+
+- **Two Symphony I/Os at 64 channels:** does Device Settings › Info show the second unit as a Symphony I/O with its cards, do the two units lock with Loop Sync (BNC Loop Sync cables between them) or Word Clock, and do DAW outputs 33–64 play? If anything fails, please send a Diagnostics report (turn on **Diagnostics** in **App Settings › Diagnostics & Feedback**, reproduce the problem, then press **Stop Diagnostics**).
+- **Converters on port 2 (AD-16X, DA-16X, DD-16X, Rosetta 800):** are they still shown and working as before?
+
+### Release notes
+
+- Driver: every unit on port 2 is asked its device type when it is found, and a unit that keeps its address between checks is found there.
+- Diagnostics show the second unit's device type and, if its set-up is incomplete, which step failed.
+
 ## 0.9.10 (beta)
 
 This beta brings Maestro closer to what Apogee's software did: a second Symphony I/O at 64 channels gets its own input routing, outputs, mixer, Loop Sync and presets; an 8MicPre's polarity, high-pass and input type can be set from your DAW; Identify; and settings that stay with each physical unit. Maestro now also behaves when the Mac sleeps, restores the card mixer after the driver restarts, and fixes Software Return mute over USB. Settings are reorganised into Device Settings and App Settings. It contains everything in 0.9.9; please share diagnostics if anything behaves differently.

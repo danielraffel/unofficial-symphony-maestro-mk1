@@ -53,7 +53,7 @@ struct SecondUnitTests {
         let info = SecondUnitInfo(slot1: .analogAES, slot2: .none, slotValid: [true, true],
                                   setupFlags: 1 << 10, txErrors: 1)
         #expect(!info.setupComplete)
-        #expect(info.reportLines(unitAPrefix: "A").contains("Unit B set-up: incomplete"))
+        #expect(info.reportLines(unitAPrefix: "A").contains("Unit B set-up: incomplete (0x400)"))
         #expect(info.reportLines(unitAPrefix: "A").contains("Unit B message errors: 1"))
     }
 
