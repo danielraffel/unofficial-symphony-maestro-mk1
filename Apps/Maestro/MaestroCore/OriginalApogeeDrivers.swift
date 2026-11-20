@@ -131,7 +131,7 @@ public enum OriginalApogeeDrivers {
     /// Apogee's Symphony I/O Release 5.5 disk image, whose Uninstall removes all of this.
     /// The same link as the installer's warning page (Installer/resources/warning.html).
     public static let releaseDMGURL = URL(string:
-        "https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg")!
+        "https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg")!
 
     /// Where Release 5.5 puts its Core Audio plug-ins (Makefile:99-101).
     public static let symphonySystemsDirectory = "/Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems"

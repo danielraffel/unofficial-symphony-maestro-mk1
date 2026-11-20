@@ -179,7 +179,8 @@ If you have already restarted and still see this, choose Open Removal Guide."
 Symphony Maestro cannot be installed while they are installed or loaded. The two interfere with each other and can cause problems, including crashes.
 
 To fix this:
-1. Download Apogee's latest installer, Symphony I/O Release 5.5 (Open Removal Guide has the link)
+1. Download Apogee's latest installer, Symphony I/O Release 5.5:
+   https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg
 2. Open the DMG and choose Uninstall
 3. Restart your Mac
 4. Run this installer again (Apogee's Uninstall also removes Maestro; this puts it back)
