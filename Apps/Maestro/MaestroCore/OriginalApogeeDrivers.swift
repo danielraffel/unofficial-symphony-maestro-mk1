@@ -189,21 +189,37 @@ public enum OriginalApogeeDrivers {
     /// What the warning tells people to do. Apogee's Uninstall also deletes
     /// /Applications/Maestro.app and macOS's audio device settings, hence the
     /// reinstall.
-    public static let removalAdvice = "Remove them with **Uninstall** in Apogee's Symphony I/O installer, "
-        + "restart your Mac, then reinstall Maestro. Apogee's Uninstall also removes Maestro and resets "
-        + "macOS's audio device settings."
+    public static let removalAdvice = "Remove them with **Uninstall** in Apogee's latest Symphony I/O installer "
+        + "(Release 5.5), restart your Mac, then reinstall Maestro and restart once more. Apogee's Uninstall "
+        + "also removes Maestro and resets macOS's audio device settings."
 
     /// What the warning says when only a restart is left (`isAwaitingRestartOnly`).
     public static let restartAdvice = "They have been removed, but one is still loaded. Restart your Mac to finish."
 
-    /// Added under `restartAdvice`: a restart does not always unload it.
-    public static let stillLoadedAdvice = "If this warning is still here after a restart, please send a "
-        + "Diagnostics report (App Settings › Diagnostics & Feedback) so we can see what is loading it."
-
-    /// Added under `removalAdvice` when `hasStagedCopy`.
+    /// Added under `removalAdvice` when `hasStagedCopy`. States what was found;
+    /// what to try is in `stillThereSteps`.
     public static let stagedAdvice = "macOS is also keeping its own copy of an Apogee kernel extension in "
-        + "/Library/StagedExtensions, which Apogee's Uninstall can leave behind. If this warning is still here "
-        + "after you uninstall and restart, please send a Diagnostics report (App Settings › Diagnostics & Feedback)."
+        + "/Library/StagedExtensions. Apogee's Uninstall doesn't remove that copy; macOS normally discards it "
+        + "once you have uninstalled and restarted."
+
+    /// The collapsed "still here" help under the warning, in Help and in
+    /// docs/UserManual.md: something people can try themselves, offered as a
+    /// suggestion. `kmutil clear-staging` is macOS's own command for the staged
+    /// folder (kmutil(8): "Clear the staging directory managed by
+    /// kernelmanagerd(8) and kmutil(8)") and runs with System Integrity
+    /// Protection on. Not tested on an affected Mac, and the text says so.
+    public static let stillThereTitle = "If the warning is still here after uninstalling and restarting"
+    public static let stillThereIntro = "macOS may still be loading its own stored copy of Apogee's kernel "
+        + "extension, which no uninstaller from Apogee removes. This macOS command asks it to clear those "
+        + "stored copies, and may help:"
+    public static let clearStagingCommand = "sudo kmutil clear-staging"
+    public static let stillThereSteps: [String] = [
+        "Open **Terminal** (in Applications › Utilities).",
+        "Paste the command above, press Return, and type your Mac's password when asked.",
+        "Restart your Mac.",
+    ]
+    public static let stillThereCaveat = "This is a suggestion, not a guaranteed fix: we haven't been able to "
+        + "test it on a Mac in this state, and Maestro can't do it for you. Leave System Integrity Protection on."
 
     /// The last resort, for a Mac that cannot run Apogee's uninstaller: what has
     /// to go, in general terms, not a procedure. Always behind a collapsed

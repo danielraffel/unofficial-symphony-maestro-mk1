@@ -63,9 +63,32 @@ In **App Settings › General**, choose Auto, Light or Dark appearance; **Show t
 
 Maestro isn't supported alongside Apogee's original Symphony I/O drivers: the two can interfere with each other and cause problems, including crashes. The installer will not install Maestro for the first time while they are present (an update of Maestro goes ahead), and **Device Settings** shows a warning at the top while they are found.
 
-To remove them, download Apogee's [Symphony I/O Release 5.5](https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open the disk image and choose **Uninstall**, restart your Mac, then reinstall Maestro. Apogee's Uninstall also removes Maestro and Apogee Maestro 2, and resets macOS's audio device settings. If you use Apogee Maestro 2 with another Apogee interface, reinstall it from Apogee afterwards.
+To remove them:
 
-macOS can keep its own copy of Apogee's kernel extensions in **/Library/StagedExtensions**, which Apogee's Uninstall doesn't remove, and that copy can load again after a restart. Maestro's warning says when it finds one. If the warning is still there after you uninstall and restart, send a Diagnostics report from **App Settings › Diagnostics & Feedback** and we'll help.
+1. Download Apogee's latest installer, [Symphony I/O Release 5.5](https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open the disk image and choose **Uninstall**. Use this one even if you installed from an older release: older uninstallers leave parts behind.
+2. Restart your Mac.
+3. Reinstall Maestro, then restart once more.
+
+Apogee's Uninstall also removes Maestro and Apogee Maestro 2, and resets macOS's audio device settings. If you use Apogee Maestro 2 with another Apogee interface, reinstall it from Apogee afterwards.
+
+<details>
+<summary>If the warning is still there after uninstalling and restarting</summary>
+
+macOS can keep its own stored copy of Apogee's kernel extensions in **/Library/StagedExtensions** and load it again after a restart. No uninstaller from Apogee removes that copy. Maestro's warning says when it finds one (open **What was found**).
+
+This macOS command asks it to clear those stored copies, and may help:
+
+```
+sudo kmutil clear-staging
+```
+
+1. Open **Terminal** (in Applications › Utilities).
+2. Paste the command, press Return, and type your Mac's password when asked.
+3. Restart your Mac.
+
+This is a suggestion, not a guaranteed fix: we haven't been able to test it on a Mac in this state, and Maestro can't do it for you. Leave System Integrity Protection on.
+
+</details>
 
 <details>
 <summary>If you can't run Apogee's uninstaller</summary>

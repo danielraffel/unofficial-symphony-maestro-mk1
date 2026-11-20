@@ -39,8 +39,14 @@ struct OriginalApogeeDriversWiringTests {
     func manualStepsPlacement() throws {
         let guide = try file("../../docs/UserManual.md")
         let section = try #require(guide.range(of: "## Removing Apogee's original drivers"))
+        // Two collapsed blocks, in this order: what to try when the warning
+        // survives the uninstaller, then the last resort.
         let details = try #require(guide.range(of: "<details>", range: section.upperBound..<guide.endIndex))
-        #expect(guide[details.upperBound...].hasPrefix("\n<summary>\(ManualApogeeRemovalSteps.title)</summary>"))
+        #expect(guide[details.upperBound...].hasPrefix("\n<summary>If the warning is still there after uninstalling and restarting</summary>"))
+        #expect(guide.contains("```\n\(OriginalApogeeDrivers.clearStagingCommand)\n```"))
+        #expect(guide.contains(OriginalApogeeDrivers.stillThereCaveat + "\n"))
+        let lastResort = try #require(guide.range(of: "<details>", range: details.upperBound..<guide.endIndex))
+        #expect(guide[lastResort.upperBound...].hasPrefix("\n<summary>\(ManualApogeeRemovalSteps.title)</summary>"))
         #expect(guide.contains(OriginalApogeeDrivers.manualRemovalIntro + "\n"))
         for part in OriginalApogeeDrivers.manualRemovalParts {
             #expect(guide.contains("- \(part)\n"), "\(part)")

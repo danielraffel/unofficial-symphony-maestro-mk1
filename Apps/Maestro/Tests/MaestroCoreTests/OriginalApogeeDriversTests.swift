@@ -170,6 +170,12 @@ struct OriginalApogeeDriversTests {
     func advice() {
         #expect(OriginalApogeeDrivers.removalAdvice.contains("**Uninstall**"))
         #expect(OriginalApogeeDrivers.removalAdvice.contains("reinstall Maestro"))
+        #expect(OriginalApogeeDrivers.removalAdvice.contains("Release 5.5"))
+        // The self-help for a copy macOS still loads: macOS's own command, with
+        // protection left on, offered as a suggestion.
+        #expect(OriginalApogeeDrivers.clearStagingCommand == "sudo kmutil clear-staging")
+        #expect(OriginalApogeeDrivers.stillThereCaveat.contains("Leave System Integrity Protection on"))
+        #expect(!OriginalApogeeDrivers.stillThereSteps.joined().contains("csrutil"))
         #expect(OriginalApogeeDrivers.manualRemovalIntro.hasPrefix("If Apogee's uninstaller won't run on your Mac"))
         #expect(OriginalApogeeDrivers.manualRemovalIntro.contains("Restart afterwards."))
         let text = ([OriginalApogeeDrivers.manualRemovalIntro] + OriginalApogeeDrivers.manualRemovalParts)

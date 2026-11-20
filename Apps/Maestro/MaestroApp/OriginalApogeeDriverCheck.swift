@@ -105,7 +105,6 @@ struct OriginalApogeeDriversWarning: View {
                     if finding.isAwaitingRestartOnly {
                         Text(OriginalApogeeDrivers.restartAdvice)
                             .fontWeight(.semibold)
-                        Text(OriginalApogeeDrivers.stillLoadedAdvice)
                     } else {
                         Text(.init(OriginalApogeeDrivers.removalAdvice))
                         Link(destination: OriginalApogeeDrivers.releaseDMGURL) {
@@ -130,6 +129,7 @@ struct OriginalApogeeDriversWarning: View {
                         .padding(.top, 4)
                     }
                     .font(.callout)
+                    ApogeeStillThereSteps()
                     if !finding.isAwaitingRestartOnly { ManualApogeeRemovalSteps() }
                 }
             }
@@ -144,6 +144,37 @@ struct OriginalApogeeDriversWarning: View {
             }
             .accessibilityElement(children: .contain)
         }
+    }
+}
+
+/// Collapsed by default, under the uninstaller advice: what someone can try
+/// themselves when the warning survives Apogee's Uninstall and a restart.
+struct ApogeeStillThereSteps: View {
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(OriginalApogeeDrivers.stillThereTitle, isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(OriginalApogeeDrivers.stillThereIntro)
+                Text(OriginalApogeeDrivers.clearStagingCommand)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .padding(.vertical, 2)
+                ForEach(Array(OriginalApogeeDrivers.stillThereSteps.enumerated()), id: \.offset) { index, step in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(index + 1).")
+                        Text(LocalizedStringKey(step))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Text(OriginalApogeeDrivers.stillThereCaveat)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        }
+        .font(.callout)
     }
 }
 

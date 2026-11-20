@@ -227,10 +227,13 @@ struct HelpView: View {
     private var originalDriversAnswer: AttributedString {
         let md = "No. Remove Apogee's original Symphony I/O drivers before using Maestro: open Apogee's "
             + "[Symphony I/O Release 5.5](\(OriginalApogeeDrivers.releaseDMGURL.absoluteString)) installer, "
-            + "choose **Uninstall**, restart your Mac, then reinstall Maestro. Apogee's Uninstall also removes "
+            + "choose **Uninstall**, restart your Mac, then reinstall Maestro and restart once more. Always use "
+            + "Apogee's latest installer: older ones leave parts behind. Apogee's Uninstall also removes "
             + "Maestro and resets macOS's audio device settings. The two can interfere with each other and cause "
             + "problems, including crashes, and we can't investigate a problem while both are installed. "
-            + "**Device Settings** shows a warning at the top while they are there."
+            + "**Device Settings** shows a warning at the top while they are there, and lists what it found. "
+            + "If the warning is still there after all that, macOS may be loading its own stored copy of "
+            + "Apogee's kernel extension; the warning has a command you can try for that."
         return (try? AttributedString(markdown: md)) ?? AttributedString(md)
     }
 
