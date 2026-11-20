@@ -195,6 +195,7 @@ public enum CardMixerReplay {
         for group in groups where !group.isEmpty {
             try validateMixer()
             for write in group {
+                try Task.checkCancellation()
                 try send(write)
                 sent += 1
                 if sent < total { try await pace() }
@@ -269,6 +270,8 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     public private(set) var completed = false
     public private(set) var gaveUp = false
     public private(set) var attempts = 0
+    /// A run has begun an attempt and not yet ended (see `endAttempt`).
+    public private(set) var running = false
 
     public init() {}
 
@@ -308,7 +311,15 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     public mutating func beginAttempt() -> Bool {
         attempts += 1
         if attempts > CardMixerReplay.maxAttempts { gaveUp = true }
+        running = !gaveUp
         return !gaveUp
+    }
+
+    /// The run task ended or was cancelled. The last allowed attempt ending
+    /// without finishing gives up, so the Mixer page gets the mixer back.
+    public mutating func endAttempt() {
+        running = false
+        if !completed, attempts >= CardMixerReplay.maxAttempts { gaveUp = true }
     }
 
     /// Latched, owned by D5, not finished: a healthy cycle may start a run.
@@ -318,16 +329,19 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     }
 
     /// Whether the Mixer page's own recall-time sync must leave `mixer` to D5.
-    /// D5 owns a mixer the driver reported empty on this instance, from the
-    /// moment that is known until the instance goes away (pending, running,
-    /// finished or given up), and only while D5 can run here at all
+    /// D5 owns a mixer the driver reported empty on this instance only while
+    /// the restore is still to come (pending or running). Once it finished or
+    /// gave up (an in-place recovery, attempts used up, too many rebuilds),
+    /// the page syncs as it always did, so a Monitoring Mode or card layout
+    /// change still reaches the card, and a mixer D5 never wrote is not left
+    /// at the driver's defaults. Only while D5 can run here at all
     /// (`eligible`: one Symphony I/O at 32 channels, no converters, identity
     /// known, ...). An undecided instance is judged from its flags. Otherwise
     /// (old driver, ineligible path, or the driver held that mixer) the page
     /// syncs as it always did.
     public func pageDefersSync(mixer: Int, instance: DriverMixerInstance?, eligible: Bool) -> Bool {
         guard eligible, let instance, (0..<2).contains(mixer) else { return false }
-        if instance.nonce == nonce { return needs[mixer] }
+        if instance.nonce == nonce { return needs[mixer] && !completed && !gaveUp }
         return !instance.holdsAppState[mixer]
     }
 }

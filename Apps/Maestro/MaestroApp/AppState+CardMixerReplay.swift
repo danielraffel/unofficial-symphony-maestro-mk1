@@ -34,7 +34,10 @@ extension AppState {
             let outcome = await CardMixerRestoreRunner.run(self.cardMixerRestoreEnvironment(tb))
             print("[Maestro] D5 card mixer restore: \(outcome)")
             if case .restored = outcome { self.refreshSoftwareReturnMeterGains() }
-            if self.cardMixerRestoreRun?.token == token { self.cardMixerRestoreRun = nil }
+            if self.cardMixerRestoreRun?.token == token {
+                self.cardMixerRestoreRun = nil
+                self.cardMixerLedger.endAttempt()
+            }
         }
         cardMixerRestoreRun = CardMixerRestoreRun(token: token, connection: tb, task: task)
     }
@@ -42,8 +45,10 @@ extension AppState {
     /// Disconnect, replacement, or a link drop seen by the health loop.
     @MainActor
     func cancelCardMixerRestore() {
-        cardMixerRestoreRun?.task.cancel()
+        guard let run = cardMixerRestoreRun else { return }
+        run.task.cancel()
         cardMixerRestoreRun = nil
+        cardMixerLedger.endAttempt()
     }
 
     /// Identity resolved after launch or reconnect asked for the restore.
@@ -100,6 +105,7 @@ extension AppState {
         let edits = tb.mixerEdits
         let layout = cardLayout
         let preferencesKey = mixerPreferences.storageKey
+        let ledger = { [weak self] in self?.cardMixerLedger.nonce }
         return CardMixerRestoreRunner.Environment(
             readLink: { await Task.detached(priority: .utility) { tb.linkState() }.value },
             sleep: { try await Task.sleep(for: $0) },
@@ -123,8 +129,9 @@ extension AppState {
             },
             replay: { plan, recovery, epoch, generation, progress in
                 let started = Date()
+                guard let nonce = ledger() else { throw DeviceConnectionError.notConnected }
                 let transaction = Task.detached(priority: .utility) {
-                    try await tb.replayCardMixer(plan, layout: layout, recoveryCount: recovery,
+                    try await tb.replayCardMixer(plan, layout: layout, recoveryCount: recovery, nonce: nonce,
                         shouldContinue: { deferral.isValid(epoch) && edits.isCurrent(generation) },
                         progress: progress)
                 }

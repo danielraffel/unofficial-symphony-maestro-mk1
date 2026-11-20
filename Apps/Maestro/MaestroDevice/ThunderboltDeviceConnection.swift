@@ -316,6 +316,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// only (0xB0-0xB4); nothing is sent to the unit.
     public func replayCardMixer(_ groups: [[ThunderboltPreset.Write]], layout: CardLayout,
                                 recoveryCount: UInt32,
+                                nonce: UInt64? = nil,
                                 shouldContinue: @escaping @Sendable () -> Bool,
                                 progress: CardMixerReplay.Progress = .init(),
                                 gap: Duration = CardMixerReplay.commandGap) async throws {
@@ -325,7 +326,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                   let boards = dextClient.readBoardTypes(),
                   boards.primary == layout.slot1.rawValue, boards.secondary == layout.slot2.rawValue,
                   let link = linkState(), CardMixerReplay.isUsable(link),
-                  link.recoveryCount == recoveryCount else { throw DeviceConnectionError.notConnected }
+                  link.recoveryCount == recoveryCount,
+                  nonce == nil || link.mixerInstance?.nonce == nonce else { throw DeviceConnectionError.notConnected }
         }
         try await CardMixerReplay.run(groups,
             validateMixer: {

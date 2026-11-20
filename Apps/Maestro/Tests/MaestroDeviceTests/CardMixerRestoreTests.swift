@@ -137,10 +137,13 @@ struct CardMixerRestoreTests {
         let set = DriverMixerInstance(nonce: 7, holdsAppState: [true, true])
         #expect(ledger.pageDefersSync(mixer: 0, instance: set, eligible: true))
         #expect(!ledger.pageDefersSync(mixer: 1, instance: set, eligible: true))
-        ledger.complete()
-        #expect(ledger.pageDefersSync(mixer: 0, instance: set, eligible: true))
+        // Finished: the page syncs again (Monitoring Mode, layout changes).
+        var finished = ledger
+        finished.complete()
+        #expect(!finished.pageDefersSync(mixer: 0, instance: set, eligible: true))
+        // Given up: the page gets the mixer back, so it is not left at defaults.
         ledger.giveUp()
-        #expect(ledger.pageDefersSync(mixer: 0, instance: set, eligible: true))
+        #expect(!ledger.pageDefersSync(mixer: 0, instance: set, eligible: true))
     }
 
     @Test("Runs per instance are bounded; pending only while latched, owned and unfinished")
@@ -160,6 +163,29 @@ struct CardMixerRestoreTests {
         var held = CardMixerRestoreLedger()
         held.observe(Self.link(nonce: 12, flags: 3))
         #expect(!held.isPending)
+    }
+
+    @Test("The page defers while the last run is in flight, and gets the mixer back when it ends unfinished")
+    func lastAttemptHandsBack() {
+        var ledger = CardMixerRestoreLedger()
+        ledger.observe(Self.link(nonce: 13))
+        let instance = DriverMixerInstance(nonce: 13, holdsAppState: [true, true])
+        for n in 1...CardMixerReplay.maxAttempts {
+            let begun = ledger.beginAttempt()
+            #expect(begun && ledger.running)
+            #expect(ledger.pageDefersSync(mixer: 0, instance: instance, eligible: true))
+            ledger.endAttempt()
+            #expect(!ledger.running)
+            #expect(ledger.gaveUp == (n == CardMixerReplay.maxAttempts))
+        }
+        #expect(!ledger.pageDefersSync(mixer: 0, instance: instance, eligible: true))
+        // A run that finished on its last attempt is not turned into a give-up.
+        var done = CardMixerRestoreLedger()
+        done.observe(Self.link(nonce: 14))
+        for _ in 1...CardMixerReplay.maxAttempts { _ = done.beginAttempt() }
+        done.complete()
+        done.endAttempt()
+        #expect(done.completed && !done.gaveUp)
     }
 
     // MARK: Finding 2: the 5 s wait exits on the first bad sample
