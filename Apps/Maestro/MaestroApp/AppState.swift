@@ -3805,6 +3805,20 @@ final class AppState: @unchecked Sendable {
                     try? await Task.sleep(for: .seconds(1))
                     continue
                 }
+                // The clock source came with this read, whatever the reading's
+                // rate says: on an external source with no signal the unit
+                // reports a rate of 0, the reading is rejected below, and that
+                // is exactly when the source must still be shown (found on
+                // Daniel's unit 2026-11-20: Word Clock with nothing connected
+                // left the status bar on "Internal"). Asked of the connection,
+                // so a board input keeps its row and USB's cached value is used.
+                if device === self.device {
+                    let reported = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32
+                    let key = reported.flatMap { ClockSourceMenu.decode($0) != nil ? $0 : nil }
+                    await MainActor.run {
+                        if device === self.device, self.reportedClockSource != key { self.reportedClockSource = key }
+                    }
+                }
                 guard let update else {
                     sync.reset(); syncB.reset()
                     try? await Task.sleep(for: .seconds(5))
@@ -3813,15 +3827,6 @@ final class AppState: @unchecked Sendable {
                 // The connection may have been replaced while the read was out.
                 if device === self.device {
                     (device as? XPCDeviceConnection)?.seedClockSource(reported: update.clockSource)
-                    // The unit's own answer for its clock source came with this
-                    // read (no extra traffic): show it. Asked of the connection
-                    // rather than taken from `update`, so a board input keeps
-                    // its row and USB's cached value is used.
-                    let reported = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32
-                    let key = reported.flatMap { ClockSourceMenu.decode($0) != nil ? $0 : nil }
-                    await MainActor.run {
-                        if device === self.device, self.reportedClockSource != key { self.reportedClockSource = key }
-                    }
                     for change in sync.changes(for: update) {
                         guard device === self.device, !Task.isCancelled else { break }
                         await self.applyFrontPanelChange(change)
