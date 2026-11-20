@@ -82,8 +82,10 @@ struct HelpView: View {
                 Text("**App Settings** is about Maestro itself: **General** (appearance, tooltips, meter zone coloring, scroll positions, pop-ups), **When a Device Connects** (what happens when a unit is plugged in, and the USB options), **Updates** (automatic checks and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).")
                 Text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**.")
             }
-            HelpQuestion("Why doesn't muting Software Return or moving Master change what I hear?") {
+            HelpQuestion("Why doesn't the Software Return fader, pan or mute, or Master, change what I hear?") {
                 Text("The **Mixer** page only affects outputs that are fed by a mixer. In **Output Routing**, an output fed straight from a software output pair (for example **1-2 → Line 1/2**) plays your Mac's audio directly, so Software Return, Master and the input strips do nothing to it. Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **Software Return**, together with the hardware inputs, and **Master** sets the level.")
+                Text("**Mixer 1 and Mixer 2 are separate.** A control on Mixer 2 changes only the outputs fed from Mixer 2. If no output is fed from Mixer 2 in Output Routing, nothing on Mixer 2 can be heard, and the same goes for Mixer 1.")
+                Text("**Over USB there are two more things to check,** both under **The Mixer over USB** further down: only channels 1-2 of your Mac's playback pass through the mixer, and Software Return pan works only when your audio plays through **Symphony I/O : Maestro USB**, not **Symphony I/O : USB Audio**.")
             }
             HelpQuestion("What do Reset Routing and Identify do?") {
                 Text("**Reset Routing** is on the Input Routing and Output Routing pages. It puts that page back to its default: on Input Routing each software input records the matching hardware input, and on Output Routing each software output goes to the matching hardware output. Maestro asks before it changes anything, and only the page you are on is reset.")

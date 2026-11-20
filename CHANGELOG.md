@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.16 (beta)
+
+This beta fixes a crash when stopping a diagnostics recording. It contains everything in 0.9.15.
+
+### Fixed
+
+- **Maestro no longer crashes when you press Stop Diagnostics.** It could quit at that moment if it was still writing to its log, and the report was then finished the next time Maestro opened. Thanks to the person who reported it.
+
+### New
+
+- **Help says more plainly when the Mixer's Software Return and Master controls can be heard:** only on outputs fed from that mixer in Output Routing, with Mixer 1 and Mixer 2 each affecting only their own outputs. It is under "Why doesn't the Software Return fader, pan or mute, or Master, change what I hear?", and in the user guide.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
+
 ## 0.9.15 (beta)
 
 This beta makes Clock Status tell the truth on ThunderBridge and PCIe. It contains everything in 0.9.14.
