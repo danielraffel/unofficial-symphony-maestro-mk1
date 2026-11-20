@@ -183,7 +183,7 @@ From 0.8.40, Maestro can also offer beta versions: builds that are still being t
 </table>
 
 
-## Uninstalling
+## Uninstalling Unofficial Symphony Maestro
 
 To remove everything this project installs, run this one command in Terminal (in Applications › Utilities) and enter your Mac's password when asked:
 
@@ -191,9 +191,26 @@ To remove everything this project installs, run this one command in Terminal (in
 sudo /Applications/Maestro.app/Contents/Resources/uninstall.sh
 ```
 
-It removes the Maestro app, the audio plug-in, the ThunderBridge driver and the background service, and restores Apogee's original audio plug-in if the installer had set it aside. Audio stops briefly while it runs. macOS may not let the script remove the driver itself; if so, the script says so, and you turn off **Symphony Thunderbridge** under **System Settings › General › Login Items & Extensions › Driver Extensions**.
+It removes the Unofficial Symphony Maestro app, its audio plug-in, its ThunderBridge driver and its background service, and restores Apogee's original audio plug-in if our installer had set it aside. Audio stops briefly while it runs. macOS may not let the script remove the driver itself; if so, the script says so, and you turn off **Symphony Thunderbridge** under **System Settings › General › Login Items & Extensions › Driver Extensions**.
 
-If you have already deleted Maestro from Applications, the same script is in this repository at [Installer/uninstall.sh](Installer/uninstall.sh).
+If you have already deleted the app from Applications, the same script is in this repository at [Installer/uninstall.sh](Installer/uninstall.sh).
+
+## Going back to Apogee's official software
+
+Unofficial Symphony Maestro and Apogee's own Symphony I/O software can't be installed side by side: their drivers interfere with each other. To use Apogee's official software again:
+
+1. Uninstall Unofficial Symphony Maestro with the command above.
+2. Restart your Mac.
+3. Download Apogee's installer, [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open it and choose **Install**.
+4. For anything beyond that, such as which Macs and macOS versions it runs on, see Apogee's own guide: [Legacy Symphony I/O MK I guide for Intel and Apple Silicon Macs](https://knowledge.apogeedigital.com/legacy-symphony-i/o-mk-i-guide-for-intel-and-apple-silicon-macs).
+
+Apogee's software is theirs, not ours: we don't provide, test or support it, and Apogee doesn't support this project.
+
+## Coming from Apogee's official software
+
+Going the other way, remove Apogee's Symphony I/O software before installing Unofficial Symphony Maestro: open Apogee's [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg) installer, choose **Uninstall**, and restart. Our installer checks for Apogee's drivers and tells you if any are still present. The details are in the user guide under [Removing Apogee's original drivers](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers).
+
+On some Macs, macOS keeps loading Apogee's old drivers even after their uninstaller has run. One user worked out why and how they cleared it, and wrote it up in detail: [their report](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371). It's one person's experience on their own Mac, shared in case it helps, and not a procedure we've tested.
 
 ## Source and development
 
