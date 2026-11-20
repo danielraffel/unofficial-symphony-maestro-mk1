@@ -949,6 +949,9 @@ struct DeviceSettingsView: View {
                 // The port-2 detail rows; the Ports choice itself is in Connection.
                 // One unit at 32 channels: one line, not five.
                 if let port2 = appState.secondPortState {
+                    if port2.experimentOn {
+                        LabeledContent(SecondPortState.port1Label, value: SecondPortState.port1Value)
+                    }
                     if port2.isNotInUse(sixtyFourSelected: appState.portSelection.sixtyFourSelected) {
                         LabeledContent(SecondPortState.notInUseLabel, value: SecondPortState.notInUseValue)
                     } else if appState.portSelection.selection != nil {
