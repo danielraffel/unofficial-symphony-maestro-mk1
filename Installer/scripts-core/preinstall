@@ -157,7 +157,7 @@ To fix this:
 (Search \"Symphony IO Release 5.5\" at apogeedigital.com)
 
 If Apogee'"'"'s uninstaller won'"'"'t run on your Mac, see \"Removing Apogee'"'"'s original drivers\" in the Maestro user guide:
-https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/docs/UserManual.md#removing-apogees-original-drivers" buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
+https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers" buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
     ' 2>/dev/null || true
         exit 1
         ;;

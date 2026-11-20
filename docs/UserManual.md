@@ -72,7 +72,7 @@ If Apogee's uninstaller won't run on your Mac, these are the parts of Apogee's o
 
 - Kernel extensions in **/Library/Extensions**: **Symphony64Thunderbridge.kext**, **Symphony64.kext**, **SymphonyIOUSBOverideDriver.kext**, **SymphonyMobile.kext**
 - Audio plug-ins: the **Symphony Systems** folder in **/Library/Audio/Plug-Ins/HAL/Apogee**
-- Background helpers: **com.SymphonyDaemon.plist**, **com.usbApogeeDaemon.plist** and **com.SymphonyIOUSBDaemon.plist** in **/Library/LaunchDaemons**, and **com.ApogeePopup.plist** in **/Library/LaunchAgents**
+- Background helpers: **com.SymphonyDaemon.plist** and **com.SymphonyIOUSBDaemon.plist** in **/Library/LaunchDaemons**
 
 </details>
 

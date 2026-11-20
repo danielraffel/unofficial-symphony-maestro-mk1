@@ -191,9 +191,10 @@ public enum OriginalApogeeDrivers {
         "Kernel extensions in **/Library/Extensions**: **Symphony64Thunderbridge.kext**, **Symphony64.kext**, "
             + "**SymphonyIOUSBOverideDriver.kext**, **SymphonyMobile.kext**",
         "Audio plug-ins: the **Symphony Systems** folder in **/Library/Audio/Plug-Ins/HAL/Apogee**",
-        "Background helpers: **com.SymphonyDaemon.plist**, **com.usbApogeeDaemon.plist** and "
-            + "**com.SymphonyIOUSBDaemon.plist** in **/Library/LaunchDaemons**, and **com.ApogeePopup.plist** "
-            + "in **/Library/LaunchAgents**",
+        // com.usbApogeeDaemon.plist and com.ApogeePopup.plist are left out on
+        // purpose: Apogee's other interfaces use them too (see the header).
+        "Background helpers: **com.SymphonyDaemon.plist** and **com.SymphonyIOUSBDaemon.plist** "
+            + "in **/Library/LaunchDaemons**",
     ]
 
     /// The check itself, over injected lookups so it can be tested.
