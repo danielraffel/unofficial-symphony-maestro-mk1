@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.14 (beta)
+
+This beta makes Maestro show the clock source the Symphony I/O is actually using, and removes two controls that did nothing. It contains everything in 0.9.13.
+
+### Changes that may affect your setup
+
+- **Word Clock Divide is gone from Device Settings › Clock.** It was always greyed out: it was a setting for a different Apogee interface, and the Symphony I/O has no such option.
+- **"USB connection health check" is gone from App Settings.** It was off by default and did nothing Maestro doesn't already do: Maestro notices a stale USB connection by itself and reconnects.
+
+### Fixed
+
+- **The status bar now shows the real clock source.** Before, it always said "Internal".
+- **The Clock Source menu in Device Settings follows changes made elsewhere,** for example in Audio MIDI Setup or a DAW, on ThunderBridge and PCIe. Before, it kept showing its last value until the page was reopened.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
+- Maestro does a little less background work: Device Settings no longer repeats a check the app already makes, and the Loop Sync status is only refreshed with two Symphony I/Os at 64 channels.
+
 ## 0.9.13 (beta)
 
 This beta keeps your chosen clock source through restarts and reconnects, and makes it easier to get past a blocked install. It contains everything in 0.9.12.
