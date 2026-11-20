@@ -236,6 +236,20 @@ final class DiagnosticsRecorder {
                             appState.hp1Level, appState.hp1Muted ? "yes" : "no",
                             appState.hp2Level, appState.hp2Muted ? "yes" : "no",
                             appState.converterVolumeKeys ? "yes" : "no", appState.connectedUnitProbeWord))
+        // The clock as Maestro shows it: the source the unit reports, the
+        // unit's own lock flag (ThunderBridge and PCIe), the driver's Clock
+        // Source selector, and the Clock Status wording on screen. Snapshots
+        // are written when they change, so a change of source is timestamped.
+        do {
+            let key = appState.reportedClockSource
+            let name = key.flatMap { _ in appState.reportedClockSourceName(sampleRate: nil) } ?? "not reported"
+            let flag = (appState.device as? ThunderboltDeviceConnection)?.lastExternalClockLocked
+            let selector = (appState.device as? ThunderboltDeviceConnection).flatMap { $0.clockSelectorValue }
+            let shown = appState.reportedClockLocked.map { PortStatusMessage.clock(locked: $0) } ?? "from Core Audio rates"
+            lines.append("clock (app): source=\(name) key=\(key.map { String(format: "0x%04x", $0) } ?? "none")"
+                + " unit lock flag=\(flag.map { $0 ? "locked" : "not locked" } ?? "none")"
+                + " driver selector=\(selector.map(String.init) ?? "none") status=\(shown)")
+        }
         if let tb = appState.device as? ThunderboltDeviceConnection, appState.connectedUnit != nil {
             // Converters (dext 131+): flags, phase and health counters, so an
             // unlock or recovery shows when it happened.
@@ -337,7 +351,8 @@ final class DiagnosticsRecorder {
     nonisolated private static func leftoverApogeeBlock() -> String {
         let fm = FileManager.default
         var found: [String] = []
-        let dirs = ["/Library/Audio/Plug-Ins/HAL", "/Library/Extensions", "/Library/LaunchDaemons",
+        let dirs = ["/Library/Audio/Plug-Ins/HAL", "/Library/Extensions",
+                    OriginalApogeeDrivers.stagedExtensionsDirectory, "/Library/LaunchDaemons",
                     "/Library/LaunchAgents", "/Applications", "/Library/Application Support"]
         for dir in dirs {
             for name in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where
@@ -371,6 +386,16 @@ final class DiagnosticsRecorder {
             .filter { !$0.localizedCaseInsensitiveContains("maestro") }
             .map { "  loaded kernel extension: " + $0.trimmingCharacters(in: .whitespaces) }
         found.append(contentsOf: kexts)
+        // Still in macOS's auxiliary kernel collection, loaded or not: where a
+        // user found Apogee's three kexts after uninstalling and after the
+        // staged folder was empty (GitHub issue 32, 2026-11-20). Read-only and
+        // needs no administrator rights.
+        let aux = run("/usr/bin/kmutil", ["showloaded", "--collection", "aux", "--show", "all", "--list-only"], timeout: 10)
+            .split(separator: "\n")
+            .filter { $0.localizedCaseInsensitiveContains("apogee") || $0.localizedCaseInsensitiveContains("symphony") }
+            .filter { !$0.localizedCaseInsensitiveContains("maestro") }
+            .map { "  in macOS's boot collection (loaded or not): " + $0.trimmingCharacters(in: .whitespaces) }
+        found.append(contentsOf: aux)
         return "Original Apogee software (conflicts with Maestro if present):\n"
             + (found.isEmpty ? "  none found" : found.joined(separator: "\n"))
     }

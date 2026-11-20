@@ -46,6 +46,9 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// The unit's "external clock locked" flag from the front panel poller's
     /// last reading; nil before the first one.
     public var lastExternalClockLocked: Bool? { clockState.lastExternalClockLocked }
+    /// The driver's Clock Source selector as Core Audio holds it (1-5); nil
+    /// when it cannot be read. For the diagnostics report.
+    public var clockSelectorValue: UInt32? { try? readClockSource() }
     private var listeners: [AudioPropertySelector: [WeakListener]] = [:]
 
     /// Property selectors handled via CoreAudio HAL (more efficient path).
