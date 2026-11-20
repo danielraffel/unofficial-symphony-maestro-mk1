@@ -148,6 +148,20 @@ struct Port {
     uint32_t dropVendorReads = 0;     // Symphony: the next N vendor reads get no reply
     uint8_t  symphonyInquire = 0;     // Symphony: INQUIRE reply byte (0 = none)
     bool     symphonyProbeAnswered = false;
+    // A Symphony I/O as an XLink unit (port 2, "unit B"), from field report
+    // 6F64285E (2026-11-20, two Symphony I/Os with one 16-channel card each):
+    // it answers INQUIRE 0xF8 and XTD_INQUIRE 0x02 (the banks of a DD-16X),
+    // passes the authentication, and reports its phase. symphonyType is its
+    // XLINK_DEVICE_TYPE answer (0x20, og SymphonyCommon.h:228); 0 keeps the
+    // older one-answer model above (port 1 scenarios).
+    uint8_t  symphonyType = 0;
+    uint8_t  symphonyXtd = 0;
+    uint8_t  symAddr = 0;
+    bool     symPassing = false;
+    bool     symHoldsAddress = false; // keeps address and pass-through over a bus reset (the field behaviour)
+    uint8_t  symAuthOut[16] = {};
+    uint32_t symAuthIdx = 0;
+    uint32_t symTypeQueries = 0;      // DEVICE_TYPE queries it answered at its address
     bool     ignoreRate = false;      // units do not follow SET_SAMPLE_RATE
     bool     txBusy = false;          // TX register reports busy (commands time out)
     long     busyAfterWrites = -1;    // TX goes busy once this many vendor writes have arrived
@@ -292,6 +306,7 @@ struct Port {
             frame.clear();
             dupArmed = false;
             symphonyProbeAnswered = false;
+            if (!symHoldsAddress) { symAddr = 0; symPassing = false; }
             return;
         }
         const uint8_t addr = (uint8_t)((val >> 17) & 0x3F);
@@ -307,6 +322,34 @@ struct Port {
         dupArmed = true;
         lastTx = val;
         if (!present()) return;
+        if (kind == Symphony && symphonyType) {
+            // Hears the broadcast address until told to pass commands on, and
+            // its own address always.
+            const bool hears = addr ? (addr == symAddr) : !symPassing;
+            switch (cmd) {
+            case 0x03: if (!ignoreRate) rateCode = data; break;
+            case 0x01: if (addr == 0 && !symPassing) symAddr = data; break;
+            case 0x02: if (addr && addr == symAddr) symPassing = (data != 0); break;
+            case 0x05: if (hears) reply(addr, cmd, symphonyInquire); break;
+            case 0x0B: if (hears) reply(addr, cmd, symphonyXtd); break;
+            case 0x0C: if (hears) { reply(addr, cmd, symphonyType); if (addr) symTypeQueries++; } break;
+            case 0x09: if (addr && addr == symAddr) reply(addr, cmd, 0x20); break;
+#ifdef TRACE_HAVE_CONVERTER_PARITY
+            case 0x06: if (addr && addr == symAddr) symAuthIdx = 0; break;
+            case 0x07: if (addr && addr == symAddr && symAuthIdx < 16) symAuthOut[symAuthIdx++] = data; break;
+            case 0x08:
+                if (addr && addr == symAddr) {
+                    static const uint8_t own[8] = { 0x31, 0x7C, 0x02, 0xE5, 0x48, 0x9B, 0x60, 0xD7 };
+                    uint8_t in[16];
+                    ConverterAuthExpectedAnswer(symAuthOut, ConverterAuthDeviceInfo(ConverterRouting(symphonyInquire, symphonyXtd), symphonyInquire), own, in);
+                    if (data < 16) reply(addr, cmd, in[data]);
+                }
+                break;
+#endif
+            default: break;
+            }
+            return;
+        }
         switch (cmd) {
         case 0x03:
             if (!ignoreRate) rateCode = data;
@@ -601,8 +644,11 @@ struct Options {
     bool        shortFlow = false;        // Start, StartDevice, link watch, Stop only
     uint32_t    dropVendorReads = 0;      // port 1 Symphony: first N vendor reads unanswered
     uint32_t    dropPort2VendorReads = 0; // port 2 Symphony: first N vendor reads unanswered
+    bool        port2OneCard = false;     // port 2 Symphony: one 16-channel card (INQUIRE 0xF8, XTD 0x02)
+    bool        port2HoldsAddress = false;// port 2 Symphony: keeps its address over a bus reset
     uint8_t     symphonyInquire = 0;      // port 1 Symphony: INQUIRE reply (0 = none)
     std::vector<Unit> port1Units;         // converters on port 1 other than the default AD,DA
+    std::vector<Unit> port2Units;         // converters on port 2 other than the default AD,DA
 };
 
 static void Attach(Port &p, Port::Kind kind)
@@ -661,7 +707,14 @@ static void RunScenario(const Options &o, Run &r)
         }
     }
     if (!o.latePort2) Attach(card.port[1], o.port2);
-    if (o.port2 == Port::Symphony) card.port[1].symphonyInquire = 0xFF;
+    if (!o.latePort2 && o.port2 == Port::Converters && !o.port2Units.empty()) card.port[1].units = o.port2Units;
+    if (o.port2 == Port::Symphony) {
+        // Two cards: all eight banks. One card: what report 6F64285E showed.
+        card.port[1].symphonyInquire = o.port2OneCard ? 0xF8 : 0xF8;
+        card.port[1].symphonyXtd     = o.port2OneCard ? 0x02 : 0xF2;
+        card.port[1].symphonyType    = 0x20;
+        card.port[1].symHoldsAddress = o.port2HoldsAddress;
+    }
     card.port[1].dropVendorReads = o.dropPort2VendorReads;
     if (o.dirtyRegisters) {
         card.reg[kRegGCSR]  = 0x2db8011b;
@@ -3062,6 +3115,80 @@ static void RunConverterParityChecks()
               "%s: unlock read-back was not attempted", o.name);
         Finish(o, r);
     }
+#ifdef kSymphonyPort2UnitTypeOK
+    // Field report 6F64285E (2026-11-20): a Symphony I/O with one 16-channel
+    // card on port 2 answers INQUIRE 0xF8 / XTD_INQUIRE 0x02, the banks of a
+    // DD-16X. Its XLINK_DEVICE_TYPE answer makes it unit B, as in the original
+    // (kSymphonyIO_XLinkDeviceType), never a converter.
+    {
+        Options o; o.name = "unit B: one-card Symphony I/O is not a DD-16X"; o.port2 = Port::Symphony;
+        o.port2OneCard = true; o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        FakeCard &c = r.card;
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        const size_t mark = c.lines.size();
+        Select(r, 1, "one-card unit B: select 64");
+        const Port2State s = ReadPort2(r);
+        CHECK((s.w[14] & kSymphonyPort2AudioActive) != 0, "%s: 64 channels not running (audio 0x%x)", o.name, s.w[14]);
+        CHECK(s.w[6] == 1 && (s.w[7] & 0xFFFF) == 0x02F8 && (s.w[7] & kSymphonyPort2UnitTypeOK) &&
+              (s.w[7] >> kSymphonyPort2UnitTypeShift) == 0x20,
+              "%s: unit word 0x%08x (want INQUIRE 0xF8, XTD 0x02, type 0x20)", o.name, s.w[7]);
+        CHECK(c.port[1].symTypeQueries >= 1, "%s: DEVICE_TYPE was not asked at the unit's address", o.name);
+        SymphonyUnitBStateOutput st = {};
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 1 && st.clockSource == 3, "%s: unit B present=%u clock=%u setup=0x%x (want 1, Loop Sync)",
+              o.name, st.present, st.clockSource, st.setupFlags);
+        CHECK(!Commands(c, mark, kRegXLink2TX, 0x10).empty(), "%s: no vendor message to unit B", o.name);
+        SymphonyConverterStateOutput conv = {};
+        r.drv->ReadConverterState(reinterpret_cast<uint32_t *>(&conv));
+        CHECK((conv.flags & kSymphonyConvPort2Converters) == 0, "%s: reported as converters (flags 0x%x)", o.name, conv.flags);
+        Finish(o, r);
+    }
+    // The same report: once found and addressed, the unit never answered the
+    // broadcast address again (every later probe said "no unit", 64 channels
+    // were refused and the driver went round in circles). It still answers at
+    // address 1, so it must be found there: 64, back to 32, and 64 again.
+    for (bool oneCard : { true, false }) {
+        Options o; o.name = oneCard ? "unit B: one-card unit keeps its address" : "unit B: two-card unit keeps its address";
+        o.port2 = Port::Symphony; o.port2OneCard = oneCard; o.port2HoldsAddress = true;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        SymphonyUnitBStateOutput st = {};
+        for (int pass = 0; pass < 3; pass++) {
+            Select(r, 1, "kept address: select 64");
+            const Port2State s = ReadPort2(r);
+            r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+            CHECK((s.w[14] & kSymphonyPort2AudioActive) != 0 && s.w[6] == 1 && st.present == 1,
+                  "%s: pass %d: audio 0x%x units %u unit B present %u (word 0x%08x)", o.name, pass, s.w[14], s.w[6], st.present, s.w[7]);
+            CHECK(pass == 0 || (s.w[7] & kSymphonyPort2UnitKeptAddress), "%s: pass %d: not found at its kept address (0x%08x)", o.name, pass, s.w[7]);
+            Select(r, 0, "kept address: back to 32");
+        }
+        Finish(o, r);
+    }
+    // A real DD-16X (no DEVICE_TYPE answer) stays a converter.
+    {
+        Options o; o.name = "unit B: a DD-16X stays a converter"; o.port2 = Port::Converters;
+        o.portCountProperty = 2; o.shortFlow = true;
+        o.port2Units = { { 0xF8, 0x02 } };
+        Run r;
+        RunScenario(o, r);
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        Select(r, 1, "DD-16X: select 64");
+        const Port2State s = ReadPort2(r);
+        SymphonyUnitBStateOutput st = {};
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        SymphonyConverterStateOutput conv = {};
+        r.drv->ReadConverterState(reinterpret_cast<uint32_t *>(&conv));
+        CHECK((s.w[14] & kSymphonyPort2AudioActive) != 0 && st.present == 0 && (conv.flags & kSymphonyConvPort2Converters) != 0 &&
+              (s.w[7] & kSymphonyPort2UnitTypeOK) == 0,
+              "%s: audio 0x%x unit B present %u conv flags 0x%x word 0x%08x", o.name, s.w[14], st.present, conv.flags, s.w[7]);
+        CHECK(r.card.port[1].vendorWrites.empty() && r.card.port[1].vendorReads.empty(), "%s: Symphony vendor traffic to a DD-16X", o.name);
+        Finish(o, r);
+    }
+#endif
 #endif
     // 4. A unit whose authentication does not verify is reported and kept.
     {
@@ -4208,7 +4335,7 @@ int main(int argc, char **argv)
                   o.name, s.w[2], s.w[11]);
             if (o.port2 != Port::Empty) {
                 if (o.port2 == Port::Symphony)
-                    CHECK((s.w[2] & 2u) != 0 && s.w[6] == 1 && (s.w[7] & 0xFF) == 0xFF,
+                    CHECK((s.w[2] & 2u) != 0 && s.w[6] == 1 && (((s.w[7] >> 8) & 0xF0) | ((s.w[7] & 0xF0) >> 4)) == 0xFF,
                           "%s: Symphony unit B not found on selecting 64 (flags 0x%x, %u units)", o.name, s.w[2], s.w[6]);
                 else
                     CHECK((s.w[2] & 2u) != 0 && s.w[6] == 2 && (s.w[7] & 0xFF) == 0x30 && (s.w[8] & 0xFF) == 0xC0,

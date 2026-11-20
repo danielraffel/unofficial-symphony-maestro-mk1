@@ -207,6 +207,21 @@ typedef struct {
 #define kSymphonyPort2UnitInquireOK     0x00010000u  // INQUIRE was answered
 #define kSymphonyPort2UnitXtdOK         0x00020000u  // XTD_INQUIRE was answered
 #define kSymphonyPort2UnitAddressed     0x00040000u  // given address n+1 and told to pass commands on
+// dext 139: what the unit answered to XLINK_DEVICE_TYPE at its own address
+// (bits 31:24, valid with TypeOK). The original told a Symphony I/O from a
+// converter by this answer, not by its channel banks: a Symphony I/O with one
+// 16-channel card has the banks of a DD-16X (0x0F), and only its type byte
+// (0x20) says what it is (og_source/maestrolink/SymphonyAPI/SymphonyCommon.h
+// :228-231 kSymphonyIO_XLinkDeviceType 0x20000 under kXLINK_DEVICE_WITH_TYPE_MASK;
+// Symphony64 Driver/XLink.cpp:1279-1288, :1705-1715 device info = (routing |
+// type << 8) << 4; SymphonyPeripheralFactory.cpp:49-72).
+#define kSymphonyPort2UnitTypeOK        0x00800000u  // DEVICE_TYPE at its address was answered
+#define kSymphonyPort2UnitTypeShift     24
+#define kSymphonyPort2UnitTypeMask      0xFF000000u
+#define kSymphonyXLinkDeviceTypeSymphonyIO 0x20u
+// Found at the address an earlier probe gave it (it no longer answers the
+// broadcast address), so it was not addressed again.
+#define kSymphonyPort2UnitKeptAddress   0x00400000u
 
 // Output of kSelectorReadPort2State. Reads driver state only, like
 // kSelectorReadLinkState (whose layout is unchanged). In a one-port build:

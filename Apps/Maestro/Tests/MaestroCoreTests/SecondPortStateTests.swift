@@ -107,6 +107,18 @@ struct SecondPortStateTests {
         // All eight channel groups: the original's "Symphony" type (0xFF).
         #expect(SecondPortState.unitText(ok | Self.xtdOK | 0xF0F1)
                 == "32-channel unit, probably a Symphony I/O (32 inputs, 32 outputs) [replies 0xf1, 0xf0]")
+        // Report 6F64285E (2026-11-20): a Symphony I/O with one 16-channel card
+        // answers a DD-16X's banks; its device type (0x20) says what it is.
+        let oneCard = ok | Self.xtdOK | 0x02F8
+        #expect(SecondPortState.unitText(oneCard) == "DD-16X (16 inputs, 16 outputs) [replies 0xf8, 0x02]")
+        #expect(!SecondPortState.unitIsSymphonyIO(oneCard))
+        let typed = oneCard | SecondPortState.unitTypeOK | 0x2000_0000
+        #expect(SecondPortState.unitText(typed) == "Symphony I/O (channel banks 0x0f) [replies 0xf8, 0x02, type 0x20]")
+        #expect(SecondPortState.unitIsSymphonyIO(typed))
+        #expect(SecondPortState.unitText(ok | Self.xtdOK | 0xF2F8 | SecondPortState.unitTypeOK | 0x2000_0000 | SecondPortState.unitKeptAddress)
+                == "Symphony I/O (32 inputs, 32 outputs) [replies 0xf8, 0xf2, type 0x20], answered at its earlier address")
+        // A converter that answers the type query with 0 stays a converter.
+        #expect(!SecondPortState.unitIsSymphonyIO(oneCard | SecondPortState.unitTypeOK))
         // Sixteen-channel banks plus some of the upper ones: no known unit.
         #expect(SecondPortState.unitText(ok | Self.xtdOK | 0x30F0) == "Not recognised [replies 0xf0, 0x30]")
         // The first position answered with no channel bits: kept as evidence.
