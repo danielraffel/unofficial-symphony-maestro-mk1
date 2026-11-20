@@ -4,11 +4,20 @@ import Testing
 
 @Suite("USB recovery restore")
 struct USBRecoveryRestoreTests {
-    @Test("restore is gated by the 5 s debounce only, not by autoRecoverMixerState")
+    @Test("restore is gated by the 5 s debounce only")
     func debounceOnly() {
         let now = Date()
         #expect(AppState.usbRecoveryRestoreDue(lastRecovery: now.addingTimeInterval(-6), now: now))
         #expect(AppState.usbRecoveryRestoreDue(lastRecovery: .distantPast, now: now))
         #expect(!AppState.usbRecoveryRestoreDue(lastRecovery: now.addingTimeInterval(-4), now: now))
+    }
+
+    @Test("no setting makes the restore optional")
+    func alwaysRestores() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("MaestroApp/AppState.swift"), encoding: .utf8)
+        #expect(!source.contains("forKey: \"autoRecoverMixerState\""))
+        #expect(source.contains("restoreRoutingMode: true)"))
     }
 }

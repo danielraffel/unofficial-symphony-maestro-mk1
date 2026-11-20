@@ -2009,7 +2009,6 @@ struct AppSettingsView: View {
     @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
     @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
     @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
-    @AppStorage("autoRecoverMixerState") private var autoRecoverMixerState = true
     /// Separate from Device Settings › Info's Copy so the two buttons never flash
     /// each other's checkmark.
     @State private var showSoftwareCopied: Bool = false
@@ -2057,9 +2056,6 @@ struct AppSettingsView: View {
                     }
                     .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
                 }
-
-                Toggle("Restore my mixer after a USB reconnect", isOn: $autoRecoverMixerState)
-                    .maestroHelp("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")
             }
 
             Section("Updates") {
