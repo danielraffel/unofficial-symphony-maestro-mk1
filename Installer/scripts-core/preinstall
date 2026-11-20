@@ -102,6 +102,30 @@ original_apogee_decision() {
     fi
 }
 
+# The dialog a blocked install ends with. A dialog's text cannot be clicked, so
+# the guide gets a button: it opens "Removing Apogee's original drivers" in the
+# browser of whoever is logged in at the console (this script runs as root).
+REMOVAL_GUIDE_URL="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers"
+blocked_dialog() {
+    local answer user uid
+    # The address is in the text as well, for anyone who would rather copy it.
+    answer="$(BLOCKED_TEXT="$1
+
+$REMOVAL_GUIDE_URL" osascript -e '
+display dialog (system attribute "BLOCKED_TEXT") buttons {"Open Removal Guide", "OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
+    ' 2>/dev/null || true)"
+    case "$answer" in
+        *"Open Removal Guide"*)
+            user="$(stat -f %Su /dev/console 2>/dev/null || true)"
+            uid="$(id -u "$user" 2>/dev/null || true)"
+            if [ -n "$uid" ] && [ "$uid" -ge 501 ]; then
+                launchctl asuser "$uid" sudo -u "$user" open "$REMOVAL_GUIDE_URL" >/dev/null 2>&1 || true
+            fi
+            echo "[preinstall] Opened the removal guide" >> "${LOG:-/tmp/maestro-installer.log}"
+            ;;
+    esac
+}
+
 main() {
 LOG="/tmp/maestro-installer.log"
 echo "[preinstall] Starting at $(date)" >> "$LOG"
@@ -141,31 +165,26 @@ case "$(original_apogee_decision "$ORIGINAL_FOUND")" in
         ;;
     restart)
         echo "[preinstall] BLOCKED: an original Apogee kext is still loaded; restart needed" >> "$LOG"
-        osascript -e '
-display dialog "Apogee'"'"'s original Symphony I/O drivers have been removed, but one is still loaded.
+        blocked_dialog "Apogee's original Symphony I/O drivers have been removed, but one is still loaded.
 
-Restart your Mac, then run this installer again." buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
-    ' 2>/dev/null || true
+Restart your Mac, then run this installer again.
+
+If you have already restarted and still see this, choose Open Removal Guide."
         exit 1
         ;;
     *)
         echo "[preinstall] BLOCKED: Original Apogee Symphony I/O drivers found" >> "$LOG"
-        osascript -e '
-display dialog "Apogee'"'"'s original Symphony I/O drivers were detected.
+        blocked_dialog "Apogee's original Symphony I/O drivers were detected.
 
 Symphony Maestro cannot be installed while they are installed or loaded. The two interfere with each other and can cause problems, including crashes.
 
 To fix this:
-1. Download the official Apogee installer from apogee.com
+1. Download Apogee's latest installer, Symphony I/O Release 5.5 (Open Removal Guide has the link)
 2. Open the DMG and choose Uninstall
 3. Restart your Mac
-4. Run this installer again (Apogee'"'"'s Uninstall also removes Maestro; this puts it back)
+4. Run this installer again (Apogee's Uninstall also removes Maestro; this puts it back)
 
-(Search \"Symphony IO Release 5.5\" at apogeedigital.com)
-
-If Apogee'"'"'s uninstaller won'"'"'t run on your Mac, see \"Removing Apogee'"'"'s original drivers\" in the Maestro user guide:
-https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers" buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
-    ' 2>/dev/null || true
+If you are still blocked after uninstalling and restarting, or Apogee's uninstaller won't run on your Mac, choose Open Removal Guide: \"Removing Apogee's original drivers\" in the Maestro user guide."
         exit 1
         ;;
 esac
