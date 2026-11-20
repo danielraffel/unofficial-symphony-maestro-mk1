@@ -996,6 +996,35 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         }.value
     }
 
+    /// Unit A's component versions (0xA0, `SymphonyVersionComponent` as nValue),
+    /// through the driver's general vendor read, for Device Settings › Info only.
+    /// Off the caller's thread, one read at a time; each is bounded by the
+    /// driver's vendor-read timeout. Before every read: still connected, the
+    /// cable carries Symphony I/Os only (converters get no Symphony vendor
+    /// reads), and the link is up with hardware access not suspended (sleep,
+    /// recovery). The first refusal or failure ends the attempt.
+    public func readSymphonyVersions(_ components: [SymphonyVersionComponent]) async -> SymphonyVersions {
+        guard isConnected, dextClient.isConnected, !components.isEmpty else { return SymphonyVersions() }
+        let client = dextClient
+        return await Task.detached(priority: .utility) { [self] in
+            SymphonyVersions.read(components, allowed: {
+                guard self.isConnected, client.isConnected,
+                      let converters = client.readConverterState(), converters.flags & 3 == 0,
+                      let link = client.readLinkState() else { return false }
+                return Self.versionReadAllowed(link: link)
+            }, read: { component in
+                try client.readVendorCommand(command: SymphonyIOCommand.symphonyIOVersion.rawValue,
+                                             value: component.rawValue,
+                                             responseLength: SymphonyVersionReply.byteCount)
+            })
+        }.value
+    }
+
+    /// A version read waits for a link that is up and not suspended.
+    static func versionReadAllowed(link: LinkState) -> Bool {
+        link.state == .up && !link.hwSuspended
+    }
+
     /// SymphonyIOCommands_Prefix: the unit's peripheral prefix letter, one byte.
     static let prefixCommand: UInt8 = 0x37
 

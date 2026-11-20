@@ -198,6 +198,11 @@ public struct PortSelectionModel: Sendable, Equatable {
     }
 }
 
+extension PortSelectionModel {
+    /// 64 channels are selected, or a switch to 64 is being tried.
+    public var sixtyFourSelected: Bool { selection == .ports1And2 || pending == .ports1And2 }
+}
+
 /// What Device Settings › Connection shows around the Ports picker. At 32 channels port 2 is
 /// off and nothing is looked at, so there is nothing to report about it: the
 /// picker, its explanation and, after a refused request, the plain reason once

@@ -725,6 +725,10 @@ final class AppState {
     /// nil until Device Settings has been opened once, and the About box falls back to what
     /// this object knows on its own.
     var deviceInfoSnapshot: DeviceInfoReport?
+    /// ThunderBridge component versions a Device Settings load read, kept for
+    /// the connection and identity generation they were read on. See
+    /// AppState+DeviceVersions.swift.
+    @ObservationIgnored var deviceInfoVersionsCache: DeviceInfoVersionsCache?
 
     /// What `sysextd` reports about the ThunderBridge driver extension, fetched once at
     /// launch. Empty means nothing is registered; nil means the query itself failed,

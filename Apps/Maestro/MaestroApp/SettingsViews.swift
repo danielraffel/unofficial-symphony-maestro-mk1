@@ -879,47 +879,60 @@ struct DeviceSettingsView: View {
                     ForEach(appState.unitBDeviceInfo.rows, id: \.label) { row in
                         LabeledContent(row.label, value: row.value)
                     }
-                } else if let info = parsedFirmware {
-                    if let system = appState.converterSystem {
-                        // One row per unit, by port, in the order they are cabled.
-                        ConverterUnitRows(appState: appState, system: system)
-                    } else if let unit = appState.connectedUnit {
-                        // One row per unit, in the order they are cabled.
-                        ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
-                            LabeledContent(row.label, value: row.value)
-                        }
-                    }
-                    if appState.connectedUnit == nil {
-                        LabeledContent("Firmware", value: DeviceInfoReport.versionText(info.firmwareVersion))
-                        LabeledContent("FPGA Version", value: DeviceInfoReport.versionText(info.fpgaVersion))
-                    }
-                    if let hw = info.hardwareID { LabeledContent("Hardware ID", value: hw) }
-                    // Board types, with provenance. Never present a cached
-                    // value as a measurement — card detection fails on USB.
-                    if appState.connectedUnit != nil {
-                        // A converter has no option cards. Saying "not
-                        // detected" for them would read as a fault.
-                        Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                    LabeledContent("IOBoard 1",
-                                   value: DeviceInfoReport.boardLine(board1Reading, version: info.ioBoard1Version))
-                        .maestroHelp(board1Reading.detailedText)
-                    LabeledContent("IOBoard 2",
-                                   value: DeviceInfoReport.boardLine(board2Reading, version: info.ioBoard2Version))
-                        .maestroHelp(board2Reading.detailedText)
-                    }
-                    if appState.connectedUnit == nil, let notice = boardDetectionNotice {
-                        Label(notice, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if appState.connectedUnit == nil {
-                        LabeledContent("XMOS Version", value: DeviceInfoReport.versionText(info.xmosVersion))
-                    }
                 } else {
-                    LabeledContent("Firmware Version", value: DeviceInfoReport.versionText(firmwareVersion))
+                    // Device Name and Connection are in the Connection section.
+                    // Mode and Channel Count only when Device Name does not
+                    // already say them.
+                    let report = currentDeviceReport()
+                    ForEach(Array(report.identityRows.dropFirst(2).enumerated()), id: \.offset) { _, row in
+                        LabeledContent(row.label, value: row.value)
+                    }
+                    if let hw = report.hardwareID { LabeledContent("Hardware ID", value: hw) }
+                    if let info = parsedFirmware {
+                        if let system = appState.converterSystem {
+                            // One row per unit, by port, in the order they are cabled.
+                            ConverterUnitRows(appState: appState, system: system)
+                        } else if let unit = appState.connectedUnit {
+                            // One row per unit, in the order they are cabled.
+                            ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
+                                LabeledContent(row.label, value: row.value)
+                            }
+                        }
+                        if appState.connectedUnit == nil {
+                            LabeledContent("Firmware", value: DeviceInfoReport.versionText(info.firmwareVersion))
+                            LabeledContent("FPGA Version", value: DeviceInfoReport.versionText(info.fpgaVersion))
+                        }
+                        // Board types, with provenance. Never present a cached
+                        // value as a measurement — card detection fails on USB.
+                        if appState.connectedUnit != nil {
+                            // A converter has no option cards. Saying "not
+                            // detected" for them would read as a fault.
+                            Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            LabeledContent("IOBoard 1", value: DeviceInfoReport.boardLine(
+                                board1Reading, version: info.ioBoard1Version,
+                                hardwareVersion: report.board1HardwareVersion))
+                                .maestroHelp(board1Reading.detailedText)
+                            LabeledContent("IOBoard 2", value: DeviceInfoReport.boardLine(
+                                board2Reading, version: info.ioBoard2Version,
+                                hardwareVersion: report.board2HardwareVersion))
+                                .maestroHelp(board2Reading.detailedText)
+                        }
+                        if appState.connectedUnit == nil, let notice = boardDetectionNotice {
+                            Label(notice, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        // Over ThunderBridge the XMOS version is the Overall
+                        // reading shown as Firmware above (SymphonyIO.cpp:1436-1442).
+                        if appState.connectedUnit == nil, report.showsXMOS {
+                            LabeledContent("XMOS Version", value: DeviceInfoReport.versionText(info.xmosVersion))
+                        }
+                    } else {
+                        LabeledContent("Firmware Version", value: DeviceInfoReport.versionText(firmwareVersion))
+                    }
                 }
 
                 if let system = appState.cardLayout.converterLayout {
@@ -931,15 +944,14 @@ struct DeviceSettingsView: View {
                     // ones the converter itself has.
                     LabeledContent("Inputs", value: "\(channels.inputs)")
                     LabeledContent("Outputs", value: "\(channels.outputs)")
-                } else if let device = appState.device {
-                    LabeledContent("Device Model", value: device.identifier.displayName)
-                    LabeledContent("Mode", value: device.identifier.mode.displayName)
-                    LabeledContent("Channel Count", value: "\(device.identifier.mode.channelCount)")
                 }
 
                 // The port-2 detail rows; the Ports choice itself is in Connection.
+                // One unit at 32 channels: one line, not five.
                 if let port2 = appState.secondPortState {
-                    if appState.portSelection.selection != nil {
+                    if port2.isNotInUse(sixtyFourSelected: appState.portSelection.sixtyFourSelected) {
+                        LabeledContent(SecondPortState.notInUseLabel, value: SecondPortState.notInUseValue)
+                    } else if appState.portSelection.selection != nil {
                         let shown = PortsPresentation(model: appState.portSelection, state: port2)
                         ForEach(Array(shown.rows.filter { !port2UnitsListedAbove || !$0.label.hasPrefix("Port 2 Unit") }
                             .enumerated()), id: \.offset) { _, row in
@@ -985,9 +997,8 @@ struct DeviceSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 if let device = appState.device {
-                    LabeledContent("Device Model", value: device.identifier.displayName)
+                    // Device Name is in Connection; the mode says the channel count.
                     LabeledContent("Mode", value: device.identifier.mode.displayName)
-                    LabeledContent("Channel Count", value: "\(device.identifier.mode.channelCount)")
                 }
                 LabeledContent("Simulated Channels",
                                value: "\(sim.totalInputChannels) in / \(sim.totalOutputChannels) out")
@@ -1072,8 +1083,11 @@ struct DeviceSettingsView: View {
                 if appState.connectionMode == .hardware {
                     Button {
                         appState.refreshSecondPortState()
+                        // The same text as the About box: this page's device
+                        // report, then the software.
+                        appState.deviceInfoSnapshot = currentDeviceReport()
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(currentDeviceReport().clipboardText, forType: .string)
+                        NSPasteboard.general.setString(appState.diagnosticsText, forType: .string)
                         showCopied = true
                         Task {
                             try? await Task.sleep(for: .seconds(1.5))
@@ -1417,26 +1431,46 @@ struct DeviceSettingsView: View {
     /// the board readings it resolved against that XML. The About box copies the same
     /// report via `appState.deviceInfoSnapshot`, which `loadProperties` publishes.
     private func currentDeviceReport() -> DeviceInfoReport {
-        let device = appState.device
         var report = (parsedFirmware ?? FirmwareInfo()).report(
             connectionMode: appState.connectionLabel,
             board1: board1Reading,
             board2: board2Reading,
-            deviceModel: device?.identifier.displayName,
-            mode: device?.identifier.mode.displayName,
-            channelCount: device?.identifier.mode.channelCount,
+            deviceModel: appState.device?.identifier.displayName,
+            mode: identityMode,
+            channelCount: identityChannelCount,
             connectedUnit: appState.connectedUnit?.displayName,
             connectedUnitModel: appState.connectedUnit?.modelName
         )
+        report.hardwareID = appState.unitAHardwareIDText ?? report.hardwareID
+        if appState.transportType == .thunderbolt {
+            report.showsXMOS = false
+            report.board1HardwareVersion = DeviceInfoReport.hardwareVersionText(board1Reading)
+            report.board2HardwareVersion = DeviceInfoReport.hardwareVersionText(board2Reading)
+        }
         report.connectedUnitLines = appState.converterSystem?.reportLines(
                 twoPortDriver: appState.secondPortState != nil)
             ?? appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
         if appState.connectedUnit != nil, let raw = ConnectedUnit.rawProbeLine(appState.connectedUnitProbeWord) {
             report.connectedUnitLines.append(raw)
         }
-        report.port2Lines = appState.secondPortState?.reportLines ?? []
+        report.port2Lines = appState.secondPortState?.reportLines(
+            sixtyFourSelected: appState.portSelection.sixtyFourSelected) ?? []
         report.unitBLines = appState.unitBDeviceInfoReportLines
         return report
+    }
+
+    /// The USB channel mode, over USB only: the ThunderBridge driver's device
+    /// carries a USB product ID that does not say how many channels run.
+    private var identityMode: String? {
+        guard appState.transportType != .thunderbolt else { return nil }
+        return appState.device?.identifier.mode.displayName
+    }
+
+    /// Over ThunderBridge, what the Ports selection runs (32 or 64).
+    private var identityChannelCount: Int? {
+        guard let device = appState.device else { return nil }
+        guard appState.transportType == .thunderbolt else { return device.identifier.mode.channelCount }
+        return appState.portSelection.selection?.channelCount ?? 32
     }
 
     // MARK: - Board Detection Provenance
@@ -1621,6 +1655,26 @@ struct DeviceSettingsView: View {
             parsedFirmware = FirmwareInfo.fromDevice(device, firmwareVersion: firmwareVersion)
         }
         await loadBoardReadings(device: device)
+        // ThunderBridge has no daemon XML and no `.version` property: read the
+        // components with 0xA0 as the original did (SymphonyIO.cpp:756, 807,
+        // 981, 990), here and nowhere else. 2-4 bounded reads, skipped for
+        // converters and while hardware access is suspended. A component that
+        // was not read stays nil and shows "Unknown".
+        if appState.transportType == .thunderbolt {
+            func installed(_ reading: BoardTypeReading) -> IOCardType? {
+                reading.source == .detected || reading.source == .cached ? reading.card : nil
+            }
+            let versions = await appState.loadThunderboltVersions(
+                slot1: installed(board1Reading), slot2: installed(board2Reading))
+            guard propertiesLoadGeneration == generation, appState.device === device else { return }
+            var info = parsedFirmware ?? FirmwareInfo()
+            info.deviceName = "Symphony I/O"
+            info.firmwareVersion = versions?.text(.overall)
+            info.fpgaVersion = versions?.text(.mainFPGA)
+            info.ioBoard1Version = versions?.text(.primaryFPGA)
+            info.ioBoard2Version = versions?.text(.secondaryFPGA)
+            parsedFirmware = info
+        }
         // Hand the assembled report to AppState so the About box can copy hardware and
         // software in one button without duplicating the provenance logic above.
         appState.refreshSecondPortState()

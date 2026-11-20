@@ -480,14 +480,15 @@ static float gSwReturnPeakR = 0.0f;
    METERDUMP "ECHO" flag below). */
 static float gSwPeak[MAESTRO_SHM_CHANNELS];
 
-/* Software mute — USB audio routes directly to DAC, bypassing the FPGA mixer.
-   Mixer mute commands (0xB3) have no effect on playback. Instead, we zero the
-   audio buffer in the render callback when muted. Toggled via XPC command. */
+/* Software mute for USB channels 1-2 rendered by this helper ("Maestro USB").
+   The app sends the unit's own SW Return mute (0xB3, strip 32) AND this
+   software mute, so it works whichever output device plays. We zero ch 1-2 in
+   the render callback when muted. Toggled via XPC command. */
 static atomic_int gSwReturnMuted = 0;
 
-/* Software gain — same reason as mute: USB audio bypasses FPGA mixer, so
-   hardware fader commands (0xB0) have no effect. We scale samples in the
-   render callback instead. Linear gain factor (1.0 = unity / 0dB).
+/* Software gain for USB channels 1-2. The app now keeps this at unity: the
+   unit's mixer owns the SW Return fader (0xB0). We scale samples in the
+   render callback only if asked. Linear gain factor (1.0 = unity / 0dB).
    Range: 0.0 (-inf dB) to ~2.0 (+6dB). Set via XPC "setSwReturnLevel". */
 static _Atomic float gSwReturnGain = 1.0f;
 /* Independent L/R gains used when the stereo-link control is off. */
@@ -504,6 +505,15 @@ static _Atomic float gSwReturnPanR = 1.0f;
    Software Return gain/pan/mute are handled by the FPGA mixer for selected
    non-default pairs. */
 static atomic_int gSwReturnSoftwareProcessing = 1;
+
+/* The requested state of a mixer solo (0xB2) or mute (0xB3) write, 0 or 1,
+   for the setProperty log line; -1 for every other request or an empty
+   payload. EP0 "OK" alone does not say which state a click asked for. */
+static int mixer_toggle_payload(uint8_t bReq, const uint8_t *data, uint32_t len)
+{
+    if ((bReq != 0xB2 && bReq != 0xB3) || !data || len < 1) return -1;
+    return data[0] ? 1 : 0;
+}
 
 static void set_sw_return_pan(double pan)
 {
@@ -2712,8 +2722,13 @@ static void handle_peer(xpc_connection_t peer) {
                 /* Reconstruct nValue from wValue/wIndex for usb_vendor_write */
                 uint32_t nValue = ((uint32_t)wVal << 16) | (uint32_t)wIdx;
                 int err = usb_vendor_write(bReq, nValue, dataCopy, copyLen);
-                LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
-                    bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
+                int toggle = mixer_toggle_payload(bReq, dataCopy, copyLen);
+                if (toggle >= 0)
+                    LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u val=%d: %s",
+                        bReq, wVal, wIdx, copyLen, toggle, err ? "FAILED" : "OK");
+                else
+                    LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
+                        bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
                 if (!err && digital_setting_index(bReq) >= 0 && nValue <= 1 &&
                     note_digital_write(bReq, nValue, dataCopy, copyLen,
                                        current_board_type(nValue)))
@@ -2882,9 +2897,10 @@ static void handle_peer(xpc_connection_t peer) {
             });
 
         } else if (strcmp(cmd, "setSwReturnMute") == 0) {
-            /* Software mute — zeros the render callback output buffer.
-               USB audio routes directly to DAC, bypassing the FPGA mixer,
-               so hardware mixer mute (0xB3) has no effect on playback. */
+            /* Software mute — zeros ch1-2 of the "Maestro USB" render while
+               software processing is on (a mixer uses the default 1-2 pair).
+               Maestro sends this together with the unit's 0xB3 to strip 32 on
+               every Software Return mute and restore; it is not forced off. */
             int muted = (int)xpc_dictionary_get_int64(msg, "muted");
             atomic_store_explicit(&gSwReturnMuted, muted, memory_order_relaxed);
             LOG("SW Return software mute: %s", muted ? "MUTED" : "unmuted");
