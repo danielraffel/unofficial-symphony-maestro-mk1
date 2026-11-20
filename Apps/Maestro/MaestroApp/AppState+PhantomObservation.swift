@@ -28,13 +28,11 @@ extension AppState {
               let records = link?.micPreEdits, records.count == 16 else { return }
         var changed = false
         if cardLayout.slot2 == .micPre8, records[0..<8].contains(where: { $0.stamp != 0 }) {
-            changed = MicPreDAWObservation.apply(records, to: channelStateStore,
-                                                 stripCount: cardLayout.analogInputStripCount)
+            changed = MicPreDAWObservation.apply(records, to: channelStateStore)
         }
-        if let layoutB = unitBLayout, layoutB.slot2 == .micPre8,
+        if unitBLayout?.slot2 == .micPre8,
            records[8..<16].contains(where: { $0.stamp != 0 }) {
-            let changedB = MicPreDAWObservation.apply(records, to: unitBChannelStateStore,
-                                                      stripCount: layoutB.analogInputStripCount)
+            let changedB = MicPreDAWObservation.apply(records, to: unitBChannelStateStore)
             changed = changed || changedB
         }
         if changed { micPreObservationRevision &+= 1 }

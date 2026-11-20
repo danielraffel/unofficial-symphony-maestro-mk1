@@ -1580,6 +1580,7 @@ final class AppState {
     private var aspDeviceID: AudioDeviceID = kAudioObjectUnknown
     private var micPreDAWListenerAddresses: [AudioObjectPropertyAddress] = []
     private var micPreDAWRefreshTask: Task<Void, Never>?
+    private var micPreDAWRefreshGate = MicPreDAWRefreshGate()
     var micPreObservationRevision = 0
     /// Timestamp of last ASP write from this app. Used to suppress feedback
     /// loops when our own writes trigger the listener callback.
@@ -3888,6 +3889,7 @@ final class AppState {
     func stopMicPreDAWSync() {
         micPreDAWRefreshTask?.cancel()
         micPreDAWRefreshTask = nil
+        micPreDAWRefreshGate.cancel()
         guard aspDeviceID != kAudioObjectUnknown else { micPreDAWListenerAddresses.removeAll(); return }
         for var address in micPreDAWListenerAddresses {
             AudioObjectRemovePropertyListener(aspDeviceID, &address, micPreDAWPropertyChanged,
@@ -3900,12 +3902,15 @@ final class AppState {
     /// one selector-5 read, made off the main actor, then apply the records.
     @MainActor
     func scheduleMicPreDAWRefresh(objectID: AudioObjectID) {
-        guard objectID == aspDeviceID, micPreDAWRefreshTask == nil,
-              let tb = device as? ThunderboltDeviceConnection else { return }
+        guard objectID == aspDeviceID, let tb = device as? ThunderboltDeviceConnection,
+              let token = micPreDAWRefreshGate.begin() else { return }
         micPreDAWRefreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(150))
             let link = await Task.detached(priority: .utility) { tb.linkState() }.value
             guard let self else { return }
+            // A cancelled task leaves a newer task's slot alone.
+            guard self.micPreDAWRefreshGate.isCurrent(token) else { return }
+            self.micPreDAWRefreshGate.finish(token)
             self.micPreDAWRefreshTask = nil
             guard !Task.isCancelled, (self.device as? ThunderboltDeviceConnection) === tb else { return }
             self.applyPhantomObservations(link)

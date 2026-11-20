@@ -5,8 +5,8 @@ import MaestroCore
 /// (selector 5's second optional tail, `kSymphonyMicPreEditWords`). The driver
 /// writes it after the unit took a change a DAW made through Core Audio, already
 /// resolved to a physical port and MicPre channel, so no host-channel or route
-/// mapping happens here. The stamp moves on each such edit; a Maestro write of
-/// a field clears that field's valid bit.
+/// mapping happens here. The stamp moves on each such edit and carries only
+/// that edit's fields; a Maestro write of a field clears that field's valid bit.
 /// Bits: Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h (kMicPreEdit*).
 public struct MicPreEditRecord: Sendable, Equatable {
     public let stamp: UInt64
@@ -27,6 +27,7 @@ public struct MicPreEditRecord: Sendable, Equatable {
     static let gainMask: UInt32 = 0x7F << 8
     static let gainValid: UInt32 = 1 << 15
     static let gainInstrument: UInt32 = 1 << 16
+    static let insertOff: UInt32 = 1 << 17
 
     /// The input type in the 0x20 wire enum (the encoding `InputChannelState`
     /// stores), or nil when the record carries no type.
@@ -40,7 +41,10 @@ public struct MicPreEditRecord: Sendable, Equatable {
         guard fields & Self.gainValid != 0 else { return nil }
         return (Int((fields & Self.gainMask) >> Self.gainShift), fields & Self.gainInstrument != 0)
     }
-    var hasEdit: Bool { inputType != nil || phase != nil || highPass != nil || gain != nil }
+    /// The driver released this channel's insert and switched its return off
+    /// (a type change whose last step then failed).
+    public var insertReleased: Bool { fields & Self.insertOff != 0 }
+    var hasEdit: Bool { inputType != nil || phase != nil || highPass != nil || gain != nil || insertReleased }
 }
 
 /// DAW edits of the 8MicPre (polarity, high-pass, input type, gain) reflected in
@@ -53,28 +57,29 @@ public enum MicPreDAWObservation {
     public static let seenKey = "halMicPreEditStamps"
 
     /// Apply one unit's eight records (`records[0..<8]`) to its strips. Pure:
-    /// `seen` holds the last stamp applied per MicPre channel. Missing strips
-    /// are created with defaults up to `stripCount`, as the Inputs page does,
-    /// so a DAW edit is not lost before the page has saved anything.
+    /// `seen` holds the last stamp applied per MicPre channel. A channel with
+    /// no saved strip is acknowledged and left alone, as front-panel gains are
+    /// (`FrontPanelSync.applyGain`): creating default strips would make the next
+    /// settings replay send +4 dBu, gain 0 and phantom OFF to every channel.
     /// - Returns: true when any strip changed.
     @discardableResult
     public static func apply(_ records: ArraySlice<MicPreEditRecord>, seen: inout [UInt64],
-                             to states: inout [InputChannelState], stripCount: Int) -> Bool {
+                             to states: inout [InputChannelState]) -> Bool {
         if seen.count != 8 { seen = Array(repeating: 0, count: 8) }
         var changed = false
         for (channel, record) in records.prefix(8).enumerated() {
             guard record.stamp != 0, record.stamp != seen[channel] else { continue }
             seen[channel] = record.stamp
-            guard record.hasEdit else { continue }
-            let needed = max(stripCount, channel + 1)
-            if states.count < needed {
-                states += (states.count..<needed).map { _ in InputChannelState() }
-            }
+            guard record.hasEdit, states.indices.contains(channel) else { continue }
             let before = states[channel]
             if let level = record.inputType, states[channel].inputType != level.rawValue {
                 // Same dependent rules as a change made in Maestro: phantom,
                 // group, insert and insert return cleared, trim clamped.
                 InputChannelLogic.applyLevelChange(&states[channel], to: level)
+            }
+            if record.insertReleased {
+                states[channel].insert = InputChannelLogic.insertNone
+                states[channel].insertReturn = false
             }
             if let phase = record.phase { states[channel].phase = phase }
             if let highPass = record.highPass { states[channel].hpf = highPass }
@@ -97,19 +102,27 @@ public enum MicPreDAWObservation {
     /// the strips before acknowledging the stamps, and acknowledges stamps
     /// even when nothing changed, so an old edit cannot later undo a newer
     /// choice made in Maestro.
+    ///
+    /// A store that has never acknowledged a record (a unit Maestro has not
+    /// seen with this driver feature, for example one swapped in while the
+    /// driver kept running) takes the records it finds as its baseline and
+    /// applies none of them: they may belong to the unit that was there before.
+    /// The driver also clears its records when a unit is set up again.
     @discardableResult
-    public static func apply(_ records: [MicPreEditRecord], to store: ChannelStateStore,
-                             stripCount: Int) -> Bool {
+    public static func apply(_ records: [MicPreEditRecord], to store: ChannelStateStore) -> Bool {
         guard records.count == 16, store.identity != nil, !store.isSimulating else { return false }
         let offset = store.unit == .b ? 8 : 0
         let unitRecords = records[offset..<offset + 8]
-        var seen: [UInt64] = store.load(seenKey) ?? []
+        guard var seen: [UInt64] = store.load(seenKey), seen.count == 8 else {
+            store.save(unitRecords.map(\.stamp), for: seenKey)
+            return false
+        }
         let before = seen
         guard unitRecords.enumerated().contains(where: { index, record in
             record.stamp != 0 && (seen.count != 8 || record.stamp != seen[index])
         }) else { return false }
         var states = store.load(ChannelStateStore.inputKey, as: [InputChannelState].self) ?? []
-        let changed = apply(unitRecords, seen: &seen, to: &states, stripCount: stripCount)
+        let changed = apply(unitRecords, seen: &seen, to: &states)
         if changed { store.save(states, for: ChannelStateStore.inputKey) }
         if seen != before { store.save(seen, for: seenKey) }
         return changed

@@ -26,6 +26,16 @@ import Testing
         Array(repeating: MicPreEditRecord(stamp: 0, fields: 0), count: 16)
     }
 
+    /// A store that has already acknowledged records once (its baseline).
+    private static func store(_ defaults: UserDefaults, unit: DeviceUnit = .a, identity: UInt64 = 42,
+                              strips: [InputChannelState]?) -> ChannelStateStore {
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false,
+                                      unit: unit, identity: identity)
+        if let strips { store.save(strips, for: ChannelStateStore.inputKey) }
+        store.save([UInt64](repeating: 0, count: 8), for: MicPreDAWObservation.seenKey)
+        return store
+    }
+
     @Test func linkStateDecodesEditsAfterTheMixerInstance() throws {
         var words = [UInt32](repeating: 0, count: 100)
         words[1] = 1
@@ -58,9 +68,8 @@ import Testing
         var seen: [UInt64] = []
         var records = Self.empty()
         records[0] = Self.record(10, type: .plus4dBu)
-        let changed = MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states, stripCount: 16)
-        #expect(changed)
-        #expect(states.count == 16)
+        #expect(MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states))
+        #expect(states.count == 1)
         #expect(states[0].inputType == AnalogInputLevel.plus4dBu.rawValue)
         #expect(!states[0].phantom && states[0].phantomProvenance == nil)
         #expect(states[0].group == InputChannelLogic.groupOff)
@@ -69,7 +78,7 @@ import Testing
         #expect(seen[0] == 10)
         // The same stamp is never applied twice, even after Maestro changes the strip.
         states[0].inputType = AnalogInputLevel.mic.rawValue
-        #expect(!MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states, stripCount: 16))
+        #expect(!MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states))
         #expect(states[0].inputType == AnalogInputLevel.mic.rawValue)
     }
 
@@ -79,51 +88,107 @@ import Testing
         var records = Self.empty()
         records[2] = Self.record(4, phase: true, highPass: false, gain: (40, true))
         records[3] = Self.record(5, gain: (70, false))
-        #expect(MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states, stripCount: 16))
+        #expect(MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states))
         #expect(states[2].phase && !states[2].hpf)
         #expect(states[2].instrumentGain == 40 && states[2].gain == 40)
         #expect(states[3].micGain == 70 && states[3].gain == 0)   // Mic stage stored, Instrument shown
         #expect(states[1] == InputChannelState(inputType: AnalogInputLevel.instrument.rawValue))
     }
 
-    @Test func unitBRecordsReachOnlyUnitBAndStripsAreCreated() throws {
+    /// N2: DAW 60 dB, front panel 20 dB (saved by Maestro), then a DAW
+    /// polarity toggle. The driver's polarity stamp carries polarity only.
+    @Test func aPolarityEditNeverBringsBackAnOlderDAWGain() {
+        var states = [InputChannelState(gain: 60, inputType: AnalogInputLevel.mic.rawValue)]
+        var seen = [UInt64](repeating: 0, count: 8)
+        var records = Self.empty()
+        records[0] = Self.record(1, gain: (60, false))
+        MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states)
+        states[0].gain = 20                                     // front panel, saved by Maestro
+        records[0] = Self.record(2, phase: true)                // what the driver now sends
+        #expect(MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states))
+        #expect(states[0].gain == 20 && states[0].micGain == 20 && states[0].phase)
+    }
+
+    /// N3: no saved strips: acknowledge, save nothing, so no replay resets the board.
+    @Test func noSavedStripsCreatesNothing() throws {
         let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
-        let a = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: false, identity: 42)
-        let b = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: false,
-                                  unit: .b, identity: 43)
-        a.save([InputChannelState(inputType: AnalogInputLevel.mic.rawValue)], for: ChannelStateStore.inputKey)
+        let store = Self.store(defaults, strips: nil)
+        var records = Self.empty()
+        records[0] = Self.record(9, phase: true)
+        #expect(!MicPreDAWObservation.apply(records, to: store))
+        #expect(store.load(ChannelStateStore.inputKey, as: [InputChannelState].self) == nil)
+        #expect(store.load(MicPreDAWObservation.seenKey, as: [UInt64].self)?[0] == 9)
+        // Only existing strips are edited, never padded.
+        var two = [InputChannelState(), InputChannelState()]
+        var seen = [UInt64](repeating: 0, count: 8)
+        var beyond = Self.empty()
+        beyond[5] = Self.record(3, type: .mic)                  // MicPre 6, no strip saved for it
+        #expect(!MicPreDAWObservation.apply(beyond[0..<8], seen: &seen, to: &two))
+        #expect(two == [InputChannelState(), InputChannelState()] && seen[5] == 3)
+    }
+
+    /// N8: a type change whose 0x20 failed after the insert was released.
+    @Test func aReleasedInsertIsClearedEvenWithoutAType() {
+        var states = [InputChannelState(inputType: AnalogInputLevel.mic.rawValue, insert: 6, insertReturn: true)]
+        var seen = [UInt64](repeating: 0, count: 8)
+        var records = Self.empty()
+        records[0] = MicPreEditRecord(stamp: 4, fields: MicPreEditRecord.insertOff)
+        #expect(MicPreDAWObservation.apply(records[0..<8], seen: &seen, to: &states))
+        #expect(states[0].insert == InputChannelLogic.insertNone && !states[0].insertReturn)
+        #expect(states[0].inputType == AnalogInputLevel.mic.rawValue)
+    }
+
+    @Test func unitBRecordsReachOnlyUnitB() throws {
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let micStrip = InputChannelState(inputType: AnalogInputLevel.mic.rawValue)
+        let a = Self.store(defaults, strips: [micStrip])
+        let b = Self.store(defaults, unit: .b, identity: 43, strips: [InputChannelState(), InputChannelState()])
         var records = Self.empty()
         records[8] = Self.record(9, type: .mic, phase: true)    // B MicPre 1
-        #expect(!MicPreDAWObservation.apply(records, to: a, stripCount: 16))
-        #expect(MicPreDAWObservation.apply(records, to: b, stripCount: 16))
-        let savedA = try #require(a.load(ChannelStateStore.inputKey, as: [InputChannelState].self))
+        #expect(!MicPreDAWObservation.apply(records, to: a))
+        #expect(MicPreDAWObservation.apply(records, to: b))
+        #expect(a.load(ChannelStateStore.inputKey, as: [InputChannelState].self) == [micStrip])
         let savedB = try #require(b.load(ChannelStateStore.inputKey, as: [InputChannelState].self))
-        #expect(savedA == [InputChannelState(inputType: AnalogInputLevel.mic.rawValue)])
-        #expect(savedB.count == 16)                             // no saved rows: full default page
+        #expect(savedB.count == 2)
         #expect(savedB[0].inputType == AnalogInputLevel.mic.rawValue && savedB[0].phase)
         #expect(!savedB[0].phantom)                             // a HAL Mic never grants phantom
         // Acknowledged: a later Maestro choice is not undone by the old record.
         var later = savedB
         later[0].phase = false
         b.save(later, for: ChannelStateStore.inputKey)
-        #expect(!MicPreDAWObservation.apply(records, to: b, stripCount: 16))
+        #expect(!MicPreDAWObservation.apply(records, to: b))
         #expect(b.load(ChannelStateStore.inputKey, as: [InputChannelState].self)?[0].phase == false)
+    }
+
+    /// N6: a store that never acknowledged a record (a unit swapped in while the
+    /// driver kept running) takes the current records as its baseline.
+    @Test func aNewUnitAdoptsTheRecordsItFindsWithoutApplyingThem() throws {
+        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let fresh = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: false, identity: 77)
+        fresh.save([InputChannelState()], for: ChannelStateStore.inputKey)
+        var records = Self.empty()
+        records[0] = Self.record(12, type: .mic)               // left by the previous unit
+        #expect(!MicPreDAWObservation.apply(records, to: fresh))
+        #expect(fresh.load(ChannelStateStore.inputKey, as: [InputChannelState].self) == [InputChannelState()])
+        #expect(fresh.load(MicPreDAWObservation.seenKey, as: [UInt64].self)?[0] == 12)
+        records[0] = Self.record(13, phase: true)              // a later edit on this unit
+        #expect(MicPreDAWObservation.apply(records, to: fresh))
+        #expect(fresh.load(ChannelStateStore.inputKey, as: [InputChannelState].self)?[0].phase == true)
     }
 
     @Test func clearedRecordsUnknownIdentityAndSimulationChangeNothing() throws {
         let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
-        let store = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: false, identity: 42)
-        store.save([InputChannelState()], for: ChannelStateStore.inputKey)
+        let store = Self.store(defaults, strips: [InputChannelState()])
         var records = Self.empty()
         records[0] = MicPreEditRecord(stamp: 3, fields: 0)     // Maestro cleared every field
-        #expect(!MicPreDAWObservation.apply(records, to: store, stripCount: 16))
+        #expect(!MicPreDAWObservation.apply(records, to: store))
         #expect(store.load(ChannelStateStore.inputKey, as: [InputChannelState].self) == [InputChannelState()])
         #expect(store.load(MicPreDAWObservation.seenKey, as: [UInt64].self)?[0] == 3)
         records[0] = Self.record(4, type: .variable)
         let anonymous = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: false)
         let simulated = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: true, identity: 42)
-        #expect(!MicPreDAWObservation.apply(records, to: anonymous, stripCount: 16))
-        #expect(!MicPreDAWObservation.apply(records, to: simulated, stripCount: 16))
-        #expect(!MicPreDAWObservation.apply(Array(records.prefix(8)), to: store, stripCount: 16))
+        #expect(!MicPreDAWObservation.apply(records, to: anonymous))
+        #expect(!MicPreDAWObservation.apply(records, to: simulated))
+        #expect(!MicPreDAWObservation.apply(Array(records.prefix(8)), to: store))
     }
 }

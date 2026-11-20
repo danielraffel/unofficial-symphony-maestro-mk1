@@ -388,8 +388,8 @@ typedef struct {
 // DAW controls): a 100-word read is receipts (16-47) + MIXS (48-51) + the
 // host-originated MicPre edits at 52-99, per physical channel A0..7, B0..7,
 // three words each (stamp low, stamp high, fields). The stamp moves after each
-// HAL edit the unit took; a Maestro write of a field clears that field's
-// valid bit. No hardware reads. The type is the 0x20 wire enum.
+// HAL edit the unit took and carries only that edit's fields; a Maestro
+// write of a field clears that field's valid bit. No hardware reads. The type is the 0x20 wire enum.
 #define kSymphonyMicPreEditWords 100u
 #define kSymphonyMicPreEditOffset kSymphonyMixerInstanceWords   // 52
 #define kMicPreEditTypeMask           0x7u
@@ -402,3 +402,4 @@ typedef struct {
 #define kMicPreEditGainMask           (0x7Fu << kMicPreEditGainShift)
 #define kMicPreEditGainValid          (1u << 15)
 #define kMicPreEditGainInstrument     (1u << 16)  // the gain is the Instrument stage's
+#define kMicPreEditInsertOff          (1u << 17)  // the insert was released (and its return off)

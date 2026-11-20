@@ -150,6 +150,7 @@ struct Port {
     bool     symphonyProbeAnswered = false;
     bool     ignoreRate = false;      // units do not follow SET_SAMPLE_RATE
     bool     txBusy = false;          // TX register reports busy (commands time out)
+    long     busyAfterWrites = -1;    // TX goes busy once this many vendor writes have arrived
     uint32_t slipReads = 0;           // the next N status reads report a data slip
     uint8_t  rateCode = 0x04;         // 44.1 kHz
     uint32_t sticky = 0;              // status sticky bits (write 1 to clear)
@@ -167,6 +168,9 @@ struct Port {
     uint64_t commandsSeen = 0;        // anything written to the TX register
 
     bool present() const { return kind != Empty; }
+    bool busy() const {
+        return txBusy || (busyAfterWrites >= 0 && (long)vendorWrites.size() >= busyAfterWrites);
+    }
 
     uint32_t detectBit() const {
         switch (rateCode) {
@@ -435,8 +439,8 @@ struct FakeCard : HostBackend {
         switch (off) {
         case kRegIDReg:         *v = idReg; break;
         case kRegIntStatus:     *v = intPending; break;
-        case kRegXLink1TX:      *v = port[0].txBusy ? 0x80000000u : 0; break;   // busy only when a test says so
-        case kRegXLink2TX:      *v = port[1].txBusy ? 0x80000000u : 0; break;
+        case kRegXLink1TX:      *v = port[0].busy() ? 0x80000000u : 0; break;   // busy only when a test says so
+        case kRegXLink2TX:      *v = port[1].busy() ? 0x80000000u : 0; break;
         case kRegXLink1RX:      *v = port[0].readRX(pcieOrder()); break;
         case kRegXLink2RX:      *v = port[1].readRX(pcieOrder()); break;
         case kRegXLink1Status:  *v = port[0].status(); break;
@@ -3223,12 +3227,20 @@ static void RunSymphonyCardInputRoutes()
     Finish(o, r);
 }
 
+// HAL MicPre writes are refused for kHALMicPreSettleNs after Start, wake and
+// a device configuration change (coreaudiod's restore). Step past it.
+static void PastMicPreSettle()
+{
+    gHostMicPreClockOffsetNs += 6000000000ull;
+}
+
 // B10: assertions only, so the shipped lifecycle goldens remain immutable.
 static void RunPreampHostRoutes()
 {
     Options o; o.name = "B10 preamp host routes"; o.shortFlow = true;
     o.micPreInstrument = true; o.portCountProperty = 2; o.port2 = Port::Symphony;
     Run r; RunScenario(o, r);
+    PastMicPreSettle();
     auto *drv = r.drv;
     auto &a = r.card.port[0].stored;
     auto &b = r.card.port[1].stored;
@@ -3266,6 +3278,7 @@ static void RunPreampHostRoutes()
     b[(uint64_t(0xA1) << 32) | 1] = {1};
     drv->StopDevice(1, IOUserAudioStartStopFlags::None);
     Select(r, 1, "B10 select 64");
+    PastMicPreSettle();
     uint8_t type[] = {3, 127};
     CHECK(drv->SendVendorCommand(0x20, 0x80000000u, type, 2, 1) == kIOReturnSuccess,
           "B10: B Mic type tracked");
@@ -3497,6 +3510,24 @@ static void RunMicPreDAWControls()
     const IOUserAudioSelectorValue plus4 = 0, minus10 = 1, variable = 2, mic = 3, instrument = 4;
     const IOUserAudioSelectorValue on = 1, off = 0;
 
+    // N1: right after Start, a coreaudiod restore cannot change the MicPre.
+    size_t settle = pa.vendorWrites.size();
+    auto refusedWhileSettling = [&](const char *when) {
+        settle = pa.vendorWrites.size();
+        CHECK(types[0]->HandleChangeSelectedValues(&plus4, 1) == kIOReturnNotPermitted &&
+              phases[0]->HandleChangeControlValue(false) == kIOReturnNotPermitted &&
+              hpfs[0]->HandleChangeSelectedValues(&on, 1) == kIOReturnNotPermitted &&
+              drv->RequestPhantom(0, true) == kIOReturnNotPermitted,
+              "B12: type, polarity, high-pass and phantom ON refused just after %s", when);
+        CHECK(drv->RequestPhantom(0, false) == kIOReturnSuccess, "B12: phantom OFF still allowed after %s", when);
+        HostPump();
+        CHECK(WritesSince(pa, settle) == std::vector<uint8_t>({0xC6}) && types[0]->selected == mic &&
+              phases[0]->GetControlValue() && hpfs[0]->selected == 0,
+              "B12: only the OFF went out after %s; controls keep the real values", when);
+        PastMicPreSettle();
+    };
+    refusedWhileSettling("Start");
+
     // Finding 1: a line-level control ('nlvl') with the original's IDs.
     CHECK(types[0]->classID == IOUserAudioClassID::LineLevelControl &&
           hpfs[0]->classID == IOUserAudioClassID::HighPassFilterControl &&
@@ -3566,22 +3597,39 @@ static void RunMicPreDAWControls()
     drv->ReadMicPreEdits(edits);
     CHECK(r.card.lines.size() == readMark, "B12: reading edits has no bus traffic");
     CHECK((edits[0] || edits[1]) &&
-          (edits[2] & (kMicPreEditPhase | kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid)) ==
-              (kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid) &&
+          edits[2] == (kMicPreEditHighPass | kMicPreEditHighPassValid) &&
           (edits[8] & (kMicPreEditPhase | kMicPreEditPhaseValid)) == (kMicPreEditPhase | kMicPreEditPhaseValid) &&
           edits[9 * 3] == 0 && edits[9 * 3 + 2] == 0,
-          "B12: A1 and A3 HAL edits recorded; untouched channels empty");
+          "B12: A1 and A3 HAL edits recorded, each stamp with its own edit only; others empty");
     uint8_t one[] = {1};
     const uint32_t stampLo = edits[0], stampHi = edits[1];
     CHECK(drv->SendVendorCommand(0xCA, 0, one, 1) == kIOReturnSuccess, "B12: Maestro high-pass write");
     drv->ReadMicPreEdits(edits);
-    CHECK(edits[0] == stampLo && edits[1] == stampHi && !(edits[2] & kMicPreEditHighPassValid) &&
-          (edits[2] & kMicPreEditPhaseValid), "B12: a Maestro write clears only its own field");
+    CHECK(edits[0] == stampLo && edits[1] == stampHi && !(edits[2] & kMicPreEditHighPassValid),
+          "B12: a Maestro write clears its field, the stamp stays");
     CHECK(drv->RequestMicGain(0, 40) == kIOReturnSuccess, "B12: DAW gain queued");
     HostPump();
     drv->ReadMicPreEdits(edits);
     CHECK((edits[2] & kMicPreEditGainValid) && ((edits[2] & kMicPreEditGainMask) >> kMicPreEditGainShift) == 40 &&
           !(edits[2] & kMicPreEditGainInstrument), "B12: DAW gain recorded with its stage");
+    // N2: DAW 60 dB, the front panel then 20 dB, then a DAW polarity toggle:
+    // the record must not hand the app 60 again.
+    CHECK(drv->RequestMicGain(0, 60) == kIOReturnSuccess, "B12: DAW gain 60");
+    HostPump();
+    CHECK(drv->PublishObservedMicGain(0, 0, 0, 20) == kIOReturnSuccess, "B12: front panel gain 20");
+    drv->ReadMicPreEdits(edits);
+    CHECK(!(edits[2] & kMicPreEditGainValid), "B12: a front-panel gain clears the unread DAW gain");
+    CHECK(drv->RequestMicGain(0, 60) == kIOReturnSuccess, "B12: DAW gain 60 again");
+    HostPump();
+    phases[0]->HandleChangeControlValue(true);
+    HostPump();
+    drv->ReadMicPreEdits(edits);
+    CHECK(edits[2] == (kMicPreEditPhase | kMicPreEditPhaseValid),
+          "B12: the polarity stamp carries polarity only, never the older 60 dB");
+    phases[0]->HandleChangeControlValue(false);
+    HostPump();
+    CHECK(drv->RequestMicGain(0, 40) == kIOReturnSuccess, "B12: DAW gain back to 40");
+    HostPump();
 
     // Finding 3: Mic -> +4 with phantom on and an insert held.
     a[key(0xC8, 2)] = {0x01};   // insert 3 holds MicPre 1
@@ -3644,15 +3692,24 @@ static void RunMicPreDAWControls()
     HostPump();
     CHECK(a[key(0xC6, 0)] == std::vector<uint8_t>({1}), "B12: a DAW user can turn +48V on after choosing Mic");
     w = pa.vendorWrites.size();
+    drv->ReadMicPreEdits(edits);
+    const uint32_t micLo = edits[0], micHi = edits[1];
     types[0]->HandleChangeSelectedValues(&mic, 1);
     HostPump();
-    CHECK(WritesSince(pa, w) == std::vector<uint8_t>({0x20, 0xC3}),
-          "B12: Mic over Mic: no OFF, no group Off (type unchanged)");
+    drv->ReadMicPreEdits(edits);
+    CHECK(WritesSince(pa, w).empty() && edits[0] == micLo && edits[1] == micHi && types[0]->selected == mic,
+          "B12: a HAL set of the same type sends nothing and records no edit (N8)");
     CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted, "B12: every HAL Mic restarts the arm delay");
+    // N4: Maestro replaying that Mic (over a channel already in Mic) keeps the delay.
     uint8_t maestroMic[] = {3, 127};
+    uint8_t maestroLine[] = {1, 127};
     CHECK(drv->SendVendorCommand(0x20, 0x80000000u, maestroMic, 2) == kIOReturnSuccess &&
+          drv->RequestPhantom(0, true) == kIOReturnNotPermitted,
+          "B12: Maestro's Mic over a HAL Mic does not cut the arm delay short");
+    CHECK(drv->SendVendorCommand(0x20, 0x80000000u, maestroLine, 2) == kIOReturnSuccess &&
+          drv->SendVendorCommand(0x20, 0x80000000u, maestroMic, 2) == kIOReturnSuccess &&
           drv->RequestPhantom(0, true) == kIOReturnSuccess,
-          "B12: a Mic set by Maestro authorises phantom ON at once, as before");
+          "B12: a Mic Maestro sets from another type authorises phantom ON at once, as before");
     HostPump();
 
     // Mic -> Instrument: phantom OFF first, no insert change, group Off.
@@ -3698,6 +3755,26 @@ static void RunMicPreDAWControls()
     CHECK(WritesSince(pa, w).empty() && types[0]->selected == instrument,
           "B12: stale type sends nothing; host 1 shows the channel it now reaches");
     CHECK(route(0, 0) == kIOReturnSuccess && types[0]->selected == mic, "B12: host 1 back on MicPre 1");
+    // N5: a unit routing edit (P2P 0 <- MicPre 2) re-targets host 1 at once.
+    uint8_t p2pTo2[] = {192, 33}, p2pTo1[] = {192, 32};
+    CHECK(drv->SendVendorCommand(0x31, 0, p2pTo2, sizeof(p2pTo2)) == kIOReturnSuccess &&
+          types[0]->selected == instrument,
+          "B12: after a unit routing edit host 1 shows MicPre 2's type");
+    CHECK(drv->SendVendorCommand(0x31, 0, p2pTo1, sizeof(p2pTo1)) == kIOReturnSuccess &&
+          types[0]->selected == mic, "B12: routing back shows MicPre 1 again");
+    // N8: 0x20 fails after the insert was released: the record says so.
+    const uint8_t insert6[] = {0x01};
+    CHECK(drv->SendVendorCommand(0xC8, 5, insert6, 1) == kIOReturnSuccess,
+          "B12: Maestro assigns insert 6 to MicPre 1");
+    w = pa.vendorWrites.size();
+    pa.busyAfterWrites = (long)w + 3;   // phantom OFF, insert release, return OFF go out; 0x20 does not
+    types[0]->HandleChangeSelectedValues(&plus4, 1);
+    HostPump();
+    pa.busyAfterWrites = -1;
+    drv->ReadMicPreEdits(edits);
+    CHECK(WritesSince(pa, w) == std::vector<uint8_t>({0xC6, 0xC8, 0xC9}) && types[0]->selected == mic &&
+          (edits[2] & kMicPreEditInsertOff) && !(edits[2] & kMicPreEditTypeValid),
+          "B12: a failed 0x20 after the insert release is reported (insert off, type unchanged)");
     // Instrument choice follows the route (finding 10).
     CHECK(route(4, 0) == kIOReturnSuccess && types[4]->values.size() == 5 &&
           types[4]->HandleChangeSelectedValues(&instrument, 1) == kIOReturnSuccess,
@@ -3712,6 +3789,10 @@ static void RunMicPreDAWControls()
     b[key(0xA1, 1)] = {1};
     drv->StopDevice(1, IOUserAudioStartStopFlags::None);
     Select(r, 1, "B12 select 64");
+    // N1: the port-mode configuration change re-arms the settle window.
+    CHECK(types[0]->HandleChangeSelectedValues(&plus4, 1) == kIOReturnNotPermitted,
+          "B12: type refused just after the port-mode configuration change");
+    PastMicPreSettle();
     CHECK(drv->SendVendorCommand(0x20, 0x80000000u, maestroMic, 2, 1) == kIOReturnSuccess &&
           route(0, 32) == kIOReturnSuccess, "B12: B MicPre 1 in Mic, routed to host 1");
     drv->ReadMicPreEdits(edits);
@@ -3742,6 +3823,28 @@ static void RunMicPreDAWControls()
     gHostDispatchSyncDrain = true;
     HostPump();
     CHECK(WritesSince(pb, wb).empty() && WritesSince(pa, wa).empty(), "B12: stale B type sends nothing anywhere");
+    // N6: unit B set up again (possibly another unit): its records and caches go.
+    b[key(0xC8, 0)] = {0x01};
+    pb.vendorReads.clear();
+    drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    Select(r, 0, "B12 back to 32");
+    Select(r, 1, "B12 64 again");
+    PastMicPreSettle();
+    drv->ReadMicPreEdits(edits);
+    CHECK(edits[24] == 0 && edits[25] == 0 && edits[26] == 0, "B12: B records cleared on reconfiguration");
+    CHECK(drv->SendVendorCommand(0x20, 0x80000000u, maestroMic, 2, 1) == kIOReturnSuccess &&
+          route(0, 32) == kIOReturnSuccess, "B12: B MicPre 1 in Mic again");
+    wb = pb.vendorWrites.size();
+    reads = pb.vendorReads.size();
+    types[0]->HandleChangeSelectedValues(&plus4, 1);
+    HostPump();
+    CHECK(ReadsSince(pb, reads, 0xC8) == 8 && b[key(0xC8, 0)] == std::vector<uint8_t>({0}),
+          "B12: B insert table read again from the new unit, not from the cache");
+    // N1: a wake re-arms the settle window.
+    drv->SetPowerState(kIOServicePowerCapabilityOn);
+    CHECK(phases[0]->HandleChangeControlValue(true) == kIOReturnNotPermitted,
+          "B12: polarity refused just after a wake");
+    PastMicPreSettle();
     Finish(o, r);
 }
 #endif
