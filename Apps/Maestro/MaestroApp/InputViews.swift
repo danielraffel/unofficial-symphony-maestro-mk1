@@ -19,6 +19,10 @@ struct InputControlsView: View {
     private var canEditPreferences: Bool {
         loadedScope.isWritable && loadedScope == appState.preferenceViewScope(for: appState.activeUnit)
     }
+    /// Edits also wait while hardware writes are suspended (sleep, wake
+    /// validation): an edit then would be shown and saved but never sent.
+    /// Kept out of `canEditPreferences`, which also gates loading the page.
+    private var canEditHardware: Bool { canEditPreferences && !appState.hardwareWritesSuspended }
     /// Seed the persisted strip state before the first body evaluation. The async task below
     /// still performs migration, simulation, and the normal board-count refresh; this seed only
     /// prevents an empty rack from appearing while that task is scheduled.
@@ -436,8 +440,8 @@ struct InputControlsView: View {
                 .padding(.bottom, 8)
             }
         }
-        .disabled(!canEditPreferences)
-        .allowsHitTesting(canEditPreferences)
+        .disabled(!canEditHardware)
+        .allowsHitTesting(canEditHardware)
         .navigationTitle("Input")
         .onAppear {
             scrollRestorationPending = true
@@ -549,7 +553,23 @@ struct InputControlsView: View {
 
     private func saveChannelStates() {
         guard canEditPreferences else { return }
+        // An edit that slipped in as writes were suspended: the unit did not
+        // take it, so neither save nor show it.
+        guard !appState.hardwareWritesSuspended else { return restoreSavedChannels() }
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
+    }
+
+    /// Put the strips back to the saved state (a binding has already changed
+    /// the local copy by the time a handler runs).
+    private func restoreSavedChannels() {
+        let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey) ?? []
+        let identity = appState.unitChannelStateStore.identity
+        for index in channels.indices {
+            let state = index < saved.count ? saved[index] : InputChannelState()
+            channels[index] = state.recalled(identity: identity, boardSlot: 1, channel: index)
+        }
+        applySimulatedAnalogLevels()
+        syncAppliedGains()
     }
 
     /// Reflect a gain selected on the physical front panel in the saved strip
@@ -609,7 +629,7 @@ struct InputControlsView: View {
     @discardableResult
     private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
                                       on device: (any DeviceConnection)?) async -> Bool {
-        guard canEditPreferences else { return false }
+        guard canEditHardware else { return false }
         guard let device else { return false }
         do {
             let element = UInt32(index)
@@ -858,7 +878,7 @@ struct InputControlsView: View {
     /// (`SymphonyIOBoard_MicPre8ch.cpp:686-696`), so it can only be trusted once
     /// the level has been established.
     private func resetInputDefaults(scope: SymphonyIOResetScope) async {
-        guard canEditPreferences else { return }
+        guard canEditHardware else { return }
         let result = InputChannelLogic.resetToDefaults(
             &channels,
             includingCalibration: scope.resetsTrims,

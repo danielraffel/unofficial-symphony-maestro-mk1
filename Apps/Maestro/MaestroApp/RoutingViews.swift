@@ -72,7 +72,9 @@ struct InputRoutingView: View {
     private var board2Reading: BoardTypeReading {
         unit == .b ? BoardTypeReading(card: board2, source: appState.unitBBoardSource(slot: 1)) : appState.secondaryBoardReading
     }
-    private var canWrite: Bool { unit == .a || appState.unitBInputRoutingAllowed }
+    private var canWrite: Bool {
+        (unit == .a || appState.unitBInputRoutingAllowed) && !appState.hardwareWritesSuspended
+    }
     private var unitBResetRoutes: [SymphonyIODefaultRouting.Route] {
         // Original ResetInputRouting: analog across boards, then AES/optical.
         // Evidence: og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:714-792.
@@ -813,7 +815,7 @@ struct OutputRoutingView: View {
                         hoverCol: $hoverCol,
                         columnMeterLevels: [],
                         onCellTap: { gridRow, col in
-                            guard !isLoadingRoutes else { return }
+                            guard !isLoadingRoutes, !appState.hardwareWritesSuspended else { return }
                             if col >= hwPairCount {
                                 tapUnitB(row: gridRow, col: col - hwPairCount)
                                 return

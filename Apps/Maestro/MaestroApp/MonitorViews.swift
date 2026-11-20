@@ -256,11 +256,13 @@ struct MonitorToolbarView: View {
                     muted: appState.speakerMuted,
                     wide: true
                 ) {
+                    guard !appState.hardwareWritesSuspended else { return }
                     appState.speakerMuted.toggle()
                     let muted = appState.speakerMuted
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
+                            guard !s.hardwareWritesSuspended else { return }
                             s.speakerMuted = prev
                             try? await s.device?.setProperty(
                                 PropertyAddress(selector: .outputMute), value: .bool(prev))
@@ -287,8 +289,11 @@ struct MonitorToolbarView: View {
                     externalReadout: true,
                     onUserChange: { level in
                         guard !isLoading else { return }
+                        // Writes are suspended: the unit keeps its level.
+                        guard !appState.hardwareWritesSuspended else { appState.speakerLevel = prevSpeakerLevel; return }
                         um?.registerUndo(withTarget: appState) { s in
                             Task { @MainActor in
+                                guard !s.hardwareWritesSuspended else { return }
                                 s.speakerLevel = prevSpeakerLevel
                                 try? await s.device?.setProperty(
                                     PropertyAddress(selector: .outputLevel),
@@ -315,11 +320,13 @@ struct MonitorToolbarView: View {
                     icon: appState.hp1Muted ? "speaker.slash.fill" : "headphones",
                     muted: appState.hp1Muted
                 ) {
+                    guard !appState.hardwareWritesSuspended else { return }
                     appState.hp1Muted.toggle()
                     let muted = appState.hp1Muted
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
+                            guard !s.hardwareWritesSuspended else { return }
                             s.hp1Muted = prev
                             try? await s.device?.setProperty(
                                 PropertyAddress(selector: .headphone1Mute), value: .bool(prev))
@@ -342,8 +349,11 @@ struct MonitorToolbarView: View {
                     externalReadout: true,
                     onUserChange: { level in
                         guard !isLoading else { return }
+                        // Writes are suspended: the unit keeps its level.
+                        guard !appState.hardwareWritesSuspended else { appState.hp1Level = prevHP1Level; return }
                         um?.registerUndo(withTarget: appState) { s in
                             Task { @MainActor in
+                                guard !s.hardwareWritesSuspended else { return }
                                 s.hp1Level = prevHP1Level
                                 try? await s.device?.setProperty(
                                     PropertyAddress(selector: .headphone1Level),
@@ -367,11 +377,13 @@ struct MonitorToolbarView: View {
                     icon: appState.hp2Muted ? "speaker.slash.fill" : "headphones",
                     muted: appState.hp2Muted
                 ) {
+                    guard !appState.hardwareWritesSuspended else { return }
                     appState.hp2Muted.toggle()
                     let muted = appState.hp2Muted
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
+                            guard !s.hardwareWritesSuspended else { return }
                             s.hp2Muted = prev
                             try? await s.device?.setProperty(
                                 PropertyAddress(selector: .headphone2Mute), value: .bool(prev))
@@ -394,8 +406,11 @@ struct MonitorToolbarView: View {
                     externalReadout: true,
                     onUserChange: { level in
                         guard !isLoading else { return }
+                        // Writes are suspended: the unit keeps its level.
+                        guard !appState.hardwareWritesSuspended else { appState.hp2Level = prevHP2Level; return }
                         um?.registerUndo(withTarget: appState) { s in
                             Task { @MainActor in
+                                guard !s.hardwareWritesSuspended else { return }
                                 s.hp2Level = prevHP2Level
                                 try? await s.device?.setProperty(
                                     PropertyAddress(selector: .headphone2Level),
@@ -413,6 +428,8 @@ struct MonitorToolbarView: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
+        // Sleep or wake validation: a change would never reach the unit.
+        .disabled(appState.hardwareWritesSuspended)
         .task(id: appState.viewReloadToken) {
             await loadMonitorState()
         }

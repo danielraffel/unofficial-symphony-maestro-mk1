@@ -3815,10 +3815,22 @@ static void RunMicPreDAWControls()
     b[key(0xA1, 0)] = {6};
     b[key(0xA1, 1)] = {1};
     drv->StopDevice(1, IOUserAudioStartStopFlags::None);
-    Select(r, 1, "B12 select 64");
-    // N1: the port-mode configuration change re-arms the settle window.
+    {
+        // N1: the port-mode configuration change re-arms the settle window
+        // when it ENDS, not only when it is requested: the port-2 probe and
+        // ConfigureUnitB can take seconds before coreaudiod re-reads the
+        // controls (0.9.10 final review, finding 5).
+        r.card.phase("B12 select 64");
+        if (gHostAudio.portSources.size() == 2) gHostAudio.portSources[1]->selected = 1;
+        const uint32_t before = gHostAudio.configChangeRequests;
+        CHECK(drv->RequestPortMode(1) == kIOReturnSuccess, "B12: 64 channels requested");
+        HostPump();
+        CHECK(gHostAudio.configChangeRequests != before, "B12: 64 channels asks for a configuration change");
+        PastMicPreSettle();   // the request's window runs out before the change is performed
+        HostPerformConfigChange(r, false);
+    }
     CHECK(types[0]->HandleChangeSelectedValues(&plus4, 1) == kIOReturnNotPermitted,
-          "B12: type refused just after the port-mode configuration change");
+          "B12: type refused just after the port-mode configuration change ends");
     PastMicPreSettle();
     CHECK(drv->SendVendorCommand(0x20, 0x80000000u, maestroMic, 2, 1) == kIOReturnSuccess &&
           route(0, 32) == kIOReturnSuccess, "B12: B MicPre 1 in Mic, routed to host 1");

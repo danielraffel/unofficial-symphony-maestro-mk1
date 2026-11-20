@@ -35,6 +35,10 @@ struct OutputControlsView: View {
     private var canEditPreferences: Bool {
         loadedScope.isWritable && loadedScope == appState.preferenceViewScope(for: appState.activeUnit)
     }
+    /// Edits also wait while hardware writes are suspended (sleep, wake
+    /// validation): an edit then would be shown and saved but never sent.
+    /// Kept out of `canEditPreferences`, which also gates loading the page.
+    private var canEditHardware: Bool { canEditPreferences && !appState.hardwareWritesSuspended }
     // Fixed for this page's lifetime (.id(activeUnit) in AppShell). Queued
     // monitor operations must never follow a later picker selection.
     private let monitorTarget: AppState.UnitWriteTarget
@@ -456,8 +460,8 @@ struct OutputControlsView: View {
                 .padding(.bottom, 8)
             }
         }
-        .disabled(!canEditPreferences)
-        .allowsHitTesting(canEditPreferences)
+        .disabled(!canEditHardware)
+        .allowsHitTesting(canEditHardware)
         .navigationTitle("Output")
         .onAppear {
             scrollRestorationPending = true
@@ -1118,6 +1122,9 @@ struct OutputControlsView: View {
 
     private func saveChannelStates() {
         guard canEditPreferences else { return }
+        // An edit that slipped in as writes were suspended: the unit did not
+        // take it, so neither save nor show it.
+        guard !appState.hardwareWritesSuspended else { return initializeOutputChannels() }
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.outputKey)
     }
 
@@ -1333,7 +1340,7 @@ struct OutputControlsView: View {
     @discardableResult
     private func writeOutputProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
                                      on device: (any DeviceConnection)?) async -> Bool {
-        guard canEditPreferences else { return false }
+        guard canEditHardware else { return false }
         guard let device else { return false }
         do {
             let element = UInt32(index)
@@ -1417,7 +1424,7 @@ struct OutputControlsView: View {
     /// controller (`SymphonyIO.cpp:1626-1634`); on this unit that would rewrite
     /// the ADAT output crosspoints. Reset Routing lives on the routing pages.
     private func resetMonitorDefaults(scope: SymphonyIOResetScope) async {
-        guard canEditPreferences else { return }
+        guard canEditHardware else { return }
         // The trims below are saved after several awaits: keep them to this unit.
         let target = appState.unitWriteTarget
         let attenuation = UInt32(SymphonyIOMonitorDefaults.levelAttenuationDB)

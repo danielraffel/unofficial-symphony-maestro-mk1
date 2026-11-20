@@ -533,6 +533,7 @@ struct MixerView: View {
     }
 
     private func resetMixerDefaults() {
+        guard editor.canEdit(appState) else { return }
         let empty = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
         editor.channels = Array(repeating: empty, count: editor.channels.count)
         editor.swReturnChannel = empty

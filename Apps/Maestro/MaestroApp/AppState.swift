@@ -320,8 +320,7 @@ final class AppState: @unchecked Sendable {
     /// Symphony behind an enumerated ThunderBridge is distinct from a missing
     /// transport, while the existing scanning/error messages remain intact.
     var endpointStatusMessage: String {
-        if hardwareSleepState == .validating { return "Validating hardware after wake…" }
-        if hardwareSleepState == .sleeping { return "Hardware sleeping" }
+        if let hardwareSuspendedNote { return hardwareSuspendedNote }
         if endpointDisconnected {
             if let portStatusMessage { return PortStatusMessage.headline(portStatusMessage) }
             return connectionPresentation.endpointLabel
@@ -1264,6 +1263,15 @@ final class AppState: @unchecked Sendable {
     enum HardwareSleepState { case awake, sleeping, validating }
     var hardwareSleepState: HardwareSleepState = .awake
     var hardwareWritesSuspended: Bool { hardwareSleepState != .awake }
+    /// Why hardware edits are unavailable right now, or nil when they are. The
+    /// status bar and the note over the device pages show the same words.
+    var hardwareSuspendedNote: String? {
+        switch hardwareSleepState {
+        case .validating: "Validating hardware after wake…"
+        case .sleeping: "Hardware sleeping"
+        case .awake: nil
+        }
+    }
     var twoUnitSleeping: Bool { hardwareWritesSuspended }
     @ObservationIgnored var wakeReconnectTask: Task<Void, Never>?
     @ObservationIgnored var wakeFallbackTask: Task<Void, Never>?
@@ -3807,8 +3815,18 @@ final class AppState: @unchecked Sendable {
 
     static let thunderboltFrontPanelSyncInterval: Duration = .milliseconds(500)
 
+    /// True when the serving ThunderBridge/PCIe driver predates build 132.
+    /// Those builds do not consume the front panel's 0x28 report themselves, so
+    /// the app must tell the Mac's volume and mute controls about a front-panel
+    /// change, as 0.9.9 did. Unknown (not read yet) counts as new: pushing to a
+    /// 132+ driver could reach the wrong unit's monitor (4ca8d90).
+    var frontPanelNeedsHALEcho: Bool {
+        transportType == .thunderbolt && servingDextBuild != nil
+            && !SymphonyExtendedSelectors.supported(by: servingDextBuild)
+    }
+
     @MainActor
-    private func applyFrontPanelChange(_ change: FrontPanelSync.Change, unit: DeviceUnit = .a) async {
+    func applyFrontPanelChange(_ change: FrontPanelSync.Change, unit: DeviceUnit = .a) async {
         guard !hardwareWritesSuspended else { return }
         switch change {
         case .micPreGain(let channel, let gain, _):
@@ -3829,7 +3847,7 @@ final class AppState: @unchecked Sendable {
             }
         case .level(.speaker, let dB, _):
             if speakerLevel != dB { speakerLevel = dB }
-            if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB) }
+            if transportType != .thunderbolt || frontPanelNeedsHALEcho { scheduleSpeakerLevelPush(dB) }
         case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
         case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
         case .level: break   // MicPre selections arrive as .micPreGain
@@ -3837,8 +3855,17 @@ final class AppState: @unchecked Sendable {
             speakerMuted = muted
             hp1Muted = muted
             hp2Muted = muted
-            // ThunderBridge consumes the physical observation in the driver;
-            // no echo through the card's selected-monitor HAL control.
+            // Driver build 132+ consumes the physical observation itself; no
+            // echo through the card's selected-monitor HAL control. An older
+            // driver knows nothing of a front-panel mute: Maestro reads that
+            // control whenever the Mac's volume changes, so without the echo
+            // the speaker flipped back to "unmuted" on screen while the unit
+            // stayed muted (2026-11-13). Setting it sends the unit the state
+            // it is already in.
+            if frontPanelNeedsHALEcho, let device {
+                Task { try? await device.setProperty(
+                    PropertyAddress(selector: .outputMute), value: .bool(muted)) }
+            }
         case .metersCleared:
             // The unit's held peaks are gone; drop Maestro's copies too.
             inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
@@ -3851,6 +3878,7 @@ final class AppState: @unchecked Sendable {
     /// How long the speaker encoder must be still before its level is passed on
     /// to the Mac's volume control.
     static let frontPanelPushQuietInterval: Duration = .milliseconds(1500)
+    @ObservationIgnored var frontPanelPushQuietInterval: Duration = AppState.frontPanelPushQuietInterval
 
     private var speakerPushGeneration = 0
 
@@ -3872,11 +3900,22 @@ final class AppState: @unchecked Sendable {
         let generation = speakerPushGeneration
         let sourceDevice = device
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.frontPanelPushQuietInterval)
+            try? await Task.sleep(for: self?.frontPanelPushQuietInterval ?? Self.frontPanelPushQuietInterval)
             guard let self, !self.hardwareWritesSuspended, generation == self.speakerPushGeneration, self.device === sourceDevice,
                   self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
-            self.lastFrontPanelSpeakerPush = dB
-            if self.transportType != .thunderbolt { self.writeASPVolume(dB) }
+            if self.transportType != .thunderbolt {
+                self.lastFrontPanelSpeakerPush = dB
+                self.writeASPVolume(dB)
+            } else if self.frontPanelNeedsHALEcho {
+                // Driver before build 132 (re-checked: a handover may have
+                // happened during the wait). Its volume control is the
+                // driver's own; setting the level through the connection
+                // updates it, as 0.9.9 did.
+                self.lastFrontPanelSpeakerPush = dB
+                let attenuation = UInt32(max(0, min(64, -dB)))
+                try? await self.device?.setProperty(
+                    PropertyAddress(selector: .outputLevel), value: .uint32(attenuation))
+            }
         }
     }
 

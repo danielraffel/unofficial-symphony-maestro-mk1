@@ -477,6 +477,27 @@ struct ConnectionBadge: View {
     }
 }
 
+// MARK: - Hardware Suspended Note
+
+/// One line over a device page while hardware writes are suspended.
+struct HardwareSuspendedBar: View {
+    let note: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "moon.zzz")
+                .foregroundStyle(.secondary)
+            Text(note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 // MARK: - Detail View Router
 
 /// Routes to the appropriate view based on sidebar selection.
@@ -489,14 +510,29 @@ struct DetailView: View {
     /// are rebuilt when it changes.
     private var isPerUnit: Bool { UnitPicker.isPerUnit(page: area.rawValue) }
 
+    /// Every page but App Settings writes the unit. While hardware writes are
+    /// suspended (sleep, wake validation) an edit would be shown and saved but
+    /// never sent, so the page is disabled and says why.
+    private var suspendedNote: String? { Self.suspendedNote(area: area, appState: appState) }
+
+    static func suspendedNote(area: NavigationArea, appState: AppState) -> String? {
+        area == .appSettings ? nil : appState.hardwareSuspendedNote
+    }
+
     var body: some View {
-        if isPerUnit && appState.unitPickerVisible {
-            VStack(spacing: 0) {
-                UnitPickerBar()
-                page.id(appState.activeUnit)
+        VStack(spacing: 0) {
+            if let suspendedNote { HardwareSuspendedBar(note: suspendedNote) }
+            Group {
+                if isPerUnit && appState.unitPickerVisible {
+                    VStack(spacing: 0) {
+                        UnitPickerBar()
+                        page.id(appState.activeUnit)
+                    }
+                } else {
+                    page
+                }
             }
-        } else {
-            page
+            .disabled(suspendedNote != nil)
         }
     }
 

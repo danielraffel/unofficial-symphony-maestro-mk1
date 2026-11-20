@@ -46,11 +46,20 @@ struct MixerEditorState {
         swReturnRightLevel = swLevel
     }
 
+    /// Also false while hardware writes are suspended (sleep, wake validation):
+    /// an edit then would be shown and saved but never sent.
     func canEdit(_ appState: AppState) -> Bool {
         scopes.allSatisfy(\.isWritable) && scopes == appState.mixerViewScopes
+            && !appState.hardwareWritesSuspended
     }
 
-    func save(appState: AppState, selectedMixer: Int) {
+    mutating func save(appState: AppState, selectedMixer: Int) {
+        // An edit that slipped in as writes were suspended: the unit did not
+        // take it, so neither save nor show it (back to the saved state).
+        if appState.hardwareWritesSuspended, scopes == appState.mixerViewScopes {
+            self = MixerEditorState(appState: appState, selectedMixer: selectedMixer)
+            return
+        }
         guard canEdit(appState) else { return }
         appState.saveMixerStrips(channels, mixer: selectedMixer)
         if let data = try? JSONEncoder().encode(swReturnChannel) {

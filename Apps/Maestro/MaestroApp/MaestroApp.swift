@@ -138,6 +138,7 @@ struct MaestroApp: App {
                     appState.clearMeters()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
+                .disabled(appState.hardwareWritesSuspended)
                 .maestroHelp("Clear all peak hold and over indicators (Cmd+K).")
 
                 Divider()
@@ -222,6 +223,7 @@ struct MaestroApp: App {
                     }
                 }
                 .keyboardShortcut("o")
+                .disabled(appState.hardwareWritesSuspended)
             }
 
             // Presets menu — named preset library (P3F-32)
@@ -272,6 +274,7 @@ struct MaestroApp: App {
                                 }
                             }
                         }
+                        .disabled(appState.hardwareWritesSuspended)
                     }
                 }
 

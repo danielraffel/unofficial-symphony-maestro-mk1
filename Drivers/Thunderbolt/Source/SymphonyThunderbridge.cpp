@@ -5809,6 +5809,9 @@ kern_return_t SymphonyThunderbridge::PerformPortModeChange()
     if (!ivars || ivars->portCount != 2 || !ivars->portPublishLock) return kIOReturnSuccess;
     uint32_t want = __atomic_load_n(&ivars->requestedPortMode, __ATOMIC_ACQUIRE);
     __block uint32_t card = __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE);
+    // A port-mode change is being performed (not, say, a rate change's
+    // configuration change with no port request pending).
+    bool portModeChange = want != card;
     IODispatchQueue *queue = ivars->xlinkQueue;
     if (queue && want != card) {
         queue->DispatchSync(^{
@@ -5865,12 +5868,18 @@ kern_return_t SymphonyThunderbridge::PerformPortModeChange()
             STLOG("Port selection: streams are now %u channels in and out", card);
         }
         if (__atomic_exchange_n(&ivars->portSelectorsStale, false, __ATOMIC_ACQ_REL)) {
+            portModeChange = true;
             IOUserAudioSelectorValue value = card == 64 ? kSymphonyPortSourcePorts1And2 : kSymphonyPortSourcePort1;
             for (uint32_t i = 0; i < 2; i++)
                 if (ivars->portSourceControl[i]) ivars->portSourceControl[i]->SetCurrentSelectedValues(&value, 1);
         }
     }
     IOLockUnlock(ivars->portPublishLock);
+    // The request armed the settle window, but the work above (the port-2
+    // probe, ConfigureUnitB) can take seconds, and coreaudiod re-reads the
+    // controls only once this configuration change ends: start the window
+    // again from here so its restore burst still falls inside it.
+    if (portModeChange) ArmMicPreSettle(ivars);
     return kIOReturnSuccess;
 }
 
