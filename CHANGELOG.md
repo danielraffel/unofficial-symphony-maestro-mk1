@@ -8,7 +8,7 @@ Thanks to the tester with two Symphony I/Os who sent the diagnostics report that
 
 ### Changes that may affect your setup
 
-- **This beta updates the ThunderBridge and PCIe driver.** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **This beta updates the ThunderBridge and PCIe driver (0.11.13, build 139).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
 - **A second Symphony I/O with one 16-channel I/O card is now recognised as a Symphony I/O.** Before, Maestro showed it as a DD-16X and treated it as a converter. If you used it that way, its channels are now named and routed as unit B's, and it follows the clock settings in Device Settings › Clock (Loop Sync by default).
 
 ### Fixed
