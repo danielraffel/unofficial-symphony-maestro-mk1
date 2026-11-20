@@ -43,6 +43,9 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     private var presetCardInputRoutes: [Int: Int] = [:]
     /// Where the clock source answer comes from; see `ThunderboltClockState`.
     let clockState = ThunderboltClockState()
+    /// The unit's "external clock locked" flag from the front panel poller's
+    /// last reading; nil before the first one.
+    public var lastExternalClockLocked: Bool? { clockState.lastExternalClockLocked }
     private var listeners: [AudioPropertySelector: [WeakListener]] = [:]
 
     /// Property selectors handled via CoreAudio HAL (more efficient path).
@@ -975,6 +978,10 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                    let key = Self.clockSourceKey(reportedSource: data[data.startIndex + 5],
                                                  boardInput: data[data.startIndex + 6]) {
                     clockState.reported(key, now: Date())
+                    // Byte 4 is the unit's "external clock locked" flag, also
+                    // meaningful when the rate guard rejects the reading (an
+                    // external source with no signal reports a rate of 0).
+                    clockState.reportedLock(data[data.startIndex + 4] != 0)
                 }
                 if shouldLog {
                     let hex = data.map { String(format: "%02x", $0) }.joined(separator: " ")
@@ -1386,12 +1393,25 @@ final class ThunderboltClockState: @unchecked Sendable {
     private var reportedKey: UInt32?
     private var reportedAt: Date?
     private var boardInputKey: UInt32?
+    private var externalClockLocked: Bool?
     private var controlAtBoardInputWrite: UInt32?
 
     func reported(_ key: UInt32, now: Date) {
         lock.lock(); defer { lock.unlock() }
         reportedKey = key
         reportedAt = now
+    }
+
+    func reportedLock(_ locked: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        externalClockLocked = locked
+    }
+
+    /// The unit's "external clock locked" flag from its last reading; nil
+    /// before the first one.
+    var lastExternalClockLocked: Bool? {
+        lock.lock(); defer { lock.unlock() }
+        return externalClockLocked
     }
 
     func wroteBoardInput(_ key: UInt32, control: UInt32?, now: Date) {

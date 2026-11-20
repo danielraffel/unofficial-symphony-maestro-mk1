@@ -118,6 +118,16 @@ public enum ClockSourceMenu {
         return (source, UInt8(high - 1))
     }
 
+    /// Whether the Symphony I/O counts as locked, as the original decided it
+    /// outside the USB audio mode (`SymphonyIO.cpp:6588-6598`, `IsLocked`
+    /// :1553-1568): on Internal clock always; on any other source, the unit's
+    /// own "external clock locked" flag from its parameter-updates reading
+    /// (`SymphonyIOParameterUpdates.m_cIsExternalClockLocked`).
+    public static func isLocked(sourceKey: UInt32, externalClockLocked: Bool) -> Bool {
+        guard let decoded = decode(sourceKey) else { return externalClockLocked }
+        return UInt32(decoded.source) == internalClock ? true : externalClockLocked
+    }
+
     /// The short name the status bar shows for a reported clock source key.
     /// Nil when the key is not a source (0 from a transport that cannot say).
     public static func statusName(for key: UInt32) -> String? {

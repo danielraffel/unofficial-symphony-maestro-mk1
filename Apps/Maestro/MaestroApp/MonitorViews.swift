@@ -23,15 +23,15 @@ struct StatusBarView: View {
         HStack(spacing: 16) {
             // Clock lock indicator
             HStack(spacing: 4) {
-                Image(systemName: clockLocked ? "lock.fill" : "lock.open")
-                    .foregroundStyle(clockLocked ? .green : .red)
+                Image(systemName: shownClockLocked ? "lock.fill" : "lock.open")
+                    .foregroundStyle(shownClockLocked ? .green : .red)
                     .font(.system(size: 11))
-                Text(PortStatusMessage.clock(locked: clockLocked, link: appState.transportType == .thunderbolt ? appState.thunderboltPortLink : .other))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                Text(PortStatusMessage.clock(locked: shownClockLocked, link: appState.transportType == .thunderbolt ? appState.thunderboltPortLink : .other))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
             .contentShape(Rectangle())
-            .maestroHelp(clockLocked
+            .maestroHelp(shownClockLocked
                 ? "Clock Status: the Symphony I/O is locked to its clock source."
                 : "Clock Status: the Symphony I/O is not locked to its clock source. Check Clock Source in Device Settings > Clock.")
 
@@ -139,6 +139,14 @@ struct StatusBarView: View {
                        ready: appState.isHardwareInitialized,
                        disconnected: appState.connectionMode == .disconnected,
                        reload: appState.viewReloadToken)
+    }
+
+    /// The unit's own lock state where it reports one (ThunderBridge and PCIe),
+    /// held "locked" for the moments after a rate change as before; otherwise
+    /// the Core Audio rate comparison.
+    private var shownClockLocked: Bool {
+        if appState.clockLockSuppressed { return true }
+        return appState.reportedClockLocked ?? clockLocked
     }
 
     /// The source the unit reports (`AppState.reportedClockSource`, from the
