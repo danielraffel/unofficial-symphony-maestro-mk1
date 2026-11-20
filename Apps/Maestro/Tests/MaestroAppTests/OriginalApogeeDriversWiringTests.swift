@@ -43,7 +43,12 @@ struct OriginalApogeeDriversWiringTests {
         // survives the uninstaller, then the last resort.
         let details = try #require(guide.range(of: "<details>", range: section.upperBound..<guide.endIndex))
         #expect(guide[details.upperBound...].hasPrefix("\n<summary>If the warning is still there after uninstalling and restarting</summary>"))
-        #expect(guide.contains("```\n\(OriginalApogeeDrivers.clearStagingCommand)\n```"))
+        for command in OriginalApogeeDrivers.stillThereCommands {
+            #expect(guide.contains("```\n\(command)\n```"), "\(command)")
+        }
+        // Offered as a user's feedback, untested, with their report linked.
+        #expect(guide.contains("We have not tested them."))
+        #expect(guide.contains(OriginalApogeeDrivers.userReportURL.absoluteString))
         #expect(guide.contains(OriginalApogeeDrivers.stillThereCaveat + "\n"))
         let lastResort = try #require(guide.range(of: "<details>", range: details.upperBound..<guide.endIndex))
         #expect(guide[lastResort.upperBound...].hasPrefix("\n<summary>\(ManualApogeeRemovalSteps.title)</summary>"))

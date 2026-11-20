@@ -78,21 +78,25 @@ Apogee's Uninstall also removes Maestro and Apogee Maestro 2, and resets macOS's
 <details>
 <summary>If the warning is still there after uninstalling and restarting</summary>
 
-macOS can keep its own stored copy of Apogee's kernel extensions in **/Library/StagedExtensions** and load it again after a restart. No uninstaller from Apogee removes that copy. Maestro's warning says when it finds one (open **What was found**).
+macOS can keep its own stored copy of Apogee's kernel extensions and load it again after a restart. No uninstaller from Apogee removes that copy. Maestro's warning says when it finds one (open **What was found**).
 
-This macOS command asks it to clear those stored copies, and may help:
+What follows is feedback from a user who had this problem and reported that these steps cleared it on their Mac. We have not tested them.
 
 ```
 sudo kmutil clear-staging
 ```
 
-1. Open **Terminal** (in Applications › Utilities).
-2. Paste the command, press Return, and type your Mac's password when asked.
-3. Restart your Mac.
+```
+sudo kmutil rebuild
+```
 
-This is a suggestion, not a guaranteed fix: we haven't been able to test it on a Mac in this state, and Maestro can't do it for you. Leave System Integrity Protection on.
+1. Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up again. The user reported a crash when they tried to remove the old driver with it connected.
+2. Open **Terminal** (in Applications › Utilities) and run the two commands above, one at a time, typing your Mac's password when asked. Approve the change if macOS asks you to.
+3. Restart your Mac, then reconnect.
 
-One user found that this command alone was not enough on their Mac, worked out where macOS was still keeping the old drivers and how they cleared them, and wrote it up in detail: [their report](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371). It is one person's experience on their own Mac, shared in case it helps, and not a procedure we have tested.
+This is one user's experience on their own Mac, shared in case it helps. It is not a tested fix and Maestro can't do it for you. Leave System Integrity Protection on.
+
+[Read the user's report](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371).
 
 </details>
 

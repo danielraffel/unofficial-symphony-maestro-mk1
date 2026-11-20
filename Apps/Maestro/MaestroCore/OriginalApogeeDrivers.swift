@@ -216,16 +216,27 @@ public enum OriginalApogeeDrivers {
 
     public static let stillThereTitle = "If the warning is still here after uninstalling and restarting"
     public static let stillThereIntro = "macOS may still be loading its own stored copy of Apogee's kernel "
-        + "extension, which no uninstaller from Apogee removes. This macOS command asks it to clear those "
-        + "stored copies, and may help:"
+        + "extension, which no uninstaller from Apogee removes. What follows is feedback from a user who had "
+        + "this problem and reported that these steps cleared it on their Mac. We have not tested them."
+    /// Kept for the first of the two commands; `stillThereCommands` is what is shown.
     public static let clearStagingCommand = "sudo kmutil clear-staging"
+    public static let rebuildCommand = "sudo kmutil rebuild"
+    public static let stillThereCommands = [clearStagingCommand, rebuildCommand]
+    /// The user's account (GitHub issue 32, 2026-11-20): clear-staging alone
+    /// did not remove the drivers, which were still in the auxiliary kernel
+    /// collection; `kmutil rebuild` with the ThunderBridge disconnected did.
+    /// Trying to unload the driver with the hardware connected panicked.
+    public static let userReportURL = URL(string:
+        "https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371")!
     public static let stillThereSteps: [String] = [
-        "Open **Terminal** (in Applications › Utilities).",
-        "Paste the command above, press Return, and type your Mac's password when asked.",
-        "Restart your Mac.",
+        "Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up again. The user "
+            + "reported a crash when they tried to remove the old driver with it connected.",
+        "Open **Terminal** (in Applications › Utilities) and run the two commands above, one at a time, typing "
+            + "your Mac's password when asked. Approve the change if macOS asks you to.",
+        "Restart your Mac, then reconnect.",
     ]
-    public static let stillThereCaveat = "This is a suggestion, not a guaranteed fix: we haven't been able to "
-        + "test it on a Mac in this state, and Maestro can't do it for you. Leave System Integrity Protection on."
+    public static let stillThereCaveat = "This is one user's experience on their own Mac, shared in case it "
+        + "helps. It is not a tested fix and Maestro can't do it for you. Leave System Integrity Protection on."
 
     /// The last resort, for a Mac that cannot run Apogee's uninstaller: what has
     /// to go, in general terms, not a procedure. Always behind a collapsed

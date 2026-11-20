@@ -174,6 +174,10 @@ struct OriginalApogeeDriversTests {
         // The self-help for a copy macOS still loads: macOS's own command, with
         // protection left on, offered as a suggestion.
         #expect(OriginalApogeeDrivers.clearStagingCommand == "sudo kmutil clear-staging")
+        #expect(OriginalApogeeDrivers.stillThereCommands == ["sudo kmutil clear-staging", "sudo kmutil rebuild"])
+        #expect(OriginalApogeeDrivers.stillThereIntro.contains("We have not tested them."))
+        // Never the command the user reported crashing their Mac.
+        #expect(!OriginalApogeeDrivers.stillThereSteps.joined().contains("kmutil unload"))
         #expect(OriginalApogeeDrivers.stillThereCaveat.contains("Leave System Integrity Protection on"))
         #expect(!OriginalApogeeDrivers.stillThereSteps.joined().contains("csrutil"))
         #expect(OriginalApogeeDrivers.manualRemovalIntro.hasPrefix("If Apogee's uninstaller won't run on your Mac"))
