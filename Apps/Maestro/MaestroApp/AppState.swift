@@ -3830,6 +3830,13 @@ final class AppState: @unchecked Sendable {
                     let locked = key.flatMap { k in flag.map { ClockSourceMenu.isLocked(sourceKey: k, externalClockLocked: $0) } }
                     await MainActor.run {
                         guard device === self.device else { return }
+                        if self.reportedClockSource != key || self.reportedClockLocked != locked {
+                            // In the diagnostics report as it happens, not only
+                            // at the next five-second snapshot.
+                            print("[Maestro] clock: source key=\(key.map { String(format: "0x%04x", $0) } ?? "none")"
+                                + " unit lock flag=\(flag.map { $0 ? "locked" : "not locked" } ?? "none")"
+                                + " status=\(locked.map { PortStatusMessage.clock(locked: $0) } ?? "not reported")")
+                        }
                         if self.reportedClockSource != key { self.reportedClockSource = key }
                         if self.reportedClockLocked != locked { self.reportedClockLocked = locked }
                     }
