@@ -387,16 +387,25 @@ extension AppState {
     @MainActor
     func applyUnitBOutputRouting(_ rows: [Int: Set<Int>], target: UnitWriteTarget) async throws {
         guard target.unit == .b, isCurrent(target) else { throw DeviceConnectionError.notConnected }
-        guard unitBOnCard, let layout = unitBLayout,
-              unitBBoardSource(slot: 0) == .detected, unitBBoardSource(slot: 1) == .detected,
-              let b = unitBDevice as? ThunderboltUnitBConnection,
-              let card = device as? ThunderboltDeviceConnection else {
+        guard unitBOnCard, let layout = unitBLayout, unitBOutputRoutingWritable else {
             throw DeviceConnectionError.notConnected
         }
         let columns = layout.outputRoutingColumns
         guard rows.allSatisfy({ row, cols in
             (0..<TwoUnitOutputRouting.rowCount).contains(row) && cols.allSatisfy { columns.indices.contains($0) }
         }) else { throw DeviceConnectionError.transportError("Invalid unit B output preset") }
+        // A whole table: saved with its empty rows, so an output it leaves
+        // unrouted stays unrouted when the grid is read back.
+        let table = TwoUnitOutputRouting.completeTable(rows)
+        // The second-unit simulation has no card to write; it keeps the table.
+        if simulatedUnitB != nil, !(device is ThunderboltDeviceConnection) {
+            unitBOutputRoutingCache?.save(table)
+            return
+        }
+        guard let b = unitBDevice as? ThunderboltUnitBConnection,
+              let card = device as? ThunderboltDeviceConnection else {
+            throw DeviceConnectionError.notConnected
+        }
         var writes: [ThunderboltCardRouting.Route] = []
         for (col, column) in columns.enumerated() {
             let owners = rows.filter { $0.value.contains(col) }.map(\.key)
@@ -411,7 +420,21 @@ extension AppState {
             try await b.applyOutputRouting(plannedWrites) { try card.setCardOutputRoute($0) }
         }.value
         guard unitBDevice === b else { throw DeviceConnectionError.notConnected }
-        unitBOutputRoutingCache?.save(rows)
+        unitBOutputRoutingCache?.save(table)
+    }
+
+    /// Unit B's cards are known well enough to write its output table: both
+    /// slots detected, or simulated in the second-unit simulation.
+    var unitBOutputRoutingWritable: Bool {
+        let wanted: BoardDetectionSource = simulatedUnitB != nil ? .simulated : .detected
+        return unitBBoardSource(slot: 0) == wanted && unitBBoardSource(slot: 1) == wanted
+    }
+
+    /// The card scope a two-unit Output Routing preset records for unit B
+    /// (simulated cards apart from real ones, as unit B's routing cache).
+    var unitBOutputPresetScope: String? {
+        guard let scope = unitBLayout?.savedStateScope else { return nil }
+        return (cardSimulation != nil || simulatedUnitB != nil ? "sim:" : "") + scope
     }
 
     /// Save Software Return 1-2 for each mixer whose saved source is beyond

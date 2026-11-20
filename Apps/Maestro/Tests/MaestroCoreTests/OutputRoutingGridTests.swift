@@ -100,3 +100,106 @@ struct OutputRoutingGridTests {
         #expect(grid.columnGroups.last?.label == "Unit B (Q)")
     }
 }
+
+@Suite("Output Routing grid: block headers")
+struct OutputRoutingGridHeaderTests {
+    @Test("A unit with no outputs (an 8MicPre alone) gets no block header")
+    func emptyBlockSkipped() {
+        let adOnly = CardLayout(slot1: .none, slot2: .micPre8, isKnown: true)   // inputs only
+        #expect(adOnly.outputRoutingColumns.isEmpty)
+        let b = CardLayout(slot1: .analogADDA16, slot2: .none, isKnown: true)
+        let grid = OutputRoutingGrid.twoUnits(unitA: adOnly.outputRoutingColumns, prefixA: "A",
+                                              unitB: b, prefixB: "B", unitAPairs: 16)
+        #expect(grid.columnGroups.map(\.label) == ["Unit B (B)"])
+        #expect(grid.columnGroups.map(\.count) == [b.outputRoutingColumns.count])
+        #expect(grid.cell(gridRow: 0, column: 0)?.unit == .b)
+    }
+}
+
+@Suite("Output Routing presets: one rule for both units")
+struct OutputRoutingPresetsTests {
+    typealias Presets = OutputRoutingPresets
+    private let rowsA: [Int: Set<Int>] = [0: [0], 1: [1]]
+    private let rowsB: [Int: Set<Int>] = [16: [0], 17: [1], 32: [2]]
+    private func state(scope: String? = "16x16", columns: Int = 8, writable: Bool = true) -> Presets.UnitBState {
+        .init(cardScope: scope, columnCount: columns, writable: writable)
+    }
+
+    @Test("A two-unit save keeps both halves; a load writes both")
+    func saveAndLoadBoth() throws {
+        var presets = Presets()
+        presets.save(name: "Tracking", unitA: rowsA, unitB: .init(cardScope: "16x16", rows: rowsB))
+        let plan = try presets.loadPlan(.preset("Tracking"), unitB: state()).get()
+        #expect(plan.unitA == rowsA)
+        #expect(plan.unitB == rowsB)
+        // With one unit the same preset writes unit A only.
+        #expect(try presets.loadPlan(.preset("Tracking"), unitB: nil).get() == .init(unitA: rowsA, unitB: nil))
+    }
+
+    @Test("A one-unit re-save drops the stale unit B half")
+    func oneUnitResave() throws {
+        var presets = Presets()
+        presets.save(name: "Tracking", unitA: rowsA, unitB: .init(cardScope: "16x16", rows: rowsB))
+        presets.save(name: "Tracking", unitA: [0: [3]], unitB: nil)
+        #expect(presets.unitB["Tracking"] == nil)
+        let plan = try presets.loadPlan(.preset("Tracking"), unitB: state()).get()
+        #expect(plan.unitA == [0: [3]])
+        #expect(plan.unitB == nil, "a preset without unit B leaves unit B alone")
+    }
+
+    @Test("Delete matches save: the whole preset, and only what is listed")
+    func deleteMatchesSave() {
+        var presets = Presets(legacyUnitB: ["Tracking": [16: [0]]])
+        presets.save(name: "Tracking", unitA: rowsA, unitB: .init(cardScope: "16x16", rows: rowsB))
+        // With one unit, the unit-B-only preset is hidden, so not deletable.
+        #expect(presets.entries(twoUnits: false) == [.preset("Tracking")])
+        presets.delete(.preset("Tracking"))
+        #expect(presets.unitA.isEmpty && presets.unitB.isEmpty)
+        #expect(presets.legacyUnitB["Tracking"] == [16: [0]])
+    }
+
+    @Test("A legacy unit-B-only preset stays its own entry, never joining unit A's of that name")
+    func legacyStaysSeparate() throws {
+        var presets = Presets(legacyUnitB: ["X": rowsB])
+        presets.save(name: "X", unitA: rowsA, unitB: nil)
+        let entries = presets.entries(twoUnits: true)
+        #expect(entries == [.preset("X"), .unitBOnly("X")])
+        #expect(entries.map(\.displayName) == ["X", "X (Unit B only)"])
+        #expect(presets.entry(displayName: "X", twoUnits: true) == .preset("X"))
+        #expect(presets.entry(displayName: "X (Unit B only)", twoUnits: false) == nil)
+        #expect(try presets.loadPlan(.preset("X"), unitB: state()).get() == .init(unitA: rowsA, unitB: nil))
+        #expect(try presets.loadPlan(.unitBOnly("X"), unitB: state()).get() == .init(unitA: nil, unitB: rowsB))
+        #expect(presets.loadPlan(.unitBOnly("X"), unitB: nil) == .failure(.unitBAbsent))
+        presets.delete(.unitBOnly("X"))
+        #expect(presets.legacyUnitB.isEmpty && presets.unitA["X"] == rowsA)
+    }
+
+    @Test("Unit B's half is checked against unit B's cards before anything is written")
+    func unitBRefusedUpFront() {
+        var presets = Presets()
+        presets.save(name: "T", unitA: rowsA, unitB: .init(cardScope: "16x16", rows: rowsB))
+        // Other cards on unit B, even with as many outputs: refused whole.
+        #expect(presets.loadPlan(.preset("T"), unitB: state(scope: "8x8+none")) == .failure(.unitBCardsChanged))
+        #expect(presets.loadPlan(.preset("T"), unitB: state(scope: nil)) == .failure(.unitBCardsChanged))
+        #expect(presets.loadPlan(.preset("T"), unitB: state(writable: false)) == .failure(.unitBNotWritable))
+        // Fewer outputs than the preset routes.
+        #expect(presets.loadPlan(.preset("T"), unitB: state(columns: 2)) == .failure(.unitBInvalid))
+        // A legacy preset has no card scope; its shape is still checked.
+        let legacy = Presets(legacyUnitB: ["L": [0: [5]]])
+        #expect(legacy.loadPlan(.unitBOnly("L"), unitB: state(columns: 4)) == .failure(.unitBInvalid))
+        for refusal in [Presets.Refusal.unitBCardsChanged, .unitBNotWritable, .unitBInvalid, .unitBAbsent] {
+            #expect(refusal.message.contains("unit B"), "\(refusal)")
+        }
+    }
+
+    @Test("Unit B tables: validity and complete tables")
+    func tables() {
+        #expect(TwoUnitOutputRouting.isValidUnitBTable([0: [0], 33: [1]], columnCount: 2))
+        #expect(!TwoUnitOutputRouting.isValidUnitBTable([0: [0], 1: [0]], columnCount: 2), "one source per output")
+        #expect(!TwoUnitOutputRouting.isValidUnitBTable([34: [0]], columnCount: 2))
+        #expect(!TwoUnitOutputRouting.isValidUnitBTable([0: [2]], columnCount: 2))
+        let table = TwoUnitOutputRouting.completeTable([3: [1], 99: [0]])
+        #expect(table.count == TwoUnitOutputRouting.rowCount)
+        #expect(table[3] == [1] && table[0] == [] && table[99] == nil)
+    }
+}
