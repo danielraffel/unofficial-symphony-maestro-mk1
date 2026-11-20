@@ -7,6 +7,42 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.11</title>
+      <pubDate>Fri, 20 Nov 2026 18:43:28 GMT</pubDate>
+      <sparkle:version>0.9.11</sparkle:version>
+      <sparkle:shortVersionString>0.9.11</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.11</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta fixes a second Symphony I/O being mistaken for a DD-16X converter. It contains everything in 0.9.10.
+
+Thanks to the tester with two Symphony I/Os who sent the diagnostics report that showed this.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.13, build 139).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **A second Symphony I/O with one 16-channel I/O card is now recognised as a Symphony I/O.** Before, Maestro showed it as a DD-16X and treated it as a converter. If you used it that way, its channels are now named and routed as unit B's, and it follows the clock settings in Device Settings › Clock (Loop Sync by default).
+
+### Fixed
+
+- **With two Symphony I/Os, the second unit is recognised whatever I/O cards it has.** A unit with a single 16-channel card (for example 16 Analog In / 16 Optical Out, or 16x16 Analog) was taken for a DD-16X, so it got none of unit B's set-up: no Loop Sync, no outputs above 16, and none of its own routing, mixer or Device Info. Maestro now asks the unit what it is, the way Apogee's software did.
+- **Choosing 64 channels no longer drops back to 32 over and over with a second Symphony I/O connected.** After Maestro had found the second unit once, later checks could miss it and report nothing on port 2.
+
+### Please test
+
+- **Two Symphony I/Os at 64 channels:** does Device Settings › Info show the second unit as a Symphony I/O with its cards, do the two units lock with Loop Sync (BNC Loop Sync cables between them) or Word Clock, and do DAW outputs 33–64 play? If anything fails, please send a Diagnostics report (turn on **Diagnostics** in **App Settings › Diagnostics & Feedback**, reproduce the problem, then press **Stop Diagnostics**).
+- **Converters on port 2 (AD-16X, DA-16X, DD-16X, Rosetta 800):** are they still shown and working as before?
+
+### Release notes
+
+- Driver: every unit on port 2 is asked its device type when it is found, and a unit that keeps its address between checks is found there.
+- Diagnostics show the second unit's device type and, if its set-up is incomplete, which step failed.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.11/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="IGVkwcJa/3S9ERzk0fJU1CUXeoDr9s9SCLyqFXt0g9xs+OiOJRhBr5CXQnECCSWqyDGPvZKF9LRmQCt57qyWBA==" length="5423087" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.10</title>
       <pubDate>Fri, 20 Nov 2026 06:20:50 GMT</pubDate>
       <sparkle:version>0.9.10</sparkle:version>
@@ -1013,6 +1049,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: uP9nEAthuI0bE9oISkONEpaMFNwmiCS/ChuvQ3M1VwXufH/N239JMdTkaHIpcvZrryB3Yhm4GLU4miqkgY0DBQ==
-length: 100850
+edSignature: XFYybTfHfM518ndb27WL/+acWXv4tV/pA8tkWfq5kdoxuIulmNPakdCaJ8BCxqf8URlUZKDYV3UKgkNXYn05DA==
+length: 104174
 -->
