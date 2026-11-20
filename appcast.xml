@@ -7,6 +7,39 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.15</title>
+      <pubDate>Fri, 20 Nov 2026 22:21:46 GMT</pubDate>
+      <sparkle:version>0.9.15</sparkle:version>
+      <sparkle:shortVersionString>0.9.15</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.15</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta makes Clock Status tell the truth on ThunderBridge and PCIe. It contains everything in 0.9.14.
+
+### Changes that may affect your setup
+
+- **"Restore my mixer after a USB reconnect" is gone from App Settings, and Maestro now always restores it.** When the Symphony I/O comes back over USB after a power cycle or sleep, Maestro puts back your mixer and monitoring mode every time, as Apogee's software restored a returning unit. Before, switching that setting off restored only part of the mixer.
+- **Clock Status can now read "Clock Mismatch" where it used to read "Ready".** With Word Clock or a digital input chosen as the clock source and no usable signal on it, the Symphony I/O is not locked, and Maestro now says so, in the status bar and in Device Settings › Clock. On Internal clock it always reads "Ready", as in Apogee's software.
+
+### Fixed
+
+- **Clock Status follows the Symphony I/O's own lock indicator on ThunderBridge and PCIe.** Before, it compared two sample rates that are always equal on those connections, so it could not show an unlocked external clock.
+
+### New
+
+- **An info button next to Clock Status** in Device Settings › Clock explains what Ready and Clock Mismatch mean.
+- **The warning about Apogee's original drivers has updated advice for when it is still there after uninstalling and restarting:** steps a user reported worked on their Mac, with a link to their report. We have not tested them ourselves, and the warning says so.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
+- Diagnostics reports now record the clock source, the Symphony I/O's lock indicator and the Clock Status shown, each time they change, and list any of Apogee's original drivers that macOS still keeps, even when they are not loaded.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.15/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="hsQnyBIVoM8CrydhLyDD+zeHiB2FLAA3gxv9yDWRZEHHkfpQUAJkbh/WXbM9w1KLG1nustoZZ1JkvHRvyu9jAw==" length="5447811" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.14</title>
       <pubDate>Fri, 20 Nov 2026 21:23:18 GMT</pubDate>
       <sparkle:version>0.9.14</sparkle:version>
@@ -1138,6 +1171,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: edqW6Hj61zykpRcs5mH3ZKO1bJtAiY2qQG6Ea5THcR6ojfKk94Yq5jOxIw0oPkkC1gj82IYpOu8TA32TcxUdCQ==
-length: 111577
+edSignature: YXVqt6aZoKt/RFbIQuv5i7I2sicaQ6SRr5/ImUgOVFB3dHyUHnQznKpxx6mvqOgOd8NCAe8gIg3LFnHZCqZ6Cw==
+length: 114451
 -->
