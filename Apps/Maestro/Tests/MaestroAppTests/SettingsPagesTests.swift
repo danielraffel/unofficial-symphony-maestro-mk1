@@ -143,7 +143,10 @@ struct SettingsPagesTests {
         let forms = view.components(separatedBy: "Form {").count - 1
         #expect(forms == 1)
         #expect(view.contains(".navigationTitle(\"App Settings\")"))
-        #expect(view.contains("Toggle(\"Restore my mixer after a USB reconnect\", isOn: $autoRecoverMixerState)"))
+        // Two switches that did nothing a user could reason about are gone:
+        // the mixer is always restored after a USB reconnect, as the original
+        // restored a returning unit, and the health check was redundant.
+        #expect(!view.contains("autoRecoverMixerState") && !view.contains("usbHealthCheckEnabled"))
         // The driver extension stays with the hardware.
         #expect(!view.contains("ThunderBridge Driver Extension"))
         // Nothing on this page talks to the Symphony I/O.

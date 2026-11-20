@@ -1747,7 +1747,7 @@ final class AppState: @unchecked Sendable {
     static let thunderboltSettleInterval: Duration = .seconds(2)
 
     /// Whether a USB recovery should restore Software Return and Master now:
-    /// only the 5 s debounce. "autoRecoverMixerState" does not gate it.
+    /// only the 5 s debounce.
     nonisolated static func usbRecoveryRestoreDue(lastRecovery: Date, now: Date) -> Bool {
         now.timeIntervalSince(lastRecovery) > 5.0
     }
@@ -3222,14 +3222,17 @@ final class AppState: @unchecked Sendable {
                             if self.unitAIdentityState == .pending {
                                 Task { await self.readCardTypes() }
                             }
-                            let autoRecover = UserDefaults.standard.object(forKey: "autoRecoverMixerState") as? Bool ?? true
                             let now = Date()
                             if self.mixerPreferences.isWritable,
                                Self.usbRecoveryRestoreDue(lastRecovery: self.lastRecoveryTime, now: now) {
                                 self.lastRecoveryTime = now
-                                // The unit comes back at 0 dB, unmuted, and nothing
-                                // else attenuates Software Return or Master now, so
-                                // this runs whatever "autoRecoverMixerState" says.
+                                // The unit comes back at 0 dB, unmuted, with its
+                                // routing mode and mixer at defaults, so all of it
+                                // is put back, always: the original restored a
+                                // returning unit's settings without asking
+                                // (SymphonyIO::ApplySettingsToHardware), and the
+                                // "Restore my mixer after a USB reconnect" switch
+                                // that used to make part of this optional is gone.
                                 // Like the reconnect path, leave a unit that has just
                                 // appeared alone until it has settled.
                                 let recoveryMixer = self.lastSelectedMixer
@@ -3256,12 +3259,10 @@ final class AppState: @unchecked Sendable {
                                     guard self.device === xpcDev, self.unitAGeneration == generation, !Task.isCancelled,
                                           self.mixerPreferences.isWritable else { return }
                                     await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer,
-                                                                           restoreRoutingMode: autoRecover)
+                                                                           restoreRoutingMode: true)
                                 }
-                                if autoRecover {
-                                    self.deviceRecoveryCount += 1
-                                    print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(self.deviceRecoveryCount))")
-                                }
+                                self.deviceRecoveryCount += 1
+                                print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(self.deviceRecoveryCount))")
                             }
                         }
                         // FPGA meter registers return all-zero when no new data is ready.

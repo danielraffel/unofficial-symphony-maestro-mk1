@@ -6,6 +6,7 @@ This beta makes Clock Status tell the truth on ThunderBridge and PCIe. It contai
 
 ### Changes that may affect your setup
 
+- **"Restore my mixer after a USB reconnect" is gone from App Settings, and Maestro now always restores it.** When the Symphony I/O comes back over USB after a power cycle or sleep, Maestro puts back your mixer and monitoring mode every time, as Apogee's software restored a returning unit. Before, switching that setting off restored only part of the mixer.
 - **Clock Status can now read "Clock Mismatch" where it used to read "Ready".** With Word Clock or a digital input chosen as the clock source and no usable signal on it, the Symphony I/O is not locked, and Maestro now says so, in the status bar and in Device Settings › Clock. On Internal clock it always reads "Ready", as in Apogee's software.
 
 ### Fixed

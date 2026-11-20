@@ -640,22 +640,6 @@ struct XPCDeviceConnectionTests {
         #expect(deviceRecoveryCount == 1, "Debounce should prevent duplicate increment")
     }
 
-    /// Verify no recovery when auto-recover is disabled.
-    @Test func noRecoveryWhenAutoRecoverDisabled() {
-        var meterPollWasDisconnected = true
-        var deviceRecoveryCount = 0
-        let autoRecover = false  // User disabled
-
-        if meterPollWasDisconnected {
-            meterPollWasDisconnected = false
-            if autoRecover {
-                deviceRecoveryCount += 1
-            }
-        }
-        #expect(deviceRecoveryCount == 0, "Should not increment when auto-recover is disabled")
-        #expect(meterPollWasDisconnected == false, "Disconnected flag should still clear")
-    }
-
     /// Verify SW Return re-sync sends correct proxy calls during recovery.
     @Test func swReturnResyncedOnRecovery() {
         let transport = MockXPCTransport()
