@@ -10,6 +10,8 @@ import MaestroDevice
 ///
 /// Sections, in this order: Clock, Connection, Input Monitoring, Volume Keys,
 /// Front Panel, Cards, Naming, Info (then Status when there is an error).
+/// While Apogee's original Symphony I/O drivers are installed, a warning comes
+/// first (`OriginalApogeeDriversWarning`).
 /// Mode-aware: shows different controls for Symphony/Standalone/Pro Tools HD modes.
 ///
 /// This page used to be two pages (Device Settings and System Setup), each with
@@ -275,6 +277,12 @@ struct DeviceSettingsView: View {
 
     var body: some View {
         Form {
+            // Above everything, and never greyed out by a load: this is the one
+            // thing on the page that may explain why the rest misbehaves.
+            if let found = appState.originalApogeeDrivers, !found.isEmpty {
+                OriginalApogeeDriversWarning(finding: found)
+                    .unredacted()
+            }
             clockSection
             connectionSection
             inputMonitoringSection
@@ -322,6 +330,7 @@ struct DeviceSettingsView: View {
         // Same reason as the About box: pick up an activation that finished after launch.
         .onAppear {
             appState.refreshInstalledDexts()
+            appState.refreshOriginalApogeeDrivers()
             if let status = SystemExtensionInstaller.shared.lastStatus {
                 presentDextStatus(status, showAlert: true)
             }

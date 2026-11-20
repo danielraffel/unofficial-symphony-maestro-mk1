@@ -4,6 +4,60 @@
 # Checks: architecture, macOS version, existing Apogee drivers.
 set -euo pipefail
 
+# Apogee's original Symphony I/O MkI software, which Maestro is not supported
+# alongside (a ThunderBridge kext loaded next to Maestro's driver panicked a
+# tester's Mac, GitHub issue 31). Exact names only, never "apogee"/"symphony"
+# substrings: Maestro's own dext and ApogeeSymIO.driver carry those words, and
+# Apogee Maestro 2, ApogeePopup and ApogeeServices are shared with other Apogee
+# products. Same list as MaestroCore/OriginalApogeeDrivers.swift; evidence in
+# og_source/symphonymk1/Makefile:76-104 and ApogeeUninstaller/uninstaller_info.xml.
+#
+# A bundle counts only while its Contents/Info.plist is present, so one renamed
+# to .disabled-maestro or .disabled-asp is already deactivated.
+#
+# Prints one line per component found and returns 0. APOGEE_ROOT, KMUTIL and
+# KEXTSTAT are overridable for Tools/test-installer-tools.sh.
+APOGEE_HAL_BUNDLES=("SymphonyPlugin.bundle" "SymphonyIOUSBPlugIn.bundle" "usbApogeePlugin.bundle")
+APOGEE_KEXTS=("Symphony64Thunderbridge.kext" "Symphony64.kext" "SymphonyIOUSBOverideDriver.kext" "SymphonyMobile.kext")
+APOGEE_KEXT_IDS=("com.apogeedigital.driver.Symphony64ThunderBridge" "com.apogeedigital.driver.Symphony64" "com.apogee.driver.ApogeeUSBSymphonyIOAudio")
+APOGEE_DAEMONS=("com.SymphonyDaemon.plist" "com.SymphonyIOUSBDaemon.plist")
+
+find_original_apogee() {
+    local root="${APOGEE_ROOT:-}"
+    local hal="$root/Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems"
+    local item dir id loaded
+    for item in "${APOGEE_HAL_BUNDLES[@]}"; do
+        if [ -f "$hal/$item/Contents/Info.plist" ]; then echo "HAL plug-in: $hal/$item"; fi
+    done
+    for dir in "$root/Library/Extensions" "$root/System/Library/Extensions"; do
+        # The plug-ins' pre-10.9 home; the Symphony-named ones only (Apogee's
+        # other USB products put their own usbApogeePlugIn.bundle there).
+        for item in "SymphonyPlugin.bundle" "SymphonyIOUSBPlugIn.bundle"; do
+            if [ -f "$dir/$item/Contents/Info.plist" ]; then echo "HAL plug-in: $dir/$item"; fi
+        done
+        for item in "${APOGEE_KEXTS[@]}"; do
+            if [ -f "$dir/$item/Contents/Info.plist" ]; then echo "Kernel extension: $dir/$item"; fi
+        done
+    done
+    for item in "${APOGEE_DAEMONS[@]}"; do
+        if [ -f "$root/Library/LaunchDaemons/$item" ]; then echo "Launch daemon: $root/Library/LaunchDaemons/$item"; fi
+    done
+    # Loaded, whether or not its file is still there: Apogee's Uninstall
+    # removes the file, but the kext stays in the kernel until a restart.
+    # Captured first, then matched: piping into `grep -q` under pipefail can
+    # report a match as a failure when the producer dies of SIGPIPE.
+    loaded="$("${KMUTIL:-/usr/bin/kmutil}" showloaded --list-only 2>/dev/null \
+        || "${KEXTSTAT:-/usr/sbin/kextstat}" 2>/dev/null || true)"
+    for id in "${APOGEE_KEXT_IDS[@]}"; do
+        # Whole bundle ID only (-w): "...Symphony64" must not match "...Symphony64ThunderBridge".
+        if printf '%s\n' "$loaded" | grep -Fqw -- "$id"; then
+            echo "Loaded kernel extension: $id"
+        fi
+    done
+    return 0
+}
+
+main() {
 LOG="/tmp/maestro-installer.log"
 echo "[preinstall] Starting at $(date)" >> "$LOG"
 
@@ -26,37 +80,30 @@ if [ "$OS_MAJOR" -lt 26 ]; then
 fi
 echo "[preinstall] macOS version: $OS_VERSION (OK)" >> "$LOG"
 
-# ── 3. Check for active Apogee HAL drivers ───────────────────────────────────
-# These are the HAL plugin bundles that conflict with our AudioServerPlugin.
-# We only check for an active Info.plist — if it's been renamed to
-# .disabled-maestro or .disabled-asp, the driver is already deactivated.
-APOGEE_ACTIVE=false
-APOGEE_DIR="/Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems"
-
-for BUNDLE in "SymphonyIOUSBPlugIn.bundle" "SymphonyPlugin.bundle" "usbApogeePlugin.bundle"; do
-    if [ -f "$APOGEE_DIR/$BUNDLE/Contents/Info.plist" ]; then
-        APOGEE_ACTIVE=true
-        echo "[preinstall] Found active Apogee driver: $BUNDLE" >> "$LOG"
-    fi
-done
-
-if [ "$APOGEE_ACTIVE" = true ]; then
-    echo "[preinstall] BLOCKED: Active Apogee drivers found" >> "$LOG"
+# ── 3. Check for Apogee's original Symphony I/O MkI drivers ────────────────
+if ORIGINAL_FOUND="$(find_original_apogee)" && [ -n "$ORIGINAL_FOUND" ]; then
+    while IFS= read -r ITEM; do
+        echo "[preinstall] Found original Apogee driver: $ITEM" >> "$LOG"
+    done <<< "$ORIGINAL_FOUND"
+    echo "[preinstall] BLOCKED: Original Apogee Symphony I/O drivers found" >> "$LOG"
     osascript -e '
-display dialog "Existing Apogee audio drivers were detected.
+display dialog "Apogee'"'"'s original Symphony I/O drivers were detected.
 
-Symphony Maestro cannot be installed while the original Apogee drivers are active. They will conflict and neither will work correctly.
+Symphony Maestro cannot be installed while they are installed or loaded. The two interfere with each other and can cause problems, including crashes.
 
 To fix this:
 1. Download the official Apogee installer from apogee.com
 2. Open the DMG and choose Uninstall
-3. Run this installer again
+3. Restart your Mac
+4. Run this installer again (Apogee'"'"'s Uninstall also removes Maestro; this puts it back)
 
-(Search \"Symphony IO Release 5.5\" at apogeedigital.com)" buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
+(Search \"Symphony IO Release 5.5\" at apogeedigital.com)
+
+If Apogee'"'"'s uninstaller won'"'"'t run on your Mac, see \"Removing Apogee'"'"'s original drivers\" in the Maestro user guide on GitHub." buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
     ' 2>/dev/null || true
     exit 1
 fi
-echo "[preinstall] No active Apogee drivers found (OK)" >> "$LOG"
+echo "[preinstall] No original Apogee Symphony I/O drivers found (OK)" >> "$LOG"
 
 # ── 4. Kill running Maestro app ─────────────────────────────────────────────
 if pgrep -x MaestroApp > /dev/null 2>&1; then
@@ -124,3 +171,9 @@ fi
 
 echo "[preinstall] All checks passed, proceeding with installation" >> "$LOG"
 exit 0
+}
+
+# Sourced by Tools/test-installer-tools.sh for find_original_apogee; run otherwise.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

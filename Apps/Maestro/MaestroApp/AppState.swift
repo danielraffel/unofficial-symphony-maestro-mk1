@@ -768,6 +768,13 @@ final class AppState: @unchecked Sendable {
     /// which is a different claim and is reported as such.
     var installedDexts: [InstalledDextInfo]?
 
+    /// Apogee's original Symphony I/O MkI drivers found on this Mac, checked at
+    /// launch and when Device Settings opens. nil until the first check has run.
+    /// See OriginalApogeeDriverCheck.swift.
+    var originalApogeeDrivers: OriginalApogeeDriverFinding?
+    @ObservationIgnored
+    var originalApogeeDriverCheckInFlight = false
+
     /// The build the driver serving the ThunderBridge reports for itself (nil
     /// when no ThunderBridge connection is open). Differs from what sysextd
     /// lists when macOS keeps an old copy on the card until restart.

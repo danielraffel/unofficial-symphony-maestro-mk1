@@ -164,9 +164,14 @@ struct HelpView: View {
                 Text("After a driver update, macOS can keep the previous driver on the ThunderBridge although it already lists the new one. Once Maestro has reopened after the update, **unplug the ThunderBridge cable and plug it back in**. Audio stops for a few seconds. You can instead **turn the Maestro driver off and on** in **System Settings › General › Login Items & Extensions › Driver Extensions**, or **restart your Mac**. Maestro shows a banner at the top of the window until the new driver is running, and **Device Settings › Info** says which driver build is still running.")
             }
             HelpQuestion("macOS keeps warning me about a \"Legacy System Extension\" from Apogee Electronics.") {
-                Text("That warning is not about this app. It comes from Apogee's own older software, which installed a system extension that macOS still loads at startup — and running Apogee's uninstaller does not always remove the entry.")
-                Text("To stop it: **System Settings › General › Login Items & Extensions**, find **Apogee Electronics** under **App Background Activity**, and switch it off. Nothing here depends on it.")
+                Text("That warning is not about this app. It comes from Apogee's own older software, which installed a kernel extension that macOS still loads at startup. Maestro is not supported alongside it: remove it with **Uninstall** in Apogee's Symphony I/O installer, restart your Mac, then reinstall Maestro (see the next question).")
+                Text("If an **Apogee Electronics** entry is still listed under **App Background Activity** in **System Settings › General › Login Items & Extensions** afterwards, switch it off. Nothing here depends on it.")
             }
+            HelpQuestion("Can I keep Apogee's original drivers installed?") {
+                Text(originalDriversAnswer)
+                ManualApogeeRemovalSteps()
+            }
+
             HelpQuestion("Can I connect more than one Symphony I/O?") {
                 // Text from MaestroCore so a test can check it uses the
                 // driver's Source menu names.
@@ -214,6 +219,18 @@ struct HelpView: View {
             + "covers the ThunderBridge power, PC-32, and Thunderbolt connections. The Guide is the reference for the unit itself; its software "
             + "chapters describe Apogee's own Maestro, which is a different app than this one and no "
             + "longer runs on current macOS."
+        return (try? AttributedString(markdown: md)) ?? AttributedString(md)
+    }
+
+    /// "Can I keep Apogee's original drivers installed?" The download is the
+    /// same disk image the installer's warning page links to.
+    private var originalDriversAnswer: AttributedString {
+        let md = "No. Remove Apogee's original Symphony I/O drivers before using Maestro: open Apogee's "
+            + "[Symphony I/O Release 5.5](\(OriginalApogeeDrivers.releaseDMGURL.absoluteString)) installer, "
+            + "choose **Uninstall**, restart your Mac, then reinstall Maestro. Apogee's Uninstall also removes "
+            + "Maestro and resets macOS's audio device settings. The two can interfere with each other and cause "
+            + "problems, including crashes, and we can't investigate a problem while both are installed. "
+            + "**Device Settings** shows a warning at the top while they are there."
         return (try? AttributedString(markdown: md)) ?? AttributedString(md)
     }
 

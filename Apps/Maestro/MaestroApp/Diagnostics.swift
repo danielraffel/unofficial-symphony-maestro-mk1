@@ -160,7 +160,7 @@ extension AppState {
     /// Hardware then software, in the shape someone can paste into a bug report:
     /// Device (name, connection, hardware ID, firmware, FPGA, cards, unit B,
     /// port 2), then Software (Maestro, macOS, audio path, driver extension,
-    /// app path).
+    /// app path), then whether Apogee's original Symphony I/O drivers are installed.
     var diagnosticsText: String {
         var blocks: [String] = []
         if let hardware = deviceInfoReportForDiagnostics {
@@ -171,6 +171,11 @@ extension AppState {
             blocks.append("Device: not connected")
         }
         blocks.append(softwareInfoReport.clipboardText)
+        // Not supported alongside Maestro (issue 31), so every report says
+        // whether they are there. Omitted until the launch check has run.
+        if let originalApogeeDrivers {
+            blocks.append(originalApogeeDrivers.reportText)
+        }
         return blocks.joined(separator: "\n\n")
     }
 }

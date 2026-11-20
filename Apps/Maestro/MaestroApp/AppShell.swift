@@ -164,6 +164,9 @@ struct ContentView: View {
             // which can take seconds, so the About box is never asked for a report it
             // cannot give. Refreshed on appear by the panels that show it.
             appState.refreshInstalledDexts()
+            // Apogee's original Symphony I/O drivers (Device Settings warns while
+            // they are installed). Off the main thread; does not wait.
+            appState.refreshOriginalApogeeDrivers()
             // Find the Symphony from a background thread now that the window is
             // up, and connect to it (0.9.8; see AppState.completeLaunchDiscovery).
             await appState.completeLaunchDiscovery()

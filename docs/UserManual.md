@@ -6,7 +6,7 @@ Maestro is an independently maintained app and driver package for the original A
 
 Use an Apple Silicon Mac running macOS 26 or later. Quit audio applications before installing: the installer replaces Maestro, stops its USB helper and, when USB support is selected, restarts the system audio service. Save your work first.
 
-The required component installs Maestro and its embedded ThunderBridge extension. The optional USB component installs the Maestro USB audio device and its background hardware-control service. Keep USB support selected if you use that connection. If the installer reports conflicting original Apogee drivers, follow its removal instructions before retrying.
+The required component installs Maestro and its embedded ThunderBridge extension. The optional USB component installs the Maestro USB audio device and its background hardware-control service. Keep USB support selected if you use that connection. If the installer reports conflicting original Apogee drivers, follow its removal instructions before retrying (see [Removing Apogee's original drivers](#removing-apogees-original-drivers)).
 
 Open Maestro from Applications after installation. With a ThunderBridge connected, follow the system-extension approval prompt. Keep System Integrity Protection enabled; the distributed installer is intended for normal macOS security settings.
 
@@ -58,6 +58,23 @@ In Maestro the same setting is **Ports** in Device Settings › Connection, with
 In **App Settings › General**, choose Auto, Light or Dark appearance; **Show tooltips** there controls the short explanations shown when you hold the pointer over a control; it is on by default. Software updates use Sparkle and the configured project update feed. An available update is not installed merely by opening this guide; follow the updater's prompts and save audio work before installing.
 
 **Update channels.** Maestro normally offers stable versions only. In **App Settings › Updates** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.
+
+## Removing Apogee's original drivers
+
+Maestro isn't supported alongside Apogee's original Symphony I/O drivers: the two can interfere with each other and cause problems, including crashes. The installer refuses to install while they are present, and **Device Settings** shows a warning at the top if they are found later. Apogee Maestro 2 and software for other Apogee products can stay.
+
+To remove them, download Apogee's [Symphony I/O Release 5.5](https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open the disk image and choose **Uninstall**, restart your Mac, then reinstall Maestro. Apogee's Uninstall also removes Maestro and resets macOS's audio device settings.
+
+<details>
+<summary>If you can't run Apogee's uninstaller</summary>
+
+If Apogee's uninstaller won't run on your Mac, these are the parts of Apogee's original Symphony I/O software that need to be removed. We recommend the uninstaller whenever it runs. Restart afterwards.
+
+- Kernel extensions in **/Library/Extensions**: **Symphony64Thunderbridge.kext**, **Symphony64.kext**, **SymphonyIOUSBOverideDriver.kext**, **SymphonyMobile.kext**
+- Audio plug-ins: the **Symphony Systems** folder in **/Library/Audio/Plug-Ins/HAL/Apogee**
+- Background helpers: **com.SymphonyDaemon.plist**, **com.usbApogeeDaemon.plist** and **com.SymphonyIOUSBDaemon.plist** in **/Library/LaunchDaemons**, and **com.ApogeePopup.plist** in **/Library/LaunchAgents**
+
+</details>
 
 ## Remove the software
 

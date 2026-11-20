@@ -254,4 +254,84 @@ PY
 done
 ok "dextPortCount from versions.json: 1 or 2, injected before signing, no environment switch"
 
+# ── Preinstall: Apogee's original Symphony I/O MkI drivers ──────────────────
+PRE="$REPO_ROOT/Installer/scripts-core/preinstall"
+
+# Runs find_original_apogee against a fake root. $1 = case dir, $2 = what the
+# stubbed kmutil prints (empty: nothing loaded).
+run_find() {
+    local dir="$1" loaded="${2:-}"
+    mkdir -p "$dir/root"
+    printf '%s\n' "$loaded" > "$dir/loaded.txt"
+    mkstub "$dir/kmutil" "cat '$dir/loaded.txt'"
+    (
+        # shellcheck source=/dev/null
+        . "$PRE"
+        APOGEE_ROOT="$dir/root" KMUTIL="$dir/kmutil" KEXTSTAT=/usr/bin/false find_original_apogee
+    )
+}
+mkbundle() { mkdir -p "$1/Contents"; touch "$1/Contents/Info.plist"; }
+HAL_DIR="Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems"
+OURS_LOADED="    1  0 0 0 0 com.danielraffel.maestro.thunderbridge (0.11.12) ABC <8 6 5 3 2 1>
+    2  0 0 0 0 com.apple.iokit.IOPCIFamily (2.9) DEF <8 6 5 3>"
+
+C="$WORK/apogee-none"
+mkdir -p "$C/root/Applications/Apogee Maestro 2.app" "$C/root/Library/Application Support/Apogee/ApogeePopup.bundle"
+mkbundle "$C/root/Library/Frameworks/ApogeeServices.framework"
+mkbundle "$C/root/Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
+mkdir -p "$C/root/Library/LaunchDaemons"; touch "$C/root/Library/LaunchDaemons/com.usbApogeeDaemon.plist"
+OUT="$(run_find "$C" "$OURS_LOADED")"
+[ -z "$OUT" ] || fail "flagged Maestro, Maestro 2 or shared Apogee software: $OUT"
+# shellcheck disable=SC2016  # the pattern is the script's literal text
+if ! grep -q '^if \[ "${BASH_SOURCE\[0\]}" = "\$0" \]; then' "$PRE"; then
+    fail "preinstall no longer runs main only when executed"
+fi
+ok "preinstall: nothing flagged for Maestro's own driver, Apogee Maestro 2, ApogeePopup or ApogeeServices"
+
+C="$WORK/apogee-hal"
+mkbundle "$C/root/$HAL_DIR/SymphonyPlugin.bundle"
+mkdir -p "$C/root/$HAL_DIR/SymphonyIOUSBPlugIn.bundle/Contents"
+touch "$C/root/$HAL_DIR/SymphonyIOUSBPlugIn.bundle/Contents/Info.plist.disabled-maestro"
+mkdir -p "$C/root/$HAL_DIR/usbApogeePlugin.bundle.disabled-asp/Contents"
+touch "$C/root/$HAL_DIR/usbApogeePlugin.bundle.disabled-asp/Contents/Info.plist"
+OUT="$(run_find "$C")"
+[ "$OUT" = "HAL plug-in: $C/root/$HAL_DIR/SymphonyPlugin.bundle" ] || fail "HAL plug-ins: $OUT"
+ok "preinstall: an active HAL plug-in blocks; .disabled-maestro and .disabled-asp ones do not"
+
+C="$WORK/apogee-kext-file"
+mkbundle "$C/root/Library/Extensions/Symphony64Thunderbridge.kext"
+OUT="$(run_find "$C" "$OURS_LOADED")"
+[ "$OUT" = "Kernel extension: $C/root/Library/Extensions/Symphony64Thunderbridge.kext" ] || fail "kext file: $OUT"
+ok "preinstall: the ThunderBridge kext in /Library/Extensions blocks"
+
+C="$WORK/apogee-kext-loaded"
+OUT="$(run_find "$C" "$OURS_LOADED
+  190  0 0 0 0 com.apogeedigital.driver.Symphony64ThunderBridge (5.5) ABC <8 6 5 3 2 1>")"
+[ "$OUT" = "Loaded kernel extension: com.apogeedigital.driver.Symphony64ThunderBridge" ] \
+    || fail "loaded ThunderBridge kext: $OUT"
+ok "preinstall: a loaded ThunderBridge kext blocks after its file is gone, and does not also match Symphony64"
+
+C="$WORK/apogee-kext-pcie"
+OUT="$(run_find "$C" "  191  0 0 0 0 com.apogeedigital.driver.Symphony64 (5.5) ABC <8 6 5 3 2 1>")"
+[ "$OUT" = "Loaded kernel extension: com.apogeedigital.driver.Symphony64" ] || fail "loaded PCIe kext: $OUT"
+C="$WORK/apogee-kextstat"
+mkdir -p "$C/root"
+# shellcheck source=/dev/null
+OUT="$(. "$PRE"; APOGEE_ROOT="$C/root" KMUTIL=/usr/bin/false \
+    KEXTSTAT="$(printf '#!/bin/bash\necho "  5 0 0 0 0 com.apogee.driver.ApogeeUSBSymphonyIOAudio (1.0)"\n' > "$C/kextstat"; chmod +x "$C/kextstat"; echo "$C/kextstat")" \
+    find_original_apogee)"
+[ "$OUT" = "Loaded kernel extension: com.apogee.driver.ApogeeUSBSymphonyIOAudio" ] || fail "kextstat fallback: $OUT"
+ok "preinstall: the Symphony 64 PCIe kext is matched exactly, and kextstat is the fallback"
+
+C="$WORK/apogee-daemons"
+mkdir -p "$C/root/Library/LaunchDaemons"
+touch "$C/root/Library/LaunchDaemons/com.SymphonyDaemon.plist" "$C/root/Library/LaunchDaemons/com.SymphonyIOUSBDaemon.plist"
+mkbundle "$C/root/System/Library/Extensions/SymphonyIOUSBOverideDriver.kext"
+mkbundle "$C/root/Library/Extensions/SymphonyPlugin.bundle"
+mkbundle "$C/root/System/Library/Extensions/usbApogeePlugin.bundle"  # other Apogee USB products' home too
+OUT="$(run_find "$C")"
+[ "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" = 4 ] || fail "daemons, old plug-in and USB override kext: $OUT"
+printf '%s\n' "$OUT" | grep -q usbApogeePlugin && fail "flagged usbApogeePlugin outside Symphony Systems"
+ok "preinstall: the Symphony launch daemons, an old-location Symphony plug-in and the USB override kext block"
+
 echo "Installer tool tests passed ($PASS)"

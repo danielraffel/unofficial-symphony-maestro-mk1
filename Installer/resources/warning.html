@@ -28,14 +28,15 @@ hr { border: none; border-top: 1px solid #d2d2d7; margin: 10px 0; }
 
 <h1>Remove Existing Apogee Software First</h1>
 
-<p>Symphony Maestro <strong>conflicts with the original Apogee drivers</strong>. If both are installed, neither will work correctly. The installer will check and <strong>block installation</strong> if it detects active Apogee drivers.</p>
+<p>Symphony Maestro <strong>conflicts with Apogee&rsquo;s original Symphony I/O drivers</strong>. If both are installed, they interfere with each other and can cause problems, <strong>including crashes</strong>. The installer will check and <strong>block installation</strong> if it detects them.</p>
 
 <h2>How to Check</h2>
 <p>Open Finder and look for:</p>
 <ul>
-<li>Apogee Maestro 2 or Apogee Control in Applications</li>
-<li>Any files in /Library/Audio/Plug-Ins/HAL/Apogee/</li>
+<li>Files in /Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems/</li>
+<li><strong>Symphony64Thunderbridge.kext</strong>, <strong>Symphony64.kext</strong> or <strong>SymphonyIOUSBOverideDriver.kext</strong> in /Library/Extensions/ (Apogee&rsquo;s ThunderBridge, Symphony 64 PCIe and USB drivers)</li>
 </ul>
+<p>Apogee Maestro 2 and software for other Apogee products do not need to be removed.</p>
 
 <h2>How to Remove</h2>
 <ol>
@@ -43,8 +44,13 @@ hr { border: none; border-top: 1px solid #d2d2d7; margin: 10px 0; }
 <a href="https://22712264.fs1.hubspotusercontent-na1.net/hubfs/22712264/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg">Symphony I/O Release 5.5</a></li>
 <li>Open the DMG and choose <strong>Uninstall</strong></li>
 <li>Keep the DMG in case you want to revert later</li>
+<li><strong>Restart your Mac</strong>, so Apogee&rsquo;s kernel extension is no longer loaded</li>
 <li>Run this installer again</li>
 </ol>
+
+<p>Apogee&rsquo;s Uninstall also removes <strong>Maestro</strong> if it is installed, and resets macOS&rsquo;s audio device settings. If you already had Maestro, running this installer again puts it back; check your audio device settings afterwards.</p>
+
+<p>If Apogee&rsquo;s uninstaller won&rsquo;t run on your Mac, see <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/docs/UserManual.md#removing-apogees-original-drivers">Removing Apogee&rsquo;s original drivers</a> in the Maestro user guide.</p>
 
 <p><strong>Why Apogee&rsquo;s own installer?</strong> Maestro is an independent project and we don&rsquo;t bundle or maintain Apogee&rsquo;s software. Using <strong>Apogee&rsquo;s own uninstaller</strong> removes the conflicting drivers with the vendor&rsquo;s own tool, and keeping that DMG means you can <strong>reinstall the original Apogee software anytime</strong> if you ever want to go back. We recommend keeping it.</p>
 
