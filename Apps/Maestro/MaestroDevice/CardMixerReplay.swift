@@ -132,8 +132,6 @@ public enum CardMixerReplay {
             put(.mixerChannelLevel, .float64(left), 1000)
             if MixerStateSnapshot.hasSavedSoftwareReturn(mixer: mixer, preferences: defaults) {
                 let own = MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: defaults)
-                // Always centre: there is no Software Return pan (see
-                // MixerStateSnapshot.savedSoftwareReturn).
                 put(.mixerChannelPan, .float64(own.pan), 1000)
                 put(.mixerChannelMute, .bool(own.isMuted), 1000)
                 put(.mixerChannelSolo, .bool(own.isSoloed), 1000)

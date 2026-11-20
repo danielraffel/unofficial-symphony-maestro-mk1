@@ -1137,14 +1137,29 @@ struct MixerView: View {
     /// Over USB the connection sends the unit's 0xB3 to strip 32 and, when it
     /// lands, mutes the helper's software stage too (the "Maestro USB" device
     /// is rendered there). ThunderBridge: the driver's mixer alone, unchanged.
+    /// What the helper's one software mute should be when this mixer's
+    /// Software Return has `muted` and `source`: the other mixer counts too.
+    private func helperMute(muted: Bool, source: UInt32) -> Bool {
+        let other = selectedMixer == 0 ? 1 : 0
+        let prefs = appState.mixerPreferences
+        return USBMixerSavedState.helperMuted([
+            (source: source, muted: muted),
+            (source: UInt32(clamping: prefs.integer(forKey: "mixerSoftwareReturnSource_\(other)")),
+             muted: MixerStateSnapshot.savedSoftwareReturn(mixer: other, preferences: prefs).isMuted),
+        ])
+    }
+
     private func writeSWReturnMute(_ muted: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
         do {
-            try await device.setProperty(
-                PropertyAddress(selector: .mixerChannelMute, element: swReturnElement),
-                value: .bool(muted)
-            )
+            let address = PropertyAddress(selector: .mixerChannelMute, element: swReturnElement)
+            if let xpcDev = usbDevice {
+                try await xpcDev.setSoftwareReturnMute(
+                    address, muted: muted, helperMuted: helperMute(muted: muted, source: editor.softwareReturnSource))
+            } else {
+                try await device.setProperty(address, value: .bool(muted))
+            }
         } catch {
             print("[Maestro] Mixer SW Return mute failed: \(error)")
         }
@@ -1221,7 +1236,7 @@ struct MixerView: View {
             }
             // Level neutral (the unit owns the fader); mute follows the strip,
             // as the unit's 0xB3 above does. Solo stays on the unit only.
-            xpcDev.setHelperNeutral(muted: muted)
+            xpcDev.setHelperNeutral(muted: helperMute(muted: muted, source: source))
             let otherMixer = selectedMixer == 0 ? 1 : 0
             let otherSource = UInt32(appState.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
             xpcDev.setSwReturnProcessing(source == 0 || otherSource == 0)

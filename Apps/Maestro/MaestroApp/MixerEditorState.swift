@@ -62,9 +62,7 @@ struct MixerEditorState {
         }
         guard canEdit(appState) else { return }
         appState.saveMixerStrips(channels, mixer: selectedMixer)
-        if let data = try? JSONEncoder().encode(swReturnChannel) {
-            appState.mixerPreferences.set(data, forKey: MixerStateSnapshot.softwareReturnKey(mixer: selectedMixer))
-        }
+        MixerStateSnapshot.saveSoftwareReturn(swReturnChannel, mixer: selectedMixer, preferences: appState.mixerPreferences)
         appState.mixerPreferences.set(masterLevel, forKey: "mixerMasterLevel_\(selectedMixer)")
         appState.mixerPreferences.set(masterLeftLevel, forKey: "mixerMasterLeftLevel_\(selectedMixer)")
         appState.mixerPreferences.set(masterRightLevel, forKey: "mixerMasterRightLevel_\(selectedMixer)")

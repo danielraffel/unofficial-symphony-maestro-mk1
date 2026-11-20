@@ -434,13 +434,13 @@ final class AppState: @unchecked Sendable {
     func refreshSoftwareReturnMeterGains() {
         let defaults = mixerPreferences
         // Each mixer has its own mute; the stereo fader's level is stored per
-        // mixer (both sides hold the same value). No pan.
+        // mixer (both sides hold the same value). Pan is shared.
         softwareReturnMeterGains = (0..<2).map { mixer in
             let saved = MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: defaults)
             let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? saved.level
             let right = left
             return SoftwareReturnMeterGain.gains(
-                leftLevelDB: left, rightLevelDB: right, pan: 0, isMuted: saved.isMuted)
+                leftLevelDB: left, rightLevelDB: right, pan: saved.pan, isMuted: saved.isMuted)
         }
     }
 

@@ -790,6 +790,15 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// by the helper, so Software Return mute is applied there as well as by
     /// the unit's 0xB3. Forcing it off here undid a saved mute on every
     /// connect and source change. There is no `muted` default on purpose.
+    /// A Software Return mute on one mixer: the unit's own mute for that
+    /// mixer, then the helper's single software mute set to `helperMuted`
+    /// (see `USBMixerSavedState.helperMuted`), not to this mixer's mute.
+    public func setSoftwareReturnMute(_ address: PropertyAddress, muted: Bool, helperMuted: Bool) async throws {
+        try await setProperty(address, value: .bool(muted), mirrorSoftwareReturnMute: false)
+        guard writeGate.allowsWrites else { return }
+        transport.setSwReturnMute(helperMuted)
+    }
+
     public func setHelperNeutral(muted: Bool) {
         guard writeGate.allowsWrites else { return }
         transport.setSwReturnLevel(0)

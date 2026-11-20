@@ -199,9 +199,16 @@ public struct USBMixerSavedState: Equatable, Sendable {
     /// mute when every mixer that takes that pair is muted; a mixer on another
     /// source does not hear the helper at all.
     public var helperMuted: Bool {
-        let onDefaultPair = mixes.filter { $0.softwareReturnSource == 0 }
-        return !onDefaultPair.isEmpty && onDefaultPair.allSatisfy { $0.softwareReturn.isMuted }
+        Self.helperMuted(mixes.map { (source: $0.softwareReturnSource, muted: $0.softwareReturn.isMuted) })
     }
+
+    public static func helperMuted(_ mixers: [(source: UInt32, muted: Bool)]) -> Bool {
+        let onDefaultPair = mixers.filter { $0.source == 0 }
+        return !onDefaultPair.isEmpty && onDefaultPair.allSatisfy { $0.muted }
+    }
+
+    /// The one Software Return pan (shared by both mixers).
+    public var softwareReturnPan: Double { mixes.first?.softwareReturn.pan ?? 0 }
 
     public var mixes: [Mix]
     public var masterLinked: Bool
@@ -283,8 +290,7 @@ public enum USBMixerRestorePlan {
                 .bool(mix.softwareReturn.isSoloed)))
         }
         steps.append(.helperNeutral(muted: state.helperMuted))
-        // No Software Return pan: the helper's balance is always centred.
-        steps.append(.helperPan(0))
+        steps.append(.helperPan(state.softwareReturnPan))
         // Same rule as the Mixer page: on when either mixer uses the default pair.
         steps.append(.helperProcessing(state.mixes.contains { $0.softwareReturnSource == 0 }))
         return steps

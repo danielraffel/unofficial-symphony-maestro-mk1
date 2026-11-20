@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.17 (beta)
+
+This beta gives Mixer 1 and Mixer 2 their own Software Return mute and solo. It contains everything in 0.9.16.
+
+### Changes that may affect your setup
+
+- **Software Return mute and solo are now separate for Mixer 1 and Mixer 2.** Before, muting or soloing Software Return on one mixer showed on the other as well. Now each mixer keeps its own, as in Apogee's software. After updating, both mixers start with the setting you had; from then on a change on one leaves the other alone. The Software Return pan is still one control for both.
+- **Over USB, muting Software Return on one mixer no longer silences "Maestro USB" playback on outputs that do not go through that mixer.** Maestro silences channels 1-2 of "Symphony I/O : Maestro USB" everywhere only when Software Return is muted on every mixer that uses the default 1-2 pair. If you relied on one mute to silence an output fed straight from a software pair, mute it on both mixers.
+
+### New
+
+- **Help says that Direct Monitor is our own addition.** It was not in Apogee's software; it is a simple way to hear the inputs played straight through, and we do not plan to develop it further.
+
+### Please test
+
+- **USB, "Maestro USB" device, an output fed from Mixer 1:** mute Software Return on Mixer 1 only. Does playback go silent? Then check that Mixer 2 still shows unmuted.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
+
 ## 0.9.16 (beta)
 
 This beta fixes a crash when stopping a diagnostics recording. It contains everything in 0.9.15.
