@@ -153,8 +153,11 @@ public enum SecondUnitHelp {
         "**In Maestro.** Once 64 channels run and the driver has set up the second unit, Input, Output, "
             + "Input Routing and Device Settings show a **Unit A / Unit B** picker at the top; each page then "
             + "shows and sets the chosen unit. The Mixer shows both units' inputs, the second unit's after the "
-            + "first's and named with its prefix letter, and Output Routing adds the second unit's outputs as "
-            + "more columns. Software 33–64 play on the second unit until you route them elsewhere.",
+            + "first's and named with its prefix letter. Output Routing has no picker: it is one grid for the "
+            + "card, with the first unit's outputs and then the second unit's, each block headed by its unit, "
+            + "and any software output pair or mixer can go to any output on either unit (scroll sideways to "
+            + "see them all). Its presets and Reset Routing cover both units. Software 33–64 play on the "
+            + "second unit until you route them elsewhere.",
         "The clock master's source cannot be Loop Sync. Configured Role and Clock Status show the "
             + "selected topology and measured lock separately.",
     ]

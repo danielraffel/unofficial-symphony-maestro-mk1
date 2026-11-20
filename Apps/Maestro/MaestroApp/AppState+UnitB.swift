@@ -196,6 +196,13 @@ extension AppState {
                         digitalSettingsKey: activeUnit == .b ? unitBDigitalSettingsKey : digitalSettingsKey)
     }
 
+    /// Unit B whatever the picker shows, for the card's own pages (Output
+    /// Routing) that show both units at once.
+    var unitBWriteTarget: UnitWriteTarget {
+        UnitWriteTarget(unit: .b, device: unitBDevice, channelStore: unitBChannelStateStore,
+                        digitalSettingsKey: unitBDigitalSettingsKey)
+    }
+
     /// Whether the unit a target was taken from is still connected as it
     /// was: unit A always, unit B while the same connection is there.
     func isCurrent(_ target: UnitWriteTarget) -> Bool {
