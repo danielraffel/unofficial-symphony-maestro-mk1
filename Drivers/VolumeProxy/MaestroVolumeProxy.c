@@ -480,14 +480,15 @@ static float gSwReturnPeakR = 0.0f;
    METERDUMP "ECHO" flag below). */
 static float gSwPeak[MAESTRO_SHM_CHANNELS];
 
-/* Software mute — USB audio routes directly to DAC, bypassing the FPGA mixer.
-   Mixer mute commands (0xB3) have no effect on playback. Instead, we zero the
-   audio buffer in the render callback when muted. Toggled via XPC command. */
+/* Software mute for USB channels 1-2 rendered by this helper ("Maestro USB").
+   The app sends the unit's own SW Return mute (0xB3, strip 32) AND this
+   software mute, so it works whichever output device plays. We zero ch 1-2 in
+   the render callback when muted. Toggled via XPC command. */
 static atomic_int gSwReturnMuted = 0;
 
-/* Software gain — same reason as mute: USB audio bypasses FPGA mixer, so
-   hardware fader commands (0xB0) have no effect. We scale samples in the
-   render callback instead. Linear gain factor (1.0 = unity / 0dB).
+/* Software gain for USB channels 1-2. The app now keeps this at unity: the
+   unit's mixer owns the SW Return fader (0xB0). We scale samples in the
+   render callback only if asked. Linear gain factor (1.0 = unity / 0dB).
    Range: 0.0 (-inf dB) to ~2.0 (+6dB). Set via XPC "setSwReturnLevel". */
 static _Atomic float gSwReturnGain = 1.0f;
 /* Independent L/R gains used when the stereo-link control is off. */

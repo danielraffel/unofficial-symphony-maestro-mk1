@@ -1194,9 +1194,12 @@ struct MixerView: View {
                 left: editor.swReturnLeftLevel, right: editor.swReturnRightLevel,
                 savedLinked: true, linkedLevel: editor.swReturnLeftLevel)
             let element = swReturnElement
+            // Read once: the unit and the helper must get the same mute even if
+            // the user clicks Mute while these writes are in flight.
+            let muted = editor.swReturnChannel.isMuted
             let writes: [(AudioPropertySelector, PropertyValue)] = [
                 (.mixerChannelLevel, .float64(level)),
-                (.mixerChannelMute, .bool(editor.swReturnChannel.isMuted)),
+                (.mixerChannelMute, .bool(muted)),
                 (.mixerChannelSolo, .bool(editor.swReturnChannel.isSoloed)),
             ]
             var unitOK = true
@@ -1212,7 +1215,7 @@ struct MixerView: View {
             }
             // Level neutral (the unit owns the fader); mute follows the strip,
             // as the unit's 0xB3 above does. Solo stays on the unit only.
-            xpcDev.setHelperNeutral(muted: editor.swReturnChannel.isMuted)
+            xpcDev.setHelperNeutral(muted: muted)
             let otherMixer = selectedMixer == 0 ? 1 : 0
             let otherSource = UInt32(appState.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
             xpcDev.setSwReturnProcessing(source == 0 || otherSource == 0)

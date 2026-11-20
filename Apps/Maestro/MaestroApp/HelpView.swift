@@ -331,7 +331,7 @@ struct HelpView: View {
             bullet("Direct Monitor still passes your inputs", "in **Direct Monitor** mode the hardware inputs go through the mixer as before, so muting SW Return does not silence a mic or line input. Mute or turn down that input's strip instead.")
             bullet("SW Return pan still needs Maestro USB", "the Symphony's mixer has no pan for SW Return. Maestro applies it to your Mac's audio, and only when that audio plays through **Symphony I/O : Maestro USB**.")
             bullet("SW Return and Master are each one stereo fader", "it is drawn with a left and a right handle, and the two always move together, as in Apogee's Maestro. This is the same over ThunderBridge.")
-            bullet("SW Return meter", "it follows the SW Return fader, pan and mute, so it drops to silence when SW Return is muted.")
+            bullet("SW Return meter", "it shows the signal before the fader. With **Maestro USB** and the default 1-2 source it drops to silence when SW Return is muted.")
             bullet("The headphone knobs control their own outputs", "independently of the mixer.")
             bullet("Hardware input faders affect the live inputs being monitored", "not your Mac's playback.")
         }
