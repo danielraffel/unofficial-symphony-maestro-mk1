@@ -208,6 +208,12 @@ public enum OriginalApogeeDrivers {
     /// folder (kmutil(8): "Clear the staging directory managed by
     /// kernelmanagerd(8) and kmutil(8)") and runs with System Integrity
     /// Protection on. Not tested on an affected Mac, and the text says so.
+    /// Above the two collapsed sections in the warning, under a divider; the
+    /// user guide carries the same sentence under a rule.
+    public static let lessCommonIntro = "You shouldn't need anything below. It is future-proofing, for two "
+        + "situations: the warning is still here after you've followed the steps above, or Apogee's uninstaller "
+        + "can't run on your Mac. It is an older Intel app, and a future macOS may no longer run it."
+
     public static let stillThereTitle = "If the warning is still here after uninstalling and restarting"
     public static let stillThereIntro = "macOS may still be loading its own stored copy of Apogee's kernel "
         + "extension, which no uninstaller from Apogee removes. This macOS command asks it to clear those "

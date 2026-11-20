@@ -71,6 +71,10 @@ To remove them:
 
 Apogee's Uninstall also removes Maestro and Apogee Maestro 2, and resets macOS's audio device settings. If you use Apogee Maestro 2 with another Apogee interface, reinstall it from Apogee afterwards.
 
+---
+
+**You shouldn't need anything below this line.** The steps above are all most people ever do. What follows is future-proofing, for two situations: the warning is still there after you've followed those steps, or Apogee's uninstaller can't run on your Mac. It is an older Intel app, and a future macOS may no longer run it.
+
 <details>
 <summary>If the warning is still there after uninstalling and restarting</summary>
 

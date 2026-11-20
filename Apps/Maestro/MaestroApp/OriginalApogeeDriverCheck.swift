@@ -129,6 +129,11 @@ struct OriginalApogeeDriversWarning: View {
                         .padding(.top, 4)
                     }
                     .font(.callout)
+                    Divider().padding(.vertical, 2)
+                    Text(OriginalApogeeDrivers.lessCommonIntro)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     ApogeeStillThereSteps()
                     if !finding.isAwaitingRestartOnly { ManualApogeeRemovalSteps() }
                 }
