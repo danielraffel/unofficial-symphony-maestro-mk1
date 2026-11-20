@@ -99,6 +99,8 @@ If Apogee's uninstaller won't run on your Mac, these are the parts of Apogee's o
 - Audio plug-ins: the **Symphony Systems** folder in **/Library/Audio/Plug-Ins/HAL/Apogee**
 - Background helpers: **com.SymphonyDaemon.plist** and **com.SymphonyIOUSBDaemon.plist** in **/Library/LaunchDaemons**
 
+For reference only, the complete list of what Apogee's Release 5.5 uninstaller deletes is [published here](https://gist.github.com/danielraffel/2c7d4f68adb562e7c94245907295320b). It is kept for education, in case a future macOS can no longer run Apogee's uninstaller. It is not a procedure, and we don't recommend removing those files by hand.
+
 </details>
 
 ## Remove the software
