@@ -134,6 +134,10 @@ final class AppState {
     var routingModeTaskMode: Int?
     var usbMixerLifecycleRestoreGeneration: UUID?
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
+    /// D5 replay is one-shot for each fresh ThunderBridge endpoint. The Mixer
+    /// page records its own sync so the lifecycle replay cannot duplicate it.
+    @ObservationIgnored var cardMixerReplayEndpoint: UUID? = nil
+    @ObservationIgnored var mixerPageSyncedEndpoint: UUID? = nil
 
     func retryFailedIdentityOnRecovery() {
         guard unitAIdentityState == .failed, !identityRecoveryRetried,
@@ -2794,6 +2798,7 @@ final class AppState {
                 await self.syncOutputRoutingToHardware()
                 await self.syncInputRoutingToHardware()
                 await self.syncDeviceSettingsToHardware()
+                await self.syncCardMixerToHardware()
 
                 let meterCA = CoreAudioDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
                 if Self.softwareMeteringOptedIn { meterCA.startSoftwareMetering() }

@@ -186,6 +186,9 @@ struct ContentView: View {
                 await appState.syncInputRoutingToHardware()
                 // Then the settings this Mac owns (peak hold, monitor mode, ...).
                 await appState.syncDeviceSettingsToHardware()
+                // D5: after a fresh ThunderBridge endpoint, restore the card
+                // mixer even when the Mixer page has never been opened.
+                await appState.syncCardMixerToHardware()
                 // And the names that follow them (prefix, optical format, Replaces).
                 await appState.refreshChannelNaming()
             }

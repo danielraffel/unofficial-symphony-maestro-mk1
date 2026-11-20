@@ -789,6 +789,9 @@ struct MixerView: View {
         // Two-unit lifecycle recall belongs to AppState even with this page closed.
         if recalling && appState.usesTwoUnitReplay { return }
         guard let device = appState.device else { return }
+        if let tb = device as? ThunderboltDeviceConnection {
+            appState.mixerPageSyncedEndpoint = tb.endpointGeneration
+        }
         let loaded = editor
         let routingMode = appState.mixerPreferences.integer(forKey: "routingMode")
         for i in 0..<min(editor.loadedChannelCount, min(editor.channels.count, channelCount)) {
