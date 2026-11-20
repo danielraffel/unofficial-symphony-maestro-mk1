@@ -12,7 +12,8 @@ extension ChannelStateStore {
                 preferences.set(mixer.source, forKey: "mixerSoftwareReturnSource_\(index)")
             }
             preferences.set(mixer.master, forKey: "mixerMasterLevel_\(index)")
-            preferences.set(try JSONEncoder().encode(mixer.softwareReturn), forKey: "mixerState_swReturn")
+            preferences.set(try JSONEncoder().encode(mixer.softwareReturn),
+                            forKey: MixerStateSnapshot.softwareReturnKey(mixer: index))
         }
         if let routingMode { preferences.set(routingMode, forKey: "routingMode") }
     }
