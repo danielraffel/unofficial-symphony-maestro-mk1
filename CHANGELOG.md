@@ -12,6 +12,11 @@ This beta makes Clock Status tell the truth on ThunderBridge and PCIe. It contai
 
 - **Clock Status follows the Symphony I/O's own lock indicator on ThunderBridge and PCIe.** Before, it compared two sample rates that are always equal on those connections, so it could not show an unlocked external clock.
 
+### New
+
+- **An info button next to Clock Status** in Device Settings › Clock explains what Ready and Clock Mismatch mean.
+- **The warning about Apogee's original drivers has updated advice for when it is still there after uninstalling and restarting:** steps a user reported worked on their Mac, with a link to their report. We have not tested them ourselves, and the warning says so.
+
 ### Release notes
 
 - The ThunderBridge and PCIe driver is unchanged from 0.9.13 (0.11.14, build 140), so there is no need to reconnect anything after updating.
