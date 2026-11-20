@@ -75,6 +75,7 @@ public:
     virtual kern_return_t ReadLinkState(uint32_t *outWords) LOCALONLY;
     virtual kern_return_t ReadPhantomObservations(uint32_t *outWords) LOCALONLY;
     virtual kern_return_t ReadMixerInstance(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t ReadMicPreEdits(uint32_t *outWords) LOCALONLY;
     // EXPERIMENT (64ch, stage 1): what the last XLink port-2 probe found, as
     // the 16 words of SymphonyPort2StateOutput. No bus access.
     virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
@@ -127,6 +128,9 @@ public:
     // the control's work queue. Coalesces + async-sends per-channel on the serial
     // XLink queue.
     virtual kern_return_t RequestMicGain(uint32_t channel, float decibels) LOCALONLY;
+    virtual kern_return_t RequestPhaseInvert(uint32_t channel, bool on) LOCALONLY;
+    virtual kern_return_t RequestHighPass(uint32_t channel, bool on) LOCALONLY;
+    virtual kern_return_t RequestInputType(uint32_t channel, uint32_t type) LOCALONLY;
 
     // Push an optical output format (0=ADAT/SMUX, 1=S/PDIF) for a 0-based option
     // board to the Symphony IO via OpticalFormat (0x34). Called by

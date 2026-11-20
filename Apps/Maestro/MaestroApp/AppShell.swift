@@ -403,13 +403,15 @@ struct SidebarView: View {
 
             Section("Controls") {
                 ForEach(NavigationArea.allCases) { area in
-                    // Every icon gets the same centred slot so the labels line up;
-                    // hifireceiver is much wider than the other symbols.
+                    // Every icon gets the same centred slot so the labels line up,
+                    // wide enough for hifireceiver (much wider than the other
+                    // symbols), plus a gap so no icon touches its label.
                     Label {
                         Text(area.rawValue)
                     } icon: {
                         Image(systemName: area.systemImage)
-                            .frame(width: 26, alignment: .center)
+                            .frame(width: 28, alignment: .center)
+                            .padding(.trailing, 4)
                     }
                         .tag(area)
                 }

@@ -42,6 +42,7 @@ struct InputControlsView: View {
     /// the only way to recover the pre-move value a relative group move needs.
     @State private var appliedGains: [Double] = []
     @State private var gainDragActive = false
+    @State private var micPreDAWReload = MicPreDAWDeferredReload()
     @State private var lastFrontPanelGainRevision = 0
     @State private var scrollPosition: ScrollPosition
     @State private var scrollRestorationPending = true
@@ -275,7 +276,10 @@ struct InputControlsView: View {
                             onGainChange: { gain in
                                 applyGainChange(i, to: gain)
                             },
-                            onGainDragChange: { gainDragActive = $0 },
+                            onGainDragChange: { dragging in
+                                gainDragActive = dragging
+                                if !dragging, micPreDAWReload.dragEnded() { initializeChannels() }
+                            },
                             onInputTypeChange: { _ in
                                 applyInputTypeChange(i)
                             },
@@ -472,6 +476,10 @@ struct InputControlsView: View {
                     channels[index].phantomProvenance = nil
                 }
             }
+        }
+        .onChange(of: appState.micPreObservationRevision) { _, _ in
+            // A DAW edit landed; a knob the user is dragging here wins until release.
+            if micPreDAWReload.request(dragging: gainDragActive) { initializeChannels() }
         }
         .onChange(of: appState.frontPanelMicPreUpdate) { _, update in
             applyFrontPanelGain(update)

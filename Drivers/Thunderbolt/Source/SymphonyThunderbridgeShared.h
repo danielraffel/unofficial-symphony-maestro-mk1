@@ -383,3 +383,23 @@ typedef struct {
 #define kSymphonyMixerInstanceMagic       0x4D495853u  // 'MIXS'
 #define kSymphonyMixerInstanceMixer1Valid 0x00000001u  // mixerStateValid[0]
 #define kSymphonyMixerInstanceMixer2Valid 0x00000002u  // mixerStateValid[1]
+
+// Optional selector-5 tail after the mixer-instance words (dext with MicPre
+// DAW controls): a 100-word read is receipts (16-47) + MIXS (48-51) + the
+// host-originated MicPre edits at 52-99, per physical channel A0..7, B0..7,
+// three words each (stamp low, stamp high, fields). The stamp moves after each
+// HAL edit the unit took and carries only that edit's fields; a Maestro
+// write of a field clears that field's valid bit. No hardware reads. The type is the 0x20 wire enum.
+#define kSymphonyMicPreEditWords 100u
+#define kSymphonyMicPreEditOffset kSymphonyMixerInstanceWords   // 52
+#define kMicPreEditTypeMask           0x7u
+#define kMicPreEditTypeValid          (1u << 3)
+#define kMicPreEditPhase              (1u << 4)
+#define kMicPreEditPhaseValid         (1u << 5)
+#define kMicPreEditHighPass           (1u << 6)
+#define kMicPreEditHighPassValid      (1u << 7)
+#define kMicPreEditGainShift          8u          // 7 bits, 0..85 dB
+#define kMicPreEditGainMask           (0x7Fu << kMicPreEditGainShift)
+#define kMicPreEditGainValid          (1u << 15)
+#define kMicPreEditGainInstrument     (1u << 16)  // the gain is the Instrument stage's
+#define kMicPreEditInsertOff          (1u << 17)  // the insert was released (and its return off)

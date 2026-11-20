@@ -205,12 +205,10 @@ kern_return_t SymphonyUserClient::ExternalMethod(
     // Preserve exact-size validation for the legacy ABI and the optional
     // host-only phantom tail. No arbitrary-sized outputs are accepted.
     if (selector == kSelectorReadLinkState && arguments &&
-        arguments->structureOutputMaximumSize == kSymphonyPhantomObservationWords * sizeof(uint32_t))
-        method.checkStructureOutputSize = kSymphonyPhantomObservationWords * sizeof(uint32_t);
-    // D5: the mixer-instance tail, also exact-size only.
-    if (selector == kSelectorReadLinkState && arguments &&
-        arguments->structureOutputMaximumSize == kSymphonyMixerInstanceWords * sizeof(uint32_t))
-        method.checkStructureOutputSize = kSymphonyMixerInstanceWords * sizeof(uint32_t);
+        (arguments->structureOutputMaximumSize == kSymphonyPhantomObservationWords * sizeof(uint32_t) ||
+         arguments->structureOutputMaximumSize == kSymphonyMixerInstanceWords * sizeof(uint32_t) ||
+         arguments->structureOutputMaximumSize == kSymphonyMicPreEditWords * sizeof(uint32_t)))
+        method.checkStructureOutputSize = static_cast<uint32_t>(arguments->structureOutputMaximumSize);
     kern_return_t ret = super::ExternalMethod(selector, arguments,
                                                &method, this, nullptr);
     if (ret != kIOReturnSuccess && ret != kIOReturnNoCompletion) {
@@ -329,18 +327,27 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             UCLOG("ExternalMethod: no driver (link state)");
             return kIOReturnNotReady;
         }
-        uint32_t output[kSymphonyMixerInstanceWords] = {};
+        // 16 words (legacy), 48 (+ phantom OFF receipts), 52 (+ D5 mixer
+        // instance) or 100 (+ MicPre host edits at 52-99). Each tail is a pure
+        // ivar read.
+        uint32_t output[kSymphonyMicPreEditWords] = {};
         kern_return_t r = ivars->driver->ReadLinkState(output);
-        const size_t phantomSize = kSymphonyPhantomObservationWords * sizeof(uint32_t);
-        const bool instance = method.checkStructureOutputSize == sizeof(output);
-        const bool extended = instance || method.checkStructureOutputSize == phantomSize;
-        if (r == kIOReturnSuccess && extended)
+        const size_t words = method.checkStructureOutputSize / sizeof(uint32_t);
+        const bool edits = words == kSymphonyMicPreEditWords;
+        const bool instance = edits || words == kSymphonyMixerInstanceWords;
+        const bool receipts = instance || words == kSymphonyPhantomObservationWords;
+        if (r == kIOReturnSuccess && receipts)
             r = ivars->driver->ReadPhantomObservations(output + 16);
         if (r == kIOReturnSuccess && instance)
             r = ivars->driver->ReadMixerInstance(output + kSymphonyPhantomObservationWords);
+        if (r == kIOReturnSuccess && edits)
+            r = ivars->driver->ReadMicPreEdits(output + kSymphonyMicPreEditOffset);
         output[0] = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
-        auto outputData = OSData::withBytes(output, instance ? sizeof(output)
-                                            : extended ? phantomSize : sizeof(SymphonyLinkStateOutput));
+        const size_t bytes = edits ? kSymphonyMicPreEditWords * sizeof(uint32_t)
+                         : instance ? kSymphonyMixerInstanceWords * sizeof(uint32_t)
+                         : receipts ? kSymphonyPhantomObservationWords * sizeof(uint32_t)
+                                    : sizeof(SymphonyLinkStateOutput);
+        auto outputData = OSData::withBytes(output, bytes);
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;
     }

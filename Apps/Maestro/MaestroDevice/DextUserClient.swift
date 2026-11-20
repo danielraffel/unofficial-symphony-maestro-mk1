@@ -714,15 +714,20 @@ public struct LinkState: Sendable, Equatable {
     /// D5: which driver instance answered and whether the app has set each
     /// card mixer on it. `nil` from a driver without the 52-word tail.
     public let mixerInstance: DriverMixerInstance?
+    /// Optional host-originated MicPre edits (a DAW through Core Audio),
+    /// physical A0...7 then B0...7. Empty from drivers without the tail.
+    public let micPreEdits: [MicPreEditRecord]
 
     public init(state: State, clockPresent: Bool, ioRunning: Bool, irqCount: UInt64,
                 recoveryCount: UInt32, hwSuspended: Bool, linkConfigured: Bool,
                 lastClockReg: UInt32, watchTicks: UInt32, audioWraps: UInt32,
                 lastGcsr: UInt32 = 0, lastXlinkStatus: UInt32 = 0, cardReinitCount: UInt32 = 0,
                 unitProbe: UInt32 = 0, phantomOffReceipts: [UInt64] = [],
-                mixerInstance: DriverMixerInstance? = nil) {
+                mixerInstance: DriverMixerInstance? = nil,
+                micPreEdits: [MicPreEditRecord] = []) {
         self.phantomOffReceipts = phantomOffReceipts
         self.mixerInstance = mixerInstance
+        self.micPreEdits = micPreEdits
         self.unitProbe = unitProbe
         self.state = state; self.clockPresent = clockPresent; self.ioRunning = ioRunning
         self.irqCount = irqCount; self.recoveryCount = recoveryCount; self.hwSuspended = hwSuspended
@@ -734,7 +739,7 @@ public struct LinkState: Sendable, Equatable {
     /// Sizes asked for, largest first. Each optional tail is tried three times
     /// so a transient first read does not pin the connection to a shorter ABI;
     /// a driver without a tail refuses that exact size and the next is tried.
-    public static let negotiationOrder = [52, 52, 52, 48, 48, 48, 16, 12]
+    public static let negotiationOrder = [100, 100, 100, 52, 52, 52, 48, 48, 48, 16, 12]
 
     /// One selector-5 negotiation. `read` returns the words for a size, or
     /// `nil` when the driver refused it. Returns the decoded state and the size
@@ -748,12 +753,24 @@ public struct LinkState: Sendable, Equatable {
         return nil
     }
 
-    /// Decode 52 words (D5 mixer instance), 48 (optional OFF receipts), 16 (dext
-    /// 117+), or 12 (113–116). `nil` when the status word is nonzero or the size
-    /// is wrong, both of which mean the selector did not answer.
+    /// Decode 100 words (OFF receipts, D5 mixer instance at 48-51, MicPre host
+    /// edits at 52-99), 52 (receipts + mixer instance), 48 (optional OFF
+    /// receipts), 16 (dext 117+), or 12 (113–116). `nil` when the status word is
+    /// nonzero or the size is wrong, both of which mean the selector did not answer.
     public static func decode(_ words: [UInt32]) -> LinkState? {
-        guard [12, 16, 48, 52].contains(words.count), words[0] == 0 else { return nil }
+        guard [12, 16, 48, 52, 100].contains(words.count), words[0] == 0 else { return nil }
         let ext = words.count >= 16
+        var receipts: [UInt64] = []
+        if words.count >= 48 {
+            receipts = (0..<16).map { UInt64(words[16 + $0 * 2]) | (UInt64(words[17 + $0 * 2]) << 32) }
+        }
+        var edits: [MicPreEditRecord] = []
+        if words.count == 100 {
+            edits = (0..<16).map { (i: Int) -> MicPreEditRecord in
+                let stamp = UInt64(words[52 + i * 3]) | (UInt64(words[53 + i * 3]) << 32)
+                return MicPreEditRecord(stamp: stamp, fields: words[54 + i * 3])
+            }
+        }
         return LinkState(state: State(rawValue: words[1]) ?? .unknown,
                          clockPresent: words[2] != 0, ioRunning: words[3] != 0,
                          irqCount: UInt64(words[4]) | (UInt64(words[5]) << 32),
@@ -763,15 +780,14 @@ public struct LinkState: Sendable, Equatable {
                          lastGcsr: ext ? words[12] : 0, lastXlinkStatus: ext ? words[13] : 0,
                          cardReinitCount: ext ? words[14] : 0,
                          unitProbe: ext ? words[15] : 0,
-                         phantomOffReceipts: words.count >= 48 ? (0..<16).map {
-                             UInt64(words[16 + $0 * 2]) | (UInt64(words[17 + $0 * 2]) << 32)
-                         } : [],
-                         mixerInstance: words.count == 52 ? DriverMixerInstance(words: Array(words[48..<52])) : nil)
+                         phantomOffReceipts: receipts,
+                         mixerInstance: words.count >= 52 ? DriverMixerInstance(words: Array(words[48..<52])) : nil,
+                         micPreEdits: edits)
     }
 }
 
 /// SymphonyThunderbridgeShared.h kSymphonyMixerInstance*: words 48-51 of the
-/// 52-word link-state read. Host only; the driver sets a flag the first time
+/// 52- or 100-word link-state read. Host only; the driver sets a flag the first time
 /// the app sends that mixer a 0xB0-0xB3 command (`mixerStateValid`), and an
 /// in-place recovery keeps it (the driver recomputes from its cache).
 public struct DriverMixerInstance: Sendable, Equatable {

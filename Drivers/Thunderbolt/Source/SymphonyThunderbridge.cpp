@@ -29,6 +29,9 @@
 #include "SymphonyClockSelectorControl.h"
 #include "SymphonyPhantomControl.h"
 #include "SymphonyMicGainControl.h"
+#include "SymphonyPhaseControl.h"
+#include "SymphonyHighPassControl.h"
+#include "SymphonyInputTypeControl.h"
 #include "SymphonyOpticalControl.h"
 #include "SymphonyPortSourceControl.h"
 #include "SymphonyThunderbridgeShared.h"
@@ -82,6 +85,24 @@ struct ThunderboltMixerState {
     bool inputMuted[64];
     bool inputSoloed[64];
 };
+
+// One coalescing lane per physical MicPre channel for each DAW-facing control
+// (polarity, high-pass, input type), like the phantom and gain lanes: a burst
+// of changes sends only the latest value, and the host channel it came from is
+// kept so a route change before the send drops it.
+struct MicPreLane {
+    uint8_t  value;
+    uint8_t  host;
+    uint32_t gen;
+    bool     scheduled;
+};
+enum : uint32_t { kMicPreLanePhase = 0, kMicPreLaneHighPass = 1, kMicPreLaneType = 2 };
+
+// The clock used for the HAL Mic arm delay (finding 9). The host test injects
+// its own so it can step past the delay without sleeping.
+#ifndef SYMPHONY_MICPRE_NOW_NS
+#define SYMPHONY_MICPRE_NOW_NS() clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+#endif
 
 struct SymphonyThunderbridge_IVars {
     IOPCIDevice *pciDevice;
@@ -242,6 +263,9 @@ struct SymphonyThunderbridge_IVars {
     uint64_t halPhantomOff[16];
     SymphonyPhantomControl *phantomControl[8];      // per-channel phantom ('phan')
     SymphonyMicGainControl *micGainControl[8];      // per-channel gain ('vlme'/Input)
+    SymphonyPhaseControl *phaseControl[8];
+    SymphonyHighPassControl *highPassControl[8];
+    SymphonyInputTypeControl *inputTypeControl[8];
     uint8_t   pendingPhantom[2][8];   uint32_t pendingPhantomGen[2][8]; bool phantomTxScheduled[2][8];
     uint8_t   pendingPhantomHost[2][8]; bool pendingPhantomTypeKnown[2][8]; bool pendingPhantomInstrument[2][8];
     uint8_t   pendingMicGain[2][2][8]; uint32_t pendingMicGainGen[2][2][8]; bool micGainTxScheduled[2][2][8];
@@ -256,6 +280,36 @@ struct SymphonyThunderbridge_IVars {
     bool      micPreInstrument[8];    // atomic type for unit A's HAL controls
     bool      micPreTypeKnown[8];     // a failed read must not guess Mic
     bool      micPreMic[8];           // known type is Mic (3): HAL phantom ON needs it
+    bool      micPrePhase[2][8];
+    bool      micPreHighPass[2][8];
+    uint8_t   micPreType[2][8];
+    // Start-up reads (0xC5/0xCA, as the original's RecallSettingsFromHardware,
+    // og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:2205-2223)
+    // or a value that was sent since.
+    bool      micPrePhaseKnown[2][8];
+    bool      micPreHighPassKnown[2][8];
+    // The trim Maestro last sent with 0x20 for a line type, in 0.1 dB, so a
+    // HAL type change can send it in the new type's encoding (the original
+    // sent its stored per-channel trim, AnalogIn_SymphonyIO_Stream.cpp:383-393).
+    int16_t   micPreTrimTenths[2][8];
+    bool      micPreTrimKnown[2][8];
+    // Insert assignment table (0xC8: nValue = insert, payload = channel mask),
+    // from Maestro's writes or a read when it is needed.
+    uint8_t   micPreInsertMask[2][8];
+    bool      micPreInsertMaskKnown[2][8];
+    // When the HAL itself put a channel in Mic (0 = Mic came from the unit's
+    // 0x60 read or from Maestro). HAL phantom ON waits kHALMicArmNs after it.
+    uint64_t  halMicTypeStamp[2][8];
+    // HAL type, polarity, high-pass and phantom ON are refused until this
+    // time (SYMPHONY_MICPRE_NOW_NS), see kHALMicPreSettleNs.
+    uint64_t  halMicPreSettleUntil;
+    MicPreLane micPreLane[3][2][8];
+    // Host-originated edits per physical channel (A0..7, B0..7), for the app:
+    // a stamp that moves on each HAL edit and the fields it set (kMicPreEdit*).
+    // A Maestro write of a field clears that field's bit; the stamp stays.
+    uint64_t  halMicPreEditStamp[16];
+    uint32_t  halMicPreEdit[16];
+    uint8_t   inputTypeChoices[8];    // entries the type selector offers (4 or 5)
     bool      unitBMicPreMic[8];
     // Separate pending lanes bind each value to its stage across a type switch.
     // Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
@@ -838,7 +892,58 @@ static constexpr uint16_t kMixerChMasterRight         = 0x2002;
 static constexpr uint8_t kSIOCmd_MicGain               = 0xC3;  // 1 byte: gain 0..85. nValue=0-based mic channel.
 static constexpr uint8_t kSIOCmd_InstrumentGain        = 0xC4;  // 1 byte: gain 0..65. nValue=0-based mic channel.
 static constexpr uint8_t kSIOCmd_CurrentAnalogInputType = 0x60;
+// CoreAudio's selector IDs are ordered +4, -10, Variable, Mic, Instrument;
+// Symphony's 0x20 wire enum is Variable, +4, -10, Mic, Instrument.
+static constexpr uint8_t CoreInputTypeToWire(uint32_t type)
+{
+    return type == 0 ? 1 : type == 1 ? 2 : type == 2 ? 0 : static_cast<uint8_t>(type);
+}
+static constexpr uint8_t WireInputTypeToCore(uint8_t type)
+{
+    return type == 1 ? 0 : type == 2 ? 1 : type == 0 ? 2 : type;
+}
 static constexpr uint8_t kSIOCmd_AnalogReferenceLevel  = 0x20;  // payload[0] = wire input type.
+// MicPre8 per-channel commands (og_source/maestrolink/Software/SymphonyIO/
+// SymphonyIOVendorSpecific.h:412-439). 0xC8's nValue is the INSERT and its
+// payload the channel mask (SymphonyIOBoard_MicPre8ch.cpp:1790-1808).
+static constexpr uint8_t kSIOCmd_PhaseInverse          = 0xC5;
+static constexpr uint8_t kSIOCmd_ChannelGroup          = 0xC7;
+static constexpr uint8_t kSIOCmd_Insert                = 0xC8;
+static constexpr uint8_t kSIOCmd_InsertEnable          = 0xC9;
+static constexpr uint8_t kSIOCmd_HighPassFilter        = 0xCA;
+static constexpr uint8_t kSIOTrimDoNotSet              = 127;   // DO_NOT_SET_TRIM_VALUE, SymphonyIOVendorSpecific.h:10
+// A Mic type set through the HAL authorises HAL phantom ON only after this
+// long. coreaudiod restores saved control values in one burst when a device
+// appears (the original refused coreaudiod for type, polarity, phantom and
+// high-pass: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:
+// 386-387,629-630,674-675,727-728); a person who picks Mic in a DAW and then
+// clicks +48V takes longer than this. A DriverKit control is not told which
+// process set it, so time is the only signal left to tell the two apart.
+static constexpr uint64_t kHALMicArmNs = 2000000000ull;
+// The original refused coreaudiod outright for all four MicPre properties
+// (type, polarity, phantom, high-pass; same lines as above): its "(broken)
+// store/recall". A DriverKit control is not told which process set it, so
+// the driver refuses HAL writes of those four (phantom OFF excepted) for this
+// long after the controls appear to coreaudiod: driver Start, wake, and every
+// device configuration change (port mode, link recovery). coreaudiod replays
+// saved values in a burst as it (re)reads the device; 5 s covers that burst
+// with room to spare, and a person editing a DAW in the first seconds after
+// a wake just clicks again. Gain is not in the window: coreaudiod's gain
+// recall arrives as a scalar change, which already only stores the value
+// (SymphonyMicGainControl.cpp; the original refused it at MicPre8ch.cpp:787-809).
+static constexpr uint64_t kHALMicPreSettleNs = 5000000000ull;
+// Defined with the MicPre request code below; Start and ConfigureUnitB use them.
+static void ReadMicPreSwitches(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch);
+static uint8_t MicPreTypeChoicesForHost(SymphonyThunderbridge_IVars *iv, uint32_t host);
+static void FillMicPreTypeDescriptions(IOUserAudioSelectorValueDescription (&out)[5]);
+static void PublishAllMicPreControls(SymphonyThunderbridge_IVars *iv);
+static void ClearHalMicPreEdit(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch, uint32_t validBit);
+static void RecordMicPreTrim(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
+                             uint8_t type, uint8_t byte);
+static void ArmMicPreSettle(SymphonyThunderbridge_IVars *iv);
+static bool MicPreTypeKnownOn(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch);
+static void ResetMicPreUnitCaches(SymphonyThunderbridge_IVars *iv, uint32_t port, bool clearEdits);
+static void RereadMicPreTypesA(SymphonyThunderbridge_IVars *iv);
 static constexpr uint8_t kSIOCmd_PhantomPower          = 0xC6;  // 1 byte: 0=off, 1=on. nValue=0-based mic channel.
 static constexpr uint8_t kSIOCmd_ResetDefaultRouting   = 0xC2;  // no payload
 static constexpr uint8_t kSIOCmd_PreferenceLoadLock    = 0xDD;  // 1 byte: 1=lock/mute, 0=unlock
@@ -3544,6 +3649,7 @@ static void RequestIORestartFromDefaultQueue(SymphonyThunderbridge_IVars *ivars,
                                              SymphonyThunderbridge *self, const char *why)
 {
     if (!ivars || !ivars->defaultQueue || !self) return;
+    ArmMicPreSettle(ivars);   // coreaudiod re-reads the device and its controls
     self->retain();
     ivars->defaultQueue->DispatchAsync(^{
         if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) && ivars->audioDevice) {
@@ -3960,6 +4066,7 @@ static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
     for (uint32_t ch = 0; ch < 8; ++ch)
         __atomic_store_n(&ivars->unitBMicPreTypeKnown[ch], false, __ATOMIC_RELEASE);
     memset(ivars->unitBMicPreGainKnown, 0, sizeof(ivars->unitBMicPreGainKnown));
+    PublishAllMicPreControls(ivars);   // inputs routed to unit B no longer resolve
     ivars->loopSyncValid = false;
     if (__atomic_exchange_n(&ivars->monitorDeviceB, false, __ATOMIC_ACQ_REL)) {
         PublishSelectedMonitor(ivars);
@@ -4027,6 +4134,7 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     for (uint32_t ch = 0; ch < 8; ++ch)
         __atomic_store_n(&ivars->unitBMicPreTypeKnown[ch], false, __ATOMIC_RELEASE);
     memset(ivars->unitBMicPreGainKnown, 0, sizeof(ivars->unitBMicPreGainKnown));
+    ResetMicPreUnitCaches(ivars, 1, true);   // possibly another unit B: its edits go too
     ivars->unitBSetupFlags = 0;
     uint32_t failures = 0;
     bool mandatoryOK = true;
@@ -4132,11 +4240,32 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     require(unlocked, kUnitBFailUnlock, "preference unlock/read-back");
     ivars->unitBSetupFlags = unlocked && mandatoryOK ? kUnitBSetupOK : failures;
     ivars->unitBConfigured = unlocked && mandatoryOK;
+    // A MicPre companion owns its selector state on unit B.  Read it once at
+    // configuration so the published selectors and gain lane start from the
+    // hardware value; rigs without the option board take no extra traffic.
+    if (ivars->unitBConfigured && ivars->unitBBoardValid[1] &&
+        ivars->unitBBoardType[1] == kSIOOptionBoard_MicPre8) {
+        for (uint32_t ch = 0; ch < 8; ++ch) {
+            uint8_t type = 0;
+            if (!ReadVendorRequestOn(dev, mi, kRegXLink2TX, kRegXLink2RX, 1,
+                                     kSIOCmd_CurrentAnalogInputType,
+                                     0x80000000u | ch, &type, 1, seq, pcie) || type > 4)
+                continue;
+            ivars->unitBMicPreInstrument[ch] = type == 4;
+            ivars->unitBMicPreMic[ch] = type == 3;
+            ivars->unitBMicPreTypeKnown[ch] = true;
+            ivars->micPreType[1][ch] = type;
+            ivars->halMicTypeStamp[1][ch] = 0;   // the unit reported it
+        }
+        // Polarity and high-pass too, as for unit A (SymphonyIOBoard_MicPre8ch.cpp:2205-2223).
+        for (uint32_t ch = 0; ch < 8; ++ch) ReadMicPreSwitches(ivars, 1, ch);
+    }
     if (!ivars->unitBConfigured) {
         ivars->loopSyncValid = false;
         __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
     }
     if (!ivars->unitBConfigured) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
+    PublishAllMicPreControls(ivars);   // host inputs routed to unit B resolve again (or no longer)
     STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, %u message error(s))",
           unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
           ivars->unitBPrefix, ivars->unitBTxErrors);
@@ -4321,6 +4450,7 @@ static void RequestPortModeConfigChange(SymphonyThunderbridge_IVars *ivars,
                                         SymphonyThunderbridge *self, const char *why)
 {
     if (!ivars || !ivars->defaultQueue || !self) return;
+    ArmMicPreSettle(ivars);   // coreaudiod re-reads the device and its controls
     self->retain();
     ivars->defaultQueue->DispatchAsync(^{
         if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) && ivars->audioDevice) {
@@ -4865,6 +4995,11 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         ivars->runtimeTxSeq = 0;   // the unit restarted its message sequence with it
         ivars->linkRecoveryCount++;
         ivars->symphonyLinkConfigured = true;
+        // The unit came back, maybe another one: forget its cached MicPre
+        // state and read the types again (unread DAW edits are kept).
+        ResetMicPreUnitCaches(ivars, 0, false);
+        RereadMicPreTypesA(ivars);
+        ArmMicPreSettle(ivars);
         // A port-1 recovery can leave a running 64-channel card with a new
         // XLink frame phase. Re-run the original shared phase jam across both
         // ports before resuming the engines.
@@ -5424,6 +5559,28 @@ kern_return_t SymphonyThunderbridge::ReadMixerInstance(uint32_t *outWords)
     outWords[1] = flags;
     outWords[2] = static_cast<uint32_t>(ivars->startNonce);
     outWords[3] = static_cast<uint32_t>(ivars->startNonce >> 32);
+    return kIOReturnSuccess;
+}
+
+// Third optional tail (words 52-99 of a 100-word read): host-originated MicPre edits, three words per physical
+// channel A0..7, B0..7 (see kSymphonyMicPreEditWords). Reads ivars only. The
+// stamp is read on both sides of the fields so a record written meanwhile is
+// read again rather than torn.
+kern_return_t SymphonyThunderbridge::ReadMicPreEdits(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    for (uint32_t i = 0; i < 16; ++i) {
+        uint64_t stamp = 0;
+        uint32_t fields = 0;
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            stamp = __atomic_load_n(&ivars->halMicPreEditStamp[i], __ATOMIC_ACQUIRE);
+            fields = __atomic_load_n(&ivars->halMicPreEdit[i], __ATOMIC_ACQUIRE);
+            if (__atomic_load_n(&ivars->halMicPreEditStamp[i], __ATOMIC_ACQUIRE) == stamp) break;
+        }
+        outWords[i * 3] = static_cast<uint32_t>(stamp);
+        outWords[i * 3 + 1] = static_cast<uint32_t>(stamp >> 32);
+        outWords[i * 3 + 2] = fields;
+    }
     return kIOReturnSuccess;
 }
 
@@ -7473,8 +7630,14 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                                   0x80000000u | ch, &type, 1, ivars->runtimeTxSeq, ivars->isLegacyPCIe2100) && type <= 4) {
                 __atomic_store_n(&ivars->micPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
                 __atomic_store_n(&ivars->micPreMic[ch], type == 3, __ATOMIC_RELEASE);
+                ivars->micPreType[0][ch] = type;
                 __atomic_store_n(&ivars->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
             }
+            // Polarity and high-pass start from the unit, as the original's
+            // RecallSettingsFromHardware read them
+            // (og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:2205-2223).
+            // A failed read leaves the value unknown and the control at Off.
+            ReadMicPreSwitches(ivars, 0, ch);
             // AudioDriverKit has no public range setter after init. Keep the
             // full Mic range; PublishMicGain clamps + notifies for Instrument.
             SymphonyMicGainControl* g = OSTypeAlloc(SymphonyMicGainControl);   // +1
@@ -7496,9 +7659,88 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                 STERR("Audio: SymphonyMicGainControl alloc/init failed (ch%u)", ch);
             }
             OSSafeReleaseNULL(g);
+
+            // Polarity, 80 Hz high-pass and input type, per host input like
+            // phantom and gain. Each starts from what the unit reported and
+            // follows the host input's MicPre route (PublishMicPreControls).
+            SymphonyPhaseControl *pc = OSTypeAlloc(SymphonyPhaseControl);
+            if (pc && pc->init(this, /*settable*/true, ivars->micPrePhase[0][ch],
+                               (IOUserAudioObjectPropertyElement)(ch + 1),
+                               IOUserAudioObjectPropertyScope::Input,
+                               IOUserAudioClassID::PhaseInvertControl)) {   // 'phsi'
+                pc->SetChannel(ch);
+                pc->SetDriver(this);
+                ret = ivars->audioDevice->AddControl(pc);
+                if (ret != kIOReturnSuccess) {
+                    STERR("Audio: AddControl(polarity ch%u) failed: 0x%x", ch, ret);
+                } else {
+                    ivars->phaseControl[ch] = pc;
+                    ivars->phaseControl[ch]->retain();
+                }
+            } else {
+                STERR("Audio: SymphonyPhaseControl alloc/init failed (ch%u)", ch);
+            }
+            OSSafeReleaseNULL(pc);
+
+            SymphonyHighPassControl *hc = OSTypeAlloc(SymphonyHighPassControl);
+            if (hc && hc->init(this, /*settable*/true, (IOUserAudioObjectPropertyElement)(ch + 1),
+                               IOUserAudioObjectPropertyScope::Input,
+                               IOUserAudioClassID::HighPassFilterControl)) {   // 'hipf'
+                IOUserAudioSelectorValueDescription values[2] = {
+                    { 0, OSSharedPtr<OSString>(OSString::withCString("Off"), OSNoRetain) },
+                    { 1, OSSharedPtr<OSString>(OSString::withCString("On"), OSNoRetain) },
+                };
+                hc->AddControlValueDescriptions(values, 2);
+                IOUserAudioSelectorValue initial = ivars->micPreHighPass[0][ch] ? 1 : 0;
+                hc->SetCurrentSelectedValues(&initial, 1);
+                hc->SetChannel(ch);
+                hc->SetDriver(this);
+                ret = ivars->audioDevice->AddControl(hc);
+                if (ret != kIOReturnSuccess) {
+                    STERR("Audio: AddControl(high-pass ch%u) failed: 0x%x", ch, ret);
+                } else {
+                    ivars->highPassControl[ch] = hc;
+                    ivars->highPassControl[ch]->retain();
+                }
+            } else {
+                STERR("Audio: SymphonyHighPassControl alloc/init failed (ch%u)", ch);
+            }
+            OSSafeReleaseNULL(hc);
+
+            // A line-level control ('nlvl'), so the HAL exposes it as
+            // kAudioDevicePropertyChannelNominalLineLevel(s) and ...NameForID,
+            // the properties the original served for the input type
+            // (SymphonyIOBoard_MicPre8ch.cpp:383-388). IDs are CoreAudio's
+            // order (+4, -10, Variable, Mic, Instrument; mAEstro.h:353-357).
+            SymphonyInputTypeControl *tc = OSTypeAlloc(SymphonyInputTypeControl);
+            if (tc && tc->init(this, /*settable*/true, (IOUserAudioObjectPropertyElement)(ch + 1),
+                               IOUserAudioObjectPropertyScope::Input,
+                               IOUserAudioClassID::LineLevelControl)) {   // 'nlvl'
+                // Instrument only where the host input reaches MicPre 1-4
+                // (SymphonyIOBoard_MicPre8ch.cpp:26,970-974); routes refresh it.
+                IOUserAudioSelectorValueDescription types[5];
+                FillMicPreTypeDescriptions(types);
+                ivars->inputTypeChoices[ch] = MicPreTypeChoicesForHost(ivars, ch);
+                tc->AddControlValueDescriptions(types, ivars->inputTypeChoices[ch]);
+                IOUserAudioSelectorValue initial = WireInputTypeToCore(ivars->micPreType[0][ch]);
+                tc->SetCurrentSelectedValues(&initial, 1);
+                tc->SetChannel(ch);
+                tc->SetDriver(this);
+                ret = ivars->audioDevice->AddControl(tc);
+                if (ret != kIOReturnSuccess) {
+                    STERR("Audio: AddControl(input type ch%u) failed: 0x%x", ch, ret);
+                } else {
+                    ivars->inputTypeControl[ch] = tc;
+                    ivars->inputTypeControl[ch]->retain();
+                }
+            } else {
+                STERR("Audio: SymphonyInputTypeControl alloc/init failed (ch%u)", ch);
+            }
+            OSSafeReleaseNULL(tc);
         }
+        ArmMicPreSettle(ivars);   // coreaudiod sees the controls for the first time
         if (ivars->numMicChannels > 0)
-            STLOG("Audio: MicPre8 phantom+gain controls added (%u channels)",
+            STLOG("Audio: MicPre8 phantom, gain, polarity, high-pass and type controls added (%u channels)",
                   ivars->numMicChannels);
 
         // ── 36e. EXPERIMENT (64ch, stage 2): the port selector ─────────────
@@ -8665,6 +8907,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                     for (uint32_t ch = 0; ch < 8; ch++) {
                         if (iv->phantomControl[ch]) iv->audioDevice->RemoveControl(iv->phantomControl[ch]);
                         if (iv->micGainControl[ch]) iv->audioDevice->RemoveControl(iv->micGainControl[ch]);
+                        if (iv->phaseControl[ch]) iv->audioDevice->RemoveControl(iv->phaseControl[ch]);
+                        if (iv->highPassControl[ch]) iv->audioDevice->RemoveControl(iv->highPassControl[ch]);
+                        if (iv->inputTypeControl[ch]) iv->audioDevice->RemoveControl(iv->inputTypeControl[ch]);
                     }
                     if (iv->vendorProperty)      iv->audioDevice->RemoveCustomProperty(iv->vendorProperty);
                     // Two-port experiment only (both null otherwise): the port
@@ -8689,6 +8934,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 for (uint32_t ch = 0; ch < 8; ch++) {
                     OSSafeReleaseNULL(iv->phantomControl[ch]);
                     OSSafeReleaseNULL(iv->micGainControl[ch]);
+                    OSSafeReleaseNULL(iv->phaseControl[ch]);
+                    OSSafeReleaseNULL(iv->highPassControl[ch]);
+                    OSSafeReleaseNULL(iv->inputTypeControl[ch]);
                 }
                 OSSafeReleaseNULL(iv->inputStream);
                 OSSafeReleaseNULL(iv->outputStream);
@@ -8944,6 +9192,7 @@ kern_return_t IMPL(SymphonyThunderbridge, SetPowerState)
             STLOG("SetPowerState: BAR access suspended for provider power-down");
         } else {
             __atomic_store_n(&ivars->providerPowerOff, false, __ATOMIC_SEQ_CST);
+            ArmMicPreSettle(ivars);   // coreaudiod may restore controls after a wake
             if (HardwareReachable(ivars)) {
                 STLOG("SetPowerState: endpoint present after power-on — BAR access resumed");
             } else {
@@ -8971,6 +9220,9 @@ kern_return_t IMPL(SymphonyThunderbridge, NewUserClient)
     // SymphonyUserClient instead of the audio client → silently broken audio
     // registration. Everything that is not kSymphonyUserClientType must go to the
     // superclass (IOUserAudioDriver) so it can build its own client.
+    // V3: coreaudiod's connection arrives here (at a cold boot and after a
+    // coreaudiod restart); it may restore saved control values right after.
+    if (type != kSymphonyUserClientType) ArmMicPreSettle(ivars);
     if (type != kSymphonyUserClientType) {
         STLOG("NewUserClient: type 0x%x → super (AudioDriverKit)", type);
         return NewUserClient(type, userClient, SUPERDISPATCH);
@@ -9215,6 +9467,25 @@ static void PublishMicGain(SymphonyThunderbridge_IVars *iv, uint32_t ch, uint32_
     }
 }
 
+static void PublishMicPreControls(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    if (!iv || ch >= 8 || !iv->audioDevice) return;
+    const uint32_t count = iv->numMicChannels;
+    for (uint32_t host = 0; host < count; ++host) {
+        uint32_t p = 0, c = 0;
+        if (!ResolveMicPreRoute(iv, host, p, c) || p != port || c != ch) continue;
+        if (iv->phaseControl[host]) iv->phaseControl[host]->SetControlValue(iv->micPrePhase[port][ch]);
+        if (iv->highPassControl[host]) {
+            IOUserAudioSelectorValue v = iv->micPreHighPass[port][ch] ? 1 : 0;
+            iv->highPassControl[host]->SetCurrentSelectedValues(&v, 1);
+        }
+        if (iv->inputTypeControl[host]) {
+            IOUserAudioSelectorValue v = WireInputTypeToCore(iv->micPreType[port][ch]);
+            iv->inputTypeControl[host]->SetCurrentSelectedValues(&v, 1);
+        }
+    }
+}
+
 // Host-only observation entry. No vendor command fallback on older drivers.
 kern_return_t SymphonyThunderbridge::PublishObservedMicGain(
     uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain)
@@ -9234,6 +9505,9 @@ kern_return_t SymphonyThunderbridge::PublishObservedMicGain(
             (port && (!ivars->unitBConfigured || !CardMixerUnitBActive(ivars)))) return;
         if (port ? (!ivars->unitBBoardValid[1] || ivars->unitBBoardType[1] != kSIOOptionBoard_MicPre8)
                  : channel >= ivars->numMicChannels) return;
+        // The front panel moved this gain: an unread DAW gain is now stale,
+        // whether or not the driver knows the stage (a failed 0x60 read).
+        ClearHalMicPreEdit(ivars, port, channel, kMicPreEditGainValid);
         const bool known = port ? ivars->unitBMicPreTypeKnown[channel] : ivars->micPreTypeKnown[channel];
         const bool instrument = port ? ivars->unitBMicPreInstrument[channel] : ivars->micPreInstrument[channel];
         if (!known || lane != (instrument ? 1u : 0u)) return;
@@ -9356,10 +9630,12 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                     __atomic_store_n(&ivars->preampRoutingEdited, true, __ATOMIC_RELEASE);
                     WriteCardInputRoute(ivars, payload[0], (kTDM_XLinkRX0 + payload[1]) |
                                         (payload[2] ? kRoutingEnable : 0u));
+                    PublishAllMicPreControls(ivars);
                 } else {
                     for (uint32_t n = 0; n < 64; n++)
                         WriteCardInputRoute(ivars, n, (kTDM_XLinkRX0 + n) |
                                             (n < channels ? kRoutingEnable : 0u));
+                    PublishAllMicPreControls(ivars);
                 }
                 namesChanged = true;
                 result = kIOReturnSuccess;
@@ -9536,6 +9812,12 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             result = kIOReturnUnsupported;
             return;
         }
+        // N4: whether this MicPre channel was already in Mic before Maestro's
+        // 0x20, read before the hooks below record the new type.
+        const bool micPreTypeWrite = command == kSIOCmd_AnalogReferenceLevel && payload &&
+            payloadLen == 2 && (value & 0xFFFFFFF8u) == 0x80000000u;
+        const bool micPreWasMic = micPreTypeWrite &&
+            MicPreTypeKnownOn(ivars, port, value & 7u) && ivars->micPreType[port][value & 7u] == 3;
         const uint64_t tx = port ? kRegXLink2TX : kRegXLink1TX;
         uint8_t &seq = port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq;
         bool ok = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, tx,
@@ -9560,7 +9842,9 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             __atomic_store_n(&ivars->unitBMicPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->unitBMicPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->unitBMicPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
+            ivars->micPreType[1][value & 7u] = payload[0];
             PublishMicGain(ivars, value & 7u, 1);
+            PublishMicPreControls(ivars, 1, value & 7u);
         }
         if (port == 1 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
             value < 8 && payload && payloadLen == 1) {
@@ -9577,7 +9861,46 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             __atomic_store_n(&ivars->micPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
+            ivars->micPreType[0][value & 7u] = payload[0];
             PublishMicGain(ivars, value & 7u);
+            PublishMicPreControls(ivars, 0, value & 7u);
+        }
+        // Maestro's own MicPre writes: keep what the unit took, and clear any
+        // older unread HAL edit of the same field so it cannot overwrite this
+        // later choice in Maestro's saved state (as for 0xC6 ON above).
+        if (port <= 1 && command == kSIOCmd_AnalogReferenceLevel && payload && payloadLen == 2 &&
+            payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
+            // A Maestro Mic authorises phantom at once, except over a channel
+            // that was already in Mic: that is Maestro replaying a HAL Mic it
+            // saved, which must not cut the arm delay short.
+            if (!(payload[0] == 3 && micPreWasMic))
+                __atomic_store_n(&ivars->halMicTypeStamp[port][value & 7u], 0, __ATOMIC_RELEASE);
+            ClearHalMicPreEdit(ivars, port, value & 7u, kMicPreEditTypeValid);
+            RecordMicPreTrim(ivars, port, value & 7u, payload[0], payload[1]);
+        }
+        if (port <= 1 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
+            payload && payloadLen == 1 && value < 8)
+            ClearHalMicPreEdit(ivars, port, value, kMicPreEditGainValid);
+        if (port <= 1 && command == kSIOCmd_Insert && payload && payloadLen == 1 && value < 8) {
+            ivars->micPreInsertMask[port][value] = payload[0];
+            ivars->micPreInsertMaskKnown[port][value] = true;
+            // Maestro assigned the insert again: the HAL release is old news.
+            for (uint32_t ch = 0; ch < 8; ++ch)
+                if (payload[0] & (1u << ch)) ClearHalMicPreEdit(ivars, port, ch, kMicPreEditInsertOff);
+        }
+        if (port <= 1 && command == kSIOCmd_InsertEnable && payload && payloadLen == 1 && value < 8)
+            ClearHalMicPreEdit(ivars, port, value, kMicPreEditInsertOff);
+        if (port <= 1 && command == kSIOCmd_PhaseInverse && payload && payloadLen == 1 && value < 8) {
+            ivars->micPrePhase[port][value] = payload[0] != 0;
+            ivars->micPrePhaseKnown[port][value] = true;
+            ClearHalMicPreEdit(ivars, port, value, kMicPreEditPhaseValid);
+            PublishMicPreControls(ivars, port, value);
+        }
+        if (port <= 1 && command == kSIOCmd_HighPassFilter && payload && payloadLen == 1 && value < 8) {
+            ivars->micPreHighPass[port][value] = payload[0] != 0;
+            ivars->micPreHighPassKnown[port][value] = true;
+            ClearHalMicPreEdit(ivars, port, value, kMicPreEditHighPassValid);
+            PublishMicPreControls(ivars, port, value);
         }
         if (port == 0 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
             value < ivars->numMicChannels && payload && payloadLen == 1) {
@@ -9613,6 +9936,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                     for (uint32_t n = 0; n < 32; n++)
                         __atomic_store_n(&ivars->unitBInputRouteSource[n], sources[n], __ATOMIC_RELEASE);
                     namesChanged = true;
+                    PublishAllMicPreControls(ivars);
                 }
             } else if (command == kSymphonyCmdPrefix && payload && payloadLen == 1 &&
                 SymphonyIsPrefixLetter(payload[0]) && ivars->unitBPrefix != payload[0]) {
@@ -9624,6 +9948,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             } else if (command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2 && payload && payloadLen >= 1) {
                 ivars->unitBCoaxReplace[value] = payload[0];
                 namesChanged = true;
+                PublishAllMicPreControls(ivars);
             }
         } else if (command == kSIOCmd_AudioRouting) {
             uint8_t sources[32];
@@ -9634,11 +9959,13 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 for (uint32_t n = 0; n < 32; n++)
                     __atomic_store_n(&ivars->inputRouteSource[n], sources[n], __ATOMIC_RELEASE);
                 namesChanged = true;
+                PublishAllMicPreControls(ivars);
             }
         } else if (command == kSIOCmd_SPDIFCoaxReplaceInput && value < 2 && payload && payloadLen >= 1) {
             __atomic_store_n(&ivars->namingCoaxReplace[value], payload[0], __ATOMIC_RELEASE);
             NoteCoaxBoardType(ivars, value);
             namesChanged = true;
+            PublishAllMicPreControls(ivars);
         } else if (command == kSymphonyCmdPrefix && payload && payloadLen == 1 &&
                    SymphonyIsPrefixLetter(payload[0])) {
             // The app's Peripheral Prefix, written to the unit as the daemon did.
@@ -9794,6 +10121,7 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
         ivars->unitBCoaxReplace[value] != outPayload[0]) {
         ivars->unitBCoaxReplace[value] = outPayload[0];
         ScheduleChannelNames(ivars, this);
+        if (ivars->xlinkQueue) ivars->xlinkQueue->DispatchAsync(^{ PublishAllMicPreControls(ivars); });
     }
     if (result == kIOReturnSuccess && port == 1 && command == kSymphonyCmdPrefix && responseLen == 1 &&
         SymphonyIsPrefixLetter(outPayload[0]) && ivars->unitBPrefix != outPayload[0]) {
@@ -9808,7 +10136,10 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
         const uint8_t before = __atomic_exchange_n(&ivars->namingCoaxReplace[value], outPayload[0],
                                                    __ATOMIC_ACQ_REL);
         NoteCoaxBoardType(ivars, value);
-        if (before != outPayload[0]) ScheduleChannelNames(ivars, this);
+        if (before != outPayload[0]) {
+            ScheduleChannelNames(ivars, this);
+            if (ivars->xlinkQueue) ivars->xlinkQueue->DispatchAsync(^{ PublishAllMicPreControls(ivars); });
+        }
     }
     return result;
 }
@@ -9991,6 +10322,7 @@ kern_return_t SymphonyThunderbridge::ReadTimingHealth(uint32_t *outWords)
             // device, and clients that were refused while the link was down
             // (StartDevice → kIOReturnNotReady) see a device configuration
             // change rather than silence.
+            ArmMicPreSettle(ivars);
             const bool ioRunning = __atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE);
             kern_return_t rc = ivars->audioDevice->RequestDeviceConfigurationChange(
                 kSymphonyConfigChangeLinkRecovered, nullptr);
@@ -10174,6 +10506,489 @@ static bool MicPreIsMic(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t
                   __atomic_load_n(&iv->micPreMic[ch], __ATOMIC_ACQUIRE);
 }
 
+// ── MicPre DAW-control helpers (polarity, high-pass, input type) ────────────
+// All of these run on the serial xlinkQueue unless noted.
+
+static bool MicPreTypeKnownOn(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    return port ? __atomic_load_n(&iv->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE)
+                : __atomic_load_n(&iv->micPreTypeKnown[ch], __ATOMIC_ACQUIRE);
+}
+
+// Polarity and high-pass exist for Mic and Instrument only; the original hid
+// both on line types (SymphonyIOBoard_MicPre8ch.cpp:1288-1297,1603-1620). An
+// unknown type does not refuse them: they change no power or routing.
+static bool MicPreTypeAllowsSwitches(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    if (!MicPreTypeKnownOn(iv, port, ch)) return true;
+    const uint8_t type = iv->micPreType[port][ch];
+    return type == 3 || type == 4;
+}
+
+// Finding 9: a Mic type that came from the HAL authorises HAL phantom ON only
+// once kHALMicArmNs has passed since the unit took it. Mic read from the unit
+// or set by Maestro carries no stamp. Any thread.
+static bool HalMicArmed(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    const uint64_t stamp = __atomic_load_n(&iv->halMicTypeStamp[port][ch], __ATOMIC_ACQUIRE);
+    return stamp == 0 || SYMPHONY_MICPRE_NOW_NS() - stamp >= kHALMicArmNs;
+}
+
+// N1: the settle window after the controls (re)appear to coreaudiod. Any thread.
+static void ArmMicPreSettle(SymphonyThunderbridge_IVars *iv)
+{
+    if (!iv) return;
+    __atomic_store_n(&iv->halMicPreSettleUntil, SYMPHONY_MICPRE_NOW_NS() + kHALMicPreSettleNs,
+                     __ATOMIC_RELEASE);
+}
+
+static bool MicPreSettling(SymphonyThunderbridge_IVars *iv)
+{
+    return SYMPHONY_MICPRE_NOW_NS() < __atomic_load_n(&iv->halMicPreSettleUntil, __ATOMIC_ACQUIRE);
+}
+
+// A refused request leaves the control on its old value; publish it again so
+// a client that showed the new one optimistically gets a notification.
+static void RepublishMicPreHostLater(SymphonyThunderbridge_IVars *iv, uint32_t host);
+
+// A unit may have been swapped or reconfigured: what the driver remembered
+// about its MicPre (insert table, trims, start values) belongs to the unit
+// that was there. `clearEdits` also drops the unread DAW edits: set when the
+// unit is set up again (ConfigureUnitB), not on a link recovery, which is
+// usually the same unit coming back. The type stamp is kept: dropping it
+// could only shorten the phantom arm delay. xlinkQueue.
+static void ResetMicPreUnitCaches(SymphonyThunderbridge_IVars *iv, uint32_t port, bool clearEdits)
+{
+    for (uint32_t ch = 0; ch < 8; ++ch) {
+        if (clearEdits) {
+            __atomic_store_n(&iv->halMicPreEdit[port * 8 + ch], 0, __ATOMIC_RELEASE);
+            __atomic_store_n(&iv->halMicPreEditStamp[port * 8 + ch], 0, __ATOMIC_RELEASE);
+        }
+        iv->micPreInsertMaskKnown[port][ch] = false;
+        iv->micPreTrimKnown[port][ch] = false;
+        iv->micPrePhaseKnown[port][ch] = false;
+        iv->micPreHighPassKnown[port][ch] = false;
+    }
+}
+
+static bool SendMicPre(SymphonyThunderbridge_IVars *iv, uint32_t port, uint8_t command,
+                       uint32_t value, const uint8_t *payload, uint16_t len)
+{
+    return SendVendorRequestOn(iv->pciDevice, iv->barMemoryIndex,
+                               port ? kRegXLink2TX : kRegXLink1TX,
+                               port ? 1 : iv->symphonyAddr, command, value, payload, len,
+                               port ? iv->runtimeTxSeq2 : iv->runtimeTxSeq);
+}
+
+static bool ReadMicPre(SymphonyThunderbridge_IVars *iv, uint32_t port, uint8_t command,
+                       uint32_t value, uint8_t *out)
+{
+    return ReadVendorRequestOn(iv->pciDevice, iv->barMemoryIndex,
+                               port ? kRegXLink2TX : kRegXLink1TX,
+                               port ? kRegXLink2RX : kRegXLink1RX,
+                               port ? 1 : iv->symphonyAddr, command, value, out, 1,
+                               port ? iv->runtimeTxSeq2 : iv->runtimeTxSeq,
+                               iv->isLegacyPCIe2100);
+}
+
+// Start (unit A) and ConfigureUnitB (unit B), MicPre rigs only.
+static void ReadMicPreSwitches(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    uint8_t on = 0;
+    iv->micPrePhaseKnown[port][ch] = ReadMicPre(iv, port, kSIOCmd_PhaseInverse, ch, &on);
+    iv->micPrePhase[port][ch] = iv->micPrePhaseKnown[port][ch] && on != 0;
+    on = 0;
+    iv->micPreHighPassKnown[port][ch] = ReadMicPre(iv, port, kSIOCmd_HighPassFilter, ch, &on);
+    iv->micPreHighPass[port][ch] = iv->micPreHighPassKnown[port][ch] && on != 0;
+}
+
+// V4: after unit A comes back from a link recovery the cached type may be
+// another unit's. Mark it unknown first (unknown sends both OFFs on a HAL type
+// change and refuses HAL phantom ON), then read 0x60 again as Start does;
+// a failed read leaves the channel unknown. MicPre rigs only. xlinkQueue.
+static void RereadMicPreTypesA(SymphonyThunderbridge_IVars *iv)
+{
+    for (uint32_t ch = 0; ch < iv->numMicChannels && ch < 8; ++ch) {
+        // Unknown means no stage flags either: a stale Instrument flag would
+        // make an unknown channel drop its Mic-lane gain.
+        __atomic_store_n(&iv->micPreTypeKnown[ch], false, __ATOMIC_RELEASE);
+        __atomic_store_n(&iv->micPreMic[ch], false, __ATOMIC_RELEASE);
+        __atomic_store_n(&iv->micPreInstrument[ch], false, __ATOMIC_RELEASE);
+        uint8_t type = 0;
+        if (ReadVendorRequest(iv->pciDevice, iv->barMemoryIndex, iv->symphonyAddr,
+                              kSIOCmd_CurrentAnalogInputType, 0x80000000u | ch, &type, 1,
+                              iv->runtimeTxSeq, iv->isLegacyPCIe2100) && type <= 4) {
+            __atomic_store_n(&iv->micPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
+            __atomic_store_n(&iv->micPreMic[ch], type == 3, __ATOMIC_RELEASE);
+            iv->micPreType[0][ch] = type;
+            __atomic_store_n(&iv->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
+        }
+        ReadMicPreSwitches(iv, 0, ch);
+        PublishMicGain(iv, ch);
+    }
+    PublishAllMicPreControls(iv);
+}
+
+static void FillMicPreTypeDescriptions(IOUserAudioSelectorValueDescription (&out)[5])
+{
+    static const char *const names[5] = { "+4 dBu", "-10 dBV", "Variable", "Mic", "Instrument" };
+    for (uint32_t i = 0; i < 5; ++i)
+        out[i] = { i, OSSharedPtr<OSString>(OSString::withCString(names[i]), OSNoRetain) };
+}
+
+// Instrument is offered where the host input currently reaches MicPre 1-4.
+// An unresolved input keeps the Start layout (host channel 1-4).
+static uint8_t MicPreTypeChoicesForHost(SymphonyThunderbridge_IVars *iv, uint32_t host)
+{
+    uint32_t port = 0, ch = host;
+    if (!ResolveMicPreRoute(iv, host, port, ch)) ch = host;
+    return ch < 4 ? 5 : 4;
+}
+
+static void RefreshMicPreTypeChoices(SymphonyThunderbridge_IVars *iv, uint32_t host)
+{
+    SymphonyInputTypeControl *control = iv->inputTypeControl[host];
+    if (!control) return;
+    const uint8_t want = MicPreTypeChoicesForHost(iv, host);
+    if (want == iv->inputTypeChoices[host]) return;
+    IOUserAudioSelectorValueDescription types[5];
+    FillMicPreTypeDescriptions(types);
+    if (want == 5) control->AddControlValueDescriptions(&types[4], 1);
+    else control->RemoveControlValueDescriptions(&types[4], 1);
+    iv->inputTypeChoices[host] = want;
+}
+
+// Every host input after a route edit: entries first, then the values of the
+// MicPre channel it now reaches.
+static void PublishAllMicPreControls(SymphonyThunderbridge_IVars *iv)
+{
+    for (uint32_t host = 0; host < iv->numMicChannels; ++host) {
+        RefreshMicPreTypeChoices(iv, host);
+        uint32_t port = 0, ch = 0;
+        if (ResolveMicPreRoute(iv, host, port, ch)) PublishMicPreControls(iv, port, ch);
+    }
+}
+
+// A request that did not reach the unit: show the real value again on the
+// host input that asked (and its aliases). An input that no longer resolves
+// still holds the last published value, which was never changed.
+static void RepublishMicPreHost(SymphonyThunderbridge_IVars *iv, uint32_t host)
+{
+    uint32_t port = 0, ch = 0;
+    if (host < 64 && ResolveMicPreRoute(iv, host, port, ch)) PublishMicPreControls(iv, port, ch);
+}
+
+static void RepublishMicPreHostLater(SymphonyThunderbridge_IVars *iv, uint32_t host)
+{
+    if (!iv || !iv->xlinkQueue) return;
+    iv->xlinkQueue->DispatchAsync(^{ RepublishMicPreHost(iv, host); });
+}
+
+static bool MicPreRouteStillBound(SymphonyThunderbridge_IVars *iv, uint32_t host,
+                                  uint32_t port, uint32_t ch)
+{
+    uint32_t p = 0, c = 0;
+    return ResolveMicPreRoute(iv, host, p, c) && p == port && c == ch &&
+           (!port || (iv->unitBConfigured && CardMixerUnitBActive(iv)));
+}
+
+// The host-only OFF receipt the app reads (ReadPhantomObservations). Monotonic
+// per channel, so the app can tell a new OFF from one it has already seen.
+static void StampHalPhantomOff(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    uint64_t previous = __atomic_load_n(&iv->halPhantomOff[port * 8 + ch], __ATOMIC_ACQUIRE);
+    uint64_t next;
+    do {
+        const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        next = now > previous ? now : previous + 1;
+    } while (!__atomic_compare_exchange_n(&iv->halPhantomOff[port * 8 + ch], &previous,
+                                         next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+}
+
+// Record a host-originated edit the unit took. Fields are cumulative per
+// channel (`replaced` names the bits this edit owns), so a DAW recall burst or
+// an hour of DAW work while Maestro is closed all reaches the app. A field
+// goes stale only when something else sets it, and those paths clear its bit:
+// Maestro's own write (SendVendorCommand) and a front-panel gain
+// (PublishObservedMicGain). Fields first, then the stamp, so a reader that
+// sees the new stamp sees the new fields (ReadMicPreEdits).
+static void StampHalMicPreEdit(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
+                               uint32_t fields, uint32_t replaced)
+{
+    const uint32_t i = port * 8 + ch;
+    const uint32_t old = __atomic_load_n(&iv->halMicPreEdit[i], __ATOMIC_ACQUIRE);
+    __atomic_store_n(&iv->halMicPreEdit[i], (old & ~replaced) | fields, __ATOMIC_RELEASE);
+    uint64_t previous = __atomic_load_n(&iv->halMicPreEditStamp[i], __ATOMIC_ACQUIRE);
+    uint64_t next;
+    do {
+        const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        next = now > previous ? now : previous + 1;
+    } while (!__atomic_compare_exchange_n(&iv->halMicPreEditStamp[i], &previous, next,
+                                         false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
+}
+
+// Maestro set this field itself: an older unread HAL value must not win.
+static void ClearHalMicPreEdit(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
+                               uint32_t validBit)
+{
+    __atomic_and_fetch(&iv->halMicPreEdit[port * 8 + ch], ~validBit, __ATOMIC_ACQ_REL);
+}
+
+static void PublishMicPrePhantomOff(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch)
+{
+    for (uint32_t host = 0; host < iv->numMicChannels; ++host) {
+        uint32_t p = 0, c = 0;
+        if (iv->phantomControl[host] && ResolveMicPreRoute(iv, host, p, c) && p == port && c == ch)
+            iv->phantomControl[host]->SetControlValue(false);
+    }
+}
+
+// Maestro's 0x20 trim byte as 0.1 dB: +4/-10 carry 0.1 dB, Variable 0.5 dB
+// (Apps/Maestro/MaestroCore/InputChannelState.swift trimRange/trimByte).
+static void RecordMicPreTrim(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
+                             uint8_t type, uint8_t byte)
+{
+    if (type > 2 || byte == kSIOTrimDoNotSet) return;
+    const int8_t b = static_cast<int8_t>(byte);
+    iv->micPreTrimTenths[port][ch] = static_cast<int16_t>(type == 0 ? b * 5 : b);
+    iv->micPreTrimKnown[port][ch] = true;
+}
+
+// The trim byte for a HAL type change: the stored trim clamped and encoded
+// for the new line type, as Maestro would encode it; Mic/Instrument and an
+// unknown trim send DO_NOT_SET, which leaves the unit's own trim alone.
+static uint8_t MicPreTrimByte(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
+                              uint8_t type)
+{
+    if (type > 2 || !iv->micPreTrimKnown[port][ch]) return kSIOTrimDoNotSet;
+    int t = iv->micPreTrimTenths[port][ch];
+    if (type == 0) {                       // Variable: 0..25 dB in 0.5 dB steps
+        if (t < 0) t = 0;
+        if (t > 250) t = 250;
+        int b = (t + 2) / 5;
+        if (b == kSIOTrimDoNotSet) b = kSIOTrimDoNotSet - 1;
+        return static_cast<uint8_t>(b);
+    }
+    if (t < -20) t = -20;                  // +4 dBu / -10 dBV: ±2 dB in 0.1 dB steps
+    if (t > 20) t = 20;
+    return static_cast<uint8_t>(static_cast<int8_t>(t));
+}
+
+// Release this channel's insert assignment as the original's SetInsert(off)
+// did: every insert slot that holds the channel gets its mask without it
+// (SymphonyIOBoard_MicPre8ch.cpp:455-461,1753-1808). A slot never written by
+// Maestro is read first; one that cannot be read is left alone (its return
+// is switched off next in any case). False only when a send failed.
+static bool ReleaseMicPreInsert(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
+                                bool &released)
+{
+    const uint8_t bit = static_cast<uint8_t>(1u << ch);
+    for (uint32_t insert = 0; insert < 8; ++insert) {
+        if (!iv->micPreInsertMaskKnown[port][insert]) {
+            uint8_t mask = 0;
+            if (!ReadMicPre(iv, port, kSIOCmd_Insert, insert, &mask)) continue;
+            iv->micPreInsertMask[port][insert] = mask;
+            iv->micPreInsertMaskKnown[port][insert] = true;
+        }
+        const uint8_t mask = iv->micPreInsertMask[port][insert];
+        if (!(mask & bit)) continue;
+        const uint8_t next = static_cast<uint8_t>(mask & ~bit);
+        if (!SendMicPre(iv, port, kSIOCmd_Insert, insert, &next, 1)) {
+            STERR("MicPre type: insert %u release failed (port %u ch%u)", insert, port, ch);
+            return false;
+        }
+        iv->micPreInsertMask[port][insert] = next;
+        released = true;
+    }
+    return true;
+}
+
+// Polarity (0xC5) or high-pass (0xCA) for one physical channel.
+static void ApplyMicPreSwitch(SymphonyThunderbridge_IVars *iv, uint32_t kind, uint32_t port,
+                              uint32_t ch, bool on, uint32_t host)
+{
+    const bool phase = kind == kMicPreLanePhase;
+    if (!XLinkTxAdmissible(iv) || !MicPreRouteStillBound(iv, host, port, ch) ||
+        !MicPreTypeAllowsSwitches(iv, port, ch)) {
+        RepublishMicPreHost(iv, host);
+        return;
+    }
+    const uint8_t v = on ? 1 : 0;
+    if (!SendMicPre(iv, port, phase ? kSIOCmd_PhaseInverse : kSIOCmd_HighPassFilter, ch, &v, 1)) {
+        STERR("MicPre %s: send failed (port %u ch%u)", phase ? "polarity" : "high-pass", port, ch);
+        RepublishMicPreHost(iv, host);
+        return;
+    }
+    (phase ? iv->micPrePhase : iv->micPreHighPass)[port][ch] = on;
+    (phase ? iv->micPrePhaseKnown : iv->micPreHighPassKnown)[port][ch] = true;
+    const uint32_t valueBit = phase ? kMicPreEditPhase : kMicPreEditHighPass;
+    const uint32_t validBit = phase ? kMicPreEditPhaseValid : kMicPreEditHighPassValid;
+    StampHalMicPreEdit(iv, port, ch, (on ? valueBit : 0u) | validBit, valueBit | validBit);
+    PublishMicPreControls(iv, port, ch);
+}
+
+// A HAL input type change, in the order that keeps the channel safe:
+//  1. Phantom OFF first unless the channel is known not to be Mic. Maestro
+//     does the same (Apps/Maestro/MaestroApp/InputViews.swift applyInputTypeChange);
+//     the original never sent it (fTurnOffPhantomPower is unused,
+//     SymphonyIOBoard_MicPre8ch.cpp:403-423). An unknown type gets the OFF.
+//  2. For a line type, unless the channel is known to be on a line type
+//     already: release the insert, then insert return OFF
+//     (SymphonyIOBoard_MicPre8ch.cpp:455-461).
+//  3. Only if every OFF went out: the type, with the stored trim
+//     (MicPreTrimByte) or DO_NOT_SET.
+//  4. Mic/Instrument only, as the original (its line branch returns at
+//     SymphonyIOBoard_MicPre8ch.cpp:465): the stored gain for the new stage
+//     (:472-482), then group Off if the type changed (:513-521).
+// A HAL set of the type the channel is known to have sends nothing and
+// records no edit; a Mic still restarts the phantom arm delay. If the insert
+// was released but a later step failed, the edit record says so
+// (kMicPreEditInsertOff) so the app does not keep an insert the unit lost.
+// N7 (review v2): the insert reads and the start-up 0xC5/0xCA reads run on
+// the serial XLink queue with the usual 200 ms read timeout; the original read
+// the same values, so the firmware answers them. Not measured on a rig.
+static void ApplyMicPreInputType(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
+                                 uint8_t type, uint32_t host)
+{
+    if (!XLinkTxAdmissible(iv) || !MicPreRouteStillBound(iv, host, port, ch) ||
+        type > 4 || (type == 4 && ch >= 4)) {
+        RepublishMicPreHost(iv, host);
+        return;
+    }
+    const bool known = MicPreTypeKnownOn(iv, port, ch);
+    const uint8_t old = iv->micPreType[port][ch];
+    const bool toPreamp = type == 3 || type == 4;
+    if (known && old == type) {
+        if (type == 3) {
+            const uint64_t now = SYMPHONY_MICPRE_NOW_NS();
+            __atomic_store_n(&iv->halMicTypeStamp[port][ch], now ? now : 1, __ATOMIC_RELEASE);
+        }
+        PublishMicPreControls(iv, port, ch);
+        return;
+    }
+    bool insertReleased = false;
+    auto reportInsertLoss = [&]() {
+        if (insertReleased) StampHalMicPreEdit(iv, port, ch, kMicPreEditInsertOff, 0);
+    };
+    if (type != 3 && (!known || old == 3)) {
+        const uint8_t off = 0;
+        if (!SendMicPre(iv, port, kSIOCmd_PhantomPower, ch, &off, 1)) {
+            STERR("MicPre type: phantom OFF failed (port %u ch%u), type unchanged", port, ch);
+            RepublishMicPreHost(iv, host);
+            return;
+        }
+        StampHalPhantomOff(iv, port, ch);
+        PublishMicPrePhantomOff(iv, port, ch);
+    }
+    if (!toPreamp && (!known || old == 3 || old == 4)) {
+        const uint8_t off = 0;
+        if (!ReleaseMicPreInsert(iv, port, ch, insertReleased) ||
+            !SendMicPre(iv, port, kSIOCmd_InsertEnable, ch, &off, 1)) {
+            STERR("MicPre type: insert OFF failed (port %u ch%u), type unchanged", port, ch);
+            reportInsertLoss();
+            RepublishMicPreHost(iv, host);
+            return;
+        }
+        insertReleased = true;   // return OFF went out: the insert is gone either way
+    }
+    const uint8_t payload[2] = { type, MicPreTrimByte(iv, port, ch, type) };
+    if (!SendMicPre(iv, port, kSIOCmd_AnalogReferenceLevel, 0x80000000u | ch, payload, 2)) {
+        STERR("MicPre type: 0x20 failed (port %u ch%u)%{public}s", port, ch,
+              insertReleased ? " after the insert was released" : "");
+        reportInsertLoss();
+        RepublishMicPreHost(iv, host);
+        return;
+    }
+    if (port) {
+        __atomic_store_n(&iv->unitBMicPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
+        __atomic_store_n(&iv->unitBMicPreMic[ch], type == 3, __ATOMIC_RELEASE);
+        __atomic_store_n(&iv->unitBMicPreTypeKnown[ch], true, __ATOMIC_RELEASE);
+    } else {
+        __atomic_store_n(&iv->micPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
+        __atomic_store_n(&iv->micPreMic[ch], type == 3, __ATOMIC_RELEASE);
+        __atomic_store_n(&iv->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
+    }
+    iv->micPreType[port][ch] = type;
+    uint64_t now = SYMPHONY_MICPRE_NOW_NS();
+    if (now == 0) now = 1;
+    __atomic_store_n(&iv->halMicTypeStamp[port][ch], type == 3 ? now : 0, __ATOMIC_RELEASE);
+    StampHalMicPreEdit(iv, port, ch, type | kMicPreEditTypeValid |
+                                         (insertReleased ? kMicPreEditInsertOff : 0u),
+                       kMicPreEditTypeMask | kMicPreEditTypeValid);
+    if (toPreamp) {
+        const uint32_t lane = type == 4 ? 1 : 0;
+        const bool gainKnown = port ? iv->unitBMicPreGainKnown[lane][ch] : iv->micPreGainKnown[lane][ch];
+        if (gainKnown) {
+            const uint8_t gain = port ? iv->unitBMicPreGain[lane][ch] : iv->micPreGain[lane][ch];
+            if (!SendMicPre(iv, port, lane ? kSIOCmd_InstrumentGain : kSIOCmd_MicGain, ch, &gain, 1))
+                STERR("MicPre type: stored gain not re-sent (port %u ch%u)", port, ch);
+        }
+        if (!known || old != type) {
+            const uint8_t groupOff = 0;   // eSymphonyIOMicPre8ChGroup_Off
+            if (!SendMicPre(iv, port, kSIOCmd_ChannelGroup, ch, &groupOff, 1))
+                STERR("MicPre type: group Off failed (port %u ch%u)", port, ch);
+        }
+    }
+    PublishMicGain(iv, ch, port);
+    PublishMicPreControls(iv, port, ch);
+}
+
+static void ApplyMicPreLane(SymphonyThunderbridge_IVars *iv, uint32_t kind, uint32_t port,
+                            uint32_t ch, uint8_t value, uint32_t host)
+{
+    if (kind == kMicPreLaneType) ApplyMicPreInputType(iv, port, ch, value, host);
+    else ApplyMicPreSwitch(iv, kind, port, ch, value != 0, host);
+}
+
+// Same generation + CAS discipline as the phantom and gain lanes: the drain
+// block sends the latest value; a change made during a send is picked up by
+// the same block. Any thread.
+static void QueueMicPreLane(SymphonyThunderbridge_IVars *iv, uint32_t kind, uint32_t port,
+                            uint32_t ch, uint8_t value, uint32_t host)
+{
+    MicPreLane *lane = &iv->micPreLane[kind][port][ch];
+    __atomic_store_n(&lane->value, value, __ATOMIC_RELAXED);
+    __atomic_store_n(&lane->host, static_cast<uint8_t>(host), __ATOMIC_RELAXED);
+    __atomic_fetch_add(&lane->gen, 1, __ATOMIC_RELEASE);
+    bool expected = false;
+    if (!__atomic_compare_exchange_n(&lane->scheduled, &expected, true,
+                                     false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+        return;
+    iv->xlinkQueue->DispatchAsync(^{
+        for (;;) {
+            const uint32_t gen = __atomic_load_n(&lane->gen, __ATOMIC_ACQUIRE);
+            ApplyMicPreLane(iv, kind, port, ch, __atomic_load_n(&lane->value, __ATOMIC_RELAXED),
+                            __atomic_load_n(&lane->host, __ATOMIC_RELAXED));
+            __atomic_store_n(&lane->scheduled, false, __ATOMIC_RELEASE);
+            if (__atomic_load_n(&lane->gen, __ATOMIC_ACQUIRE) == gen) break;
+            bool again = false;
+            if (!__atomic_compare_exchange_n(&lane->scheduled, &again, true,
+                                             false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
+                break;
+        }
+    });
+}
+
+static kern_return_t RequestMicPreSwitch(SymphonyThunderbridge_IVars *iv, uint32_t kind,
+                                         uint32_t channel, bool on)
+{
+    if (!iv || channel >= 64) return kIOReturnBadArgument;
+    uint32_t port = 0, ch = 0;
+    if (!ResolveMicPreRoute(iv, channel, port, ch) || !iv->xlinkQueue ||
+        __atomic_load_n(&iv->txShutdown, __ATOMIC_ACQUIRE)) return kIOReturnNotReady;
+    // Read without the queue: a type change racing this is re-checked in the
+    // drain block, which refuses there and republishes.
+    if (!MicPreTypeAllowsSwitches(iv, port, ch)) return kIOReturnNotPermitted;
+    if (MicPreSettling(iv)) {
+        STERR("MicPre %s: refused during the settle window (coreaudiod restore)",
+              kind == kMicPreLanePhase ? "polarity" : "high-pass");
+        RepublishMicPreHostLater(iv, channel);
+        return kIOReturnNotPermitted;
+    }
+    QueueMicPreLane(iv, kind, port, ch, on ? 1 : 0, channel);
+    return kIOReturnSuccess;
+}
+
 kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
 {
     if (!ivars || channel >= 64) return kIOReturnBadArgument;
@@ -10190,6 +11005,16 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
     // OFF is always allowed.
     if (on && !(admittedTypeKnown && MicPreIsMic(ivars, port, ch))) {
         STERR("RequestPhantom: ON refused, ch%u is not known to be in Mic mode", ch);
+        return kIOReturnNotPermitted;
+    }
+    // A Mic type the HAL itself set moments ago may be coreaudiod restoring
+    // saved values; it does not authorise +48V until kHALMicArmNs has passed.
+    if (on && MicPreSettling(ivars)) {
+        STERR("RequestPhantom: ON refused during the settle window (coreaudiod restore)");
+        return kIOReturnNotPermitted;
+    }
+    if (on && !HalMicArmed(ivars, port, ch)) {
+        STERR("RequestPhantom: ON refused, ch%u was put in Mic through the HAL too recently", ch);
         return kIOReturnNotPermitted;
     }
     IODispatchQueue *txq = ivars->xlinkQueue;
@@ -10231,22 +11056,15 @@ kern_return_t SymphonyThunderbridge::RequestPhantom(uint32_t channel, bool on)
                 // it still reaches the channel the request was made for, so a route
                 // change can never leave +48 V on a channel the user just switched off.
                 if (XLinkTxAdmissible(ivars) &&
-                    (val == 0 || (routeUnchanged && pendingTypeKnown && MicPreIsMic(ivars, port, ch))) &&
+                    (val == 0 || (routeUnchanged && pendingTypeKnown && MicPreIsMic(ivars, port, ch) &&
+                                  HalMicArmed(ivars, port, ch) && !MicPreSettling(ivars))) &&
                     (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // 1=on, 0=off
                     const bool sent = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
                                       port ? kRegXLink2TX : kRegXLink1TX,
                                       port ? 1 : ivars->symphonyAddr, kSIOCmd_PhantomPower,
                                       ch, &pData, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
-                    if (sent && val == 0) {
-                        uint64_t previous = __atomic_load_n(&ivars->halPhantomOff[port * 8 + ch], __ATOMIC_ACQUIRE);
-                        uint64_t next;
-                        do {
-                            const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
-                            next = now > previous ? now : previous + 1;
-                        } while (!__atomic_compare_exchange_n(&ivars->halPhantomOff[port * 8 + ch], &previous,
-                                                             next, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
-                    }
+                    if (sent && val == 0) StampHalPhantomOff(ivars, port, ch);
                 }
                 __atomic_store_n(&ivars->phantomTxScheduled[port][ch], false, __ATOMIC_RELEASE);
                 if (__atomic_load_n(&ivars->pendingPhantomGen[port][ch], __ATOMIC_ACQUIRE) == gen)
@@ -10324,6 +11142,11 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
                                           port ? kRegXLink2TX : kRegXLink1TX,
                                           port ? 1 : ivars->symphonyAddr, command,
                                           ch, &pData, 1, port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq)) {
+                        // Only the HAL calls RequestMicGain: record it for the app.
+                        StampHalMicPreEdit(ivars, port, ch,
+                                           (uint32_t(val) << kMicPreEditGainShift) | kMicPreEditGainValid |
+                                               (lane ? kMicPreEditGainInstrument : 0u),
+                                           kMicPreEditGainMask | kMicPreEditGainValid | kMicPreEditGainInstrument);
                         if (port == 1) {
                             ivars->unitBMicPreGain[lane][ch] = val;
                             ivars->unitBMicPreGainKnown[lane][ch] = true;
@@ -10347,5 +11170,39 @@ kern_return_t SymphonyThunderbridge::RequestMicGain(uint32_t channel, float deci
         });
     }
     STLOG("RequestMicGain: ch=%u gain=%u [coalesced]", ch, gainByte);
+    return kIOReturnSuccess;
+}
+
+// ── RequestPhaseInvert / RequestHighPass / RequestInputType ─────────────────
+// The DAW-facing MicPre controls. Each request is admitted here, coalesced on
+// its own lane (QueueMicPreLane) and sent from the serial XLink queue. A
+// control's value moves only when PublishMicPreControls publishes what the
+// unit took; a refused or dropped request republishes the real value.
+
+kern_return_t SymphonyThunderbridge::RequestPhaseInvert(uint32_t channel, bool on)
+{
+    return RequestMicPreSwitch(ivars, kMicPreLanePhase, channel, on);
+}
+
+kern_return_t SymphonyThunderbridge::RequestHighPass(uint32_t channel, bool on)
+{
+    return RequestMicPreSwitch(ivars, kMicPreLaneHighPass, channel, on);
+}
+
+kern_return_t SymphonyThunderbridge::RequestInputType(uint32_t channel, uint32_t type)
+{
+    if (!ivars || channel >= 64 || type > 4) return kIOReturnBadArgument;
+    uint32_t port = 0, ch = 0;
+    if (!ResolveMicPreRoute(ivars, channel, port, ch) || !ivars->xlinkQueue ||
+        __atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE)) return kIOReturnNotReady;
+    // Instrument exists on MicPre channels 1-4 only (SymphonyIOBoard_MicPre8ch.cpp:26,970-974).
+    if (ch >= 4 && type == 4) return kIOReturnBadArgument;
+    if (MicPreSettling(ivars)) {
+        STERR("RequestInputType: refused during the settle window (coreaudiod restore)");
+        RepublishMicPreHostLater(ivars, channel);
+        return kIOReturnNotPermitted;
+    }
+    QueueMicPreLane(ivars, kMicPreLaneType, port, ch, CoreInputTypeToWire(type), channel);
+    STLOG("RequestInputType: host=%u -> port %u ch%u type=%u [coalesced]", channel, port, ch, type);
     return kIOReturnSuccess;
 }

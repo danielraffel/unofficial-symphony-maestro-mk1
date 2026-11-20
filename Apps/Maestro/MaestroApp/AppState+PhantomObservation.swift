@@ -18,5 +18,23 @@ extension AppState {
             changed = changed || changedB
         }
         if changed { phantomObservationRevision += 1 }
+        applyMicPreDAWObservations(link)
+    }
+
+    /// DAW edits of either unit's 8MicPre, resolved by the driver to a
+    /// physical unit and channel. Same admission as the OFF receipts above.
+    func applyMicPreDAWObservations(_ link: LinkState?) {
+        guard connectedUnit == nil, converterSystem == nil, cardSimulation == nil,
+              let records = link?.micPreEdits, records.count == 16 else { return }
+        var changed = false
+        if cardLayout.slot2 == .micPre8, records[0..<8].contains(where: { $0.stamp != 0 }) {
+            changed = MicPreDAWObservation.apply(records, to: channelStateStore)
+        }
+        if unitBLayout?.slot2 == .micPre8,
+           records[8..<16].contains(where: { $0.stamp != 0 }) {
+            let changedB = MicPreDAWObservation.apply(records, to: unitBChannelStateStore)
+            changed = changed || changedB
+        }
+        if changed { micPreObservationRevision &+= 1 }
     }
 }

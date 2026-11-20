@@ -13,7 +13,7 @@ struct CardMixerRestoreTests {
         var w = [UInt32](repeating: 0, count: count)
         w[1] = state; w[2] = 1; w[6] = recovery; w[8] = 1
         if count >= 16 { w[14] = reinit }
-        if count == 52 {
+        if count >= 52 {   // 52 and 100 carry MIXS at 48-51
             w[48] = DriverMixerInstance.magic
             w[49] = flags
             w[50] = UInt32(truncatingIfNeeded: nonce)
@@ -54,9 +54,18 @@ struct CardMixerRestoreTests {
         var badMagic = Self.words(); badMagic[48] = 0
         #expect(try #require(LinkState.decode(badMagic)).mixerInstance == nil)
         #expect(LinkState.decode(Array(Self.words().prefix(51))) == nil)
+        // 100 words: the same MIXS words, then the MicPre edit records at 52-99.
+        var wide = Self.words(count: 100, flags: 1)
+        wide[52] = 7; wide[54] = 1 << 5          // A1 edit: polarity valid
+        let both = try #require(LinkState.decode(wide))
+        #expect(both.mixerInstance == DriverMixerInstance(nonce: 0xABCD_0001, holdsAppState: [true, false]))
+        #expect(both.micPreEdits.count == 16 && both.micPreEdits[0].stamp == 7 && both.micPreEdits[0].phase == false)
+        #expect(full.micPreEdits.isEmpty && phantom.micPreEdits.isEmpty)
+        var noMagic = wide; noMagic[48] = 0
+        #expect(try #require(LinkState.decode(noMagic)).mixerInstance == nil)
     }
 
-    @Test("Negotiation: an old driver refusing 52 falls back to 48, then 16; a known size is reused")
+    @Test("Negotiation: 100, then 52 (D5 only), then 48, then 16; a known size is reused")
     func negotiationFallback() throws {
         var asked: [Int] = []
         let old = LinkState.negotiate(known: nil) { count in
@@ -64,22 +73,29 @@ struct CardMixerRestoreTests {
             return count == 48 ? Array(Self.words().prefix(48)) : nil
         }
         #expect(old?.1 == 48 && old?.0.mixerInstance == nil)
-        #expect(asked == [52, 52, 52, 48])
+        #expect(asked == [100, 100, 100, 52, 52, 52, 48])
+        asked = []
+        let d5 = LinkState.negotiate(known: nil) { count in
+            asked.append(count)
+            return count == 52 ? Self.words() : nil
+        }
+        #expect(d5?.1 == 52 && d5?.0.mixerInstance != nil && d5?.0.micPreEdits.isEmpty == true)
+        #expect(asked == [100, 100, 100, 52])
         asked = []
         let legacy = LinkState.negotiate(known: nil) { count in
             asked.append(count)
             return count == 16 ? Array(Self.words().prefix(16)) : nil
         }
-        #expect(legacy?.1 == 16 && asked == [52, 52, 52, 48, 48, 48, 16])
+        #expect(legacy?.1 == 16 && asked == [100, 100, 100, 52, 52, 52, 48, 48, 48, 16])
         asked = []
         // A transient first failure does not pin a new driver to 48.
         var failures = 1
         let transient = LinkState.negotiate(known: nil) { count in
             asked.append(count)
             if failures > 0 { failures -= 1; return nil }
-            return Self.words()
+            return Self.words(count: count)
         }
-        #expect(transient?.1 == 52 && asked == [52, 52])
+        #expect(transient?.1 == 100 && asked == [100, 100])
         asked = []
         _ = LinkState.negotiate(known: 48) { asked.append($0); return Array(Self.words().prefix(48)) }
         #expect(asked == [48])
