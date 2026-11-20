@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.13 (beta)
+
+This beta keeps your chosen clock source through restarts and reconnects, and makes it easier to get past a blocked install. It contains everything in 0.9.12.
+
+Thanks to the tester who reported Word Clock blinking after every restart.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.14, build 140).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **With Word Clock or a digital input as the clock source, the Symphony I/O is now told its clock source again each time the sample rate changes,** and audio starts up to a second later while it locks. With Internal clock nothing changes.
+
+### Fixed
+
+- **A clock source other than Internal now survives a restart of the Mac.** Before, the Symphony's clock could blink after a restart until you switched to Internal and back in Maestro. This is new and has not been tried with an external clock yet, so please tell us whether it works for you.
+- **The clock source also survives sleep, a reconnect and a link recovery.** Before, the Symphony went back to Internal while Maestro still showed your choice.
+
+### New
+
+- **If the installer stops because Apogee's original drivers are present, its message now has an Open Removal Guide button,** and shows the guide's address and Apogee's download address, for when the uninstall steps didn't clear it or Apogee's uninstaller won't run.
+- **The warning about Apogee's original drivers gives numbered steps,** and, set apart below a line, a macOS command you can try if the warning is still there after uninstalling and restarting. Most people will never need that part.
+
+### Please test
+
+- **Word Clock or a digital input as clock source:** after restarting the Mac, or unplugging and replugging the ThunderBridge, does the Symphony lock by itself? If not, a Diagnostics report started before the replug shows us why (turn on **Diagnostics** in **App Settings › Diagnostics & Feedback**, replug, wait 20 seconds, then press **Stop Diagnostics**).
+
 ## 0.9.12 (beta)
 
 This beta makes the warning about Apogee's original drivers accurate when macOS has kept its own copy of them. It contains everything in 0.9.11.
