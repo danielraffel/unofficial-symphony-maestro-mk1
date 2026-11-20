@@ -311,6 +311,48 @@ OUT="$(run_find "$C" "$OURS_LOADED
     || fail "loaded ThunderBridge kext: $OUT"
 ok "preinstall: a loaded ThunderBridge kext blocks after its file is gone, and does not also match Symphony64"
 
+(
+    # shellcheck source=/dev/null
+    . "$PRE"
+    only_awaiting_restart "Loaded kernel extension: com.apogeedigital.driver.Symphony64ThunderBridge" \
+        || fail "loaded-only finding not treated as awaiting restart"
+    only_awaiting_restart "Loaded kernel extension: com.apogeedigital.driver.Symphony64
+Kernel extension: /Library/Extensions/Symphony64.kext" && fail "an installed kext treated as awaiting restart"
+    grep -q 'Restart your Mac, then run this installer again.' "$PRE" || fail "no restart-only dialog"
+) || exit 1
+ok "preinstall: a kext loaded with its file gone asks for a restart, not Uninstall again"
+
+# The decision: fresh installs are blocked; an update of Maestro goes ahead.
+# $1 = case dir, $2 = bundle ID of /Applications/Maestro.app ("" = none), $3 = findings.
+decide() {
+    local dir="$1" id="$2" found="$3"
+    mkdir -p "$dir/root"
+    if [ -n "$id" ]; then
+        mkdir -p "$dir/root/Applications/Maestro.app/Contents"
+        plutil -create xml1 "$dir/root/Applications/Maestro.app/Contents/Info.plist"
+        plutil -insert CFBundleIdentifier -string "$id" "$dir/root/Applications/Maestro.app/Contents/Info.plist"
+    fi
+    (
+        # shellcheck source=/dev/null
+        . "$PRE"
+        APOGEE_ROOT="$dir/root" original_apogee_decision "$found"
+    )
+}
+FOUND_FILE="Kernel extension: /Library/Extensions/Symphony64Thunderbridge.kext"
+FOUND_HAL="HAL plug-in: /Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems/SymphonyPlugin.bundle"
+FOUND_LOADED="Loaded kernel extension: com.apogeedigital.driver.Symphony64ThunderBridge"
+[ "$(decide "$WORK/d-none" "" "")" = clear ] || fail "nothing found: not clear"
+[ "$(decide "$WORK/d-fresh" "" "$FOUND_FILE")" = block ] || fail "fresh install with the kext: not blocked"
+[ "$(decide "$WORK/d-fresh-hal" "" "$FOUND_HAL")" = block ] || fail "fresh install with a HAL plug-in: not blocked"
+[ "$(decide "$WORK/d-restart" "" "$FOUND_LOADED")" = restart ] || fail "fresh install, loaded only: not restart"
+[ "$(decide "$WORK/d-update" com.danielraffel.maestro "$FOUND_FILE")" = update ] || fail "update with the kext: blocked"
+[ "$(decide "$WORK/d-update-hal" com.danielraffel.maestro "$FOUND_HAL")" = update ] || fail "update with a HAL plug-in: blocked"
+[ "$(decide "$WORK/d-update-loaded" com.danielraffel.maestro "$FOUND_LOADED")" = update ] || fail "update, loaded only: blocked"
+[ "$(decide "$WORK/d-apogee-app" com.apogee.Maestro "$FOUND_FILE")" = block ] \
+    || fail "Apogee's own /Applications/Maestro.app taken for ours"
+[ "$(decide "$WORK/d-update-clear" com.danielraffel.maestro "")" = clear ] || fail "update, nothing found: not clear"
+ok "preinstall: Apogee's drivers block a fresh install, not an update of Maestro (by bundle ID, not name)"
+
 C="$WORK/apogee-kext-pcie"
 OUT="$(run_find "$C" "  191  0 0 0 0 com.apogeedigital.driver.Symphony64 (5.5) ABC <8 6 5 3 2 1>")"
 [ "$OUT" = "Loaded kernel extension: com.apogeedigital.driver.Symphony64" ] || fail "loaded PCIe kext: $OUT"

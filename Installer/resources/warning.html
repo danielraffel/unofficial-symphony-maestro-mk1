@@ -28,7 +28,7 @@ hr { border: none; border-top: 1px solid #d2d2d7; margin: 10px 0; }
 
 <h1>Remove Existing Apogee Software First</h1>
 
-<p>Symphony Maestro <strong>conflicts with Apogee&rsquo;s original Symphony I/O drivers</strong>. If both are installed, they interfere with each other and can cause problems, <strong>including crashes</strong>. The installer will check and <strong>block installation</strong> if it detects them.</p>
+<p>Symphony Maestro <strong>conflicts with Apogee&rsquo;s original Symphony I/O drivers</strong>. If both are installed, they interfere with each other and can cause problems, <strong>including crashes</strong>. The installer will check and <strong>block a first installation</strong> if it detects them. An update of Maestro goes ahead, and Maestro&rsquo;s Device Settings shows a warning until they are removed.</p>
 
 <h2>How to Check</h2>
 <p>Open Finder and look for:</p>
@@ -36,7 +36,7 @@ hr { border: none; border-top: 1px solid #d2d2d7; margin: 10px 0; }
 <li>Files in /Library/Audio/Plug-Ins/HAL/Apogee/Symphony Systems/</li>
 <li><strong>Symphony64Thunderbridge.kext</strong>, <strong>Symphony64.kext</strong> or <strong>SymphonyIOUSBOverideDriver.kext</strong> in /Library/Extensions/ (Apogee&rsquo;s ThunderBridge, Symphony 64 PCIe and USB drivers)</li>
 </ul>
-<p>Apogee Maestro 2 and software for other Apogee products do not need to be removed.</p>
+<p>Maestro doesn&rsquo;t need Apogee Maestro 2 or software for other Apogee products removed, but Apogee&rsquo;s Uninstall removes Apogee Maestro 2 too. If you use it with another Apogee interface, reinstall it from Apogee afterwards.</p>
 
 <h2>How to Remove</h2>
 <ol>

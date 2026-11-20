@@ -18,7 +18,7 @@ extension AppState {
         originalApogeeDriverCheckInFlight = true
         Task { @MainActor [weak self] in
             let finding = await Task.detached(priority: .utility) {
-                OriginalApogeeDrivers.detect(
+                Self.previewOriginalApogeeDrivers() ?? OriginalApogeeDrivers.detect(
                     fileExists: { FileManager.default.fileExists(atPath: $0) },
                     loadedBundleIDs: Self.loadedOriginalApogeeKextIDs())
             }.value
@@ -31,6 +31,42 @@ extension AppState {
                 }
             }
         }
+    }
+
+    /// The launch argument that previews the warning for a screenshot without
+    /// installing Apogee's drivers:
+    ///
+    ///   .build/debug/MaestroApp -MaestroPreviewOriginalApogeeDrivers installed
+    ///   .build/debug/MaestroApp -MaestroPreviewOriginalApogeeDrivers restart
+    ///
+    /// `installed` shows a typical finding (the issue 31 kext, loaded, and the
+    /// Symphony Systems plug-ins); `restart` shows the kext still loaded after
+    /// Uninstall. DEBUG builds only: the read is compiled out of release builds
+    /// (the installer builds with `-c release`), so a stray defaults key can
+    /// never make a shipped Maestro claim Apogee's drivers are installed.
+    nonisolated static let originalApogeeDriversPreviewKey = "MaestroPreviewOriginalApogeeDrivers"
+
+    nonisolated static func previewOriginalApogeeDrivers() -> OriginalApogeeDriverFinding? {
+        #if DEBUG
+        let thunderBridge = "com.apogeedigital.driver.Symphony64ThunderBridge"
+        switch UserDefaults.standard.string(forKey: originalApogeeDriversPreviewKey) {
+        case "installed":
+            let hal = OriginalApogeeDrivers.symphonySystemsDirectory
+            let files: Set<String> = [
+                "/Library/Extensions/Symphony64Thunderbridge.kext/Contents/Info.plist",
+                "\(hal)/SymphonyPlugin.bundle/Contents/Info.plist",
+                "\(hal)/SymphonyIOUSBPlugIn.bundle/Contents/Info.plist",
+                "/Library/LaunchDaemons/com.SymphonyDaemon.plist",
+            ]
+            return OriginalApogeeDrivers.detect(fileExists: files.contains, loadedBundleIDs: [thunderBridge])
+        case "restart":
+            return OriginalApogeeDrivers.detect(fileExists: { _ in false }, loadedBundleIDs: [thunderBridge])
+        default:
+            return nil
+        }
+        #else
+        return nil
+        #endif
     }
 
     /// Which of Apogee's MkI kext identifiers are loaded in the kernel. Asks for
@@ -66,12 +102,17 @@ struct OriginalApogeeDriversWarning: View {
                         .font(.headline)
                         .foregroundStyle(.red)
                     Text(Self.message)
-                    Text(.init(OriginalApogeeDrivers.removalAdvice))
-                    Link(destination: OriginalApogeeDrivers.releaseDMGURL) {
-                        Label("Download Apogee's Symphony I/O Release 5.5", systemImage: "arrow.down.circle")
+                    if finding.isAwaitingRestartOnly {
+                        Text(OriginalApogeeDrivers.restartAdvice)
+                            .fontWeight(.semibold)
+                    } else {
+                        Text(.init(OriginalApogeeDrivers.removalAdvice))
+                        Link(destination: OriginalApogeeDrivers.releaseDMGURL) {
+                            Label("Download Apogee's Symphony I/O Release 5.5", systemImage: "arrow.down.circle")
+                        }
+                        .buttonStyle(.bordered)
+                        .padding(.top, 2)
                     }
-                    .buttonStyle(.bordered)
-                    .padding(.top, 2)
                     DisclosureGroup("What was found", isExpanded: $showFound) {
                         VStack(alignment: .leading, spacing: 3) {
                             ForEach(finding.lines, id: \.self) { line in
@@ -85,7 +126,7 @@ struct OriginalApogeeDriversWarning: View {
                         .padding(.top, 4)
                     }
                     .font(.callout)
-                    ManualApogeeRemovalSteps()
+                    if !finding.isAwaitingRestartOnly { ManualApogeeRemovalSteps() }
                 }
             }
             .padding(12)

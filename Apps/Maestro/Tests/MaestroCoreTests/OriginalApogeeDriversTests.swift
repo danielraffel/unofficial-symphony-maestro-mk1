@@ -57,6 +57,17 @@ struct OriginalApogeeDriversTests {
         #expect(finding.lines == ["Kernel extension: \(id) (loaded; restart to unload)"])
     }
 
+    @Test("Only a loaded kext with no file left: awaiting a restart, not another Uninstall")
+    func awaitingRestart() {
+        let id = "com.apogeedigital.driver.Symphony64ThunderBridge"
+        #expect(detect(loaded: [id]).isAwaitingRestartOnly)
+        #expect(!detect().isAwaitingRestartOnly)
+        #expect(!detect(["/Library/Extensions/Symphony64Thunderbridge.kext/Contents/Info.plist"], loaded: [id])
+            .isAwaitingRestartOnly)
+        #expect(!detect(["/Library/LaunchDaemons/com.SymphonyDaemon.plist"], loaded: [id]).isAwaitingRestartOnly)
+        #expect(OriginalApogeeDrivers.restartAdvice.contains("Restart your Mac"))
+    }
+
     @Test("Each Symphony launch daemon is found", arguments: [
         "com.SymphonyDaemon.plist", "com.SymphonyIOUSBDaemon.plist",
     ])

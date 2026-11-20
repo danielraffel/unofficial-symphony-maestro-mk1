@@ -2,9 +2,10 @@
 //
 // Maestro is not supported alongside Apogee's own Symphony I/O MkI drivers. A
 // tester's Mac kernel-panicked with Apogee's ThunderBridge kernel extension
-// loaded next to Maestro's driver (GitHub issue 31). The installer refuses to
-// install over them (Installer/scripts-core/preinstall); this is the app's
-// read-only version of the same check, for a Mac where they came back or were
+// loaded next to Maestro's driver (GitHub issue 31). The installer refuses a
+// first install over them, but lets an update of Maestro go ahead
+// (Installer/scripts-core/preinstall); this is the app's read-only version of
+// the same check, for that update and for a Mac where they came back or were
 // installed afterwards.
 //
 // Only the Symphony I/O MkI release installs these. The same release also
@@ -98,6 +99,12 @@ public struct OriginalApogeeDriverFinding: Sendable, Equatable {
     public init(items: [Item]) { self.items = items }
 
     public var isEmpty: Bool { items.isEmpty }
+    /// Everything found is a kext still loaded whose file is gone: Apogee's
+    /// Uninstall has run, and only a restart is left. Running Uninstall again
+    /// would delete Maestro.app a second time for nothing.
+    public var isAwaitingRestartOnly: Bool {
+        !items.isEmpty && items.allSatisfy { $0.path == nil && $0.loaded }
+    }
     public var lines: [String] { items.map(\.line) }
 
     /// The block the diagnostics text carries, found or not.
@@ -163,6 +170,9 @@ public enum OriginalApogeeDrivers {
     public static let removalAdvice = "Remove them with **Uninstall** in Apogee's Symphony I/O installer, "
         + "restart your Mac, then reinstall Maestro. Apogee's Uninstall also removes Maestro and resets "
         + "macOS's audio device settings."
+
+    /// What the warning says when only a restart is left (`isAwaitingRestartOnly`).
+    public static let restartAdvice = "They have been removed, but one is still loaded. Restart your Mac to finish."
 
     /// The last resort, for a Mac that cannot run Apogee's uninstaller: what has
     /// to go, in general terms, not a procedure. Always behind a collapsed

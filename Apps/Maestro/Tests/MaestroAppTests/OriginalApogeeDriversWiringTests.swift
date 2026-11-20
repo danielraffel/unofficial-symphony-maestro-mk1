@@ -57,6 +57,30 @@ struct OriginalApogeeDriversWiringTests {
         #expect(try file("MaestroApp/HelpView.swift").contains("ManualApogeeRemovalSteps()"))
     }
 
+    @Test("The screenshot preview: a sample finding in DEBUG, compiled out of release builds")
+    func previewIsDebugOnly() throws {
+        let key = AppState.originalApogeeDriversPreviewKey
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        UserDefaults.standard.set("installed", forKey: key)
+        let installed = try #require(AppState.previewOriginalApogeeDrivers())
+        #expect(!installed.isEmpty && !installed.isAwaitingRestartOnly)
+        UserDefaults.standard.set("restart", forKey: key)
+        #expect(AppState.previewOriginalApogeeDrivers()?.isAwaitingRestartOnly == true)
+        UserDefaults.standard.removeObject(forKey: key)
+        #expect(AppState.previewOriginalApogeeDrivers() == nil)
+        // The only read of the key sits between #if DEBUG and #else, so a release
+        // build (`swift build -c release`, Installer/build-installer.sh) cannot see it.
+        let source = try file("MaestroApp/OriginalApogeeDriverCheck.swift")
+        let body = try #require(source.range(of: "static func previewOriginalApogeeDrivers()"))
+        let debug = try #require(source.range(of: "#if DEBUG", range: body.upperBound..<source.endIndex))
+        let release = try #require(source.range(of: "#else\n        return nil\n        #endif", range: debug.upperBound..<source.endIndex))
+        let read = try #require(source.range(of: "forKey: originalApogeeDriversPreviewKey", range: body.upperBound..<source.endIndex))
+        #expect(debug.upperBound <= read.lowerBound && read.upperBound <= release.lowerBound)
+        #expect(source.components(separatedBy: "originalApogeeDriversPreviewKey").count - 1 == 2) // declared, read once
+        let build = try file("../../Installer/build-installer.sh")
+        #expect(build.contains("swift build --package-path \"$REPO_ROOT/Apps/Maestro\" -c release"))
+    }
+
     @Test("Device Settings shows the warning first, unredacted; checked at launch and on open; in the report")
     func wiring() throws {
         let settings = try file("MaestroApp/SettingsViews.swift")

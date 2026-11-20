@@ -57,6 +57,44 @@ find_original_apogee() {
     return 0
 }
 
+# True when Maestro itself is already installed, so this is an update. Checked
+# by bundle identifier, not name: Apogee's own old app was also
+# /Applications/Maestro.app. APOGEE_ROOT and PLISTBUDDY are for the tests.
+maestro_already_installed() {
+    local plist="${APOGEE_ROOT:-}/Applications/Maestro.app/Contents/Info.plist"
+    [ -f "$plist" ] || return 1
+    [ "$("${PLISTBUDDY:-/usr/libexec/PlistBuddy}" -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null)" \
+        = "com.danielraffel.maestro" ]
+}
+
+# True when every line find_original_apogee printed is a loaded kext with no
+# file left: only a restart remains.
+only_awaiting_restart() {
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            "Loaded kernel extension: "*) ;;
+            *) return 1 ;;
+        esac
+    done <<< "$1"
+    return 0
+}
+
+# What step 3 does about what find_original_apogee printed ($1):
+#   clear    nothing found
+#   update   found, but Maestro is already installed: an update goes ahead, so
+#            someone already running both is not stuck on an old version behind
+#            a failed install; Maestro's Device Settings warns them
+#   restart  fresh install, and only a kext still loaded with its file gone
+#   block    fresh install with them installed
+original_apogee_decision() {
+    if [ -z "$1" ]; then echo clear
+    elif maestro_already_installed; then echo update
+    elif only_awaiting_restart "$1"; then echo restart
+    else echo block
+    fi
+}
+
 main() {
 LOG="/tmp/maestro-installer.log"
 echo "[preinstall] Starting at $(date)" >> "$LOG"
@@ -81,12 +119,31 @@ fi
 echo "[preinstall] macOS version: $OS_VERSION (OK)" >> "$LOG"
 
 # ── 3. Check for Apogee's original Symphony I/O MkI drivers ────────────────
-if ORIGINAL_FOUND="$(find_original_apogee)" && [ -n "$ORIGINAL_FOUND" ]; then
+ORIGINAL_FOUND="$(find_original_apogee)"
+if [ -n "$ORIGINAL_FOUND" ]; then
     while IFS= read -r ITEM; do
         echo "[preinstall] Found original Apogee driver: $ITEM" >> "$LOG"
     done <<< "$ORIGINAL_FOUND"
-    echo "[preinstall] BLOCKED: Original Apogee Symphony I/O drivers found" >> "$LOG"
-    osascript -e '
+fi
+case "$(original_apogee_decision "$ORIGINAL_FOUND")" in
+    clear)
+        echo "[preinstall] No original Apogee Symphony I/O drivers found (OK)" >> "$LOG"
+        ;;
+    update)
+        echo "[preinstall] Maestro is already installed: updating anyway; Device Settings will warn" >> "$LOG"
+        ;;
+    restart)
+        echo "[preinstall] BLOCKED: an original Apogee kext is still loaded; restart needed" >> "$LOG"
+        osascript -e '
+display dialog "Apogee'"'"'s original Symphony I/O drivers have been removed, but one is still loaded.
+
+Restart your Mac, then run this installer again." buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
+    ' 2>/dev/null || true
+        exit 1
+        ;;
+    *)
+        echo "[preinstall] BLOCKED: Original Apogee Symphony I/O drivers found" >> "$LOG"
+        osascript -e '
 display dialog "Apogee'"'"'s original Symphony I/O drivers were detected.
 
 Symphony Maestro cannot be installed while they are installed or loaded. The two interfere with each other and can cause problems, including crashes.
@@ -99,11 +156,12 @@ To fix this:
 
 (Search \"Symphony IO Release 5.5\" at apogeedigital.com)
 
-If Apogee'"'"'s uninstaller won'"'"'t run on your Mac, see \"Removing Apogee'"'"'s original drivers\" in the Maestro user guide on GitHub." buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
+If Apogee'"'"'s uninstaller won'"'"'t run on your Mac, see \"Removing Apogee'"'"'s original drivers\" in the Maestro user guide:
+https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/main/docs/UserManual.md#removing-apogees-original-drivers" buttons {"OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
     ' 2>/dev/null || true
-    exit 1
-fi
-echo "[preinstall] No original Apogee Symphony I/O drivers found (OK)" >> "$LOG"
+        exit 1
+        ;;
+esac
 
 # ── 4. Kill running Maestro app ─────────────────────────────────────────────
 if pgrep -x MaestroApp > /dev/null 2>&1; then
