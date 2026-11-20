@@ -1940,6 +1940,9 @@ struct DeviceSettingsView: View {
                 PropertyAddress(selector: .clockSource),
                 value: .uint32(source)
             )
+            // The status bar shows this; a board input and USB send no Core
+            // Audio notification of their own.
+            if ClockSourceMenu.decode(source) != nil { appState.reportedClockSource = source }
             errorMessage = nil
         } catch {
             errorMessage = unitBFollows

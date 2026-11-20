@@ -775,7 +775,9 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored
     var originalApogeeDriverCheckInFlight = false
     /// The clock source the connection reports now, as a `ClockSourceMenu`
-    /// key, refreshed every two seconds by the status bar. It follows changes
+    /// key, kept current by the status bar from Core Audio's change
+    /// notifications (no polling) and by Device Settings when it writes one.
+    /// It follows changes
     /// made outside Maestro (Audio MIDI Setup, a DAW) and by the driver, which
     /// the status bar and the Clock Source menu both showed stale before:
     /// the bar always read "Internal", and the menu kept its last value.
