@@ -181,6 +181,18 @@ From 0.8.40, Maestro can also offer beta versions: builds that are still being t
 </table>
 
 
+## Uninstalling
+
+To remove everything this project installs, run this one command in Terminal (in Applications › Utilities) and enter your Mac's password when asked:
+
+```
+sudo /Applications/Maestro.app/Contents/Resources/uninstall.sh
+```
+
+It removes the Maestro app, the audio plug-in, the ThunderBridge driver and the background service, and restores Apogee's original audio plug-in if the installer had set it aside. Audio stops briefly while it runs. macOS may not let the script remove the driver itself; if so, the script says so, and you turn off **Symphony Thunderbridge** under **System Settings › General › Login Items & Extensions › Driver Extensions**.
+
+If you have already deleted Maestro from Applications, the same script is in this repository at [Installer/uninstall.sh](Installer/uninstall.sh).
+
 ## Source and development
 
 The repository includes the Maestro desktop app, shipping ThunderBridge and USB support, installer resources, and build/install tools. Source is provided for learning, maintenance and further development. **We strongly recommend the prebuilt, signed and notarized installer for everyday use.**
