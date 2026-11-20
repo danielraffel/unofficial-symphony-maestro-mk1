@@ -2721,6 +2721,9 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ConvSetPort(ivars, 0, true, unitCount, units);
             __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort1Converters, __ATOMIC_RELEASE);
             STLOG("Converter: port 1 carries %u converter unit(s); Symphony I/O set-up skipped", unitCount);
+            // A Symphony I/O's clock choice does not outlive the unit: one
+            // plugged in after these converters starts on Internal again.
+            ivars->unitAClockKnown = false;
             // SetWCMaster after enumeration, the rate set with lock, actual
             // rate and phase, EnableDeviceRouting's per-unit unmute, and the
             // routing layer's placement.
@@ -2888,14 +2891,29 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         //   loopSync: 0=off, 1=on
         //   boardClockSrc: 0=SPDIFCoax, 1=Optical1-2, etc.
         // Evidence: MaestroVolumeProxy.c:811-818 configure_fpga_routing() step 3.
+        // dext 140: when this set-up runs again in the same session (link
+        // recovery, wake, a card reset), the clock source chosen since Start()
+        // is sent, not Internal: the original applied the saved source in this
+        // same step every time (SymphonyIO::ApplySettingsToHardware ->
+        // SetClockSource(m_nCurrentClockSourceID, true), SymphonyIO.cpp:4660-4695).
+        // Before, a recovery put the unit on Internal while the Clock Source
+        // menu still read Word Clock. The first set-up after Start() knows no
+        // choice yet and sends Internal, as before; Core Audio then restores
+        // the saved source through the selector.
         {
             uint8_t clockData[4] = { 0x01, 0x01, 0x00, 0x00 };  // Internal, Master
+            const bool chosen = ivars->unitAClockKnown && ivars->unitAClock[0] >= 1 && ivars->unitAClock[0] <= 5;
+            if (chosen) memcpy(clockData, ivars->unitAClock, 4);
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_ClockMode,
                                          0, clockData, sizeof(clockData), txSeq);
             memcpy(ivars->unitAClock, clockData, 4);   // dext 131: unit A's last ClockMode
             ivars->unitAClockKnown = true;
-            STLOG("SymphonyIO: ClockMode(Internal, Master): %{public}s", ok ? "OK" : "FAILED");
+            if (chosen && clockData[0] != 1)
+                STLOG("SymphonyIO: ClockMode(source %u, master %u, loop sync %u) re-applied: %{public}s",
+                      clockData[0], clockData[1], clockData[2], ok ? "OK" : "FAILED");
+            else
+                STLOG("SymphonyIO: ClockMode(Internal, Master): %{public}s", ok ? "OK" : "FAILED");
             IOSleep(10);
         }
 
@@ -8523,6 +8541,50 @@ kern_return_t SymphonyThunderbridge::StartDevice(
                     STERR("StartDevice: rate change FAILED (cmdIssued=%d) — DMA stopped, outputs "
                           "muted, DDS+XLink consistent (offline pending reinit)", cmdIssued);
                     return;
+                }
+
+                // 3b. dext 140: an external clock source is sent again once the
+                // units run at the new rate. On a cold start Core Audio restores
+                // the saved source (Word Clock, say) through the selector while
+                // the hardware is still at its start-up 44.1 kHz, and this is
+                // the first moment it is at the rate the external clock runs at;
+                // without it the unit kept blinking until the source was
+                // switched away and back by hand (issue 31). The original tied
+                // the two together from the other side: changing external lock
+                // forced a full rate re-sync, and a rate set that had trouble
+                // re-set the word-clock setting (Symphony64 Driver/XLink.cpp
+                // :149-160, :352-356). DMA is stopped and the card muted here.
+                // Internal (the default) sends nothing: unchanged traces.
+                // Not with unit B set up: there unit A's ClockMode carries the
+                // Loop Sync output and master choice, which SendUnitAClock and
+                // the Loop Sync configuration own, and the recorded bytes do
+                // not include them.
+                if (!ivars->convPort1 && !ivars->unitBConfigured && ivars->unitAClockKnown &&
+                    ivars->unitAClock[0] >= 2 && ivars->unitAClock[0] <= 5) {
+                    uint8_t clockData[4];
+                    memcpy(clockData, ivars->unitAClock, 4);
+                    const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                      ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
+                                                      clockData, sizeof(clockData), ivars->runtimeTxSeq);
+                    // Give the unit up to a second to lock to its external
+                    // clock before DMA restarts and the card is unmuted (it
+                    // goes on either way, as before this change).
+                    uint8_t clk[5] = {};
+                    bool read = false;
+                    for (int poll = 0; ok && poll < 10; poll++) {
+                        IOSleep(100);
+                        memset(clk, 0, sizeof(clk));
+                        read = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                 ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, clk, 5,
+                                                 ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
+                        if (!read || clk[0]) break;
+                    }
+                    const uint32_t measured = ((uint32_t)clk[1] << 24) | ((uint32_t)clk[2] << 16) |
+                                              ((uint32_t)clk[3] << 8) | clk[4];
+                    STLOG("StartDevice: ClockMode(source %u) sent again after the rate change to %.0f Hz: %{public}s; "
+                          "unit reports %{public}s, measured %u Hz",
+                          clockData[0], requestedRate, ok ? "OK" : "FAILED",
+                          !read ? "nothing" : clk[0] ? "locked" : "not locked", read ? measured : 0u);
                 }
 
                 // 4. Reprogram ClkCtrl frame size (legacy does this in every
