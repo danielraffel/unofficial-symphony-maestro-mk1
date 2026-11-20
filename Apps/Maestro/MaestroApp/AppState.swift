@@ -751,6 +751,37 @@ final class AppState: @unchecked Sendable {
     var originalApogeeDrivers: OriginalApogeeDriverFinding?
     @ObservationIgnored
     var originalApogeeDriverCheckInFlight = false
+    /// A second Symphony I/O on port 2 takes its clock from unit A through
+    /// Loop Sync, so unit A cannot take Loop Sync itself.
+    var unitBFollowsUnitA: Bool { unitB != nil }
+
+    /// The Clock Source menu's rows for what is connected. One list for the
+    /// menu in Device Settings and the name in the status bar, so the two
+    /// always read the same ("SPDIF Coax 1-2", not "I/O Board 1").
+    func clockSourceChoices(sampleRate: Double?) -> [ClockSourceChoice] {
+        // Older converters: their own clock or word clock, as the original
+        // offered, written as the converter config's clock bit.
+        if convertersIdentified { return ClockSourceMenu.converters }
+        guard transportType != .usb else { return ClockSourceMenu.usb }
+        return ClockSourceMenu.unitAChoices(
+            ClockSourceMenu.thunderbolt(slot1: primaryBoardType,
+                                        slot2: secondaryBoardType,
+                                        sampleRate: sampleRate,
+                                        opticalIsSPDIF: channelNaming.opticalIsSPDIF),
+            unitBFollows: unitBFollowsUnitA)
+    }
+
+    /// The name of the reported clock source as its menu row reads; the plain
+    /// source name when no row matches (a board the menu does not list).
+    func reportedClockSourceName(sampleRate: Double?) -> String? {
+        guard let key = reportedClockSource else { return nil }
+        let choices = clockSourceChoices(sampleRate: sampleRate)
+        if let row = ClockSourceMenu.row(for: key, in: choices),
+           let choice = choices.first(where: { $0.id == row }) {
+            return choice.name
+        }
+        return ClockSourceMenu.statusName(for: key)
+    }
     /// The clock source the connection reports now, as a `ClockSourceMenu`
     /// key, kept current by the front panel sync from the reading it already
     /// takes of the unit (the unit's own answer, no extra traffic) and by

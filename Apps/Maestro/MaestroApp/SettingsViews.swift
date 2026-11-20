@@ -224,21 +224,12 @@ struct DeviceSettingsView: View {
     // AES pairs, optical), as Apogee's software did in the Symphony mode. The
     // optical row's name follows the rate and the board's optical format.
     private var clockSourceChoices: [ClockSourceChoice] {
-        // Older converters: their own clock or word clock, as the original
-        // offered, written as the converter config's clock bit.
-        if appState.convertersIdentified { return ClockSourceMenu.converters }
-        guard appState.transportType != .usb else { return ClockSourceMenu.usb }
-        return ClockSourceMenu.unitAChoices(
-            ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
-                                        slot2: appState.secondaryBoardType,
-                                        sampleRate: sampleRate > 0 ? sampleRate : nil,
-                                        opticalIsSPDIF: appState.channelNaming.opticalIsSPDIF),
-            unitBFollows: unitBFollowsUnitA)
+        appState.clockSourceChoices(sampleRate: sampleRate > 0 ? sampleRate : nil)
     }
 
     /// A second Symphony I/O on port 2 takes its clock from unit A through
     /// Loop Sync, so unit A cannot take Loop Sync itself.
-    private var unitBFollowsUnitA: Bool { appState.unitB != nil }
+    private var unitBFollowsUnitA: Bool { appState.unitBFollowsUnitA }
 
     /// Fallback rates shown when device doesn't report available rates.
     private static let defaultRates: [Double] = [

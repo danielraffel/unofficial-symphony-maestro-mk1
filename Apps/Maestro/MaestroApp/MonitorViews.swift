@@ -146,7 +146,7 @@ struct StatusBarView: View {
     /// connected, a dash while not).
     private var shownClockSourceName: String {
         guard clockSourceDisplayName != "—" else { return clockSourceDisplayName }
-        return appState.reportedClockSource.flatMap(ClockSourceMenu.statusName(for:)) ?? clockSourceDisplayName
+        return appState.reportedClockSourceName(sampleRate: sampleRate) ?? clockSourceDisplayName
     }
 
     private var statusConnection: CoreAudioDeviceConnection? {
