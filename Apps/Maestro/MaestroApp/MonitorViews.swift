@@ -157,6 +157,9 @@ struct StatusBarView: View {
         while !Task.isCancelled {
             if appState.isHardwareInitialized, appState.connectionMode != .disconnected,
                !appState.convertersIdentified, let device = appState.device,
+               // The legacy daemon connection would query its socket (and log
+               // twice) for every read; it keeps the old display.
+               !(device is CoreAudioDeviceConnection),
                let key = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32,
                ClockSourceMenu.decode(key) != nil {
                 if appState.reportedClockSource != key { appState.reportedClockSource = key }
