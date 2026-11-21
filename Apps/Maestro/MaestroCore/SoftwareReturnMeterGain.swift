@@ -6,7 +6,7 @@
 /// meters stayed full whatever the strip said. Applying the same trims here
 /// makes the meters follow the strip.
 ///
-/// Software Return has no pan (0.9.19): callers pass centre. The pan law is
+/// Software Return has no pan (0.9.21): callers pass centre. The pan law is
 /// kept because the card mixer still has one; it mirrors that balance law exactly
 /// (`Drivers/Thunderbolt/Source/SymphonyMixerPan.h`): the centre and the
 /// favoured side stay at unity, the opposite side fades linearly in dB to a

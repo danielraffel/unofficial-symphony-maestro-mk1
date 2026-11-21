@@ -60,7 +60,7 @@ public enum KeyboardVolumeOutput: UInt32, Sendable, Equatable, CaseIterable {
     /// With nothing saved and the unit in Line mode the choice is Headphone
     /// 1: in the original a unit with an analog output card only got into
     /// Line mode by the user setting it, which made Headphone 1 the choice
-    /// (see `afterUserChange`), and Maestro versions before 0.9.20 moved
+    /// (see `afterUserChange`), and Maestro versions before 0.9.21 moved
     /// Headphone 1 in Line mode without saving anything.
     public static func resolve(saved: UInt32?, hasAnalogOutput: Bool, convertersOnly: Bool,
                                speakerMode: UInt32? = nil) -> KeyboardVolumeOutput {

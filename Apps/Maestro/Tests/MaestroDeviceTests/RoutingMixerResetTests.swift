@@ -3,7 +3,7 @@ import Testing
 import MaestroCore
 @testable import MaestroDevice
 
-/// The one-time reset of 0.9.19: Output Routing, Input Routing and both
+/// The one-time reset of 0.9.21: Output Routing, Input Routing and both
 /// mixers back to default for every unit and layout; everything else kept.
 @Suite("Routing and mixer reset (one time)")
 struct RoutingMixerResetTests {

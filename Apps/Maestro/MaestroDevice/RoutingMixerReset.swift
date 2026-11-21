@@ -1,7 +1,7 @@
 import Foundation
 
 /// The one-time return to the original's defaults when the Input Monitoring
-/// setting was removed (0.9.19): Output Routing, Input Routing and both mixers
+/// setting was removed (0.9.21): Output Routing, Input Routing and both mixers
 /// go back to default for every unit, card layout, converter chain and
 /// connection ever saved.
 ///
@@ -32,7 +32,7 @@ import Foundation
 /// strips at 0 dB, centre, unmuted (og_source/maestrolink/Software/SymphonyIOMixer.h:28-33).
 public enum RoutingMixerReset {
     public static let versionKey = "routingMixerReset.version"
-    /// 1: the reset as first built (0.9.19 development builds). 2: converter
+    /// 1: the reset as first built (early 0.9.21 development builds). 2: converter
     /// routing is part of it, and a USB unit's outputs are written direct
     /// once. An install that ran 1 gets only what 2 added.
     public static let currentVersion = 2

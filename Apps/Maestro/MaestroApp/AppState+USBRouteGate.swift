@@ -8,7 +8,7 @@ import MaestroDevice
 // mixer in full on this connection (`usbMixerIsWritten`); until then it is
 // direct or disabled, the real route is owed, and the restore sends it.
 //
-// The headphone crosspoints were written past this gate until 0.9.19. A
+// The headphone crosspoints were written past this gate until 0.9.21. A
 // headphone following Line 1/2 had been pointed at Mixer 1 by an earlier
 // version (Mixer 1 was then the default for Line 1/2), the unit keeps its
 // routing until it is power-cycled, and the restore then wrote every strip of

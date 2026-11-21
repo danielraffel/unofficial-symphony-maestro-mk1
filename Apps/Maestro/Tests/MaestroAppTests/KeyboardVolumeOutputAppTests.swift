@@ -272,7 +272,7 @@ struct KeyboardVolumeOutputAppTests {
         #expect(KeyboardVolumeOutput.speakers.label(speakerMode: state.keyboardVolumeSpeakerMode(for: .a)) == "Speaker (6ch)")
     }
 
-    @Test("a unit found in Line mode with nothing saved (an update from 0.9.19) has Headphone 1; with a driver before 142 nothing is saved by a mode change")
+    @Test("a unit found in Line mode with nothing saved (an update from 0.9.18) has Headphone 1; with a driver before 142 nothing is saved by a mode change")
     func lineModeWithNothingSaved() async {
         let (state, tb, driver) = thunderbolt()
         state.speakerOutputMode = 0

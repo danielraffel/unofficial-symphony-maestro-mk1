@@ -25,11 +25,11 @@ struct MaestroApp: App {
     @State private var diagnostics = DiagnosticsRecorder()
     @State private var presetLibrary = PresetLibrary.shared
 
-    /// The one-time routing and mixer reset (0.9.19, `RoutingMixerReset`) runs
+    /// The one-time routing and mixer reset (0.9.21, `RoutingMixerReset`) runs
     /// before `AppState` exists, so nothing has read the saved state it removes.
     private static func makeAppState() -> AppState {
         if RoutingMixerReset.runIfNeeded(defaults: .standard) {
-            print("[Maestro] Output Routing, Input Routing, converter routing and both mixers reset to defaults (one time, 0.9.19)")
+            print("[Maestro] Output Routing, Input Routing, converter routing and both mixers reset to defaults (one time, 0.9.21)")
         }
         return AppState()
     }

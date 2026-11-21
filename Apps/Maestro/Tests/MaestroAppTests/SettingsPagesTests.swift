@@ -78,7 +78,7 @@ struct SettingsPagesTests {
         // Each section is a property, declared in page order; the body adds Status last.
         let sections = try #require(view.range(of: "// MARK: - Sections, in page order"))
         let titles = try sectionTitles(view[sections.upperBound...])
-        // No "Input Monitoring": Apogee had no such setting, and it was removed in 0.9.19.
+        // No "Input Monitoring": Apogee had no such setting, and it was removed in 0.9.21.
         // VBus (ThunderBridge and PCIe only) comes directly after Connection.
         let expected = ["Clock", "Connection", "VBus", "Volume Keys", "Front Panel",
                         "Cards", "Naming", "Info"]

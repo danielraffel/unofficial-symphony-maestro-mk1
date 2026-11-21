@@ -877,7 +877,7 @@ struct ThunderboltProtocolTests {
     @Test("Init sequence: the dext's command order")
     func initSequenceOrdering() {
         // The ThunderBridge driver sends commands in this order (the USB helper
-        // sent the same until 0.9.19; it no longer sends SpeakerMode or
+        // sent the same until 0.9.21; it no longer sends SpeakerMode or
         // MixerInputMute):
         // 1. PreferenceLoadLock(lock=1)
         // 2. SpeakerMode, SpeakerVolume, SpeakerMute
