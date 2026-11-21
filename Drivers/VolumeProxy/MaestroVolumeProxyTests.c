@@ -325,8 +325,13 @@ static void check_monitor_output(void)
     uint64_t wait = 0;
     CHECK(slider_set_admitted(100, &wait, 8, 40), "nothing waited for: every set is taken");
     wait = 1000;
-    CHECK(!slider_set_admitted(100, &wait, 8, 40) && wait == 1000, "the old output's level is not taken for the new output");
-    CHECK(!slider_set_admitted(999, &wait, 39, 40) && wait == 1000, "nor one step from it");
+    CHECK(!slider_set_admitted(100, &wait, 8, 40) && wait == 1000, "the old output's louder level is not taken for the new output");
+    CHECK(!slider_set_admitted(999, &wait, 39, 40) && wait == 1000, "nor one step louder");
+    CHECK(slider_set_admitted(200, &wait, 41, 40) && wait == 1000, "turning down is taken at once, and the wait goes on");
+    CHECK(slider_set_admitted(200, &wait, 64, 40) && wait == 1000, "down to silence too");
+    /* Mute: 1 is muted. */
+    CHECK(slider_set_admitted(200, &wait, 1, 0) && wait == 1000, "mute on is taken at once");
+    CHECK(!slider_set_admitted(200, &wait, 0, 1) && wait == 1000, "an unmute is not");
     CHECK(slider_set_admitted(500, &wait, 40, 40) && wait == 0, "the new output's own level ends the wait");
     CHECK(slider_set_admitted(501, &wait, 8, 40), "after that a key is taken");
     wait = 1000;

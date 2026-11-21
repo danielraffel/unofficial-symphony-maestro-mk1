@@ -940,10 +940,13 @@ static bool WriteFile(const std::string &dir, const char *name, const std::vecto
 #ifdef TRACE_HAVE_CONVERTER_VOLUME
 static uint32_t Mixer1Return(Run &r) { return r.card.reg[MixerCoefOffset(0, 128)]; }
 
-// A key pressed by a person: after the settle window (see RunScenario).
+// A key pressed by a person: after the settle window (see RunScenario), and
+// after the driver has looked at the controls once since it was armed.
 static void PressVolume(Run &r, float db)
 {
     gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;
+    Irq(r, 1);
+    HostPump();
     gHostAudio.volume->SetDecibelValue(db);
     Irq(r, 1);
     HostPump();
@@ -953,6 +956,8 @@ static void PressVolume(Run &r, float db)
 static void PressMute(Run &r, bool muted)
 {
     gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;
+    Irq(r, 1);
+    HostPump();
     gHostAudio.mute->SetControlValue(muted);
     Irq(r, 1);
     HostPump();
@@ -1468,12 +1473,14 @@ static void RunMonitorOutputChecks()
         CHECK(StoredOn(r, 0, 0x23, 1) == 52, "%s: recovery sent the unit an HP2 level it did not have (%u, want 52)", o.name, StoredOn(r, 0, 0x23, 1));
         CHECK(ShownDb() == -52.0f, "%s: control at %.1f after recovery (want -52)", o.name, ShownDb());
         r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
-        // A value coreaudiod puts back right after the recovery is not sent.
+        // A louder value coreaudiod puts back right after the recovery is not
+        // sent; a mute that is on is.
         RestoreByCoreAudio(r, -6.0f, true);
-        CHECK(StoredOn(r, 0, 0x23, 1) == 52 && StoredOn(r, 0, 0x24, 1) == 0 && ShownDb() == -52.0f &&
-              !gHostAudio.mute->GetControlValue(),
-              "%s: a restored control value reached HP2 after recovery (%u, control %.1f)", o.name,
+        CHECK(StoredOn(r, 0, 0x23, 1) == 52 && ShownDb() == -52.0f,
+              "%s: a restored louder value reached HP2 after recovery (%u, control %.1f)", o.name,
               StoredOn(r, 0, 0x23, 1), ShownDb());
+        CHECK(StoredOn(r, 0, 0x24, 1) == 1 && gHostAudio.mute->GetControlValue(), "%s: mute on was dropped in the settle window", o.name);
+        PressMute(r, false);
         PressVolume(r, -44.0f);
         CHECK(StoredOn(r, 0, 0x23, 1) == 44, "%s: the output was not kept over a re-init (HP2 %u)", o.name, StoredOn(r, 0, 0x23, 1));
         // Line mode with Speakers chosen: nothing is written, and the controls
@@ -1561,16 +1568,45 @@ static void RunMonitorOutputChecks()
         Run r;
         RunScenario(o, r);
         const size_t writes = r.card.port[0].vendorWrites.size();
-        RestoreByCoreAudio(r, -3.0f, true);
+        // Louder than the unit (12 in the fake), and an unmute of a muted
+        // output, are put back.
+        RestoreByCoreAudio(r, -3.0f, false);
         CHECK(r.card.port[0].vendorWrites.size() == writes, "%s: a restored value was written to the unit after Start (%zu writes)",
               o.name, r.card.port[0].vendorWrites.size() - writes);
         CHECK(StoredOn(r, 0, 0x26) == 12 && StoredOn(r, 0, 0x27) == 0 && StoredOn(r, 0, 0x23, 0) == 18 && StoredOn(r, 0, 0x23, 1) == 30,
               "%s: a restored value changed a level", o.name);
         CHECK(ShownDb() == -12.0f && !gHostAudio.mute->GetControlValue(), "%s: the controls were not put back to the speakers' (%.1f)", o.name, ShownDb());
+        // Towards quiet is honoured at once, inside the window: a lower level
+        // and mute on.
+        RestoreByCoreAudio(r, -40.0f, true);
+        CHECK(StoredOn(r, 0, 0x26) == 40 && StoredOn(r, 0, 0x27) == 1, "%s: turning down or muting inside the window was dropped (%u/%u)",
+              o.name, StoredOn(r, 0, 0x26), StoredOn(r, 0, 0x27));
+        // Unmute and louder inside the window: put back.
+        RestoreByCoreAudio(r, -20.0f, false);
+        CHECK(StoredOn(r, 0, 0x26) == 40 && StoredOn(r, 0, 0x27) == 1 && ShownDb() == -40.0f && gHostAudio.mute->GetControlValue(),
+              "%s: unmute or louder inside the window was sent (%u/%u)", o.name, StoredOn(r, 0, 0x26), StoredOn(r, 0, 0x27));
         PressVolume(r, -31.0f); PressMute(r, true);
         CHECK(StoredOn(r, 0, 0x26) == 31 && StoredOn(r, 0, 0x27) == 1, "%s: a key pressed after the window was not sent (%u/%u)",
               o.name, StoredOn(r, 0, 0x26), StoredOn(r, 0, 0x27));
         PressMute(r, false);
+        // No interrupt runs while the window is open (the hardware suspended,
+        // or the PCIe card before IO starts): the value that arrived meanwhile
+        // is still not sent by the first interrupt after it, however late.
+        ResetCardAndRecover(r);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        {
+            const size_t before = r.card.port[0].vendorWrites.size();
+            gHostAudio.volume->SetDecibelValue(-3.0f);
+            gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;   // the window lapses unseen, for good
+            Irq(r, 1); HostPump();
+            CHECK(r.card.port[0].vendorWrites.size() == before && StoredOn(r, 0, 0x26) == 31 && ShownDb() == -31.0f,
+                  "%s: the first look at the controls after a lapsed window sent a restored value (%u, control %.1f)",
+                  o.name, StoredOn(r, 0, 0x26), ShownDb());
+            gHostAudio.volume->SetDecibelValue(-5.0f);
+            Irq(r, 1); HostPump();
+            CHECK(StoredOn(r, 0, 0x26) == 5, "%s: a change after that was not sent (%u)", o.name, StoredOn(r, 0, 0x26));
+            PressVolume(r, -12.0f);
+        }
         // With a headphone chosen, after a wake with an FPGA reset.
         CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: HP1 refused", o.name);
         ResetCardAndRecover(r);
@@ -1754,6 +1790,33 @@ static void RunMonitorOutputChecks()
         ResetCardAndRecover(r);
         CheckOutputsDirect("two units, after a card re-init", r, 32, true);
         CHECK(!Sent(r, 0, 0xB3) && !Sent(r, 1, 0xB3), "%s: a re-init mutes a unit's mixer inputs", o.name);
+        Finish(o, r);
+    }
+    // 5b. Unit B owned the controls and its set-up fails when 64 channels
+    //     start again: the controls are unit A's, at unit A's level, and the
+    //     next key steps unit A from there. (The hand-back happens in
+    //     LeaveTwoUnit; ConfigureUnitB's own, for a failed set-up, cannot be
+    //     reached on its own from here.)
+    {
+        Options o; o.name = "audio output: unit B lost at set-up"; o.port2 = Port::Symphony;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        Select(r, 1, "select 64 before losing unit B's set-up", false);
+        uint8_t quiet = 55;
+        CHECK(r.drv->SendVendorCommand(0x26, 0, &quiet, 1, 1) == kIOReturnSuccess, "%s: seed B", o.name);
+        CHECK(r.drv->SetMonitorDevice(1) == kIOReturnSuccess, "%s: select B", o.name);
+        CHECK(ShownDb() == -55.0f, "%s: B shows %.1f", o.name, ShownDb());
+        Select(r, 0, "back to 32", false);
+        CHECK(r.drv->SetMonitorDevice(1) == kIOReturnNotReady, "%s: B selectable at 32", o.name);
+        r.card.port[1].dropVendorReads = 1;
+        Select(r, 1, "select 64 with unit B's set-up failing", false);
+        SymphonyUnitBStateOutput st = {};
+        r.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 0, "%s: unit B configured although a read failed", o.name);
+        CHECK(ShownDb() == -12.0f, "%s: the controls show %.1f (want unit A's -12)", o.name, ShownDb());
+        PressVolume(r, -14.0f);
+        CHECK(StoredOn(r, 0, 0x26) == 14 && StoredOn(r, 1, 0x26) == 55, "%s: the key did not move unit A (%u)", o.name, StoredOn(r, 0, 0x26));
         Finish(o, r);
     }
     // 6. A Symphony I/O with converters on port 2, and converters on both

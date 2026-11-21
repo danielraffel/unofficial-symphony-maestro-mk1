@@ -317,21 +317,25 @@ static bool     gSpeakerMuted       = false;
 static bool     gHasSpeakerLevel    = false;
 /* After "setMonitorOutput" the Mac's volume control still holds the level of
    the output chosen before, until Maestro has set it to the new output's.
-   Until then (or until the wait runs out) a volume or mute set that is not
-   the new output's own value is not kept and not sent: a key pressed in that
-   moment would otherwise carry the old output's level to the new one. */
+   Until then (or until the wait runs out) a volume set louder than the new
+   output's own level, or an unmute, is not kept and not sent: a key pressed
+   in that moment would otherwise carry the old output's level to the new one. */
 #define SLIDER_WAIT_NS (3ull * NSEC_PER_SEC)
 static uint64_t gVolumeWaitUntilNs = 0;
 static uint64_t gMuteWaitUntilNs   = 0;
 
-/* Whether a volume (or mute) set is taken. `waitUntil` is 0 when nothing is
-   waited for; a set equal to the chosen output's own value, or the wait
-   running out, ends the wait. */
+/* Whether a volume (or mute) set is taken. `value` and `expected` are an
+   attenuation (more is quieter) or a mute (1 is muted). `waitUntil` is 0 when
+   nothing is waited for; a set equal to the chosen output's own value, or the
+   wait running out, ends the wait. While waiting, a change towards quiet
+   (more attenuation, mute on) is still taken: it cannot make the output
+   louder than it was, and a mute the user sees as on is never dropped. Only
+   louder and unmute are refused. */
 static bool slider_set_admitted(uint64_t nowNs, uint64_t *waitUntil, unsigned value, unsigned expected)
 {
     if (*waitUntil == 0) return true;
     if (nowNs >= *waitUntil || value == expected) { *waitUntil = 0; return true; }
-    return false;
+    return value > expected;
 }
 
 /* The cached level belongs to the speakers while they are the chosen output. */

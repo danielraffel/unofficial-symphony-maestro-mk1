@@ -327,6 +327,14 @@ struct SymphonyThunderbridge_IVars {
     // HAL type, polarity, high-pass and phantom ON are refused until this
     // time (SYMPHONY_MICPRE_NOW_NS), see kHALMicPreSettleNs.
     uint64_t  halMicPreSettleUntil;
+    // Counts the times the settle window was armed, and the count the last
+    // completed pass over the volume and mute controls began under. While
+    // they differ no pass has looked at the controls since the window was
+    // armed: the next one takes their values for coreaudiod's restore however
+    // late it runs (interrupts stop while the hardware is suspended, and on
+    // the PCIe card until IO starts, so the window can lapse unseen). Atomic.
+    uint32_t  monitorSettleArms;
+    uint32_t  monitorPolledArm;
     MicPreLane micPreLane[3][2][8];
     // Host-originated edits per physical channel (A0..7, B0..7), for the app:
     // a stamp that moves on each HAL edit and the fields it set (kMicPreEdit*).
@@ -4449,7 +4457,11 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     }
     if (!ivars->unitBConfigured) {
         ivars->loopSyncValid = false;
-        __atomic_store_n(&ivars->monitorDeviceB, false, __ATOMIC_RELEASE);
+        // The controls go back to unit A at unit A's level: left at unit B's,
+        // the next key would step unit A from it. (Today every caller has
+        // already left two-unit mode, LeaveTwoUnit, which does the same; this
+        // keeps it true if that ever changes.)
+        if (__atomic_exchange_n(&ivars->monitorDeviceB, false, __ATOMIC_ACQ_REL)) PublishSelectedMonitor(ivars);
     }
     if (!ivars->unitBConfigured) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
     PublishAllMicPreControls(ivars);   // host inputs routed to unit B resolve again (or no longer)
@@ -8372,6 +8384,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                     } else {
                         const bool b = ivars->monitorDeviceB;
                         const bool converter = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
+                        const uint32_t arms = __atomic_load_n(&ivars->monitorSettleArms, __ATOMIC_ACQUIRE);
                         // The app's Audio Output choice: 0 speakers, 1/2 a headphone
                         // (the headphone's index is kind - 1).
                         const unsigned kind = SelectedMonitorKind(ivars, b);
@@ -8398,14 +8411,22 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                                 PublishSelectedMonitor(ivars);
                             }
                         }
-                        const bool adopting = MicPreSettling(ivars) ||
-                                              (!converter && !b && !ivars->monitorLevelsKnown);
+                        // The first pass after the window was armed counts as inside
+                        // it, however late it runs (monitorSettleArms).
+                        const bool settling = MicPreSettling(ivars) ||
+                            arms != __atomic_load_n(&ivars->monitorPolledArm, __ATOMIC_ACQUIRE);
+                        // No level of the unit's is known: nothing at all is sent.
+                        const bool unknown = !converter && !b && !ivars->monitorLevelsKnown;
+                        // While settling, only a change towards quiet is honoured: a
+                        // level below the output's, and mute on. Those cannot make
+                        // anything louder than the unit was, and a mute the user sees
+                        // as on is never dropped. Louder and unmute are put back.
                         // Target and value are consumed together here. No delayed block
                         // re-resolves a physical destination after selection changes.
                         if (ivars->outputVolumeControl) {
                             const float db = ivars->outputVolumeControl->GetDecibelValue();
                             const float diff = db - ivars->lastVolumeDb;
-                            if ((diff > 0.5f || diff < -0.5f) && (inert || adopting)) {
+                            if ((diff > 0.5f || diff < -0.5f) && (inert || unknown || (settling && diff > 0.0f))) {
                                 ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
                             } else if ((diff > 0.5f || diff < -0.5f) && XLinkTxAdmissible(ivars)) {
                                 ivars->lastVolumeDb = db;
@@ -8429,7 +8450,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                         const bool muteInert = converter && ivars->converterKeysOff;
                         if (ivars->outputMuteControl) {
                             const bool muted = ivars->outputMuteControl->GetControlValue();
-                            if (muted != ivars->lastMuteState && (muteInert || adopting)) {
+                            if (muted != ivars->lastMuteState && (muteInert || unknown || (settling && !muted))) {
                                 ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
                             } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
                                 ivars->lastMuteState = muted;
@@ -8448,6 +8469,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                                 }
                             }
                         }
+                        __atomic_store_n(&ivars->monitorPolledArm, arms, __ATOMIC_RELEASE);
                     }
                 }
                 __atomic_store_n(&ivars->monitorPollScheduled, false, __ATOMIC_RELEASE);
@@ -11049,6 +11071,7 @@ static void ArmMicPreSettle(SymphonyThunderbridge_IVars *iv)
     if (!iv) return;
     __atomic_store_n(&iv->halMicPreSettleUntil, SYMPHONY_MICPRE_NOW_NS() + kHALMicPreSettleNs,
                      __ATOMIC_RELEASE);
+    __atomic_fetch_add(&iv->monitorSettleArms, 1, __ATOMIC_RELEASE);
 }
 
 static bool MicPreSettling(SymphonyThunderbridge_IVars *iv)
