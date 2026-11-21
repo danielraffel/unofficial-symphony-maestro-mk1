@@ -175,6 +175,8 @@ kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
     // HandleChangeSampleRate stages the target tuple before SetSampleRate's
     // host notification, and StartDevice applies it again for the hardware
     // restart.
+    // Only acts on the driver's own "link recovered" change (see there).
+    SymphonySyncHardwareRate(this, 0.0, in_change_action, "link recovered");
     const double rate = GetSampleRate();
     ADLOG("PerformDeviceConfigurationChange end action=%llu rate=%.0f "
           "readback=(%u,%u,%u,%u)",
@@ -187,6 +189,9 @@ kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
 // Defined in SymphonyThunderbridge.cpp: the channel names follow the nominal
 // rate, which can change with no IO start (see there).
 void SymphonyNoteNominalSampleRate(IOUserAudioDevice *device, double rate);
+// Defined in SymphonyThunderbridge.cpp: the hardware takes the nominal rate
+// now, as the original's performFormatChange did (see there).
+void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t changeAction, const char *why);
 
 kern_return_t SymphonyAudioDevice::HandleChangeSampleRate(double in_sample_rate)
 {
@@ -230,5 +235,6 @@ kern_return_t SymphonyAudioDevice::HandleChangeSampleRate(double in_sample_rate)
     const kern_return_t postResult = ApplyTimingTuple(this, in_sample_rate, &previousTuple);
     ADLOG("HandleChangeSampleRate %.0f completed result=0x%x post=0x%x",
           in_sample_rate, result, postResult);
+    if (postResult == kIOReturnSuccess) SymphonySyncHardwareRate(this, in_sample_rate, 0, "rate change");
     return postResult;
 }

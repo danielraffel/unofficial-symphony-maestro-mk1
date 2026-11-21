@@ -471,7 +471,9 @@ assert "namingSampleRate, SymphonyNamingRateHz(44100.0)" in start
 stop = src[src.index("kern_return_t IMPL(SymphonyThunderbridge, Stop)"):]
 stop = stop[:stop.index("// ── 9.")]
 assert "UnregisterNominalRateObserver(this)" in stop
-sd = src[src.index("kern_return_t SymphonyThunderbridge::StartDevice("):src.index("kern_return_t SymphonyThunderbridge::StopDevice(")]
+# The rate transaction StartDevice runs is ApplyRequestedSampleRate, defined just above it.
+sd = src[src.index("static kern_return_t ApplyRequestedSampleRate("):src.index("kern_return_t SymphonyThunderbridge::StopDevice(")]
+assert sd.index("static kern_return_t ApplyRequestedSampleRate(") < sd.index("kern_return_t SymphonyThunderbridge::StartDevice(")
 assert sd.index("ivars->lastSampleRate = requestedRate;") < sd.index("namingSampleRate, SymphonyNamingRateHz(requestedRate)")
 # ... and whatever the nominal rate is when IO starts, the names follow it.
 sync = sd.index("SymphonyNamingRateHz(ivars->audioDevice->GetSampleRate())")
