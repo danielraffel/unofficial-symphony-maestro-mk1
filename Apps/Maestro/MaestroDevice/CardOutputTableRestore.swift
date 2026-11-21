@@ -13,10 +13,25 @@ import Synchronization
 // ch0/1 <- Mixer0/1 out" and "inputs start muted"). The default here is every
 // output direct, as the original
 // (og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp,
-// ResetRouting, output branch). So until the app's whole table is on the card,
-// no strip may be unmuted: the driver's muted inputs are the holding state.
+// ResetRouting, output branch).
+//
+// The rule is enforced in one place, `CardMixerLedger`, which every card output
+// route and every card mixer write of a `ThunderboltDeviceConnection` passes:
+//
+// * a route whose source is a mixer is sent only when that mixer is marked
+//   written for the serving driver state; otherwise it is deferred and owed;
+// * a mixer write is sent when the mixer feeds no output (it cannot be heard)
+//   or when the mixer is marked written (the write is an edit that keeps it in
+//   step); otherwise it is deferred and owed;
+// * a mixer is marked written only by a complete write (Master, Software
+//   Return, every strip) that the connection itself saw land in full;
+// * the marks are dropped whenever the driver's state changes (a new driver
+//   instance, a link recovery, a card re-init) and at connect.
+//
+// The driver's own "holds app state" flag is never used as evidence: one
+// write sets it, and it says nothing about whose state it was.
 
-/// Splits an output table into the three phases it is written in.
+/// Helpers for reading card output routes.
 public enum CardOutputTableOrder {
     /// The mixer (0 or 1) a source byte belongs to, nil for anything else.
     public static func mixer(ofSource source: UInt8) -> Int? {
@@ -26,196 +41,250 @@ public enum CardOutputTableOrder {
         return nil
     }
 
-    public struct Write: Equatable, Sendable {
-        public let destination: UInt8
-        public let source: UInt8
-        public init(destination: UInt8, source: UInt8) {
-            self.destination = destination; self.source = source
-        }
-    }
-
-    public struct Phases: Equatable, Sendable {
-        /// Every destination of the table. One the table feeds from a mixer
-        /// whose strips are still to be written is silenced here, so after
-        /// this phase no output carries a mixer through a route this run did
-        /// not write.
-        public var first: [Write] = []
-        /// Mixers written between the two route phases, ascending.
-        public var mixers: [Int] = []
-        /// The routes fed by those mixers, written once their strips are.
-        public var last: [Write] = []
-    }
-
-    /// - Parameter readyMixers: mixers whose strips on the card already are
-    ///   the saved state (the driver reports it holds the app's state for
-    ///   them, and nothing since has been held back). Their routes go in the
-    ///   first phase; nothing is silenced for them.
-    public static func phases(table: [UInt8: UInt8], readyMixers: Set<Int>) -> Phases {
-        var phases = Phases()
-        var pending: Set<Int> = []
-        for destination in table.keys.sorted() {
-            guard let source = table[destination] else { continue }
-            if let mixer = mixer(ofSource: source), !readyMixers.contains(mixer) {
-                pending.insert(mixer)
-                phases.first.append(Write(destination: destination, source: SymphonyIORoutingAddress.none))
-                phases.last.append(Write(destination: destination, source: source))
-            } else {
-                phases.first.append(Write(destination: destination, source: source))
-            }
-        }
-        phases.mixers = pending.sorted()
-        return phases
-    }
-
     /// Whether a card route plays a card mixer's output.
-    public static func isMixerFed(_ route: ThunderboltCardRouting.Route) -> Bool {
-        route.enabled && route.slot >= ThunderboltCardRouting.mixerOutBase
-            && route.slot < ThunderboltCardRouting.mixerOutBase &+ 4
+    public static func isMixerFed(_ route: ThunderboltCardRouting.Route) -> Bool { mixer(of: route) != nil }
+
+    /// The card mixer (0 or 1) a card route plays, nil for a direct or
+    /// disabled route.
+    public static func mixer(of route: ThunderboltCardRouting.Route) -> Int? {
+        guard route.enabled, route.slot >= ThunderboltCardRouting.mixerOutBase,
+              route.slot < ThunderboltCardRouting.mixerOutBase &+ 4 else { return nil }
+        return Int(route.slot - ThunderboltCardRouting.mixerOutBase) / 2
     }
 
-    /// The two-unit replay's card writes in the same order: every output
-    /// route with the mixer-fed ones silenced, then everything else (card
-    /// inputs and both mixers, as given), then the mixer-fed routes.
-    public static func ordered(_ writes: [ThunderboltPreset.Write]) -> [ThunderboltPreset.Write] {
-        var first: [ThunderboltPreset.Write] = [], middle: [ThunderboltPreset.Write] = []
-        var last: [ThunderboltPreset.Write] = []
+    /// The same channel, playing nothing.
+    public static func disabled(_ route: ThunderboltCardRouting.Route) -> ThunderboltCardRouting.Route {
+        ThunderboltCardRouting.Route(channel: route.channel,
+                                     slot: ThunderboltCardRouting.pciOutBase &+ route.channel, enabled: false)
+    }
+
+    /// Card writes in the order that keeps the rule: every output route first
+    /// (one fed by a mixer that is not marked written is sent disabled), then
+    /// everything that is neither a route nor a mixer write, then the mixer
+    /// writes, then the routes held back. A mixer in `written` keeps its
+    /// routes in the first group, so nothing is silenced for it.
+    public static func ordered(_ writes: [ThunderboltPreset.Write],
+                               written: Set<Int> = []) -> [ThunderboltPreset.Write] {
+        var first: [ThunderboltPreset.Write] = [], rest: [ThunderboltPreset.Write] = []
+        var mixers: [ThunderboltPreset.Write] = [], last: [ThunderboltPreset.Write] = []
         for write in writes {
-            guard case .output(let route) = write else { middle.append(write); continue }
-            if isMixerFed(route) {
-                first.append(.output(ThunderboltCardRouting.Route(
-                    channel: route.channel, slot: ThunderboltCardRouting.pciOutBase &+ route.channel,
-                    enabled: false)))
-                last.append(write)
-            } else {
-                first.append(write)
+            switch write {
+            case .output(let route):
+                if let mixer = mixer(of: route), !written.contains(mixer) {
+                    first.append(.output(disabled(route)))
+                    last.append(write)
+                } else {
+                    first.append(write)
+                }
+            case .property(let address, _) where ThunderboltDeviceConnection.mixerEditSelectors.contains(address.selector):
+                mixers.append(write)
+            default:
+                rest.append(write)
             }
         }
-        return first + middle + last
+        return first + rest + mixers + last
     }
 }
 
-/// Whether the app's complete output table is on the card, for one driver
-/// state. A restarted driver (new instance nonce), an in-place link recovery
-/// or a card re-init is a different state: the table counts as unwritten until
-/// the ordered restore has run again.
-public struct CardOutputTableLedger: Sendable, Equatable {
-    public struct Instance: Sendable, Equatable {
-        /// The driver's instance nonce (`DriverMixerInstance`); nil on a
-        /// driver that does not report one.
-        public let nonce: UInt64?
-        public let recoveryCount: UInt32
-        public let cardReinitCount: UInt32
-        /// False when the driver gave no link report at all.
-        public let reported: Bool
+/// The driver state a card mixer's "written" mark belongs to: the driver's
+/// instance nonce with its recovery and card re-init counts. Any change means
+/// the driver may have re-programmed the card.
+public struct CardDriverState: Sendable, Equatable {
+    /// The driver's instance nonce (`DriverMixerInstance`); nil on a driver
+    /// that does not report one.
+    public let nonce: UInt64?
+    public let recoveryCount: UInt32
+    public let cardReinitCount: UInt32
 
-        /// A driver too old to report its link state is one fixed instance:
-        /// nothing about it can be seen to change, and a restart of it comes
-        /// with a new connection, which starts held and unwritten.
-        public init(_ link: LinkState?) {
-            self.init(nonce: link?.mixerInstance?.nonce, recoveryCount: link?.recoveryCount ?? 0,
-                      cardReinitCount: link?.cardReinitCount ?? 0, reported: link != nil)
-        }
-
-        public init(nonce: UInt64?, recoveryCount: UInt32, cardReinitCount: UInt32, reported: Bool) {
-            self.nonce = nonce; self.recoveryCount = recoveryCount
-            self.cardReinitCount = cardReinitCount; self.reported = reported
-        }
+    public init(_ link: LinkState) {
+        self.init(nonce: link.mixerInstance?.nonce, recoveryCount: link.recoveryCount,
+                  cardReinitCount: link.cardReinitCount)
     }
 
-    public private(set) var written: Instance?
+    public init(nonce: UInt64?, recoveryCount: UInt32, cardReinitCount: UInt32) {
+        self.nonce = nonce; self.recoveryCount = recoveryCount; self.cardReinitCount = cardReinitCount
+    }
+}
+
+/// What the chokepoint did with a card route or a whole-mixer write.
+public enum CardWriteResult: Equatable, Sendable {
+    /// Sent to the card.
+    case written
+    /// Not sent: it would have put a mixer on an output (or changed a mixer
+    /// that may be on one) before that mixer was written. It is owed, and
+    /// the restore sends it from the saved state.
+    case deferred
+}
+
+/// Thrown for a single mixer control write that was deferred (the
+/// `DeviceConnection` write has no result to return). The ledger has already
+/// recorded it as owed, so a caller that ignores the error loses nothing.
+public struct CardMixerWriteDeferred: Error, Sendable, Equatable, CustomStringConvertible {
+    public let mixer: Int
+    public var description: String {
+        "card mixer \(mixer + 1) write deferred until that mixer is written for this driver state"
+    }
+}
+
+/// The per-mixer "written in this driver state" ledger of one ThunderBridge
+/// connection, and the admission rule for card routes and mixer writes (see
+/// the top of this file). A new connection starts with nothing written and
+/// nothing known about the card's routes.
+public final class CardMixerLedger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: CardDriverState?
+    private var epochValue: UInt64 = 0
+    private var written: Set<Int> = []
+    /// Card output channels written in this driver state: the mixer each
+    /// plays, nil for direct or disabled.
+    private var channels: [UInt8: Int?] = [:]
+    /// The channels of the app's output table. Until every one of them has
+    /// been written in this driver state, any of them may still be on a mixer
+    /// (the driver's own default, or an earlier session's route).
+    private var table: Set<UInt8>?
+    private var owedCount: UInt64 = 0
+    private var coveredCount: UInt64 = 0
+    private var restoredEpoch: UInt64?
+    private var bypassed = false
+    private var appBypass = false
+    private var driverBypass = false
 
     public init() {}
 
-    public func isWritten(on link: LinkState?) -> Bool { written == Instance(link) }
+    /// Counts driver states: it changes each time the marks are dropped.
+    public var epoch: UInt64 { lock.withLock { epochValue } }
+    public var writtenMixers: Set<Int> { lock.withLock { written } }
+    public func isWritten(_ mixer: Int) -> Bool { lock.withLock { written.contains(mixer) } }
 
-    public mutating func recordWritten(_ instance: Instance) { written = instance }
-    public mutating func invalidate() { written = nil }
-}
-
-/// Holds card mixer writes back while the output table is not on the card.
-/// A new connection starts held. A held write is refused (the Mixer page has
-/// already saved and shown it) and counted, so the restore knows to replay the
-/// mixers once the table is written.
-public final class CardMixerHold: Sendable {
-    private let held = Atomic<Bool>(true)
-    private let refused = Atomic<UInt64>(0)
-
-    public init() {}
-
-    public var isHeld: Bool { held.load(ordering: .sequentiallyConsistent) }
-    public func hold() { held.store(true, ordering: .sequentiallyConsistent) }
-    public func release() { held.store(false, ordering: .sequentiallyConsistent) }
-
-    /// How many writes have been refused so far.
-    public var refusedCount: UInt64 { refused.load(ordering: .sequentiallyConsistent) }
-
-    /// Throws while held. Called before a card mixer write from the app's
-    /// property path.
-    public func admit(_ address: PropertyAddress) throws {
-        guard isHeld else { return }
-        refused.wrappingAdd(1, ordering: .sequentiallyConsistent)
-        throw DeviceConnectionError.transportError(
-            "card mixer write held until the output table is written (\(address.selector))")
+    /// The driver state now serving. A change drops every mark. A read that
+    /// failed (nil) says nothing either way and is ignored.
+    @discardableResult
+    public func observe(_ link: LinkState?) -> Bool {
+        guard let link else { return false }
+        let now = CardDriverState(link)
+        return lock.withLock {
+            guard let state else { self.state = now; return false }
+            guard state != now else { return false }
+            self.state = now
+            clearLocked()
+            return true
+        }
     }
-}
 
-/// The ordered restore, with every outside effect injected so the order and
-/// the failure handling can be tested.
-public enum CardOutputTableRestore {
-    public enum Outcome: Equatable, Sendable {
-        /// Every route and every mixer was written.
-        case written(routes: Int, mixers: [Int])
-        /// A route write failed; nothing after it was sent.
-        case routeFailed(destination: UInt8, source: UInt8, error: String)
-        /// A mixer could not be written; its routes were not sent.
-        case mixerFailed(mixers: [Int], error: String)
-        /// The connection, layout or driver state changed under the run.
-        case superseded
+    /// Drop every mark: connect, a reopened driver client, a different unit
+    /// or saved-state owner.
+    public func clear() { lock.withLock { clearLocked() } }
 
-        public var isWritten: Bool {
-            if case .written = self { return true }
+    /// Drop these mixers' marks only (a recall that failed partway).
+    public func clear(mixers: Set<Int>) {
+        lock.withLock {
+            written.subtract(mixers)
+            restoredEpoch = nil
+            owedCount &+= 1
+        }
+    }
+
+    private func clearLocked() {
+        epochValue &+= 1
+        written = []
+        channels = [:]
+        restoredEpoch = nil
+    }
+
+    /// Converters on the cable: their routing is not the Symphony I/O table,
+    /// and the rule does not apply.
+    public var isBypassed: Bool {
+        get { lock.withLock { bypassed } }
+        set { lock.withLock { appBypass = newValue; bypassed = appBypass || driverBypass } }
+    }
+
+    /// The driver reports converters on port 1 (set by the connection).
+    public func setConvertersOnPort1(_ present: Bool) {
+        lock.withLock { driverBypass = present; bypassed = appBypass || driverBypass }
+    }
+
+    /// The card channels of the app's whole output table.
+    public func declareTable(channels: Set<UInt8>) { lock.withLock { table = channels } }
+
+    private func mayFeedLocked(_ mixer: Int) -> Bool {
+        guard let table, table.allSatisfy({ channels[$0] != nil }) else { return true }
+        return channels.values.contains { $0 == mixer }
+    }
+
+    /// Whether a mixer may be playing on an output, as far as this driver
+    /// state's writes show.
+    public func mayFeed(_ mixer: Int) -> Bool { lock.withLock { mayFeedLocked(mixer) } }
+
+    /// Card channels known to play this mixer.
+    public func channelsFed(by mixers: Set<Int>) -> [UInt8] {
+        lock.withLock { channels.compactMap { channel, mixer in mixer.flatMap { mixers.contains($0) ? channel : nil } }.sorted() }
+    }
+
+    /// A route may be sent unless it plays a mixer that is not marked
+    /// written. A refusal is recorded as owed.
+    public func admitRoute(mixer: Int?) -> Bool {
+        lock.withLock {
+            guard !bypassed, let mixer, !written.contains(mixer) else { return true }
+            owedCount &+= 1
             return false
         }
     }
 
-    public struct Environment {
-        public var writeRoute: @MainActor (UInt8, UInt8) async throws -> Void
-        /// Writes these mixers in full (every strip, Software Return, Master).
-        public var writeMixers: @MainActor ([Int]) async throws -> Void
-        public var isCurrent: @MainActor () -> Bool
+    public func recordRoute(channel: UInt8, mixer: Int?) {
+        lock.withLock { channels[channel] = .some(mixer) }
+    }
 
-        public init(writeRoute: @escaping @MainActor (UInt8, UInt8) async throws -> Void,
-                    writeMixers: @escaping @MainActor ([Int]) async throws -> Void,
-                    isCurrent: @escaping @MainActor () -> Bool) {
-            self.writeRoute = writeRoute; self.writeMixers = writeMixers; self.isCurrent = isCurrent
+    /// A mixer write may be sent when the mixer cannot be heard or is marked
+    /// written. A refusal is recorded as owed.
+    public func admitMixerWrite(_ mixer: Int) -> Bool {
+        lock.withLock {
+            if bypassed || written.contains(mixer) || !mayFeedLocked(mixer) { return true }
+            owedCount &+= 1
+            return false
         }
     }
 
-    @MainActor
-    public static func run(_ phases: CardOutputTableOrder.Phases, _ env: Environment) async -> Outcome {
-        func send(_ writes: [CardOutputTableOrder.Write]) async -> Outcome? {
-            for write in writes {
-                guard env.isCurrent() else { return .superseded }
-                do {
-                    try await env.writeRoute(write.destination, write.source)
-                } catch {
-                    return .routeFailed(destination: write.destination, source: write.source,
-                                        error: "\(error)")
-                }
-            }
-            return nil
+    /// Something saved did not reach the card (a failed edit of a written
+    /// mixer, a recall that left a control out): the restore runs again.
+    public func noteOwed() { lock.withLock { owedCount &+= 1 } }
+
+    /// Mark a mixer written: only when `sent` covers every address a complete
+    /// write of it needs, in the driver state the write started in, and only
+    /// while it feeds nothing (or is already marked).
+    @discardableResult
+    public func markWritten(_ mixer: Int, sent: Set<PropertyAddress>, required: Set<PropertyAddress>,
+                            epoch: UInt64) -> Bool {
+        lock.withLock {
+            guard !bypassed, epoch == epochValue, required.isSubset(of: sent) else { return false }
+            if written.contains(mixer) { return true }
+            guard !mayFeedLocked(mixer) else { return false }
+            written.insert(mixer)
+            return true
         }
-        if let failure = await send(phases.first) { return failure }
-        if !phases.mixers.isEmpty {
-            guard env.isCurrent() else { return .superseded }
-            do {
-                try await env.writeMixers(phases.mixers)
-            } catch {
-                return .mixerFailed(mixers: phases.mixers, error: "\(error)")
-            }
-        }
-        if let failure = await send(phases.last) { return failure }
-        guard env.isCurrent() else { return .superseded }
-        return .written(routes: phases.first.count + phases.last.count, mixers: phases.mixers)
     }
+
+    /// How many deferrals and failures have been recorded.
+    public var owed: UInt64 { lock.withLock { owedCount } }
+
+    /// The restore ran to the end in `epoch`, from state saved after
+    /// `covering` deferrals had been recorded. False (and nothing recorded)
+    /// when the driver state has moved on or a mixer is not marked.
+    @discardableResult
+    public func completeRestore(epoch: UInt64, covering: UInt64) -> Bool {
+        lock.withLock {
+            guard epoch == epochValue, written.isSuperset(of: [0, 1]) else { return false }
+            restoredEpoch = epoch
+            coveredCount = max(coveredCount, covering)
+            return true
+        }
+    }
+
+    /// Whether the restore still has work: nothing completed in this driver
+    /// state, or something deferred or failed since.
+    public var needsRestore: Bool {
+        lock.withLock { !bypassed && (restoredEpoch != epochValue || owedCount > coveredCount) }
+    }
+
+    /// Whether a restore completed in this driver state (owed work aside).
+    public var isRestored: Bool { lock.withLock { restoredEpoch == epochValue } }
 }

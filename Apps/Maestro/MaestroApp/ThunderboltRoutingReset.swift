@@ -24,7 +24,17 @@ extension AppState {
         let aInputCache = peripheralRoutingCache(direction: "input")
         let aOutputCache = peripheralRoutingCache(direction: "output")
         let bInputCache = unitBInputRoutingCache, bOutputCache = unitBOutputRoutingCache
-        let planned = try await Task.detached {
+        let planned: ([ThunderboltPreset.Write], [ThunderboltPreset.Write])
+        do {
+            planned = try await resetWrites()
+        } catch {
+            // Part of the reset may be on the card while the grids show what
+            // is saved: put the saved routing and mixers back.
+            await recoverFromFailedRecall(a)
+            throw error
+        }
+        @Sendable func resetWrites() async throws -> ([ThunderboltPreset.Write], [ThunderboltPreset.Write]) {
+          try await Task.detached {
             try a.withPresetLock {
                 try b.withPresetLock {
                     let aWrites = try a.routingResetWrites(layout: aLayout, input: input)
@@ -39,7 +49,8 @@ extension AppState {
                     return (aWrites, bWrites)
                 }
             }
-        }.value
+          }.value
+        }
         guard device === a, unitBDevice === b else { throw DeviceConnectionError.notConnected }
         if input {
             func grid(_ writes: [ThunderboltPreset.Write], layout: CardLayout) -> [Int: Int] {

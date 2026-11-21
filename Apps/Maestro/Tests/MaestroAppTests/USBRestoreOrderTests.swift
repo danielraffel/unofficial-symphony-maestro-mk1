@@ -23,6 +23,11 @@ private final class RecordingUnit: XPCTransport, @unchecked Sendable {
     var shouldFail: (@Sendable (Write) -> Bool)?
     var onWrite: (@Sendable (Write) async -> Void)?
 
+    private var epoch: UInt64 = 0
+    var helperEpoch: UInt64 { lock.withLock { epoch } }
+    /// The helper restarted under the app.
+    func restartHelper() { lock.withLock { epoch += 1 } }
+
     var writes: [Write] { lock.withLock { recorded } }
     var helperEvents: [String] { lock.withLock { helper } }
     var isConnected: Bool { true }
@@ -161,7 +166,7 @@ struct USBRestoreOrderTests {
         #expect(unit.writes.filter { $0.request == 0xB3 && $0.index < 32 }.allSatisfy { $0.data == [0] })
     }
 
-    @Test("a mixer whose strips did not all reach the unit is not routed to an output")
+    @Test("a mixer whose strips did not all reach the unit is not routed: its output is disabled, the route owed and sent by the retry")
     func failedMixerIsNotRouted() async throws {
         let restore = restoringDefaults()
         defer { restore() }
@@ -172,13 +177,111 @@ struct USBRestoreOrderTests {
         #expect(unit.writes.filter { $0.isMixerFedRoute }.isEmpty)
         #expect(!state.usbMixerIsWritten(0))
         #expect(state.usbMixerIsWritten(1))
-        // Nor by a click in Output Routing while that is so.
-        var refused = false
-        do {
-            try await state.writeOutputRoute(destination: 32, source: SymphonyIORoutingAddress.mixer0Base, device: usb)
-        } catch { refused = true }
-        #expect(refused)
-        #expect(unit.writes.filter { $0.isMixerFedRoute }.isEmpty)
+        // Not skipped: an earlier session's mixer route may still be on the
+        // unit, so Line 1/2 is disabled until the mixer is written.
+        let none = SymphonyIORoutingAddress.none
+        #expect(unit.writes.suffix(2).map { $0.data } == [[32, none], [33, none]])
+        // The connection does not count as restored, and it is said.
+        #expect(state.usbRestoredGeneration != state.unitAGeneration)
+        #expect(state.usbRestoreOwed)
+        #expect(state.usbRestoreRetryAfter > Date())
+        #expect(state.restoreStatusNote == PortStatusMessage.restoringMixerAndRouting)
+        #expect(state.endpointStatusMessage == PortStatusMessage.restoringMixerAndRouting)
+        // A click in Output Routing while that is so is owed too, not an error.
+        let before = unit.writes.count
+        #expect(try await state.writeOutputRoute(destination: 34, source: SymphonyIORoutingAddress.mixer0Base,
+                                                 device: usb) == .deferred)
+        #expect(unit.writes[before...].map { $0.data } == [[34, none]])
+        // The meter loop retries with a pause: not inside it...
+        state.usbRestoreRetryAfter = Date().addingTimeInterval(30)
+        state.serviceUSBRestore(usb)
+        #expect(state.usbRestoreServiceTask == nil)
+        // ...and still failing, it stays owed, however often.
+        for _ in 0..<4 {
+            state.usbRestoreRetryAfter = .distantPast
+            state.serviceUSBRestore(usb)
+            await state.usbRestoreServiceTask?.value
+            #expect(state.usbRestoreOwed)
+            #expect(unit.writes.filter { $0.isMixerFedRoute }.isEmpty)
+        }
+        // The retry does not send the input routing or the speaker mode again.
+        #expect(unit.writes.filter { $0.isSpeakerMode }.count == 1)
+        // The unit takes the write: the mixer is written, then its route.
+        unit.shouldFail = nil
+        state.usbRestoreRetryAfter = .distantPast
+        state.serviceUSBRestore(usb)
+        await state.usbRestoreServiceTask?.value
+        #expect(state.usbMixerIsWritten(0))
+        #expect(unit.writes.suffix(2).map { $0.data } == [[32, 64], [33, 65]])
+        let lastMixer = try #require(unit.writes.lastIndex { $0.isMixer })
+        let firstRoute = try #require(unit.writes.firstIndex { $0.isMixerFedRoute })
+        #expect(lastMixer < firstRoute)
+        #expect(!state.usbRestoreOwed)
+        #expect(state.usbRestoredGeneration == state.unitAGeneration)
+        #expect(state.restoreStatusNote == nil)
+        // Nothing owed: the loop leaves the unit alone.
+        let quiet = unit.writes.count
+        state.serviceUSBRestore(usb)
+        await state.usbRestoreServiceTask?.value
+        #expect(unit.writes.count == quiet)
+        // With its mixer written a mixer route is immediate.
+        #expect(try await state.writeOutputRoute(destination: 36, source: SymphonyIORoutingAddress.mixer1Base,
+                                                 device: usb) == .written)
+    }
+
+    @Test("a helper that restarts under the app: no mixer route until the restore has run again on it")
+    func helperRestart() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-helper", identity: 0xF2A0_000B)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(state.usbRestoredGeneration == state.unitAGeneration)
+        let generation = state.unitAGeneration
+        // The helper that answers next programs every output direct.
+        unit.restartHelper()
+        let before = unit.writes.count
+        state.serviceUSBRestore(usb)
+        // The connection generation did not change, so only this notices.
+        #expect(state.unitAGeneration == generation)
+        #expect(!state.usbMixerIsWritten(0))
+        await state.usbRestoreServiceTask?.value
+        let again = Array(unit.writes[before...])
+        #expect(again.filter { $0.isMixerFedRoute }.map { $0.data } == [[32, 64], [33, 65]])
+        #expect(again.filter { $0.isMixer }.count == 16 * 8 + 10)
+        let lastMixer = try #require(again.lastIndex { $0.isMixer })
+        let firstRoute = try #require(again.firstIndex { $0.isMixerFedRoute })
+        #expect(lastMixer < firstRoute)
+        // A new helper gets the device settings too.
+        #expect(again.contains { $0.isSpeakerMode })
+        #expect(!state.usbRestoreOwed)
+    }
+
+    @Test("a second power cycle inside the recovery debounce still gets a restore")
+    func secondPowerCycleInsideDebounce() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-debounce", identity: 0xF2A0_000C)
+        let first = Date()
+        #expect(state.usbRecoveryRestoreDueOrOwed(now: first))
+        state.lastRecoveryTime = first
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(!state.usbRestoreOwed)
+        // Two seconds later the unit is power-cycled again.
+        state.usbMixersWritten = nil
+        #expect(!state.usbRecoveryRestoreDueOrOwed(now: first.addingTimeInterval(2)))
+        #expect(state.usbRestoreOwed)
+        // Not before the debounce has passed...
+        let before = unit.writes.count
+        state.serviceUSBRestore(usb)
+        #expect(state.usbRestoreServiceTask == nil)
+        // ...then in full, mixers before the route.
+        state.usbRestoreRetryAfter = .distantPast
+        state.serviceUSBRestore(usb)
+        await state.usbRestoreServiceTask?.value
+        let again = Array(unit.writes[before...])
+        #expect(again.filter { $0.isMixerFedRoute }.count == 2)
+        #expect(again.contains { $0.isSpeakerMode })
+        #expect(!state.usbRestoreOwed)
     }
 
     @Test("a power cycle un-writes the mixers: nothing routes one until the restore has run again")

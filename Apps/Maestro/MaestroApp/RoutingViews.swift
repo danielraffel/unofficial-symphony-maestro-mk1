@@ -1021,6 +1021,7 @@ struct OutputRoutingView: View {
         // unrouted outputs stay unrouted when the grid is read back.
         let complete = (0..<TwoUnitOutputRouting.rowCount).allSatisfy(unitBChosenRows.contains)
         appState.unitBOutputRoutingCache?.save(complete ? TwoUnitOutputRouting.completeTable(chosen) : chosen)
+        appState.outputRoutingSaved()
         let destLeft = unitBColumns[col].routingByte
         Task {
             do {
@@ -1116,6 +1117,9 @@ struct OutputRoutingView: View {
     /// must never be written here.
     private func persistChosenRows() {
         routingCache?.save(routes.filter { userChosenRows.contains($0.key) })
+        // A restore in progress (or one that deferred this route until its
+        // mixer is written) starts again from what was just saved.
+        appState.outputRoutingSaved()
     }
 
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`

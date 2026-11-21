@@ -19,6 +19,10 @@ public struct TwoUnitReplay: Sendable {
     /// hardware yet. The pending flags are cleared only after this plan has
     /// run to the end.
     public var consumesRoutingReset = false
+    /// Both units' card layouts: what a complete card mixer consists of at 64
+    /// channels, so the connection can tell when a mixer of this plan has
+    /// been written in full.
+    public var mixerLayouts: (a: CardLayout, b: CardLayout)?
     public init() {}
 
     public var writes: [Write] { tables + card + settings + [.headphones(.a), .headphones(.b)] }

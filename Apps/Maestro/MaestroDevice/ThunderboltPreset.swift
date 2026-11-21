@@ -338,6 +338,9 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         }
         // The card is routed before any peripheral's ApplySettingsToHardware.
         // og_source/maestrolink/Software/SymphonyController.cpp:696-704.
+        // When the list is sent (`ThunderboltDeviceConnection.applyPresetWrites`)
+        // a route fed by a card mixer goes out disabled here and is sent again
+        // after the mixers, so no mixer plays before it is written.
         return result.filter(\.isCardRoute) + result.filter { !$0.isCardRoute }
     }
 

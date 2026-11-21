@@ -377,9 +377,33 @@ extension AppState {
         guard let b = unitBDevice as? ThunderboltUnitBConnection else {
             throw DeviceConnectionError.notConnected
         }
-        try await Task.detached(priority: .userInitiated) {
-            try await b.applyOutputRouting(routes) { try tb.setCardOutputRoute($0) }
+        outputRouteEdits &+= 1
+        // A route from a mixer that is not written is deferred by the
+        // connection: the output is disabled until the two-unit replay has
+        // written that mixer and sends the saved route.
+        let deferred = try await Task.detached(priority: .userInitiated) {
+            try await Self.sendUnitBRoutes(routes, unitB: b, card: tb)
         }.value
+        if deferred {
+            outputRouteDeferredSinceSave = true
+            twoUnitReplayNeeded = true
+            updateRestoreStatus()
+        }
+    }
+
+    /// Unit B's card routes through the one chokepoint; true when any was
+    /// deferred (its output is then disabled).
+    nonisolated static func sendUnitBRoutes(_ routes: [ThunderboltCardRouting.Route],
+                                            unitB: ThunderboltUnitBConnection,
+                                            card: ThunderboltDeviceConnection) async throws -> Bool {
+        let deferred = DeferredFlag()
+        try await unitB.applyOutputRouting(routes) { route in
+            if try card.setCardOutputRoute(route) == .deferred {
+                _ = try card.setCardOutputRoute(CardOutputTableOrder.disabled(route))
+                deferred.set()
+            }
+        }
+        return deferred.isSet
     }
 
     /// A complete B output table, used by Reset Routing and the routing preset.
@@ -416,11 +440,17 @@ extension AppState {
             writes += pair
         }
         let plannedWrites = writes
-        try await Task.detached {
-            try await b.applyOutputRouting(plannedWrites) { try card.setCardOutputRoute($0) }
+        outputRouteEdits &+= 1
+        let deferred = try await Task.detached {
+            try await Self.sendUnitBRoutes(plannedWrites, unitB: b, card: card)
         }.value
         guard unitBDevice === b else { throw DeviceConnectionError.notConnected }
         unitBOutputRoutingCache?.save(table)
+        outputRouteEdits &+= 1
+        if deferred {
+            twoUnitReplayNeeded = true
+            updateRestoreStatus()
+        }
     }
 
     /// Unit B's cards are known well enough to write its output table: both
@@ -638,4 +668,12 @@ extension AppState {
         refreshUnitBNamingFromSaved()
         print("[Maestro] SECOND UNIT SIMULATION: \(info.slot1.productName) + \(info.slot2.productName) — no hardware")
     }
+}
+
+/// Set from the connection's serial owner, read after it returns.
+final class DeferredFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
 }

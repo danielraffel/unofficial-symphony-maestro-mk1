@@ -650,6 +650,56 @@ public protocol VendorTransport: AnyObject, Sendable {
 
 extension DextUserClient: VendorTransport {}
 
+/// Everything `ThunderboltDeviceConnection` asks of the driver's user client,
+/// so the connection (its routing and mixer chokepoint, the restore, preset
+/// recall) can run in tests against an in-memory driver
+/// (`FakeThunderboltDriver`). `DextUserClient` is the real one.
+public protocol ThunderboltDriverClient: VendorTransport {
+    var hardwareWriteGate: HardwareWriteGate { get }
+    func connect(audioDeviceID: AudioDeviceID)
+    func disconnect()
+    func setMonitorDevice(_ unit: DeviceUnit) -> Bool
+    func readMeters() -> [UInt32]?
+    func probeHardwareResponse() -> Bool
+    func readLinkState() -> LinkState?
+    func readDriverBuild() -> UInt32?
+    func readPort2State() -> SecondPortState?
+    func readConverterState() -> ConverterState?
+    func setConverterConfig(_ config: UInt32) -> Bool
+    func retireForUpgrade(replacementBuild: UInt32) -> DextUserClient.RetireReply
+    func readTimingHealth() -> TimingHealth?
+    func readBoardTypes() -> (primary: UInt8?, secondary: UInt8?)?
+    func readUnitBState() -> UnitBState?
+    func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool
+    func loopSync(_ settings: LoopSyncSettings?) throws -> LoopSyncState
+    /// The port selector (32 or 64 channels) when it does not come from Core
+    /// Audio: nil from the real driver client.
+    var portSelectionOverride: UInt32? { get }
+}
+
+extension ThunderboltDriverClient {
+    public var portSelectionOverride: UInt32? { nil }
+
+    public func sendVendorCommand(command: UInt8, value: UInt32, payload: Data) throws {
+        try sendVendorCommand(command: command, value: value, payload: payload, port: 0)
+    }
+
+    public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int) throws -> Data {
+        try readVendorCommand(command: command, value: value, responseLength: responseLength, port: 0)
+    }
+
+    public func loopSync() throws -> LoopSyncState { try loopSync(nil) }
+
+    /// Send a command built as a USB control request (mixer ID in the high
+    /// word of the value, channel in the low word).
+    public func sendUSBRequest(_ request: USBControlRequest) throws {
+        try sendVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
+                              payload: request.data, port: 0)
+    }
+}
+
+extension DextUserClient: ThunderboltDriverClient {}
+
 /// Selector 11: the second Symphony I/O (unit B) as the driver configured it.
 public struct UnitBState: Sendable, Equatable {
     public let present: Bool

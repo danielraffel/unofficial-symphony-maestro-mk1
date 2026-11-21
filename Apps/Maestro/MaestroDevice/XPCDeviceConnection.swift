@@ -31,6 +31,12 @@ public struct XPCPropertyReply: Sendable {
 ///
 /// Real implementation uses `xpc_connection_t`; tests can substitute a mock.
 public protocol XPCTransport: Sendable {
+    /// Counts the times the helper behind this connection went away
+    /// (restarted or crashed) while the app kept running. Unit A's connection
+    /// generation does not change then, but the helper that answers next
+    /// programs the direct routes again, so the app's restore must run again.
+    var helperEpoch: UInt64 { get }
+
     /// Send a setProperty message and await the proxy's reply. Throws if the XPC
     /// round-trip fails or the proxy reports a non-zero (USB write) status (S5).
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws
@@ -98,6 +104,10 @@ public extension XPCTransport {
 
 // MARK: - Mach XPC Transport (real implementation)
 
+extension XPCTransport {
+    public var helperEpoch: UInt64 { 0 }
+}
+
 /// XPC transport connecting to the MaestroVolumeProxy LaunchDaemon.
 public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
     private let connection: xpc_connection_t
@@ -115,6 +125,9 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
 
         xpc_connection_set_event_handler(connection) { [weak self] event in
             guard xpc_get_type(event) == XPC_TYPE_ERROR else { return }
+            // Interrupted or invalid: the helper went away. The one that
+            // answers next configures the unit again (direct routes).
+            self?.bumpHelperEpoch()
             // S5: Only CONNECTION_INVALID is terminal (service gone / cancelled).
             // CONNECTION_INTERRUPTED (e.g. proxy restart) is recoverable — the next
             // successful reply resets _connected, so never latch disconnected on it.
@@ -130,6 +143,10 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
         defer { lock.unlock() }
         _connected = value
     }
+
+    private var _helperEpoch: UInt64 = 0
+    private func bumpHelperEpoch() { lock.withLock { _helperEpoch &+= 1 } }
+    public var helperEpoch: UInt64 { lock.withLock { _helperEpoch } }
 
     public var isConnected: Bool {
         lock.lock()
@@ -402,6 +419,9 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     /// In-memory unless the app hands in a persistent one.
     public let settingsStore: DeviceSettingsStore
+
+    /// See `XPCTransport.helperEpoch`.
+    public var helperEpoch: UInt64 { transport.helperEpoch }
 
     public init(identifier: USBDeviceIdentifier, transport: XPCTransport? = nil,
                 settingsStore: DeviceSettingsStore = DeviceSettingsStore()) {

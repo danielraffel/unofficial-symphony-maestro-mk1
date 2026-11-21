@@ -95,8 +95,23 @@ extension AppState {
         if !warnings.all.isEmpty { statusMessage = "Saved with skipped settings: " + warnings.all.joined(separator: ", ") }
     }
 
+    /// Recall a bundle. If it fails after its first write, the unit may hold
+    /// part of the bundle while the pages show what is saved: no output is
+    /// left on a card mixer, and the restore puts the saved routing and
+    /// mixers back (`recoverFromFailedRecall`).
     @MainActor
     func loadThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
+        recallWritesStarted = false
+        do {
+            try await recallThunderboltPresetBundle(from: url, connection: connection)
+        } catch {
+            if recallWritesStarted { await recoverFromFailedRecall(connection) }
+            throw error
+        }
+    }
+
+    @MainActor
+    private func recallThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
         guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
         try requireSymphonyPreset()
         let (preset, legacy) = try ThunderboltPreset.loadBundle(from: url, layout: cardLayout)
@@ -116,6 +131,7 @@ extension AppState {
             && unitBBoardSource(slot: 0) == .detected && unitBBoardSource(slot: 1) == .detected)
         let recallB = preset.unitB != nil && skip == nil
         let cardChannels = unitBOnCard && unitBInputRoutingAllowed && skip == nil ? 64 : 32
+        recallWritesStarted = true
         try await Task.detached {
             try connection.withPresetLock {
                 let aWrites = try connection.presetWrites(preset, layout: layout, legacy: legacy, channels: cardChannels,

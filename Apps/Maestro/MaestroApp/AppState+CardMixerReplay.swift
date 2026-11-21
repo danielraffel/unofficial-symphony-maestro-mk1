@@ -92,8 +92,9 @@ extension AppState {
     @MainActor
     func mixerPageDefersToCardMixerRestore(mixer: Int) async -> Bool {
         guard let tb = device as? ThunderboltDeviceConnection else { return false }
-        // The output table is not on the card yet: nothing unmutes a strip.
-        if tb.cardMixerHold.isHeld { return true }
+        // The restore writes both mixers in full and is not done yet: a
+        // partial copy from the page would only interrupt it.
+        if tb.cardMixers.needsRestore { return true }
         let link = await Task.detached(priority: .utility) { tb.linkState() }.value
         guard device === tb else { return true }
         observeCardMixerInstance(link)
@@ -103,8 +104,10 @@ extension AppState {
 
     @MainActor
     private func cardMixerRestoreEligible(_ tb: ThunderboltDeviceConnection) -> Bool {
-        // Not before the output table is on the card (`CardMixerHold`).
-        device === tb && !tb.cardMixerHold.isHeld && !twoUnitSleeping && !usesTwoUnitReplay
+        // Not before the restore has completed (it writes both mixers in
+        // full and then marks this restore complete, so in practice D5 has
+        // nothing left to do on a driver the restore has run on).
+        device === tb && !tb.cardMixers.needsRestore && !twoUnitSleeping && !usesTwoUnitReplay
             && connectionMode == .hardware && isHardwareInitialized
             && unitAIdentity != nil && connectedUnit == nil && converterSystem == nil
             && mixerPreferences.isWritable

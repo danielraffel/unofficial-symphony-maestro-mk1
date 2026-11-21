@@ -199,12 +199,13 @@ public enum CardMixerReplay {
     /// (off the main actor), read by the runner.
     public final class Progress: @unchecked Sendable {
         private let lock = NSLock()
-        private var addresses: Set<PropertyAddress> = []
+        private var sentAddresses: Set<PropertyAddress> = []
         public init() {}
-        public func sent(_ address: PropertyAddress) { lock.withLock { _ = addresses.insert(address) } }
-        public var count: Int { lock.withLock { addresses.count } }
+        public func sent(_ address: PropertyAddress) { lock.withLock { _ = sentAddresses.insert(address) } }
+        public var count: Int { lock.withLock { sentAddresses.count } }
+        public var addresses: Set<PropertyAddress> { lock.withLock { sentAddresses } }
         public func remaining(_ groups: [[ThunderboltPreset.Write]]) -> [[ThunderboltPreset.Write]] {
-            let done = lock.withLock { addresses }
+            let done = lock.withLock { sentAddresses }
             return groups.map { $0.filter {
                 guard case .property(let address, _) = $0 else { return true }
                 return !done.contains(address)
@@ -242,6 +243,10 @@ public enum CardMixerReplay {
         }
     }
 
+    /// One whole card mixer. The order is a safety rule of its own, so that
+    /// nothing would be louder than saved for a moment even if a route were
+    /// live: Master, Software Return (level, mute, solo, source), then every
+    /// input strip with its level and pan before its mute and solo.
     public static func writes(mixer: Int, layout: CardLayout, snapshot: MixerStateSnapshot,
                               second: (CardLayout, MixerStateSnapshot)? = nil) -> [ThunderboltPreset.Write] {
         var writes: [ThunderboltPreset.Write] = []
@@ -249,22 +254,53 @@ public enum CardMixerReplay {
         func put(_ selector: AudioPropertySelector, _ value: PropertyValue, _ channel: Int = 0) {
             writes.append(.property(PropertyAddress(selector: selector, element: base | UInt32(channel)), value))
         }
+        put(.mixerChannelLevel, .float64(snapshot.masterLevel), 2000)
+        let own = snapshot.swReturnChannel
+        // 1000 sets both sides; the right fader follows on its own ID.
+        put(.mixerChannelLevel, .float64(own.level), 1000)
+        put(.mixerChannelLevel, .float64(snapshot.swReturnRightLevel), 0x1002)
+        // Software Return has no pan: always centre.
+        put(.mixerChannelPan, .float64(0), 1000)
+        put(.mixerChannelMute, .bool(own.isMuted), 1000)
+        put(.mixerChannelSolo, .bool(own.isSoloed), 1000)
         let source = TwoUnitMixer.shownSoftwareReturnSource(snapshot.softwareReturnSource,
             pairCount: TwoUnitMixer.softwareReturnPairCount(unitBActive: second != nil))
         put(.mixerSoftwareReturnID, .uint32(source))
         let ids = layout.mixerChannels.map(\.hardwareIndex)
-            + (second?.0.mixerChannels.map { 32 + $0.hardwareIndex } ?? []) + [1000]
-        let states = snapshot.channels + (second?.1.channels ?? []) + [snapshot.swReturnChannel]
+            + (second?.0.mixerChannels.map { 32 + $0.hardwareIndex } ?? [])
+        let states = snapshot.channels + (second?.1.channels ?? [])
         for (id, state) in zip(ids, states) {
             put(.mixerChannelLevel, .float64(state.level), id)
-            // Software Return has no pan: always centre.
-            put(.mixerChannelPan, .float64(id == 1000 ? 0 : state.pan), id)
+            put(.mixerChannelPan, .float64(state.pan), id)
             put(.mixerChannelMute, .bool(state.isMuted), id)
             put(.mixerChannelSolo, .bool(state.isSoloed), id)
         }
-        put(.mixerChannelLevel, .float64(snapshot.swReturnRightLevel), 0x1002)
-        put(.mixerChannelLevel, .float64(snapshot.masterLevel), 2000)
         return writes
+    }
+
+    /// Every control a complete write of one card mixer must reach, for the
+    /// connection to count that mixer as written: Master, Software Return
+    /// (both sides, pan, mute, solo) and level, pan, mute and solo of every
+    /// input strip of the layout (and of unit B's at 64 channels). The
+    /// Software Return source is added by the caller when the plan carries it.
+    public static func requiredAddresses(mixer: Int, layout: CardLayout,
+                                         second: CardLayout? = nil) -> Set<PropertyAddress> {
+        let base = UInt32(mixer + 1) << 16
+        var required: Set<PropertyAddress> = []
+        func need(_ selector: AudioPropertySelector, _ channel: Int) {
+            required.insert(PropertyAddress(selector: selector, element: base | UInt32(channel)))
+        }
+        need(.mixerChannelLevel, 2000)
+        need(.mixerChannelLevel, 0x1002)
+        let strips = layout.mixerChannels.map(\.hardwareIndex)
+            + (second?.mixerChannels.map { 32 + $0.hardwareIndex } ?? []) + [1000]
+        for id in strips {
+            for selector in [AudioPropertySelector.mixerChannelLevel, .mixerChannelPan,
+                             .mixerChannelMute, .mixerChannelSolo] {
+                need(selector, id)
+            }
+        }
+        return required
     }
 }
 

@@ -12,10 +12,20 @@ private final class SilentVendorTransport: VendorTransport, @unchecked Sendable 
     }
 }
 
+private final class Tick: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func next() -> Int { lock.withLock { value += 1; return value } }
+}
+
 extension StandardDefaultsSuites {
-/// ThunderBridge: while the app's output table is not on the card, nothing
-/// unmutes a card mixer strip or routes a mixer.
-@Suite("ThunderBridge output table guard", .serialized)
+/// ThunderBridge, on the real restore, service loop, route and mixer writes
+/// and preset recall, over an in-memory driver. Every scenario replays the
+/// driver's write log through `CardWriteLogChecker`: no output is ever
+/// routed from a card mixer that was not written in full in the driver state
+/// then serving, no mixer that may be on an output is written before that,
+/// and none is left on a stale or driver-default mixer route.
+@Suite("ThunderBridge mixer routing safety", .serialized)
 @MainActor
 struct CardOutputTableGuardTests {
     private func restoringDefaults() -> () -> Void {
@@ -27,121 +37,547 @@ struct CardOutputTableGuardTests {
         }
     }
 
-    private func makeState(identity: UInt64, cardsRead: Bool) -> (AppState, ThunderboltDeviceConnection) {
+    private let layout = CardLayout(slot1: .analogADDA16, slot2: .analogADDA16)
+    private var required: [Int: Set<CardWriteLogChecker.Control>] { CardWriteLogChecker.required(layout: layout) }
+    private let mixer1 = SymphonyIORoutingAddress.mixer0Base
+
+    private func makeState(identity: UInt64?, cardsRead: Bool = true,
+                           mixer1ToLine12: Bool = false) -> (AppState, ThunderboltDeviceConnection, FakeThunderboltDriver) {
+        UserDefaults.standard.removeObject(forKey: "mixerWideState.migratedTo")
         let state = AppState()
+        state.cardMixerCommandGap = .zero
+        state.cardMixerEditQuietWindow = .zero
         state.connectionMode = .hardware
         state.transportType = .thunderbolt
         state.isHardwareInitialized = true
-        // No driver behind it: every card write and the link-state read fail.
-        let tb = ThunderboltDeviceConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier, audioDeviceID: 0)
+        let driver = FakeThunderboltDriver()
+        let tb = ThunderboltDeviceConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier,
+                                             audioDeviceID: 0, driver: driver)
         state.device = tb
         state.primaryBoardType = .analogADDA16
         state.secondaryBoardType = .analogADDA16
         state.primaryBoardSource = cardsRead ? .detected : .cached
         state.secondaryBoardSource = cardsRead ? .detected : .cached
-        state.unitAIdentity = identity
-        state.unitAIdentityState = .known(identity)
-        return (state, tb)
-    }
-
-    private let unmute = PropertyAddress(selector: .mixerChannelMute, element: 1 << 16 | 0)
-
-    private func refusal(_ body: () async throws -> Void) async -> String {
-        do { try await body() } catch { return "\(error)" }
-        return ""
-    }
-
-    @Test("cards not read this session: the table is refused, and no strip is unmuted or mixer routed")
-    func guardRefused() async {
-        let restore = restoringDefaults()
-        defer { restore() }
-        let (state, tb) = makeState(identity: 0xF2B0_0001, cardsRead: false)
-        // Whatever let writes through before, a refused table takes it back.
-        tb.cardMixerHold.release()
-        await state.syncOutputRoutingToHardware()
-        #expect(tb.cardMixerHold.isHeld)
-        #expect(state.cardOutputTableReplayNeeded)
-        #expect(state.cardOutputLedger.written == nil)
-        // The retry waits its turn on the health cadence.
-        #expect(state.cardOutputRetryAttempts == 1)
-        #expect(state.cardOutputRetryAfter > Date())
-        // The Mixer page's sync defers...
-        #expect(await state.mixerPageDefersToCardMixerRestore(mixer: 0))
-        #expect(await state.mixerPageDefersToCardMixerRestore(mixer: 1))
-        // ...an unmute the user makes is refused before it reaches the card
-        // (the page has saved and shown it), and is owed a replay...
-        #expect(!state.cardMixerOwesReplay(tb))
-        let message = await refusal { try await tb.setProperty(unmute, value: .bool(false)) }
-        #expect(message.contains("held until the output table is written"))
-        #expect(state.cardMixerOwesReplay(tb))
-        // ...and a mixer cannot be routed to an output from the grid.
-        let route = await refusal {
-            try await state.writeOutputRoute(destination: 32, source: SymphonyIORoutingAddress.mixer0Base, device: tb)
+        if let identity {
+            state.unitAIdentity = identity
+            state.unitAIdentityState = .known(identity)
         }
-        #expect(route.contains("its strips have not been written"))
-        // D5 does not start either.
-        state.syncCardMixerToHardware()
-        #expect(state.cardMixerRestoreRun == nil)
+        // 32 channels: 16 software pairs, so row 16 is Mixer 1. Column 0 is Line 1/2.
+        if mixer1ToLine12 { state.peripheralRoutingCache(direction: "output").save([16: Set([0])]) }
+        return (state, tb, driver)
     }
 
-    @Test("cards read but the card refuses the first route write: reported, still unwritten, still held, retried later")
-    func failedWriteKeepsTheHold() async {
-        let restore = restoringDefaults()
-        defer { restore() }
-        let (state, tb) = makeState(identity: 0xF2B0_0002, cardsRead: true)
-        tb.cardMixerHold.release()
-        await state.syncOutputRoutingToHardware()
-        #expect(tb.cardMixerHold.isHeld)
-        #expect(state.cardOutputLedger.written == nil)
-        #expect(state.cardOutputTableReplayNeeded)
-        let message = await refusal { try await tb.setProperty(unmute, value: .bool(false)) }
-        #expect(message.contains("held until the output table is written"))
-        // A second failure waits longer.
-        let firstWait = state.cardOutputRetryAfter
-        await state.syncOutputRoutingToHardware()
-        #expect(state.cardOutputRetryAttempts == 2)
-        #expect(state.cardOutputRetryAfter > firstWait)
+    /// Health cycles (no waiting for the backoff) until nothing is owed.
+    private func settle(_ state: AppState, _ tb: ThunderboltDeviceConnection, cycles: Int = 12) async {
+        for _ in 0..<cycles {
+            state.cardOutputRetryAfter = .distantPast
+            await state.serviceCardOutputTable(tb)
+            if !tb.cardMixers.needsRestore, !state.cardOutputTableReplayNeeded { return }
+        }
     }
 
-    @Test("a link recovery or card re-init takes the table back until the ordered restore has run again")
-    func invalidation() async {
+    private func violations(_ driver: FakeThunderboltDriver, settled: Bool = true) -> [String] {
+        CardWriteLogChecker.violations(driver.log, required: required, settled: settled)
+    }
+
+    /// What is on the card equals the saved table.
+    private func expectUnitEqualsTable(_ state: AppState, _ tb: ThunderboltDeviceConnection,
+                                       _ driver: FakeThunderboltDriver,
+                                       sourceLocation: SourceLocation = #_sourceLocation) {
+        for (destination, source) in state.thunderboltOutputTable(for: tb, quiet: true) {
+            let wanted = ThunderboltCardRouting.route(destination: destination, source: source)
+            #expect(wanted != nil && driver.routes[wanted!.channel] == wanted,
+                    "output \(destination) ← \(source)", sourceLocation: sourceLocation)
+        }
+    }
+
+    private func saveStrip(_ state: AppState, mixer: Int, strip: Int, muted: Bool, level: Double = -6) {
+        var strips: [MixerChannelState] = state.channelStateStore.load(ChannelStateStore.mixerKey(mixer))
+            ?? Array(repeating: MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false),
+                     count: layout.mixerChannels.count)
+        strips[strip] = MixerChannelState(level: level, pan: 0, isMuted: muted, isSoloed: false)
+        state.channelStateStore.save(strips, for: ChannelStateStore.mixerKey(mixer))
+    }
+
+    private func muteByte(_ driver: FakeThunderboltDriver, mixer: Int, strip: Int) -> UInt8? {
+        driver.control(mixer: mixer, command: 0xB3, channel: UInt32(layout.mixerChannels[strip].hardwareIndex))
+    }
+
+    private func withMute(_ writes: [ThunderboltPreset.Write], strip: Int, muted: Bool) -> [ThunderboltPreset.Write] {
+        let channel = UInt32(layout.mixerChannels[strip].hardwareIndex)
+        return writes.map {
+            guard case .property(let address, _) = $0, address.selector == .mixerChannelMute,
+                  address.element & 0xFFFF == channel else { return $0 }
+            return .property(address, .bool(muted))
+        }
+    }
+
+    private func mixerEvents(_ log: [FakeThunderboltDriver.Event]) -> Int {
+        log.filter { if case .mixer = $0 { true } else { false } }.count
+    }
+
+    // MARK: Connect
+
+    @Test("connect on the default direct routing: no output is silenced, no mixer is routed, both mixers are written after the main pair is direct")
+    func connectDirect() async {
         let restore = restoringDefaults()
         defer { restore() }
-        let (state, tb) = makeState(identity: 0xF2B0_0003, cardsRead: true)
-        let link = LinkState(state: .up, clockPresent: true, ioRunning: true, irqCount: 1, recoveryCount: 4,
-                             hwSuspended: false, linkConfigured: true, lastClockReg: 0, watchTicks: 1, audioWraps: 1,
-                             cardReinitCount: 2, mixerInstance: DriverMixerInstance(nonce: 9, holdsAppState: [true, true]))
-        state.cardOutputLedger.recordWritten(.init(link))
-        state.cardOutputTableReplayNeeded = false
-        tb.cardMixerHold.release()
-        state.invalidateCardOutputTable(tb)
-        #expect(tb.cardMixerHold.isHeld)
-        #expect(!state.cardOutputLedger.isWritten(on: link))
-        #expect(state.cardOutputTableReplayNeeded)
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0001)
+        #expect(state.mixerPreferences.isWritable)
+        await state.syncOutputRoutingToHardware()
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(!state.cardOutputTableReplayNeeded)
+        #expect(state.restoreStatusNote == nil)
+        #expect(violations(driver).isEmpty)
+        #expect(driver.mixerFeeds.isEmpty)
+        // No silence for a user who routes no mixer.
+        #expect(!driver.log.contains { if case .route(_, _, false) = $0 { true } else { false } })
+        #expect(tb.cardMixers.writtenMixers == [0, 1])
+        expectUnitEqualsTable(state, tb, driver)
     }
+
+    @Test("connect with Mixer 1 on Line 1/2: the pair is disabled, the mixer written from the saved state, then routed")
+    func connectWithMixerRoute() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0002, mixer1ToLine12: true)
+        saveStrip(state, mixer: 0, strip: 2, muted: true)
+        // The driver says it holds app state for both mixers: that is not evidence.
+        driver.claimAppState()
+        // An earlier session left Mixer 2 on output 5.
+        driver.seedRoute(channel: 4, mixer: 1)
+        await state.syncOutputRoutingToHardware()
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(violations(driver).isEmpty)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        let log = driver.log
+        let disabled = try #require(log.firstIndex(of: .route(channel: 0, mixer: nil, enabled: false)))
+        let firstMixer = try #require(log.firstIndex { if case .mixer = $0 { true } else { false } })
+        let routed = try #require(log.firstIndex(of: .route(channel: 0, mixer: 0, enabled: true)))
+        #expect(disabled < firstMixer && firstMixer < routed)
+        // The strips on the card are the saved ones.
+        #expect(muteByte(driver, mixer: 0, strip: 2) == 1)
+        #expect(muteByte(driver, mixer: 0, strip: 3) == 0)
+        expectUnitEqualsTable(state, tb, driver)
+        #expect(state.restoreStatusNote == nil)
+    }
+
+    @Test("a second run with nothing changed in the driver state silences nothing")
+    func replayDoesNotSilence() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0003, mixer1ToLine12: true)
+        await state.syncOutputRoutingToHardware()
+        let before = driver.log.count
+        state.cardOutputTableReplayNeeded = true
+        await settle(state, tb)
+        let again = driver.log[before...]
+        #expect(!again.isEmpty)
+        #expect(!again.contains { if case .route(_, _, false) = $0 { true } else { false } })
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        #expect(violations(driver).isEmpty)
+    }
+
+    // MARK: Driver state changes
+
+    @Test("a link recovery, a card re-init and a driver restart: the health loop puts everything back in order",
+          arguments: ["recovery", "reinit", "restart"])
+    func driverStateChange(_ change: String) async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0004, mixer1ToLine12: true)
+        saveStrip(state, mixer: 0, strip: 0, muted: true)
+        await state.syncOutputRoutingToHardware()
+        #expect(!tb.cardMixers.needsRestore)
+        switch change {
+        case "recovery": driver.simulateLinkRecovery()
+        case "reinit": driver.simulateCardReinit()
+        default: driver.simulateDriverRestart()
+        }
+        // The health loop's probe sees it; nothing is trusted from before.
+        _ = tb.probeEndpoint()
+        #expect(tb.cardMixers.needsRestore)
+        #expect(tb.cardMixers.writtenMixers.isEmpty)
+        await state.serviceCardOutputTable(tb)
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(violations(driver).isEmpty)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        #expect(muteByte(driver, mixer: 0, strip: 0) == 1)
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    // MARK: Interactive writes
+
+    @Test("a mixer route clicked before that mixer is written is owed, its output disabled, and sent once the mixer is written")
+    func interactiveRouteBeforeMixerWritten() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0005)
+        // Before any restore has run on this driver state.
+        let result = try await state.writeOutputRoutePair(destLeft: 34, srcLeft: mixer1, device: tb)
+        #expect(result == .deferred)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])   // only the driver's own default, untouched
+        #expect(driver.routes[2]?.enabled == false && driver.routes[3]?.enabled == false)
+        #expect(state.restoreStatusNote == PortStatusMessage.restoringMixerAndRouting)
+        // The page saves the choice and shows it.
+        state.peripheralRoutingCache(direction: "output").save([16: Set([1])])
+        state.outputRoutingSaved()
+        await settle(state, tb)
+        #expect(driver.mixerFeeds == [2: 0, 3: 0])
+        #expect(violations(driver).isEmpty)
+        #expect(state.restoreStatusNote == nil)
+        expectUnitEqualsTable(state, tb, driver)
+        // After the mixers are written a mixer route is immediate.
+        #expect(try await state.writeOutputRoutePair(destLeft: 36, srcLeft: SymphonyIORoutingAddress.mixer1Base,
+                                                     device: tb) == .written)
+        #expect(driver.mixerFeeds[4] == 1)
+        #expect(violations(driver).isEmpty)
+    }
+
+    @Test("a strip edit made before the mixers are written is deferred, kept, and on the card after the restore")
+    func deferredEditIsReplayed() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0006, mixer1ToLine12: true)
+        // The page saves the edit, then sends it: the main pair is still on
+        // the driver's mixer 1, so it is not sent.
+        saveStrip(state, mixer: 0, strip: 1, muted: false, level: -12)
+        let address = PropertyAddress(selector: .mixerChannelMute,
+                                      element: 1 << 16 | UInt32(layout.mixerChannels[1].hardwareIndex))
+        await #expect(throws: CardMixerWriteDeferred.self) { try await tb.setProperty(address, value: .bool(false)) }
+        #expect(driver.sent.isEmpty)
+        #expect(await state.mixerPageDefersToCardMixerRestore(mixer: 0))
+        await settle(state, tb)
+        #expect(driver.control(mixer: 0, command: 0xB0, channel: UInt32(layout.mixerChannels[1].hardwareIndex)) == 36)
+        #expect(violations(driver).isEmpty)
+        #expect(!(await state.mixerPageDefersToCardMixerRestore(mixer: 0)))
+    }
+
+    @Test("a route moved from a mixer to a direct source while the restore is writing that mixer is not put back by a later phase")
+    func directEditDuringRestore() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0013, mixer1ToLine12: true)
+        let tick = Tick()
+        let cache = state.peripheralRoutingCache(direction: "output")
+        // On the 30th mixer write the user puts software 1/2 on Line 1/2.
+        driver.onWrite = { event in
+            guard case .mixer = event, tick.next() == 30 else { return }
+            Task { @MainActor in
+                _ = try? await state.writeOutputRoutePair(destLeft: 32, srcLeft: 0, device: tb)
+                cache.save([0: Set([0])])
+                state.outputRoutingSaved()
+            }
+        }
+        await state.syncOutputRoutingToHardware()
+        for _ in 0..<20 where state.outputRouteEdits == 0 { await Task.yield() }
+        await settle(state, tb)
+        #expect(state.outputRouteEdits > 0)
+        #expect(driver.mixerFeeds.isEmpty)
+        #expect(driver.routes[0] == ThunderboltCardRouting.Route(channel: 0, slot: ThunderboltCardRouting.pciOutBase, enabled: true))
+        #expect(violations(driver).isEmpty)
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    @Test("a route edit made while the restore is writing a mixer is what ends on the unit")
+    func routeEditDuringRestore() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0007, mixer1ToLine12: true)
+        let tick = Tick()
+        let cache = state.peripheralRoutingCache(direction: "output")
+        // On the 30th mixer write: the user moves Line 1/2 from Mixer 1 to
+        // software 1/2 and puts Mixer 2 on Line 3/4.
+        driver.onWrite = { event in
+            guard case .mixer = event, tick.next() == 30 else { return }
+            Task { @MainActor in
+                _ = try? await state.writeOutputRoutePair(destLeft: 32, srcLeft: 0, device: tb)
+                _ = try? await state.writeOutputRoutePair(destLeft: 34, srcLeft: SymphonyIORoutingAddress.mixer1Base,
+                                                          device: tb)
+                cache.save([0: Set([0]), 17: Set([1])])
+                state.outputRoutingSaved()
+            }
+        }
+        await state.syncOutputRoutingToHardware()
+        for _ in 0..<20 where state.outputRouteEdits == 0 { await Task.yield() }
+        await settle(state, tb)
+        #expect(state.outputRouteEdits > 0)
+        #expect(driver.mixerFeeds == [2: 1, 3: 1])
+        #expect(violations(driver).isEmpty)
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    @Test("Reset Routing during the restore wins: no mixer is routed afterwards")
+    func resetRoutingDuringRestore() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0008, mixer1ToLine12: true)
+        let tick = Tick()
+        let cache = state.peripheralRoutingCache(direction: "output")
+        driver.onWrite = { event in
+            guard case .mixer = event, tick.next() == 100 else { return }
+            Task { @MainActor in
+                // What the Output Routing page's reset does: every default
+                // route, then the saved rows are cleared.
+                for destination in UInt8(32)..<64 {
+                    _ = try? await state.writeOutputRoute(destination: destination, source: destination - 32, device: tb)
+                }
+                cache.save([Int: Set<Int>]())
+                state.outputRoutingSaved()
+            }
+        }
+        await state.syncOutputRoutingToHardware()
+        for _ in 0..<50 where state.outputRouteEdits < 33 { await Task.yield() }
+        await settle(state, tb)
+        #expect(state.outputRouteEdits >= 33)
+        #expect(driver.mixerFeeds.isEmpty)
+        #expect(violations(driver).isEmpty)
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    // MARK: Preset recall
+
+    @Test("a recall that starts during the restore stops it; the restore then runs from what the recall saved")
+    func recallDuringRestore() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0009, mixer1ToLine12: true)
+        saveStrip(state, mixer: 0, strip: 4, muted: false)
+        let tick = Tick()
+        let deferral = state.replayDeferral
+        driver.onWrite = { event in
+            if case .mixer = event, tick.next() == 20 { deferral.beginRecall() }
+        }
+        await state.syncOutputRoutingToHardware()
+        driver.onWrite = nil
+        // It stopped at once: nothing more of the pre-recall state went out.
+        #expect(mixerEvents(driver.log) == 20)
+        #expect(tb.cardMixers.needsRestore)
+        // While the recall runs, the health loop leaves the card alone.
+        let during = driver.log.count
+        await settle(state, tb, cycles: 3)
+        #expect(driver.log.count == during)
+        #expect(violations(driver, settled: false).isEmpty)
+        // The recall saves a muted strip 5 and moves Mixer 1 to Line 3/4.
+        saveStrip(state, mixer: 0, strip: 4, muted: true)
+        state.peripheralRoutingCache(direction: "output").save([16: Set([1])])
+        state.finishRecall()
+        await settle(state, tb)
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(muteByte(driver, mixer: 0, strip: 4) == 1)
+        #expect(driver.mixerFeeds == [2: 0, 3: 0])
+        #expect(violations(driver).isEmpty)
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    @Test("a preset recall: mixer-fed outputs are disabled first and routed last, and the unit ends on what the recall saved")
+    func presetRecall() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_000A, mixer1ToLine12: true)
+        await state.syncOutputRoutingToHardware()
+        let start = driver.log.count
+        // The recall: Mixer 2 onto Line 1/2 with strip 1 muted.
+        let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: 1,
+                                          store: state.channelStateStore, preferences: state.mixerPreferences)
+        let slot = ThunderboltCardRouting.mixerOutBase + 2
+        let writes: [ThunderboltPreset.Write] = [
+            .output(.init(channel: 0, slot: slot, enabled: true)), .output(.init(channel: 1, slot: slot + 1, enabled: true)),
+        ] + withMute(CardMixerReplay.writes(mixer: 1, layout: layout, snapshot: snapshot), strip: 0, muted: true)
+        state.beginRecall()
+        try await Task.detached { try tb.applyPresetWrites(writes, layout: CardLayout(slot1: .analogADDA16, slot2: .analogADDA16)) }.value
+        let recall = Array(driver.log[start...])
+        #expect(recall.first == .route(channel: 0, mixer: nil, enabled: false))
+        #expect(recall.last == .route(channel: 1, mixer: 1, enabled: true))
+        saveStrip(state, mixer: 1, strip: 0, muted: true, level: 0)
+        state.peripheralRoutingCache(direction: "output").save([17: Set([0])])
+        state.finishRecall()
+        // The follow-up from the stores silences nothing.
+        let after = driver.log.count
+        await settle(state, tb)
+        #expect(!driver.log[after...].contains { if case .route(_, _, false) = $0 { true } else { false } })
+        #expect(driver.mixerFeeds == [0: 1, 1: 1])
+        #expect(muteByte(driver, mixer: 1, strip: 0) == 1)
+        #expect(violations(driver).isEmpty)
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    @Test("a recall that fails partway: no output stays on a card mixer, and the saved routing and mixers come back")
+    func failedRecall() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_000B, mixer1ToLine12: true)
+        saveStrip(state, mixer: 0, strip: 6, muted: true)
+        await state.syncOutputRoutingToHardware()
+        // The bundle would unmute strip 7 of Mixer 1; the card refuses a later write.
+        let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: 0,
+                                          store: state.channelStateStore, preferences: state.mixerPreferences)
+        let writes = withMute(CardMixerReplay.writes(mixer: 0, layout: layout, snapshot: snapshot), strip: 6, muted: false)
+        let lastStrip = UInt32(1 << 16) | UInt32(layout.mixerChannels.last!.hardwareIndex)
+        driver.shouldFail = { $0.command == 0xB3 && $0.value == lastStrip }
+        state.beginRecall()
+        let failed = await Task.detached { (try? tb.applyPresetWrites(writes, layout: CardLayout(slot1: .analogADDA16, slot2: .analogADDA16))) == nil }.value
+        #expect(failed)
+        driver.shouldFail = nil
+        // The card holds part of the bundle (strip 7 unmuted), so nothing plays Mixer 1.
+        #expect(muteByte(driver, mixer: 0, strip: 6) == 0)
+        #expect(driver.mixerFeeds.isEmpty)
+        await state.recoverFromFailedRecall(tb)
+        state.finishRecall()
+        #expect(state.restoreStatusNote == PortStatusMessage.restoringMixerAndRouting)
+        await settle(state, tb)
+        #expect(muteByte(driver, mixer: 0, strip: 6) == 1)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        #expect(violations(driver).isEmpty)
+        #expect(state.restoreStatusNote == nil)
+    }
+
+    // MARK: Owed work, and the cases that cannot proceed
+
+    @Test("owed work is never dropped: after many interrupted attempts the restore still completes")
+    func owedSurvivesInterruptedAttempts() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_000C, mixer1ToLine12: true)
+        saveStrip(state, mixer: 0, strip: 9, muted: true)
+        let strip = UInt32(1 << 16) | UInt32(layout.mixerChannels[9].hardwareIndex)
+        driver.shouldFail = { $0.command == 0xB3 && $0.value == strip }
+        for attempt in 1...8 {
+            state.cardOutputRetryAfter = .distantPast
+            await state.serviceCardOutputTable(tb)
+            #expect(tb.cardMixers.needsRestore, "attempt \(attempt)")
+            #expect(state.cardOutputRetryAfter > Date(), "attempt \(attempt) waits before the next")
+            #expect(state.restoreStatusNote == PortStatusMessage.restoringMixerAndRouting)
+            // Line 1/2 stays disabled, never on the unwritten mixer.
+            #expect(driver.mixerFeeds.isEmpty)
+        }
+        // Inside the backoff the loop does not hammer the card.
+        let quiet = driver.sent.count
+        await state.serviceCardOutputTable(tb)
+        #expect(driver.sent.count == quiet)
+        driver.shouldFail = nil
+        await settle(state, tb)
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        #expect(muteByte(driver, mixer: 0, strip: 9) == 1)
+        #expect(violations(driver).isEmpty)
+        #expect(state.restoreStatusNote == nil)
+    }
+
+    @Test("a failed edit of a written mixer is owed and written again by the health loop")
+    func failedEditIsRetried() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_000D, mixer1ToLine12: true)
+        await state.syncOutputRoutingToHardware()
+        saveStrip(state, mixer: 0, strip: 0, muted: true)
+        let address = PropertyAddress(selector: .mixerChannelMute,
+                                      element: 1 << 16 | UInt32(layout.mixerChannels[0].hardwareIndex))
+        driver.shouldFail = { $0.command == 0xB3 }
+        await #expect(throws: (any Error).self) { try await tb.setProperty(address, value: .bool(true)) }
+        driver.shouldFail = nil
+        #expect(tb.cardMixers.needsRestore)
+        await settle(state, tb)
+        #expect(muteByte(driver, mixer: 0, strip: 0) == 1)
+        #expect(violations(driver).isEmpty)
+    }
+
+    @Test("cards not detected this session: nothing at all is written, it is said, retried, and completes once they are",
+          arguments: [true, false])
+    func cannotReadTheTable(cardsMissing: Bool) async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        // Either the cards are not detected, or the unit is not identified.
+        let (state, tb, driver) = makeState(identity: cardsMissing ? 0xF2C0_000E : nil, cardsRead: !cardsMissing,
+                                            mixer1ToLine12: cardsMissing)
+        await state.syncOutputRoutingToHardware()
+        #expect(driver.sent.isEmpty)
+        #expect(state.restoreStatusNote == PortStatusMessage.mixerWaitsForIdentity)
+        #expect(state.cardOutputRetryAfter > Date())
+        #expect(tb.cardMixers.needsRestore)
+        // A mixer edit and a mixer route meanwhile: neither reaches a mixer.
+        let unmute = PropertyAddress(selector: .mixerChannelMute, element: 1 << 16 | 0)
+        await #expect(throws: CardMixerWriteDeferred.self) { try await tb.setProperty(unmute, value: .bool(false)) }
+        #expect(mixerEvents(driver.log) == 0)
+        #expect(violations(driver, settled: false).isEmpty)
+        // The condition clears.
+        if cardsMissing {
+            state.primaryBoardSource = .detected
+            state.secondaryBoardSource = .detected
+        } else {
+            state.unitAIdentity = 0xF2C0_000F
+            state.unitAIdentityState = .known(0xF2C0_000F)
+        }
+        await settle(state, tb)
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(state.restoreStatusNote == nil)
+        #expect(violations(driver).isEmpty)
+        expectUnitEqualsTable(state, tb, driver)
+        // No output was ever disabled on the way for a table with no mixer;
+        // with one, the pair came on.
+        #expect(driver.mixerFeeds == (cardsMissing ? [0: 0, 1: 0] : [:]))
+    }
+
+    @Test("saved mixer state not available: direct routes are written, mixer-fed outputs disabled, no mixer written; it completes once it is")
+    func mixerStateUnavailable() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0010, mixer1ToLine12: true)
+        let key = state.mixerPreferencesCacheKey
+        state.cachedMixerPreferences = (key, MixerPreferences(legacyDefaults: .standard, readOnly: true))
+        #expect(!state.mixerPreferences.isWritable)
+        await state.syncOutputRoutingToHardware()
+        #expect(mixerEvents(driver.log) == 0)
+        #expect(driver.mixerFeeds.isEmpty)
+        #expect(driver.routes[0]?.enabled == false && driver.routes[1]?.enabled == false)
+        #expect((2..<32).allSatisfy { driver.routes[UInt8($0)]?.enabled == true })
+        #expect(state.restoreStatusNote == PortStatusMessage.mixerWaitsForIdentity)
+        #expect(violations(driver).isEmpty)
+        // Not disabled for good: the state becomes available.
+        state.cachedMixerPreferences = nil
+        #expect(state.mixerPreferences.isWritable)
+        await settle(state, tb)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        #expect(state.restoreStatusNote == nil)
+        #expect(violations(driver).isEmpty)
+    }
+
+    @Test("another unit's saved state: the marks made from the first are dropped and both mixers written again")
+    func ownerChange() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0011, mixer1ToLine12: true)
+        await state.syncOutputRoutingToHardware()
+        state.unitAIdentity = 0xF2C0_0012
+        state.unitAIdentityState = .known(0xF2C0_0012)
+        state.peripheralRoutingCache(direction: "output").save([16: Set([0])])
+        let before = driver.log.count
+        state.cardOutputTableReplayNeeded = true
+        await settle(state, tb)
+        // The pair was taken off the mixer until it was written from this unit's state.
+        #expect(driver.log[before...].contains(.route(channel: 0, mixer: nil, enabled: false)))
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        #expect(violations(driver).isEmpty)
+    }
+
+    // MARK: Table and two-unit plan
 
     @Test("the table is the whole default with the saved rows over it, mixer routes included")
     func table() {
         let restore = restoringDefaults()
         defer { restore() }
-        let (state, tb) = makeState(identity: 0xF2B0_0004, cardsRead: true)
+        let (state, tb, _) = makeState(identity: 0xF2B0_0004)
         var table = state.thunderboltOutputTable(for: tb)
         // Default: 32 outputs, each from its own playback channel, no mixer.
         #expect(table.count == 32)
         #expect(table.values.allSatisfy { CardOutputTableOrder.mixer(ofSource: $0) == nil })
-        // 32 channels: 16 software pairs, so row 16 is Mixer 1. Column 0 is Line 1/2.
         state.peripheralRoutingCache(direction: "output").save([16: Set([0])])
         table = state.thunderboltOutputTable(for: tb)
         #expect(table[32] == SymphonyIORoutingAddress.mixer0Base)
         #expect(table[33] == SymphonyIORoutingAddress.mixer0Base + 1)
-        let phases = CardOutputTableOrder.phases(table: table, readyMixers: [])
-        #expect(phases.mixers == [0])
-        #expect(phases.first.count == 32)
-        #expect(phases.first.contains(.init(destination: 32, source: SymphonyIORoutingAddress.none)))
-        #expect(phases.last.map(\.destination) == [32, 33])
     }
 
-    @Test("two-unit replay: the reset's defaults and card-input reset go out, and the flags are consumed only when it has run")
+    @Test("two-unit replay: the reset's defaults and card-input reset go out, both mixers in full, and the flags are consumed only when it has run")
     func twoUnitResetConsumer() throws {
         let restore = restoringDefaults()
         defer { restore() }
@@ -149,69 +585,58 @@ struct CardOutputTableGuardTests {
         for item in RoutingMixerReset.Pending.allCases {
             defaults.set(true, forKey: "routingMixerReset.pending.\(item.rawValue)")
         }
-        let (state, tb) = makeState(identity: 0xF2B0_0005, cardsRead: true)
+        let (state, tb, _) = makeState(identity: 0xF2B0_0005, mixer1ToLine12: true)
         // A driver that takes the card's own input routes (build 132 and later).
         state.servingDextBuild = .build(140)
         #expect(state.symphonyCardInputs.resetCommand != nil)
         let layoutB = CardLayout(slot1: .analogADDA16, slot2: .none)
         let b = ThunderboltUnitBConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier,
                                            transport: SilentVendorTransport(), state: { nil })
-        state.peripheralRoutingCache(direction: "output").save([16: Set([0])])
 
         let plan = state.makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
         #expect(plan.consumesRoutingReset)
         // Building a plan consumes nothing.
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
-        // The default input table of unit A is in the plan (the saved copy is gone).
-        #expect(plan.tables.contains {
-            if case .unit(.a, let address, _) = $0 { return address.selector == .routing && address.scope == .input }
-            return false
-        })
         let card: [ThunderboltPreset.Write] = plan.card.compactMap {
             if case .card(let write) = $0 { return write }
             return nil
         }
-        // The card's own input routes go back to straight through.
         #expect(card.contains(.cardInput(ConverterRouting.resetRoutingCommand)))
-        // No strip write comes before every output route has been written
-        // with the mixer-fed ones silent, and Mixer 1 is routed to Line 1/2
-        // only after the last strip write.
-        let firstStrip = try #require(card.firstIndex {
-            if case .property(let address, _) = $0 { return address.selector == .mixerChannelMute }
+        // Each mixer is in the plan in full, unit B's strips included, so the
+        // connection can mark it written.
+        let layouts = try #require(plan.mixerLayouts)
+        for mixer in 0..<2 {
+            let addresses: Set<PropertyAddress> = Set(card.compactMap {
+                if case .property(let address, _) = $0, ThunderboltDeviceConnection.cardMixer(of: address) == mixer {
+                    return address
+                }
+                return nil
+            })
+            #expect(CardMixerReplay.requiredAddresses(mixer: mixer, layout: layouts.a, second: layouts.b)
+                .isSubset(of: addresses))
+        }
+        // As the connection sends it: no mixer write before every route has
+        // gone out with the mixer-fed ones disabled; Mixer 1 last.
+        let ordered = CardOutputTableOrder.ordered(card)
+        let firstMixer = try #require(ordered.firstIndex {
+            if case .property(let address, _) = $0 { return ThunderboltDeviceConnection.mixerEditSelectors.contains(address.selector) }
             return false
         })
-        let lastStrip = try #require(card.lastIndex {
-            if case .property = $0 { return true }
-            return false
-        })
-        let fed = card.indices.filter {
-            if case .output(let route) = card[$0] { return CardOutputTableOrder.isMixerFed(route) }
+        let fed = ordered.indices.filter {
+            if case .output(let route) = ordered[$0] { return CardOutputTableOrder.isMixerFed(route) }
             return false
         }
-        #expect(fed.count == 2)
-        #expect(fed.allSatisfy { $0 > lastStrip })
-        let silenced = card[..<firstStrip].filter {
+        #expect(fed.count == 2 && fed.allSatisfy { $0 > firstMixer } && fed.last == ordered.count - 1)
+        #expect(ordered[..<firstMixer].filter {
             if case .output(let route) = $0 { return !route.enabled && route.channel < 2 }
             return false
-        }
-        #expect(silenced.count == 2)
+        }.count == 2)
 
-        // A replay that did not finish leaves the flags; one that did consumes them.
-        let link = LinkState(state: .up, clockPresent: true, ioRunning: true, irqCount: 1, recoveryCount: 1,
-                             hwSuspended: false, linkConfigured: true, lastClockReg: 0, watchTicks: 1, audioWraps: 1)
-        state.finishTwoUnitReplay(plan, tb: tb, link: link, refusedAtPlan: tb.cardMixerHold.refusedCount)
-        #expect(!RoutingMixerReset.isPending(.thunderboltInputRouting))
-        #expect(!RoutingMixerReset.isPending(.thunderboltCardMixer))
-        #expect(RoutingMixerReset.isPending(.usbInputRouting))
-        #expect(!tb.cardMixerHold.isHeld)
-        #expect(state.cardOutputLedger.isWritten(on: link))
-        // With the flag consumed the next plan no longer starts from the defaults.
-        let next = state.makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
-        #expect(!next.consumesRoutingReset)
-        #expect(!next.card.contains {
-            if case .card(.cardInput(let command)) = $0 { return command == ConverterRouting.resetRoutingCommand }
-            return false
-        })
+        // A replay the connection did not complete leaves the flags.
+        state.finishTwoUnitReplay(plan, tb: tb, epoch: tb.cardMixers.epoch, owed: tb.cardMixers.owed,
+                                  routeEdits: state.outputRouteEdits)
+        #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
+        #expect(state.twoUnitReplayNeeded)
     }
 }
 }
