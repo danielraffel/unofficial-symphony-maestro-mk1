@@ -205,23 +205,32 @@ struct SymphonyThunderbridge_IVars {
     // Re-add when Port 2 (dual Symphony IO) is implemented.
     float     lastVolumeDb;
     bool      lastMuteState;
-    // Core Audio's single output volume/mute control follows the legacy
-    // monitor target.  0 = speakers, 1 = Headphone 1 (Line mode).
+    // Which output Core Audio's single output volume/mute control moves: the
+    // app's "Audio Output" choice (kSymphonyMonitorOutputSpeakers/HP1/HP2,
+    // selector 15), Speakers until the app says otherwise, as the original
+    // (og_source/symphonymk1/ext/maestrolink/Software/SymphonyIO.cpp:131).
+    // Nothing changes it but the app: with Speakers chosen and the speaker
+    // mode Off (Line) the control does nothing (SymphonyIO.cpp:2345-2351).
     uint8_t   monitorOutputTarget;
+    bool      lineMode;               // unit A's speaker mode is Off (Line)
     // Per-monitor state behind the single Core Audio volume/mute control.
-    // Line mode selects HP1, while speaker modes select the speaker pair.
     uint8_t   speakerAttenuation;
     bool      speakerMute;
     uint8_t   hp1Attenuation;
     bool      hp1Mute;
+    uint8_t   hp2Attenuation;
+    bool      hp2Mute;
     // Which configured Symphony I/O owns the single HAL volume/mute control.
     // Unit A is the default and is the only possible target at 32 channels.
     bool      monitorDeviceB;
     uint8_t   unitBMonitorOutputTarget;
+    bool      unitBLineMode;
     uint8_t   unitBSpeakerAttenuation;
     bool      unitBSpeakerMute;
     uint8_t   unitBHP1Attenuation;
     bool      unitBHP1Mute;
+    uint8_t   unitBHP2Attenuation;
+    bool      unitBHP2Mute;
     bool      monitorKnobChanging[2];
     uint8_t   monitorMuteAll[2];
 
@@ -397,6 +406,9 @@ struct SymphonyThunderbridge_IVars {
     bool      converterVolumeKeys;        // keys drive the mixer-1 trim, not 0x26/0x27
     uint8_t   converterTrimAtten;         // 0..64 dB, from the volume control
     bool      converterTrimMuted;         // from the mute control
+    // The app chose "None" for the keys on converters (selector 15, output 0):
+    // the trim stays at 0 dB, unmuted, and the controls do nothing.
+    bool      converterKeysOff;
     // dext 131: the older XLink converters, as Apogee's driver ran them
     // (SymphonyConverters.h). Written on xlinkQueue (or in Start() before the
     // queue runs); convConfig, convFlags and convRecoveryPending are atomic, the
@@ -874,6 +886,9 @@ static constexpr uint8_t kSIOCmd_SpeakerMode          = 0x25;  // 1 byte: 2=ster
 static constexpr uint8_t kSIOCmd_SpeakerVolume        = 0x26;  // 1 byte: attenuation in dB
 static constexpr uint8_t kSIOCmd_SpeakerMute          = 0x27;  // 1 byte: 0=unmuted, 1=muted
 static constexpr uint8_t kSIOCmd_ActiveSpeakerSet     = 0xE9;  // 1 byte: A=bit0, B=bit1, C=bit2
+// What the volume control reads with Speakers chosen in Line mode: the
+// original's fixed 20 dB attenuation (SymphonyIO.cpp:3145-3152).
+static constexpr uint8_t kLineModeSpeakerReading      = 20;
 static constexpr uint8_t kSIOCmd_HeadphoneVolume      = 0x23;  // 1 byte: nValue=HP index, attenuation in dB
 static constexpr uint8_t kSIOCmd_HeadphoneMute        = 0x24;  // 1 byte: nValue=HP index, 0=unmuted, 1=muted
 static constexpr uint8_t kSIOCmd_AudioRouting          = 0x31;  // N×2 bytes: [dest, src] pairs
@@ -1879,6 +1894,8 @@ struct SymphonyLinkInitResult {
     bool    speakerMute;
     uint8_t hp1Attenuation;
     bool    hp1Mute;
+    uint8_t hp2Attenuation;
+    bool    hp2Mute;
 };
 
 static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
@@ -1925,6 +1942,8 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
         __atomic_store_n(&ivars->speakerMute, symphony->speakerMute, __ATOMIC_RELEASE);
         __atomic_store_n(&ivars->hp1Attenuation, symphony->hp1Attenuation, __ATOMIC_RELEASE);
         __atomic_store_n(&ivars->hp1Mute, symphony->hp1Mute, __ATOMIC_RELEASE);
+        ivars->hp2Attenuation = symphony->hp2Attenuation;
+        ivars->hp2Mute = symphony->hp2Mute;
         if (ivars->outputVolumeControl)
             ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(symphony->monitorAttenuation));
         if (ivars->outputMuteControl)
@@ -1944,6 +1963,13 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
         }
         if (ivars->outputMuteControl)
             ivars->converterTrimMuted = ivars->outputMuteControl->GetControlValue();
+        if (ivars->converterKeysOff) {
+            // "None": no trim, and the controls show that.
+            ivars->converterTrimAtten = 0;
+            ivars->converterTrimMuted = false;
+            if (ivars->outputVolumeControl) ivars->outputVolumeControl->SetDecibelValue(0.0f);
+            if (ivars->outputMuteControl) ivars->outputMuteControl->SetControlValue(false);
+        }
         __atomic_store_n(&ivars->converterVolumeKeys, true, __ATOMIC_RELEASE);
         STLOG("Volume keys: converters only, keys trim card mixer 1 (atten=%u mute=%u)",
               ivars->converterTrimAtten, ivars->converterTrimMuted ? 1 : 0);
@@ -2750,6 +2776,8 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             out->speakerMute = startupMute != 0;
             out->hp1Attenuation = startupHP1Volume;
             out->hp1Mute = startupHP1Mute != 0;
+            out->hp2Attenuation = startupHP2Volume;
+            out->hp2Mute = startupHP2Mute != 0;
             out->monitorAttenuation = startupVolume;
             out->monitorMute = startupMute != 0;
             if (ClassifyVolumeTarget(ivars, false, out)) {
@@ -2772,12 +2800,26 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         out->speakerMute = (startupMute != 0 || startupVolume >= 64);
         out->hp1Attenuation = startupHP1Volume;
         out->hp1Mute = (startupHP1Mute != 0 || startupHP1Volume >= 64);
-        out->monitorAttenuation = out->lineMonitor
-            ? ((startupHP1Volume > 64) ? 64 : startupHP1Volume)
-            : startupVolume;
-        out->monitorMute = out->lineMonitor
-            ? (startupHP1Mute != 0 || startupHP1Volume >= 64)
-            : (startupMute != 0 || startupVolume >= 64);
+        out->hp2Attenuation = startupHP2Volume;
+        out->hp2Mute = (startupHP2Mute != 0 || startupHP2Volume >= 64);
+        // What the volume control shows for the app's Audio Output choice
+        // (Speakers until the app chose). No output is picked from the speaker
+        // mode: with Speakers chosen in Line mode the control reads the
+        // original's fixed -20 dB (SymphonyIO.cpp:3145-3152) and does nothing.
+        switch (ivars->monitorOutputTarget) {
+        case kSymphonyMonitorOutputHP1:
+            out->monitorAttenuation = out->hp1Attenuation;
+            out->monitorMute = out->hp1Mute;
+            break;
+        case kSymphonyMonitorOutputHP2:
+            out->monitorAttenuation = out->hp2Attenuation;
+            out->monitorMute = out->hp2Mute;
+            break;
+        default:
+            out->monitorAttenuation = out->lineMonitor ? kLineModeSpeakerReading : startupVolume;
+            out->monitorMute = out->speakerMute;
+            break;
+        }
 
         // Where the volume keys go. On a cable of converters only, the single
         // Core Audio volume/mute control becomes a trim on card mixer 1 and
@@ -2812,12 +2854,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                                          symphonyAddr, kSIOCmd_SpeakerMode,
                                          0, &mode, 1, txSeq);
             STLOG("SymphonyIO: SpeakerMode(mode=%u): %{public}s", mode, ok ? "OK" : "FAILED");
-            if (ok) {
-                __atomic_store_n(&ivars->monitorOutputTarget,
-                                 mode == 0 ? static_cast<uint8_t>(1)
-                                           : static_cast<uint8_t>(0),
-                                 __ATOMIC_RELEASE);
-            }
+            if (ok) __atomic_store_n(&ivars->lineMode, mode == 0, __ATOMIC_RELEASE);
             IOSleep(10);
 
             uint8_t vol = startupVolume;
@@ -3074,27 +3111,18 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ResetInputRouteSources(ivars, slot1Type, slot1Known);
         }
 
-        // ── 19b-3. Mute mixer hardware inputs (DAW mode) ────────────
-        // XMOS firmware boots with all mixer inputs at 0dB/unmuted, so
-        // hardware inputs pass through: IOBoard→Mixer→DAC by default.
-        // In DAW mode, mute all 32 HW inputs on Mixer0 so only the
-        // SW Return (XLink/DMA playback) is heard via direct routing.
-        // cmd 0xB3: nValue = (mixer<<16)|channel, data = 1 (muted).
-        // Evidence: MaestroVolumeProxy.c:889-911 configure_fpga_routing() step 4c.
-        {
-            int muteOk = 0, muteFail = 0;
-            for (uint16_t ch = 0; ch < 32; ch++) {
-                uint32_t nValue = ((uint32_t)0 << 16) | (uint32_t)ch;  // Mixer 0, channel ch
-                uint8_t muteVal = 1;  // muted
-                bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                             symphonyAddr, kSIOCmd_MixerInputMute,
-                                             nValue, &muteVal, 1, txSeq);
-                if (ok) muteOk++; else muteFail++;
-            }
-            STLOG("SymphonyIO: Mixer0 HW inputs muted (DAW mode): %d OK, %d failed",
-                  muteOk, muteFail);
-            IOSleep(20);
-        }
+        // ── 19b-3. (dext 142) No mixer strip of the unit is muted here ──
+        // Builds up to 141 muted the unit's 32 mixer-1 inputs at this point,
+        // a leftover of the removed Input Monitoring mode. Every unit output
+        // is fed directly from its XLink channel (19b-1, 19b-1b), as the
+        // firmware's own default (og_source/symphonymk1/ext/SymphonyIO/
+        // Software/XMOS/SymphonyIO/src/XMOS/XCore/Core3/MainFPGAThread/
+        // SymphonyIOAudioRouteManager/SymphonyIOAudioRouteManager.cpp:226-439:
+        // outputs and both headphones from the host link, the unit's mixers
+        // fed only in the USB and Standalone images), and the original sent
+        // the unit's mixer nothing in this step
+        // (SymphonyIO::ApplySettingsToHardware, og_source/symphonymk1/ext/
+        // maestrolink/Software/SymphonyIO.cpp:4660-4735).
 
         // ── 19b-4. PreferenceLoadLock(false) — unlock XMOS, audio can flow ──
         // CRITICAL: Without this unlock, the XMOS stays muted and NO audio
@@ -4118,6 +4146,40 @@ static bool ApplyLoopSync(SymphonyThunderbridge_IVars *ivars, uint32_t config)
 
 static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, uint16_t mixerID, uint8_t source);
 
+// The output a unit's volume keys move: 0 = speakers, 1 = Headphone 1,
+// 2 = Headphone 2 (also the headphone index of 0x23/0x24). Anything but a
+// headphone choice is the speakers, the original's default.
+static unsigned SelectedMonitorKind(const SymphonyThunderbridge_IVars *ivars, bool b)
+{
+    const uint8_t target = b ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget;
+    if (target == kSymphonyMonitorOutputHP1) return 1;
+    if (target == kSymphonyMonitorOutputHP2) return 2;
+    return 0;
+}
+
+// Speakers chosen while the speaker mode is Off (Line): the original ignored
+// a Core Audio volume set there (SymphonyIO.cpp:2345-2351) and listed the
+// entry as "Speaker (0ch)" (:3562-3571). The keys then move nothing; a
+// headphone is moved only when the user chose it.
+static bool SelectedMonitorInert(const SymphonyThunderbridge_IVars *ivars, bool b)
+{
+    return SelectedMonitorKind(ivars, b) == 0 && (b ? ivars->unitBLineMode : ivars->lineMode);
+}
+
+static uint8_t &MonitorAttenuation(SymphonyThunderbridge_IVars *ivars, bool b, unsigned kind)
+{
+    if (kind == 1) return b ? ivars->unitBHP1Attenuation : ivars->hp1Attenuation;
+    if (kind == 2) return b ? ivars->unitBHP2Attenuation : ivars->hp2Attenuation;
+    return b ? ivars->unitBSpeakerAttenuation : ivars->speakerAttenuation;
+}
+
+static bool &MonitorMute(SymphonyThunderbridge_IVars *ivars, bool b, unsigned kind)
+{
+    if (kind == 1) return b ? ivars->unitBHP1Mute : ivars->hp1Mute;
+    if (kind == 2) return b ? ivars->unitBHP2Mute : ivars->hp2Mute;
+    return b ? ivars->unitBSpeakerMute : ivars->speakerMute;
+}
+
 // Every way out of two-unit mode: unit B is no longer configured, unit A's
 // clock gets its single-unit message back (when the card can be reached), and
 // a card-mixer Software Return pointing above DAW 1-16 goes back to 1-2.
@@ -4127,13 +4189,13 @@ static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, u
 static void PublishSelectedMonitor(SymphonyThunderbridge_IVars *ivars)
 {
     const bool b = ivars->monitorDeviceB;
-    const bool hp = (b ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget) == 1;
-    const uint8_t attenuation = b
-        ? (hp ? ivars->unitBHP1Attenuation : ivars->unitBSpeakerAttenuation)
-        : (hp ? ivars->hp1Attenuation : ivars->speakerAttenuation);
-    const bool muted = b
-        ? (hp ? ivars->unitBHP1Mute : ivars->unitBSpeakerMute)
-        : (hp ? ivars->hp1Mute : ivars->speakerMute);
+    const unsigned kind = SelectedMonitorKind(ivars, b);
+    // Speakers chosen in Line mode: the original's reading there is a fixed
+    // 20 dB attenuation (SymphonyIO.cpp:3145-3152) with the speaker's mute
+    // (:3069-3081); the control does nothing (see the drain).
+    const uint8_t attenuation = SelectedMonitorInert(ivars, b)
+        ? kLineModeSpeakerReading : MonitorAttenuation(ivars, b, kind);
+    const bool muted = MonitorMute(ivars, b, kind);
     ivars->lastVolumeDb = -static_cast<float>(attenuation);
     ivars->lastMuteState = muted;
     if (ivars->outputVolumeControl) ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
@@ -4180,8 +4242,8 @@ static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, u
 // message sequence (SymphonyIOSymphonyPeripheralDevice.cpp:52-70,
 // SymphonyDriverInterface.cpp:982-1016); not being the master, it was set to
 // Loop Sync slave of unit A (Loop Sync mode on, the original's default). This mirrors what ConfigureSymphonyLink sends unit A (19b): lock,
-// clock, optical format, playback and capture routing, the unit's mixer
-// inputs muted (DAW mode), unlock. Unit B's monitor settings stay its own;
+// clock, optical format, playback and capture routing, unlock. Unit B's
+// monitor settings stay its own;
 // Maestro sets the rest through the port byte. On xlinkQueue, port 2 enabled
 // and its unit addressed; nothing is sent unless the unit answers a vendor read.
 static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
@@ -4303,10 +4365,9 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
         }
         IOSleep(20);
     }
-    for (uint16_t ch = 0; ch < 32; ch++) {
-        const uint8_t muted = 1;
-        require(send(kSIOCmd_MixerInputMute, (uint32_t)ch, &muted, 1), kUnitBFailMute, "mixer input mute");
-    }
+    // (dext 142) The unit's mixer inputs are not muted any more, as for unit
+    // A (19b-3). kUnitBFailMute stays in the set-up word for the app's sake
+    // and is never set.
     // Match SetPeripheralReady(true): retry the final unlock, and verify the
     // read-back up to ten times at 5 ms intervals even when an earlier stage
     // failed, so a partially configured unit is never left muted.
@@ -4940,9 +5001,10 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
         ivars->port2DisablePending = false;
     }
     // Routing tables: the app's card output routes where known, Start()'s
-    // defaults elsewhere; input routing is always the default.
+    // defaults elsewhere (every output direct, see step 21b); input routing
+    // is always the default.
     for (uint32_t n = 0; n < kMaxChannelsPerPort; n++) {
-        const uint32_t def = ((n < 2) ? (kTDM_Mixer0Out + n) : (kTDM_PCIOut0 + n)) | kRoutingEnable;
+        const uint32_t def = (kTDM_PCIOut0 + n) | kRoutingEnable;
         WriteRegister(dev, mi, kRegOutputRouting + n * 4,
                       ivars->cardOutputRouteSet[n] ? ivars->cardOutputRoute[n] : def);
         WriteCardInputRoute(ivars, n, (kTDM_XLinkRX0 + n) | kRoutingEnable);
@@ -5137,6 +5199,20 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
                               kSIOCmd_HeadphoneMute, 0, &hpMute, 1, ivars->runtimeTxSeq);
             STLOG("Link recovery: replayed session monitor state (speaker atten=%u mute=%u, "
                   "HP1 atten=%u mute=%u)", spkAtten, spkMute, hpAtten, hpMute);
+            // Headphone 2 only while the keys move it: the driver has then
+            // been setting its level this session.
+            if (ivars->monitorOutputTarget == kSymphonyMonitorOutputHP2) {
+                uint8_t hp2Atten = ivars->hp2Attenuation;
+                uint8_t hp2Mute  = ivars->hp2Mute ? 1 : 0;
+                SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                                  kSIOCmd_HeadphoneVolume, 1, &hp2Atten, 1, ivars->runtimeTxSeq);
+                SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                                  kSIOCmd_HeadphoneMute, 1, &hp2Mute, 1, ivars->runtimeTxSeq);
+                STLOG("Link recovery: replayed HP2 atten=%u mute=%u (the keys' output)", hp2Atten, hp2Mute);
+            }
+            // The speaker mode the unit came back with decides whether the
+            // keys' output can be moved; the controls show the kept output.
+            if (!ivars->monitorDeviceB) PublishSelectedMonitor(ivars);
         }
         // Start() may have run with no Symphony at all, in which case the
         // option-board types were never read. Refresh them so the app's
@@ -5157,7 +5233,7 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
         STLOG("Link recovery: Symphony re-enumerated and configured at %u Hz "
               "(recovery #%u, monitor=%{public}s atten=%u)",
               (uint32_t)(rate + 0.5), ivars->linkRecoveryCount,
-              restored.lineMonitor ? "HP1" : "speakers", restored.monitorAttenuation);
+              restored.lineMonitor ? "Line" : "speakers", restored.monitorAttenuation);
         ivars->linkClockPresent = true;
         __atomic_store_n(&ivars->linkState, kLinkStateUp, __ATOMIC_RELEASE);
         // The dext owns the IO restart (review item 5): clients refused by StartDevice
@@ -6147,6 +6223,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     bool initialSpeakerMute = false;
     uint8_t initialHP1Attenuation = 20;
     bool initialHP1Mute = false;
+    uint8_t initialHP2Attenuation = 20;
+    bool initialHP2Mute = false;
 
     STLOG("Start() — Apogee ThunderBridge DriverKit driver");
 
@@ -6433,6 +6511,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         initialSpeakerMute        = linkInit.speakerMute;
         initialHP1Attenuation     = linkInit.hp1Attenuation;
         initialHP1Mute            = linkInit.hp1Mute;
+        initialHP2Attenuation     = linkInit.hp2Attenuation;
+        initialHP2Mute            = linkInit.hp2Mute;
     } else {
         // No Symphony clock (unit off or PC-32 cable absent). The legacy
         // driver still published its audio engine in this state and let its
@@ -6478,19 +6558,19 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // This is the critical step — without it, DMA playback data never
     // reaches the XLink bus (and thus never reaches the Symphony IO DACs).
 
+    // dext 142: every output is direct, the main pair included, and no card
+    // mixer feeds an output until the app routes one. That is the original's
+    // default (SymphonyPCIeRoutingController::ResetToDefaults / ResetRouting,
+    // og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp:453-458
+    // and :918-938: the mixer destinations are cleared and software output n
+    // is routed to hardware output n). Builds up to 141 put ch0/1 on card
+    // mixer 1 here, a leftover of the removed Input Monitoring mode.
     for (uint32_t n = 0; n < kMaxChannelsPerPort; n++) {
-        // Main stereo ch0/1 come from the card Mixer 0 output (TDM slots 128/129)
-        // so the app's mixer (SW-return fader/mute/master) affects the speakers.
-        // ch2-31 stay direct PCI_OUT (host playback straight to XLink TX). The mixer
-        // is set up + fed host playback below (step 21d-2); at unity it passes audio
-        // unchanged. Evidence: original Sym64Routing.cpp:249-254 routes MIXER0..3_OUT
-        // to outputs; SymphonyPCIeRoutingController.cpp:1164 (ThunderBridge=Sym64 default).
-        uint32_t src = (n < 2) ? (kTDM_Mixer0Out + n) : (kTDM_PCIOut0 + n);
         WriteRegister(ivars->pciDevice, ivars->barMemoryIndex,
                       kRegOutputRouting + n * 4,
-                      src | kRoutingEnable);
+                      (kTDM_PCIOut0 + n) | kRoutingEnable);
     }
-    STLOG("Output routing: ch0/1 ← Mixer0/1 out (128/129), ch2-%u ← PCI_OUT (enabled)",
+    STLOG("Output routing: ch0-%u ← PCI_OUT (enabled); no mixer feeds an output",
           kMaxChannelsPerPort - 1);
 
     // ── 21c. Input routing: map XLink RX inputs → A2H DMA channels ────────
@@ -6522,9 +6602,17 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // The ThunderBridge card FPGA has a low-latency mixer: 64 fixed inputs (XLink RX
     // hardware inputs) + one RETURN per mixer (must be a PCI_OUT host-playback slot),
     // emitting TDM slot 128+m. Physical mixers: 0=A-L, 1=A-R. We feed host playback
-    // (PCI_OUT0/1) into Mixer0(L)/Mixer1(R) returns at unity, so main-stereo playback
-    // flows host → card mixer → XLink → Symphony IO DAC (output routing above sends
-    // slots 128/129 to XLink ch0/1). The 32 fixed inputs stay muted (coeffs cleared).
+    // (PCI_OUT0/1) into Mixer0(L)/Mixer1(R) returns at unity: the original card
+    // mixer's own start (Software Return 1-2 at 0 dB, unmuted, Master at 0 dB:
+    // og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:30-50 and
+    // ResetToDefaults at :1758-1798). No output plays a mixer until the app
+    // routes one (step 21b), so none of this is heard before then. The fixed
+    // inputs stay at zero coefficients, as the original card driver's
+    // Mixer::init left them (step 21d): the original's strips came up unmuted
+    // at 0 dB only once its daemon had written the mixer, and here Maestro
+    // writes a mixer in full before it routes it. Unmuting them in the driver
+    // would put live inputs on an output the moment a mixer is routed by
+    // anything that has not written it.
     //
     // This replaces the IO-unit-mixer (0x31/0xE4) approach, which is USB-only and was
     // silent on Thunderbolt. Evidence (original Apogee source): Sym64Mixer.cpp (return
@@ -6560,7 +6648,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                       MixerCoefOffset(3, 129), kMixerUnityCoeff);
         ivars->mixerSwReturnSource[0] = 0;
         ivars->mixerSwReturnSource[1] = 0;
-        STLOG("Card mixer: host PCI_OUT0/1 → Mixer0/1 return @ unity (0x%08x); out → XLink ch0/1",
+        STLOG("Card mixer: host PCI_OUT0/1 → mixer returns @ unity (0x%08x); no mixer is routed to an output",
               kMixerUnityCoeff);
     }
 
@@ -7447,8 +7535,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                 if (ret != kIOReturnSuccess) {
                     STERR("Audio: AddControl(volume) failed: 0x%x", ret);
                 } else {
-                    STLOG("Audio: Output volume control added (-64..0 dB, init=%.1f, target=%{public}s)",
-                          initialMonitorDb, initialLineMonitor ? "HP1" : "speakers");
+                    STLOG("Audio: Output volume control added (-64..0 dB, init=%.1f, speakers%{public}s)",
+                          initialMonitorDb, initialLineMonitor ? " in Line mode: the control does nothing" : "");
                 }
             } else {
                 STERR("Audio: IOUserAudioLevelControl::Create failed");
@@ -7475,14 +7563,18 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
 
             ivars->lastVolumeDb = initialMonitorDb;
             ivars->lastMuteState = initialMonitorMute;
-            // Preserve the restored mode selected above.  Resetting this to speakers
-            // here makes a persisted Line mode send subsequent Core Audio volume/mute
-            // changes to the wrong hardware target after reconnect.
-            ivars->monitorOutputTarget = initialLineMonitor ? 1 : 0;
+            // The keys' output is the speakers until the app chooses another
+            // (selector 15); the speaker mode read above only decides whether
+            // the speakers can be moved.
+            ivars->monitorOutputTarget = kSymphonyMonitorOutputSpeakers;
+            ivars->unitBMonitorOutputTarget = kSymphonyMonitorOutputSpeakers;
+            ivars->lineMode = initialLineMonitor;
             ivars->speakerAttenuation = initialSpeakerAttenuation;
             ivars->speakerMute = initialSpeakerMute;
             ivars->hp1Attenuation = initialHP1Attenuation;
             ivars->hp1Mute = initialHP1Mute;
+            ivars->hp2Attenuation = initialHP2Attenuation;
+            ivars->hp2Mute = initialHP2Mute;
             ivars->runtimeTxSeq = 0;
             ivars->symphonyAddr = 1;  // First Symphony IO on XLink bus (assigned during enum)
             for (int mixer = 0; mixer < 2; mixer++) {
@@ -8226,43 +8318,53 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                         PublishSelectedMonitor(ivars);
                     } else {
                         const bool b = ivars->monitorDeviceB;
-                        const bool hp = (b ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget) == 1;
                         const bool converter = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
+                        // The app's Audio Output choice: 0 speakers, 1/2 a headphone
+                        // (the headphone's index is kind - 1).
+                        const unsigned kind = SelectedMonitorKind(ivars, b);
+                        // Nothing to move: Speakers chosen in Line mode
+                        // (SymphonyIO.cpp:2345-2351), or "None" on converters. The
+                        // control is put back to what it showed and nothing is written.
+                        const bool inert = converter ? ivars->converterKeysOff : SelectedMonitorInert(ivars, b);
                         // Target and value are consumed together here. No delayed block
                         // re-resolves a physical destination after selection changes.
                         if (ivars->outputVolumeControl) {
                             const float db = ivars->outputVolumeControl->GetDecibelValue();
                             const float diff = db - ivars->lastVolumeDb;
-                            if ((diff > 0.5f || diff < -0.5f) && XLinkTxAdmissible(ivars)) {
+                            if ((diff > 0.5f || diff < -0.5f) && inert) {
+                                ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
+                            } else if ((diff > 0.5f || diff < -0.5f) && XLinkTxAdmissible(ivars)) {
                                 ivars->lastVolumeDb = db;
                                 uint8_t value = static_cast<uint8_t>(db > 0 ? 0 : (db < -64 ? 64 : -db));
                                 if (converter) {
                                     ivars->converterTrimAtten = value;
                                     ApplyConverterTrim(ivars);
                                 } else {
-                                    if (b) { if (hp) ivars->unitBHP1Attenuation = value; else ivars->unitBSpeakerAttenuation = value; }
-                                    else { if (hp) ivars->hp1Attenuation = value; else ivars->speakerAttenuation = value; }
+                                    MonitorAttenuation(ivars, b, kind) = value;
                                     SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
                                         b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
-                                        hp ? kSIOCmd_HeadphoneVolume : kSIOCmd_SpeakerVolume, 0,
+                                        kind ? kSIOCmd_HeadphoneVolume : kSIOCmd_SpeakerVolume, kind ? kind - 1 : 0,
                                         &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
                                 }
                             }
                         }
                         if (ivars->outputMuteControl) {
                             const bool muted = ivars->outputMuteControl->GetControlValue();
-                            if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
+                            if (muted != ivars->lastMuteState && inert) {
+                                ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
+                            } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
                                 ivars->lastMuteState = muted;
                                 uint8_t value = muted ? 1 : 0;
                                 if (converter) {
                                     ivars->converterTrimMuted = muted;
                                     ApplyConverterTrim(ivars);
                                 } else {
-                                    if (b) { if (hp) ivars->unitBHP1Mute = muted; else ivars->unitBSpeakerMute = muted; }
-                                    else { if (hp) ivars->hp1Mute = muted; else ivars->speakerMute = muted; }
+                                    // The Core Audio mute is the chosen output's own mute
+                                    // (SymphonyIO.cpp:2239-2276).
+                                    MonitorMute(ivars, b, kind) = muted;
                                     SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
                                         b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
-                                        hp ? kSIOCmd_HeadphoneMute : kSIOCmd_SpeakerMute, 0,
+                                        kind ? kSIOCmd_HeadphoneMute : kSIOCmd_SpeakerMute, kind ? kind - 1 : 0,
                                         &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
                                 }
                             }
@@ -10120,16 +10222,18 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 PublishMicGain(ivars, value);
         }
         if (payload && payloadLen == 1) {
-            bool speaker = command == kSIOCmd_SpeakerVolume || command == kSIOCmd_SpeakerMute;
-            bool hp1 = (command == kSIOCmd_HeadphoneVolume || command == kSIOCmd_HeadphoneMute) && value == 0;
-            if (speaker || hp1) {
+            // A level or mute set elsewhere (Maestro's knobs): kept per output,
+            // and shown on the controls when it is the keys' output.
+            const bool speaker = command == kSIOCmd_SpeakerVolume || command == kSIOCmd_SpeakerMute;
+            const bool headphone = (command == kSIOCmd_HeadphoneVolume || command == kSIOCmd_HeadphoneMute) && value <= 1;
+            if (speaker || headphone) {
                 const bool b = port == 1;
-                if (command == kSIOCmd_SpeakerVolume) (b ? ivars->unitBSpeakerAttenuation : ivars->speakerAttenuation) = payload[0];
-                if (command == kSIOCmd_SpeakerMute) (b ? ivars->unitBSpeakerMute : ivars->speakerMute) = payload[0] != 0;
-                if (command == kSIOCmd_HeadphoneVolume) (b ? ivars->unitBHP1Attenuation : ivars->hp1Attenuation) = payload[0];
-                if (command == kSIOCmd_HeadphoneMute) (b ? ivars->unitBHP1Mute : ivars->hp1Mute) = payload[0] != 0;
-                const bool selectedHP = (b ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget) == 1;
-                if (b == ivars->monitorDeviceB && selectedHP == hp1) PublishSelectedMonitor(ivars);
+                const unsigned kind = speaker ? 0 : value + 1;
+                if (command == kSIOCmd_SpeakerVolume || command == kSIOCmd_HeadphoneVolume)
+                    MonitorAttenuation(ivars, b, kind) = payload[0];
+                else
+                    MonitorMute(ivars, b, kind) = payload[0] != 0;
+                if (b == ivars->monitorDeviceB && SelectedMonitorKind(ivars, b) == kind) PublishSelectedMonitor(ivars);
             }
         }
         // Host input names follow the capture routes and S/PDIF Coax Replaces.
@@ -10185,28 +10289,41 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             __atomic_store_n(&ivars->sessionCoaxMirror[value], payload[0], __ATOMIC_RELEASE);
             NoteCoaxBoardType(ivars, value);
         }
-        // Legacy SymphonyIO::UpdateMainOutputChannelMode makes Line (mode 0)
-        // an HP1 monitor target.  The HAL exposes one volume/mute control, so
-        // remember that target only after the hardware mode write succeeds;
-        // subsequent coalesced HAL writes then use 0x23/0x24 for HP1.
+        // The speaker mode only decides whether the speakers can be moved by
+        // the keys (Off, i.e. Line: they cannot). It never changes the keys'
+        // output: that is the app's choice (SetMonitorOutput). Remembered
+        // only after the hardware mode write succeeded.
         if ((port == 0 || port == 1) && command == kSIOCmd_SpeakerMode && payload && payloadLen >= 1 &&
             !__atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
-            const uint8_t target = payload[0] == 0 ? static_cast<uint8_t>(1)
-                                                   : static_cast<uint8_t>(0);
+            const bool line = payload[0] == 0;
             if (port == 1) {
-                __atomic_store_n(&ivars->unitBMonitorOutputTarget, target, __ATOMIC_RELEASE);
+                __atomic_store_n(&ivars->unitBLineMode, line, __ATOMIC_RELEASE);
             } else {
-                __atomic_store_n(&ivars->monitorOutputTarget, target, __ATOMIC_RELEASE);
+                __atomic_store_n(&ivars->lineMode, line, __ATOMIC_RELEASE);
             }
 
             if ((port == 1) == ivars->monitorDeviceB) PublishSelectedMonitor(ivars);
-            STLOG("Monitor target: unit=%{public}s mode=%u target=%{public}s", port ? "B" : "A",
-                  payload[0], payload[0] == 0 ? "HP1" : "speakers");
+            STLOG("Monitor: unit=%{public}s speaker mode=%u%{public}s", port ? "B" : "A",
+                  payload[0], line ? " (Line: the keys do not move the speakers)" : "");
         }
         result = kIOReturnSuccess;
     });
     if (namesChanged) ScheduleChannelNames(ivars, this);
     return result;
+}
+
+// Unit B's Headphone 2 level and mute, read from the unit. On xlinkQueue.
+static bool ReadUnitBHeadphone2(SymphonyThunderbridge_IVars *ivars)
+{
+    uint8_t level = 0, mute = 0;
+    if (!ReadVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink2TX, kRegXLink2RX, 1,
+                             kSIOCmd_HeadphoneVolume, 1, &level, 1, ivars->runtimeTxSeq2, ivars->isLegacyPCIe2100) ||
+        !ReadVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, kRegXLink2TX, kRegXLink2RX, 1,
+                             kSIOCmd_HeadphoneMute, 1, &mute, 1, ivars->runtimeTxSeq2, ivars->isLegacyPCIe2100))
+        return false;
+    ivars->unitBHP2Attenuation = level > 64 ? 64 : level;
+    ivars->unitBHP2Mute = mute != 0;
+    return true;
 }
 
 // Select which configured Symphony I/O owns the single Core Audio volume/mute
@@ -10239,7 +10356,13 @@ kern_return_t SymphonyThunderbridge::SetMonitorDevice(uint32_t unit)
                     return;
                 }
             }
-            ivars->unitBMonitorOutputTarget = values[0] == 0 ? 1 : 0;
+            // Headphone 2 only when it is unit B's Audio Output: nothing
+            // else needs its level.
+            if (ivars->unitBMonitorOutputTarget == kSymphonyMonitorOutputHP2 && !ReadUnitBHeadphone2(ivars)) {
+                result = kIOReturnIOError;
+                return;
+            }
+            ivars->unitBLineMode = values[0] == 0;
             ivars->unitBSpeakerAttenuation = values[1];
             ivars->unitBSpeakerMute = values[2] != 0;
             ivars->unitBHP1Attenuation = values[3];
@@ -10247,6 +10370,67 @@ kern_return_t SymphonyThunderbridge::SetMonitorDevice(uint32_t unit)
         }
         ivars->monitorDeviceB = unit == 1;
         PublishSelectedMonitor(ivars);
+    });
+    return result;
+}
+
+// The app's "Audio Output" choice for one unit: which of its outputs the Mac's
+// volume and mute controls move. The original kept this per unit as
+// m_MonitorOutput (og_source/symphonymk1/ext/maestrolink/Software/
+// SymphonyIO.cpp:2410-2445) and sent a Core Audio volume or mute set to that
+// output (:2239-2276, :2345-2395). Unit B's choice is kept while unit A owns
+// the controls and takes effect when unit B is selected (SetMonitorDevice).
+// Converters only (our addition; the original had no working volume there):
+// 1 = the card mixer trim, 0 = "None", which puts the trim back to 0 dB,
+// unmuted, and makes the controls do nothing.
+kern_return_t SymphonyThunderbridge::SetMonitorOutput(uint32_t unit, uint32_t output)
+{
+    if (!ivars || unit > 1 || output > kSymphonyMonitorOutputHP2) return kIOReturnBadArgument;
+    IODispatchQueue *q = ivars->xlinkQueue;
+    if (!q) return kIOReturnNotReady;
+    __block kern_return_t result = kIOReturnSuccess;
+    q->DispatchSync(^{
+        if (__atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
+            if (unit != 0 || output > kSymphonyMonitorOutputSpeakers) {
+                result = kIOReturnUnsupported;   // no speakers or headphones on converters
+                return;
+            }
+            const bool off = output == kSymphonyMonitorOutputNone;
+            if (ivars->converterKeysOff == off) return;
+            ivars->converterKeysOff = off;
+            if (off) {
+                ivars->converterTrimAtten = 0;
+                ivars->converterTrimMuted = false;
+                // Not reachable now: link recovery puts the trim on the card.
+                if (XLinkTxAdmissible(ivars)) ApplyConverterTrim(ivars);
+            }
+            ivars->lastVolumeDb = -static_cast<float>(ivars->converterTrimAtten);
+            ivars->lastMuteState = ivars->converterTrimMuted;
+            if (ivars->outputVolumeControl) ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
+            if (ivars->outputMuteControl) ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
+            __atomic_fetch_add(&ivars->monitorGeneration, 1, __ATOMIC_RELEASE);
+            STLOG("Volume keys: converters, %{public}s", off ? "None (trim back to 0 dB, unmuted)" : "card mixer level");
+            return;
+        }
+        if (output == kSymphonyMonitorOutputNone) {
+            result = kIOReturnBadArgument;   // "None" exists for converters only
+            return;
+        }
+        if (unit == 1 && (!ivars->unitBConfigured || ivars->portMode != 64)) {
+            result = kIOReturnNotReady;
+            return;
+        }
+        uint8_t &target = unit ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget;
+        if (target == output) return;
+        // Unit B's Headphone 2 has not been read yet when it becomes the
+        // output the controls show.
+        if (unit == 1 && output == kSymphonyMonitorOutputHP2 && ivars->monitorDeviceB) {
+            if (!XLinkTxAdmissible(ivars)) { result = kIOReturnNotReady; return; }
+            if (!ReadUnitBHeadphone2(ivars)) { result = kIOReturnIOError; return; }
+        }
+        __atomic_store_n(&target, static_cast<uint8_t>(output), __ATOMIC_RELEASE);
+        if ((unit == 1) == ivars->monitorDeviceB) PublishSelectedMonitor(ivars);
+        STLOG("Volume keys: unit %{public}s output %u (1 speakers, 2 HP1, 3 HP2)", unit ? "B" : "A", output);
     });
     return result;
 }
@@ -10296,20 +10480,24 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
                 if (rate >= 32000 && rate <= 200000 && response[4] <= 1 && response[7] <= 2 &&
                     response[10] <= 1 && response[11] <= 1 && response[9] <= (response[8] == 2 ? 64 : 127)) {
                     bool publish = false;
-                    const bool hp = (port ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget) == 1;
+                    // Front panel selection: 0 = HP1, 1 = HP2, 2 = speaker
+                    // (SymphonyIOVendorSpecific.h:1010-1012).
+                    const unsigned selected = SelectedMonitorKind(ivars, port != 0);
                     if (response[10] || ivars->monitorKnobChanging[port]) {
                         if (response[8] == 2) {
                             (port ? ivars->unitBSpeakerAttenuation : ivars->speakerAttenuation) = response[9];
-                            publish = !hp;
-                        } else if (response[8] == 0) {
-                            (port ? ivars->unitBHP1Attenuation : ivars->hp1Attenuation) = response[9] > 64 ? 64 : response[9];
-                            publish = hp;
+                            publish = selected == 0;
+                        } else if (response[8] <= 1) {
+                            const unsigned kind = response[8] + 1u;
+                            MonitorAttenuation(ivars, port != 0, kind) = response[9] > 64 ? 64 : response[9];
+                            publish = selected == kind;
                         }
                     }
                     ivars->monitorKnobChanging[port] = response[10] != 0;
                     if (response[7] && response[7] != ivars->monitorMuteAll[port]) {
                         (port ? ivars->unitBSpeakerMute : ivars->speakerMute) = response[7] == 2;
                         (port ? ivars->unitBHP1Mute : ivars->hp1Mute) = response[7] == 2;
+                        (port ? ivars->unitBHP2Mute : ivars->hp2Mute) = response[7] == 2;
                         publish = true;
                     }
                     ivars->monitorMuteAll[port] = response[7];

@@ -36,7 +36,20 @@
 #define kSelectorSetMonitorDevice 12         // input: SymphonyMonitorDeviceInput
 #define kSelectorLoopSync       13
 #define kSelectorPublishMicGain  14 // host observation only; never sends hardware
-#define kSelectorCount          15
+// Selector 15 (dext 142+): which output of a unit the Mac's volume and mute
+// controls move. input: SymphonyMonitorOutputInput.
+#define kSelectorSetMonitorOutput 15
+#define kSelectorCount          16
+
+// The values of SymphonyMonitorOutputInput.output. 1-3 are the original's
+// eSymphonyIO_MonitorOutput (og_source/symphonymk1/ext/SymphonyIO/generic/
+// Products/SymphonyIO/SymphonyIOVendorSpecific.h:977-982). On a cable of
+// converters only, 1 is the card mixer level (the default there) and 0 turns
+// the keys off; 0 is refused for a Symphony I/O, 2 and 3 for converters.
+#define kSymphonyMonitorOutputNone      0u
+#define kSymphonyMonitorOutputSpeakers  1u
+#define kSymphonyMonitorOutputHP1       2u
+#define kSymphonyMonitorOutputHP2       3u
 
 // Version 1, 24 bytes. Gain is integer dB; lane 0 = Mic, 1 = Instrument.
 typedef struct { uint32_t magic, version, port, channel, lane, gain; } SymphonyObservedGainInput;
@@ -84,6 +97,12 @@ typedef struct {
     uint32_t magic; // kSymphonyUCMagic
     uint32_t unit;  // 0 = unit A, 1 = unit B
 } SymphonyMonitorDeviceInput; // 8 bytes
+
+typedef struct {
+    uint32_t magic;  // kSymphonyUCMagic
+    uint32_t unit;   // 0 = unit A, 1 = unit B
+    uint32_t output; // kSymphonyMonitorOutput*
+} SymphonyMonitorOutputInput; // 12 bytes
 
 // Output of kSelectorReadMeters — a snapshot of the card FPGA meter DMA buffer.
 // Per word: peak magnitude in bits[31:24] (dB = 20*log10(peak/256)); over = bit1.

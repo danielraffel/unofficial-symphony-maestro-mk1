@@ -419,7 +419,7 @@ link = src[src.index("static bool ConfigureSymphonyLink"):src.index("// ── S
 read = link.index("kSIOCmd_OptionBoardType")
 cap = link.index("19b-2. Capture")
 assert read < cap
-capture = link[cap:link.index("19b-3. Mute mixer")]
+capture = link[cap:link.index("19b-3. (dext 142) No mixer strip")]
 assert "SymphonyCaptureSource(slot1Type, slot1Known, host)" in capture
 assert "for (int half = 0; half < 2; half++)" in capture and "for (int n = 0; n < 16; n++)" in capture
 assert "kSIOSrc_IOBoard0Ch0 + n" not in capture and "kSIOSrc_IOBoard1Ch0 + n" not in capture

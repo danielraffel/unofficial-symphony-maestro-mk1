@@ -44,7 +44,8 @@ cat > "$TMP/t.cpp" <<'CPP'
 static_assert(kSelectorReadDriverBuild == 6, "app asks selector 6");
 static_assert(kSelectorRetireForUpgrade == 7, "7 is the released retire selector");
 static_assert(kSelectorReadPort2State == 8, "app asks selector 8 for port 2");
-static_assert(kSelectorReadUnitB == 11 && kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13 && kSelectorPublishMicGain == 14 && kSelectorCount == 15, "old selectors unchanged; 12 monitor device, 13 Loop Sync");
+static_assert(kSelectorReadUnitB == 11 && kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13 && kSelectorPublishMicGain == 14 && kSelectorSetMonitorOutput == 15 && kSelectorCount == 16, "old selectors unchanged; 12 monitor device, 13 Loop Sync, 15 monitor output");
+static_assert(sizeof(SymphonyMonitorDeviceInput) == 8 && sizeof(SymphonyMonitorOutputInput) == 12, "monitor device is two words, monitor output three");
 static_assert(sizeof(SymphonyObservedGainInput) == 24, "observed gain ABI v1 is six words");
 static_assert(sizeof(SymphonyDriverBuildOutput) == 8, "app reads two words");
 // Different output sizes are what make an old/new mismatch fail safe: an exp64

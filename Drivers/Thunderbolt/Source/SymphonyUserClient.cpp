@@ -145,6 +145,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount = 0,
         .checkStructureOutputSize = 0,
     },
+    [kSelectorSetMonitorOutput] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyMonitorOutputInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = 0,
+    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -449,6 +457,15 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         auto *input = (const SymphonyMonitorDeviceInput *)arguments->structureInput->getBytesNoCopy();
         if (!input || input->magic != kSymphonyUCMagic) return kIOReturnBadArgument;
         return ivars->driver->SetMonitorDevice(input->unit);
+    }
+
+    if (selector == kSelectorSetMonitorOutput) {
+        if (!ivars->driver || !arguments->structureInput ||
+            arguments->structureInput->getLength() != sizeof(SymphonyMonitorOutputInput))
+            return kIOReturnBadArgument;
+        auto *input = (const SymphonyMonitorOutputInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyUCMagic) return kIOReturnBadArgument;
+        return ivars->driver->SetMonitorOutput(input->unit, input->output);
     }
 
     if (selector == kSelectorRetireForUpgrade) {

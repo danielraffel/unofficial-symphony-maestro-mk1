@@ -62,6 +62,7 @@ public:
     kern_return_t ReadUnitBState(uint32_t *outWords);
     kern_return_t PublishObservedMicGain(uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain);
     kern_return_t SetMonitorDevice(uint32_t unit);
+    kern_return_t SetMonitorOutput(uint32_t unit, uint32_t output);
     kern_return_t ReadConverterState(uint32_t *outWords);
     kern_return_t SetConverterConfig(uint32_t config);
     kern_return_t RequestPortMode(uint32_t selectorValue);   // experiment, stage 2

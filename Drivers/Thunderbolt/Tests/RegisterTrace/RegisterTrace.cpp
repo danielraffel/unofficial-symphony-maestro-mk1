@@ -47,8 +47,14 @@ static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 
 #ifdef kSelectorSetMonitorDevice
 static_assert(kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13, "existing selectors unchanged");
 #ifdef kSelectorPublishMicGain
+#ifdef kSelectorSetMonitorOutput
+static_assert(kSelectorPublishMicGain == 14 && kSelectorSetMonitorOutput == 15 && kSelectorCount == 16 &&
+              sizeof(SymphonyObservedGainInput) == 24 && sizeof(SymphonyMonitorOutputInput) == 12,
+              "host gain observation ABI v1; monitor output is selector 15, three words");
+#else
 static_assert(kSelectorPublishMicGain == 14 && kSelectorCount == 15 &&
               sizeof(SymphonyObservedGainInput) == 24, "host gain observation ABI v1");
+#endif
 #else
 static_assert(kSelectorCount == 14, "baseline selector count");
 #endif
@@ -1025,8 +1031,15 @@ static void RunMonitorDeviceChecks()
     uint8_t hp = 44, line = 0;
     CHECK(r.drv->SendVendorCommand(0x23, 0, &hp, 1) == kIOReturnSuccess, "seed A HP1");
     CHECK(gHostAudio.volume->GetDecibelValue() == -21.0f, "nonselected HP1 changed speaker HAL");
-    CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1) == kIOReturnSuccess, "select A Line/HP1");
+    CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1) == kIOReturnSuccess, "select A Line");
+#ifdef kSelectorSetMonitorOutput
+    // dext 142: Line mode no longer points the keys at Headphone 1. With
+    // Speakers chosen the control reads the original's fixed -20 dB.
+    CHECK(gHostAudio.volume->GetDecibelValue() == -20.0f, "Line mode with Speakers chosen must read -20 dB (got %.1f)",
+          gHostAudio.volume->GetDecibelValue());
+#else
     CHECK(gHostAudio.volume->GetDecibelValue() == -44.0f, "Line mode failed to restore HP1");
+#endif
     Irq(r, 1); HostPump();
     CHECK(StoredVendor(r, 0x26) == 21, "Line transition overwrote speakers");
     CHECK(StoredVendor(r, 0x23) == 44, "Line transition overwrote HP1");
@@ -1247,6 +1260,303 @@ static void RunVolumeKeyChecks()
         Finish(o, r);
     }
 }
+
+#ifdef kSelectorSetMonitorOutput
+// ── dext 142: the keys' output is the app's choice ("Audio Output") ────────
+// Speakers by default; Headphone 1 or 2 only when chosen; with Speakers chosen
+// in Line mode nothing is written; converters: the card mixer level or None.
+static uint8_t StoredOn(Run &r, unsigned port, uint8_t cmd, uint32_t value = 0)
+{
+    auto it = r.card.port[port].stored.find(((uint64_t)cmd << 32) | value);
+    return (it == r.card.port[port].stored.end() || it->second.empty()) ? 0xFF : it->second[0];
+}
+
+static void ResetCardAndRecover(Run &r)
+{
+    r.card.phase("FPGA reset");
+    r.drv->SetPowerState(kIOServicePowerCapabilityOff);
+    r.card.powerCycleFPGA();
+    r.drv->SetPowerState(kIOServicePowerCapabilityOn);
+    r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+    r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+}
+
+static float ShownDb() { return gHostAudio.volume->GetDecibelValue(); }
+
+// Every card output channel direct, none on a mixer output slot. exact: channel
+// n plays software output n. Otherwise (converters, whose routing layer places
+// the units and leaves unused entries disabled) every enabled entry plays a
+// software output.
+static void CheckOutputsDirect(const char *what, Run &r, uint32_t channels, bool exact)
+{
+    uint32_t enabled = 0;
+    for (uint32_t n = 0; n < channels; n++) {
+        const uint32_t word = r.card.reg[kRegOutputRouting + n * 4];
+        const uint32_t slot = word & 0xFFu;
+        if (!(word & kRoutingEnable)) continue;
+        enabled++;
+        CHECK(slot >= kTDM_PCIOut0 && slot < kTDM_PCIOut0 + 64,
+              "%s: output %u is not fed from a software output (0x%03x)", what, n, word);
+        CHECK(slot < kTDM_Mixer0Out, "%s: output %u is on a mixer (0x%03x)", what, n, word);
+    }
+    CHECK(enabled > 0, "%s: no output is enabled", what);
+    for (uint32_t n = 0; n < channels; n++) {
+        const uint32_t word = r.card.reg[kRegOutputRouting + n * 4];
+        if (exact) CHECK(word == ((kTDM_PCIOut0 + n) | kRoutingEnable), "%s: output %u = 0x%03x (want 0x%03x)",
+                         what, n, word, (kTDM_PCIOut0 + n) | kRoutingEnable);
+    }
+}
+
+static bool Sent(Run &r, unsigned port, uint8_t cmd)
+{
+    auto &w = r.card.port[port].vendorWrites;
+    return std::find(w.begin(), w.end(), cmd) != w.end();
+}
+
+static void RunMonitorOutputChecks()
+{
+    // 1. One Symphony I/O.
+    {
+        Options o; o.name = "audio output: unit A"; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        // The start-up table: direct, and no unit mixer strip muted.
+        CheckOutputsDirect("Symphony I/O on port 1, after Start", r, 32, true);
+        CHECK(!Sent(r, 0, 0xB3), "%s: Start still mutes the unit's mixer inputs (0xB3)", o.name);
+        // Default: the speakers.
+        PressVolume(r, -31.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 0, 0x26) == 31 && StoredOn(r, 0, 0x27) == 1, "%s: default output is not the speakers (%u/%u)",
+              o.name, StoredOn(r, 0, 0x26), StoredOn(r, 0, 0x27));
+        PressMute(r, false);
+        // Refusals.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputNone) == kIOReturnBadArgument, "%s: None accepted for a Symphony I/O", o.name);
+        CHECK(r.drv->SetMonitorOutput(0, 4) == kIOReturnBadArgument, "%s: output 4 accepted", o.name);
+        CHECK(r.drv->SetMonitorOutput(2, kSymphonyMonitorOutputHP1) == kIOReturnBadArgument, "%s: unit 2 accepted", o.name);
+        CHECK(r.drv->SetMonitorOutput(1, kSymphonyMonitorOutputHP1) == kIOReturnNotReady, "%s: unit B accepted at 32 channels", o.name);
+        CHECK(ShownDb() == -31.0f, "%s: a refused choice moved the control (%.1f)", o.name, ShownDb());
+        // Headphone 1: the control shows its level (18 in the fake), and the
+        // keys reach 0x23/0x24 with index 0 only.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: HP1 refused", o.name);
+        CHECK(ShownDb() == -18.0f && !gHostAudio.mute->GetControlValue(), "%s: HP1 chosen, control at %.1f (want -18)", o.name, ShownDb());
+        Irq(r, 1); HostPump();
+        CHECK(StoredOn(r, 0, 0x26) == 31 && StoredOn(r, 0, 0x23, 0) == 18, "%s: choosing HP1 wrote a level", o.name);
+        PressVolume(r, -40.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 0, 0x23, 0) == 40 && StoredOn(r, 0, 0x24, 0) == 1, "%s: HP1 keys gave %u/%u (want 40/1)",
+              o.name, StoredOn(r, 0, 0x23, 0), StoredOn(r, 0, 0x24, 0));
+        CHECK(StoredOn(r, 0, 0x26) == 31 && StoredOn(r, 0, 0x27) == 0, "%s: HP1 keys moved the speakers", o.name);
+        CHECK(StoredOn(r, 0, 0x23, 1) == 30 && StoredOn(r, 0, 0x24, 1) == 0, "%s: HP1 keys moved HP2", o.name);
+        // Headphone 2: its level (30 in the fake), index 1.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP2) == kIOReturnSuccess, "%s: HP2 refused", o.name);
+        CHECK(ShownDb() == -30.0f && !gHostAudio.mute->GetControlValue(), "%s: HP2 chosen, control at %.1f (want -30)", o.name, ShownDb());
+        PressVolume(r, -41.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 0, 0x23, 1) == 41 && StoredOn(r, 0, 0x24, 1) == 1, "%s: HP2 keys gave %u/%u (want 41/1)",
+              o.name, StoredOn(r, 0, 0x23, 1), StoredOn(r, 0, 0x24, 1));
+        CHECK(StoredOn(r, 0, 0x23, 0) == 40 && StoredOn(r, 0, 0x26) == 31, "%s: HP2 keys moved HP1 or the speakers", o.name);
+        PressMute(r, false);
+        // A level set elsewhere (Maestro's knob) shows when it is the chosen output only.
+        uint8_t level = 50;
+        CHECK(r.drv->SendVendorCommand(0x23, 1, &level, 1) == kIOReturnSuccess, "%s: HP2 knob", o.name);
+        CHECK(ShownDb() == -50.0f, "%s: an HP2 level set elsewhere is not shown (%.1f)", o.name, ShownDb());
+        level = 9;
+        CHECK(r.drv->SendVendorCommand(0x23, 0, &level, 1) == kIOReturnSuccess, "%s: HP1 knob", o.name);
+        CHECK(r.drv->SendVendorCommand(0x26, 0, &level, 1) == kIOReturnSuccess, "%s: speaker knob", o.name);
+        CHECK(ShownDb() == -50.0f, "%s: another output's level moved the control (%.1f)", o.name, ShownDb());
+        Irq(r, 1); HostPump();
+        CHECK(StoredOn(r, 0, 0x23, 1) == 50, "%s: showing a level echoed a write", o.name);
+        // The front panel turning Headphone 2 (selection 1).
+        r.card.port[0].stored[(uint64_t(0x28) << 32) | 1] = {0,0,172,68,1,0,0,1,1,37,1,0};
+        uint8_t observation[12] = {};
+        CHECK(r.drv->ReadVendorCommand(0x28, 1, observation, 12) == kIOReturnSuccess, "%s: front panel read", o.name);
+        CHECK(ShownDb() == -37.0f, "%s: a front-panel HP2 level is not shown (%.1f)", o.name, ShownDb());
+        Irq(r, 1); HostPump();
+        CHECK(StoredOn(r, 0, 0x23, 1) == 50, "%s: a front-panel observation was echoed to the unit", o.name);
+        // A card reset and the link recovery keep the output, and put the
+        // session's Headphone 2 level back (the fake unit lost nothing, so
+        // the write is what proves it).
+        r.card.port[0].stored.erase(((uint64_t)0x23 << 32) | 1);
+        ResetCardAndRecover(r);
+        CheckOutputsDirect("Symphony I/O on port 1, after a card re-init", r, 32, true);
+        CHECK(!Sent(r, 0, 0xB3), "%s: the re-init mutes the unit's mixer inputs (0xB3)", o.name);
+        CHECK(StoredOn(r, 0, 0x23, 1) == 37, "%s: recovery did not put HP2 back (%u, want 37)", o.name, StoredOn(r, 0, 0x23, 1));
+        CHECK(ShownDb() == -37.0f, "%s: control at %.1f after recovery (want -37)", o.name, ShownDb());
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        PressVolume(r, -44.0f);
+        CHECK(StoredOn(r, 0, 0x23, 1) == 44, "%s: the output was not kept over a re-init (HP2 %u)", o.name, StoredOn(r, 0, 0x23, 1));
+        // Line mode with Speakers chosen: nothing is written, and the controls
+        // go back to what they showed (-20 dB, the speaker's mute).
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: speakers refused", o.name);
+        CHECK(ShownDb() == -9.0f, "%s: speakers chosen, control at %.1f (want -9)", o.name, ShownDb());
+        uint8_t line = 0, stereo = 2;
+        CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1) == kIOReturnSuccess, "%s: Line", o.name);
+        CHECK(ShownDb() == -20.0f, "%s: Line with Speakers chosen reads %.1f (want -20)", o.name, ShownDb());
+        Irq(r, 1); HostPump();
+        const uint64_t seen = r.card.port[0].commandsSeen;
+        const size_t writes = r.card.port[0].vendorWrites.size();
+        PressVolume(r, -5.0f); PressMute(r, true);
+        PressVolume(r, -60.0f); PressMute(r, false);
+        CHECK(r.card.port[0].commandsSeen == seen && r.card.port[0].vendorWrites.size() == writes,
+              "%s: Line with Speakers chosen wrote to the unit (%llu commands)", o.name,
+              (unsigned long long)(r.card.port[0].commandsSeen - seen));
+        CHECK(StoredOn(r, 0, 0x26) == 9 && StoredOn(r, 0, 0x23, 0) == 9 && StoredOn(r, 0, 0x23, 1) == 44,
+              "%s: Line with Speakers chosen moved a level", o.name);
+        CHECK(ShownDb() == -20.0f && !gHostAudio.mute->GetControlValue(), "%s: the controls were not put back (%.1f)", o.name, ShownDb());
+        // A headphone chosen in Line mode is moved.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: HP1 in Line refused", o.name);
+        CHECK(ShownDb() == -9.0f, "%s: HP1 in Line reads %.1f (want -9)", o.name, ShownDb());
+        PressVolume(r, -22.0f);
+        CHECK(StoredOn(r, 0, 0x23, 0) == 22 && StoredOn(r, 0, 0x26) == 9, "%s: HP1 in Line gave %u", o.name, StoredOn(r, 0, 0x23, 0));
+        // Leaving Line: the speakers are movable again once chosen.
+        CHECK(r.drv->SendVendorCommand(0x25, 0, &stereo, 1) == kIOReturnSuccess, "%s: Stereo", o.name);
+        CHECK(ShownDb() == -22.0f, "%s: leaving Line changed the output (%.1f)", o.name, ShownDb());
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: speakers refused", o.name);
+        PressVolume(r, -15.0f);
+        CHECK(StoredOn(r, 0, 0x26) == 15, "%s: speakers after Line gave %u", o.name, StoredOn(r, 0, 0x26));
+        Finish(o, r);
+    }
+    // 1b. A unit that starts in Line mode: Speakers is still the output, the
+    //     keys write nothing, and Headphone 1 is not moved by itself.
+    {
+        Options o; o.name = "audio output: starts in Line"; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        // The harness has no hook before Start(), so put the unit in Line and
+        // run the set-up again, as after a power cycle.
+        r.card.port[0].stored[(uint64_t)0x25 << 32] = { 0 };
+        ResetCardAndRecover(r);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        CHECK(ShownDb() == -20.0f, "%s: control at %.1f (want -20)", o.name, ShownDb());
+        const size_t writes = r.card.port[0].vendorWrites.size();
+        PressVolume(r, -50.0f); PressMute(r, true);
+        CHECK(r.card.port[0].vendorWrites.size() == writes, "%s: the keys wrote to a unit in Line mode", o.name);
+        CHECK(StoredOn(r, 0, 0x23, 0) == 18, "%s: Headphone 1 moved by itself (%u)", o.name, StoredOn(r, 0, 0x23, 0));
+        Finish(o, r);
+    }
+    // 2. The original PCIe card: the same table.
+    {
+        Options o; o.name = "direct defaults: PCIe card"; o.legacy2100 = true; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        CheckOutputsDirect("PCIe card, after Start", r, 32, true);
+        CHECK(!Sent(r, 0, 0xB3), "%s: Start mutes the unit's mixer inputs", o.name);
+        ResetCardAndRecover(r);
+        CheckOutputsDirect("PCIe card, after a card re-init", r, 32, true);
+        Finish(o, r);
+    }
+    // 3. The app's routes and mixer state are still replayed by a re-init.
+    {
+        Options o; o.name = "direct defaults: app routes replayed"; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        const uint8_t route[3] = { 4, (uint8_t)kTDM_Mixer0Out, 1 };
+        CHECK(r.drv->SendVendorCommand(kThunderboltCardOutputRouteCommand, 0, route, 3) == kIOReturnSuccess, "%s: route", o.name);
+        ResetCardAndRecover(r);
+        CHECK(r.card.reg[kRegOutputRouting + 4 * 4] == ThunderboltCardOutputRouteWord((uint8_t)kTDM_Mixer0Out, true),
+              "%s: the app's route was not replayed (0x%03x)", o.name, r.card.reg[kRegOutputRouting + 4 * 4]);
+        for (uint32_t n = 0; n < 32; n++)
+            if (n != 4) CHECK(r.card.reg[kRegOutputRouting + n * 4] == ((kTDM_PCIOut0 + n) | kRoutingEnable),
+                              "%s: output %u = 0x%03x after the re-init", o.name, n, r.card.reg[kRegOutputRouting + n * 4]);
+        CHECK(r.card.reg[MixerCoefOffset(0, 128)] == kMixerUnityCoeff && r.card.reg[MixerCoefOffset(0, 0)] == 0,
+              "%s: mixer 1 defaults changed (return 0x%08x, input 0x%08x)", o.name,
+              r.card.reg[MixerCoefOffset(0, 128)], r.card.reg[MixerCoefOffset(0, 0)]);
+        Finish(o, r);
+    }
+    // 4. Converters only: the card mixer level, or None.
+    {
+        Options o; o.name = "audio output: converters"; o.port1 = Port::Converters; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        CheckOutputsDirect("converters, after Start", r, 32, false);
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnUnsupported, "%s: HP1 accepted on converters", o.name);
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP2) == kIOReturnUnsupported, "%s: HP2 accepted on converters", o.name);
+        PressVolume(r, -31.0f); PressMute(r, true);
+        CHECK(Mixer1Return(r) == kMixerMuteCoeff, "%s: mute gives 0x%08x", o.name, Mixer1Return(r));
+        // None: the trim is back at 0 dB, unmuted, and the keys do nothing.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputNone) == kIOReturnSuccess, "%s: None refused", o.name);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: None left the trim on (0x%08x)", o.name, Mixer1Return(r));
+        CHECK(ShownDb() == 0.0f && !gHostAudio.mute->GetControlValue(), "%s: None shows %.1f dB", o.name, ShownDb());
+        PressVolume(r, -40.0f); PressMute(r, true);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: the keys trimmed with None chosen (0x%08x)", o.name, Mixer1Return(r));
+        CHECK(ShownDb() == 0.0f && !gHostAudio.mute->GetControlValue(), "%s: None, controls not put back (%.1f)", o.name, ShownDb());
+        CHECK(StoredOn(r, 0, 0x26) == 0xFF && StoredOn(r, 0, 0x23) == 0xFF, "%s: a converter was sent a level", o.name);
+        ResetCardAndRecover(r);
+        CheckOutputsDirect("converters, after a card re-init", r, 32, false);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: None lost over a card reset (0x%08x)", o.name, Mixer1Return(r));
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        PressVolume(r, -12.0f);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: the keys trimmed after a reset with None chosen", o.name);
+        // The card mixer level again: the keys trim from 0 dB.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: level refused", o.name);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff && ShownDb() == 0.0f, "%s: choosing the level changed it", o.name);
+        PressVolume(r, -31.0f);
+        CHECK(Mixer1Return(r) == 0x00e70000, "%s: -31 dB gives 0x%08x", o.name, Mixer1Return(r));
+        Finish(o, r);
+    }
+#ifdef TRACE_HAVE_PORT2_AUDIO
+    // 5. Two units at 64 channels: each has its own output.
+    {
+        Options o; o.name = "audio output: unit B"; o.port2 = Port::Symphony;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        Select(r, 1, "select 64 for audio output", false);
+        CheckOutputsDirect("two units at 64 channels", r, 64, true);
+        CHECK(!Sent(r, 0, 0xB3) && !Sent(r, 1, 0xB3), "%s: a unit's mixer inputs are muted at set-up", o.name);
+        // Unit B's choice is kept while unit A owns the controls.
+        CHECK(r.drv->SetMonitorOutput(1, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: B HP1 refused", o.name);
+        CHECK(ShownDb() == -12.0f, "%s: unit B's choice moved unit A's control (%.1f)", o.name, ShownDb());
+        PressVolume(r, -25.0f);
+        CHECK(StoredOn(r, 0, 0x26) == 25 && StoredOn(r, 1, 0x23, 0) == 0xFF, "%s: unit A keys went elsewhere", o.name);
+        // Unit B selected: its Headphone 1 (18 in the fake).
+        CHECK(r.drv->SetMonitorDevice(1) == kIOReturnSuccess, "%s: select B", o.name);
+        CHECK(ShownDb() == -18.0f, "%s: B HP1 shows %.1f (want -18)", o.name, ShownDb());
+        PressVolume(r, -27.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 1, 0x23, 0) == 27 && StoredOn(r, 1, 0x24, 0) == 1, "%s: B HP1 keys gave %u/%u",
+              o.name, StoredOn(r, 1, 0x23, 0), StoredOn(r, 1, 0x24, 0));
+        CHECK(StoredOn(r, 1, 0x26) == 0xFF && StoredOn(r, 0, 0x23, 0) == 18 && StoredOn(r, 0, 0x26) == 25,
+              "%s: B HP1 keys reached another output", o.name);
+        PressMute(r, false);
+        // Unit B's Headphone 2: read from the unit when chosen (30 in the fake).
+        CHECK(r.drv->SetMonitorOutput(1, kSymphonyMonitorOutputHP2) == kIOReturnSuccess, "%s: B HP2 refused", o.name);
+        CHECK(ShownDb() == -30.0f, "%s: B HP2 shows %.1f (want -30)", o.name, ShownDb());
+        PressVolume(r, -28.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 1, 0x23, 1) == 28 && StoredOn(r, 1, 0x24, 1) == 1, "%s: B HP2 keys gave %u/%u",
+              o.name, StoredOn(r, 1, 0x23, 1), StoredOn(r, 1, 0x24, 1));
+        CHECK(StoredOn(r, 1, 0x23, 0) == 27 && StoredOn(r, 0, 0x23, 1) == 30, "%s: B HP2 keys reached another output", o.name);
+        PressMute(r, false);
+        // Unit B in Line with Speakers chosen: nothing reaches either unit.
+        CHECK(r.drv->SetMonitorOutput(1, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: B speakers refused", o.name);
+        uint8_t line = 0;
+        CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1, 1) == kIOReturnSuccess, "%s: B Line", o.name);
+        CHECK(ShownDb() == -20.0f, "%s: B Line with Speakers chosen reads %.1f", o.name, ShownDb());
+        Irq(r, 1); HostPump();
+        const size_t a = r.card.port[0].vendorWrites.size(), b = r.card.port[1].vendorWrites.size();
+        PressVolume(r, -3.0f); PressMute(r, true);
+        CHECK(r.card.port[0].vendorWrites.size() == a && r.card.port[1].vendorWrites.size() == b,
+              "%s: B Line with Speakers chosen wrote to a unit", o.name);
+        CHECK(ShownDb() == -20.0f && !gHostAudio.mute->GetControlValue(), "%s: B Line, controls not put back", o.name);
+        // Back to unit A: its own output (the speakers), its own level.
+        CHECK(r.drv->SetMonitorDevice(0) == kIOReturnSuccess, "%s: select A", o.name);
+        CHECK(ShownDb() == -25.0f, "%s: unit A shows %.1f (want -25)", o.name, ShownDb());
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP2) == kIOReturnSuccess, "%s: A HP2 refused", o.name);
+        PressVolume(r, -35.0f);
+        CHECK(StoredOn(r, 0, 0x23, 1) == 35 && StoredOn(r, 1, 0x23, 1) == 28, "%s: A HP2 keys gave %u", o.name, StoredOn(r, 0, 0x23, 1));
+        Finish(o, r);
+    }
+    // 6. A Symphony I/O with converters on port 2, and converters on both
+    //    ports: no output on a mixer after Start.
+    {
+        Options o; o.name = "direct defaults: Symphony plus converters"; o.port2 = Port::Converters;
+        o.portCountProperty = 2; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        CheckOutputsDirect("Symphony I/O plus converters, after Start", r, 32, true);
+        Select(r, 1, "select 64 with converters on port 2", false);
+        CheckOutputsDirect("Symphony I/O plus converters at 64", r, 64, false);
+        Finish(o, r);
+    }
+#endif
+}
+#endif
 #endif
 
 // The single-port scenarios. Their traces are the contract: they must not
@@ -4336,6 +4646,9 @@ int main(int argc, char **argv)
 #endif
 #if defined(TRACE_HAVE_PORT2_AUDIO) && defined(kSelectorSetMonitorDevice)
     RunMonitorDeviceChecks();
+#endif
+#if defined(TRACE_HAVE_CONVERTER_VOLUME) && defined(kSelectorSetMonitorOutput)
+    RunMonitorOutputChecks();
 #endif
 #ifdef TRACE_HAVE_CONVERTER_PARITY
     RunConverterParityChecks();
