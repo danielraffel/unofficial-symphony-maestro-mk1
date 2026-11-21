@@ -53,7 +53,9 @@ struct MixerPreferencesTests {
         let preferences = store.mixerPreferences
         let after = USBMixerSavedState.load(preferences: preferences)
         #expect(before == after)
-        #expect(preferences.integer(forKey: "routingMode") == 1)
+        // The removed Input Monitoring setting is not carried into a unit's settings.
+        #expect(preferences.object(forKey: "routingMode") == nil)
+        #expect(!MixerPreferences.legacyKeys.contains("routingMode"))
         for key in MixerPreferences.legacyKeys {
             let old = try #require(defaults.object(forKey: key) as? NSObject)
             let migrated = preferences.object(forKey: key) as? NSObject
@@ -105,11 +107,11 @@ struct MixerPreferencesTests {
         defer { defaults.removePersistentDomain(forName: name) }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         let first = store.mixerPreferences
-        defaults.set(1, forKey: "routingMode")
+        defaults.set(-9.0, forKey: "mixerMasterLevel_0")
         let key = try #require(first.storageKey)
         defaults.removeObject(forKey: key) // interruption before destination materialization
         let resumed = store.mixerPreferences
-        #expect(resumed.integer(forKey: "routingMode") == 0)
+        #expect(resumed.object(forKey: "mixerMasterLevel_0") == nil)
         #expect(defaults.dictionary(forKey: key)?.isEmpty == true)
     }
 }

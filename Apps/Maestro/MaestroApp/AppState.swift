@@ -144,11 +144,68 @@ final class AppState: @unchecked Sendable {
     var cardDiscoveryTask: Task<Void, Never>?
     private var cardDiscoveryTaskGeneration: UUID?
     private weak var cardDiscoveryTaskConnection: AnyObject?
-    var routingModeEpoch: UInt64 = 0
-    var routingModeTask: Task<Void, Never>?
-    var routingModeTaskAppliesInputMutes = false
-    var routingModeTaskMode: Int?
     var usbMixerLifecycleRestoreGeneration: UUID?
+    /// The running USB restore (`restoreUSBUnit`): one at a time per connection.
+    @ObservationIgnored var usbRestoreTask: Task<Void, Never>?
+    /// Which mixers the USB restore has written in full on this connection,
+    /// since the unit last came back from a power cycle. Output Routing sends
+    /// a route fed by a mixer only when that mixer is listed here.
+    @ObservationIgnored var usbMixersWritten: (generation: UUID, mixers: [Bool])?
+    /// The connection generation whose ordered USB restore ran to the end.
+    @ObservationIgnored var usbRestoredGeneration: UUID?
+    /// The USB restore did not finish (a mixer or a route is still owed):
+    /// tried again by the meter loop, with a growing pause.
+    @ObservationIgnored var usbRestoreOwed = false
+    /// The installed USB helper is older than this app (a custom install
+    /// that left the USB support out): no mixer is written under it.
+    @ObservationIgnored var usbHelperOutdated = false
+    /// Mixer edits are not sent over USB while the installed helper is older
+    /// than this app (see `MixerEditorState.canEdit`).
+    var usbMixerEditsBlockedByOldHelper: Bool { usbHelperOutdated && device is XPCDeviceConnection }
+    @ObservationIgnored var usbRestoreServiceTask: Task<Void, Never>?
+    @ObservationIgnored var usbRestoreRetryAttempts = 0
+    @ObservationIgnored var usbRestoreRetryAfter = Date.distantPast
+    /// The helper connection the USB restore last ran on: a helper that
+    /// reconnects re-programs the direct routes, so the restore runs again.
+    @ObservationIgnored var usbRestoredHelperEpoch: UInt64?
+    /// The connection generation whose input routing and device settings the
+    /// restore has sent (a retry of owed mixers or routes leaves them alone).
+    @ObservationIgnored var usbSettingsRestored: (generation: UUID, helperEpoch: UInt64)?
+    /// ThunderBridge: the app asked for the restore (the connection's ledger,
+    /// `ThunderboltDeviceConnection.cardMixers`, says by itself when one is
+    /// owed), whether one is running, and when to try next.
+    @ObservationIgnored var cardOutputTableReplayNeeded = false
+    @ObservationIgnored var cardOutputRestoreRunning = false
+    @ObservationIgnored var cardOutputRetryAttempts = 0
+    @ObservationIgnored var cardOutputRetryAfter = Date.distantPast
+    /// Checks in a row that found the cards or the unit's identity unread,
+    /// and the driver state in which the direct defaults were then written
+    /// (`cardRestoreStillBlocked`).
+    @ObservationIgnored var cardBlockedChecks = 0
+    @ObservationIgnored var cardBlockedConnection: ObjectIdentifier?
+    @ObservationIgnored var cardDirectFallback: (connection: ObjectIdentifier, epoch: UInt64)?
+    /// 64 channels: the pause after a replay that did not complete, and the
+    /// connections on which the reset's default input tables have landed.
+    @ObservationIgnored var twoUnitRetryAttempts = 0
+    @ObservationIgnored var twoUnitRetryAfter = Date.distantPast
+    @ObservationIgnored var twoUnitResetDefaultsSent: (a: ObjectIdentifier, b: ObjectIdentifier)?
+    /// Whose saved state the connection's card mixer marks were written from.
+    @ObservationIgnored var cardRestoreOwner: (connection: ObjectIdentifier, owner: CardRestoreOwner)?
+    /// Counts Output Routing edits, so a restore can tell one happened under it.
+    @ObservationIgnored var outputRouteEdits: UInt64 = 0
+    @ObservationIgnored var outputRouteDeferredSinceSave = false
+    /// A bundle recall has sent its first write (a failure after that leaves
+    /// the unit differing from what is saved).
+    @ObservationIgnored var recallWritesStarted = false
+    /// Pause between a card mixer's writes, and before a whole-mixer write is
+    /// started again after an edit (tests set zero).
+    @ObservationIgnored var cardMixerCommandGap: Duration = CardMixerReplay.commandGap
+    @ObservationIgnored var cardMixerEditQuietWindow: Duration = CardMixerReplay.quietWindow
+    /// Status bar text while saved routing or mixer state is not on the unit
+    /// yet (`updateRestoreStatus`).
+    var restoreStatusNote: String?
+    /// Pause between the strip writes of a USB mixer restore (tests set zero).
+    @ObservationIgnored var usbMixerStripSpacing: Duration = .milliseconds(5)
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
     /// D5: which mixers are restored on which driver instance (keyed by the
     /// driver's own nonce), the stored restore task, and whether launch or
@@ -321,6 +378,7 @@ final class AppState: @unchecked Sendable {
     /// transport, while the existing scanning/error messages remain intact.
     var endpointStatusMessage: String {
         if let hardwareSuspendedNote { return hardwareSuspendedNote }
+        if connectionMode == .hardware, let restoreStatusNote { return restoreStatusNote }
         if endpointDisconnected {
             if let portStatusMessage { return PortStatusMessage.headline(portStatusMessage) }
             return connectionPresentation.endpointLabel
@@ -384,13 +442,10 @@ final class AppState: @unchecked Sendable {
     /// Incremented when USB recovery is detected (meter polling failure→success transition).
     /// MixerView observes via .onChange to re-sync persisted state to hardware.
     var deviceRecoveryCount: Int = 0
-    /// Incremented when routing mode changes (DAW ↔ Direct Monitor).
-    /// MixerView observes via .onChange to apply force-mute/restore.
-    var routingModeChangeCount: Int = 0
     /// Tracks whether meter polling was in a disconnected/failed state.
     private var meterPollWasDisconnected: Bool = false
     /// Debounce guard — prevents rapid recovery events from triggering multiple re-syncs.
-    private var lastRecoveryTime: Date = .distantPast
+    var lastRecoveryTime: Date = .distantPast
 
     /// ThunderBridge remains enumerated when the interface loses power, so its
     /// PCI/Core Audio presence cannot drive lifecycle state. This task polls the
@@ -423,24 +478,36 @@ final class AppState: @unchecked Sendable {
     /// second registration must never be an unbounded exception.
     private var thunderboltExtensionSwapGrace = ExtensionSwapGrace()
     private var thunderboltExtensionSwapGraceActive = false
-    /// Linear trims (SW Return faders, pan, mute) applied to the host-playback
+    /// Linear trims (SW Return fader and mute) applied to the host-playback
     /// peaks that drive the ThunderBridge SW Return meters, so they read the
     /// same as USB, where the proxy meters after its own trims. Refreshed from
     /// the persisted mixer state whenever the mixer saves and when polling starts.
     var softwareReturnMeterGains: [(left: Double, right: Double)] = [(1.0, 1.0), (1.0, 1.0)]
 
-    /// Recompute `softwareReturnMeterGains` from the persisted SW Return state.
+    /// Per mixer, the gain from host playback to the mixer's output over USB
+    /// (`USBMasterMeter.gain`): what its Software Return adds to the Master meter.
+    var usbMasterMeterGains: [Double] = [1.0, 1.0]
+
+    /// Recompute `softwareReturnMeterGains` and `usbMasterMeterGains` from the
+    /// persisted Software Return and Master state.
     @MainActor
     func refreshSoftwareReturnMeterGains() {
         let defaults = mixerPreferences
         // Each mixer has its own mute; the stereo fader's level is stored per
-        // mixer (both sides hold the same value). Pan is shared.
-        softwareReturnMeterGains = (0..<2).map { mixer in
+        // mixer (both sides hold the same value). Software Return has no pan.
+        let returns = (0..<2).map { mixer -> (level: Double, muted: Bool) in
             let saved = MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: defaults)
-            let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? saved.level
-            let right = left
-            return SoftwareReturnMeterGain.gains(
-                leftLevelDB: left, rightLevelDB: right, pan: saved.pan, isMuted: saved.isMuted)
+            return (defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? saved.level,
+                    saved.isMuted)
+        }
+        softwareReturnMeterGains = returns.map {
+            SoftwareReturnMeterGain.gains(
+                leftLevelDB: $0.level, rightLevelDB: $0.level, pan: 0, isMuted: $0.muted)
+        }
+        usbMasterMeterGains = returns.enumerated().map { mixer, own in
+            USBMasterMeter.gain(
+                softwareReturnLevelDB: own.level, softwareReturnMuted: own.muted,
+                masterLevelDB: MixerStateSnapshot.savedMasterLevel(mixer: mixer, preferences: defaults))
         }
     }
 
@@ -561,7 +628,7 @@ final class AppState: @unchecked Sendable {
                     if let count = tb.lastLinkState?.recoveryCount {
                         if let seen = self.thunderboltSeenRecoveryCount, count != seen,
                            self.connectionMode == .hardware {
-                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying input routing")
+                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying output table, mixers and input routing")
                             // D5 never runs across an in-place recovery.
                             self.cancelCardMixerRestore()
                             // The driver lays its capture table out from the
@@ -570,16 +637,26 @@ final class AppState: @unchecked Sendable {
                             // too, so the grid and the replay use the same table.
                             self.retryFailedIdentityOnRecovery()
                             await self.readCardTypes()
+                            // The whole ordered sequence, not the input
+                            // routing alone: the output table, the card
+                            // mixers, the routes they feed, then the input
+                            // routing.
+                            self.invalidateCardOutputTable(tb)
                             if self.recallInFlight {
                                 self.replayDeferral.request()
                             } else if self.usesTwoUnitReplay {
                                 self.twoUnitReplayNeeded = true
                             } else {
+                                await self.syncOutputRoutingToHardware()
                                 await self.syncInputRoutingToHardware()
                             }
                         }
                         self.thunderboltSeenRecoveryCount = count
                     }
+                    // A card re-init or a restarted driver without a recovery
+                    // count change, a failed write, a deferred route or mixer
+                    // edit: the restore runs again until nothing is owed.
+                    await self.serviceCardOutputTable(tb)
                     if self.inputRoutingReplayNeeded, !self.recallInFlight,
                        self.connectionMode == .hardware {
                         self.inputRoutingReplayNeeded = false
@@ -2492,13 +2569,20 @@ final class AppState: @unchecked Sendable {
         // I/O table below (same product ID) and never behind the card
         // detection guard (a converter has no option cards).
         if converterRoutingSurface {
+            // The Symphony I/O output table (and the rule that waits for a
+            // card mixer to be written) does not apply to converters.
+            (device as? ThunderboltDeviceConnection)?.cardMixers.isBypassed = true
             // Nothing is replayed while a unit is not identified (no layout).
             // From the default placement first, so no route the driver kept
             // from before stays on the card.
             await replayConverterRouting(resetFirst: true)
             return
         }
-        guard connectionMode != .hardware || unitAIdentity != nil else { return }
+        // ThunderBridge: the restore checks the unit's identity itself, so
+        // that an unidentified unit is retried and said in the status bar.
+        guard device is ThunderboltDeviceConnection || connectionMode != .hardware || unitAIdentity != nil else {
+            return
+        }
         // The cache is keyed by product ID, so ThunderBridge (0x12) and the USB
         // modes keep separate tables. On ThunderBridge the dext replays its
         // default routing on every Start and in-place recovery, so without this
@@ -2507,27 +2591,45 @@ final class AppState: @unchecked Sendable {
         // after a card change, so on ThunderBridge require this session's card
         // types to have been detected (the same provenance rule Reset Routing
         // applies) before writing anything.
-        if transportType == .thunderbolt,
-           let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
-            print("[Maestro] syncOutputRouting: skipped on ThunderBridge — \(reason)")
+        if let tb = device as? ThunderboltDeviceConnection, transportType == .thunderbolt {
+            // The ordered restore: the table, the card mixers it routes, then
+            // the routes they feed (`restoreThunderboltOutputTable`).
+            tb.cardMixers.isBypassed = false
+            await restoreThunderboltOutputTable(tb)
             return
         }
+        await syncUSBOutputRouting(device)
+    }
+
+    /// USB: the saved Output Routing rows over the helper's direct default
+    /// table (it programs that every time it configures the unit). Returns
+    /// whether every saved route is on the unit.
+    ///
+    /// A route fed by a mixer the restore has not written is not skipped: an
+    /// earlier session's route may still be on the unit, so its destination
+    /// is disabled (the "no source" byte the grid writes when a route is
+    /// removed) and the route stays owed until the mixer is written.
+    ///
+    /// `mixerFedOnly`: the last step of the USB restore. Its first step
+    /// (`usbPointRoutesAwayFromMixers`) has already written the direct routes.
+    @MainActor
+    @discardableResult
+    func syncUSBOutputRouting(_ device: any DeviceConnection, mixerFedOnly: Bool = false) async -> Bool {
         let id = device.identifier
         let cache = peripheralRoutingCache(direction: "output")
-        if transportType == .thunderbolt {
-            Self.migrateMainPairToMixer(cache: cache, mixerRow: id.mode.channelCount / 2,
-                                        board1: primaryBoardType, board2: secondaryBoardType)
-        }
-        guard let routes = cache.loadMulti(), !routes.isEmpty else {
-            print("[Maestro] syncOutputRouting: no cached routes, proxy defaults apply")
-            return
+        let routes = cache.loadMulti() ?? [:]
+        guard !routes.isEmpty else {
+            print("[Maestro] syncOutputRouting: no saved routes, the direct default stands")
+            syncUSBHelperSoftwareReturn()
+            return true
         }
         let board1 = self.primaryBoardType
         let board2 = self.secondaryBoardType
         let swPairs = (id.mode.channelCount) / 2
-        var written = 0
+        var written = 0, failed = 0, withheld = 0
         for (row, cols) in routes.sorted(by: { $0.key < $1.key }) {
             for col in cols.sorted() {
+                guard self.device === device, !hardwareWritesSuspended else { return false }
                 guard let destByte = IOCardType.columnToRoutingByte(
                     col: col, isInput: false, board1: board1, board2: board2
                 ) else { continue }
@@ -2540,13 +2642,37 @@ final class AppState: @unchecked Sendable {
                 } else if row == swPairs + 1 {
                     srcLeft = SymphonyIORoutingAddress.mixer1Base
                 } else { continue }
+                if mixerFedOnly, CardOutputTableOrder.mixer(ofSource: srcLeft) == nil { continue }
                 do {
-                    try await writeOutputRoutePair(destLeft: destByte, srcLeft: srcLeft, device: device)
-                    written += 1
-                } catch {}
+                    // A mixer is routed only once its strips are on the unit
+                    // (`restoreUSBUnit`); `writeOutputRoute` disables the
+                    // destination until then and reports it deferred.
+                    if try await writeOutputRoutePair(destLeft: destByte, srcLeft: srcLeft, device: device,
+                                                      restoring: true) == .deferred {
+                        withheld += 1
+                    } else {
+                        written += 1
+                    }
+                } catch {
+                    failed += 1
+                    print("[Maestro] syncOutputRouting: output \(destByte) ← source \(srcLeft) failed: \(error)")
+                }
             }
         }
-        print("[Maestro] syncOutputRouting: wrote \(written) cached routes to hardware")
+        print("[Maestro] syncOutputRouting: wrote \(written) saved routes to hardware"
+            + (failed == 0 ? "" : ", \(failed) failed")
+            + (withheld == 0 ? "" : ", \(withheld) mixer route(s) owed and their outputs disabled: that mixer's strips are not on the unit yet"))
+        syncUSBHelperSoftwareReturn()
+        return failed == 0 && withheld == 0
+    }
+
+    /// Whether the USB restore has written this mixer in full on this
+    /// connection since the unit last came back (`usbMixersWritten`).
+    @MainActor
+    func usbMixerIsWritten(_ mixer: Int) -> Bool {
+        guard let record = usbMixersWritten, record.generation == unitAGeneration,
+              record.mixers.indices.contains(mixer) else { return false }
+        return record.mixers[mixer]
     }
 
     /// Put the input routing choices saved on this Mac back on a ThunderBridge
@@ -2562,7 +2688,7 @@ final class AppState: @unchecked Sendable {
     func syncInputRoutingToHardware() async {
         guard !hardwareWritesSuspended, connectionMode != .hardware || unitAIdentity != nil else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
-        guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
+        guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return await syncUSBInputRoutingToHardware() }
         // Symphony I/O routing. Nothing is sent to a converter unprompted, the
         // read-back included (see syncDeviceSettingsToHardware).
         guard connectedUnit == nil else {
@@ -2585,7 +2711,13 @@ final class AppState: @unchecked Sendable {
             if ThunderboltInputRoutingMigration.run(routingKey: cache.key) {
                 print("[Maestro] syncInputRouting: cleared input routing saved before 0.8.40 (made on the old grid); the driver's default stands")
             }
-            let writes = InputRoutingReplay.writes(
+            // Once after the routing and mixer reset: the default table first,
+            // because a driver that kept running still has the unit on the
+            // routes the reset removed from this Mac.
+            let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
+            var writes = resetPending
+                ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: thunderboltCaptureSlot1) : []
+            writes += InputRoutingReplay.writes(
                 saved: cache.load() ?? [:], columns: cardLayout.inputRoutingColumns,
                 pairCount: tb.identifier.mode.channelCount / 2)
             var written = 0
@@ -2599,47 +2731,82 @@ final class AppState: @unchecked Sendable {
                     print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
                 }
             }
-            print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) saved input routes")
+            print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) input routes\(resetPending ? " (default table, then saved)" : " (saved)")")
+            if resetPending, written == writes.count, self.device === tb {
+                var cardReset = true
+                if symphonyCardInputs.channelCount > 0 {
+                    cardReset = await applySymphonyCardInputs([:], reset: true)
+                }
+                if cardReset { RoutingMixerReset.clearPending(.thunderboltInputRouting) }
+            }
         }
         await replaySymphonyCardInputs()
         await tb.logInputRoutes()
     }
 
-    static let mainPairMixerMigrationKey = "thunderboltMainPairMixerMigration_v1"
-
-    /// One-time, ThunderBridge only: a saved "Software 1-2 → main pair" becomes
-    /// "Mixer 1 → main pair".
-    ///
-    /// Until 0.8.36 that saved route was quietly sent through card mixer 1, so
-    /// it is what the user has been hearing: Software Return, Master and input
-    /// monitoring all in the path. From 0.8.36 the same route is truly direct.
-    /// Replaying it unchanged would silently remove the mixer from their main
-    /// outputs on update. Relabelling it keeps the sound and makes the grid say
-    /// what is happening; choosing Software 1-2 afterwards gives the direct
-    /// route.
-    static func migrateMainPairToMixer(cache: RoutingStateCache, mixerRow: Int,
-                                       board1: IOCardType, board2: IOCardType,
-                                       defaults: UserDefaults = .standard) {
-        guard !defaults.bool(forKey: mainPairMixerMigrationKey) else { return }
-        defaults.set(true, forKey: mainPairMixerMigrationKey)
-        guard var routes = cache.loadMulti(), let softwarePair = routes[0] else { return }
-        let mainColumn = (0..<64).first {
-            IOCardType.columnToRoutingByte(col: $0, isInput: false, board1: board1, board2: board2)
-                == SymphonyIORoutingAddress.ioBoard0Base
+    /// Over USB the unit holds its capture table until it is power-cycled, and
+    /// comes back at its own default after one. The saved choices are put back
+    /// on connect and after a recovery, as the original did
+    /// (og_source/maestrolink/Software/SymphonyIO.cpp:4692-4701: the routing
+    /// controller's ApplySettingsToHardware in the USB Audio mode). Only rows
+    /// the user picked are written, except once after the routing and mixer
+    /// reset, when the original's default table
+    /// (SymphonyIOUSBAudioRoutingController::ResetInputRouting) goes first so a
+    /// unit that was never power-cycled does not keep the removed routes.
+    /// Card types must have been read this session, as for Reset Routing.
+    @MainActor
+    private func syncUSBInputRoutingToHardware() async {
+        guard let usb = device as? XPCDeviceConnection, connectedUnit == nil else { return }
+        if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
+            print("[Maestro] syncInputRouting: skipped over USB — \(reason)")
+            return
         }
-        guard let mainColumn, softwarePair.contains(mainColumn) else { return }
-        let remaining = softwarePair.subtracting([mainColumn])
-        if remaining.isEmpty { routes.removeValue(forKey: 0) } else { routes[0] = remaining }
-        routes[mixerRow, default: []].insert(mainColumn)
-        cache.save(routes)
-        print("[Maestro] Output routing: saved Software 1-2 → main pair relabelled as Mixer 1 (it always went through the mixer)")
+        let channels = usb.identifier.mode.channelCount
+        let resetPending = RoutingMixerReset.isPending(.usbInputRouting)
+        var writes = resetPending
+            ? SymphonyIODefaultRouting.inputRoutes(
+                board0: .init(analog: primaryBoardType.analogInputChannels,
+                              digital: primaryBoardType.digitalInputChannels),
+                board1: .init(analog: secondaryBoardType.analogInputChannels,
+                              digital: secondaryBoardType.digitalInputChannels),
+                usbChannelCount: channels)
+            : []
+        writes += InputRoutingReplay.writes(
+            saved: peripheralRoutingCache(direction: "input").load() ?? [:],
+            columns: cardLayout.inputRoutingColumns, pairCount: channels / 2)
+        guard !writes.isEmpty else { return }
+        var written = 0
+        for write in writes {
+            guard self.device === usb, !hardwareWritesSuspended else { return }
+            if written > 0 { try? await Task.sleep(for: .milliseconds(25)) }
+            do {
+                try await usb.setProperty(
+                    PropertyAddress(selector: .routing, scope: .input, element: UInt32(write.destination)),
+                    value: .uint32(UInt32(write.source)))
+                written += 1
+            } catch {
+                print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
+            }
+        }
+        print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) input routes over USB\(resetPending ? " (default table, then saved)" : " (saved)")")
+        if resetPending, written == writes.count { RoutingMixerReset.clearPending(.usbInputRouting) }
     }
 
     /// Write one mono output route to whichever routing stage the transport
     /// uses: the Symphony's `0x31` table over USB, the ThunderBridge card's
     /// output routing registers on ThunderBridge (`ThunderboltCardRouting`).
+    ///
+    /// A mixer is never routed to an output before that mixer is the user's:
+    /// over ThunderBridge the connection decides (`setCardOutputRoute`), over
+    /// USB the restore's record (`usbMixerIsWritten`). Such a route is
+    /// `.deferred`, not an error: the choice is saved and shown, the
+    /// destination is disabled meanwhile (never left on a stale route), the
+    /// status bar says so, and the restore sends it once the mixer is written.
     @MainActor
-    func writeOutputRoute(destination: UInt8, source: UInt8, device: any DeviceConnection) async throws {
+    @discardableResult
+    func writeOutputRoute(destination: UInt8, source: UInt8, device: any DeviceConnection,
+                          restoring: Bool = false) async throws -> CardWriteResult {
+        if !restoring { outputRouteEdits &+= 1 }
         if let thunderbolt = device as? ThunderboltDeviceConnection {
             // Converters route through `applyConverterRouting` (their own
             // grid and channels); this path is the Symphony I/O table.
@@ -2647,23 +2814,33 @@ final class AppState: @unchecked Sendable {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
             }
-            try await Task.detached(priority: .userInitiated) {
-                try thunderbolt.setCardOutputRoute(route)
+            let result = try await Task.detached(priority: .userInitiated) {
+                let result = try thunderbolt.setCardOutputRoute(route)
+                if result == .deferred { _ = try thunderbolt.setCardOutputRoute(CardOutputTableOrder.disabled(route)) }
+                return result
             }.value
-            return
+            if result == .deferred, !restoring {
+                outputRouteDeferredSinceSave = true
+                cardOutputTableReplayNeeded = true
+                cardOutputRetryAfter = .distantPast
+                updateRestoreStatus()
+            }
+            return result
         }
-        try await device.setProperty(
-            PropertyAddress(selector: .routing, scope: .output, element: UInt32(destination)),
-            value: .uint32(UInt32(source)))
+        return try await writeUSBRoute(destination: destination, source: source, device: device, restoring: restoring)
     }
 
     /// Write a stereo output route (left + right channel) — see ``writeOutputRoute``.
     @MainActor
-    func writeOutputRoutePair(destLeft: UInt8, srcLeft: UInt8, device: any DeviceConnection) async throws {
-        try await writeOutputRoute(destination: destLeft, source: srcLeft, device: device)
-        try await writeOutputRoute(destination: destLeft &+ 1,
-                                   source: SymphonyIORoutingAddress.rightChannelSource(of: srcLeft),
-                                   device: device)
+    @discardableResult
+    func writeOutputRoutePair(destLeft: UInt8, srcLeft: UInt8, device: any DeviceConnection,
+                              restoring: Bool = false) async throws -> CardWriteResult {
+        let left = try await writeOutputRoute(destination: destLeft, source: srcLeft, device: device,
+                                              restoring: restoring)
+        let right = try await writeOutputRoute(destination: destLeft &+ 1,
+                                               source: SymphonyIORoutingAddress.rightChannelSource(of: srcLeft),
+                                               device: device, restoring: restoring)
+        return left == .deferred || right == .deferred ? .deferred : .written
     }
 
     /// Write the settings saved on this Mac back to the unit on connect/reconnect.
@@ -2677,6 +2854,19 @@ final class AppState: @unchecked Sendable {
     @MainActor
     func syncDeviceSettingsToHardware() async {
         guard !hardwareWritesSuspended else { return }
+        // Over USB the monitor mode goes first and always, also for a unit
+        // whose identity could not be read: the saved mode, or Stereo when
+        // none is saved, as the original
+        // (og_source/maestrolink/Software/SymphonyIO.cpp:4669, default :128).
+        // The helper used to force Stereo each time it configured the unit and
+        // no longer writes the mode at all. Over ThunderBridge the driver
+        // reads the unit's mode at start, writes it back and points the volume
+        // keys at the output that mode uses, so nothing is added there.
+        if let xpc = device as? XPCDeviceConnection, connectionMode == .hardware, connectedUnit == nil,
+           let mode = await xpc.applySpeakerOutputMode() {
+            guard self.device === xpc else { return }
+            speakerOutputMode = mode
+        }
         guard unitAIdentity != nil else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
@@ -2708,6 +2898,7 @@ final class AppState: @unchecked Sendable {
                 speakerOutputMode = mode
             }
         } else if let xpc = device as? XPCDeviceConnection {
+            // The monitor mode was applied above (`applySpeakerOutputMode`).
             replay = await xpc.reapplyStoredSettings()
         } else {
             return
@@ -2737,14 +2928,16 @@ final class AppState: @unchecked Sendable {
         let store = (device as? ThunderboltDeviceConnection)?.settingsStore
             ?? (device as? XPCDeviceConnection)?.settingsStore
         let replaysHeadphones = !(device is XPCDeviceConnection) || XPCDeviceConnection.replaysOnConnect
-        if let store, replaysHeadphones, !usesTwoUnitReplay {
+        // Over USB the restore writes them itself: away from the mixers
+        // before any strip, the saved source last (`performUSBRestore`).
+        if let store, replaysHeadphones, !usesTwoUnitReplay, !(device is XPCDeviceConnection) {
             let saved: [(SymphonyIOHeadphoneRouting.Headphone, AudioPropertySelector)] =
                 [(.headphone1, .headphone1RoutingID), (.headphone2, .headphone2RoutingID)]
             for (headphone, selector) in saved {
                 guard let id = store.value(for: PropertyAddress(selector: selector))?.asUInt32 else { continue }
                 await HeadphoneCrosspoint.apply(headphone, sourceID: id, device: device,
                                                 cachedRoutes: cachedOutputRouteMap(),
-                                                transport: transportType ?? .usb)
+                                                transport: transportType ?? .usb, state: self)
             }
         }
         guard replay.applied > 0 || !replay.failed.isEmpty
@@ -2988,9 +3181,10 @@ final class AppState: @unchecked Sendable {
                 await self.readCardTypes()
                 await self.reapplyDigitalSettings()
                 await self.refreshChannelNaming()
-                await self.syncOutputRoutingToHardware()
-                await self.syncInputRoutingToHardware()
-                await self.syncDeviceSettingsToHardware()
+                // Over ThunderBridge the output table goes first and card
+                // mixer writes are held until it is on the card; over USB the
+                // ordered restore (mixers first, output routing last).
+                await self.syncSavedStateToHardware()
 
                 guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
                 let meterCA = CoreAudioDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
@@ -3205,6 +3399,11 @@ final class AppState: @unchecked Sendable {
                         // the FPGA has been power-cycled and mixer state needs re-syncing.
                         if self.meterPollWasDisconnected {
                             self.meterPollWasDisconnected = false
+                            // The unit's mixers are back at 0 dB, unmuted:
+                            // no mixer is routed until the restore has
+                            // written them again.
+                            self.usbMixersWritten = nil
+                            self.usbSettingsRestored = nil
                             self.tdmMeteringAvailable = true
                             // Re-evaluate the firmware's output-meter verdict after
                             // a power-cycle rather than trusting the old latch.
@@ -3215,12 +3414,11 @@ final class AppState: @unchecked Sendable {
                                 Task { await self.readCardTypes() }
                             }
                             let now = Date()
-                            if self.mixerPreferences.isWritable,
-                               Self.usbRecoveryRestoreDue(lastRecovery: self.lastRecoveryTime, now: now) {
+                            if self.usbRecoveryRestoreDueOrOwed(now: now) {
                                 self.lastRecoveryTime = now
                                 // The unit comes back at 0 dB, unmuted, with its
-                                // routing mode and mixer at defaults, so all of it
-                                // is put back, always: the original restored a
+                                // routing, speaker mode and mixer at defaults, so
+                                // all of it is put back, always: the original restored a
                                 // returning unit's settings without asking
                                 // (SymphonyIO::ApplySettingsToHardware), and the
                                 // "Restore my mixer after a USB reconnect" switch
@@ -3239,7 +3437,7 @@ final class AppState: @unchecked Sendable {
                                     guard self.device === xpcDev, self.unitAGeneration == generation else { return }
                                     // Identity discovery owns the first restore. If this
                                     // recovery joined that pending discovery, do not replay
-                                    // Master/Return (or DAW mutes) a second time.
+                                    // the mixer a second time.
                                     if restoreGenerationAtStart != self.usbIdentityRestoreGeneration { return }
                                     do {
                                         let wait = Self.usbSettleRemaining(
@@ -3250,13 +3448,15 @@ final class AppState: @unchecked Sendable {
                                     }
                                     guard self.device === xpcDev, self.unitAGeneration == generation, !Task.isCancelled,
                                           self.mixerPreferences.isWritable else { return }
-                                    await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer,
-                                                                           restoreRoutingMode: true)
+                                    await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer)
                                 }
                                 self.deviceRecoveryCount += 1
                                 print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(self.deviceRecoveryCount))")
                             }
                         }
+                        // A USB restore that did not finish, or a helper that
+                        // restarted under the app, is put right here.
+                        self.serviceUSBRestore(xpcDev)
                         // FPGA meter registers return all-zero when no new data is ready.
                         // Real data arrives ~3Hz (every ~300ms). All-zero means "no update" —
                         // NOT silence. Skip zero reads to hold the last valid meter values.
@@ -3340,19 +3540,18 @@ final class AppState: @unchecked Sendable {
                             // Each mixer can select a different USB playback pair through
                             // AEsR.  The proxy reports one peak pair per USB pair, so do
                             // not mirror channels 0/1 into both mixer strips.
-                            func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
+                            func softwareReturnPeaks(mixer: Int) -> (Float, Float) {
                                 let source = self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")
                                 let left = source * 2
-                                guard left >= 0, left + 1 < peaks.count else {
-                                    return (-60.0, -60.0)
-                                }
-                                return (
-                                    SoftwareOutputMeterMap.dBFS(linearPeak: peaks[left]),
-                                    SoftwareOutputMeterMap.dBFS(linearPeak: peaks[left + 1])
-                                )
+                                guard left >= 0, left + 1 < peaks.count else { return (0, 0) }
+                                return (peaks[left], peaks[left + 1])
                             }
-                            let mixer0Peaks = softwareReturnDBFS(mixer: 0)
-                            let mixer1Peaks = softwareReturnDBFS(mixer: 1)
+                            let mixer0Linear = softwareReturnPeaks(mixer: 0)
+                            let mixer1Linear = softwareReturnPeaks(mixer: 1)
+                            let mixer0Peaks = (SoftwareOutputMeterMap.dBFS(linearPeak: mixer0Linear.0),
+                                               SoftwareOutputMeterMap.dBFS(linearPeak: mixer0Linear.1))
+                            let mixer1Peaks = (SoftwareOutputMeterMap.dBFS(linearPeak: mixer1Linear.0),
+                                               SoftwareOutputMeterMap.dBFS(linearPeak: mixer1Linear.1))
 
                             // Slots [0..1] = Mixer 0 SW Return L/R, [2..3] = Mixer 1 SW Return L/R.
                             if self.mixerMeterLevels.count >= 4 {
@@ -3371,16 +3570,20 @@ final class AppState: @unchecked Sendable {
                                 self.mixerMeterLevels[3] = swR1
                             }
                             // Blend SW Return into Master meter (slots [4..7]).
-                            // USB audio bypasses the FPGA mixer so TDM master output
-                            // doesn't include it. Convert linear peaks to dB and take max.
+                            // The helper's peaks are taken before the unit's
+                            // mixer, so each mixer's part goes through that
+                            // mixer's Software Return fader and mute and its
+                            // Master fader first (USBMasterMeter).
                             if self.mixerMeterLevels.count >= 8 {
-                                // swPeaks are already dBFS. (The previous code
-                                // re-applied 20*log10 to a dB value, which is never
-                                // > 0, so the master blend was always -60.)
-                                self.mixerMeterLevels[4] = max(self.mixerMeterLevels[4], mixer0Peaks.0)
-                                self.mixerMeterLevels[5] = max(self.mixerMeterLevels[5], mixer0Peaks.1)
-                                self.mixerMeterLevels[6] = max(self.mixerMeterLevels[6], mixer1Peaks.0)
-                                self.mixerMeterLevels[7] = max(self.mixerMeterLevels[7], mixer1Peaks.1)
+                                let gains = self.usbMasterMeterGains
+                                self.mixerMeterLevels[4] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[4], softwareReturnPeak: mixer0Linear.0, gain: gains[0])
+                                self.mixerMeterLevels[5] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[5], softwareReturnPeak: mixer0Linear.1, gain: gains[0])
+                                self.mixerMeterLevels[6] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[6], softwareReturnPeak: mixer1Linear.0, gain: gains[1])
+                                self.mixerMeterLevels[7] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[7], softwareReturnPeak: mixer1Linear.1, gain: gains[1])
                             }
                         }
                     } catch {
@@ -3496,7 +3699,7 @@ final class AppState: @unchecked Sendable {
                                     return (-60.0, -60.0)
                                 }
                                 // Mirror what the card mixer delivers: USB meters
-                                // SW Return after level/pan/mute in the proxy, so
+                                // SW Return after its level and mute, so
                                 // apply the same trims to the host-playback peaks
                                 // here (SoftwareReturnMeterGain) rather than
                                 // showing the pre-mixer signal.
@@ -3566,7 +3769,7 @@ final class AppState: @unchecked Sendable {
                                 let left = source * 2
                                 guard left + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
                                 // Mirror what the card mixer delivers: USB meters
-                                // SW Return after level/pan/mute in the proxy, so
+                                // SW Return after its level and mute, so
                                 // apply the same trims to the host-playback peaks
                                 // here (SoftwareReturnMeterGain) rather than
                                 // showing the pre-mixer signal.

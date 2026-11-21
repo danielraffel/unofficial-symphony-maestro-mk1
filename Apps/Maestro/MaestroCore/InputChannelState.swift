@@ -31,7 +31,7 @@ public struct InputChannelState: Codable, Sendable, Equatable {
     public var phase: Bool = false
     /// High-pass filter enable. Maps to 'AEhf' (highPassFilter).
     public var hpf: Bool = false
-    /// Soft limiter mode: 0=off, 1=−2dBFS, 2=−4dBFS, 3=Saturate, 4=Crunch.
+    /// Soft limiter mode: 0=off, 1=−2 dBfs, 2=−4 dBfs, 3=Soft Saturate, 4=Soft Crush.
     /// Maps to 'AEsl' (softLimit).
     public var softLimit: UInt32 = 0
     /// Analog input type (mic/line/instrument). Maps to 'AErl' (analogIOType).
@@ -441,6 +441,16 @@ public enum InputChannelLogic {
     /// (`APAnalogInputController.m:583-590`).
     public static func usesGainKnob(level: AnalogInputLevel) -> Bool { level.isPreampLevel }
 
+    /// Whether the strip has a trim value that can be typed into: the trim
+    /// fader is showing (Show Trims on a line-level strip — Mic/Instrument
+    /// strips carry the gain knob instead) and is not inert on converters.
+    /// Tab skips the strips where this is false.
+    public static func hasEditableTrimReadout(level: AnalogInputLevel,
+                                              showTrims: Bool,
+                                              convertersOnly: Bool) -> Bool {
+        showTrims && !convertersOnly && !usesGainKnob(level: level)
+    }
+
     /// The selected stage has its own wire command and stored gain.
     /// Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
     public static func gainSelector(for level: AnalogInputLevel) -> AudioPropertySelector {
@@ -773,7 +783,9 @@ public enum InputChannelLogic {
         if card == .analogADDA16 {
             return [(0, "Off"), (2, "On")]
         }
-        return [(0, "Off"), (1, "-2 dBFS"), (2, "-4 dBFS"), (3, "Saturate"), (4, "Crunch")]
+        // The original's names, as its menu showed them
+        // (og_source/maestrolink/Software/AnalogIn_SymphonyIO_Stream.cpp:17).
+        return [(0, "Off"), (1, "-2 dBfs"), (2, "-4 dBfs"), (3, "Soft Saturate"), (4, "Soft Crush")]
     }
 
     /// Display name for a soft limit value on a given card.

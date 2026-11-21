@@ -55,7 +55,7 @@ extension AppState {
     @MainActor
     func replayUnitBSettings() async {
         guard usesTwoUnitReplay, twoUnitReplayNeeded, !twoUnitReplayRunning,
-              !recallInFlight,
+              !recallInFlight, Date() >= twoUnitRetryAfter,
               !twoUnitSleeping, connectionMode == .hardware, isHardwareInitialized,
               let tb = device as? ThunderboltDeviceConnection,
               let b = unitBDevice as? ThunderboltUnitBConnection,
@@ -68,7 +68,20 @@ extension AppState {
         let bGeneration = await Task.detached(priority: .utility) { tb.readUnitBState()?.generation }.value
         guard device === tb, unitBDevice === b, let link, let bGeneration else { return }
         applyPhantomObservations(link)
+        // Deferred mixer edits and routes up to here are in the plan (it is
+        // built from the stores). The connection sends the card's part in the
+        // restore order and marks each mixer once all of it has landed. A
+        // recall, or a mixer edit made after the plan was built, stops it;
+        // it is then built again from the stores.
+        tb.cardMixers.isBypassed = false
+        let epoch = tb.cardMixers.epoch
+        let owed = tb.cardMixers.owed
+        let routeEdits = outputRouteEdits
+        let edits = tb.mixerEdits
+        let editGeneration = edits.capture()
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
+        let progress = TwoUnitReplay.Progress(tables: plan.tables.count)
+        let sendsResetDefaults = plan.consumesRoutingReset && !twoUnitResetDefaultsLanded(tb: tb, b: b)
         let replayDeferral = self.replayDeferral
         let recallEpoch = replayDeferral.currentEpoch()
         twoUnitReplayNeeded = false
@@ -76,9 +89,12 @@ extension AppState {
             try await Task.detached(priority: .utility) {
                 try tb.replayTwoUnits(plan, unitB: b, recoveryCount: link.recoveryCount,
                                       unitBGeneration: bGeneration,
-                                      shouldContinue: { replayDeferral.isValid(recallEpoch) })
+                                      shouldContinue: {
+                                          replayDeferral.isValid(recallEpoch) && edits.isCurrent(editGeneration)
+                                      }, progress: progress)
             }.value
             guard device === tb, unitBDevice === b else { return }
+            finishTwoUnitReplay(plan, tb: tb, epoch: epoch, owed: owed, routeEdits: routeEdits)
             if let mode = tb.settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32 {
                 speakerOutputMode = mode
             }
@@ -89,10 +105,29 @@ extension AppState {
             await refreshChannelNaming()
             print("[Maestro] Two-unit routing, mixers and headphones restored")
         } catch {
-            // Retry on the next healthy poll; no tight bus retry loop.
+            guard device === tb, unitBDevice === b else { return }
+            // The reset's default tables and card-input reset reached the
+            // hardware before the failure: the retries do not send them again
+            // (the saved tables over them are sent each time).
+            if sendsResetDefaults, progress.resetDefaultsLanded {
+                twoUnitResetDefaultsSent = (ObjectIdentifier(tb), ObjectIdentifier(b))
+            }
+            // Retried by the health loop with a growing pause, at once when
+            // a recall or a mixer edit stopped it (those are saved, and the
+            // next plan is built from them).
             twoUnitReplayNeeded = true
+            if replayDeferral.isValid(recallEpoch), edits.isCurrent(editGeneration) {
+                twoUnitReplayDidNotComplete()
+            }
+            updateRestoreStatus()
             print("[Maestro] Two-unit replay refused: \(error)")
         }
+    }
+
+    /// Whether the reset's default input tables and card-input reset have
+    /// already reached these two connections in a replay that failed later.
+    func twoUnitResetDefaultsLanded(tb: ThunderboltDeviceConnection, b: ThunderboltUnitBConnection) -> Bool {
+        twoUnitResetDefaultsSent.map { $0.a == ObjectIdentifier(tb) && $0.b == ObjectIdentifier(b) } ?? false
     }
 
     /// Capture saved values on the main actor; all hardware work uses the
@@ -101,11 +136,32 @@ extension AppState {
                            layoutB: CardLayout) -> TwoUnitReplay {
         var plan = TwoUnitReplay()
         plan.unitBBoards = [layoutB.slot1.rawValue, layoutB.slot2.rawValue]
+        plan.mixerLayouts = (cardLayout, layoutB)
         let cacheA = peripheralRoutingCache(direction: "input")
         _ = ThunderboltInputRoutingMigration.run(routingKey: cacheA.key)
+        // After the routing and mixer reset the default tables go first (a
+        // driver that kept running still has the units on the removed
+        // routes), and the card's own input routes go back to straight
+        // through (their saved copy is gone too). The flag is cleared when
+        // this plan has run to the end (`finishTwoUnitReplay`); it used to be
+        // cleared by the single-unit replay only, so at 64 channels the
+        // default tables were written before the saved ones on every replay.
+        let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
+        let cardInputReset = symphonyCardInputs.resetCommand
+        plan.consumesRoutingReset = resetPending
+            && (symphonyCardInputs.channelCount == 0 || cardInputReset != nil)
+        // Once they have landed on these connections they are not sent again
+        // by a retry of a replay that failed later on (they were sent before
+        // the saved tables on every retry while the flag stayed pending).
+        let sendDefaults = resetPending && !twoUnitResetDefaultsLanded(tb: tb, b: b)
+        if sendDefaults, let cardInputReset { plan.card.append(.card(.cardInput(cardInputReset))) }
         for (unit, layout, cache) in [(DeviceUnit.a, cardLayout, Optional(cacheA)), (.b, layoutB, unitBInputRoutingCache)] {
-            let writes = InputRoutingReplay.writes(saved: cache?.load() ?? [:],
-                                                   columns: layout.inputRoutingColumns, pairCount: 16)
+            var writes = sendDefaults
+                ? SymphonyIODefaultRouting.thunderboltInputRoutes(
+                    slot1: unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1)
+                : []
+            writes += InputRoutingReplay.writes(saved: cache?.load() ?? [:],
+                                                columns: layout.inputRoutingColumns, pairCount: 16)
             for write in writes {
                 plan.tables.append(.unit(unit, PropertyAddress(selector: .routing, scope: .input,
                                                               element: UInt32(write.destination)),
@@ -116,15 +172,17 @@ extension AppState {
             plan.card.append(.card(.cardInput(command)))
         }
         let outputCache = peripheralRoutingCache(direction: "output")
-        Self.migrateMainPairToMixer(cache: outputCache, mixerRow: tb.identifier.mode.channelCount / 2,
-                                   board1: primaryBoardType, board2: secondaryBoardType)
         let savedA = outputCache.loadMulti() ?? [:]
         let completeA = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { savedA[$0] != nil }
         let defaultsA = SymphonyIODefaultRouting.thunderboltOutputRoutes(
             board0Outputs: primaryBoardType.totalOutputChannels,
             board1Outputs: secondaryBoardType.totalOutputChannels)
         let defaultSourcesA = Dictionary(uniqueKeysWithValues: defaultsA.map { ($0.destination, $0.source) })
-        if !savedA.isEmpty {
+        // Always the whole table, with nothing saved too: the driver starts the
+        // card with the main pair on card mixer 1 and keeps an earlier
+        // session's routes, and the default is every output direct
+        // (see syncOutputRoutingToHardware).
+        do {
             let sources = cachedOutputRouteMap()
             let destinations = cardLayout.outputRoutingColumns.flatMap { [$0.routingByte, $0.routingByte &+ 1] }
             let merged = Self.replayOutputSources(defaults: defaultSourcesA, saved: sources,
@@ -136,7 +194,8 @@ extension AppState {
                     }
             }
         }
-        if let rows = unitBOutputRoutingCache?.loadMulti() {
+        do {
+            let rows = unitBOutputRoutingCache?.loadMulti() ?? [:]
             let completeB = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { rows[$0] != nil }
             for (index, column) in layoutB.outputRoutingColumns.enumerated() {
                 let row = rows.keys.sorted().last { rows[$0]?.contains(index) == true }
@@ -153,21 +212,15 @@ extension AppState {
         for mixer in 0..<2 {
             let a = MixerStateSnapshot(channelCount: cardLayout.mixerChannels.count, mixer: mixer, store: channelStateStore, preferences: mixerPreferences)
             let b = MixerStateSnapshot(channelCount: layoutB.mixerChannels.count, mixer: mixer, store: unitBChannelStateStore)
-            let base = UInt32(mixer + 1) << 16
-            func put(_ selector: AudioPropertySelector, _ value: PropertyValue, _ channel: Int = 0) {
-                plan.card.append(.card(.property(PropertyAddress(selector: selector, element: base | UInt32(channel)), value)))
-            }
-            if a.softwareReturnSource < 32 { put(.mixerSoftwareReturnID, .uint32(a.softwareReturnSource)) }
-            let ids = cardLayout.mixerChannels.map(\.hardwareIndex) + layoutB.mixerChannels.map { 32 + $0.hardwareIndex } + [1000]
-            let channels = a.channels + b.channels + [a.swReturnChannel]
-            for (id, state) in zip(ids, channels) {
-                put(.mixerChannelLevel, .float64(state.level), id)
-                put(.mixerChannelPan, .float64(state.pan), id)
-                put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && mixerPreferences.integer(forKey: "routingMode") == 0)), id)
-                put(.mixerChannelSolo, .bool(state.isSoloed), id)
-            }
-            put(.mixerChannelLevel, .float64(a.masterLevel), 2000)
+            // The whole mixer, in the order of `CardMixerReplay.writes`
+            // (Master, Software Return, then strips with level and pan
+            // before mute and solo).
+            plan.card += CardMixerReplay.writes(mixer: mixer, layout: cardLayout, snapshot: a,
+                                                second: (layoutB, b)).map { .card($0) }
         }
+        // The connection orders these when it runs the plan: every route
+        // first with one fed by a mixer it has not seen written disabled,
+        // then the mixers, then those routes (`replayTwoUnits`).
         // Keep B5's departure: B monitor settings are read, never host-replayed.
         for (unit, store) in [(DeviceUnit.a, tb.settingsStore), (.b, b.settingsStore)] {
             for entry in store.entries() {

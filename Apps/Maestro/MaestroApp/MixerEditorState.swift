@@ -48,9 +48,14 @@ struct MixerEditorState {
 
     /// Also false while hardware writes are suspended (sleep, wake validation):
     /// an edit then would be shown and saved but never sent.
+    ///
+    /// Nor over USB under an older helper: it puts Line 1/2 on Mixer 1 every
+    /// time it configures the unit, so a strip written from here would be
+    /// heard there (`AppState.usbHelperOutdated`, said in the status bar).
     func canEdit(_ appState: AppState) -> Bool {
         scopes.allSatisfy(\.isWritable) && scopes == appState.mixerViewScopes
             && !appState.hardwareWritesSuspended
+            && !appState.usbMixerEditsBlockedByOldHelper
     }
 
     mutating func save(appState: AppState, selectedMixer: Int) {
@@ -77,7 +82,7 @@ struct MixerEditorState {
                                       saved: UInt32(clamping: appState.mixerPreferences.integer(forKey: sourceKey)),
                                       pairCount: appState.softwareReturnPairCount),
             forKey: sourceKey)
-        // Keep the ThunderBridge SW Return meters in step with the faders/pan/mute.
+        // Keep the Software Return and USB Master meters in step with the faders and mute.
         appState.refreshSoftwareReturnMeterGains()
     }
 }

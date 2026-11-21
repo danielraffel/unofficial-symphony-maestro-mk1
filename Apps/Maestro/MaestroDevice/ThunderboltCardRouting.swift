@@ -29,16 +29,6 @@ public enum ThunderboltCardRouting {
     /// XLink TX channels on the port (`MAX_SYMPHONY_CHANNELS_ON_BUS`).
     public static let channelCount = UInt8(SymphonyRoutingModel.channelsPerPort)
 
-    /// The source the main output pair uses until the user picks another: card
-    /// mixer 1, which is what the driver programs at start-up. Software Return,
-    /// Master and input monitoring therefore work out of the box.
-    public static func mainPairDefaultSource(forDestination destination: UInt8) -> UInt8? {
-        let board0 = SymphonyIORoutingAddress.ioBoard0Base
-        if destination == board0 { return SymphonyIORoutingAddress.mixer0Base }
-        if destination == board0 &+ 1 { return SymphonyIORoutingAddress.mixer0Base &+ 1 }
-        return nil
-    }
-
     public struct Route: Equatable, Sendable {
         /// XLink TX channel 0...31 (Symphony output: board 0 ch 0-15, board 1 ch 16-31).
         public let channel: UInt8
@@ -94,8 +84,8 @@ public enum ThunderboltCardRouting {
     ///   (`SymphonyPCIeRoutingController.cpp:1139-1185`). Until 0.8.36 DAW 1/2
     ///   onto the main pair was quietly sent through card mixer 0 instead, so
     ///   Master and Software Return changed a route the grid showed as direct.
-    ///   The mixer is now reached only by choosing a Mixer source, which is also
-    ///   what the main pair defaults to (`mainPairDefaultSource`).
+    ///   The mixer is reached only by choosing a Mixer source; no output
+    ///   defaults to one.
     public static func route(destination: UInt8, source: UInt8, unitBActive: Bool = false) -> Route? {
         guard let channel = channel(forDestination: destination) else { return nil }
         if source == SymphonyIORoutingAddress.clearRoute || source == SymphonyIORoutingAddress.none {

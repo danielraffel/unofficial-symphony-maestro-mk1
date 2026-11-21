@@ -106,6 +106,23 @@ struct OutputControlsView: View {
     }
     @State private var isMonitorLoading = true
     @State private var scrollPosition: ScrollPosition
+    /// The strip whose trim value is being typed into, if any — one at a time.
+    @State private var editingTrim: Int?
+    /// Keyboard focus among the trim readouts; Tab moves it along the strips.
+    @FocusState private var focusedTrim: Int?
+
+    /// What strip `index`'s trim readout needs to take part in Tab order.
+    /// Every analog output has a trim, so the readouts are enabled or not
+    /// together: shown with Show Trims, and inert on converters.
+    private func trimEntry(_ index: Int) -> LevelReadoutEntry<Int> {
+        LevelReadoutEntry(id: index, editing: $editingTrim, focus: $focusedTrim) { current, forward in
+            let strips = Array(0..<min(channels.count, analogOutputStripCount))
+            let enabled = OutputChannelLogic.hasEditableTrimReadout(
+                showTrims: appState.showOutputTrims,
+                convertersOnly: appState.converterRoutingSurface)
+            return LevelEntry.neighbour(of: current, in: strips, forward: forward) { _ in enabled }
+        }
+    }
     @State private var scrollRestorationPending = true
     @State private var scrollObservationEnabled = false
     @State private var scrollRestorationTarget: CGFloat?
@@ -324,6 +341,7 @@ struct OutputControlsView: View {
                 Text(resetMonitorMessage)
             }
 
+            ScrollViewReader { scrollProxy in
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 0) {
                     // Analog output strips
@@ -350,11 +368,13 @@ struct OutputControlsView: View {
                                 Task { await writeOutputProperty(i, .analogIOType,
                                     value: .uint32(outputAnalogIOTypeWithTrim(i))) }
                             },
+                            trimEntry: trimEntry(i),
                             showZoneColoring: appState.showMeterZoneColoring
                         )
                         .background(GeometryReader { geo in
                             Color.clear.preference(key: AnalogStripHeightKey.self, value: geo.size.height)
                         })
+                        .id(TrimStripID(strip: i))
                     }
 
                     // Speaker / HP section — inline after analog strips, no header
@@ -447,6 +467,12 @@ struct OutputControlsView: View {
                     scrollPosition.scrollTo(x: 0)
                     appState.setControlTabScrollOffset(0, for: .output)
                 }
+            }
+            // Tab can move editing to a strip that is scrolled out of view;
+            // bring it in by the smallest amount (no move when already visible).
+            .onChange(of: editingTrim) { _, strip in
+                if let strip { scrollProxy.scrollTo(TrimStripID(strip: strip)) }
+            }
             }
 
             if let error = errorMessage {
@@ -1406,7 +1432,7 @@ struct OutputControlsView: View {
         // every destination — Docs/issue-1-research.md).
         await HeadphoneCrosspoint.apply(headphone, sourceID: sourceID, device: device,
                                         cachedRoutes: appState.cachedOutputRouteMap(),
-                                        transport: appState.transportType ?? .usb)
+                                        transport: appState.transportType ?? .usb, state: appState)
     }
 
     /// Restore the monitor section to the daemon's defaults.
@@ -1468,7 +1494,7 @@ struct OutputControlsView: View {
         // outs and therefore mode Off -- and Off hands monitoring to Headphone 1
         // and greys out the speaker knob, while the confirmation text promises
         // "returns to Stereo". Defaulting to Stereo on unknown provenance keeps
-        // the dialog honest and matches what the proxy writes at every boot.
+        // the dialog honest.
         let boardsMeasured = appState.unitPrimaryBoardSource == .detected
                           && appState.unitSecondaryBoardSource == .detected
         let mode: SymphonyIOSpeakerMode
@@ -1517,6 +1543,9 @@ struct OutputChannelStripView: View {
     var onAnalogRefChange: ((UInt32) -> Void)?
     var onDigitalRefChange: ((UInt32) -> Void)?
     var onTrimChange: ((Double) -> Void)?
+    /// Ties this strip's trim readout into the page's one-at-a-time editing
+    /// and Tab order.
+    let trimEntry: LevelReadoutEntry<Int>
     var showZoneColoring: Bool = false
     /// Converters on port 1: the Symphony I/O channel settings do nothing.
     private var convertersOnly: Bool { appState?.converterRoutingSurface ?? false }
@@ -1652,16 +1681,24 @@ struct OutputChannelStripView: View {
             // Pill-styled readouts below meter — only when trims visible
             if showTrims {
                 HStack(spacing: 3) {
-                    Text(String(format: "%.1f", channel.trim))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+                    // Typed values go through the same binding as the fader,
+                    // with the fader's own range and step, so they are written
+                    // and saved by the fader's onChange above. Disabled exactly
+                    // when the fader is.
+                    EditableLevelReadout(
+                        value: $channel.trim,
+                        range: trimSpec.range,
+                        step: trimSpec.step,
+                        entry: trimEntry,
+                        height: nil)
+                        .disabled(convertersOnly)
                         .maestroHelp("Trim: \(String(format: "%.1f", channel.trim)) dB "
-                              + "(range \(Self.rangeText(trimSpec.range)), 0.1 dB steps)")
-                    Text(String(format: "%.0f", resolvedMeterLevel))
+                              + "(range \(Self.rangeText(trimSpec.range)), 0.1 dB steps). "
+                              + "Click to type a value; Tab moves to the next channel.")
+                    // Tenths of a dB, as the original (User's Guide p. 55
+                    // item 8). Both boxes share the row equally and the digits
+                    // are monospaced, so the width never changes.
+                    Text(String(format: "%.1f", resolvedMeterLevel))
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

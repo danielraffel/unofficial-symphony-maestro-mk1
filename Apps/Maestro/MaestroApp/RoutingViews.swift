@@ -930,7 +930,7 @@ struct OutputRoutingView: View {
             if plan.unitA != nil, let device = appState.device {
                 await HeadphoneCrosspoint.reapplyAll(
                     device: device, cachedRoutes: appState.cachedOutputRouteMap(),
-                    transport: appState.transportType ?? .usb)
+                    transport: appState.transportType ?? .usb, state: appState)
             }
             var problems: [String] = []
             if failedA > 0 { problems.append("Unit A: \(failedA) of \(writesA.count) routes failed to write.") }
@@ -1021,6 +1021,7 @@ struct OutputRoutingView: View {
         // unrouted outputs stay unrouted when the grid is read back.
         let complete = (0..<TwoUnitOutputRouting.rowCount).allSatisfy(unitBChosenRows.contains)
         appState.unitBOutputRoutingCache?.save(complete ? TwoUnitOutputRouting.completeTable(chosen) : chosen)
+        appState.outputRoutingSaved()
         let destLeft = unitBColumns[col].routingByte
         Task {
             do {
@@ -1082,10 +1083,10 @@ struct OutputRoutingView: View {
     /// `SymphonyIODefaultRouting.usbChannelCount`); ThunderBridge carries 32,
     /// board 1 ← playback 17-32, as XLink sources.
     private func defaultOutputRouteList(board1: IOCardType, board2: IOCardType) -> [SymphonyIODefaultRouting.Route] {
-        // On ThunderBridge: what the driver and card program at start-up, Mac
-        // output n on slot 1 output n (1-16) and slot 2 output n-16 (17-32),
-        // with the main pair on Mixer 1. The grid shows it and Reset Routing
-        // writes it, so the picture matches the sound.
+        // On ThunderBridge: Mac output n on slot 1 output n (1-16) and slot 2
+        // output n-16 (17-32), every output direct and no mixer routed, as in
+        // the original. The grid shows it, Maestro writes it on connect and
+        // Reset Routing writes it, so the picture matches the sound.
         if appState.transportType == .thunderbolt {
             return SymphonyIODefaultRouting.thunderboltOutputRoutes(
                 board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
@@ -1116,6 +1117,9 @@ struct OutputRoutingView: View {
     /// must never be written here.
     private func persistChosenRows() {
         routingCache?.save(routes.filter { userChosenRows.contains($0.key) })
+        // A restore in progress (or one that deferred this route until its
+        // mixer is written) starts again from what was just saved.
+        appState.outputRoutingSaved()
     }
 
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
@@ -1228,6 +1232,8 @@ struct OutputRoutingView: View {
             errorMessage = nil
             userChosenRows.insert(row)
             persistChosenRows()
+            // A mixer may have started or stopped feeding an output (USB helper rule).
+            appState.syncUSBHelperSoftwareReturn()
             print("[Maestro] OutputRouting: wrote row \(row) → col \(col) (dest \(destLeft), src \(srcLeft), clear=\(clear))")
             // Legacy re-runs RouteHeadphones() after every routing change, because a
             // headphone's crosspoint source is inherited from the output pair it
@@ -1235,7 +1241,7 @@ struct OutputRoutingView: View {
             // Without this the headphone keeps feeding on the previous source.
             await HeadphoneCrosspoint.reapplyAll(
                 device: device, cachedRoutes: appState.cachedOutputRouteMap(),
-            transport: appState.transportType ?? .usb)
+            transport: appState.transportType ?? .usb, state: appState)
             return true
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"
@@ -1321,13 +1327,8 @@ struct OutputRoutingView: View {
         // which the proxy never renders. ThunderBridge renders all 32.
         // On ThunderBridge/PCIe, Reset writes Apogee's reset layout (every software
         // output on the matching output, the main pair on Software 1-2, no mixer
-        // routed), not the start-up default with the main pair on Mixer 1.
-        let thunderbolt = appState.transportType == .thunderbolt
-        let routeList = thunderbolt
-            ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
-                board0Outputs: b1.card.totalOutputChannels, board1Outputs: b2.card.totalOutputChannels,
-                mainPairOnMixer: false)
-            : defaultOutputRouteList(board1: b1.card, board2: b2.card)
+        // routed), which is also the default.
+        let routeList = defaultOutputRouteList(board1: b1.card, board2: b2.card)
 
         var newRoutes: [Int: Set<Int>] = [:]
         var failures = 0
@@ -1349,22 +1350,16 @@ struct OutputRoutingView: View {
         }
 
         routes = newRoutes
-        if thunderbolt {
-            // The driver puts the main pair back on Mixer 1 at every start, and the
-            // app replays only chosen rows: keep the rows where the reset layout
-            // differs from that start-up default as chosen, so it survives a restart.
-            let startup = defaultRouteGrid()
-            userChosenRows = Set(newRoutes.keys.filter { $0 < swOutputPairCount && newRoutes[$0] != startup[$0] })
-        } else {
-            // The defaults are now on the hardware; there are no overrides left.
-            userChosenRows.removeAll()
-        }
+        // The defaults are now on the hardware; there are no overrides left.
+        // (On ThunderBridge Maestro writes the default table on every connect.)
+        userChosenRows.removeAll()
         persistChosenRows()
+        appState.syncUSBHelperSoftwareReturn()
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] OutputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")
         await HeadphoneCrosspoint.reapplyAll(
             device: device, cachedRoutes: appState.cachedOutputRouteMap(),
-            transport: appState.transportType ?? .usb)
+            transport: appState.transportType ?? .usb, state: appState)
     }
 }
 
@@ -1670,13 +1665,25 @@ enum HeadphoneCrosspoint {
     /// Returns true when both channels were written. When no source can be
     /// determined for either channel this writes NOTHING and says why; the
     /// firmware default then stands, which is what stood before this feature.
+    ///
+    /// Over USB the write goes through the app's route gate
+    /// (`AppState.writeUSBRoute`): a headphone following a pair that a mixer
+    /// feeds is pointed at that mixer only once the mixer is written. Until
+    /// then the crosspoint is disabled, the route is owed, the restore sends
+    /// it, and this returns false. On ThunderBridge a headphone's source is
+    /// always the XLink channel of the output it follows, never a mixer
+    /// (`SymphonyIOHeadphoneRouting.inheritedSource`; the mixers there are on
+    /// the card, behind the card's own gate).
+    @MainActor
     @discardableResult
     static func apply(
         _ headphone: SymphonyIOHeadphoneRouting.Headphone,
         sourceID: UInt32,
         device: any DeviceConnection,
         cachedRoutes: [UInt8: UInt8],
-        transport: TransportType = .usb
+        transport: TransportType = .usb,
+        state: AppState,
+        restoring: Bool = false
     ) async -> Bool {
         guard let pair = SymphonyIOHeadphoneRouting.outputPairDestinations(sourceID: sourceID) else {
             print("[Maestro] HP routing: source ID \(sourceID) is out of range 0-15 — skipping crosspoint")
@@ -1700,12 +1707,33 @@ enum HeadphoneCrosspoint {
 
         do {
             let dest = SymphonyIOHeadphoneRouting.headphoneDestinations(headphone)
-            try await device.setProperty(
-                PropertyAddress(selector: .routing, scope: .output, element: UInt32(dest.left)),
-                value: .uint32(UInt32(srcLeft)))
-            try await device.setProperty(
-                PropertyAddress(selector: .routing, scope: .output, element: UInt32(dest.right)),
-                value: .uint32(UInt32(srcRight)))
+            if device is XPCDeviceConnection {
+                let left = try await state.writeUSBRoute(destination: dest.left, source: srcLeft,
+                                                         device: device, restoring: restoring)
+                let right = try await state.writeUSBRoute(destination: dest.right, source: srcRight,
+                                                          device: device, restoring: restoring)
+                guard left == .written, right == .written else {
+                    print("[Maestro] HP\(headphone.rawValue + 1) crosspoint: outputs \(pair.left)/\(pair.right) are fed by a mixer that is not set yet; headphone disabled until it is")
+                    return false
+                }
+            } else {
+                // ThunderBridge: the mixers are on the card and this table
+                // only ever names XLink channels. A mixer source here would
+                // pass no gate, so it is never sent.
+                if device is ThunderboltDeviceConnection || transport == .thunderbolt {
+                    guard CardOutputTableOrder.mixer(ofSource: srcLeft) == nil,
+                          CardOutputTableOrder.mixer(ofSource: srcRight) == nil else {
+                        print("[Maestro] HP\(headphone.rawValue + 1) crosspoint: a mixer source is never written over ThunderBridge")
+                        return false
+                    }
+                }
+                try await device.setProperty(
+                    PropertyAddress(selector: .routing, scope: .output, element: UInt32(dest.left)),
+                    value: .uint32(UInt32(srcLeft)))
+                try await device.setProperty(
+                    PropertyAddress(selector: .routing, scope: .output, element: UInt32(dest.right)),
+                    value: .uint32(UInt32(srcRight)))
+            }
             print("[Maestro] HP\(headphone.rawValue + 1) crosspoint: dest \(dest.left)/\(dest.right) ← src \(srcLeft)/\(srcRight) (source ID \(sourceID), inherited from outputs \(pair.left)/\(pair.right))")
             return true
         } catch {
@@ -1720,14 +1748,15 @@ enum HeadphoneCrosspoint {
     /// Only headphones whose source the user has actually chosen in this session
     /// are touched. Nothing is guessed: without a known source this writes no
     /// crosspoint at all, because guessing would silently re-point a jack.
+    @MainActor
     static func reapplyAll(device: any DeviceConnection, cachedRoutes: [UInt8: UInt8],
-                           transport: TransportType = .usb) async {
+                           transport: TransportType = .usb, state: AppState) async {
         let known = recalled()
         guard !known.isEmpty else { return }
         for headphone in SymphonyIOHeadphoneRouting.Headphone.allCases {
             guard let id = known[headphone.rawValue] else { continue }
             await apply(headphone, sourceID: id, device: device, cachedRoutes: cachedRoutes,
-                        transport: transport)
+                        transport: transport, state: state)
         }
     }
 }

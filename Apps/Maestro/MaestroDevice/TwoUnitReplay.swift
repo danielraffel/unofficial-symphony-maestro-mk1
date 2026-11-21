@@ -14,9 +14,58 @@ public struct TwoUnitReplay: Sendable {
     public var tables: [Write] = []
     public var card: [Write] = []
     public var settings: [Write] = []
+    /// The routing and mixer reset's pending flags are cleared once this
+    /// plan has run to the end. It starts from the default input tables and
+    /// the card-input reset unless an earlier replay on the same connections
+    /// already got those onto the hardware.
+    public var consumesRoutingReset = false
+    /// Both units' card layouts: what a complete card mixer consists of at 64
+    /// channels, so the connection can tell when a mixer of this plan has
+    /// been written in full.
+    public var mixerLayouts: (a: CardLayout, b: CardLayout)?
     public init() {}
 
     public var writes: [Write] { tables + card + settings + [.headphones(.a), .headphones(.b)] }
+
+    /// What a replay got onto the hardware before it ended, for a caller
+    /// that must not repeat part of it on the retry.
+    public final class Progress: @unchecked Sendable {
+        private let lock = NSLock()
+        private let tables: Int
+        private var sent = 0
+        private var cardInputReset = false
+        private var plansCardInputReset = false
+        private var stopped = false
+
+        /// - Parameter tables: how many writes the plan's `tables` has.
+        public init(tables: Int) { self.tables = tables }
+
+        func begin(_ plan: TwoUnitReplay) {
+            lock.withLock {
+                plansCardInputReset = plan.card.contains {
+                    if case .card(.cardInput(ConverterRouting.resetRoutingCommand)) = $0 { true } else { false }
+                }
+            }
+        }
+
+        /// A write failed: what the plan sends after that is its cleanup,
+        /// not progress.
+        func failed() { lock.withLock { stopped = true } }
+
+        func landed(_ write: Write) {
+            lock.withLock {
+                guard !stopped else { return }
+                sent += 1
+                if case .card(.cardInput(ConverterRouting.resetRoutingCommand)) = write { cardInputReset = true }
+            }
+        }
+
+        /// Every input table write landed, and the card-input reset too if
+        /// the plan had one.
+        public var resetDefaultsLanded: Bool {
+            lock.withLock { sent >= tables && (cardInputReset || !plansCardInputReset) }
+        }
+    }
 
     /// The caller holds the connection's serial owner throughout, off MainActor.
     /// A stale target refuses cleanup too: never unlock a replacement unit.

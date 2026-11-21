@@ -489,10 +489,12 @@ public enum SymphonyIOHeadphoneRouting {
     ///
     /// Deterministic, and the only thing that is true about the crosspoint before
     /// the user has routed anything. Evidence:
-    /// `Drivers/VolumeProxy/MaestroVolumeProxy.c:1233-1276` —
+    /// `Drivers/VolumeProxy/MaestroVolumeProxy.c` `configure_fpga_routing`, step 4 —
     ///
-    /// * DAC L/R (dest 32/33) ← Mixer0 out L/R (64/65)
-    /// * IOBoard0 ch2-15 (dest 34-47) ← USB ch2-15 (192 + (dest - 32))
+    /// * IOBoard0 ch0-15 (dest 32-47) ← USB ch0-15 (192 + (dest - 32)), Line 1/2
+    ///   included: every output is direct and no mixer is routed, as the unit
+    ///   powers on and as the original reset it
+    ///   (og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:623-712)
     /// * IOBoard1 ch0-15 (dest 48-63) ← USB ch0-15 (192 + (dest - 48))
     ///
     /// On ThunderBridge the boot table is the dext's, not the proxy's
@@ -521,11 +523,7 @@ public enum SymphonyIOHeadphoneRouting {
         let lastBoard1 = board1 &+ UInt8(SymphonyIORoutingAddress.channelsPerIOBoard - 1) // 63
         let playback = SymphonyIORoutingAddress.hostPlaybackBase(for: transport)
         switch destination {
-        case board0, board0 &+ 1:
-            return transport == .thunderbolt
-                ? playback &+ (destination &- board0)
-                : SymphonyIORoutingAddress.mixer0Base &+ (destination &- board0)
-        case (board0 &+ 2)...(board1 &- 1):
+        case board0...(board1 &- 1):
             return playback &+ (destination &- board0)
         case board1...lastBoard1:
             // USB: the proxy mirrors USB 1-16 onto slot 2. ThunderBridge: the
@@ -1927,20 +1925,22 @@ public enum SymphonyIODefaultRouting {
     /// steps 19b-1 / 19b-1b: XLink 0-15 → slot 1's outputs, 16-31 → slot 2's),
     /// and the card feeds XLink TX n from playback n (step 21b), so Mac output
     /// n plays through slot 1 output n for 1-16 and slot 2 output n-16 for
-    /// 17-32. The main pair defaults to card mixer 1
-    /// (`ThunderboltCardRouting.mainPairDefaultSource`). A destination past a
-    /// card's outputs (or in an empty slot) is silent.
+    /// 17-32. A destination past a card's outputs (or in an empty slot) is
+    /// silent.
     ///
     /// It is NOT the USB table above, which puts every analog output first:
     /// with two cards that have analog outputs, that table drew Mac 9-10 on
     /// slot 2's Line 1/2 while the unit played it on slot 1's digital outputs.
     ///
-    /// `mainPairOnMixer: false` is Reset Routing's layout, as Apogee's software
-    /// reset it (`SymphonyPCIeRoutingController::ResetRouting`, output branch:
-    /// the mixers' destinations cleared and every software output routed to the
-    /// matching hardware output): the main pair plays Software 1-2 directly.
-    public static func thunderboltOutputRoutes(board0Outputs: Int, board1Outputs: Int,
-                                               mainPairOnMixer: Bool = true) -> [Route] {
+    /// Every output is direct, the main pair included, and no mixer is routed
+    /// to an output: the original's default and its Reset Routing layout
+    /// (`SymphonyPCIeRoutingController::ResetRouting`, output branch: the
+    /// mixers' destinations cleared and every software output routed to the
+    /// matching hardware output; USB the same,
+    /// og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:623-712).
+    /// The driver itself still starts the card with the main pair on card
+    /// mixer 1, so Maestro writes this table on every connect.
+    public static func thunderboltOutputRoutes(board0Outputs: Int, board1Outputs: Int) -> [Route] {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         let bases = [SymphonyIORoutingAddress.ioBoard0Base, SymphonyIORoutingAddress.ioBoard1Base]
         let outputs = [board0Outputs, board1Outputs]
@@ -1951,9 +1951,7 @@ public enum SymphonyIODefaultRouting {
                 let source = index < outputs[board]
                     ? SymphonyIORoutingAddress.xlinkPlaybackBase + UInt8(board * perBoard + index)
                     : SymphonyIORoutingAddress.none
-                let mixer = mainPairOnMixer
-                    ? ThunderboltCardRouting.mainPairDefaultSource(forDestination: destination) : nil
-                routes.append((destination: destination, source: mixer ?? source))
+                routes.append((destination: destination, source: source))
             }
         }
         return routes
@@ -2298,8 +2296,7 @@ public enum RoutingResetGuard {
                                        transport: TransportType = .usb) -> [String] {
         let routes = transport == .thunderbolt
             ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
-                board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels,
-                mainPairOnMixer: false)
+                board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
             : SymphonyIODefaultRouting.outputRoutes(
                 board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
                 board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),

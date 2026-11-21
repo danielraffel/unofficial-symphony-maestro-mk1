@@ -317,7 +317,8 @@ struct InputLogicTests {
             let options = InputChannelLogic.softLimitOptions(card: card)
             #expect(options.count == 5, "\(card) should expose five soft limit values")
             #expect(options.map(\.value) == [0, 1, 2, 3, 4])
-            #expect(options.map(\.name) == ["Off", "-2 dBFS", "-4 dBFS", "Saturate", "Crunch"])
+            // Apogee's names (AnalogIn_SymphonyIO_Stream.cpp:17), not "Saturate" / "Crunch".
+            #expect(options.map(\.name) == ["Off", "-2 dBfs", "-4 dBfs", "Soft Saturate", "Soft Crush"])
         }
     }
 
@@ -330,9 +331,10 @@ struct InputLogicTests {
     }
 
     @Test func softLimitNames() {
-        #expect(InputChannelLogic.softLimitName(2, card: .optical) == "-4 dBFS")
+        #expect(InputChannelLogic.softLimitName(2, card: .optical) == "-4 dBfs")
         #expect(InputChannelLogic.softLimitName(2, card: .analogADDA16) == "On")
-        #expect(InputChannelLogic.softLimitName(3, card: .optical) == "Saturate")
+        #expect(InputChannelLogic.softLimitName(3, card: .optical) == "Soft Saturate")
+        #expect(InputChannelLogic.softLimitName(4, card: .optical) == "Soft Crush")
         // A value the card rejects falls back to Off rather than showing "?".
         #expect(InputChannelLogic.softLimitName(3, card: .analogADDA16) == "Off")
     }
@@ -751,7 +753,7 @@ struct MicPreStripLogicTests {
         var channels = (0..<4).map { _ in InputChannelState(softLimit: 0) }
         let cards: [IOCardType] = [.optical, .optical, .analogADDA16, .analogADDA16]
 
-        // "Saturate" (3) exists on the Optical card only.
+        // "Soft Saturate" (3) exists on the Optical card only.
         let changed = InputChannelLogic.applySoftLimitToAll(
             &channels, to: 3, cards: cards, excluding: 0)
 

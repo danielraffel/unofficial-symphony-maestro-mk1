@@ -42,7 +42,6 @@ extension AppState {
             let cardInputs = symphonyCardInputStore?.load() ?? [:]
             seed.cardInputRoutes = (0..<(unitBOnCard ? 64 : 32)).map { cardInputs[$0] ?? $0 }
         }
-        seed.routingMode = mixerPreferences.integer(forKey: "routingMode")
         seed.mixers = (0..<2).map {
             ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount,
                                                                  mixer: $0, store: channelStateStore, preferences: mixerPreferences))
@@ -50,7 +49,7 @@ extension AppState {
         let saved = cachedOutputRouteMap()
         seed.outputRoutes = (0..<32).map { channel in
             let destination = UInt8(channel + 32)
-            return saved[destination] ?? ThunderboltCardRouting.mainPairDefaultSource(forDestination: destination) ?? UInt8(channel)
+            return saved[destination] ?? UInt8(channel)
         }
         let b = unitBOnCard ? unitBDevice as? ThunderboltUnitBConnection : nil
         let bLayout = unitBLayout
@@ -72,7 +71,6 @@ extension AppState {
                 value.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
             }
             value.outputRoutes = Array(0..<32)
-            value.routingMode = store.mixerPreferences.integer(forKey: "routingMode")
             value.mixers = (0..<2).map {
                 ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: bLayout.mixerChannelCount, mixer: $0, store: store))
             }
@@ -97,8 +95,23 @@ extension AppState {
         if !warnings.all.isEmpty { statusMessage = "Saved with skipped settings: " + warnings.all.joined(separator: ", ") }
     }
 
+    /// Recall a bundle. If it fails after its first write, the unit may hold
+    /// part of the bundle while the pages show what is saved: no output is
+    /// left on a card mixer, and the restore puts the saved routing and
+    /// mixers back (`recoverFromFailedRecall`).
     @MainActor
     func loadThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
+        recallWritesStarted = false
+        do {
+            try await recallThunderboltPresetBundle(from: url, connection: connection)
+        } catch {
+            if recallWritesStarted { await recoverFromFailedRecall(connection) }
+            throw error
+        }
+    }
+
+    @MainActor
+    private func recallThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
         guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
         try requireSymphonyPreset()
         let (preset, legacy) = try ThunderboltPreset.loadBundle(from: url, layout: cardLayout)
@@ -118,6 +131,7 @@ extension AppState {
             && unitBBoardSource(slot: 0) == .detected && unitBBoardSource(slot: 1) == .detected)
         let recallB = preset.unitB != nil && skip == nil
         let cardChannels = unitBOnCard && unitBInputRoutingAllowed && skip == nil ? 64 : 32
+        recallWritesStarted = true
         try await Task.detached {
             try connection.withPresetLock {
                 let aWrites = try connection.presetWrites(preset, layout: layout, legacy: legacy, channels: cardChannels,
@@ -169,7 +183,7 @@ extension AppState {
             }
             bStore.save(saved.metadata.inputChannelStates.enumerated().map { $0.element.recalled(identity: bStore.identity, boardSlot: 1, channel: $0.offset) }, for: ChannelStateStore.inputKey)
             bStore.save(saved.metadata.outputChannelStates, for: ChannelStateStore.outputKey)
-            try bStore.saveMixerPreset(saved.mixers, routingMode: saved.routingMode, sourceCount: 32)
+            try bStore.saveMixerPreset(saved.mixers, sourceCount: 32)
             if let bDigitalKey {
                 for digital in PresetDigitalWrites.writes(for: saved.metadata, layout: bLayout) {
                     SlotDigitalSettings.remember(digital.address.selector, slot: Int(digital.address.element), value: digital.value, key: bDigitalKey)
@@ -196,8 +210,7 @@ extension AppState {
         for digital in PresetDigitalWrites.writes(for: meta, layout: cardLayout) {
             rememberDigitalSetting(digital.address.selector, slot: Int(digital.address.element), value: digital.value)
         }
-        try channelStateStore.saveMixerPreset(preset.mixers, routingMode: legacy ? nil : preset.routingMode,
-                                              sourceCount: cardChannels == 64 ? 32 : 8)
+        try channelStateStore.saveMixerPreset(preset.mixers, sourceCount: cardChannels == 64 ? 32 : 8)
         if !legacy {
             persistPresetRoutes(preset, productID: connection.identifier.productID, recalledChannels: cardChannels)
             if let routes = preset.cardInputRoutes {

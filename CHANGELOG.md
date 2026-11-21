@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.9.19 (beta)
+
+This beta removes Input Monitoring and puts Output Routing, Input Routing and the mixer back to how Apogee's software worked. It contains everything in 0.9.18.
+
+### Changes that may affect your setup
+
+- **Breaking change: Input Monitoring is gone, and routing and the mixer are reset to how Apogee's software worked. We got this wrong, and we're sorry for the disruption.** There is no DAW / Direct Monitor setting any more; Apogee's software never had one. The first time you open this version, Output Routing, Input Routing and both mixers go back to their defaults: every output plays the matching software output directly, no mixer feeds an output, and every mixer strip is at 0 dB and unmuted. Everything in the mixers returns to default, so a strip or Software Return you had muted comes back unmuted. If you use Apogee converters (AD-16X, DA-16X, DD-16X or Rosetta) on a ThunderBridge or PCIe card, their input and output routing goes back to default as well. You hear an input directly through the Symphony only when its strip is unmuted in a mixer that you route to an output in Output Routing. If you had routed a mixer to your outputs, or had Software Return or Master turned down, your outputs may be louder than before: turn your monitors down first, then set your routing and mixer again. Levels, trims, channel names, speaker and headphone settings and your saved presets, including converter routing presets, are kept.
+- **The pan knob on Software Return is gone.** It was our addition: Apogee's Software Return had a fader, mute and solo, and no pan. A Software Return you had panned is centred again.
+- **Line 1/2 now plays Software 1-2 directly by default, on every connection.** Until now Maestro put Mixer 1 on Line 1/2: over USB every time the Symphony connected, and over ThunderBridge and PCIe unless you had chosen otherwise. A mixer now reaches an output only when you route it there in Output Routing.
+- **An output you feed from a mixer is silent for a few seconds when Maestro connects, on USB and on ThunderBridge.** Maestro sets that mixer first, then turns the output on. Over USB the same goes for a headphone whose Output Source is an output pair fed from a mixer: it is silent until that mixer is set. The status bar shows "Restoring mixer and routing…" while this happens. Outputs and headphones fed directly are not affected.
+- **Over USB, your speaker setting is no longer put back to Stereo every time the Symphony connects.** Maestro restores the one you chose on the Output page, or sets Stereo if you never chose one.
+- **Over USB, your settings come back after the Symphony is switched off and on while Maestro is open:** Output Routing, Input Routing, both mixers and the speaker setting. Before, only Master and Software Return came back.
+- **The "Display pop-ups" setting in App Settings is gone.** It never did anything. Apogee's software showed an on-screen level display; [issue 34](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/34) describes what it would take to add one.
+
+### Fixed
+
+- **Over USB, the Master meter follows the Software Return and Master faders.** It used to show your Mac's playback at full level whatever those faders, or a Software Return mute, were set to.
+- **Soft Limit's choices are named as in Apogee's software:** Soft Saturate and Soft Crush (we had "Saturate" and "Crunch").
+
+### New
+
+- **Help and the user guide are rewritten for this.** Help has a new question, "When do I hear an input directly through the Symphony?", and "Why doesn't the Software Return fader or mute, or Master, change what I hear?" and "The Mixer over USB" now describe the default routing.
+- **Trim values on the Input and Output pages can be typed, as in Apogee's software.** Click the trim value under a trim fader, type a number and press Return. Tab applies it and moves to the next channel's trim, and Shift-Tab to the previous one.
+- **Tab also moves along the fader values on the Mixer page,** from one strip to the next, then Software Return and Master.
+- **The level readout on the Input and Output pages shows tenths of a dB, as in Apogee's software.** It showed whole dB before, which was too coarse for calibrating a trim against a tone.
+
+### Please test
+
+On USB and on ThunderBridge. Please say which connection you used.
+
+- **The default, right after updating:** play audio from your Mac. Do you hear it on your outputs? Then play or speak into an input with your DAW closed: it should be silent.
+- **Route Mixer 1 to Line 1/2 in Output Routing:** is an unmuted input now audible, and silent again when you mute its strip? Do the Software Return and Master faders change the level you hear, and does the Master meter move with them?
+- **Unplug and replug, or switch the Symphony off and on:** do Output Routing, the mixer and the speaker setting come back as you left them, and is the clock source still the one you chose?
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.18 (0.11.15, build 141), so there is no need to reconnect anything after updating.
+- If you installed Maestro with a custom install that left out "USB support" and you connect over USB, the status bar asks you to reinstall Maestro with USB support. Until you do, Maestro does not set the mixers and does not turn on an output fed from a mixer.
+- Saved presets still load. A preset saved while Input Monitoring was set to DAW no longer mutes the input strips when it loads, and a preset's Software Return pan is not applied.
+
 ## 0.9.18 (beta)
 
 This beta makes the Symphony I/O take a new sample rate the moment it is set, on ThunderBridge and PCIe. It contains everything in 0.9.17.

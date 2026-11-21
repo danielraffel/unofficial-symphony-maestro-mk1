@@ -39,6 +39,20 @@ struct MixerView: View {
     @State private var outsideClickMonitor: Any?
     @State private var scrollPosition: ScrollPosition
     @AppStorage("rememberControlTabScrollPositions") private var rememberControlTabScrollPositions = true
+    /// The fader level readout being typed into, if any — one at a time.
+    @State private var editingReadout: MixerLevelReadout?
+    /// Keyboard focus among the fader level readouts; Tab moves it along the strips.
+    @FocusState private var focusedReadout: MixerLevelReadout?
+
+    /// What a strip's level readout needs to take part in Tab order: inputs
+    /// that are showing, then Software Return, then Master.
+    private func readoutEntry(_ id: MixerLevelReadout) -> LevelReadoutEntry<MixerLevelReadout> {
+        LevelReadoutEntry(id: id, editing: $editingReadout, focus: $focusedReadout) { current, forward in
+            let inputs = (0..<min(editor.channels.count, channelCount)).filter { isChannelVisible($0) }
+            return LevelEntry.neighbour(of: current, in: MixerLevelReadout.order(visibleInputs: inputs),
+                                        forward: forward) { _ in true }
+        }
+    }
 
     init(appState: AppState) {
         self.appState = appState
@@ -220,6 +234,7 @@ struct MixerView: View {
             // Give the scroll container the available window height so its
             // indicator stays bottom-aligned while strips remain top-aligned.
             GeometryReader { viewport in
+            ScrollViewReader { scrollProxy in
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 0) {
                     Spacer().frame(width: 7)
@@ -287,8 +302,10 @@ struct MixerView: View {
                                 onCustomLabelChange: { value in
                                     setCustomChannelLabel(value, for: i)
                                 },
-                                showZoneColoring: appState.showMeterZoneColoring
+                                showZoneColoring: appState.showMeterZoneColoring,
+                                readoutEntry: readoutEntry(.input(i))
                             )
+                            .id(MixerLevelReadout.input(i))
                         }
                     }
 
@@ -296,6 +313,7 @@ struct MixerView: View {
                     // to the card below, so it cannot stretch to the scroll
                     // viewport's full height.
                     swReturnStrip
+                        .id(MixerLevelReadout.softwareReturn)
 
                     // Master fader strip — pill aligned with SW Return pill,
                     // fader+meter+dB aligned with channel strips, no M/S at bottom.
@@ -362,6 +380,7 @@ struct MixerView: View {
                             .fill(Color.primary.opacity(0.4))
                             .frame(width: 1)
                     }
+                    .id(MixerLevelReadout.master)
                 }
                 // Keep the scroll content at its intrinsic strip height. A
                 // max-height frame here makes Divider stretch to the window
@@ -402,6 +421,12 @@ struct MixerView: View {
                     scrollPosition.scrollTo(x: 0)
                     appState.setControlTabScrollOffset(0, for: .mixer)
                 }
+            }
+            // Tab can move editing to a strip that is scrolled out of view;
+            // bring it in by the smallest amount (no move when already visible).
+            .onChange(of: editingReadout) { _, readout in
+                if let readout { scrollProxy.scrollTo(readout) }
+            }
             }
             }
 
@@ -473,11 +498,6 @@ struct MixerView: View {
             }
             print("[Maestro] MixerView: Reloaded mixer state after recovery")
         }
-        .onChange(of: appState.routingModeChangeCount) { _, _ in
-            // Routing-mode and hardware-input mutes are serialized by
-            // AppState; reload the snapshot without starting a second writer.
-            initializeChannels()
-        }
     }
 
     /// Reapply the session offset after a tab recreation or card-layout update.
@@ -548,7 +568,7 @@ struct MixerView: View {
         Task {
             await syncMixerToHardware()
             await writeSWReturnLevel(0)
-            await writeSWReturnPan(0)
+            await centreSWReturnPanOnCard()
             await writeSWReturnMute(false)
             await writeSWReturnSolo(false)
             await writeSoftwareReturnSource(0)
@@ -640,41 +660,32 @@ struct MixerView: View {
             guard i < editor.channels.count else { continue }
             batchDragStartPans[i] = editor.channels[i].pan
         }
-        // Include SW Return in batch (sentinel key -1)
-        batchDragStartPans[-1] = editor.swReturnChannel.pan
     }
 
     /// Apply a delta to all target channel pans (clamped, preserves relative positions).
     private func batchApplyPanDelta(delta: Double) {
         for (i, startPan) in batchDragStartPans {
             let newPan = min(max(startPan + delta, -1.0), 1.0)
-            if i == -1 {
-                // SW Return (sentinel key)
-                editor.swReturnChannel.pan = newPan
-                Task { await writeSWReturnPan(newPan) }
-            } else {
-                guard i < editor.channels.count else { continue }
-                editor.channels[i].pan = newPan
-                panDebounce[i]?.cancel()
-                panDebounce[i] = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(25))
-                    guard !Task.isCancelled else { return }
-                    await writePan(channel: i, pan: newPan)
-                }
+            guard i >= 0, i < editor.channels.count else { continue }
+            editor.channels[i].pan = newPan
+            panDebounce[i]?.cancel()
+            panDebounce[i] = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(25))
+                guard !Task.isCancelled else { return }
+                await writePan(channel: i, pan: newPan)
             }
         }
         saveMixerState()
     }
 
-    /// Center all pans (including SW Return) — triggered by Option+click on any pan knob.
+    /// Center all input pans — triggered by Option+click on any pan knob.
+    /// Software Return has no pan.
     private func batchCenterPans() {
         for i in batchTargetChannels {
             guard i < editor.channels.count else { continue }
             editor.channels[i].pan = 0
             Task { await writePan(channel: i, pan: 0) }
         }
-        editor.swReturnChannel.pan = 0
-        Task { await writeSWReturnPan(0) }
         saveMixerState()
     }
 
@@ -787,6 +798,12 @@ struct MixerView: View {
     /// may not match the UI, causing silent channels until user interaction.
     private func syncMixerToHardware(recalling: Bool = false) async {
         guard editor.canEdit(appState) else { return }
+        // Over USB the connection's restore writes each mixer in full, in an
+        // order that keeps it off every output until it is done. Until it has
+        // written this mixer, a copy from here could unmute strips on a mixer
+        // that still feeds an output (an older helper, or a restore that has
+        // not reached it yet); afterwards this is the page's usual re-send.
+        if appState.device is XPCDeviceConnection, !recalling, !appState.usbMixerIsWritten(selectedMixer) { return }
         // Two-unit lifecycle recall belongs to AppState even with this page closed.
         if recalling && appState.usesTwoUnitReplay { return }
         guard let device = appState.device else { return }
@@ -796,12 +813,14 @@ struct MixerView: View {
         // it. A reset (recalling == false) is an edit and is always written.
         if recalling, await appState.mixerPageDefersToCardMixerRestore(mixer: selectedMixer) { return }
         let loaded = editor
-        let routingMode = appState.mixerPreferences.integer(forKey: "routingMode")
-        for i in 0..<min(editor.loadedChannelCount, min(editor.channels.count, channelCount)) {
+        // Every strip shown, saved or not: a strip nobody has touched shows
+        // unmuted at 0 dB, and the unit or the driver may hold something else
+        // (the ThunderBridge driver starts its card mixer with inputs muted).
+        // A strip is muted only when it shows muted.
+        for i in 0..<min(editor.channels.count, channelCount) {
             guard loaded.canEdit(appState), appState.device === device else { return }
             let ch = loaded.channels[i]
             let elem = mixerElement(channel: i)
-            let effectiveMute = (routingMode == 0) ? true : ch.isMuted
             do {
                 try await device.setProperty(
                     PropertyAddress(selector: .mixerChannelLevel, element: elem),
@@ -809,7 +828,7 @@ struct MixerView: View {
                 guard loaded.canEdit(appState), appState.device === device else { return }
                 try await device.setProperty(
                     PropertyAddress(selector: .mixerChannelMute, element: elem),
-                    value: .bool(effectiveMute))
+                    value: .bool(ch.isMuted))
             } catch {
                 // Non-critical — channel may not exist on this board config
             }
@@ -834,7 +853,7 @@ struct MixerView: View {
             }
             if editor.loadedReturn { await writeSoftwareReturnSource(editor.softwareReturnSource) }
         }
-        print("[Maestro] syncMixerToHardware: sent \(editor.channels.count) channels + master to mixer \(selectedMixer + 1) (\(routingMode == 0 ? "DAW" : "Direct Monitor"))")
+        print("[Maestro] syncMixerToHardware: sent \(editor.channels.count) channels + master to mixer \(selectedMixer + 1)")
     }
 
     /// Encode mixer element: (mixerID << 16) | channelIndex.
@@ -894,9 +913,6 @@ struct MixerView: View {
         onLevelChange: { level in
             Task { await writeSWReturnLevel(level); saveMixerState() }
         },
-        onPanChange: { pan in
-            Task { await writeSWReturnPan(pan); saveMixerState() }
-        },
         onMuteChange: { muted, isOption in
             if isOption {
                 batchToggleMute(newValue: muted)
@@ -917,15 +933,6 @@ struct MixerView: View {
         onBatchLevelDragStart: {
             beginBatchLevelDrag(fromChannel: -1)
         },
-        onBatchPanChange: { delta in
-            batchApplyPanDelta(delta: delta)
-        },
-        onBatchPanDragStart: {
-            beginBatchPanDrag(fromChannel: -1)
-        },
-        onPanOptionClick: {
-            batchCenterPans()
-        },
         softwareReturnSource: $editor.softwareReturnSource,
         softwareReturnPairCount: appState.softwareReturnPairCount,
         onSoftwareReturnSourceChange: { source in
@@ -937,12 +944,12 @@ struct MixerView: View {
         },
         showZoneColoring: appState.showMeterZoneColoring,
         stereoFader: true,
-        // Keep SW Return pan available alongside the stereo fader. The
-        // mixer model and ThunderBridge write path both support it.
-        showPan: true,
+        // No pan: Apogee's Software Return had a stereo fader, solo and mute.
+        showPan: false,
         stereoLeftLevel: $editor.swReturnLeftLevel,
         stereoRightLevel: $editor.swReturnRightLevel,
-        onStereoLevelChange: { level in swSideChanged(level) }
+        onStereoLevelChange: { level in swSideChanged(level) },
+        readoutEntry: readoutEntry(.softwareReturn)
     )
     }
 
@@ -961,8 +968,9 @@ struct MixerView: View {
                     get: { editor.masterLevel },
                     set: { newLevel in masterSideChanged(newLevel) }),
                 range: -48...6,
-                step: 0.5)
-            .maestroHelp("Master fader level: double-click to edit")
+                step: 0.5,
+                entry: readoutEntry(.master))
+            .maestroHelp("Master fader level: click to edit")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
@@ -1001,12 +1009,10 @@ struct MixerView: View {
     private func writeMute(channel: Int, muted: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
-        let routingMode = appState.mixerPreferences.integer(forKey: "routingMode")
-        let effectiveMute = (routingMode == 0) ? true : muted
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelMute, element: mixerElement(channel: channel)),
-                value: .bool(effectiveMute)
+                value: .bool(muted)
             )
         } catch {
             print("[Maestro] Mixer mute ch\(channel) failed: \(error)")
@@ -1115,40 +1121,32 @@ struct MixerView: View {
         }
     }
 
-    private func writeSWReturnPan(_ pan: Double) async {
-        guard editor.canEdit(appState) else { return }
-        guard let device = appState.device else { return }
-        if let xpcDev = usbDevice {
-            // The unit's Software Return strip has no pan. Over USB the pan is a
-            // balance in the helper, which only sees USB playback 1-2.
-            if editor.softwareReturnSource == 0 { xpcDev.setSwReturnPan(pan) }
-        } else {
-            do {
-                try await device.setProperty(
-                    PropertyAddress(selector: .mixerChannelPan, element: swReturnElement),
-                    value: .float64(pan)
-                )
-            } catch {
-                print("[Maestro] Mixer SW Return pan failed: \(error)")
-            }
+    /// Software Return has no pan (the original's strip had a stereo fader,
+    /// solo and mute: og_source/maestro2/App/Controllers/APMixerSoftwareReturnViewController.m).
+    /// The ThunderBridge card mixer still has the control and may hold a pan
+    /// an earlier version wrote, so it is put back to centre wherever the
+    /// return is rewritten. Over USB the unit's strip has none.
+    private func centreSWReturnPanOnCard() async {
+        guard editor.canEdit(appState), usbDevice == nil, let device = appState.device else { return }
+        do {
+            try await device.setProperty(
+                PropertyAddress(selector: .mixerChannelPan, element: swReturnElement),
+                value: .float64(0))
+        } catch {
+            print("[Maestro] Mixer SW Return pan centre failed: \(error)")
         }
     }
 
-    /// What the helper's one software mute should be when this mixer's
-    /// Software Return has `muted` and `source`: the other mixer counts too.
-    private func helperMute(muted: Bool, source: UInt32) -> Bool {
-        let other = selectedMixer == 0 ? 1 : 0
-        let prefs = appState.mixerPreferences
-        return USBMixerSavedState.helperMuted([
-            (source: source, muted: muted),
-            (source: UInt32(clamping: prefs.integer(forKey: "mixerSoftwareReturnSource_\(other)")),
-             muted: MixerStateSnapshot.savedSoftwareReturn(mixer: other, preferences: prefs).isMuted),
-        ])
+    /// What the helper's software stage should do when this mixer's Software
+    /// Return has `muted` and `source`: the other mixer and Output Routing
+    /// count too (``USBHelperSoftwareReturn``).
+    private func helperState(muted: Bool, source: UInt32) -> USBHelperSoftwareReturn.State {
+        appState.usbHelperSoftwareReturn(editing: (mixer: selectedMixer, source: source, muted: muted))
     }
 
     /// Over USB the connection sends the unit's 0xB3 to strip 32 of this mixer
-    /// and, when it lands, sets the helper's software mute by `helperMute`
-    /// (the "Maestro USB" device is rendered there). ThunderBridge: the
+    /// and, when it lands, sets the helper's software mute by `helperState`
+    /// (on only while a mixer on USB 1-2 feeds an output). ThunderBridge: the
     /// driver's mixer alone, unchanged.
     private func writeSWReturnMute(_ muted: Bool) async {
         guard editor.canEdit(appState) else { return }
@@ -1157,7 +1155,8 @@ struct MixerView: View {
             let address = PropertyAddress(selector: .mixerChannelMute, element: swReturnElement)
             if let xpcDev = usbDevice {
                 try await xpcDev.setSoftwareReturnMute(
-                    address, muted: muted, helperMuted: helperMute(muted: muted, source: editor.softwareReturnSource))
+                    address, muted: muted,
+                    helperMuted: helperState(muted: muted, source: editor.softwareReturnSource).muted)
             } else {
                 try await device.setProperty(address, value: .bool(muted))
             }
@@ -1235,19 +1234,15 @@ struct MixerView: View {
                 print("[Maestro] SW Return write to the unit failed twice; the helper was left as it was")
                 return
             }
-            // Level neutral (the unit owns the fader); mute follows the strip,
-            // as the unit's 0xB3 above does. Solo stays on the unit only.
-            xpcDev.setHelperNeutral(muted: helperMute(muted: muted, source: source))
-            let otherMixer = selectedMixer == 0 ? 1 : 0
-            let otherSource = UInt32(appState.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(otherMixer)"))
-            xpcDev.setSwReturnProcessing(source == 0 || otherSource == 0)
-            if source == 0 { await writeSWReturnPan(editor.swReturnChannel.pan) }
+            // Level neutral (the unit owns the fader); the helper's mute only
+            // while a mixer on USB 1-2 feeds an output. Solo stays on the unit.
+            xpcDev.applyHelperSoftwareReturn(helperState(muted: muted, source: source))
         } else {
             // ThunderBridge: the FPGA mixer processes every source. Mirror the
             // current persisted state into its software-return input controls.
             let swReturnChannel = editor.swReturnChannel
             await writeSWReturnLevel(swReturnChannel.level)
-            await writeSWReturnPan(swReturnChannel.pan)
+            await centreSWReturnPanOnCard()
             await writeSWReturnMute(swReturnChannel.isMuted)
             await writeSWReturnSolo(swReturnChannel.isSoloed)
         }
@@ -1330,14 +1325,16 @@ struct MixerChannelStripView: View {
     /// Legacy Maestro draws a stereo return as one fader with a left and a
     /// right handle. The two always move together.
     var stereoFader: Bool = false
-    /// Whether this strip exposes its pan control. SW Return enables this for
-    /// the ThunderBridge mixer path; strips that use fixed stereo routing can
-    /// still reserve the same lane by setting this false.
+    /// Whether this strip exposes its pan control. Software Return has none;
+    /// a strip without one still reserves the same lane.
     var showPan: Bool = true
     var stereoLeftLevel: Binding<Double>? = nil
     var stereoRightLevel: Binding<Double>? = nil
     /// A stereo fader handle or its readout moved: the new level for both sides.
     var onStereoLevelChange: ((Double) -> Void)? = nil
+    /// Ties this strip's level readout into the page's one-at-a-time editing
+    /// and Tab order.
+    let readoutEntry: LevelReadoutEntry<MixerLevelReadout>
     @Environment(\.colorScheme) private var colorScheme
 
     /// Height for the fader+meter area (matches Input/Output strip meter height).
@@ -1539,12 +1536,13 @@ struct MixerChannelStripView: View {
                         get: { stereoLeftLevel?.wrappedValue ?? channel.level },
                         set: { newValue in onStereoLevelChange?(newValue) }),
                     range: -48...6,
-                    step: 0.5)
-                .maestroHelp("Software Return fader level: double-click to edit")
+                    step: 0.5,
+                    entry: readoutEntry)
+                .maestroHelp("Software Return fader level: click to edit")
             } else {
                 // dB readout (level) — single readout, no duplicate
-                EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5)
-                    .maestroHelp("Fader Level: \(String(format: "%.1f", channel.level)) dB — double-click to edit")
+                EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5, entry: readoutEntry)
+                    .maestroHelp("Fader Level: \(String(format: "%.1f", channel.level)) dB — click to edit")
             }
 
             // Mute / Solo buttons — at the very bottom
@@ -1641,70 +1639,5 @@ struct MixerChannelStripView: View {
                 .fill(Color.primary.opacity(0.4))
                 .frame(width: 1)
         }
-    }
-}
-
-/// Compact legacy-style dB readout. It is display-only until double-clicked,
-/// then accepts a bounded, half-dB value and commits with Return (Escape
-/// cancels). Keeping this outside FaderView also lets the parent align one
-/// readout beneath a stereo fader pair, as the original Maestro did.
-private struct EditableLevelReadout: View {
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    @State private var isEditing = false
-    @State private var editText = ""
-    @FocusState private var fieldFocused: Bool
-
-    private func formatted(_ number: Double) -> String {
-        String(format: step >= 1 ? "%.0f" : "%.1f", number)
-    }
-
-    private func finishEditing(commit: Bool) {
-        if commit, let parsed = Double(editText), parsed.isFinite {
-            let clamped = min(max(parsed, range.lowerBound), range.upperBound)
-            value = (clamped / step).rounded() * step
-        }
-        fieldFocused = false
-        isEditing = false
-        NSApp.keyWindow?.endEditing(for: nil)
-        NSApp.keyWindow?.makeFirstResponder(nil)
-    }
-
-    var body: some View {
-        Group {
-            if isEditing {
-                TextField("", text: $editText)
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .multilineTextAlignment(.center)
-                    .textFieldStyle(.plain)
-                    .focused($fieldFocused)
-                    .onSubmit { finishEditing(commit: true) }
-                    .onExitCommand { finishEditing(commit: false) }
-                    .onAppear {
-                        DispatchQueue.main.async {
-                            fieldFocused = true
-                            // Wait for AppKit to install the field editor before
-                            // selecting, so the first keystroke replaces the
-                            // displayed value instead of appending to it.
-                            DispatchQueue.main.async {
-                            NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: nil)
-                            }
-                        }
-                    }
-            } else {
-                Text(formatted(value))
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .onTapGesture {
-                        editText = formatted(value)
-                        isEditing = true
-                    }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 22)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
     }
 }

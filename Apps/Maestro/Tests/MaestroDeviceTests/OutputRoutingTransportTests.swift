@@ -77,8 +77,8 @@ struct OutputRoutingTransportTests {
             #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination, transport: .thunderbolt)
                     == ThunderboltCardRouting.channel(forDestination: destination))
         }
-        // The USB table is unchanged.
-        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 32, cachedRoutes: [:], transport: .usb) == 64)
+        // The USB table: direct as well, from USB playback (192 + n).
+        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 32, cachedRoutes: [:], transport: .usb) == 192)
         #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 50, cachedRoutes: [:], transport: .usb) == 194)
     }
 
@@ -93,16 +93,16 @@ struct OutputRoutingTransportTests {
         #expect(SymphonyIORoutingAddress.rightChannelSource(of: 64) == 65)
     }
 
-    @Test("ThunderBridge default output table is the driver's: Mac n on slot 1 output n, 17-32 on slot 2")
+    @Test("ThunderBridge default output table: Mac n on slot 1 output n, 17-32 on slot 2, all direct")
     func thunderboltPositionTable() {
         // Two 8x8s: the USB table would put slot 2's Line outputs on playback 9-16.
         let routes = SymphonyIODefaultRouting.thunderboltOutputRoutes(board0Outputs: 16, board1Outputs: 16)
         #expect(routes.count == 32)
         var byDestination: [UInt8: UInt8] = [:]
         for route in routes { byDestination[route.destination] = route.source }
-        // Main pair on Mixer 1, as the driver programs it.
-        #expect(byDestination[32] == SymphonyIORoutingAddress.mixer0Base)
-        #expect(byDestination[33] == SymphonyIORoutingAddress.mixer0Base + 1)
+        // Every output direct, the main pair included: no mixer is routed by default.
+        #expect(byDestination[32] == 0)
+        #expect(byDestination[33] == 1)
         for channel in UInt8(2)...UInt8(15) { #expect(byDestination[32 + channel] == channel) }
         for channel in UInt8(0)...UInt8(15) { #expect(byDestination[48 + channel] == 16 + channel) }
         // Every route reaches the card output the driver's fixed table gives it.
@@ -116,12 +116,11 @@ struct OutputRoutingTransportTests {
         #expect(empty.first { $0.destination == 48 }?.source == 16)
     }
 
-    @Test("ThunderBridge Reset Routing layout is Apogee's: every software output on its output, no mixer")
+    @Test("The default and Reset Routing layout is Apogee's on both transports: every software output on its output, no mixer")
     func thunderboltResetLayout() {
         // SymphonyPCIeRoutingController::ResetRouting (output): mixer destinations
         // cleared, software output n routed to hardware output n.
-        let routes = SymphonyIODefaultRouting.thunderboltOutputRoutes(
-            board0Outputs: 16, board1Outputs: 16, mainPairOnMixer: false)
+        let routes = SymphonyIODefaultRouting.thunderboltOutputRoutes(board0Outputs: 16, board1Outputs: 16)
         var byDestination: [UInt8: UInt8] = [:]
         for route in routes { byDestination[route.destination] = route.source }
         #expect(byDestination[32] == 0)
@@ -130,9 +129,11 @@ struct OutputRoutingTransportTests {
         for channel in UInt8(0)...UInt8(15) { #expect(byDestination[48 + channel] == 16 + channel) }
         #expect(!routes.contains { $0.source >= SymphonyIORoutingAddress.mixer0Base &&
                                    $0.source != SymphonyIORoutingAddress.none })
-        // The start-up default is unchanged: main pair on Mixer 1.
-        let startup = SymphonyIODefaultRouting.thunderboltOutputRoutes(board0Outputs: 16, board1Outputs: 16)
-        #expect(startup.first { $0.destination == 32 }?.source == SymphonyIORoutingAddress.mixer0Base)
+        // The USB boot table is direct as well: Line 1/2 from USB 1/2, no mixer.
+        for destination in UInt8(32)...UInt8(63) {
+            let source = SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination, transport: .usb)
+            #expect(source == 192 + (destination - 32) % 16, "USB output \(destination) is not direct")
+        }
     }
 
     @Test("The ThunderBridge reset confirmation describes the position table")

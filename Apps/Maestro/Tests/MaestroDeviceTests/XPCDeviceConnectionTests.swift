@@ -73,12 +73,6 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
         swReturnChannelLevelCalls.append((channel, dB))
     }
 
-    var swReturnPanCalls: [Double] = []
-
-    func setSwReturnPan(_ pan: Double) {
-        swReturnPanCalls.append(pan)
-    }
-
     var swReturnProcessingCalls: [Bool] = []
 
     func setSwReturnProcessing(_ enabled: Bool) {
@@ -89,12 +83,6 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
 
     func setSwReturnSource(_ source: UInt32) {
         swReturnSourceCalls.append(source)
-    }
-
-    var routingModeCalls: [Int] = []
-
-    func setRoutingMode(_ mode: Int) {
-        routingModeCalls.append(mode)
     }
 
     /// Records that the audio path rebuild was requested.
@@ -648,123 +636,56 @@ struct XPCDeviceConnectionTests {
         // Simulate what recovery code does: re-sync SW Return
         conn.setSwReturnMute(true)
         conn.setSwReturnLevel(-6.0)
-        conn.setSwReturnPan(0.5)
 
         #expect(transport.swReturnMuteCalls == [true])
         #expect(transport.swReturnLevelCalls == [-6.0])
-        #expect(transport.swReturnPanCalls == [0.5])
     }
 
-    // MARK: - Routing Mode
+    // MARK: - Mixer strips restore (no forced mutes)
 
-    @Test func setRoutingModeDelegatesToTransport() {
+    /// The connect/recovery restore writes each strip exactly as saved, and an
+    /// unsaved strip at the default: unmuted, 0 dB, centre. Nothing is muted
+    /// that Maestro does not show muted (the removed Input Monitoring setting
+    /// used to force 64 mutes here).
+    @Test func mixerStripsRestoreWritesWhatIsShown() async {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        conn.setRoutingMode(0)  // DAW
-        conn.setRoutingMode(1)  // Direct Monitor
-
-        #expect(transport.routingModeCalls == [0, 1])
+        let muted = MixerChannelState(level: -12, pan: 0.5, isMuted: true, isSoloed: true)
+        let open = MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: false)
+        // Mixer 1: strips 0 and 1 saved. Mixer 2: nothing saved.
+        let result = await conn.restoreMixerStrips(saved: [[muted, open], []], hardwareIndexes: [0, 1, 16],
+                                                   spacing: .zero)
+        #expect(result.applied == 2 * 3 * 4 && result.failed == 0)
+        func byte(_ request: UInt8, mixer: UInt16, channel: UInt16) -> UInt8? {
+            transport.setPropertyCalls.last { $0.bRequest == request && $0.wValue == mixer && $0.wIndex == channel }?.data.first
+        }
+        // 0xB3 mute, 0xB2 solo.
+        #expect(byte(0xB3, mixer: 1, channel: 0) == 1)
+        #expect(byte(0xB2, mixer: 1, channel: 0) == 1)
+        #expect(byte(0xB3, mixer: 1, channel: 1) == 0)
+        #expect(byte(0xB3, mixer: 1, channel: 16) == 0)   // unsaved: default, unmuted
+        for channel: UInt16 in [0, 1, 16] {
+            #expect(byte(0xB3, mixer: 2, channel: channel) == 0)
+            #expect(byte(0xB2, mixer: 2, channel: channel) == 0)
+            // Default level 0 dB and centre pan are written too: the unit may hold anything.
+            #expect(byte(0xB0, mixer: 2, channel: channel) == byte(0xB0, mixer: 1, channel: 16))
+            #expect(byte(0xB1, mixer: 2, channel: channel) == 64)
+        }
+        #expect(byte(0xB0, mixer: 1, channel: 0) != byte(0xB0, mixer: 1, channel: 16))
+        // Never an unmute before its level, and only strips 0-31 (never 32/33 here).
+        let firstMute = transport.setPropertyCalls.firstIndex { $0.bRequest == 0xB3 }!
+        let firstLevel = transport.setPropertyCalls.firstIndex { $0.bRequest == 0xB0 }!
+        #expect(firstLevel < firstMute)
+        #expect(transport.setPropertyCalls.allSatisfy { $0.wIndex < 32 })
+        // The helper is not touched by the strips.
+        #expect(transport.swReturnMuteCalls.isEmpty && transport.swReturnProcessingCalls.isEmpty)
     }
 
-    // MARK: - DAW Force-Mute Pattern
-
-    /// Verify the force-mute batch pattern: 2 mixers x 32 channels = 64 mute commands.
-    /// This is the pattern used by the app in DAW mode to silence all HW mixer inputs.
-    @Test func dawForceMuteBatchPattern() {
+    @Test func mixerStripsRestoreStopsWhenNoLongerCurrent() async {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        // Simulate the DAW force-mute loop from MaestroApp
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-            }
-        }
-
-        #expect(transport.mixerParamCalls.count == 64)
-        // All calls should be mute command (0xB3) with value 1 (muted)
-        for call in transport.mixerParamCalls {
-            #expect(call.usbCmd == 0xB3)
-            #expect(call.value == 1)
-        }
-        // First 32 calls are mixer 1, next 32 are mixer 2
-        for i in 0..<32 {
-            #expect(transport.mixerParamCalls[i].mixer == 1)
-            #expect(transport.mixerParamCalls[i].channel == UInt16(i))
-        }
-        for i in 32..<64 {
-            #expect(transport.mixerParamCalls[i].mixer == 2)
-            #expect(transport.mixerParamCalls[i].channel == UInt16(i - 32))
-        }
-    }
-
-    /// Verify Direct Monitor restore: unmute all channels (value 0) when no persisted state.
-    @Test func directMonitorRestoreUnmutesAll() {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        // Simulate the Direct Monitor fallback (no persisted state) from MaestroApp
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
-            }
-        }
-
-        #expect(transport.mixerParamCalls.count == 64)
-        for call in transport.mixerParamCalls {
-            #expect(call.usbCmd == 0xB3)
-            #expect(call.value == 0)  // unmuted
-        }
-    }
-
-    /// Verify routing mode + force-mute sequence: setRoutingMode then batch mute.
-    @Test func routingModeAndForceMuteSequence() {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        // DAW mode: set routing then force-mute
-        conn.setRoutingMode(0)
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-            }
-        }
-
-        #expect(transport.routingModeCalls == [0])
-        #expect(transport.mixerParamCalls.count == 64)
-
-        // Switch to Direct Monitor: set routing then unmute
-        conn.setRoutingMode(1)
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
-            }
-        }
-
-        #expect(transport.routingModeCalls == [0, 1])
-        #expect(transport.mixerParamCalls.count == 128)  // 64 mute + 64 unmute
-    }
-
-    /// SW Return uses separate dedicated function — never part of force-mute batch.
-    @Test func swReturnMuteIndependentOfForceMute() {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        // Force-mute all HW inputs
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-            }
-        }
-        // SW Return mute is a separate path
-        conn.setSwReturnMute(false)
-
-        // mixerParam calls should NOT contain SW Return (channel 1000)
-        for call in transport.mixerParamCalls {
-            #expect(call.channel != 1000, "Force-mute should not touch SW Return channel")
-        }
-        // SW Return mute goes through dedicated function
-        #expect(transport.swReturnMuteCalls == [false])
+        let result = await conn.restoreMixerStrips(saved: [], hardwareIndexes: [0, 1], spacing: .zero,
+                                                   isCurrent: { false })
+        #expect(result.applied == 0 && transport.setPropertyCalls.isEmpty)
     }
 }

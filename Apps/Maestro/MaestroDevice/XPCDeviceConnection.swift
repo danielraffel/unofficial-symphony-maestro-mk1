@@ -31,6 +31,12 @@ public struct XPCPropertyReply: Sendable {
 ///
 /// Real implementation uses `xpc_connection_t`; tests can substitute a mock.
 public protocol XPCTransport: Sendable {
+    /// Counts the times the helper behind this connection went away
+    /// (restarted or crashed) while the app kept running. Unit A's connection
+    /// generation does not change then, but the helper that answers next
+    /// programs the direct routes again, so the app's restore must run again.
+    var helperEpoch: UInt64 { get }
+
     /// Send a setProperty message and await the proxy's reply. Throws if the XPC
     /// round-trip fails or the proxy reports a non-zero (USB write) status (S5).
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws
@@ -43,15 +49,15 @@ public protocol XPCTransport: Sendable {
     func getSoftwareMeterLevels() async -> (Float, Float)?
 
     /// Per-USB-playback-channel peaks measured in the proxy render callback,
-    /// linear 0..1, index = USB channel (0/1 are post software gain/pan/mute).
+    /// linear 0..1, index = USB channel (0/1 are post software gain/mute).
     /// Reading resets the proxy's accumulators, so a caller must not also call
     /// `getSoftwareMeterLevels()` in the same cycle. Returns nil when the proxy
     /// is unreachable. An older proxy that only reports L/R yields a 2-element
     /// array.
     func getSoftwareOutputPeaks() async -> [Float]?
 
-    /// Set the proxy's software mute on the SW Return audio path. Maestro keeps
-    /// this unmuted: the unit's own mixer (strip 32) owns Software Return mute.
+    /// Set the proxy's software mute on USB playback 1-2. When it may be on is
+    /// one rule, ``USBHelperSoftwareReturn``.
     func setSwReturnMute(_ muted: Bool)
 
     /// Send a mixer parameter command directly (bypasses generic setProperty).
@@ -67,16 +73,8 @@ public protocol XPCTransport: Sendable {
     /// Set one side of the software return independently.
     func setSwReturnChannelLevel(channel: Int, dB: Double)
 
-    /// Set SW Return pan position. The unit's Software Return strip has no pan,
-    /// so this is a balance in the proxy. Stereo balance preserves unity
-    /// at center and attenuates the opposite side. Range: -1.0 (left) to +1.0 (right).
-    func setSwReturnPan(_ pan: Double)
-
-    /// Select whether software gain/pan/mute should process USB channels 1-2.
+    /// Select whether the software gain/mute stage should process USB channels 1-2.
     func setSwReturnProcessing(_ enabled: Bool)
-
-    /// Set FPGA routing mode: 0 = DAW (null passthrough), 1 = Direct Monitor (1:1 passthrough).
-    func setRoutingMode(_ mode: Int)
 
     /// Ask the proxy to tear down and rebuild its output AudioUnit.
     ///
@@ -88,6 +86,11 @@ public protocol XPCTransport: Sendable {
     /// rate, recomputes the presentation delay and bumps the clock generation.
     func resetAudioOutput()
 
+    /// The installed helper's version (`MAESTRO_HELPER_VERSION` in
+    /// Drivers/VolumeProxy/MaestroVolumeProxy.c), nil when it did not answer:
+    /// a helper from before the question existed, or one that is not there.
+    func helperVersion() async -> UInt64?
+
     /// Whether the transport is connected.
     var isConnected: Bool { get }
 }
@@ -97,6 +100,9 @@ public extension XPCTransport {
     /// app then keeps its SW Return L/R path and shows no software output meters.
     func getSoftwareOutputPeaks() async -> [Float]? { nil }
 
+    /// Test transports stand for the helper this app ships.
+    func helperVersion() async -> UInt64? { XPCDeviceConnection.requiredHelperVersion }
+
     func setSwReturnChannelLevel(channel: Int, dB: Double) {
         // Older test transports and proxies use the linked command.  The real
         // transport overrides this with the side-specific XPC message.
@@ -105,6 +111,10 @@ public extension XPCTransport {
 }
 
 // MARK: - Mach XPC Transport (real implementation)
+
+extension XPCTransport {
+    public var helperEpoch: UInt64 { 0 }
+}
 
 /// XPC transport connecting to the MaestroVolumeProxy LaunchDaemon.
 public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
@@ -123,6 +133,9 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
 
         xpc_connection_set_event_handler(connection) { [weak self] event in
             guard xpc_get_type(event) == XPC_TYPE_ERROR else { return }
+            // Interrupted or invalid: the helper went away. The one that
+            // answers next configures the unit again (direct routes).
+            self?.bumpHelperEpoch()
             // S5: Only CONNECTION_INVALID is terminal (service gone / cancelled).
             // CONNECTION_INTERRUPTED (e.g. proxy restart) is recoverable — the next
             // successful reply resets _connected, so never latch disconnected on it.
@@ -138,6 +151,10 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
         defer { lock.unlock() }
         _connected = value
     }
+
+    private var _helperEpoch: UInt64 = 0
+    private func bumpHelperEpoch() { lock.withLock { _helperEpoch &+= 1 } }
+    public var helperEpoch: UInt64 { lock.withLock { _helperEpoch } }
 
     public var isConnected: Bool {
         lock.lock()
@@ -248,6 +265,23 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
         }
     }
 
+    /// An older helper has no "helperVersion" command and sends no reply; the
+    /// question is given two seconds.
+    public func helperVersion() async -> UInt64? {
+        let msg = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_string(msg, "command", "helperVersion")
+        let once = ResumeOnce<UInt64?>()
+        return await withCheckedContinuation { continuation in
+            once.set(continuation)
+            xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
+                guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY else { once.resume(nil); return }
+                let version = xpc_dictionary_get_uint64(reply, "helperVersion")
+                once.resume(version == 0 ? nil : version)
+            }
+            queue.asyncAfter(deadline: .now() + 2) { once.resume(nil) }
+        }
+    }
+
     public func getSoftwareMeterLevels() async -> (Float, Float)? {
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "getSoftwareMeterLevels")
@@ -327,18 +361,6 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
         }
     }
 
-    public func setSwReturnPan(_ pan: Double) {
-        guard hardwareWriteGate.allowsWrites else { return }
-        let msg = xpc_dictionary_create(nil, nil, 0)
-        xpc_dictionary_set_string(msg, "command", "setSwReturnPan")
-        xpc_dictionary_set_double(msg, "pan", pan)
-        xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
-            if xpc_get_type(reply) == XPC_TYPE_ERROR {
-                print("[Maestro] setSwReturnPan XPC ERROR: \(reply)")
-            }
-        }
-    }
-
     public func setSwReturnProcessing(_ enabled: Bool) {
         guard hardwareWriteGate.allowsWrites else { return }
         let msg = xpc_dictionary_create(nil, nil, 0)
@@ -362,16 +384,19 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
         }
     }
 
-    public func setRoutingMode(_ mode: Int) {
-        guard hardwareWriteGate.allowsWrites else { return }
-        let msg = xpc_dictionary_create(nil, nil, 0)
-        xpc_dictionary_set_string(msg, "command", "setRoutingMode")
-        xpc_dictionary_set_int64(msg, "mode", Int64(mode))
-        xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
-            if xpc_get_type(reply) == XPC_TYPE_ERROR {
-                print("[Maestro] setRoutingMode XPC ERROR: \(reply)")
-            }
+}
+
+/// Resumes a continuation with the first answer only.
+private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    func set(_ continuation: CheckedContinuation<T, Never>) { lock.withLock { self.continuation = continuation } }
+    func resume(_ value: T) {
+        let pending = lock.withLock { () -> CheckedContinuation<T, Never>? in
+            defer { continuation = nil }
+            return continuation
         }
+        pending?.resume(returning: value)
     }
 }
 
@@ -433,6 +458,35 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     /// In-memory unless the app hands in a persistent one.
     public let settingsStore: DeviceSettingsStore
+
+    /// See `XPCTransport.helperEpoch`.
+    public var helperEpoch: UInt64 { transport.helperEpoch }
+
+    /// The helper version this app is built for. From 2 on, every configure of
+    /// the unit leaves both I/O boards and both headphones on direct sources
+    /// and the helper mutes no mixer strip. An older helper puts Line 1/2 on
+    /// Mixer 1 each time it configures the unit, with that mixer's inputs
+    /// muted to hide them, so Maestro must not unmute them under it.
+    public static let requiredHelperVersion: UInt64 = 2
+
+    public enum HelperStatus: Sendable, Equatable {
+        /// The helper this app ships, or a newer one.
+        case current
+        /// An older helper: it answers, but not with a version this app
+        /// accepts (or not the version question at all).
+        case outdated
+        /// No helper answered anything; nothing is concluded.
+        case unknown
+    }
+
+    /// Asks the helper which one it is. A helper that does not know the
+    /// question but answers the meter read it has always had is an old one.
+    public func helperStatus() async -> HelperStatus {
+        if let version = await transport.helperVersion() {
+            return version >= Self.requiredHelperVersion ? .current : .outdated
+        }
+        return await transport.getSoftwareMeterLevels() != nil ? .outdated : .unknown
+    }
 
     public init(identifier: USBDeviceIdentifier, transport: XPCTransport? = nil,
                 settingsStore: DeviceSettingsStore = DeviceSettingsStore()) {
@@ -687,54 +741,38 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     }
 
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
-        try await setProperty(address, value: value, mirrorSoftwareReturnMute: true)
+        try await setProperty(address, value: value, helperMuted: nil)
     }
 
-    /// - Parameter mirrorSoftwareReturnMute: a Software Return mute that lands
-    ///   on the unit is also given to the helper's software stage, in the same
-    ///   call and under the same sequence owner, so the two never disagree.
-    ///   Over USB the "Maestro USB" device is rendered by the helper, and the
-    ///   unit's 0xB3 alone was not heard there (tester report 2026-11-20). The
-    ///   connect/recovery restore and the Software Return source change pass
-    ///   `false`: they write the unit first and give the helper the saved mute
-    ///   afterwards, in `setHelperNeutral(muted:)`.
-    ///
-    /// Only mute is mirrored. Solo stays the unit's 0xB2 alone: the helper has
-    /// no solo, and the unit's mixer is what silences the other strips.
     /// A Software Return mute on one mixer: the unit's own mute for that
-    /// mixer, then the helper's single software mute set to `helperMuted`
-    /// (see `USBMixerSavedState.helperMuted`), not to this mixer's mute. Both
-    /// happen in one turn of the write sequence, as the mirrored mute does.
+    /// mixer, then the helper's single software mute set to `helperMuted`,
+    /// which the caller takes from ``USBHelperSoftwareReturn`` (it is on only
+    /// while a mixer that takes USB 1-2 feeds an output), never from this
+    /// mixer's mute alone. Both happen in one turn of the write sequence, so
+    /// the two never disagree.
+    ///
+    /// A plain `setProperty` of a Software Return mute writes the unit only.
+    /// It used to be copied to the helper as well, which muted "Maestro USB"
+    /// on outputs that no mixer fed.
+    ///
+    /// Solo stays the unit's 0xB2 alone: the helper has no solo, and the
+    /// unit's mixer is what silences the other strips.
     public func setSoftwareReturnMute(_ address: PropertyAddress, muted: Bool, helperMuted: Bool) async throws {
-        try await setProperty(address, value: .bool(muted), mirrorSoftwareReturnMute: false, helperMuted: helperMuted)
+        try await setProperty(address, value: .bool(muted), helperMuted: helperMuted)
     }
 
     private func setProperty(_ address: PropertyAddress, value: PropertyValue,
-                             mirrorSoftwareReturnMute: Bool, helperMuted: Bool? = nil) async throws {
+                             helperMuted: Bool?) async throws {
         await sequenceOwner.acquire()
         do {
             try await setOwnedProperty(address, value: value)
-            if let helperMuted {
-                transport.setSwReturnMute(helperMuted)
-            } else if mirrorSoftwareReturnMute, let muted = Self.softwareReturnMute(address, value) {
-                transport.setSwReturnMute(muted)
-            }
+            if let helperMuted { transport.setSwReturnMute(helperMuted) }
             await sequenceOwner.release()
         } catch {
             await sequenceOwner.release()
             throw error
         }
         await listenerStorage.notifyListeners(for: address, change: PropertyChange(address: address, value: value))
-    }
-
-    /// The requested state when `address` is a Software Return mute (strip 32,
-    /// or its CoreAudio-level ID 1000, on either mixer); otherwise nil.
-    static func softwareReturnMute(_ address: PropertyAddress, _ value: PropertyValue) -> Bool? {
-        guard address.selector == .mixerChannelMute else { return nil }
-        let strip = UInt16(address.element & 0xFFFF)
-        guard strip == USBMixerStrip.softwareReturn || strip == USBMixerStrip.softwareReturnLogicalID
-        else { return nil }
-        return value.asBool
     }
 
     private func setOwnedProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
@@ -793,17 +831,19 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     }
 
     /// Hold the helper's software level at 0 dB (the unit's mixer owns the
-    /// fader) and give it the saved Software Return mute. Send this only after
-    /// the unit's own strips have taken their values.
-    ///
-    /// The mute is not neutral: over USB the "Maestro USB" device is rendered
-    /// by the helper, so Software Return mute is applied there as well as by
-    /// the unit's 0xB3. Forcing it off here undid a saved mute on every
-    /// connect and source change. There is no `muted` default on purpose.
+    /// fader) and give it the mute ``USBHelperSoftwareReturn`` allows. Send
+    /// this only after the unit's own strips have taken their values. There is
+    /// no `muted` default on purpose.
     public func setHelperNeutral(muted: Bool) {
         guard writeGate.allowsWrites else { return }
         transport.setSwReturnLevel(0)
         transport.setSwReturnMute(muted)
+    }
+
+    /// Put the helper's software stage in the state the one rule gives.
+    public func applyHelperSoftwareReturn(_ state: USBHelperSoftwareReturn.State) {
+        setHelperNeutral(muted: state.muted)
+        setSwReturnProcessing(state.processing)
     }
 
     /// One write to the unit's mixer, tried again once after a short delay.
@@ -814,7 +854,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     ) async -> Bool {
         for attempt in 0..<2 {
             do {
-                try await setProperty(address, value: value, mirrorSoftwareReturnMute: false)
+                try await setProperty(address, value: value, helperMuted: nil)
                 return true
             } catch {
                 if attempt == 0 { try? await Task.sleep(for: retryDelay) }
@@ -823,39 +863,53 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         return false
     }
 
-    /// Put the unit's Master and Software Return strips, for both mixers, and
-    /// the helper's software stage back to what Maestro has saved.
+    /// Put the unit's Software Return source, Master and Software Return
+    /// strips, for both mixers, and the helper's software stage back to what
+    /// Maestro has saved.
     ///
     /// Runs when Maestro connects, reconnects, and recovers after the unit was
     /// power-cycled (its mixer then returns to 0 dB, unmuted). The unit's mixer
     /// owns Software Return level, mute and solo and the Master level. The unit
     /// is written first; only when every unit write has landed (each is tried
-    /// twice) is the helper made neutral, so a level or mute an older Maestro
+    /// twice) is the helper set, so a level or mute an older Maestro
     /// left in the helper is never dropped before the unit holds its value.
     /// Returns whether the restore completed.
     @discardableResult
     public func restoreReturnAndMaster(helperMixer: Int = 0, defaults: UserDefaults,
+                                      routedToOutput: [Bool] = [false, false],
                                       retryDelay: Duration = .milliseconds(150)) async -> Bool {
         await restoreReturnAndMaster(helperMixer: helperMixer,
-            preferences: MixerPreferences(legacyDefaults: defaults), retryDelay: retryDelay)
+            preferences: MixerPreferences(legacyDefaults: defaults),
+            routedToOutput: routedToOutput, retryDelay: retryDelay)
     }
 
     @discardableResult
     public func restoreReturnAndMaster(
         helperMixer: Int = 0, preferences: MixerPreferences,
+        routedToOutput: [Bool] = [false, false],
         retryDelay: Duration = .milliseconds(150)
     ) async -> Bool {
-        let state = USBMixerSavedState.load(preferences: preferences)
+        var state = USBMixerSavedState.load(preferences: preferences)
         var unitOK = true
         var helperSteps: [USBMixerRestorePlan.Step] = []
-        for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer) {
-            if case .hardware(let address, let value) = step {
-                if await !setUnitMixerWithRetry(address, value: value, retryDelay: retryDelay) {
-                    unitOK = false
+        // An edit saved while these writes were going out is written again, so
+        // the unit ends on what is saved now, not on the snapshot taken first.
+        for _ in 0..<Self.restoreEditPasses {
+            unitOK = true
+            helperSteps = []
+            for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer,
+                                                  routedToOutput: routedToOutput) {
+                if case .hardware(let address, let value) = step {
+                    if await !setUnitMixerWithRetry(address, value: value, retryDelay: retryDelay) {
+                        unitOK = false
+                    }
+                } else {
+                    helperSteps.append(step)
                 }
-            } else {
-                helperSteps.append(step)
             }
+            let now = USBMixerSavedState.load(preferences: preferences)
+            if !unitOK || now == state { break }
+            state = now
         }
         guard unitOK else {
             print("[Maestro] USB mixer restore did not complete: a write to the unit failed twice; the helper was left as it was")
@@ -864,12 +918,115 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         for step in helperSteps {
             switch step {
             case .helperNeutral(let muted): setHelperNeutral(muted: muted)
-            case .helperPan(let pan): setSwReturnPan(pan)
             case .helperProcessing(let on): setSwReturnProcessing(on)
             case .hardware: break
             }
         }
         return true
+    }
+
+    /// How often a restore writes a strip (or the Master and Software Return
+    /// block) again because its saved value changed while it was being written.
+    static let restoreEditPasses = 4
+
+    /// Write both mixers' input strips, saved or default, to the unit
+    /// (``USBMixerRestorePlan/stripSteps(saved:hardwareIndexes:)``), paced like
+    /// the other connect-time replays. Stops when `isCurrent` turns false.
+    /// Returns how many writes landed and how many the unit refused.
+    @discardableResult
+    public func restoreMixerStrips(
+        saved: [[MixerChannelState]], hardwareIndexes: [Int],
+        spacing: Duration = .milliseconds(25),
+        isCurrent: @Sendable () async -> Bool = { true }
+    ) async -> (applied: Int, failed: Int) {
+        let result = await restoreMixerStrips(
+            hardwareIndexes: hardwareIndexes, spacing: spacing,
+            savedStrip: { mixer, strip in
+                mixer < saved.count && strip < saved[mixer].count ? saved[mixer][strip] : nil
+            }, isCurrent: isCurrent)
+        return (result.applied, result.failed)
+    }
+
+    /// The same restore with each strip's saved value read at the moment the
+    /// strip is written (`savedStrip`, nil for a strip nobody saved), and read
+    /// again after its four writes: a mute or level the user changes while the
+    /// restore runs is what ends up on the unit. A restore that took one
+    /// snapshot up front wrote the old value over such an edit while the page
+    /// and the store showed the new one.
+    ///
+    /// `mixersWritten[m]` is true only when every strip of mixer `m` took all
+    /// its writes: the caller routes a mixer to an output only then.
+    @discardableResult
+    public func restoreMixerStrips(
+        hardwareIndexes: [Int],
+        spacing: Duration = .milliseconds(25),
+        savedStrip: @Sendable (_ mixer: Int, _ strip: Int) async -> MixerChannelState?,
+        isCurrent: @Sendable () async -> Bool = { true }
+    ) async -> (applied: Int, failed: Int, mixersWritten: [Bool]) {
+        var applied = 0, failed = 0
+        var written = [true, true]
+        mixers: for mixer in 0..<2 {
+            for (strip, channel) in hardwareIndexes.enumerated() where (0...31).contains(channel) {
+                var state = await savedStrip(mixer, strip) ?? USBMixerRestorePlan.defaultStrip
+                for _ in 0..<Self.restoreEditPasses {
+                    for step in USBMixerRestorePlan.stripSteps(mixer: mixer, channel: channel, state: state) {
+                        guard case .hardware(let address, let value) = step else { continue }
+                        guard await isCurrent() else {
+                            for unfinished in mixer..<2 { written[unfinished] = false }
+                            break mixers
+                        }
+                        if applied + failed > 0, spacing > .zero { try? await Task.sleep(for: spacing) }
+                        do {
+                            try await setProperty(address, value: value, helperMuted: nil)
+                            applied += 1
+                        } catch {
+                            failed += 1
+                            written[mixer] = false
+                        }
+                    }
+                    let now = await savedStrip(mixer, strip) ?? USBMixerRestorePlan.defaultStrip
+                    if now == state { break }
+                    state = now
+                }
+            }
+        }
+        return (applied, failed, written)
+    }
+
+    /// The monitor (speaker) mode, written on every connect and after a
+    /// recovery: the saved one, or Stereo when none is saved, as the original
+    /// did (og_source/maestrolink/Software/SymphonyIO.cpp:4669
+    /// `setSpeakerOutputMode(m_MainOutMode)`, whose default at :128 is
+    /// `eSymphonyIOSpeakerOutputMode_Stereo`). In a mode other than a speaker
+    /// mode Line 1/2 play at full level and the volume keys do nothing, so
+    /// this is never left to the unit's own default. A default is sent
+    /// without being stored: only what the user chose is saved.
+    /// Returns the mode sent, nil if the unit refused it.
+    @discardableResult
+    public func applySpeakerOutputMode() async -> UInt32? {
+        let address = PropertyAddress(selector: .speakerOutputMode)
+        do {
+            if let saved = settingsStore.value(for: address), let mode = saved.asUInt32 {
+                try await setProperty(address, value: saved)
+                return mode
+            }
+            let stereo = UInt32(SymphonyIOSpeakerMode.stereo.rawValue)
+            let request = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .uint32(stereo))
+            guard transport.isConnected else { throw DeviceConnectionError.notConnected }
+            await sequenceOwner.acquire()
+            do {
+                try await transport.sendSetProperty(bRequest: request.request, wValue: request.value,
+                                                    wIndex: request.index, data: request.data)
+                await sequenceOwner.release()
+            } catch {
+                await sequenceOwner.release()
+                throw error
+            }
+            return stereo
+        } catch {
+            print("[Maestro] Speaker mode was not applied: \(error)")
+            return nil
+        }
     }
 
     /// Write every stored setting to the hardware. Called once per connect, as
@@ -949,12 +1106,6 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         transport.setSwReturnChannelLevel(channel: channel, dB: dB)
     }
 
-    /// Set SW Return pan position (software pan in proxy render callback).
-    public func setSwReturnPan(_ pan: Double) {
-        guard writeGate.allowsWrites else { return }
-        transport.setSwReturnPan(pan)
-    }
-
     public func setSwReturnProcessing(_ enabled: Bool) {
         guard writeGate.allowsWrites else { return }
         transport.setSwReturnProcessing(enabled)
@@ -965,12 +1116,6 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     public func resetAudioOutput() {
         guard writeGate.allowsWrites else { return }
         transport.resetAudioOutput()
-    }
-
-    /// Set FPGA routing mode: 0 = DAW (null passthrough), 1 = Direct Monitor.
-    public func setRoutingMode(_ mode: Int) {
-        guard writeGate.allowsWrites else { return }
-        transport.setRoutingMode(mode)
     }
 
     public func disconnect() async {

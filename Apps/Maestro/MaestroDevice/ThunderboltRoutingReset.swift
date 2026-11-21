@@ -42,8 +42,7 @@ extension ThunderboltPreset {
         }
         return layouts.prefix(2).enumerated().flatMap { unit, layout in
             SymphonyIODefaultRouting.thunderboltOutputRoutes(
-                board0Outputs: layout.slot1.totalOutputChannels, board1Outputs: layout.slot2.totalOutputChannels,
-                mainPairOnMixer: false).map { route in
+                board0Outputs: layout.slot1.totalOutputChannels, board1Outputs: layout.slot2.totalOutputChannels).map { route in
                     let channel = UInt8(unit * 32) + route.destination - 32
                     return .output(.init(channel: channel, slot: 64 + channel, enabled: route.source != SymphonyIORoutingAddress.none))
                 }

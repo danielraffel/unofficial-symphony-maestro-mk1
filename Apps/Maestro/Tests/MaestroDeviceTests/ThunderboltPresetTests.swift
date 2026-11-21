@@ -122,9 +122,43 @@ struct ThunderboltPresetTests {
         #expect(simulated.properties[PropertyAddress(selector: .analogIOType, scope: .output, element: 0)] == .uint32(0xFB01))
         #expect(simulated.properties[PropertyAddress(selector: .opticalInFormat, element: 1)] == .uint32(0))
         #expect(simulated.properties[PropertyAddress(selector: .mixerChannelLevel, element: (2 << 16) | 2000)] == .float64(-8))
-        #expect(simulated.properties[PropertyAddress(selector: .mixerChannelPan, element: (1 << 16) | 1000)] == .float64(0.25))
+        // Software Return has no pan: the preset's saved 0.25 is loaded as centre.
+        #expect(loaded.mixers[0].softwareReturn.pan == 0.25)
+        #expect(simulated.properties[PropertyAddress(selector: .mixerChannelPan, element: (1 << 16) | 1000)] == .float64(0))
         #expect(simulated.routes[2]?.enabled == false)
         #expect(simulated.trace.suffix(2) == ["0xDD 0", "read 0xDD"])
+    }
+
+    /// A preset saved by an older version in "DAW" mode (routingMode 0), where
+    /// every input strip was force-muted on recall. The file still loads, and
+    /// only the strips it saved muted are muted.
+    @Test func oldPresetWithRoutingModeZeroLoadsWithoutMuting() throws {
+        var old = try fixture()
+        old.routingMode = 0
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("mode0-\(UUID().uuidString).mst2")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try old.writeBundle(to: directory)
+        let (loaded, legacy) = try ThunderboltPreset.loadBundle(from: directory, layout: layout)
+        #expect(!legacy)
+        #expect(loaded.routingMode == 0)          // read as written, and ignored
+        var modern = loaded
+        modern.routingMode = 1
+        let writes = try loaded.writes(layout: layout)
+        #expect(writes == (try modern.writes(layout: layout)))
+        for (index, mixer) in loaded.mixers.enumerated() {
+            for (channel, state) in mixer.channels.enumerated() {
+                let element = UInt32(index + 1) << 16 | UInt32(layout.mixerChannels[channel].hardwareIndex)
+                let expected = ThunderboltPreset.Write.property(
+                    PropertyAddress(selector: .mixerChannelMute, element: element), .bool(state.isMuted))
+                #expect(writes.contains(expected), "mixer \(index + 1) strip \(channel)")
+            }
+            // The fixture mutes one strip per mixer; a forced mute would be all of them.
+            #expect(mixer.channels.filter(\.isMuted).count == 1)
+        }
+        // The file format is unchanged: the key is still there for older versions.
+        let plist = try #require(try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: directory.appendingPathComponent(ThunderboltPreset.fileName)), format: nil) as? [String: Any])
+        #expect(plist["routingMode"] as? Int == 0)
     }
 
     @Test func cardInputsBundleRoundTripAndRefusal() throws {

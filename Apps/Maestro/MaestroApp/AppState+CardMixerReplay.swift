@@ -18,6 +18,10 @@ extension AppState {
     @MainActor
     func syncCardMixerToHardware() {
         guard let tb = device as? ThunderboltDeviceConnection else { return }
+        // Once after the routing and mixer reset: both mixers are written in
+        // full even if the driver holds app state, because that state is what
+        // the reset removed from this Mac (the driver kept running).
+        cardMixerLedger.restoresHeldMixers = RoutingMixerReset.isPending(.thunderboltCardMixer)
         cardMixerRestoreRequested = true
         if let run = cardMixerRestoreRun, run.connection === tb { return }
         cancelCardMixerRestore()
@@ -33,7 +37,13 @@ extension AppState {
             guard let self else { return }
             let outcome = await CardMixerRestoreRunner.run(self.cardMixerRestoreEnvironment(tb))
             print("[Maestro] D5 card mixer restore: \(outcome)")
-            if case .restored = outcome { self.refreshSoftwareReturnMeterGains() }
+            if case .restored = outcome {
+                self.refreshSoftwareReturnMeterGains()
+                if self.cardMixerLedger.restoresHeldMixers {
+                    RoutingMixerReset.clearPending(.thunderboltCardMixer)
+                    self.cardMixerLedger.restoresHeldMixers = false
+                }
+            }
             if self.cardMixerRestoreRun?.token == token {
                 self.cardMixerRestoreRun = nil
                 self.cardMixerLedger.endAttempt()
@@ -82,6 +92,9 @@ extension AppState {
     @MainActor
     func mixerPageDefersToCardMixerRestore(mixer: Int) async -> Bool {
         guard let tb = device as? ThunderboltDeviceConnection else { return false }
+        // The restore writes both mixers in full and is not done yet: a
+        // partial copy from the page would only interrupt it.
+        if tb.cardMixers.needsRestore { return true }
         let link = await Task.detached(priority: .utility) { tb.linkState() }.value
         guard device === tb else { return true }
         observeCardMixerInstance(link)
@@ -91,7 +104,10 @@ extension AppState {
 
     @MainActor
     private func cardMixerRestoreEligible(_ tb: ThunderboltDeviceConnection) -> Bool {
-        device === tb && !twoUnitSleeping && !usesTwoUnitReplay
+        // Not before the restore has completed (it writes both mixers in
+        // full and then marks this restore complete, so in practice D5 has
+        // nothing left to do on a driver the restore has run on).
+        device === tb && !tb.cardMixers.needsRestore && !twoUnitSleeping && !usesTwoUnitReplay
             && connectionMode == .hardware && isHardwareInitialized
             && unitAIdentity != nil && connectedUnit == nil && converterSystem == nil
             && mixerPreferences.isWritable
@@ -125,7 +141,8 @@ extension AppState {
             plan: { [weak self] mixers in
                 guard let self else { return [] }
                 return CardMixerReplay.plan(mixers: mixers, layout: layout, store: self.channelStateStore,
-                                            preferences: self.mixerPreferences)
+                                            preferences: self.mixerPreferences,
+                                            complete: self.cardMixerLedger.restoresHeldMixers)
             },
             replay: { plan, recovery, epoch, generation, progress in
                 let started = Date()

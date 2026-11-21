@@ -59,24 +59,26 @@ public struct MixerStateSnapshot: Sendable {
 
     /// The saved Software Return strip of one mixer, or a neutral one.
     ///
-    /// Mute and solo are the mixer's own. Pan is one value for both mixers,
-    /// as it always was here (over USB it is a single balance in the helper,
-    /// ahead of both mixers); it is carried by the shared key.
+    /// Mute and solo are the mixer's own. There is no pan: the original's
+    /// Software Return had a stereo fader, solo and mute only
+    /// (og_source/maestrolink/Software/SymphonyIOMixer.cpp:262-290 pans input
+    /// channels only; og_source/maestro2/App/Controllers/APMixerSoftwareReturnViewController.m).
+    /// A pan an earlier version saved is never applied: it always reads centre.
     public static func savedSoftwareReturn(mixer: Int, preferences defaults: MixerPreferences) -> MixerChannelState {
         func strip(_ key: String) -> MixerChannelState? {
             guard let data = defaults.data(forKey: key) else { return nil }
             return try? JSONDecoder().decode(MixerChannelState.self, from: data)
         }
-        let shared = strip(sharedSoftwareReturnKey)
-        var own = strip(softwareReturnKey(mixer: mixer)) ?? shared
+        var own = strip(softwareReturnKey(mixer: mixer)) ?? strip(sharedSoftwareReturnKey)
             ?? MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
-        if let shared { own.pan = shared.pan }
+        own.pan = 0
         return own
     }
 
-    /// Save one mixer's Software Return strip. The other mixer keeps what it
-    /// had: if it never had a strip of its own, the one it was showing until
-    /// now is written down for it first, so this save cannot change it.
+    /// Save one mixer's Software Return strip (always with pan centre). The
+    /// other mixer keeps what it had: if it never had a strip of its own, the
+    /// one it was showing until now is written down for it first, so this save
+    /// cannot change it.
     public static func saveSoftwareReturn(_ strip: MixerChannelState, mixer: Int, mixerCount: Int = 2,
                                           preferences defaults: MixerPreferences) {
         let encoder = JSONEncoder()
@@ -86,9 +88,11 @@ public struct MixerStateSnapshot: Sendable {
                 defaults.set(data, forKey: softwareReturnKey(mixer: other))
             }
         }
+        var strip = strip
+        strip.pan = 0
         guard let data = try? encoder.encode(strip) else { return }
         defaults.set(data, forKey: softwareReturnKey(mixer: mixer))
-        // The shared key now only carries the pan (and serves older builds).
+        // Older builds read the shared key.
         defaults.set(data, forKey: sharedSoftwareReturnKey)
     }
 

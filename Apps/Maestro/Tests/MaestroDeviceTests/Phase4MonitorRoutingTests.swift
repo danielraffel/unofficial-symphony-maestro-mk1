@@ -680,10 +680,12 @@ struct HeadphoneCrosspointSourceTests {
 
     @Test("An uncached destination falls back to the proxy boot table")
     func uncachedFallsBackToBootTable() {
-        // Evidence: Drivers/VolumeProxy/MaestroVolumeProxy.c:1233-1276.
-        // DAC L/R are mixer-fed.
-        #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: 32) == 64)
-        #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: 33) == 65)
+        // Evidence: Drivers/VolumeProxy/MaestroVolumeProxy.c configure_fpga_routing, step 4.
+        // Every output is direct, DAC L/R (Line 1/2) included: no mixer is
+        // routed to an output by default, as in the original
+        // (SymphonyIOUSBAudioRoutingController.cpp:623-712).
+        #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: 32) == 192)
+        #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: 33) == 193)
         // IOBoard0 ch2-15 take USB ch2-15.
         for destination in UInt8(34)...UInt8(47) {
             #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination)
@@ -699,7 +701,7 @@ struct HeadphoneCrosspointSourceTests {
             #expect(SymphonyIOHeadphoneRouting.bootTableSource(forDestination: destination) == nil)
         }
         // And resolution with an empty cache uses exactly that table — no read.
-        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 32, cachedRoutes: [:]) == 64)
+        #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 32, cachedRoutes: [:]) == 192)
         #expect(SymphonyIOHeadphoneRouting.inheritedSource(forDestination: 48, cachedRoutes: [:]) == 192)
     }
 

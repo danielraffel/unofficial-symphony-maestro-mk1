@@ -37,6 +37,18 @@ public enum PortStatusMessage {
             + "from the one set here. Check the cable and the source's sample rate, or choose Internal.",
     ]
 
+    /// Status bar, while routing or mixer state saved on this Mac is being
+    /// put on the unit (a mixer-fed output is silent until its mixer is set).
+    public static let restoringMixerAndRouting = "Restoring mixer and routing…"
+    /// Status bar, while that cannot happen yet: the I/O cards, the unit's
+    /// identity or its saved mixer state are not available.
+    public static let mixerWaitsForIdentity = "Mixer changes will apply when the Symphony I/O is identified."
+
+    /// Status bar over USB, while the installed USB helper is older than the
+    /// app (an install that left "USB support" out): the mixers are not set
+    /// and no mixer is routed until the helper is the app's own.
+    public static let usbHelperOutdated = "Reinstall Maestro with USB support to use the mixers: the installed USB helper is older than this version."
+
     public static let verify = "Verify that the hardware is properly connected and powered on."
     public static let defaultCard = "the ThunderBridge"
 

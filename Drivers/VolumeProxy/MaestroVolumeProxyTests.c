@@ -45,7 +45,7 @@ static void check_render(int planar, float left, float right)
             float actual = output[planar ? ch * frames + f : f * channels + ch];
             float expected = input[f * channels + ch] * (ch == 0 ? left : ch == 1 ? right : 1.f);
             CHECK(fabsf(actual - expected) < 1e-7f,
-                  "stereo balance scales only the selected pair without mixing other channels");
+                  "only channels 1-2 are scaled, without mixing other channels");
         }
     }
     CHECK(fabsf(gSwReturnPeakL - left / 128.f) < 1e-7f &&
@@ -184,65 +184,81 @@ static void check_optical_format_gate(void)
             CHECK(proxy_boot_sends_optical_format(t), "every other card, and a failed read, unchanged");
 }
 
-static void check_mixer_toggle_payload(void)
+static void check_mixer_param_payload(void)
 {
-    const uint8_t on = 1, off = 0, odd = 7;
-    CHECK(mixer_toggle_payload(0xB3, &on, 1) == 1, "mute payload 1 is logged as 1");
-    CHECK(mixer_toggle_payload(0xB3, &off, 1) == 0, "mute payload 0 is logged as 0");
-    CHECK(mixer_toggle_payload(0xB2, &on, 1) == 1, "solo payload 1 is logged as 1");
-    CHECK(mixer_toggle_payload(0xB2, &odd, 1) == 1, "any non-zero solo byte is on");
-    CHECK(mixer_toggle_payload(0xB0, &on, 1) == -1, "fader writes keep the old log line");
-    CHECK(mixer_toggle_payload(0xB3, NULL, 0) == -1, "empty mute payload is not logged as a state");
+    const uint8_t on = 1, off = 0, odd = 7, fader = 48, pan = 64, top = 255;
+    CHECK(mixer_param_payload(0xB3, &on, 1) == 1, "mute payload 1 is logged as 1");
+    CHECK(mixer_param_payload(0xB3, &off, 1) == 0, "mute payload 0 is logged as 0");
+    CHECK(mixer_param_payload(0xB2, &on, 1) == 1, "solo payload 1 is logged as 1");
+    CHECK(mixer_param_payload(0xB2, &odd, 1) == 1, "any non-zero solo byte is on");
+    CHECK(mixer_param_payload(0xB0, &fader, 1) == 48, "a fader write logs the byte sent");
+    CHECK(mixer_param_payload(0xB0, &off, 1) == 0, "a fader at the bottom logs 0, not 'no value'");
+    CHECK(mixer_param_payload(0xB1, &pan, 1) == 64, "a pan write logs the byte sent");
+    CHECK(mixer_param_payload(0xB1, &top, 1) == 255, "the byte is logged unsigned");
+    CHECK(mixer_param_payload(0xB4, &on, 1) == -1, "other requests keep the plain log line");
+    CHECK(mixer_param_payload(0xAF, &on, 1) == -1, "other requests keep the plain log line");
+    CHECK(mixer_param_payload(0xB3, NULL, 0) == -1, "empty mute payload is not logged as a state");
+    CHECK(mixer_param_payload(0xB0, NULL, 0) == -1, "empty fader payload is not logged as a value");
+}
+
+/* What a configure leaves on the unit: every audible destination (both I/O
+   boards and both headphones) on a USB playback channel, none on a mixer. */
+static void check_direct_route_table(void)
+{
+    uint8_t table[DIRECT_ROUTE_COUNT][2];
+    unsigned count = direct_route_table(table);
+    CHECK(count == DIRECT_ROUTE_COUNT, "the table has every I/O board and headphone destination");
+    bool seen[256] = { false };
+    for (unsigned i = 0; i < count; i++) {
+        seen[table[i][0]] = true;
+        CHECK(!ROUTE_SRC_IS_MIXER(table[i][1]), "no destination is routed from a mixer");
+        CHECK(table[i][1] >= 0xC0 && table[i][1] <= 0xCF, "every source is a USB playback channel");
+    }
+    for (unsigned d = 0x20; d <= 0x3F; d++) CHECK(seen[d], "every I/O board output is written");
+    for (unsigned d = 224; d <= 227; d++) CHECK(seen[d], "both headphones' crosspoints are written");
+    /* Headphones 1 and 2 play USB 1-2, as the firmware powers on. */
+    for (unsigned i = 0; i < count; i++)
+        if (table[i][0] >= 224)
+            CHECK(table[i][1] == 0xC0 + (table[i][0] & 1), "a headphone plays USB 1-2, left and right");
+    CHECK(ROUTE_SRC_IS_MIXER(64) && ROUTE_SRC_IS_MIXER(65) && ROUTE_SRC_IS_MIXER(96) && ROUTE_SRC_IS_MIXER(97)
+          && !ROUTE_SRC_IS_MIXER(0xC0) && !ROUTE_SRC_IS_MIXER(0xEC), "the mixer outputs are 64/65 and 96/97");
+    CHECK(MAESTRO_HELPER_VERSION >= 2, "the version Maestro asks for says headphones are direct after a configure");
 }
 
 int main(void)
 {
-    check_mixer_toggle_payload();
+    check_direct_route_table();
+    check_mixer_param_payload();
     check_optical_format_gate();
     check_digital_settings();
     check_reconfigure_holdoff();
     check_transport_filter();
-    printf("Production startup gains: L=%.8f R=%.8f (%.5f dB)\n",
-           (double)gSwReturnPanL, (double)gSwReturnPanR, 20.0 * log10(gSwReturnPanL));
+    /* As started: the software stage is out of the path (no mixer on USB 1-2
+       feeds an output until Maestro says so), and all 16 channels pass. */
+    CHECK(gSwReturnSoftwareProcessing == 0, "the software stage starts out of the path");
     check_render(0, 1.f, 1.f);
     check_render(1, 1.f, 1.f);
-    const int startupFailures = failures;
-    // Positive control: the same renderer and assertions at known unity gains.
-    failures = 0;
-    gSwReturnPanL = gSwReturnPanR = 1.0f;
-    check_render(0, 1.f, 1.f);
-    check_render(1, 1.f, 1.f);
-    printf("Unity control: %s (%d failures)\n", failures ? "FAIL" : "PASS", failures);
-    failures += startupFailures;
-    // Exercise the same setter used by XPC, including saved-state reapplication.
-    const double positions[] = {-1, -0.5, 0, 0.5, 1, -2, 2, NAN};
-    const float expectedL[] = {1, 1, 1, 0.70710678f, 0, 1, 0, 1};
-    const float expectedR[] = {0, 0.70710678f, 1, 1, 1, 0, 1, 1};
-    for (unsigned i = 0; i < sizeof(positions) / sizeof(positions[0]); ++i) {
-        set_sw_return_pan(positions[i]);
-        CHECK(fabsf(gSwReturnPanL - expectedL[i]) < 1e-6f, "left balance coefficient");
-        CHECK(fabsf(gSwReturnPanR - expectedR[i]) < 1e-6f, "right balance coefficient");
-        check_render(0, expectedL[i], expectedR[i]);
-        check_render(1, expectedL[i], expectedR[i]);
-    }
-    float previousL = 1.f, previousR = 0.f;
-    for (int step = -100; step <= 100; ++step) {
-        set_sw_return_pan(step / 100.0);
-        CHECK(gSwReturnPanL >= 0 && gSwReturnPanL <= 1 &&
-              gSwReturnPanR >= 0 && gSwReturnPanR <= 1, "balance never boosts or inverts");
-        CHECK(gSwReturnPanL <= previousL && gSwReturnPanR >= previousR, "balance sweep is monotonic");
-        previousL = gSwReturnPanL; previousR = gSwReturnPanR;
-    }
-    set_sw_return_pan(0);
-    check_render(0, 1.f, 1.f);
-    check_render(1, 1.f, 1.f);
-    /* The unlink path uses separate render gains and must not alter channels
-       3-16 or accidentally collapse the pair back to one value. */
+    /* Out of the path, neither a level nor a mute left in the helper acts:
+       a direct output is never attenuated or silenced by Software Return. */
     gSwReturnGainL = 0.5f;
     gSwReturnGainR = 0.25f;
+    gSwReturnMuted = 1;
+    check_render(0, 1.f, 1.f);
+    check_render(1, 1.f, 1.f);
+    /* In the path, the mute silences channels 1-2 only and their meters. */
+    gSwReturnSoftwareProcessing = 1;
+    check_render(0, 0.f, 0.f);
+    check_render(1, 0.f, 0.f);
+    gSwReturnMuted = 0;
+    /* The separate render gains must not alter channels 3-16 or collapse the
+       pair back to one value. There is no balance: nothing but these scales
+       channels 1-2. */
     check_render(0, 0.5f, 0.25f);
     check_render(1, 0.5f, 0.25f);
     gSwReturnGainL = gSwReturnGainR = 1.0f;
+    check_render(0, 1.f, 1.f);
+    check_render(1, 1.f, 1.f);
+    gSwReturnSoftwareProcessing = 0;
     /* After an unplug the old handle answers "no device" while the unit that
        came back is published: that handle must be replaced, not the unit
        declared wedged or off the bus (2026-11-17 23:44). */
