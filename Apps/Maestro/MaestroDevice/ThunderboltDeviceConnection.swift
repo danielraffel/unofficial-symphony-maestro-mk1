@@ -357,6 +357,31 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             pace: { try await Task.sleep(for: gap) })
     }
 
+    /// The ordered output-table restore's mixer phase: whole mixers, paced like
+    /// D5, each write under the serial owner on its own. Not subject to
+    /// `cardMixerHold` (this is the write the hold waits for). Card registers
+    /// only (0xB0-0xB4).
+    public func writeCardMixers(_ groups: [[ThunderboltPreset.Write]],
+                                shouldContinue: @escaping @Sendable () -> Bool,
+                                gap: Duration = CardMixerReplay.commandGap) async throws {
+        func validate() throws {
+            guard shouldContinue(), isConnected else { throw DeviceConnectionError.notConnected }
+        }
+        try await CardMixerReplay.run(groups,
+            validateMixer: { try withPresetLock { try validate() } },
+            send: { write in
+                try withPresetLock {
+                    try validate()
+                    guard case .property(let address, let value) = write,
+                          Self.mixerEditSelectors.contains(address.selector) else {
+                        throw DeviceConnectionError.notConnected
+                    }
+                    try writeProperty(address, value: value)
+                }
+            },
+            pace: { try await Task.sleep(for: gap) })
+    }
+
     /// Both connections share this recursive serial owner, also used by UI
     /// writes and preset recall. Never hold it across an async suspension.
     public func replayTwoUnits(_ plan: TwoUnitReplay, unitB: ThunderboltUnitBConnection,
@@ -541,8 +566,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         .mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo, .mixerSoftwareReturnID,
     ]
 
+    /// Held until the app's whole output table is on the card for the serving
+    /// driver state (`CardOutputTableLedger`): the driver starts the card with
+    /// the main pair on card mixer 1 and the inputs muted, so an unmute sent
+    /// before the table would be heard on an output the grid shows as direct.
+    public let cardMixerHold = CardMixerHold()
+
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
         if Self.mixerEditSelectors.contains(address.selector) {
+            // Refused while held; the page has saved the edit and the restore
+            // replays the mixers once the table is written.
+            try cardMixerHold.admit(address)
             mixerEdits.invalidate()
         }
         try await Task.detached { try self.writeProperty(address, value: value) }.value

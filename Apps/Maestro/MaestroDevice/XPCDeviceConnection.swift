@@ -804,18 +804,27 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         routedToOutput: [Bool] = [false, false],
         retryDelay: Duration = .milliseconds(150)
     ) async -> Bool {
-        let state = USBMixerSavedState.load(preferences: preferences)
+        var state = USBMixerSavedState.load(preferences: preferences)
         var unitOK = true
         var helperSteps: [USBMixerRestorePlan.Step] = []
-        for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer,
-                                              routedToOutput: routedToOutput) {
-            if case .hardware(let address, let value) = step {
-                if await !setUnitMixerWithRetry(address, value: value, retryDelay: retryDelay) {
-                    unitOK = false
+        // An edit saved while these writes were going out is written again, so
+        // the unit ends on what is saved now, not on the snapshot taken first.
+        for _ in 0..<Self.restoreEditPasses {
+            unitOK = true
+            helperSteps = []
+            for step in USBMixerRestorePlan.steps(for: state, helperMixer: helperMixer,
+                                                  routedToOutput: routedToOutput) {
+                if case .hardware(let address, let value) = step {
+                    if await !setUnitMixerWithRetry(address, value: value, retryDelay: retryDelay) {
+                        unitOK = false
+                    }
+                } else {
+                    helperSteps.append(step)
                 }
-            } else {
-                helperSteps.append(step)
             }
+            let now = USBMixerSavedState.load(preferences: preferences)
+            if !unitOK || now == state { break }
+            state = now
         }
         guard unitOK else {
             print("[Maestro] USB mixer restore did not complete: a write to the unit failed twice; the helper was left as it was")
@@ -831,6 +840,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         return true
     }
 
+    /// How often a restore writes a strip (or the Master and Software Return
+    /// block) again because its saved value changed while it was being written.
+    static let restoreEditPasses = 4
+
     /// Write both mixers' input strips, saved or default, to the unit
     /// (``USBMixerRestorePlan/stripSteps(saved:hardwareIndexes:)``), paced like
     /// the other connect-time replays. Stops when `isCurrent` turns false.
@@ -841,19 +854,94 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         spacing: Duration = .milliseconds(25),
         isCurrent: @Sendable () async -> Bool = { true }
     ) async -> (applied: Int, failed: Int) {
+        let result = await restoreMixerStrips(
+            hardwareIndexes: hardwareIndexes, spacing: spacing,
+            savedStrip: { mixer, strip in
+                mixer < saved.count && strip < saved[mixer].count ? saved[mixer][strip] : nil
+            }, isCurrent: isCurrent)
+        return (result.applied, result.failed)
+    }
+
+    /// The same restore with each strip's saved value read at the moment the
+    /// strip is written (`savedStrip`, nil for a strip nobody saved), and read
+    /// again after its four writes: a mute or level the user changes while the
+    /// restore runs is what ends up on the unit. A restore that took one
+    /// snapshot up front wrote the old value over such an edit while the page
+    /// and the store showed the new one.
+    ///
+    /// `mixersWritten[m]` is true only when every strip of mixer `m` took all
+    /// its writes: the caller routes a mixer to an output only then.
+    @discardableResult
+    public func restoreMixerStrips(
+        hardwareIndexes: [Int],
+        spacing: Duration = .milliseconds(25),
+        savedStrip: @Sendable (_ mixer: Int, _ strip: Int) async -> MixerChannelState?,
+        isCurrent: @Sendable () async -> Bool = { true }
+    ) async -> (applied: Int, failed: Int, mixersWritten: [Bool]) {
         var applied = 0, failed = 0
-        for step in USBMixerRestorePlan.stripSteps(saved: saved, hardwareIndexes: hardwareIndexes) {
-            guard case .hardware(let address, let value) = step else { continue }
-            guard await isCurrent() else { break }
-            if applied + failed > 0, spacing > .zero { try? await Task.sleep(for: spacing) }
-            do {
-                try await setProperty(address, value: value, helperMuted: nil)
-                applied += 1
-            } catch {
-                failed += 1
+        var written = [true, true]
+        mixers: for mixer in 0..<2 {
+            for (strip, channel) in hardwareIndexes.enumerated() where (0...31).contains(channel) {
+                var state = await savedStrip(mixer, strip) ?? USBMixerRestorePlan.defaultStrip
+                for _ in 0..<Self.restoreEditPasses {
+                    for step in USBMixerRestorePlan.stripSteps(mixer: mixer, channel: channel, state: state) {
+                        guard case .hardware(let address, let value) = step else { continue }
+                        guard await isCurrent() else {
+                            for unfinished in mixer..<2 { written[unfinished] = false }
+                            break mixers
+                        }
+                        if applied + failed > 0, spacing > .zero { try? await Task.sleep(for: spacing) }
+                        do {
+                            try await setProperty(address, value: value, helperMuted: nil)
+                            applied += 1
+                        } catch {
+                            failed += 1
+                            written[mixer] = false
+                        }
+                    }
+                    let now = await savedStrip(mixer, strip) ?? USBMixerRestorePlan.defaultStrip
+                    if now == state { break }
+                    state = now
+                }
             }
         }
-        return (applied, failed)
+        return (applied, failed, written)
+    }
+
+    /// The monitor (speaker) mode, written on every connect and after a
+    /// recovery: the saved one, or Stereo when none is saved, as the original
+    /// did (og_source/maestrolink/Software/SymphonyIO.cpp:4669
+    /// `setSpeakerOutputMode(m_MainOutMode)`, whose default at :128 is
+    /// `eSymphonyIOSpeakerOutputMode_Stereo`). In a mode other than a speaker
+    /// mode Line 1/2 play at full level and the volume keys do nothing, so
+    /// this is never left to the unit's own default. A default is sent
+    /// without being stored: only what the user chose is saved.
+    /// Returns the mode sent, nil if the unit refused it.
+    @discardableResult
+    public func applySpeakerOutputMode() async -> UInt32? {
+        let address = PropertyAddress(selector: .speakerOutputMode)
+        do {
+            if let saved = settingsStore.value(for: address), let mode = saved.asUInt32 {
+                try await setProperty(address, value: saved)
+                return mode
+            }
+            let stereo = UInt32(SymphonyIOSpeakerMode.stereo.rawValue)
+            let request = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .uint32(stereo))
+            guard transport.isConnected else { throw DeviceConnectionError.notConnected }
+            await sequenceOwner.acquire()
+            do {
+                try await transport.sendSetProperty(bRequest: request.request, wValue: request.value,
+                                                    wIndex: request.index, data: request.data)
+                await sequenceOwner.release()
+            } catch {
+                await sequenceOwner.release()
+                throw error
+            }
+            return stereo
+        } catch {
+            print("[Maestro] Speaker mode was not applied: \(error)")
+            return nil
+        }
     }
 
     /// Write every stored setting to the hardware. Called once per connect, as

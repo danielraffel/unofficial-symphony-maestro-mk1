@@ -360,17 +360,26 @@ public enum USBMixerRestorePlan {
         for mixer in 0..<2 {
             let states = mixer < saved.count ? saved[mixer] : []
             for (strip, channel) in hardwareIndexes.enumerated() where (0...31).contains(channel) {
-                let state = strip < states.count ? states[strip]
-                    : MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
-                func at(_ selector: AudioPropertySelector) -> PropertyAddress {
-                    PropertyAddress(selector: selector, element: UInt32(mixer + 1) << 16 | UInt32(channel))
-                }
-                steps.append(.hardware(at(.mixerChannelLevel), .float64(state.level)))
-                steps.append(.hardware(at(.mixerChannelPan), .float64(state.pan)))
-                steps.append(.hardware(at(.mixerChannelMute), .bool(state.isMuted)))
-                steps.append(.hardware(at(.mixerChannelSolo), .bool(state.isSoloed)))
+                steps += stripSteps(mixer: mixer, channel: channel,
+                                    state: strip < states.count ? states[strip] : defaultStrip)
             }
         }
         return steps
+    }
+
+    /// A strip nobody has saved: 0 dB, centre, unmuted, no solo.
+    public static let defaultStrip = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
+
+    /// One input strip's four writes: level, pan, mute, solo.
+    public static func stripSteps(mixer: Int, channel: Int, state: MixerChannelState) -> [Step] {
+        func at(_ selector: AudioPropertySelector) -> PropertyAddress {
+            PropertyAddress(selector: selector, element: UInt32(mixer + 1) << 16 | UInt32(channel))
+        }
+        return [
+            .hardware(at(.mixerChannelLevel), .float64(state.level)),
+            .hardware(at(.mixerChannelPan), .float64(state.pan)),
+            .hardware(at(.mixerChannelMute), .bool(state.isMuted)),
+            .hardware(at(.mixerChannelSolo), .bool(state.isSoloed)),
+        ]
     }
 }

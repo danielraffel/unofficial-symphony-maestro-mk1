@@ -92,6 +92,8 @@ extension AppState {
     @MainActor
     func mixerPageDefersToCardMixerRestore(mixer: Int) async -> Bool {
         guard let tb = device as? ThunderboltDeviceConnection else { return false }
+        // The output table is not on the card yet: nothing unmutes a strip.
+        if tb.cardMixerHold.isHeld { return true }
         let link = await Task.detached(priority: .utility) { tb.linkState() }.value
         guard device === tb else { return true }
         observeCardMixerInstance(link)
@@ -101,7 +103,8 @@ extension AppState {
 
     @MainActor
     private func cardMixerRestoreEligible(_ tb: ThunderboltDeviceConnection) -> Bool {
-        device === tb && !twoUnitSleeping && !usesTwoUnitReplay
+        // Not before the output table is on the card (`CardMixerHold`).
+        device === tb && !tb.cardMixerHold.isHeld && !twoUnitSleeping && !usesTwoUnitReplay
             && connectionMode == .hardware && isHardwareInitialized
             && unitAIdentity != nil && connectedUnit == nil && converterSystem == nil
             && mixerPreferences.isWritable

@@ -100,11 +100,9 @@ extension AppState {
         if unit == .a, let usb = connection as? XPCDeviceConnection,
            usbIdentityRestoreGeneration != generation, preferences.isWritable {
             usbIdentityRestoreGeneration = generation
-            usbMixerLifecycleRestoreGeneration = generation
             // The first restore must wait for UID/layout migration, otherwise
             // an unchanged USB unit would receive defaults before its settings.
-            await restoreUSBMixer(usb, generation: generation, helperMixer: lastSelectedMixer,
-                                  preferences: preferences)
+            await restoreUSBUnit(usb, helperMixer: lastSelectedMixer)
         }
     }
 
@@ -112,48 +110,129 @@ extension AppState {
     /// power-cycled or re-enumerated while Maestro stayed connected) puts back
     /// everything the Mac owns, as the original did for a returning unit
     /// (og_source/maestrolink/Software/SymphonyIO.cpp:4660-4708
-    /// ApplySettingsToHardware, called from :6373-6381): the saved output and
-    /// input routing, the stored device settings (speaker mode among them),
-    /// then the mixer. The helper programs only the direct default routing and
-    /// no longer sets the speaker mode, so without this a recovered unit kept
-    /// its own defaults while Maestro showed the saved state.
+    /// ApplySettingsToHardware, called from :6373-6381), in the one order
+    /// `restoreUSBUnit` uses for a connect too.
     @MainActor
     func restoreUSBMixerAfterRecovery(_ connection: XPCDeviceConnection, helperMixer: Int) async {
-        let generation = unitAGeneration
-        let preferences = mixerPreferences
-        guard device === connection, preferences.isWritable,
-              unitAIdentityState != .pending else { return }
-        usbMixerLifecycleRestoreGeneration = generation
+        guard device === connection, unitAIdentityState != .pending else { return }
+        await restoreUSBUnit(connection, helperMixer: helperMixer)
+    }
+
+    /// Launch and reconnect, once the cards have been read: put the saved
+    /// state on the unit. Over USB that is the ordered restore, which identity
+    /// discovery has normally just run for this connection; it is not run a
+    /// second time.
+    @MainActor
+    func syncSavedStateToHardware() async {
+        if let usb = device as? XPCDeviceConnection {
+            guard usbRestoredGeneration != unitAGeneration, unitAIdentityState != .pending else { return }
+            await restoreUSBUnit(usb, helperMixer: lastSelectedMixer)
+            return
+        }
         await syncOutputRoutingToHardware()
         await syncInputRoutingToHardware()
         await syncDeviceSettingsToHardware()
-        guard device === connection, unitAGeneration == generation, mixerPreferences.isWritable else { return }
-        await restoreUSBMixer(connection, generation: generation, helperMixer: helperMixer,
-                              preferences: preferences)
+    }
+
+    /// The one USB restore, used by connect and by recovery, one at a time
+    /// per connection: a restore that starts while another runs cancels it and
+    /// waits for it to stop, then starts over from what is saved now.
+    ///
+    /// The order is a safety rule. A mixer must never be audible on an output
+    /// unless the routing and that mixer's strips are the user's saved (or
+    /// default) state, and a power-cycled unit comes back with its mixers at
+    /// 0 dB, unmuted. The helper programs the direct default table every time
+    /// it configures the unit, so no mixer feeds an output until this writes
+    /// one, and that is the last thing it does:
+    ///
+    /// 1. both mixers: every input strip, then Software Return and Master;
+    /// 2. the input routing;
+    /// 3. the device settings (speaker mode first);
+    /// 4. the output routing, and a route fed by a mixer only if that mixer
+    ///    took every write of step 1.
+    ///
+    /// With the routing written before the mixers (as it was), a saved
+    /// "Mixer 1 to Line 1/2" put live inputs and full-level playback on the
+    /// monitors for the seconds the strip writes took.
+    @MainActor
+    func restoreUSBUnit(_ connection: XPCDeviceConnection, helperMixer: Int) async {
+        let previous = usbRestoreTask
+        previous?.cancel()
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self, !Task.isCancelled else { return }
+            await self.performUSBRestore(connection, helperMixer: helperMixer)
+        }
+        usbRestoreTask = task
+        await task.value
+        if usbRestoreTask == task { usbRestoreTask = nil }
+    }
+
+    @MainActor
+    private func performUSBRestore(_ connection: XPCDeviceConnection, helperMixer: Int) async {
+        let generation = unitAGeneration
+        let preferences = mixerPreferences
+        guard device === connection, unitAIdentityState != .pending, !hardwareWritesSuspended else { return }
+        func isCurrent() -> Bool {
+            device === connection && unitAGeneration == generation && !hardwareWritesSuspended
+                && !Task.isCancelled && mixerPreferences.isWritable == preferences.isWritable
+                && mixerPreferences.storageKey == preferences.storageKey
+        }
+        // Until step 1 has finished nothing may route a mixer to an output.
+        usbMixersWritten = nil
+        var mixers = [false, false]
+        // Mixer state that cannot be read for this unit is not written, and
+        // then no mixer is routed either; the rest is still put back.
+        if preferences.isWritable {
+            usbMixerLifecycleRestoreGeneration = generation
+            mixers = await restoreUSBMixer(connection, generation: generation, helperMixer: helperMixer,
+                                           preferences: preferences)
+        }
+        guard isCurrent() else { return }
+        usbMixersWritten = (generation, mixers)
+        await syncInputRoutingToHardware()
+        guard isCurrent() else { return }
+        await syncDeviceSettingsToHardware()
+        guard isCurrent() else { return }
+        await syncOutputRoutingToHardware()
+        // Launch reads the cards (and so runs this) only after the hardware is
+        // marked ready; a run before that skipped the stored settings and
+        // must not count as the connection's restore.
+        guard isCurrent(), isHardwareInitialized else { return }
+        usbRestoredGeneration = generation
     }
 
     /// Both mixers, complete: every input strip (saved or default), then the
     /// Software Return source, Master and Software Return, then the helper.
     /// The unit keeps its mixer until it is power-cycled, so strips are not
     /// left to whatever an earlier session wrote: a strip does what it shows.
+    /// Each strip's saved value is read when the strip is written and checked
+    /// again after it, so an edit made during the restore is what the unit
+    /// ends on. Returns, per mixer, whether every write landed.
     @MainActor
+    @discardableResult
     func restoreUSBMixer(_ connection: XPCDeviceConnection, generation: UUID, helperMixer: Int,
-                         preferences: MixerPreferences) async {
-        let saved: [[MixerChannelState]] = (0..<2).map {
-            channelStateStore.load(ChannelStateStore.mixerKey($0)) ?? []
-        }
+                         preferences: MixerPreferences) async -> [Bool] {
         let current: @Sendable () async -> Bool = { @MainActor [weak self] in
             guard let self else { return false }
             return self.device === connection && self.unitAGeneration == generation
-                && !self.hardwareWritesSuspended
+                && !self.hardwareWritesSuspended && !Task.isCancelled
+                && self.mixerPreferences.isWritable
+                && self.mixerPreferences.storageKey == preferences.storageKey
+        }
+        let savedStrip: @Sendable (Int, Int) async -> MixerChannelState? = { @MainActor [weak self] mixer, strip in
+            let saved: [MixerChannelState] = self?.channelStateStore.load(ChannelStateStore.mixerKey(mixer)) ?? []
+            return strip < saved.count ? saved[strip] : nil
         }
         let strips = await connection.restoreMixerStrips(
-            saved: saved, hardwareIndexes: cardLayout.mixerChannels.map(\.hardwareIndex),
-            spacing: usbMixerStripSpacing, isCurrent: current)
-        guard device === connection, unitAGeneration == generation else { return }
+            hardwareIndexes: cardLayout.mixerChannels.map(\.hardwareIndex),
+            spacing: usbMixerStripSpacing, savedStrip: savedStrip, isCurrent: current)
+        guard await current() else { return [false, false] }
         print("[Maestro] USB mixer restore: \(strips.applied) strip writes, \(strips.failed) refused")
-        await connection.restoreReturnAndMaster(helperMixer: helperMixer, preferences: preferences,
-                                                routedToOutput: mixersRoutedToOutput())
+        let returnAndMaster = await connection.restoreReturnAndMaster(
+            helperMixer: helperMixer, preferences: preferences, routedToOutput: mixersRoutedToOutput())
+        guard await current() else { return [false, false] }
+        return strips.mixersWritten.map { $0 && returnAndMaster }
     }
 
     /// Which of the two mixers feed an output, from the saved Output Routing

@@ -38,6 +38,12 @@ private final class MixerRestoreTransport: XPCTransport, @unchecked Sendable {
     state.cardLayout.mixerChannels.filter { (0...31).contains($0.hardwareIndex) }.count * 8 + 10
 }
 
+/// The speaker mode (0x25) goes out with every restore, saved or Stereo; the
+/// counts below are of the mixer writes.
+private func mixerWrites(_ capture: MixerRestoreTransport.Capture) -> [(UInt8, UInt16, UInt16, Data)] {
+    capture.writes.filter { $0.0 != 0x25 }
+}
+
 extension StandardDefaultsSuites {
 @Suite("Mixer identity completion", .serialized)
 @MainActor
@@ -137,11 +143,11 @@ struct MixerIdentityRestoreTests {
         #expect(transport.snapshot.mutes.isEmpty)
         await state.resolveUnitIdentity(for: .a, connection: usb) { nil }
         let count = restoreWriteCount(state)
-        #expect(transport.snapshot.writes.count == count)
+        #expect(mixerWrites(transport.snapshot).count == count)
         #expect(transport.snapshot.mutes.isEmpty)
         state.retryFailedIdentityOnRecovery()
         await state.resolveUnitIdentity(for: .a, connection: usb) { nil }
-        #expect(transport.snapshot.writes.count == count)
+        #expect(mixerWrites(transport.snapshot).count == count)
     }
 
     /// The reported gap: a recovery (unit power-cycled while connected) put
@@ -187,7 +193,13 @@ struct MixerIdentityRestoreTests {
             let outputRoutes = result.writes.filter { $0.0 == 0x31 && ($0.3.first ?? 0) < 64 }.map { Array($0.3) }
             #expect(outputRoutes == (routed ? [[32, 64], [33, 65]] : []))
             // The mixer follows: strips, source, Master and return, on the unit.
-            #expect(result.writes.filter { $0.0 != 0x31 || ($0.3.first ?? 0) >= 0xE0 }.count == restoreWriteCount(state))
+            #expect(mixerWrites(result).filter { $0.0 != 0x31 || ($0.3.first ?? 0) >= 0xE0 }.count == restoreWriteCount(state))
+            // ...and before the route: no mixer is routed until its strips are written.
+            if routed {
+                let firstRoute = result.writes.firstIndex { $0.0 == 0x31 && ($0.3.first ?? 0) < 64 } ?? -1
+                let lastStrip = result.writes.lastIndex { (0xB0...0xB4).contains($0.0) } ?? Int.max
+                #expect(lastStrip < firstRoute)
+            }
             // Strip 32 of mixer 1 is muted on the unit either way...
             #expect(result.writes.last { $0.0 == 0xB3 && $0.1 == 1 && $0.2 == 32 }?.3 == Data([1]))
             // ...but the helper only mutes "Maestro USB" while that mixer feeds an output.
@@ -263,7 +275,9 @@ struct MixerIdentityRestoreTests {
                 return nil
             }
             let result = transport.snapshot
-            #expect(result.writes.count == restoreWriteCount(state))
+            #expect(mixerWrites(result).count == restoreWriteCount(state))
+            // No speaker mode is saved: Stereo is sent, once.
+            #expect(result.writes.filter { $0.0 == 0x25 }.map { $0.3 } == [Data([2])])
             // Every input strip of both mixers is written, and none is muted:
             // nothing was saved muted, and no setting forces a mute.
             let stripMutes = result.writes.filter { $0.0 == 0xB3 && $0.2 < 32 }
@@ -271,8 +285,8 @@ struct MixerIdentityRestoreTests {
             #expect(stripMutes.allSatisfy { $0.3 == Data([0]) })
             #expect(result.mutes.isEmpty)
             // Default routing: no mixer feeds an output, so the helper is neutral.
-            #expect(result.helperMutes == [false])
-            #expect(result.helperProcessing == [false])
+            #expect(!result.helperMutes.isEmpty && result.helperMutes.allSatisfy { !$0 })
+            #expect(!result.helperProcessing.isEmpty && result.helperProcessing.allSatisfy { !$0 })
             let master = result.writes.first { $0.0 == 0xB0 && $0.1 == 1 && $0.2 == 33 }?.3
             let softwareReturn = result.writes.first { $0.0 == 0xB0 && $0.1 == 1 && $0.2 == 32 }?.3
             #expect(master == Data([outcome == "success" ? 24 : 36]))

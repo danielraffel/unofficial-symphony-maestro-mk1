@@ -68,6 +68,11 @@ extension AppState {
         let bGeneration = await Task.detached(priority: .utility) { tb.readUnitBState()?.generation }.value
         guard device === tb, unitBDevice === b, let link, let bGeneration else { return }
         applyPhantomObservations(link)
+        // Refused mixer edits up to here are in the plan (it is built from
+        // the store); the table and mixers go out with the mixers held.
+        tb.cardMixerHold.hold()
+        cardOutputLedger.invalidate()
+        let refusedAtPlan = tb.cardMixerHold.refusedCount
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
         let replayDeferral = self.replayDeferral
         let recallEpoch = replayDeferral.currentEpoch()
@@ -79,6 +84,7 @@ extension AppState {
                                       shouldContinue: { replayDeferral.isValid(recallEpoch) })
             }.value
             guard device === tb, unitBDevice === b else { return }
+            finishTwoUnitReplay(plan, tb: tb, link: link, refusedAtPlan: refusedAtPlan)
             if let mode = tb.settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32 {
                 speakerOutputMode = mode
             }
@@ -105,8 +111,16 @@ extension AppState {
         _ = ThunderboltInputRoutingMigration.run(routingKey: cacheA.key)
         // After the routing and mixer reset the default tables go first (a
         // driver that kept running still has the units on the removed
-        // routes); the single-unit replay clears the flag.
+        // routes), and the card's own input routes go back to straight
+        // through (their saved copy is gone too). The flag is cleared when
+        // this plan has run to the end (`finishTwoUnitReplay`); it used to be
+        // cleared by the single-unit replay only, so at 64 channels the
+        // default tables were written before the saved ones on every replay.
         let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
+        let cardInputReset = symphonyCardInputs.resetCommand
+        plan.consumesRoutingReset = resetPending
+            && (symphonyCardInputs.channelCount == 0 || cardInputReset != nil)
+        if resetPending, let cardInputReset { plan.card.append(.card(.cardInput(cardInputReset))) }
         for (unit, layout, cache) in [(DeviceUnit.a, cardLayout, Optional(cacheA)), (.b, layoutB, unitBInputRoutingCache)] {
             var writes = resetPending
                 ? SymphonyIODefaultRouting.thunderboltInputRoutes(
@@ -180,6 +194,13 @@ extension AppState {
             }
             put(.mixerChannelLevel, .float64(a.masterLevel), 2000)
         }
+        // Output routes around the mixers: every route first with the
+        // mixer-fed ones silenced, the mixers, then the mixer-fed routes, so
+        // no mixer feeds an output before its strips are written.
+        plan.card = CardOutputTableOrder.ordered(plan.card.compactMap {
+            if case .card(let write) = $0 { return write }
+            return nil
+        }).map { .card($0) }
         // Keep B5's departure: B monitor settings are read, never host-replayed.
         for (unit, store) in [(DeviceUnit.a, tb.settingsStore), (.b, b.settingsStore)] {
             for entry in store.entries() {

@@ -14,6 +14,11 @@ public struct TwoUnitReplay: Sendable {
     public var tables: [Write] = []
     public var card: [Write] = []
     public var settings: [Write] = []
+    /// The plan starts from the default input tables and the card-input reset
+    /// because the routing and mixer reset's defaults have not reached the
+    /// hardware yet. The pending flags are cleared only after this plan has
+    /// run to the end.
+    public var consumesRoutingReset = false
     public init() {}
 
     public var writes: [Write] { tables + card + settings + [.headphones(.a), .headphones(.b)] }

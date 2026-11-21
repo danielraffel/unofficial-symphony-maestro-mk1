@@ -179,10 +179,10 @@ struct ContentView: View {
                 await appState.readCardTypes()
                 // Sync persisted output routing to hardware after card types are known.
                 // This overwrites proxy boot defaults with any user-customized routes.
-                await appState.syncOutputRoutingToHardware()
-                await appState.syncInputRoutingToHardware()
-                // Then the settings this Mac owns (peak hold, monitor mode, ...).
-                await appState.syncDeviceSettingsToHardware()
+                // The input routing and the settings this Mac owns (peak hold,
+                // monitor mode, ...) go with it, in the order each transport
+                // needs (`syncSavedStateToHardware`).
+                await appState.syncSavedStateToHardware()
                 // And the names that follow them (prefix, optical format, Replaces).
                 await appState.refreshChannelNaming()
             }
