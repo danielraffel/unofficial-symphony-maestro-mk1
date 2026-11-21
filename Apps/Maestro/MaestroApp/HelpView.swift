@@ -49,14 +49,19 @@ struct HelpView: View {
                 Divider()
                 ScrollViewReader { proxy in
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
+                        // Each section carries its own space above, so jumping to
+                        // one leaves that space between it and the top edge.
+                        VStack(alignment: .leading, spacing: 0) {
                             if sections.isEmpty {
                                 Text("No results for \"\(query)\"")
                                     .font(.callout)
                                     .foregroundStyle(.secondary)
+                                    .padding(.top, 24)
                             }
                             ForEach(sections) { section in
-                                sectionView(section).id(section.id)
+                                sectionView(section)
+                                    .padding(.top, 24)
+                                    .id(section.id)
                                     .background(GeometryReader { geometry in
                                         Color.clear.preference(
                                             key: HelpSectionTops.self,
@@ -64,7 +69,7 @@ struct HelpView: View {
                                     })
                             }
                         }
-                        .padding(24)
+                        .padding([.horizontal, .bottom], 24)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         // Help is reference material people quote back in bug reports and forum
                         // posts, so every paragraph is selectable, not just the uninstall command.
