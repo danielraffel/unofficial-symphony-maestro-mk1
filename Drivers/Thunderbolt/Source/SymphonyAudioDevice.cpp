@@ -144,6 +144,10 @@ static kern_return_t ApplyTimingTuple(IOUserAudioDevice* device, double rate,
     return result;
 }
 
+// Defined in SymphonyThunderbridge.cpp: the hardware takes the nominal rate
+// now, as the original's performFormatChange did (see there).
+void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t changeAction, const char *why);
+
 kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
     uint64_t in_change_action, OSObject* in_change_info)
 {
@@ -189,9 +193,6 @@ kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
 // Defined in SymphonyThunderbridge.cpp: the channel names follow the nominal
 // rate, which can change with no IO start (see there).
 void SymphonyNoteNominalSampleRate(IOUserAudioDevice *device, double rate);
-// Defined in SymphonyThunderbridge.cpp: the hardware takes the nominal rate
-// now, as the original's performFormatChange did (see there).
-void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t changeAction, const char *why);
 
 kern_return_t SymphonyAudioDevice::HandleChangeSampleRate(double in_sample_rate)
 {
