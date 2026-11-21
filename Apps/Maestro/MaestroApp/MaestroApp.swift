@@ -29,7 +29,7 @@ struct MaestroApp: App {
     /// before `AppState` exists, so nothing has read the saved state it removes.
     private static func makeAppState() -> AppState {
         if RoutingMixerReset.runIfNeeded(defaults: .standard) {
-            print("[Maestro] Output Routing, Input Routing and both mixers reset to defaults (one time, 0.9.19)")
+            print("[Maestro] Output Routing, Input Routing, converter routing and both mixers reset to defaults (one time, 0.9.19)")
         }
         return AppState()
     }

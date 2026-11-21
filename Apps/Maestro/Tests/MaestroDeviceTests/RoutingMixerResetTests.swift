@@ -219,6 +219,49 @@ struct RoutingMixerResetTests {
         #expect(settings.value(for: PropertyAddress(selector: .frontPanelMeterBank)) == .uint32(1))
     }
 
+    @Test("a converter chain's saved routes, a card mixer on a converter output included, are reset; its routing presets are kept")
+    func converterRouting() throws {
+        let (defaults, cleanup) = suite()
+        defer { cleanup() }
+        let signature = "ad16x+da16x"
+        let store = ConverterRoutingStore(signature: signature, defaults: defaults)
+        // Mixer 1 on the chain's first output pair, and an input route.
+        var edits = ConverterRoutingEdits()
+        edits.outputs[0] = ConverterRouting.mixerSource(mixer: 0, side: 0)
+        edits.outputs[1] = ConverterRouting.mixerSource(mixer: 0, side: 1)
+        edits.inputs[4] = 6
+        store.save(edits)
+        store.savePreset(name: "Tracking", input: false, routes: [0: ConverterRouting.mixerSource(mixer: 1, side: 0)])
+        #expect(!store.load().isEmpty)
+        #expect(RoutingMixerReset.runIfNeeded(defaults: defaults))
+        #expect(store.load().isEmpty)
+        #expect(defaults.object(forKey: store.key) == nil)
+        #expect(store.presetNames(input: false) == ["Tracking"])
+    }
+
+    @Test("an install that ran the first version of the reset gets only what was added: converter routes and the USB output flag")
+    func upgradeFromVersion1() throws {
+        let (defaults, cleanup) = suite()
+        defer { cleanup() }
+        defaults.set(1, forKey: RoutingMixerReset.versionKey)
+        // Set up again after the first reset: kept.
+        defaults.set(["x": 1], forKey: "routing_output_18_v2_multi")
+        defaults.set(Data([1]), forKey: "mixerState_0")
+        let store = ConverterRoutingStore(signature: "ad16x", defaults: defaults)
+        var edits = ConverterRoutingEdits()
+        edits.outputs[0] = ConverterRouting.mixerSource(mixer: 0, side: 0)
+        store.save(edits)
+        #expect(RoutingMixerReset.runIfNeeded(defaults: defaults))
+        #expect(defaults.integer(forKey: RoutingMixerReset.versionKey) == RoutingMixerReset.currentVersion)
+        #expect(store.load().isEmpty)
+        #expect(defaults.object(forKey: "routing_output_18_v2_multi") != nil)
+        #expect(defaults.object(forKey: "mixerState_0") != nil)
+        #expect(RoutingMixerReset.isPending(.usbOutputRouting, defaults: defaults))
+        #expect(!RoutingMixerReset.isPending(.usbInputRouting, defaults: defaults))
+        #expect(!RoutingMixerReset.isPending(.thunderboltCardMixer, defaults: defaults))
+        #expect(!RoutingMixerReset.runIfNeeded(defaults: defaults))
+    }
+
     @Test("only routing and mixer keys are in scope")
     func keyFamilies() {
         for key in ["routingMode", "mixerState_0", "mixerState_1.unit:v3:a1:8x8", "mixerState_0.claimedBy",
@@ -231,14 +274,18 @@ struct RoutingMixerResetTests {
                     "cardRouting.v3.18.a=a1.b=none.channels=32.a.8x8", "cardRouting.v3.18.a=a1.b=b1.channels=64.b.8x8_multi.snapshot",
                     "unit.v3.a1.inputRouting.8x8", "unit.v3.a1.cardOutput_multi.8x8.snapshot",
                     "pending.cardOutput.a=pending.b=none.channels=32.a", "pending.6F9619FF.inputRouting",
-                    "sim.routing_output_18_v2_multi", "symphonyCardInputs.a1", "thunderboltMainPairMixerMigration_v1"] {
+                    "sim.routing_output_18_v2_multi", "symphonyCardInputs.a1", "thunderboltMainPairMixerMigration_v1",
+                    // A converter chain's routes (its output grid has the card mixers as sources).
+                    "converterRouting.ad16x+da16x", "converterRouting.sim:ad16x", "conv.ad16x.cardOutput",
+                    "conv.ad16x.inputRouting_multi", "converter.cardOutput"] {
             #expect(RoutingMixerReset.isResetKey(key), "\(key) should be reset")
         }
         for key in ["inputChannelStates", "outputChannelStates.unit:v3:a1:8x8", "inputChannelStates.claimedBy",
                     "mixerChannelNames", "unit.v3.a1.mixerChannelNames.8x8", "mixerPresets", "outputRoutingPresets",
                     "outputRoutingPresets.twoUnit.unitB", "outputRoutingPresets.unitB", "deviceSettings_18_v1",
                     "deviceSettings_18_identity_v3_a1", "unitStateOwner.unitA.8x8", "lastSelectedMixer",
-                    "conv.ad16x.cardOutput", "converter.cardOutput", "routingMixerReset.version",
+                    "conv.ad16x.mixerChannelNames", "converter.digital", "routingMixerReset.version",
+                    "converterOutputRoutingPresets.ad16x", "converterInputRoutingPresets.ad16x",
                     "routingMixerReset.pending.usbInputRouting", "unit.v3.a1.digital.8x8", "pending.6F9619FF.mixerChannelNames"] {
             #expect(!RoutingMixerReset.isResetKey(key), "\(key) should be kept")
         }
