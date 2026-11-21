@@ -10,7 +10,7 @@ enum HelpSectionID: String {
     case whatItDoes, connecting, controls, settings, clock, inputOutput, modules
     case micPreStrip, micPreQuestions, routing, mixer, mixerUSB, volumeKeys
     case vbus, usbOutput, interfaceMode, twoUnits, troubleshooting
-    case apogeeDrivers, uninstalling, about
+    case apogeeDrivers, uninstalling, about, feedback, donate
 }
 
 struct HelpSection: Identifiable {
@@ -125,6 +125,13 @@ enum HelpSearch {
         return String(text.characters).hasSuffix(title)
     }
 
+    /// An empty line a third of the usual height.
+    static var bulletGap: AttributedString {
+        var gap = AttributedString("\n")
+        gap.font = .system(size: 4)
+        return gap
+    }
+
     /// Consecutive paragraphs and bullets become one attributed text:
     /// paragraphs a blank line apart, bullets on consecutive lines.
     static func runs(_ blocks: [HelpBlock]) -> [Run] {
@@ -151,7 +158,13 @@ enum HelpSearch {
                 continue
             }
             if var text = prose {
-                text += AttributedString(isBullet && lastWasBullet ? "\n" : "\n\n")
+                if isBullet && lastWasBullet {
+                    // Between bullets: a new line and a thin spacer line, so a
+                    // list reads as separate items without a full blank line.
+                    text += AttributedString("\n") + bulletGap
+                } else {
+                    text += AttributedString("\n\n")
+                }
                 text += piece
                 prose = text
             } else {

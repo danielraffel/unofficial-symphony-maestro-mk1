@@ -241,7 +241,7 @@ extension HelpSection {
         [whatItDoes, connecting, controls, settings, clock, inputOutput, modules]
             + (micPreInstalled ? [micPreStrip, micPreQuestions] : [])
             + [routing, mixer, mixerUSB, volumeKeys, vbus, usbOutput, interfaceMode, twoUnits,
-               troubleshooting, apogeeDrivers, uninstalling, about]
+               troubleshooting, apogeeDrivers, uninstalling, about, feedback, donate]
     }
 
     private static let uninstallCommand =
@@ -252,6 +252,9 @@ extension HelpSection {
         HelpSection(id: .whatItDoes, title: "What Maestro does", items: [
             HelpItem(blocks: [
                 .text("A modern native control app for the Apogee Symphony I/O MK I — volume, mute, clock source, sample rate, optical format, routing, and metering. Built for macOS 26 (Tahoe) on Apple Silicon."),
+            ]),
+            HelpItem(title: "Where do I find Apogee's own documentation and software?", blocks: [
+                .text(apogeeDocsLink),
             ]),
         ])
     }
@@ -501,7 +504,7 @@ extension HelpSection {
     }
 
     private static var interfaceMode: HelpSection {
-        HelpSection(id: .interfaceMode, title: "Interface mode (Symphony / USB / Pro Tools)", items: [
+        HelpSection(id: .interfaceMode, title: "Audio Interface Modes (AIM)", items: [
             HelpItem(blocks: [
                 .text("This is set from the buttons on the front of the unit. The firmware doesn't expose it to the host, so it can't be changed from the app — Maestro shows the current mode in **Device Settings › Info**."),
             ]),
@@ -622,15 +625,24 @@ extension HelpSection {
     }
 
     private static var about: HelpSection {
-        HelpSection(id: .about, title: "Supported Macs & feedback", items: [
+        HelpSection(id: .about, title: "Supported Macs", items: [
             HelpItem(blocks: [
                 .text("Maestro runs on Apple Silicon Macs. Intel Macs are not supported."),
+            ]),
+        ])
+    }
+
+    private static var feedback: HelpSection {
+        HelpSection(id: .feedback, title: "Feedback", items: [
+            HelpItem(blocks: [
                 .text(feedbackText),
             ]),
-            HelpItem(title: "Where do I find Apogee's own documentation and software?", blocks: [
-                .text(apogeeDocsLink),
-            ]),
-            HelpItem(title: "How can I say thanks?", blocks: [
+        ])
+    }
+
+    private static var donate: HelpSection {
+        HelpSection(id: .donate, title: "How to donate", items: [
+            HelpItem(blocks: [
                 .text("If Maestro has been useful to you, consider making a donation to the SF-Marin Food Bank."),
                 .link("Donate to the SF-Marin Food Bank", URL(string: "https://www.sfmfoodbank.org/")!),
             ]),

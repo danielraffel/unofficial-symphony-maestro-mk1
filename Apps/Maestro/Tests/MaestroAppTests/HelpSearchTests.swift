@@ -20,14 +20,14 @@ struct HelpSearchTests {
             #expect(shown.map(\.id) == all.map(\.id))
             #expect(shown.map(\.items.count) == all.map(\.items.count))
         }
-        #expect(all.count == 21)
-        #expect(HelpSection.all(micPreInstalled: false).count == 19)
+        #expect(all.count == 23)
+        #expect(HelpSection.all(micPreInstalled: false).count == 21)
     }
 
     @Test("A word in a question's title finds that question")
     func questionTitle() {
-        // "thanks" is in one title and in no answer.
-        #expect(titles("thanks") == ["How can I say thanks?"])
+        // "documentation" is in one title.
+        #expect(titles("documentation") == ["Where do I find Apogee's own documentation and software?"])
         #expect(titles("Identify") == ["What do Reset Routing and Identify do?"])
     }
 
@@ -101,7 +101,7 @@ struct HelpSearchTests {
     @Test("Every question has an answer, and titles are not repeated")
     func content() {
         let questions = all.flatMap(\.items).compactMap(\.title)
-        #expect(questions.count == 39)
+        #expect(questions.count == 38)
         #expect(Set(questions).count == questions.count)
         #expect(Set(all.map(\.title)).count == all.count)
         for item in all.flatMap(\.items) {
@@ -211,7 +211,7 @@ struct HelpSearchTests {
         #expect(runs.count == 3)
         guard case .prose(let first) = runs[0], case .block(.command(let command)) = runs[1],
               case .prose(let last) = runs[2] else { Issue.record("unexpected runs"); return }
-        #expect(String(first.characters) == "One.\n\nTwo bold.\n\n\u{2022} Term \u{2014} what it does\n\u{2022} Other \u{2014} more")
+        #expect(String(first.characters) == "One.\n\nTwo bold.\n\n\u{2022} Term \u{2014} what it does\n\n\u{2022} Other \u{2014} more")
         #expect(command == "ls")
         #expect(String(last.characters) == "After.")
     }
