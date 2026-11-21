@@ -10,9 +10,8 @@
 
 #define ADLOG(fmt, ...) os_log(OS_LOG_DEFAULT, "SymphonyTB-AUDIO: " fmt, ##__VA_ARGS__)
 
-// EXPERIMENT (64ch, stage 2). Allocated only when a two-port driver calls
-// SetPortModeDriver; in a one-port build `ivars` stays null and nothing below
-// that mentions it runs.
+// Allocated when the driver calls SetPortModeDriver (every build since dext
+// 143, for VBus; PerformPortModeChange itself does nothing in a one-port build).
 struct SymphonyAudioDevice_IVars {
     // Retained, set once before the device is published and released in
     // free(), like the selector controls' back-pointers: it is never cleared
@@ -163,6 +162,12 @@ kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
     if (ivars && ivars->portModeDriver) {
         const kern_return_t portResult = ivars->portModeDriver->PerformPortModeChange();
         ADLOG("PerformDeviceConfigurationChange port selection applied: 0x%x", portResult);
+        // VBus (dext 143), every build: after the port selection, so the VBus
+        // channels follow the hardware channels (33-, or 65- at 64). Its
+        // result does not fail the configuration change either: a size that
+        // could not be published leaves the device without VBus channels.
+        const kern_return_t vbusResult = ivars->portModeDriver->PerformVBusChange();
+        ADLOG("PerformDeviceConfigurationChange VBus applied: 0x%x", vbusResult);
     }
 
     const kern_return_t result = super::PerformDeviceConfigurationChange(

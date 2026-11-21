@@ -67,6 +67,9 @@ public:
     kern_return_t SetConverterConfig(uint32_t config);
     kern_return_t RequestPortMode(uint32_t selectorValue);   // experiment, stage 2
     kern_return_t PerformPortModeChange();                   // experiment, stage 2
+    kern_return_t SetVBusChannels(uint32_t channels);
+    kern_return_t ReadVBusState(uint32_t *outWords);
+    kern_return_t PerformVBusChange();
     kern_return_t ReadVendorCommand(uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen, uint8_t port);
     kern_return_t ReadVendorCommand(uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen);
     kern_return_t RequestClockSource(uint32_t source);

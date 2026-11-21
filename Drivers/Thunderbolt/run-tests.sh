@@ -52,6 +52,13 @@
 #      a wake that kept the card's registers disables it again.
 #      Until 64 is selected a two-port build writes exactly what stage 1 wrote.
 #
+#   dext 143, VBus (assertions only; VBus writes no register, so it has no
+#      trace, and every golden above is produced with VBus off): each size on
+#      a one-port and a two-port build, converters and the PCIe card; formats,
+#      buffers, names; the loopback in the IO handler; size changes, Ports
+#      32 <-> 64, a card reset, sleep/wake and Stop with VBus on; selector 16
+#      through the user client's ExternalMethod (RunVBusChecks).
+#
 # Usage:
 #   Drivers/Thunderbolt/run-tests.sh                 # all checks, default base ref
 #   Drivers/Thunderbolt/run-tests.sh --against REF   # use another base ref

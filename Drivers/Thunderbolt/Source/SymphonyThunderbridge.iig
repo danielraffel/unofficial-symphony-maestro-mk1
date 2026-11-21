@@ -101,6 +101,18 @@ public:
     // one-port build.
     virtual kern_return_t PerformPortModeChange() LOCALONLY;
 
+    // VBus (dext 143): Apogee's loopback channels, host memory only.
+    // SetVBusChannels records the size the app asked for (0 = off) and asks
+    // Core Audio for a device configuration change; refuses a size the
+    // original did not offer. ReadVBusState fills the 4 words of
+    // SymphonyVBusStateOutput. PerformVBusChange is called by
+    // SymphonyAudioDevice from every PerformDeviceConfigurationChange, after
+    // PerformPortModeChange (IO is stopped): it adds, removes or moves the
+    // VBus stream pair. None of them touches the card.
+    virtual kern_return_t SetVBusChannels(uint32_t channels) LOCALONLY;
+    virtual kern_return_t ReadVBusState(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t PerformVBusChange() LOCALONLY;
+
     // Stop serving the device so the copy macOS registered to replace this one
     // can attach (kSelectorRetireForUpgrade). Calls Terminate(0) on this
     // service; Stop() then runs as for any other teardown.

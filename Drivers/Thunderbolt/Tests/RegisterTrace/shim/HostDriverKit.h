@@ -478,6 +478,11 @@ struct HostAudioRegistry {
     void *ioHandler = nullptr;                               // the IOOperationHandler block
     uint64_t lastConfigChangeAction = 0;
     uint32_t configChangeRequests = 0;
+    // VBus (dext 143): every stream on the device, in the order added (the
+    // two hardware streams first), and what was removed.
+    std::vector<IOUserAudioStream *> deviceStreams;
+    uint32_t streamsRemoved = 0;
+    int failAddStreamAfter = -1;         // >= 0: that many AddStream calls succeed, then one fails
 };
 extern HostAudioRegistry gHostAudio;
 
@@ -609,11 +614,15 @@ public:
         snprintf(buf, sizeof(buf), "stream-create dir=%s buffer=%llu", s->input_ ? "in" : "out",
                  (unsigned long long)mem->size_);
         gHostBackend->HostEvent(buf);
-        (s->input_ ? gHostAudio.inStream : gHostAudio.outStream) = s;
+        // The first stream of each direction is the hardware stream; later
+        // ones (VBus) are found through gHostAudio.deviceStreams.
+        IOUserAudioStream *&slot = s->input_ ? gHostAudio.inStream : gHostAudio.outStream;
+        if (!slot) slot = s;
         s->memory = mem;
         return OSSharedPtr<IOUserAudioStream>(s, OSNoRetain);
     }
     kern_return_t SetAvailableStreamFormats(const IOUserAudioStreamBasicDescription *f, size_t n) {
+        formatCount = (uint32_t)n;
         for (size_t i = 0; i < n; i++) {
             char buf[128];
             snprintf(buf, sizeof(buf), "stream-format dir=%s rate=%.0f channels=%u bytesPerFrame=%u bits=%u",
@@ -639,7 +648,13 @@ public:
     IOUserAudioStreamBasicDescription current = {};
     IOMemoryDescriptor *memory = nullptr;
     kern_return_t SetTerminalType(IOUserAudioStreamTerminalType) { return kIOReturnSuccess; }
+    kern_return_t SetName(OSString *n) { name = n ? n->getCStringNoCopy() : ""; return kIOReturnSuccess; }
+    std::string name;
+    uint32_t startingChannel = 0;
+    uint32_t formatCount = 0;
+    bool isInput() const { return input_; }
     kern_return_t SetStartingChannel(uint32_t ch) {
+        startingChannel = ch;
         char buf[64];
         snprintf(buf, sizeof(buf), "stream-starting-channel dir=%s ch=%u", input_ ? "in" : "out", ch);
         gHostBackend->HostEvent(buf);
@@ -674,8 +689,23 @@ public:
     uint32_t GetInputLatency() const { return inLatency_; }
     uint32_t GetOutputLatency() const { return outLatency_; }
     kern_return_t SetPreferredChannelsForStereo(uint32_t, uint32_t) { return kIOReturnSuccess; }
-    kern_return_t AddStream(IOUserAudioStream *) { gHostBackend->HostEvent("device-add-stream"); return kIOReturnSuccess; }
-    kern_return_t RemoveStream(IOUserAudioStream *) { return kIOReturnSuccess; }
+    kern_return_t AddStream(IOUserAudioStream *st) {
+        if (gHostAudio.failAddStreamAfter >= 0 && gHostAudio.failAddStreamAfter-- == 0) return kIOReturnError;
+        gHostBackend->HostEvent("device-add-stream");
+        st->retain();   // "The stream's reference count will be incremented"
+        gHostAudio.deviceStreams.push_back(st);
+        return kIOReturnSuccess;
+    }
+    kern_return_t RemoveStream(IOUserAudioStream *st) {
+        for (size_t i = 0; i < gHostAudio.deviceStreams.size(); i++) {
+            if (gHostAudio.deviceStreams[i] != st) continue;
+            gHostAudio.deviceStreams.erase(gHostAudio.deviceStreams.begin() + (long)i);
+            gHostAudio.streamsRemoved++;
+            st->release();
+            return kIOReturnSuccess;
+        }
+        return kIOReturnSuccess;
+    }
     kern_return_t AddControl(IOUserAudioControl *) { return kIOReturnSuccess; }
     kern_return_t RemoveControl(IOUserAudioControl *) { return kIOReturnSuccess; }
     kern_return_t AddCustomProperty(IOUserAudioCustomProperty *) { return kIOReturnSuccess; }

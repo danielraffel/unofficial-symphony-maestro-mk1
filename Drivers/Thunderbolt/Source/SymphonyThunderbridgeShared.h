@@ -39,7 +39,38 @@
 // Selector 15 (dext 142+): which output of a unit the Mac's volume and mute
 // controls move. input: SymphonyMonitorOutputInput.
 #define kSelectorSetMonitorOutput 15
-#define kSelectorCount          16
+// Selector 16 (dext 143+): VBus, Apogee's loopback channels. input:
+// SymphonyVBusInput; output: SymphonyVBusStateOutput. No bus access.
+#define kSelectorVBus           16
+#define kSelectorCount          17
+
+// ── VBus ────────────────────────────────────────────────────────────────────
+// The original's "virtual buses": N extra output channels and N extra input
+// channels after the hardware channels; what applications play to the outputs
+// is what they record from the inputs. Host memory only: no register, no DMA.
+// Sizes: og_source/symphonymk1/ext/Symphony64/SymphonyAPI/
+// SymphonyBaseAudioEngine.cpp:1061-1075 (createNewVBUSStream) offers 2, 4, 8
+// and 16, then steps of 16 below the starting channel number, which is
+// cards * 64 + 1 (:379, SymphonyDrivers.h:77): 32, 48 and 64 for the one card
+// this driver serves, with one port in use or two. The original Maestro menu
+// has the same entries (og_source/symphonymk1/ext/maestro2/App/Views/
+// APSystemSymphonySetupView.xib:131-230). 0 is off, the default
+// (SymphonyBaseAudioEngine.cpp:956).
+#define kSymphonyVBusMaxChannels 64u
+static inline bool SymphonyVBusChannelsValid(uint32_t n) {
+    return n == 0 || n == 2 || n == 4 || n == 8 || n == 16 || n == 32 || n == 48 || n == 64;
+}
+#define kSymphonyVBusOperationRead 0u   // channels is ignored
+#define kSymphonyVBusOperationSet  1u
+// 12 bytes.
+typedef struct { uint32_t magic, operation, channels; } SymphonyVBusInput;
+// 16 bytes. published: the VBus channels the device has now. requested: what
+// was last asked for (differs from published until Core Audio has performed
+// the configuration change). firstChannel: the 1-based device channel of
+// VBus channel 1 (33, or 65 at 64 hardware channels); 0 while off.
+// flags: kSymphonyVBusFlag*.
+typedef struct { uint32_t published, requested, firstChannel, flags; } SymphonyVBusStateOutput;
+#define kSymphonyVBusFlagPublishFailed 0x00000001u   // the last request could not be published
 
 // The values of SymphonyMonitorOutputInput.output. 1-3 are the original's
 // eSymphonyIO_MonitorOutput (og_source/symphonymk1/ext/SymphonyIO/generic/

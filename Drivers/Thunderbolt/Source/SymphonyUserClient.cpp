@@ -153,6 +153,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount = 0,
         .checkStructureOutputSize = 0,
     },
+    [kSelectorVBus] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyVBusInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyVBusStateOutput),
+    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -466,6 +474,29 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         auto *input = (const SymphonyMonitorOutputInput *)arguments->structureInput->getBytesNoCopy();
         if (!input || input->magic != kSymphonyUCMagic) return kIOReturnBadArgument;
         return ivars->driver->SetMonitorOutput(input->unit, input->output);
+    }
+
+    if (selector == kSelectorVBus) {
+        // The same checks as selector 15: the exact size, then the magic.
+        // The size and the operation are refused here, an invalid channel
+        // count by the driver.
+        if (!ivars->driver || !arguments->structureInput ||
+            arguments->structureInput->getLength() != sizeof(SymphonyVBusInput))
+            return kIOReturnBadArgument;
+        auto *input = (const SymphonyVBusInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyUCMagic ||
+            input->operation > kSymphonyVBusOperationSet) return kIOReturnBadArgument;
+        if (input->operation == kSymphonyVBusOperationSet) {
+            const kern_return_t r = ivars->driver->SetVBusChannels(input->channels);
+            if (r != kIOReturnSuccess) return r;
+        }
+        SymphonyVBusStateOutput output = {};
+        const kern_return_t r = ivars->driver->ReadVBusState(reinterpret_cast<uint32_t *>(&output));
+        if (r != kIOReturnSuccess) return r;
+        auto data = OSData::withBytes(&output, sizeof(output));
+        if (!data) return kIOReturnNoMemory;
+        arguments->structureOutput = data;
+        return kIOReturnSuccess;
     }
 
     if (selector == kSelectorRetireForUpgrade) {

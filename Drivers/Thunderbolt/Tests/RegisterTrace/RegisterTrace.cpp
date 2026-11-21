@@ -48,7 +48,12 @@ static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 
 static_assert(kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13, "existing selectors unchanged");
 #ifdef kSelectorPublishMicGain
 #ifdef kSelectorSetMonitorOutput
-static_assert(kSelectorPublishMicGain == 14 && kSelectorSetMonitorOutput == 15 && kSelectorCount == 16 &&
+#ifdef kSelectorVBus
+static_assert(kSelectorCount == 17, "VBus is the 17th selector");
+#else
+static_assert(kSelectorCount == 16, "selector count before VBus");
+#endif
+static_assert(kSelectorPublishMicGain == 14 && kSelectorSetMonitorOutput == 15 &&
               sizeof(SymphonyObservedGainInput) == 24 && sizeof(SymphonyMonitorOutputInput) == 12,
               "host gain observation ABI v1; monitor output is selector 15, three words");
 #else
@@ -2372,6 +2377,9 @@ static kern_return_t HostPerformConfigChange(Run &r, bool ioWasRunning)
 {
     if (ioWasRunning) r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
     r.drv->PerformPortModeChange();
+#ifdef kSelectorVBus
+    r.drv->PerformVBusChange();   // SymphonyAudioDevice::PerformDeviceConfigurationChange calls both
+#endif
     kern_return_t rc = kIOReturnSuccess;
     if (ioWasRunning) {
         rc = r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
@@ -4793,6 +4801,531 @@ static void RunMicPreDAWControls()
 }
 #endif
 
+#if defined(kSelectorVBus) && defined(TRACE_HAVE_USERCLIENT) && defined(TRACE_HAVE_PORT2_AUDIO)
+// ── dext 143: VBus ──────────────────────────────────────────────────────────
+// Assertions only: VBus writes no register, so there is no trace to record,
+// and every existing golden trace is produced with VBus off.
+static_assert(kSelectorVBus == 16 && kSelectorCount == 17 && sizeof(SymphonyVBusInput) == 12 &&
+              sizeof(SymphonyVBusStateOutput) == 16, "VBus is selector 16: three words in, four out");
+
+static kern_return_t CallVBusRaw(Run &r, const void *bytes, size_t length, SymphonyVBusStateOutput *out = nullptr,
+                                 uint64_t selector = kSelectorVBus, uint64_t outputSize = sizeof(SymphonyVBusStateOutput))
+{
+    auto *client = new SymphonyUserClient;
+    client->init();
+    client->SetDriver(r.drv);
+    IOUserClientMethodArguments arguments;
+    arguments.selector = selector;
+    arguments.structureInput = length ? OSData::withBytes(bytes, length) : nullptr;
+    arguments.structureOutputMaximumSize = outputSize;   // the app asks for the four state words
+    const kern_return_t result = client->ExternalMethod(selector, &arguments, nullptr, nullptr, nullptr);
+    if (out && arguments.structureOutput && arguments.structureOutput->getLength() == sizeof(*out))
+        memcpy(out, arguments.structureOutput->getBytesNoCopy(), sizeof(*out));
+    if (arguments.structureInput) arguments.structureInput->release();
+    if (arguments.structureOutput) arguments.structureOutput->release();
+    client->release();
+    return result;
+}
+
+static kern_return_t CallVBus(Run &r, uint32_t operation, uint32_t channels, SymphonyVBusStateOutput *out = nullptr,
+                              uint32_t magic = kSymphonyUCMagic)
+{
+    const SymphonyVBusInput input = { magic, operation, channels };
+    return CallVBusRaw(r, &input, sizeof(input), out);
+}
+
+static SymphonyVBusStateOutput VBusState(Run &r)
+{
+    SymphonyVBusStateOutput s = { 99, 99, 99, 99 };
+    CHECK(CallVBus(r, kSymphonyVBusOperationRead, 0, &s) == kIOReturnSuccess, "VBus: the state could not be read");
+    return s;
+}
+
+// Lines since `mark` that are an access to the card, its configuration space
+// or a DMA mapping.
+static size_t CardAccessesSince(const FakeCard &c, size_t mark)
+{
+    size_t n = 0;
+    for (size_t i = mark; i < c.lines.size(); i++) {
+        const std::string &l = c.lines[i];
+        if (l.compare(0, 2, "R ") == 0 || l.compare(0, 2, "W ") == 0 || l.compare(0, 2, "CR") == 0 ||
+            l.compare(0, 2, "CW") == 0 || l.find("dma") != std::string::npos) n++;
+    }
+    return n;
+}
+
+// The app asks for a size; Core Audio performs the configuration change.
+// With IO stopped, nothing between the request and the end of the change may
+// touch the card (with IO running the stop and the start do, as for any
+// configuration change). Returns the line the request started at.
+static size_t VBusSet(const char *what, Run &r, uint32_t channels, bool ioRunning = false, bool expectChange = true)
+{
+    FakeCard &c = r.card;
+    const size_t mark = c.lines.size();
+    const uint32_t before = gHostAudio.configChangeRequests;
+    SymphonyVBusStateOutput s = {};
+    const kern_return_t rc = CallVBus(r, kSymphonyVBusOperationSet, channels, &s);
+    CHECK(rc == kIOReturnSuccess, "%s: selector 16 refused %u channels (0x%x)", what, channels, rc);
+    CHECK(s.requested == channels, "%s: the request reads back as %u (want %u)", what, s.requested, channels);
+    HostPump();
+    CHECK(CardAccessesSince(c, mark) == 0, "%s: asking for %u VBus channels touched the card", what, channels);
+    CHECK((gHostAudio.configChangeRequests != before) == expectChange,
+          "%s: %u configuration change request(s) for %u channels", what,
+          gHostAudio.configChangeRequests - before, channels);
+    if (gHostAudio.configChangeRequests != before) {
+        CHECK(gHostAudio.lastConfigChangeAction == 0x56425553ull, "%s: configuration change action 0x%llx",
+              what, (unsigned long long)gHostAudio.lastConfigChangeAction);
+        const size_t perform = c.lines.size();
+        HostPerformConfigChange(r, ioRunning);
+        HostPump();
+        if (!ioRunning)
+            CHECK(CardAccessesSince(c, perform) == 0, "%s: publishing %u VBus channels touched the card", what, channels);
+    }
+    CHECK(gHostLocksHeld == 0, "%s: a lock is still held", what);
+    return mark;
+}
+
+static IOUserAudioStream *VBusStream(bool input)
+{
+    for (size_t i = 2; i < gHostAudio.deviceStreams.size(); i++)
+        if (gHostAudio.deviceStreams[i]->isInput() == input) return gHostAudio.deviceStreams[i];
+    return nullptr;
+}
+
+// What the device publishes: `hw` hardware channels on the two hardware
+// streams, exactly as without VBus, and `channels` VBus channels after them.
+static void CheckVBusPublished(const char *what, Run &r, uint32_t channels, uint32_t hw)
+{
+    const SymphonyVBusStateOutput s = VBusState(r);
+    CHECK(s.published == channels && s.requested == channels && s.flags == 0 &&
+          s.firstChannel == (channels ? hw + 1 : 0),
+          "%s: state published=%u requested=%u first=%u flags=0x%x (want %u after %u)", what,
+          s.published, s.requested, s.firstChannel, s.flags, channels, hw);
+    CHECK(gHostAudio.deviceStreams.size() == (channels ? 4u : 2u), "%s: %zu streams on the device", what,
+          gHostAudio.deviceStreams.size());
+    // The hardware streams are the first two, with their own format and buffer.
+    CHECK(gHostAudio.deviceStreams.size() >= 2 && gHostAudio.deviceStreams[0] == gHostAudio.inStream &&
+          gHostAudio.deviceStreams[1] == gHostAudio.outStream, "%s: the hardware streams are not first", what);
+    for (IOUserAudioStream *st : { gHostAudio.inStream, gHostAudio.outStream }) {
+        CHECK(st && st->current.mChannelsPerFrame == hw && st->current.mBytesPerFrame == hw * 4 &&
+              st->current.mFormatFlags == (IOUserAudioFormatFlags)(0x4 | 0x8) && st->startingChannel == 1 &&
+              st->memory && st->memory->size_ == (uint64_t)kNumSampleFrames * hw * 4,
+              "%s: a hardware stream changed (%u channels, flags 0x%x, first channel %u)", what,
+              st ? st->current.mChannelsPerFrame : 0, st ? (unsigned)st->current.mFormatFlags : 0,
+              st ? st->startingChannel : 0);
+    }
+    if (!channels) {
+        CHECK(VBusStream(true) == nullptr && VBusStream(false) == nullptr, "%s: a VBus stream is still published", what);
+        return;
+    }
+    for (bool input : { false, true }) {
+        IOUserAudioStream *st = VBusStream(input);
+        CHECK(st != nullptr, "%s: no VBus %s stream", what, input ? "input" : "output");
+        if (!st) continue;
+        CHECK(st->current.mChannelsPerFrame == channels && st->current.mBytesPerFrame == channels * 4 &&
+              st->current.mBytesPerPacket == channels * 4 && st->current.mFramesPerPacket == 1 &&
+              st->current.mBitsPerChannel == 32 && st->current.mFormatFlags == (IOUserAudioFormatFlags)(0x1 | 0x8) &&
+              st->current.mSampleRate == gHostAudio.device->GetSampleRate() && st->formatCount == 6,
+              "%s: VBus %s format is %u channels, %u bytes/frame, %u bits, flags 0x%x, %.0f Hz, %u formats", what,
+              input ? "input" : "output", st->current.mChannelsPerFrame, st->current.mBytesPerFrame,
+              st->current.mBitsPerChannel, (unsigned)st->current.mFormatFlags, st->current.mSampleRate, st->formatCount);
+        CHECK(st->startingChannel == hw + 1, "%s: VBus %s starts at channel %u (want %u)", what,
+              input ? "input" : "output", st->startingChannel, hw + 1);
+        CHECK(st->name == "VBus channels", "%s: VBus stream is named \"%s\"", what, st->name.c_str());
+        // Exactly one ring of the format, and not a hardware stream's buffer.
+        CHECK(st->memory && st->memory->size_ == (uint64_t)kNumSampleFrames * channels * 4 &&
+              st->memory != gHostAudio.inStream->memory && st->memory != gHostAudio.outStream->memory,
+              "%s: VBus %s buffer is %llu bytes", what, input ? "input" : "output",
+              (unsigned long long)(st->memory ? st->memory->size_ : 0));
+    }
+    CHECK(VBusStream(true) && VBusStream(false) && VBusStream(true)->memory != VBusStream(false)->memory,
+          "%s: the VBus streams share a buffer", what);
+}
+
+// The names the device has now (the last one set for each channel; a name
+// that does not change is not set again): "VBout k" / "VBin k" at hw + k.
+static void CheckVBusNames(const char *what, Run &r, size_t, uint32_t channels, uint32_t hw)
+{
+    const size_t mark = 0;
+    for (uint32_t k = 1; k <= channels; k++) {
+        char in[24], out[24];
+        snprintf(in, sizeof(in), "VBin %u", k);
+        snprintf(out, sizeof(out), "VBout %u", k);
+        const std::string gotIn = LastElementName(r.card, mark, "in", hw + k);
+        const std::string gotOut = LastElementName(r.card, mark, "out", hw + k);
+        CHECK(gotIn == in && gotOut == out, "%s: channel %u is named \"%s\" / \"%s\" (want %s / %s)", what, hw + k,
+              gotIn.c_str(), gotOut.c_str(), in, out);
+    }
+    // Nothing past the last VBus channel was named.
+    CHECK(LastElementName(r.card, mark, "in", hw + channels + 1).find("VB") == std::string::npos &&
+          LastElementName(r.card, mark, "out", hw + channels + 1).find("VB") == std::string::npos,
+          "%s: a channel past the VBus channels has a VBus name", what);
+}
+
+static float VBusTag(uint64_t time, uint32_t ch) { return (float)((time % 100000) * 64 + ch) + 0.25f; }
+
+struct VBusBuffers {
+    float *out = nullptr, *in = nullptr;
+    uint32_t channels = 0;
+    IOOperationHandler handler = nullptr;
+    VBusBuffers() {
+        handler = (IOOperationHandler)gHostAudio.ioHandler;
+        if (VBusStream(false) && VBusStream(true)) {
+            out = (float *)VBusStream(false)->memory->mem_;
+            in = (float *)VBusStream(true)->memory->mem_;
+            channels = VBusStream(false)->current.mChannelsPerFrame;
+        }
+    }
+    float &o(uint64_t t, uint32_t ch) { return out[(size_t)(t % kNumSampleFrames) * channels + ch]; }
+    float &i(uint64_t t, uint32_t ch) { return in[(size_t)(t % kNumSampleFrames) * channels + ch]; }
+    // An application plays `frames` frames at sample time `t`.
+    void play(uint64_t t, uint32_t frames) {
+        for (uint32_t n = 0; n < frames; n++)
+            for (uint32_t ch = 0; ch < channels; ch++) o(t + n, ch) = VBusTag(t + n, ch);
+        handler(1, IOUserAudioIOOperationWriteEnd, frames, t, 0);
+    }
+    // Stale memory everywhere: what a missing clear would let through.
+    void poison() {
+        for (size_t n = 0; n < (size_t)kNumSampleFrames * channels; n++) { out[n] = -7.5f; in[n] = -9.5f; }
+    }
+    void poisonInput() { for (size_t n = 0; n < (size_t)kNumSampleFrames * channels; n++) in[n] = -9.5f; }
+    // An application records [t, t + frames): the count of samples that are
+    // not the tag where [from, to) was played and not silence elsewhere.
+    uint32_t record(uint64_t t, uint32_t frames, uint64_t from, uint64_t to) {
+        handler(1, IOUserAudioIOOperationBeginRead, frames, t, 0);
+        uint32_t bad = 0;
+        for (uint32_t n = 0; n < frames; n++)
+            for (uint32_t ch = 0; ch < channels; ch++) {
+                const float want = (t + n >= from && t + n < to) ? VBusTag(t + n, ch) : 0.0f;
+                const float got = i(t + n, ch);
+                if (memcmp(&want, &got, sizeof(float)) != 0) bad++;
+            }
+        return bad;
+    }
+};
+
+// The loopback in the IO handler, and the hardware copy next to it.
+static void CheckVBusLoopback(const char *what, Run &r, uint32_t channels, uint32_t hw)
+{
+    VBusBuffers v;
+    CHECK(v.handler && v.out && v.in && v.channels == channels, "%s: no IO handler or VBus buffers", what);
+    if (!v.handler || !v.out || !v.in || v.channels != channels) return;
+    const uint64_t ring = kNumSampleFrames;
+    r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);   // a fresh session: nothing written yet
+
+    // Nothing has played: silence, whatever the memory holds.
+    v.poison();
+    CHECK(v.record(ring * 3 + 100, 512, 0, 0) == 0, "%s: VBus inputs are not silent when nothing plays", what);
+
+    // Hardware buffers, to see that VBus leaves them alone. Creation order:
+    // A2H, H2A, the 32-channel in/out stream buffers (see CheckIOHandler).
+    const bool both = hw == 64;
+    int32_t *a2h = (int32_t *)gHostAudio.buffers[0]->mem_, *h2a = (int32_t *)gHostAudio.buffers[1]->mem_;
+    int32_t *hwIn = (int32_t *)gHostAudio.inStream->memory->mem_, *hwOut = (int32_t *)gHostAudio.outStream->memory->mem_;
+    const uint64_t t = ring * 9 - 200;   // wraps the end of the ring
+    const uint32_t frames = 512;
+    memset(h2a, 0, ring * 128);
+    memset(hwIn, 0, (size_t)ring * hw * 4);
+    for (uint32_t n = 0; n < frames; n++)
+        for (uint32_t ch = 0; ch < 32; ch++) {
+            hwOut[(size_t)((t + n) % ring) * hw + ch] = (int32_t)(0x10000000u | (((t + n) % ring) << 8) | ch);
+            a2h[(size_t)((t + n) % ring) * 32 + ch] = (int32_t)(0x20000000u | (((t + n) % ring) << 8) | ch);
+        }
+    v.poisonInput();
+    v.play(t, frames);
+    // Sample-accurate, bit-exact, channel k to channel k, across the wrap.
+    CHECK(v.record(t, frames, t, t + frames) == 0, "%s: what was played to the VBus outputs is not what is recorded", what);
+    // The output buffer itself is not altered by the read.
+    uint32_t bad = 0;
+    for (uint32_t n = 0; n < frames; n++)
+        for (uint32_t ch = 0; ch < channels; ch++) if (v.o(t + n, ch) != VBusTag(t + n, ch)) bad++;
+    CHECK(bad == 0, "%s: reading the VBus inputs changed the VBus output buffer", what);
+    // Hardware: channels 1-32 went to and came from port 1's DMA buffers.
+    bad = 0;
+    for (uint32_t n = 0; n < frames; n++) {
+        const uint32_t f = (uint32_t)((t + n) % ring);
+        for (uint32_t ch = 0; ch < 32; ch++) {
+            if (h2a[(size_t)f * 32 + ch] != (int32_t)(0x10000000u | (f << 8) | ch)) bad++;
+            if (hwIn[(size_t)f * hw + ch] != (int32_t)(0x20000000u | (f << 8) | ch)) bad++;
+        }
+    }
+    CHECK(bad == 0, "%s: the hardware channels were not copied as without VBus (%u samples)", what, bad);
+    (void)both;
+
+    // A read that starts before and ends after what was played: silence on
+    // both sides, although the buffers hold other memory there.
+    v.poisonInput();
+    CHECK(v.record(t - 100, frames + 200, t, t + frames) == 0, "%s: a read past what was played is not silence", what);
+
+    // One lap later nothing new was played: the same ring positions must not
+    // be heard again.
+    v.poisonInput();
+    CHECK(v.record(t + ring, frames, 0, 0) == 0, "%s: audio is repeated one ring later", what);
+
+    // A gap in what the host wrote is silence, not the previous lap.
+    const uint64_t g = ring * 20 + 64;
+    v.poison();
+    v.play(g, 100);
+    v.play(g + 300, 100);
+    {
+        v.handler(1, IOUserAudioIOOperationBeginRead, 400, g, 0);
+        uint32_t wrong = 0;
+        for (uint32_t n = 0; n < 400; n++)
+            for (uint32_t ch = 0; ch < channels; ch++) {
+                const bool played = n < 100 || n >= 300;
+                const float want = played ? VBusTag(g + n, ch) : 0.0f;
+                if (v.i(g + n, ch) != want) wrong++;
+            }
+        CHECK(wrong == 0, "%s: a gap between two writes is not silence (%u samples)", what, wrong);
+    }
+
+    // More than a ring played without a pause: a sample time whose position
+    // has since been written again for a later time is silence, not the
+    // later audio; the newest ring's worth is still read exactly.
+    {
+        const uint64_t l = ring * 24;
+        for (uint64_t at = l; at < l + ring + 2048; at += 1024) v.play(at, 1024);
+        v.poisonInput();
+        CHECK(v.record(l, 512, 0, 0) == 0, "%s: a sample time overwritten a ring later is not silence", what);
+        CHECK(v.record(l + 2048, 1024, l + 2048, l + ring + 2048) == 0 &&
+              v.record(l + ring + 1024, 1024, l + 2048, l + ring + 2048) == 0,
+              "%s: the newest ring of VBus audio is not read back exactly", what);
+    }
+
+    // IO stops and starts again: nothing of the last session is recorded.
+    v.play(ring * 30, 256);
+    r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    v.poisonInput();
+    CHECK(v.record(ring * 30, 256, 0, 0) == 0, "%s: audio from before IO stopped is recorded after it", what);
+    bad = 0;
+    for (size_t n = 0; n < (size_t)ring * channels; n++) if (v.out[n] != 0.0f) bad++;
+    CHECK(bad == 0, "%s: the VBus output buffer is not cleared when IO stops", what);
+}
+
+static void CheckVBusSelector(const char *name, Run &r)
+{
+    const SymphonyVBusStateOutput before = VBusState(r);
+    const uint32_t requests = gHostAudio.configChangeRequests;
+    const size_t streams = gHostAudio.deviceStreams.size();
+    const size_t mark = r.card.lines.size();
+    const uint32_t words[4] = { kSymphonyUCMagic, kSymphonyVBusOperationSet, 8, 0 };
+    CHECK(CallVBusRaw(r, words, 8) == kIOReturnBadArgument, "%s: selector 16 took an 8-byte input", name);
+    CHECK(CallVBusRaw(r, words, 16) == kIOReturnBadArgument, "%s: selector 16 took a 16-byte input", name);
+    CHECK(CallVBusRaw(r, nullptr, 0) == kIOReturnBadArgument, "%s: selector 16 took no input", name);
+    CHECK(CallVBus(r, kSymphonyVBusOperationSet, 8, nullptr, 0x12345678u) == kIOReturnBadArgument,
+          "%s: selector 16 took a bad magic", name);
+    CHECK(CallVBus(r, 2, 8) == kIOReturnBadArgument, "%s: selector 16 took operation 2", name);
+    CHECK(CallVBusRaw(r, words, 12, nullptr, kSelectorVBus, 0) == kIOReturnBadArgument &&
+          CallVBusRaw(r, words, 12, nullptr, kSelectorVBus, 12) == kIOReturnBadArgument,
+          "%s: selector 16 took a wrong output size", name);
+    for (uint32_t n : { 1u, 3u, 6u, 12u, 24u, 33u, 65u, 80u, 96u, 128u, 0xFFFFFFFFu })
+        CHECK(CallVBus(r, kSymphonyVBusOperationSet, n) == kIOReturnBadArgument, "%s: selector 16 took %u channels", name, n);
+    CHECK(CallVBusRaw(r, words, 12, nullptr, kSelectorCount) == kIOReturnBadArgument, "%s: a selector past the table was taken", name);
+    HostPump();
+    const SymphonyVBusStateOutput after = VBusState(r);
+    CHECK(memcmp(&before, &after, sizeof(before)) == 0 && gHostAudio.configChangeRequests == requests &&
+          gHostAudio.deviceStreams.size() == streams && CardAccessesSince(r.card, mark) == 0,
+          "%s: a refused selector 16 call changed something", name);
+    for (uint32_t n : { 0u, 2u, 4u, 8u, 16u, 32u, 48u, 64u })
+        CHECK(SymphonyVBusChannelsValid(n), "%s: %u channels is not offered", name, n);
+}
+
+static void RunVBusChecks()
+{
+    static const uint32_t sizes[] = { 2, 4, 8, 16, 32, 48, 64 };
+    struct { const char *name; Port::Kind port1; bool legacy; int portCount; } setups[] = {
+        { "VBus, Symphony I/O, one-port build", Port::Symphony, false, -1 },
+        { "VBus, Symphony I/O, two-port build at 32", Port::Symphony, false, 2 },
+        { "VBus, converters", Port::Converters, false, 2 },
+        { "VBus, Symphony 64 PCIe card", Port::Symphony, true, 2 },
+    };
+    for (auto &setup : setups) {
+        Options o; o.name = setup.name; o.shortFlow = true; o.port1 = setup.port1;
+        o.legacy2100 = setup.legacy; o.portCountProperty = setup.portCount;
+        Run r;
+        RunScenario(o, r);
+        // Off by default: the device is as without VBus, and the IO handler
+        // does the hardware copy only.
+        CheckVBusPublished(o.name, r, 0, 32);
+        CHECK(r.card.count("H device-add-stream") == 2, "%s: %zu streams added at Start (want 2)", o.name,
+              r.card.count("H device-add-stream"));
+        CheckVBusSelector(o.name, r);
+        // None while none is published: nothing to do.
+        VBusSet(o.name, r, 0, false, /*expectChange*/false);
+        for (uint32_t n : sizes) {
+            char what[96];
+            snprintf(what, sizeof(what), "%s, %u channels", o.name, n);
+            const size_t mark = VBusSet(what, r, n);
+            CheckVBusPublished(what, r, n, 32);
+            CheckVBusNames(what, r, mark, n, 32);
+            r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+            Irq(r, 1);
+            CheckVBusLoopback(what, r, n, 32);
+            // The same size again: no configuration change.
+            VBusSet(what, r, n, false, /*expectChange*/false);
+        }
+        // 64 -> 8 with a client streaming: the old pair is gone, the new
+        // buffers are silent, and what was played at 64 is not recorded at 8.
+        {
+            r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+            Irq(r, 1);
+            VBusBuffers big;
+            const uint64_t t = (uint64_t)kNumSampleFrames * 40 + 10;
+            big.play(t, 300);
+            const uint32_t removed = gHostAudio.streamsRemoved;
+            const size_t mark = VBusSet("VBus 64 -> 8 while streaming", r, 8, /*ioRunning*/true);
+            CHECK(gHostAudio.streamsRemoved == removed + 2, "%s: the 64-channel pair was not removed (%u)", o.name,
+                  gHostAudio.streamsRemoved - removed);
+            CheckVBusPublished("VBus 64 -> 8 while streaming", r, 8, 32);
+            CheckVBusNames("VBus 64 -> 8 while streaming", r, mark, 8, 32);
+            for (uint32_t ch : { 41u, 49u, 96u }) {   // VBus channels 9, 17 and 64 are gone
+                CHECK(LastElementName(r.card, 0, "in", ch) == "(none)" && LastElementName(r.card, 0, "out", ch) == "(none)",
+                      "%s: channel %u kept its VBus name after 64 -> 8", o.name, ch);
+            }
+            VBusBuffers small;
+            uint32_t nonzero = 0;
+            for (size_t n = 0; n < (size_t)kNumSampleFrames * 8; n++) if (small.out[n] != 0.0f || small.in[n] != 0.0f) nonzero++;
+            CHECK(nonzero == 0, "%s: the new VBus buffers are not silent (%u samples)", o.name, nonzero);
+            small.poison();
+            CHECK(small.record(t, 300, 0, 0) == 0, "%s: audio played before the size change is recorded after it", o.name);
+            CheckVBusLoopback("VBus 8 after 64", r, 8, 32);
+        }
+        // A rate change's own configuration change leaves VBus alone, and the
+        // card is recovered with VBus on.
+        {
+            const uint32_t removed = gHostAudio.streamsRemoved;
+            const size_t added = r.card.count("H device-add-stream");
+            HostPerformConfigChange(r, false);
+            const uint32_t requests = gHostAudio.configChangeRequests;
+            ResetCardAndRecover(r);
+            if (gHostAudio.configChangeRequests != requests) HostPerformConfigChange(r, false);
+            HostPump();
+            r.drv->SetPowerState(kIOServicePowerCapabilityOff);   // sleep
+            r.drv->SetPowerState(kIOServicePowerCapabilityOn);    // wake
+            r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+            r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+            HostPerformConfigChange(r, false);
+            HostPump();
+            CHECK(gHostAudio.streamsRemoved == removed && r.card.count("H device-add-stream") == added,
+                  "%s: a recovery or a wake republished the VBus streams", o.name);
+            CheckVBusPublished("VBus after a card reset and a wake", r, 8, 32);
+            if (r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess) {
+                Irq(r, 1);
+                CheckVBusLoopback("VBus after a card reset and a wake", r, 8, 32);
+            } else {
+                CHECK(false, "%s: IO did not start after the recovery", o.name);
+            }
+        }
+        // Disabled mid-session: the pair and its names are gone and the IO
+        // handler does the hardware copy alone.
+        {
+            r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+            Irq(r, 1);
+            const size_t mark = VBusSet("VBus off while streaming", r, 0, /*ioRunning*/true);
+            CheckVBusPublished("VBus off while streaming", r, 0, 32);
+            for (uint32_t ch = 33; ch <= 40; ch++)
+                CHECK(LastElementName(r.card, 0, "in", ch) == "(none)" && LastElementName(r.card, 0, "out", ch) == "(none)",
+                      "%s: channel %u kept its VBus name after VBus was turned off", o.name, ch);
+            auto handler = (IOOperationHandler)gHostAudio.ioHandler;
+            int32_t *h2a = (int32_t *)gHostAudio.buffers[1]->mem_, *hwOut = (int32_t *)gHostAudio.outStream->memory->mem_;
+            hwOut[5 * 32 + 3] = 0x1234500;
+            handler(1, IOUserAudioIOOperationWriteEnd, 64, (uint64_t)kNumSampleFrames * 50, 0);
+            handler(1, IOUserAudioIOOperationBeginRead, 64, (uint64_t)kNumSampleFrames * 50, 0);
+            CHECK(h2a[5 * 32 + 3] == 0x1234500, "%s: the hardware copy stopped when VBus was turned off", o.name);
+        }
+        // A size that cannot be published leaves the device without VBus and says so.
+        for (int succeed : { 0, 1 }) {   // the output stream is refused, then the input stream
+            gHostAudio.failAddStreamAfter = succeed;
+            SymphonyVBusStateOutput s = {};
+            CHECK(CallVBus(r, kSymphonyVBusOperationSet, 16, &s) == kIOReturnSuccess, "%s: 16 refused", o.name);
+            HostPump();
+            HostPerformConfigChange(r, true);
+            s = VBusState(r);
+            CHECK(s.published == 0 && s.requested == 0 && (s.flags & kSymphonyVBusFlagPublishFailed) &&
+                  gHostAudio.deviceStreams.size() == 2 && gHostLocksHeld == 0,
+                  "%s: a failed publication left published=%u requested=%u flags=0x%x streams=%zu", o.name,
+                  s.published, s.requested, s.flags, gHostAudio.deviceStreams.size());
+            HostPerformConfigChange(r, true);   // and is not tried again by itself
+            CHECK(VBusState(r).published == 0, "%s: a failed size was published by a later configuration change", o.name);
+        }
+        // Teardown with VBus on.
+        VBusSet("VBus 16 before Stop", r, 16, /*ioRunning*/true);
+        CheckVBusPublished("VBus 16 before Stop", r, 16, 32);
+        const size_t stop = r.card.lines.size();
+        Finish(o, r);
+        CHECK(gHostAudio.deviceStreams.empty(), "%s: %zu stream(s) still on the device after Stop", o.name,
+              gHostAudio.deviceStreams.size());
+        CHECK(gHostLocksHeld == 0, "%s: a lock is still held after Stop", o.name);
+        (void)stop;
+    }
+
+    // Ports 32 <-> 64 with VBus on: the VBus channels follow the hardware
+    // channels (33-40, then 65-72, then 33-40 again).
+    for (Port::Kind port2 : { Port::Converters, Port::Symphony }) {
+        Options o; o.name = port2 == Port::Symphony ? "VBus with two Symphony I/Os" : "VBus with converters on port 2";
+        o.shortFlow = true; o.port2 = port2; o.portCountProperty = 2;
+        Run r;
+        RunScenario(o, r);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        Irq(r, 1);
+        VBusSet(o.name, r, 8, /*ioRunning*/true);
+        CheckVBusPublished(o.name, r, 8, 32);
+        // Played after the last StopDevice the driver saw: the move itself
+        // must clear it (it is at other channels afterwards).
+        r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        {
+            VBusBuffers v;
+            v.play((uint64_t)kNumSampleFrames * 4, 128);
+        }
+        const uint32_t removed = gHostAudio.streamsRemoved;
+        size_t mark = Select(r, 1, "VBus on: select Port 1-2: 64ch", /*ioRunning*/false);
+        HostPump();
+        CheckPublished("VBus on at 64", 64);
+        CheckVBusPublished("VBus on at 64", r, 8, 64);
+        CheckVBusNames("VBus on at 64", r, mark, 8, 64);
+        CHECK(gHostAudio.streamsRemoved == removed, "%s: the port change replaced the VBus streams", o.name);
+        for (uint32_t ch = 33; ch <= 40; ch++)
+            CHECK(LastElementName(r.card, 0, "in", ch).find("VB") == std::string::npos &&
+                  LastElementName(r.card, 0, "out", ch).find("VB") == std::string::npos &&
+                  !LastElementName(r.card, 0, "out", ch).empty(),
+                  "%s: channel %u still has a VBus name at 64 (\"%s\")", o.name, ch,
+                  LastElementName(r.card, 0, "out", ch).c_str());
+        {
+            VBusBuffers v;
+            v.poisonInput();
+            CHECK(v.record((uint64_t)kNumSampleFrames * 4, 128, 0, 0) == 0,
+                  "%s: audio played before the port change is recorded after it", o.name);
+        }
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        Irq(r, 1);
+        CheckIOHandler("VBus on at 64", 64);   // the 64-channel hardware copy, unchanged
+        CheckVBusLoopback("VBus on at 64", r, 8, 64);
+        // A size change at 64.
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        Irq(r, 1);
+        mark = VBusSet("VBus 8 -> 64 at 64", r, 64, /*ioRunning*/true);
+        CheckVBusPublished("VBus 64 at 64", r, 64, 64);
+        CheckVBusNames("VBus 64 at 64", r, mark, 64, 64);
+        CheckVBusLoopback("VBus 64 at 64", r, 64, 64);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        Irq(r, 1);
+        VBusSet("VBus 64 -> 8 at 64", r, 8, /*ioRunning*/true);
+        mark = Select(r, 0, "VBus on: select Port 1: 32ch", /*ioRunning*/true);
+        HostPump();
+        CheckPublished("VBus on, back at 32", 32);
+        CheckVBusPublished("VBus on, back at 32", r, 8, 32);
+        CheckVBusNames("VBus on, back at 32", r, mark, 8, 32);
+        for (uint32_t ch = 65; ch <= 72; ch++)
+            CHECK(LastElementName(r.card, 0, "in", ch) == "(none)" && LastElementName(r.card, 0, "out", ch) == "(none)",
+                  "%s: channel %u kept its VBus name back at 32", o.name, ch);
+        CheckIOHandler("VBus on, back at 32", 32);
+        CheckVBusLoopback("VBus on, back at 32", r, 8, 32);
+        Finish(o, r);
+        CHECK(gHostAudio.deviceStreams.empty() && gHostLocksHeld == 0, "%s: teardown left a stream or a lock", o.name);
+    }
+}
+#endif
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -4930,6 +5463,9 @@ int main(int argc, char **argv)
 #ifdef TRACE_HAVE_CONVERTER_PARITY
     RunConverterParityChecks();
 #endif
+#if defined(kSelectorVBus) && defined(TRACE_HAVE_USERCLIENT) && defined(TRACE_HAVE_PORT2_AUDIO)
+    RunVBusChecks();
+#endif
 
     size_t accesses = 0;
 #ifdef TRACE_HAVE_PORT2_AUDIO
@@ -4989,7 +5525,14 @@ int main(int argc, char **argv)
             CHECK(s.w[14] == 0 && s.w[15] == 0, "%s: stage-2 words not zero in single-port mode", o.name);
             if (r.startResult == kIOReturnSuccess && gHostAudio.device) {
                 auto *dev = dynamic_cast<SymphonyAudioDevice *>(gHostAudio.device);
+#ifdef kSelectorVBus
+                // dext 143: every build's device calls back into the driver on
+                // a configuration change, for VBus. The port entry points
+                // still refuse or do nothing with one port (checked below).
+                CHECK(dev && dev->portModeDriver == r.drv, "%s: single-port device has no configuration-change hook", o.name);
+#else
                 CHECK(dev && dev->portModeDriver == nullptr, "%s: single-port device has a port-mode driver", o.name);
+#endif
             CHECK(gHostAudio.buffers.size() <= 5, "%s: %zu buffers with one port (want at most 5)", o.name, gHostAudio.buffers.size());
                 const size_t mark = r.card.lines.size();
                 const uint32_t requests = gHostAudio.configChangeRequests;

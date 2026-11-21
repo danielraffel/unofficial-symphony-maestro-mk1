@@ -104,6 +104,20 @@ enum : uint32_t { kMicPreLanePhase = 0, kMicPreLaneHighPass = 1, kMicPreLaneType
 #define SYMPHONY_MICPRE_NOW_NS() clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
 #endif
 
+// VBus (dext 143): the loopback's state as the IO handler sees it. `channels`
+// is 0 while VBus is off; `out`/`in` are the mapped VBus stream buffers
+// (kNumSampleFrames frames of `channels` Float32 samples each) and are only
+// changed while `channels` is 0 and IO is stopped. [validStart, validEnd) is
+// the span of sample times the host has written to the VBus output and that
+// is still in the ring; the IO thread alone reads and writes it while IO runs.
+struct SymphonyVBusIO {
+    uint32_t  channels;      // atomic
+    uint8_t  *out;
+    uint8_t  *in;
+    uint64_t  validStart;
+    uint64_t  validEnd;
+};
+
 struct SymphonyThunderbridge_IVars {
     IOPCIDevice *pciDevice;
     uint8_t      barMemoryIndex;
@@ -517,8 +531,9 @@ struct SymphonyThunderbridge_IVars {
     uint8_t   namingCoaxReplace[2];
     uint8_t   sessionCoaxMirror[2];   // last Mirrors (0x36) sent, 0 = none this session
     uint8_t   sessionCoaxBoardType[2]; // the slot's card type those two belong to, 0 = none
-    char      publishedInputName[64][20]; // what Core Audio has now; "" = no name set
-    char      publishedOutputName[64][20]; // same, for the host outputs (33-64: converters on port 2 only)
+    // 128 = 64 hardware channels + up to 64 VBus channels (dext 143).
+    char      publishedInputName[128][20]; // what Core Audio has now; "" = no name set
+    char      publishedOutputName[128][20]; // same, for the host outputs (33-64: converters on port 2 only)
     uint8_t   namingPrefix;               // unit's peripheral prefix byte (0x37); not A-Z = "A"
     uint8_t   unitBBoardType[2];
     bool      unitBBoardValid[2];
@@ -612,6 +627,23 @@ struct SymphonyThunderbridge_IVars {
     bool      port2DisablePending;
     uint32_t  port2PhaseWord;        // kSymphonyPort2Phase*, the last alignment
     SymphonyPortSourceControl *portSourceControl[2];   // [0] input, [1] output
+
+    // ── VBus (dext 143): see "VBus" further down ────────────────────────────
+    // Everything is null/0 until a size is first requested: a driver that is
+    // never asked for VBus allocates nothing and publishes nothing for it.
+    // The objects are created, replaced and released in PerformVBusChange
+    // (IO stopped) and in Stop()'s teardown, both under portPublishLock.
+    IOBufferMemoryDescriptor *vbusOutBuffer;   // exactly one ring of the format in effect
+    IOBufferMemoryDescriptor *vbusInBuffer;
+    IOMemoryMap              *vbusOutMap;
+    IOMemoryMap              *vbusInMap;
+    IOUserAudioStream        *vbusOutStream;
+    IOUserAudioStream        *vbusInStream;
+    SymphonyVBusIO            vbusIO;          // what the IO handler uses
+    uint32_t  vbusRequested;   // atomic: the size last asked for (selector 16)
+    uint32_t  vbusPublished;   // atomic: the size of the streams on the device, 0 = none
+    uint32_t  vbusBase;        // atomic: hardware channels before VBus channel 1 (32 or 64)
+    uint32_t  vbusFlags;       // atomic: kSymphonyVBusFlag*
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -4751,12 +4783,24 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     const char convPrefix = ConvPort1(ivars) ? 'A' : 'B';         // a Symphony I/O on port 1 is unit A
     const uint32_t nameCount = (convP2 || ivars->unitBConfigured) ? 64 : 32;
     auto convNames = [&](uint32_t n) { return ConvPort1(ivars) || (convP2 && n >= 32); };
+    // VBus (dext 143): VBus channel k is device channel vbusBase + k and is
+    // named "VBin k" / "VBout k", as Apogee's daemon named every channel past
+    // the physical ones (og_source/symphonymk1/ext/maestrolink/Software/
+    // SymphonyController.cpp:3145-3158; it also refused custom names there).
+    const uint32_t vbusCount = __atomic_load_n(&ivars->vbusPublished, __ATOMIC_ACQUIRE);
+    const uint32_t vbusBase = __atomic_load_n(&ivars->vbusBase, __ATOMIC_ACQUIRE);
+    auto vbusName = [&](uint32_t n, bool input, char *name, size_t size) {
+        if (!vbusCount || n < vbusBase || n >= vbusBase + vbusCount) return false;
+        snprintf(name, size, input ? "VBin %u" : "VBout %u", n - vbusBase + 1);
+        return true;
+    };
     uint32_t changed = 0;
     for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedInputName[0])] = {};
         const uint32_t route = __atomic_load_n(&ivars->cardInputRoute[n], __ATOMIC_ACQUIRE);
         const uint32_t rx = route & 0xFFu;
-        if (convNames(n)) ConverterHostChannelName(conv, true, n - convBase, name, sizeof(name), convPrefix);
+        if (vbusName(n, true, name, sizeof(name))) { }
+        else if (convNames(n)) ConverterHostChannelName(conv, true, n - convBase, name, sizeof(name), convPrefix);
         else if ((route & kRoutingEnable) && rx < 64) {
             const uint8_t source = rx < 32
                 ? __atomic_load_n(&ivars->inputRouteSource[rx], __ATOMIC_ACQUIRE)
@@ -4774,7 +4818,8 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     uint32_t outChanged = 0;
     for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedOutputName[0])] = {};
-        if (convNames(n)) ConverterHostChannelName(conv, false, n - convBase, name, sizeof(name), convPrefix);
+        if (vbusName(n, false, name, sizeof(name))) { }
+        else if (convNames(n)) ConverterHostChannelName(conv, false, n - convBase, name, sizeof(name), convPrefix);
         else if (n < 32) {
             if (!SymphonyHostOutputName(s, n, name, sizeof(name))) name[0] = 0;
         } else if (!SymphonyHostOutputName(sB, n - 32, name, sizeof(name))) name[0] = 0;
@@ -4787,16 +4832,24 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     }
     // dext 131 review: names 33-64 published for converters or unit B in an
     // earlier 64-channel session are removed when that is no longer the case.
-    for (uint32_t n = nameCount; n < 64; n++) {
-        if (ivars->publishedInputName[n][0]) {
-            ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, nullptr);
-            ivars->publishedInputName[n][0] = 0;
-            changed++;
-        }
-        if (ivars->publishedOutputName[n][0]) {
-            ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Output, nullptr);
-            ivars->publishedOutputName[n][0] = 0;
-            outChanged++;
+    // dext 143: the same pass names the VBus channels that lie past the named
+    // hardware channels and removes VBus names left where there is no VBus
+    // channel any more (VBus turned off or made smaller, or moved by a port
+    // change). With VBus off this is the loop above it replaces: every entry
+    // from 64 up is empty.
+    for (uint32_t n = nameCount; n < 128; n++) {
+        for (uint32_t dir = 0; dir < 2; dir++) {
+            const bool input = dir == 0;
+            char (*published)[20] = input ? ivars->publishedInputName : ivars->publishedOutputName;
+            char name[sizeof(ivars->publishedInputName[0])] = {};
+            vbusName(n, input, name, sizeof(name));
+            if (strncmp(name, published[n], sizeof(name)) == 0) continue;
+            OSString *str = name[0] ? OSString::withCString(name) : nullptr;
+            ivars->audioDevice->SetElementName(n + 1, input ? IOUserAudioObjectPropertyScope::Input
+                                                            : IOUserAudioObjectPropertyScope::Output, str);
+            OSSafeReleaseNULL(str);
+            strlcpy(published[n], name, sizeof(published[n]));
+            if (input) changed++; else outChanged++;
         }
     }
     if (changed || outChanged)
@@ -6105,6 +6158,365 @@ kern_return_t SymphonyThunderbridge::PerformPortModeChange()
     return kIOReturnSuccess;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// VBus (dext 143)
+//
+// Apogee's "virtual buses": N output channels and N input channels after the
+// hardware channels, where what applications play to the outputs is what they
+// record from the inputs (user guide, "Working with VBus").
+//
+// The original (og_source/symphonymk1/ext/Symphony64/SymphonyAPI/
+// SymphonyBaseAudioEngine.cpp):
+//   initVBUSBuffers (:921-960): one more output stream and one more input
+//     stream, after the cards' streams, on ONE sample buffer
+//     (m_pVBUSInputBuffer = m_pVBUSOutputBuffer, :942), off by default (:956).
+//   VBUS_STREAM_FORMAT (SymphonyDrivers.h:103-123): 32-bit float, which
+//     clipOutputSamples / convertInputSamples copy unchanged
+//     (Driver/AudioClip.cpp:303-316, :393-406): no clipping, no conversion.
+//   The streams are named "VBus channels" (SymphonyCommon.h:83).
+//   setNumVBUSChannels (:1391-1440): the engine is paused, both streams are
+//     made available or unavailable and given the N-channel format inside
+//     beginConfigurationChange / completeConfigurationChange.
+//   No latency or safety offset of their own: the engine's offsets and
+//     latency (setLatenciesForSampleRate, :1318-1337) apply to every stream,
+//     and only the cards' streams get a stream latency
+//     (SymphonyBaseCard.cpp:441-447). Sample T of the output is sample T of
+//     the input, because both streams are one buffer.
+//   The output buffer was cleared by IOAudioFamily's erase head, which the
+//     original held back 1200 frames "for correct VBUS operation" (:1849) so
+//     an input read came before the erase.
+//
+// Here:
+//   A second stream pair as well, added to the device (and removed from it)
+//   in the Core Audio configuration change the port selection uses: IO is
+//   stopped, and the streams are published under portPublishLock
+//   (PerformVBusChange, called after PerformPortModeChange). Apple's
+//   IOUserAudioClockDevice.iig lists "changing stream layout" among the
+//   changes that go through RequestDeviceConfigurationChange, and
+//   IOUserAudioDevice.iig documents AddStream/RemoveStream and
+//   IOUserAudioStream::SetStartingChannel ("the first element in the owning
+//   device that corresponds to element one of this stream"). The hardware
+//   streams, their buffers and the DMA copy are not touched, and nothing here
+//   reads or writes a register.
+//   AudioDriverKit has no erase head, and nothing clears a stream buffer the
+//   host stops writing. So the two streams have a buffer each, and the IO
+//   handler copies output to input at the SAME ring position (sample T out is
+//   sample T in, as in the original) for the sample times the host really
+//   wrote, and gives silence for every other one (VBusIO).
+//   The format is the original's: Float32, copied bit for bit. Only the size
+//   chosen in Maestro is offered (the original also listed every size as a
+//   stream format in Audio MIDI Setup, performFormatChange :1239-1260).
+//   The device's timing is not changed: like the original's, the VBus streams
+//   have no latency of their own.
+// ══════════════════════════════════════════════════════════════════════════
+
+static constexpr uint64_t kSymphonyConfigChangeVBus = 0x56425553ULL;   // 'VBUS'
+static constexpr uint32_t kVBusBytesPerSample = 4;                      // Float32 (VBUS_BIT_WIDTH 32)
+
+// The hardware channels in front of the VBus channels: 32, or 64 while both
+// ports run.
+static uint32_t VBusHardwareChannels(const SymphonyThunderbridge_IVars *ivars)
+{
+    return (ivars->portCount == 2 && __atomic_load_n(&ivars->ioChannels, __ATOMIC_ACQUIRE) == 64)
+        ? 2 * kMaxChannelsPerPort : kMaxChannelsPerPort;
+}
+
+// `count` (<= kNumSampleFrames) frames of a ring starting at sample time `t`.
+static inline void VBusRingZero(uint8_t *ring, size_t frameBytes, uint64_t t, uint32_t count)
+{
+    const uint32_t frame = (uint32_t)(t % kNumSampleFrames);
+    const uint32_t first = (frame + count <= kNumSampleFrames) ? count : kNumSampleFrames - frame;
+    memset(ring + (size_t)frame * frameBytes, 0, (size_t)first * frameBytes);
+    if (count > first) memset(ring, 0, (size_t)(count - first) * frameBytes);
+}
+
+static inline void VBusRingCopy(uint8_t *dst, const uint8_t *src, size_t frameBytes, uint64_t t, uint32_t count)
+{
+    const uint32_t frame = (uint32_t)(t % kNumSampleFrames);
+    const uint32_t first = (frame + count <= kNumSampleFrames) ? count : kNumSampleFrames - frame;
+    memcpy(dst + (size_t)frame * frameBytes, src + (size_t)frame * frameBytes, (size_t)first * frameBytes);
+    if (count > first) memcpy(dst, src, (size_t)(count - first) * frameBytes);
+}
+
+// The loopback, called by both IO handlers for WriteEnd and BeginRead.
+// Real-time: one atomic load when VBus is off; otherwise integer arithmetic
+// and at most four memcpy/memset over memory mapped before IO started. No
+// lock, no allocation, no logging, no register.
+//
+// WriteEnd(t, frames): the host has just written [t, t + frames) of the VBus
+// output. That span is added to [validStart, validEnd). Frames the host
+// skipped between the end of the span and t are cleared (they still hold the
+// previous lap), and the span never covers more than one ring.
+// BeginRead(t, frames): the host is about to read [t, t + frames) of the VBus
+// input. The part inside the span is copied from the output buffer at the
+// same ring position; the rest is silence. A position is therefore never
+// read unless it was written for that very sample time: nothing plays ->
+// silence, and a client that stops playing is not heard again a ring later.
+// Every offset is taken modulo the ring and `frames` is clamped to it, so a
+// wrong sample time can cost audio but never memory.
+static inline void VBusIO(SymphonyVBusIO *v, bool write, uint32_t frames, uint64_t t)
+{
+    const uint32_t channels = __atomic_load_n(&v->channels, __ATOMIC_ACQUIRE);
+    if (!channels) return;
+    const size_t frameBytes = (size_t)channels * kVBusBytesPerSample;
+    if (frames > kNumSampleFrames) frames = kNumSampleFrames;
+    uint64_t start = v->validStart, end = v->validEnd;
+    if (write) {
+        if (end != start && t >= start && t <= end) {
+            // Follows the span, or rewrites part of it.
+        } else if (end != start && t > end && t - end < kNumSampleFrames) {
+            VBusRingZero(v->out, frameBytes, end, (uint32_t)(t - end));
+        } else {
+            start = t;   // the first write, a restart, or a jump of a ring or more
+        }
+        end = t + frames;
+        if (end - start > kNumSampleFrames) start = end - kNumSampleFrames;
+        v->validStart = start;
+        v->validEnd = end;
+        return;
+    }
+    const uint64_t readEnd = t + frames;
+    const uint64_t from = t > start ? t : start;
+    const uint64_t to = readEnd < end ? readEnd : end;
+    if (from >= to) {
+        VBusRingZero(v->in, frameBytes, t, frames);
+        return;
+    }
+    if (from > t) VBusRingZero(v->in, frameBytes, t, (uint32_t)(from - t));
+    VBusRingCopy(v->in, v->out, frameBytes, from, (uint32_t)(to - from));
+    if (readEnd > to) VBusRingZero(v->in, frameBytes, to, (uint32_t)(readEnd - to));
+}
+
+// Silence in both buffers and an empty span. Only with IO stopped
+// (StopDevice, PerformVBusChange).
+static void VBusClear(SymphonyThunderbridge_IVars *ivars)
+{
+    SymphonyVBusIO &v = ivars->vbusIO;
+    const uint32_t channels = __atomic_load_n(&v.channels, __ATOMIC_ACQUIRE);
+    if (!channels || !v.out || !v.in) return;
+    const size_t bytes = (size_t)kNumSampleFrames * channels * kVBusBytesPerSample;
+    memset(v.out, 0, bytes);
+    memset(v.in, 0, bytes);
+    v.validStart = 0;
+    v.validEnd = 0;
+}
+
+// Take the VBus streams off the device and release them and their buffers.
+// Under portPublishLock, with IO stopped (a configuration change) or the
+// device already removed from the driver (Stop()).
+static void VBusUnpublishLocked(SymphonyThunderbridge_IVars *ivars)
+{
+    // The IO handler first: it uses the buffers only while channels != 0.
+    __atomic_store_n(&ivars->vbusIO.channels, 0u, __ATOMIC_RELEASE);
+    ivars->vbusIO.out = nullptr;
+    ivars->vbusIO.in = nullptr;
+    ivars->vbusIO.validStart = 0;
+    ivars->vbusIO.validEnd = 0;
+    if (ivars->audioDevice) {
+        if (ivars->vbusOutStream) ivars->audioDevice->RemoveStream(ivars->vbusOutStream);
+        if (ivars->vbusInStream)  ivars->audioDevice->RemoveStream(ivars->vbusInStream);
+    }
+    OSSafeReleaseNULL(ivars->vbusOutStream);
+    OSSafeReleaseNULL(ivars->vbusInStream);
+    OSSafeReleaseNULL(ivars->vbusOutMap);
+    OSSafeReleaseNULL(ivars->vbusInMap);
+    OSSafeReleaseNULL(ivars->vbusOutBuffer);
+    OSSafeReleaseNULL(ivars->vbusInBuffer);
+    __atomic_store_n(&ivars->vbusPublished, 0u, __ATOMIC_RELEASE);
+}
+
+// The N-channel Float32 formats, one per supported rate, and the index of
+// `rate` among them (VBUS_STREAM_FORMAT, SymphonyDrivers.h:103-123).
+static uint32_t BuildVBusFormats(uint32_t channels, double rate,
+                                 IOUserAudioStreamBasicDescription formats[6])
+{
+    static const double rates[6] = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+    uint32_t current = 0;
+    for (uint32_t i = 0; i < 6; i++) {
+        IOUserAudioStreamBasicDescription f = {};
+        f.mSampleRate       = rates[i];
+        f.mFormatID         = IOUserAudioFormatID::LinearPCM;
+        // FormatFlagsNativeFloatPacked (AudioDriverKitTypes.h): IsFloat | IsPacked.
+        f.mFormatFlags      = (IOUserAudioFormatFlags)(0x1 | 0x8);
+        f.mBytesPerPacket   = channels * kVBusBytesPerSample;
+        f.mFramesPerPacket  = 1;
+        f.mBytesPerFrame    = channels * kVBusBytesPerSample;
+        f.mChannelsPerFrame = channels;
+        f.mBitsPerChannel   = kVBusBytesPerSample * 8;
+        f.mReserved         = 0;
+        formats[i] = f;
+        if (rates[i] == rate) current = i;
+    }
+    return current;
+}
+
+// Create the VBus stream pair for `channels` and add it to the device after
+// `base` hardware channels. Under portPublishLock with IO stopped; nothing is
+// published when it fails.
+static kern_return_t VBusPublishLocked(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
+                                       uint32_t channels, uint32_t base)
+{
+    // Exactly one ring of the format, like the hardware streams' buffers.
+    const uint64_t bytes = (uint64_t)kNumSampleFrames * channels * kVBusBytesPerSample;
+    kern_return_t ret = IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, bytes, 0, &ivars->vbusOutBuffer);
+    if (ret == kIOReturnSuccess && ivars->vbusOutBuffer)
+        ret = IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, bytes, 0, &ivars->vbusInBuffer);
+    if (ret == kIOReturnSuccess && (!ivars->vbusOutBuffer || !ivars->vbusInBuffer)) ret = kIOReturnNoMemory;
+    if (ret == kIOReturnSuccess) {
+        ivars->vbusOutBuffer->SetLength(bytes);
+        ivars->vbusInBuffer->SetLength(bytes);
+        ret = ivars->vbusOutBuffer->CreateMapping(0, 0, 0, 0, 0, &ivars->vbusOutMap);
+    }
+    if (ret == kIOReturnSuccess)
+        ret = ivars->vbusInBuffer->CreateMapping(0, 0, 0, 0, 0, &ivars->vbusInMap);
+    if (ret == kIOReturnSuccess && (!ivars->vbusOutMap || !ivars->vbusInMap)) ret = kIOReturnNoMemory;
+    if (ret == kIOReturnSuccess) {
+        // New memory is never read before it is silence.
+        memset((void *)ivars->vbusOutMap->GetAddress(), 0, (size_t)bytes);
+        memset((void *)ivars->vbusInMap->GetAddress(), 0, (size_t)bytes);
+        auto out = IOUserAudioStream::Create(self, IOUserAudioStreamDirection::Output, ivars->vbusOutBuffer);
+        auto in = IOUserAudioStream::Create(self, IOUserAudioStreamDirection::Input, ivars->vbusInBuffer);
+        if (out && in) {
+            ivars->vbusOutStream = out.get();
+            ivars->vbusOutStream->retain();
+            ivars->vbusInStream = in.get();
+            ivars->vbusInStream->retain();
+        } else {
+            ret = kIOReturnNoMemory;
+        }
+    }
+    if (ret == kIOReturnSuccess) {
+        IOUserAudioStreamBasicDescription formats[6];
+        const uint32_t current = BuildVBusFormats(channels, ivars->audioDevice->GetSampleRate(), formats);
+        OSString *name = OSString::withCString("VBus channels");   // SYMPHONY_STREAM_NAME2
+        IOUserAudioStream *pair[2] = { ivars->vbusOutStream, ivars->vbusInStream };
+        for (IOUserAudioStream *stream : pair) {
+            stream->SetAvailableStreamFormats(formats, 6);
+            stream->SetCurrentStreamFormat(&formats[current]);
+            stream->SetTerminalType(IOUserAudioStreamTerminalType::Line);
+            stream->SetStartingChannel(base + 1);
+            if (name) stream->SetName(name);
+        }
+        OSSafeReleaseNULL(name);
+        ret = ivars->audioDevice->AddStream(ivars->vbusOutStream);
+        if (ret == kIOReturnSuccess) ret = ivars->audioDevice->AddStream(ivars->vbusInStream);
+    }
+    if (ret != kIOReturnSuccess) {
+        VBusUnpublishLocked(ivars);
+        return ret;
+    }
+    ivars->vbusIO.out = (uint8_t *)ivars->vbusOutMap->GetAddress();
+    ivars->vbusIO.in = (uint8_t *)ivars->vbusInMap->GetAddress();
+    ivars->vbusIO.validStart = 0;
+    ivars->vbusIO.validEnd = 0;
+    __atomic_store_n(&ivars->vbusBase, base, __ATOMIC_RELEASE);
+    __atomic_store_n(&ivars->vbusPublished, channels, __ATOMIC_RELEASE);
+    // Last: from here the IO handler uses the buffers.
+    __atomic_store_n(&ivars->vbusIO.channels, channels, __ATOMIC_RELEASE);
+    return kIOReturnSuccess;
+}
+
+// Selector 16, "set". From the user client's queue. Records the size and asks
+// Core Audio for the configuration change in which PerformVBusChange applies
+// it; touches no AudioDriverKit stream and no hardware. The size is the
+// driver's until it stops: a new driver instance starts with VBus off (the
+// original's daemon sent its saved size again, SymphonyController.cpp:2881),
+// and Maestro sends the saved choice again.
+kern_return_t SymphonyThunderbridge::SetVBusChannels(uint32_t channels)
+{
+    if (!ivars) return kIOReturnNotReady;
+    if (!SymphonyVBusChannelsValid(channels)) return kIOReturnBadArgument;
+    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) || !ivars->audioDevice ||
+        !ivars->portPublishLock || !ivars->defaultQueue) return kIOReturnNotReady;
+    __atomic_store_n(&ivars->vbusRequested, channels, __ATOMIC_RELEASE);
+    __atomic_and_fetch(&ivars->vbusFlags, ~kSymphonyVBusFlagPublishFailed, __ATOMIC_RELEASE);
+    // Already there: no configuration change, so no IO restart.
+    if (__atomic_load_n(&ivars->vbusPublished, __ATOMIC_ACQUIRE) == channels) return kIOReturnSuccess;
+    STLOG("VBus: %u channels requested", channels);
+    ArmMicPreSettle(ivars);   // coreaudiod re-reads the device and its controls
+    SymphonyThunderbridge *self = this;
+    SymphonyThunderbridge_IVars *iv = ivars;
+    self->retain();
+    ivars->defaultQueue->DispatchAsync(^{
+        if (!__atomic_load_n(&iv->stopping, __ATOMIC_ACQUIRE) && iv->audioDevice) {
+            kern_return_t rc = iv->audioDevice->RequestDeviceConfigurationChange(
+                kSymphonyConfigChangeVBus, nullptr);
+            STLOG("VBus: requested Core Audio configuration change (0x%x)", rc);
+        }
+        self->release();
+    });
+    return kIOReturnSuccess;
+}
+
+// Selector 16's output (SymphonyVBusStateOutput). Driver state only.
+kern_return_t SymphonyThunderbridge::ReadVBusState(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    const uint32_t published = __atomic_load_n(&ivars->vbusPublished, __ATOMIC_ACQUIRE);
+    outWords[0] = published;
+    outWords[1] = __atomic_load_n(&ivars->vbusRequested, __ATOMIC_ACQUIRE);
+    outWords[2] = published ? __atomic_load_n(&ivars->vbusBase, __ATOMIC_ACQUIRE) + 1 : 0;
+    outWords[3] = __atomic_load_n(&ivars->vbusFlags, __ATOMIC_ACQUIRE);
+    return kIOReturnSuccess;
+}
+
+// Called by SymphonyAudioDevice::PerformDeviceConfigurationChange for every
+// configuration change, after PerformPortModeChange, with IO stopped by Core
+// Audio. Under portPublishLock (Stop()'s teardown takes it before releasing
+// these objects):
+//   the requested size differs from the published one: the old stream pair
+//     is removed and released, and a new pair on new, silent buffers is added
+//     after the hardware channels. Nothing of the old size can be read again.
+//   the size is the same but the hardware channels changed (Ports 32 <-> 64):
+//     the VBus channels move to follow them, 33- or 65-; the buffers are
+//     cleared.
+// A configuration change for anything else (rate, link recovery, card
+// re-init, sleep/wake) finds nothing to do and leaves VBus as it is.
+kern_return_t SymphonyThunderbridge::PerformVBusChange()
+{
+    if (!ivars || !ivars->portPublishLock) return kIOReturnSuccess;
+    kern_return_t result = kIOReturnSuccess;
+    bool changed = false;
+    IOLockLock(ivars->portPublishLock);
+    if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) &&
+        ivars->audioDevice && ivars->inputStream && ivars->outputStream) {
+        const uint32_t want = __atomic_load_n(&ivars->vbusRequested, __ATOMIC_ACQUIRE);
+        const uint32_t have = __atomic_load_n(&ivars->vbusPublished, __ATOMIC_ACQUIRE);
+        const uint32_t base = VBusHardwareChannels(ivars);
+        if (want != have) {
+            VBusUnpublishLocked(ivars);
+            if (want) {
+                result = VBusPublishLocked(ivars, this, want, base);
+                if (result != kIOReturnSuccess) {
+                    // Not asked for again by itself: the device is left as it
+                    // is without VBus, and the app is told.
+                    uint32_t expected = want;
+                    __atomic_compare_exchange_n(&ivars->vbusRequested, &expected, 0u, false,
+                                                __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+                    __atomic_or_fetch(&ivars->vbusFlags, kSymphonyVBusFlagPublishFailed, __ATOMIC_RELEASE);
+                    STERR("VBus: %u channels could not be published (0x%x) — VBus is off", want, result);
+                }
+            }
+            if (result == kIOReturnSuccess)
+                STLOG("VBus: %u channels in and out, after %u hardware channels", want, base);
+            changed = true;
+        } else if (have && __atomic_load_n(&ivars->vbusBase, __ATOMIC_ACQUIRE) != base) {
+            ivars->vbusOutStream->SetStartingChannel(base + 1);
+            ivars->vbusInStream->SetStartingChannel(base + 1);
+            __atomic_store_n(&ivars->vbusBase, base, __ATOMIC_RELEASE);
+            VBusClear(ivars);
+            STLOG("VBus: %u channels moved after %u hardware channels", have, base);
+            changed = true;
+        }
+    }
+    IOLockUnlock(ivars->portPublishLock);
+    if (changed) {
+        ScheduleChannelNames(ivars, this);
+        ArmMicPreSettle(ivars);   // coreaudiod re-reads the controls when the change ends
+    }
+    return result;
+}
+
 // The IO handler of a two-port build (the one-port handler in Start() is left
 // as it is). With 32 channels it does the one-port copy. With 64 the stream
 // buffers hold 64-channel frames: channels 1-32 of each frame belong to port
@@ -6133,6 +6545,7 @@ static kern_return_t InstallTwoPortIOHandler(SymphonyThunderbridge_IVars *ivars)
             const bool write = in_io_operation == IOUserAudioIOOperationWriteEnd;
             if (!write && in_io_operation != IOUserAudioIOOperationBeginRead)
                 return kIOReturnSuccess;
+            VBusIO(&ivars->vbusIO, write, in_io_buffer_frame_size, in_sample_time);   // one atomic load when off
             const bool both = a2h2 && h2a2 &&
                               __atomic_load_n(&ivars->ioChannels, __ATOMIC_RELAXED) == 64;
             const uint32_t streamFrameBytes = both ? 2 * kPortBytes : kPortBytes;
@@ -6818,6 +7231,11 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
     STLOG("DMA: Buffers zeroed");
 
+    // dext 143: every build has the lock now, for VBus (PerformVBusChange).
+    // It was a two-port build's only; PerformPortModeChange still does
+    // nothing unless portCount is 2.
+    if (!ivars->portPublishLock) ivars->portPublishLock = IOLockAlloc();
+
     // ── 23a. Allocate SEPARATE stream buffers for CoreAudio ─────────────
     // After PrepareForDMA(), the DMA buffers are wired through IOMMU/DART for
     // PCIe device access. The CoreAudio HAL (coreaudiod) runs in a DIFFERENT
@@ -6966,7 +7384,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
             if (p2 == kIOReturnSuccess)
                 p2 = ivars->h2aStream64Buffer->CreateMapping(0, 0, 0, 0, 0, &ivars->h2aStream64Map);
         }
-        ivars->portPublishLock = IOLockAlloc();
+        if (!ivars->portPublishLock) ivars->portPublishLock = IOLockAlloc();
         ivars->port2AudioReady = (p2 == kIOReturnSuccess) && ivars->a2h2DMAMap && ivars->h2a2DMAMap
             && ivars->a2hStream64Map && ivars->h2aStream64Map && ivars->portPublishLock;
         if (ivars->port2AudioReady)
@@ -8042,6 +8460,12 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                   kSymphonyPortSourceName64 "\" available)");
         }
 
+        // dext 143: every build's configuration changes pass through the
+        // driver, for VBus (PerformVBusChange; set once, so this does nothing
+        // after the two-port call above).
+        if (auto *device = OSDynamicCast(SymphonyAudioDevice, ivars->audioDevice))
+            device->SetPortModeDriver(this);
+
         // ── 37. Set IO operation handler ─────────────────────────────────
         // Copy between CoreAudio stream buffers and FPGA DMA buffers.
         // WriteEnd (playback): CoreAudio wrote to stream buf → copy to DMA buf.
@@ -8117,6 +8541,12 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                                    byteCount - firstPart);
                         }
                     }
+
+                    // VBus (dext 143): host memory only; one atomic load when off.
+                    if (in_io_operation == IOUserAudioIOOperationWriteEnd ||
+                        in_io_operation == IOUserAudioIOOperationBeginRead)
+                        VBusIO(&ivars->vbusIO, in_io_operation == IOUserAudioIOOperationWriteEnd,
+                               in_io_buffer_frame_size, in_sample_time);
 
                     // Diagnostic logging — first calls + periodic (STLOG is RT-unsafe).
                     // M4: gated behind SYMPHONY_RT_DEBUG (default OFF). When off, the
@@ -9168,6 +9598,9 @@ kern_return_t SymphonyThunderbridge::StopDevice(
     if (ivars->h2a2DMA)
         ivars->h2a2DMA->PerformOperation(kIODMACommandPerformOperationOptionZero, 0, kDMABufferSize, 0, nullptr);
     STLOG("StopDevice: playback buffers cleared (the card plays silence until IO starts again)");
+    // VBus (dext 143): IO has stopped, so nothing a client wrote in this
+    // session can be read in the next one (the sample time starts again).
+    VBusClear(ivars);
     return ret;
 }
 
@@ -9336,6 +9769,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 // selectors, streams and device under this lock; wait for it.
                 // 'stopping' is set, so it will not start on them afterwards.
                 if (iv->portPublishLock) IOLockLock(iv->portPublishLock);
+                VBusUnpublishLocked(iv);   // dext 143: the device is still held here
                 for (uint32_t i = 0; i < 2; i++)
                     OSSafeReleaseNULL(iv->portSourceControl[i]);
                 OSSafeReleaseNULL(iv->vendorProperty);
@@ -9482,7 +9916,8 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 if (ivars->portSourceControl[i]) ivars->audioDevice->RemoveControl(ivars->portSourceControl[i]);
             RemoveObject(ivars->audioDevice);
         }
-        if (ivars->portPublishLock) IOLockLock(ivars->portPublishLock);   // two-port experiment only
+        if (ivars->portPublishLock) IOLockLock(ivars->portPublishLock);
+        VBusUnpublishLocked(ivars);   // dext 143: the device is still held here
         for (uint32_t i = 0; i < 2; i++)
             OSSafeReleaseNULL(ivars->portSourceControl[i]);
         OSSafeReleaseNULL(ivars->vendorProperty);
