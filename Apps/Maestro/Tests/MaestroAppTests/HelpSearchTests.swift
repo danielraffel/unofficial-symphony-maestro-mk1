@@ -203,4 +203,16 @@ struct HelpSearchTests {
             .joined(separator: "\n").lowercased()
         for phrase in more { #expect(!text.contains(phrase), "\(phrase)") }
     }
+
+    @Test("an answer's paragraphs and bullets are one text, so a selection can run across them")
+    func proseRuns() {
+        let runs = HelpSearch.runs([.text("One."), .text("Two **bold**."), .bullet("Term", "what it does"),
+                                    .bullet("Other", "more"), .command("ls"), .text("After.")])
+        #expect(runs.count == 3)
+        guard case .prose(let first) = runs[0], case .block(.command(let command)) = runs[1],
+              case .prose(let last) = runs[2] else { Issue.record("unexpected runs"); return }
+        #expect(String(first.characters) == "One.\n\nTwo bold.\n\n\u{2022} Term \u{2014} what it does\n\u{2022} Other \u{2014} more")
+        #expect(command == "ls")
+        #expect(String(last.characters) == "After.")
+    }
 }

@@ -52,6 +52,51 @@ enum HelpBlock {
 }
 
 enum HelpSearch {
+    /// What Help draws for an answer: runs of paragraphs and bullets joined
+    /// into one text each, and the other blocks one by one.
+    enum Run {
+        case prose(AttributedString)
+        case block(HelpBlock)
+    }
+
+    /// Consecutive paragraphs and bullets become one attributed text:
+    /// paragraphs a blank line apart, bullets on consecutive lines.
+    static func runs(_ blocks: [HelpBlock]) -> [Run] {
+        var result: [Run] = []
+        var prose: AttributedString?
+        var lastWasBullet = false
+        func flush() {
+            if let text = prose { result.append(.prose(text)) }
+            prose = nil
+        }
+        for block in blocks {
+            let piece: AttributedString
+            let isBullet: Bool
+            switch block {
+            case .text(let markdown):
+                piece = attributed(markdown); isBullet = false
+            case .bullet(let term, let description):
+                var bold = AttributedString(term)
+                bold.inlinePresentationIntent = .stronglyEmphasized
+                piece = AttributedString("\u{2022} ") + bold + attributed(" \u{2014} \(description)")
+                isBullet = true
+            default:
+                flush(); result.append(.block(block)); lastWasBullet = false
+                continue
+            }
+            if var text = prose {
+                text += AttributedString(isBullet && lastWasBullet ? "\n" : "\n\n")
+                text += piece
+                prose = text
+            } else {
+                prose = piece
+            }
+            lastWasBullet = isBullet
+        }
+        flush()
+        return result
+    }
+
     /// A paragraph as inline Markdown, the way Help draws it.
     static func attributed(_ markdown: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)

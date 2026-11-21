@@ -160,28 +160,23 @@ struct HelpView: View {
         }
     }
 
+    /// An answer's paragraphs and bullets are drawn as one piece of text, so a
+    /// selection can run across them (SwiftUI selects within one `Text`
+    /// only). Commands, links and the removal steps stay views of their own.
     private func blocks(_ item: HelpItem) -> some View {
-        ForEach(Array(item.blocks.enumerated()), id: \.offset) { _, block in
-            switch block {
-            case .text(let markdown):
-                Text(HelpSearch.attributed(markdown))
-            case .bullet(let term, let description):
-                bullet(term, description)
-            case .command(let command):
+        ForEach(Array(HelpSearch.runs(item.blocks).enumerated()), id: \.offset) { _, run in
+            switch run {
+            case .prose(let text):
+                Text(text)
+            case .block(.command(let command)):
                 commandRow(command)
-            case .link(let title, let url):
+            case .block(.link(let title, let url)):
                 Link(title, destination: url)
-            case .manualApogeeRemoval:
+            case .block(.manualApogeeRemoval):
                 ManualApogeeRemovalSteps()
+            case .block:
+                EmptyView()
             }
-        }
-    }
-
-    private func bullet(_ term: String, _ desc: String) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text("•").foregroundStyle(.secondary)
-            (Text(term).fontWeight(.semibold) + Text(HelpSearch.attributed(" — \(desc)")))
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
