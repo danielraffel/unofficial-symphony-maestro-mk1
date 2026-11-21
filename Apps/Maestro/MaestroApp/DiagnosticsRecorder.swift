@@ -490,15 +490,16 @@ final class DiagnosticsRecorder {
             var v: Float64 = 0; var s = UInt32(8)
             return AudioObjectGetPropertyData(id, &a, 0, nil, &s, &v) == noErr ? v : nil
         }
-        func channels(_ id: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int {
+        /// The channels of each of the device's streams, in order.
+        func channels(_ id: AudioObjectID, _ scope: AudioObjectPropertyScope) -> [Int] {
             var a = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: scope, mElement: kAudioObjectPropertyElementMain)
             var s: UInt32 = 0
-            guard AudioObjectGetPropertyDataSize(id, &a, 0, nil, &s) == noErr, s > 0 else { return 0 }
+            guard AudioObjectGetPropertyDataSize(id, &a, 0, nil, &s) == noErr, s > 0 else { return [] }
             let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(s), alignment: 16)
             defer { raw.deallocate() }
-            guard AudioObjectGetPropertyData(id, &a, 0, nil, &s, raw) == noErr else { return 0 }
+            guard AudioObjectGetPropertyData(id, &a, 0, nil, &s, raw) == noErr else { return [] }
             let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
-            return list.reduce(0) { $0 + Int($1.mNumberChannels) }
+            return list.map { Int($0.mNumberChannels) }
         }
         var ours: [AudioDeviceID: String] = [:]
         var lines: [String] = []
@@ -520,7 +521,11 @@ final class DiagnosticsRecorder {
                 ? String(format: "%.1f dB", vdb) : "none"
             let muted = u32(id, kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput)
                 .map { $0 != 0 ? "yes" : "no" } ?? "none"
-            lines.append("  \"\(name)\" rate=\(rate) buffer=\(buffer) in=\(channels(id, kAudioObjectPropertyScopeInput)) out=\(channels(id, kAudioObjectPropertyScopeOutput)) runningSomewhere=\(running) alive=\(alive) volume=\(volume) muted=\(muted)")
+            // With VBus on, the ThunderBridge device has a second stream in
+            // each direction after the hardware one: "40 (streams 32+8)".
+            let inCount = VBusState.channelCountText(streams: channels(id, kAudioObjectPropertyScopeInput))
+            let outCount = VBusState.channelCountText(streams: channels(id, kAudioObjectPropertyScopeOutput))
+            lines.append("  \"\(name)\" rate=\(rate) buffer=\(buffer) in=\(inCount) out=\(outCount) runningSomewhere=\(running) alive=\(alive) volume=\(volume) muted=\(muted)")
         }
         func defaultIs(_ sel: AudioObjectPropertySelector) -> String {
             var a = AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)

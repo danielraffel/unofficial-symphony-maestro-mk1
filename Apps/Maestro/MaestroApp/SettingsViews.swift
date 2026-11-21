@@ -608,6 +608,8 @@ struct DeviceSettingsView: View {
                     .foregroundStyle(.secondary)
                 }
 
+                vbusRows
+
                 // Same action as the View > Rescan menu item; one concept,
                 // one name. This copy is gated on connectionMode == .hardware
                 // so it is only ever visible once a device is ALREADY found,
@@ -629,6 +631,46 @@ struct DeviceSettingsView: View {
             } else {
                 LabeledContent("Connection", value: "Offline")
             }
+        }
+    }
+
+    // The original's System Setup › "VBus" pop-up
+    // (og_source/symphonymk1/ext/maestro2/App/Views/
+    // APSystemSymphonySetupView.xib:131-230, the label at :283), next to
+    // Ports, which was the same panel's "Symphony Source". ThunderBridge and
+    // the PCIe card only.
+    @ViewBuilder private var vbusRows: some View {
+        if appState.vbusShown {
+            let reason = appState.vbusUnavailableReason
+            let choice = appState.vbusChoice
+            Picker("VBus", selection: Binding(
+                get: { reason == nil ? choice : VBusChannels.none },
+                set: { appState.chooseVBus($0) }
+            )) {
+                ForEach(VBusChannels.allCases) { entry in
+                    Text(entry.label).tag(entry)
+                }
+            }
+            .pickerStyle(.menu)
+            .maestroHelp("Add virtual channels for sending audio between applications.")
+            .disabled(reason != nil || !appState.vbusDriverSupports)
+            VStack(alignment: .leading, spacing: 2) {
+                if let reason {
+                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                } else {
+                    ForEach(VBusChannels.explanationLines, id: \.self) { Text($0) }
+                    if let placement = VBusChannels.placementLine(
+                        channels: choice, hardwareChannels: appState.thunderboltHardwareChannels) {
+                        Text(placement)
+                    }
+                    if let status = appState.vbusStatusLine {
+                        Text(status).padding(.top, 2)
+                    }
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -1497,6 +1539,7 @@ struct DeviceSettingsView: View {
         }
         report.port2Lines = appState.secondPortState?.reportLines(
             sixtyFourSelected: appState.portSelection.sixtyFourSelected) ?? []
+        report.vbusLine = appState.vbusReportLine
         report.unitBLines = appState.unitBDeviceInfoReportLines
         return report
     }

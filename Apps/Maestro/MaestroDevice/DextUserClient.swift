@@ -221,6 +221,40 @@ public final class DextUserClient: @unchecked Sendable {
         return kr == KERN_SUCCESS
     }
 
+    private static let selectorVBus: UInt32 = 16
+
+    /// The input of selector 16 (`SymphonyVBusInput`): magic, operation
+    /// (0 read, 1 set), channels.
+    static func vbusInput(_ channels: VBusChannels?) -> [UInt32] {
+        [magic, channels == nil ? 0 : 1, channels?.rawValue ?? 0]
+    }
+
+    /// VBus (selector 16): with `channels`, ask the driver for that many VBus
+    /// channels (None turns them off); with nil, only read. Returns the
+    /// driver's state. Only a driver from build 143 on is asked; an older or
+    /// unknown one never receives the selector. Setting touches no hardware,
+    /// but is still held back while hardware writes are suspended.
+    public func vbus(_ channels: VBusChannels?) -> VBusState? {
+        if channels != nil, !hardwareWriteGate.allowsWrites { return nil }
+        lock.lock()
+        let supported = VBusChannels.driverSupports(cachedDriverBuild.map { ServingDextBuild.build($0) })
+        let conn = supported ? connection : IO_OBJECT_NULL
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        let input = Self.vbusInput(channels)
+        var out = [UInt32](repeating: 0, count: VBusState.wordCount)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = input.withUnsafeBytes { inBytes in
+            out.withUnsafeMutableBytes { outBytes in
+                IOConnectCallStructMethod(conn, Self.selectorVBus,
+                                          inBytes.baseAddress, input.count * MemoryLayout<UInt32>.size,
+                                          outBytes.baseAddress, &outSize)
+            }
+        }
+        guard kr == KERN_SUCCESS, outSize == out.count * MemoryLayout<UInt32>.size else { return nil }
+        return VBusState(words: out)
+    }
+
     // kSelectorReadMeters — snapshot the card FPGA meter DMA buffer (256 words).
     private static let selectorReadMeters: UInt32 = 1
 
@@ -689,6 +723,8 @@ public protocol ThunderboltDriverClient: VendorTransport {
     func disconnect()
     func setMonitorDevice(_ unit: DeviceUnit) -> Bool
     func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool
+    /// VBus (selector 16): set when `channels` is given, then read the state.
+    func vbus(_ channels: VBusChannels?) -> VBusState?
     func readMeters() -> [UInt32]?
     func probeHardwareResponse() -> Bool
     func readLinkState() -> LinkState?

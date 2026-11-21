@@ -1182,6 +1182,19 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return dextClient.setMonitorOutput(output, unit: unit)
     }
 
+    /// VBus (dext 143+): ask the driver for `channels` VBus channels, or only
+    /// read its state with nil. Nil from an older driver, which is not asked,
+    /// and when the request is refused. Off the main thread: a user-client
+    /// call waits behind whatever the driver is doing for another one.
+    public func vbus(_ channels: VBusChannels?) async -> VBusState? {
+        await Task.detached { self.vbusOffMain(channels) }.value
+    }
+
+    private func vbusOffMain(_ channels: VBusChannels?) -> VBusState? {
+        guard isConnected else { return nil }
+        return dextClient.vbus(channels)
+    }
+
     /// A connection to unit B through this connection's driver client: the
     /// same calls with port byte 1. Unit A's bytes are not affected.
     public func makeUnitBConnection(settingsStore: DeviceSettingsStore = DeviceSettingsStore()) -> ThunderboltUnitBConnection {

@@ -662,6 +662,9 @@ final class AppState: @unchecked Sendable {
                     // The volume keys' output, where the driver now serving
                     // has not been told it.
                     await self.serviceKeyboardVolumeOutput()
+                    // The VBus size, where the driver now serving has not
+                    // been told it (a new driver starts without VBus).
+                    await self.serviceVBus()
                     if self.inputRoutingReplayNeeded, !self.recallInFlight,
                        self.connectionMode == .hardware {
                         self.inputRoutingReplayNeeded = false
@@ -1467,6 +1470,17 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored var keyboardVolumeSent: KeyboardVolumeSent?
     @ObservationIgnored var keyboardVolumeRetryAfter = Date.distantPast
     @ObservationIgnored var keyboardVolumeServiceRunning = false
+    /// Bumped when the VBus choice changes, so the pop-up follows (the choice
+    /// itself is saved per card, `VBusChannels.saved`).
+    var vbusRevision = 0
+    /// The driver's last VBus report; nil until read, and over USB.
+    var vbusState: VBusState?
+    /// What has reached the driver (`serviceVBus`).
+    @ObservationIgnored var vbusSent: VBusSent?
+    @ObservationIgnored var vbusRetryAfter = Date.distantPast
+    @ObservationIgnored var vbusServiceRunning = false
+    /// Where the VBus choice is saved (the app's preferences; tests give their own).
+    @ObservationIgnored var vbusDefaults: UserDefaults = .standard
     @ObservationIgnored private var monitorSelectionGeneration = 0
     /// Unit B's naming state (its optical formats and Replaces).
     var unitBChannelNaming = CardLayout.ChannelNaming()
@@ -3696,7 +3710,7 @@ final class AppState: @unchecked Sendable {
                         // meter DMA is absent, while preserving real FPGA peaks.
                         // Its channel n is host input n too.
                         if (hostInputs.max() ?? -60.0) <= -60.0,
-                           let softwareInputs = self.meterDevice?.softwareInputPeaks(),
+                           let softwareInputs = self.hardwareSoftwarePeaks(self.meterDevice?.softwareInputPeaks()),
                            !softwareInputs.isEmpty {
                             // Core Audio's channel n is host channel n, not a bus
                             // slot: converter strips read it one to one.
@@ -3732,7 +3746,7 @@ final class AppState: @unchecked Sendable {
                         // host-playback peaks as a bounded fallback. This is
                         // also the correct source for SW Return because that
                         // strip represents host playback before the card mixer.
-                        if let softwarePeaks = self.meterDevice?.softwareOutputPeaks(),
+                        if let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2 {
                             func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
                                 let source = self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")
@@ -3803,7 +3817,7 @@ final class AppState: @unchecked Sendable {
                         // Keep the SW Return source visible even when the FPGA
                         // snapshot has no mixer tap data. The Core Audio IOProc
                         // measures the same host playback that feeds PCI_OUT.
-                        if let softwarePeaks = self.meterDevice?.softwareOutputPeaks(),
+                        if let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2,
                            self.mixerMeterLevels.count >= 4 {
                             func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
@@ -3851,9 +3865,9 @@ final class AppState: @unchecked Sendable {
                         // Preserve useful host-playback meters through the Core
                         // Audio IOProc while the device is actively streaming.
                         if allowMeterRead,
-                           let softwarePeaks = self.meterDevice?.softwareOutputPeaks(),
+                           let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2 {
-                            if let softwareInputs = self.meterDevice?.softwareInputPeaks(),
+                            if let softwareInputs = self.hardwareSoftwarePeaks(self.meterDevice?.softwareInputPeaks()),
                                !softwareInputs.isEmpty {
                                 // Core Audio channel n is host input n: map it
                                 // to the strips as the FPGA words are.

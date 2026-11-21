@@ -933,6 +933,8 @@ public struct DeviceInfoReport: Sendable, Equatable {
     /// A second Symphony I/O on port 2 while 64 channels run
     /// (`SecondUnitInfo.reportLines`). Empty with one unit.
     public var unitBLines: [String] = []
+    /// The VBus size (`VBusState.reportLine`); nil over USB.
+    public var vbusLine: String?
     /// False over ThunderBridge: the XMOS version is the unit's Overall
     /// firmware reading, which the Firmware line already shows there.
     public var showsXMOS = true
@@ -1031,6 +1033,7 @@ public struct DeviceInfoReport: Sendable, Equatable {
         }
         lines.append(contentsOf: unitBLines)
         lines.append(contentsOf: port2Lines)
+        if let vbusLine { lines.append(vbusLine) }
         return lines.joined(separator: "\n")
     }
 

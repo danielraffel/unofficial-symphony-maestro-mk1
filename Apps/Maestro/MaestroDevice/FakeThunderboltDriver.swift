@@ -80,6 +80,23 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     public var monitorOutputCalls: [MonitorOutputCall] { lock.withLock { monitorOutputs } }
     /// False: the driver refuses the choice (unit B not configured, a failed read).
     public var acceptsMonitorOutput = true
+    /// The build the driver reports for itself; nil = it does not answer.
+    public var driverBuild: UInt32? = 200
+    /// VBus (selector 16): the sizes that reached the driver, and its state.
+    private var vbusSets: [VBusChannels] = []
+    public var vbusSetCalls: [VBusChannels] { lock.withLock { vbusSets } }
+    public var acceptsVBus = true
+    /// Every selector-16 call that reached the driver client, whatever came of it.
+    private var vbusCalls = 0
+    public var vbusCallCount: Int { lock.withLock { vbusCalls } }
+    /// False: a request stays "requested" until `performVBusChange()` (Core
+    /// Audio has not made the configuration change yet).
+    public var vbusPublishesAtOnce = true
+    public var vbusPublished: UInt32 = 0
+    public var vbusRequested: UInt32 = 0
+    public var vbusFlags: UInt32 = 0
+    public var vbusHardwareChannels: UInt32 = 32
+    public func performVBusChange() { lock.withLock { vbusPublished = vbusRequested } }
 
     public init(primary: IOCardType = .analogADDA16, secondary: IOCardType = .analogADDA16) {
         boards = (primary.rawValue, secondary.rawValue)
@@ -150,6 +167,7 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     public func simulateDriverRestart() {
         lock.withLock {
             nonce += 1; recoveryCount = 0; cardReinitCount = 0; held = [false, false]; controls = [:]
+            vbusPublished = 0; vbusRequested = 0; vbusFlags = 0   // a new driver starts without VBus
             reprogramLocked()
         }
     }
@@ -224,9 +242,23 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
             return true
         }
     }
+    public func vbus(_ channels: VBusChannels?) -> VBusState? {
+        lock.withLock {
+            vbusCalls += 1
+            guard connected, let build = driverBuild, build >= VBusChannels.requiredDriverBuild else { return nil }
+            if let channels {
+                guard acceptsVBus else { return nil }
+                vbusSets.append(channels)
+                vbusRequested = channels.rawValue
+                if vbusPublishesAtOnce { vbusPublished = channels.rawValue }
+            }
+            return VBusState(published: vbusPublished, requested: vbusRequested,
+                             firstChannel: vbusPublished > 0 ? vbusHardwareChannels + 1 : 0, flags: vbusFlags)
+        }
+    }
     public func readMeters() -> [UInt32]? { nil }
     public func probeHardwareResponse() -> Bool { isConnected }
-    public func readDriverBuild() -> UInt32? { 200 }
+    public func readDriverBuild() -> UInt32? { driverBuild }
     public func readPort2State() -> SecondPortState? { port2 }
     public func readConverterState() -> ConverterState? { ConverterState.decode(Array(repeating: 0, count: ConverterState.wordCount)) }
     public func setConverterConfig(_ config: UInt32) -> Bool { false }

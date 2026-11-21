@@ -152,6 +152,8 @@ extension AppState {
         // reports the two-port experiment on.
         report.port2Lines = currentSecondPortState()?.reportLines(
             sixtyFourSelected: portSelection.sixtyFourSelected) ?? []
+        // VBus: the size chosen for this card and what the driver last reported.
+        report.vbusLine = vbusReportLine
         // A second Symphony I/O (unit B) on port 2, as the driver reports it now.
         report.unitBLines = unitBDeviceInfoReportLines
         return report

@@ -78,7 +78,7 @@ struct HelpView: View {
                 Text("Maestro also has smaller resets that do not need a power cycle: **Reset Defaults** on the Input and Output tabs, **Reset Trims** on either tab, and **Reset Routing** on each routing tab. The Input and Output resets offer the same choice the front panel does — one that keeps your trims, because trims are calibration data, and one that clears them too.")
             }
             HelpQuestion("Where do I find a setting?") {
-                Text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (sample rate, clock source, Loop Sync and Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, and **Rescan**), **Volume Keys** (which output the Mac's volume and mute keys control, and which unit with two units), **Front Panel** (the meter banks, Peak Hold and Over Hold), **Cards** (Optical Format, and Insert Labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension).")
+                Text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (sample rate, clock source, Loop Sync and Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, **VBus**, and **Rescan**), **Volume Keys** (which output the Mac's volume and mute keys control, and which unit with two units), **Front Panel** (the meter banks, Peak Hold and Over Hold), **Cards** (Optical Format, and Insert Labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension).")
                 Text("**App Settings** is about Maestro itself: **General** (appearance, tooltips, meter zone coloring, scroll positions), **When a Device Connects** (what happens when a unit is plugged in, and the USB options), **Updates** (automatic checks and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).")
                 Text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**.")
             }
@@ -140,7 +140,7 @@ struct HelpView: View {
                 Text("The output chosen under **Device Settings › Volume Keys › Audio Output**: **Speaker**, **Headphone 1** or **Headphone 2**, as in Apogee's software. Speaker is the default. The choice is kept for each Symphony I/O. On ThunderBridge and PCIe Maestro puts it in place when it opens: after the Mac restarts, until Maestro is open, the keys control the speaker, or Headphone 1 if the outputs are set to Line. A unit without an analog output card offers the two headphones only.")
                 Text("The Speaker entry shows how many channels the **Analog Out Format** on the Output page uses, for example **Speaker (2ch)** or **Speaker (6ch)**. When you set the format to **Line**, Audio Output changes to **Headphone 1** by itself, as in Apogee's software, because line outputs have no level control; it stays there when you leave Line, until you change it. In Line mode the Speaker entry reads **Speaker (0ch)**: if you choose it, the volume keys do not change a level, and the mute key still mutes the speaker output.")
                 Text("With two Symphony I/Os at 64 channels, **Peripheral** chooses which unit the keys control, and **Audio Output** then lists that unit's outputs.")
-                Text("Over USB the keys work when **Symphony I/O : Maestro USB** is the Mac's output device. On ThunderBridge and PCIe, turning up and unmuting wait about five seconds after the Mac starts or wakes, the Symphony reconnects, the Ports setting changes between 32 and 64 channels, or macOS restarts its audio, so that a louder volume macOS saved earlier is not sent to the Symphony. Turning down and muting work at once.")
+                Text("Over USB the keys work when **Symphony I/O : Maestro USB** is the Mac's output device. On ThunderBridge and PCIe, turning up and unmuting wait about five seconds after the Mac starts or wakes, the Symphony reconnects, the Ports setting changes between 32 and 64 channels, the VBus size changes, or macOS restarts its audio, so that a louder volume macOS saved earlier is not sent to the Symphony. Turning down and muting work at once.")
                 Text("With converters only (AD-16X, DA-16X, DD-16X or Rosetta) there is no speaker or headphone. There, **Audio Output** offers **Mixer 1 level**, where the keys turn Mixer 1 down and up and mute it (heard only on outputs you feed from Mixer 1 in Output Routing), and **None**, where the keys do nothing and Mixer 1 is left at full level. This level control for converters is our own addition; Apogee's software had no volume control for them.")
             }
             HelpQuestion("Why does Audio MIDI Setup show Maestro USB with 0 inputs and 16 outputs?") {
@@ -195,6 +195,12 @@ struct HelpView: View {
                 // driver's Source menu names.
                 ForEach(PortSelection.helpText, id: \.self) { Text(LocalizedStringKey($0)) }
                 ForEach(SecondUnitHelp.lines, id: \.self) { Text(LocalizedStringKey($0)) }
+            }
+
+            HelpQuestion("What is VBus, and how do I send audio from one application to another?") {
+                // Text from MaestroCore so a test can check it against the
+                // names the driver publishes.
+                ForEach(VBusChannels.helpText, id: \.self) { Text(LocalizedStringKey($0)) }
             }
 
             HelpQuestion("Does Maestro work with AD-16X, DA-16X or Rosetta converters?") {
