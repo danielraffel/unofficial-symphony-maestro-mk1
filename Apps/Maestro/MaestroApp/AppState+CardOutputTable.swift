@@ -7,8 +7,8 @@ enum CardRestoreOutcome: Equatable {
     /// Every route and both mixers are on the card and equal what is saved.
     case complete
     /// The cards, the unit's identity or its saved mixer state are not
-    /// available yet. Nothing mixer-related was written and no output is on
-    /// a mixer route this run could see.
+    /// available yet. Nothing mixer-related was written; from the third
+    /// check in a row every card channel is direct.
     case waiting(String)
     /// A write failed or the driver state changed under the run.
     case failed(String)
@@ -26,14 +26,19 @@ extension AppState {
     /// session wrote. A saved source the card cannot play (a unit B playback
     /// pair at 32 channels) does not fail the table: its output is disabled
     /// (and said, unless `quiet`), so that every destination is written and
-    /// none is left on whatever the card had.
+    /// none is left on whatever the card had. The table has all 32 card
+    /// channels of the unit, whatever cards are fitted.
     @MainActor
     func thunderboltOutputTable(for device: any DeviceConnection, quiet: Bool = false) -> [UInt8: UInt8] {
         let routes = peripheralRoutingCache(direction: "output").loadMulti() ?? [:]
+        // Every destination of both slots, so every card channel (0-31) is
+        // in the table: one past a card's outputs, or in an empty slot, has
+        // no source and is written disabled. Left out, such a channel kept
+        // whatever the card had (a mixer route of an earlier session or of
+        // other cards), while the ledger believed that mixer fed nothing.
         let defaults = SymphonyIODefaultRouting.thunderboltOutputRoutes(
             board0Outputs: primaryBoardType.totalOutputChannels,
             board1Outputs: secondaryBoardType.totalOutputChannels)
-            .filter { $0.source != SymphonyIORoutingAddress.none }
         let rowCount = device.identifier.mode.channelCount / 2 + 2
         let table = Self.replayOutputSources(
             defaults: Dictionary(uniqueKeysWithValues: defaults.map { ($0.destination, $0.source) }),
@@ -54,6 +59,13 @@ extension AppState {
         return playable
     }
 
+    /// The pause before retry number `attempt` of a restore that did not
+    /// complete: 2, 4, 8, 16 s, then 30 s. One scheme for the single-unit
+    /// restore, the 64-channel replay and (with its own counter) USB.
+    static func restoreRetryPause(_ attempt: Int) -> TimeInterval {
+        min(30.0, pow(2.0, Double(min(max(attempt, 1), 5))))
+    }
+
     /// The driver re-programmed the card (the connection's ledger has dropped
     /// its marks by itself): run the restore at the next opportunity.
     @MainActor
@@ -61,6 +73,8 @@ extension AppState {
         cardOutputTableReplayNeeded = true
         cardOutputRetryAttempts = 0
         cardOutputRetryAfter = .distantPast
+        twoUnitRetryAttempts = 0
+        twoUnitRetryAfter = .distantPast
         updateRestoreStatus()
     }
 
@@ -75,6 +89,7 @@ extension AppState {
         if device is ThunderboltDeviceConnection {
             cardOutputTableReplayNeeded = true
             cardOutputRetryAfter = .distantPast
+            twoUnitRetryAfter = .distantPast
         } else {
             usbRestoreOwed = true
             usbRestoreRetryAfter = .distantPast
@@ -82,21 +97,62 @@ extension AppState {
         updateRestoreStatus()
     }
 
-    /// Why the restore cannot write mixers or mixer-fed routes yet, nil when
-    /// it can.
+    /// Why the saved output table cannot be read at all (its destinations
+    /// depend on the cards, its rows on the unit), nil when it can.
     @MainActor
-    func cardRestoreBlockedReason() -> String? {
+    func cardTableUnreadableReason() -> String? {
         if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
             return "cards not read this session: \(reason.prefix(80))"
         }
         if connectionMode == .hardware, unitAIdentity == nil { return "the unit is not identified yet" }
-        if !mixerPreferences.isWritable { return "saved mixer state is not available for this unit" }
         // 64 channels: the two-unit replay also waits for unit B's cards.
         if usesTwoUnitReplay, !unitBInputRoutingAllowed || unitBLayout == nil
             || unitBBoardSource(slot: 0) != .detected || unitBBoardSource(slot: 1) != .detected {
             return "the second Symphony I/O's cards are not read yet"
         }
         return nil
+    }
+
+    /// Why the restore cannot write mixers or mixer-fed routes yet, nil when
+    /// it can.
+    @MainActor
+    func cardRestoreBlockedReason() -> String? {
+        if let reason = cardTableUnreadableReason() { return reason }
+        if !mixerPreferences.isWritable { return "saved mixer state is not available for this unit" }
+        return nil
+    }
+
+    /// How many checks in a row may find the cards or the unit's identity
+    /// unread before the card is put on its direct defaults. With the
+    /// restore's pauses (2 s, 4 s) the third check comes about 6 s after the
+    /// first.
+    static let cardBlockedChecksBeforeDirect = 3
+
+    /// The cards or the unit's identity are still not read. Until the third
+    /// check in a row nothing is written (a read normally arrives within a
+    /// second or two, and the saved table then goes out in order). From the
+    /// third on, the card is not left as it was found: every card channel is
+    /// written to its direct default (channel n plays software output n), so
+    /// that no output stays on a mixer route of the driver's start-up table
+    /// or of an earlier session, with that mixer's old strips, while Maestro
+    /// shows it direct. With nothing on a mixer, mixer edits made meanwhile
+    /// reach the card too. Once per driver state; the restore keeps retrying
+    /// and writes the saved table when it can be read.
+    @MainActor
+    func cardRestoreStillBlocked(_ tb: ThunderboltDeviceConnection) async {
+        cardBlockedChecks += 1
+        let epoch = tb.cardMixers.epoch
+        guard cardBlockedChecks >= Self.cardBlockedChecksBeforeDirect, device === tb, !hardwareWritesSuspended,
+              connectedUnit == nil, !converterRoutingSurface,
+              cardDirectFallback.map({ $0.connection != ObjectIdentifier(tb) || $0.epoch != epoch }) ?? true else { return }
+        // Unit B's channels exist only while 64 channels run with it.
+        let channels: UInt8 = usesTwoUnitReplay ? 64 : 32
+        let failed = await Task.detached(priority: .utility) { tb.writeCardDirectDefaults(channels: channels) }.value
+        guard device === tb else { return }
+        if failed.isEmpty, tb.cardMixers.epoch == epoch { cardDirectFallback = (ObjectIdentifier(tb), epoch) }
+        print("[Maestro] syncOutputRouting: cards or identity still not read after \(cardBlockedChecks) checks; "
+            + "card channels 0-\(channels - 1) written direct so that no output is on a mixer"
+            + (failed.isEmpty ? "" : " (\(failed.count) refused: \(failed))"))
     }
 
     /// The one restore for a Symphony I/O on ThunderBridge: connect, reconnect,
@@ -111,11 +167,12 @@ extension AppState {
     ///
     /// 1. Preconditions. With the cards not detected or the unit not
     ///    identified, the saved table cannot be read at all (its destinations
-    ///    depend on the cards, its rows on the unit), so nothing is written:
-    ///    the choice between leaving the card alone and forcing the main pair
-    ///    direct is the one that writes least. The driver's own default
-    ///    (mixer 1 with its inputs muted) is silent on the inputs, and every
-    ///    mixer write stays deferred by the connection until step 2 has run.
+    ///    depend on the cards, its rows on the unit). Nothing is written for
+    ///    the first two checks; every mixer write stays deferred by the
+    ///    connection meanwhile. From the third check on the card is written
+    ///    to its direct defaults (`cardRestoreStillBlocked`): the card may
+    ///    hold a mixer route of an earlier session with that session's
+    ///    strips, not only the driver's start-up table with its inputs muted.
     ///    With only the saved mixer state unavailable, step 2 still runs and
     ///    the mixer-fed outputs stay disabled.
     /// 2. Every destination of the saved table: direct routes as saved, a
@@ -156,7 +213,7 @@ extension AppState {
             cardOutputRetryAfter = .distantPast
         case .waiting(let why), .failed(let why):
             cardOutputRetryAttempts += 1
-            let wait = min(30.0, pow(2.0, Double(min(cardOutputRetryAttempts, 5))))
+            let wait = Self.restoreRetryPause(cardOutputRetryAttempts)
             cardOutputRetryAfter = Date().addingTimeInterval(wait)
             print("[Maestro] syncOutputRouting: restore not complete (\(why)); no mixer is routed that is not written, retry in \(Int(wait)) s")
         }
@@ -185,11 +242,13 @@ extension AppState {
                 && !usesTwoUnitReplay && mixerPreferences.storageKey == storageKey
                 && deferral.isValid(recallEpoch)
         }
-        // 1. Nothing can be read: write nothing (see above).
-        if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
-            return .waiting("cards not read this session: \(reason.prefix(80))")
+        // 1. Nothing can be read: write nothing at first, then the direct
+        //    defaults (see above and `cardRestoreStillBlocked`).
+        if let reason = cardTableUnreadableReason() {
+            await cardRestoreStillBlocked(tb)
+            return .waiting(reason)
         }
-        if connectionMode == .hardware, unitAIdentity == nil { return .waiting("the unit is not identified yet") }
+        cardBlockedChecks = 0
         let mixersAvailable = mixerPreferences.isWritable
         let epoch = ledger.epoch
         let editsAtStart = outputRouteEdits
@@ -309,6 +368,15 @@ extension AppState {
             // The two-unit replay writes the table and the mixers in the same
             // order through the same chokepoint (`finishTwoUnitReplay`).
             twoUnitReplayNeeded = true
+            // It does not run while a unit's cards or identity are unread;
+            // the same bounded wait, then the direct defaults.
+            if cardTableUnreadableReason() != nil, Date() >= cardOutputRetryAfter {
+                cardOutputRetryAttempts += 1
+                cardOutputRetryAfter = Date().addingTimeInterval(Self.restoreRetryPause(cardOutputRetryAttempts))
+                await cardRestoreStillBlocked(tb)
+            } else if cardTableUnreadableReason() == nil {
+                cardBlockedChecks = 0
+            }
             return
         }
         guard Date() >= cardOutputRetryAfter else { return }
@@ -322,10 +390,16 @@ extension AppState {
     func finishTwoUnitReplay(_ plan: TwoUnitReplay, tb: ThunderboltDeviceConnection,
                              epoch: UInt64, owed: UInt64, routeEdits: UInt64) {
         guard tb.cardMixers.completeRestore(epoch: epoch, covering: owed), outputRouteEdits == routeEdits else {
-            // The driver state moved on, or a route was edited under the plan.
+            // The driver state moved on, or a route was edited under the
+            // plan: at once for an edit, otherwise with the growing pause.
             twoUnitReplayNeeded = true
+            if outputRouteEdits == routeEdits { twoUnitReplayDidNotComplete() }
             return
         }
+        twoUnitRetryAttempts = 0
+        twoUnitRetryAfter = .distantPast
+        twoUnitResetDefaultsSent = nil
+        cardBlockedChecks = 0
         if plan.consumesRoutingReset {
             RoutingMixerReset.clearPending(.thunderboltInputRouting)
             RoutingMixerReset.clearPending(.thunderboltCardMixer)
@@ -335,6 +409,17 @@ extension AppState {
         // Something deferred or failed while the replay ran is not in its plan.
         if tb.cardMixers.needsRestore { twoUnitReplayNeeded = true }
         updateRestoreStatus()
+    }
+
+    /// A 64-channel replay was refused or did not complete: the next one
+    /// waits, as the single-unit restore does (`restoreRetryPause`), instead
+    /// of running again on every health cycle.
+    @MainActor
+    func twoUnitReplayDidNotComplete() {
+        twoUnitRetryAttempts += 1
+        let wait = Self.restoreRetryPause(twoUnitRetryAttempts)
+        twoUnitRetryAfter = Date().addingTimeInterval(wait)
+        print("[Maestro] Two-unit replay not complete; retry in \(Int(wait)) s")
     }
 
     /// A recall or reset failed partway: the unit may differ from what is
@@ -348,6 +433,7 @@ extension AppState {
         cardOutputTableReplayNeeded = true
         cardOutputRetryAfter = .distantPast
         inputRoutingReplayNeeded = true
+        twoUnitRetryAfter = .distantPast
         if usesTwoUnitReplay { twoUnitReplayNeeded = true }
         updateRestoreStatus()
     }

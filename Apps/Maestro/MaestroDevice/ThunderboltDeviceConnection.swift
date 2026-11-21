@@ -365,6 +365,31 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         cardMixers.clear(mixers: mixers)
     }
 
+    /// A card channel playing nothing (its slot left at the straight
+    /// `PCI_OUT` default, as a cleared route).
+    static func disabledRoute(_ channel: UInt8) -> ThunderboltCardRouting.Route {
+        ThunderboltCardRouting.Route(channel: channel, slot: ThunderboltCardRouting.pciOutBase &+ channel, enabled: false)
+    }
+
+    /// Every card channel 0..<`channels` on its direct default: channel n
+    /// plays software output n (`PCI_OUT n`), as the driver starts every
+    /// channel but the main pair. No mixer is on an output afterwards, and
+    /// the ledger knows it. Used while the saved table cannot be read
+    /// (`AppState.cardRestoreStillBlocked`). Returns the channels the driver
+    /// refused.
+    public func writeCardDirectDefaults(channels: UInt8) -> [UInt8] {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        var failed: [UInt8] = []
+        for channel in 0..<channels {
+            let route = ThunderboltCardRouting.Route(channel: channel,
+                                                     slot: ThunderboltCardRouting.pciOutBase &+ channel, enabled: true)
+            do { _ = try setCardOutputRoute(route) } catch { failed.append(channel) }
+        }
+        cardMixers.declareTable(channels: Set(0..<channels))
+        return failed
+    }
+
     /// The card mixer (0 or 1) a mixer control address belongs to.
     public static func cardMixer(of address: PropertyAddress) -> Int? {
         let id = Int(address.element >> 16)
@@ -494,20 +519,29 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     public func replayTwoUnits(_ plan: TwoUnitReplay, unitB: ThunderboltUnitBConnection,
                                recoveryCount: UInt32,
                                unitBGeneration: UInt32,
-                               shouldContinue: @Sendable @escaping () -> Bool = { true }) throws {
+                               shouldContinue: @Sendable @escaping () -> Bool = { true },
+                               progress: TwoUnitReplay.Progress? = nil) throws {
         presetLock.lock()
         defer { presetLock.unlock() }
+        progress?.begin(plan)
         // The card's part in the restore order, for the mixers this driver
         // state has not seen written; a written mixer keeps its routes.
         observeDriverState()
         let epoch = cardMixers.epoch
         var plan = plan
-        let cardWrites: [ThunderboltPreset.Write] = plan.card.compactMap {
+        var cardWrites: [ThunderboltPreset.Write] = plan.card.compactMap {
             if case .card(let write) = $0 { write } else { nil }
         }
-        cardMixers.declareTable(channels: Set(cardWrites.compactMap {
+        // The table is every card channel of both units (0-63), not only the
+        // ones the plan routes: a channel past a card's outputs or in an
+        // empty slot is written disabled, so "this mixer feeds nothing" is
+        // true of the card and not only of the plan.
+        let planned = Set(cardWrites.compactMap {
             if case .output(let route) = $0 { route.channel } else { nil }
-        }))
+        })
+        let all = Set(UInt8(0)..<(2 * ThunderboltCardRouting.channelCount))
+        cardWrites += all.subtracting(planned).sorted().map { .output(Self.disabledRoute($0)) }
+        cardMixers.declareTable(channels: all)
         plan.card = CardOutputTableOrder.ordered(cardWrites, written: cardMixers.writtenMixers).map { .card($0) }
         var required: [Int: Set<PropertyAddress>] = [:]
         if let layouts = plan.mixerLayouts {
@@ -542,8 +576,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                 throw DeviceConnectionError.notConnected
             }
         }
-        try plan.run(validate: validate, send: { write in
-            guard shouldContinue() else { throw DeviceConnectionError.notConnected }
+        func sendOne(_ write: TwoUnitReplay.Write) throws {
             switch write {
             case .unit(let unit, let address, let value):
                 if address.selector == .prefix {
@@ -584,6 +617,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                         headphone: headphone, leftSource: pair.left - 32, rightSource: pair.right - 32))
                 }
             }
+        }
+        try plan.run(validate: validate, send: { write in
+            guard shouldContinue() else { progress?.failed(); throw DeviceConnectionError.notConnected }
+            do { try sendOne(write) } catch { progress?.failed(); throw error }
+            progress?.landed(write)
         }, unlock: { unit in
             // The original unlock/read-back always runs, even after a recall
             // epoch change stopped the remaining writes.

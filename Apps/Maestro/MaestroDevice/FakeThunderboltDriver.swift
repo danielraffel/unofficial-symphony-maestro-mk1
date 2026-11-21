@@ -8,11 +8,22 @@ import MaestroCore
 /// that lands, can refuse chosen writes, and can change its state the way the
 /// driver does (a link recovery, a card re-init, a restart).
 ///
-/// It starts, and comes back after each such change, in the driver's default
-/// state: the main pair (card channels 0 and 1) on card mixer 1, every other
-/// channel direct, mixer inputs muted, Software Return and Master at 0 dB
-/// (Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp, "Output routing:
-/// ch0/1 <- Mixer0/1 out" and "inputs start muted").
+/// It starts, and comes back after a link recovery or a restart, in the
+/// driver's default state: the main pair (card channels 0 and 1) on card mixer
+/// 1, every other channel direct, mixer inputs muted, Software Return and
+/// Master at 0 dB (Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp,
+/// "Output routing: ch0/1 <- Mixer0/1 out" and "inputs start muted").
+///
+/// A card re-init is different, as in the driver (`ReprogramCardAfterReset`):
+/// each channel gets the last route the app wrote to it where there is one
+/// and the default elsewhere, and each mixer the app has written is computed
+/// again from the app's last controls. So after a re-init an output can be
+/// back on a mixer route of the app's with that mixer holding whatever the
+/// app last sent, complete or not.
+///
+/// Card channels 32-63 are unit B's: a route to one is refused unless 64
+/// channels run with a unit B (the driver's `CardMixerUnitBActive` test in
+/// the 0xB5 handler), and channels past 63 always.
 public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Sendable {
     /// One thing that happened on the card, in order.
     public enum Event: Equatable, Sendable {
@@ -97,10 +108,32 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
         events.append(.driverState(feeds: feeds))
     }
 
+    /// 64 channels with a unit B: its card channels (32-63) exist.
+    private var unitBActiveLocked: Bool {
+        portSelectionOverride == PortSelection.ports1And2.rawValue && unitB?.present == true
+    }
+
     /// An in-place link recovery: the default table is back on the card.
     public func simulateLinkRecovery() { lock.withLock { recoveryCount += 1; reprogramLocked() } }
-    /// The card was re-initialised after a power cycle.
-    public func simulateCardReinit() { lock.withLock { cardReinitCount += 1; reprogramLocked() } }
+    /// The card was re-initialised after a power cycle: the app's last routes
+    /// where it wrote one, the default elsewhere; a mixer the app wrote keeps
+    /// the app's last controls, one it never wrote is at the default.
+    public func simulateCardReinit() {
+        lock.withLock {
+            cardReinitCount += 1
+            var now: [UInt8: Int] = [:]
+            for channel in UInt8(0)..<64 {
+                if let route = lastRoutes[channel] {
+                    if let mixer = CardOutputTableOrder.mixer(of: route) { now[channel] = mixer }
+                } else if channel < 2 {
+                    now[channel] = 0
+                }
+            }
+            feeds = now
+            for mixer in 0..<2 where !held[mixer] { controls[mixer] = nil }
+            events.append(.driverState(feeds: feeds))
+        }
+    }
     /// A new driver instance.
     public func simulateDriverRestart() {
         lock.withLock {
@@ -123,6 +156,14 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
         }
         let event: Event? = try lock.withLock {
             guard connected else { throw DeviceConnectionError.notConnected }
+            if command == ThunderboltCardRouting.outputRouteCommand, port == 0 {
+                // kIOReturnBadArgument in the driver: nothing is written.
+                guard payload.count == 3, sent.payload[0] < 64,
+                      sent.payload[0] < ThunderboltCardRouting.unitBChannelBase || unitBActiveLocked else {
+                    throw DeviceConnectionError.transportError(
+                        "fake driver: card output route refused (channel \(sent.payload.first ?? 0xFF))")
+                }
+            }
             commands.append(sent)
             var event: Event?
             switch command {

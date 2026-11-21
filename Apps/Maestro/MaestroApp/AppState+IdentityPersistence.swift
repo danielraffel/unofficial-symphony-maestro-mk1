@@ -81,6 +81,7 @@ extension AppState {
                 unitBIdentityTask = nil
                 unitBPeripheralPrefix = prefix.map(CardLayout.peripheralPrefix) ?? unitBPeripheralPrefix
                 twoUnitReplayNeeded = true
+                twoUnitRetryAfter = .distantPast
             }
             let preferences = unit == .a ? mixerPreferences : unitBChannelStateStore.mixerPreferences
             MixerPairLink.migrateSavedPairs(preferences: preferences)
@@ -265,7 +266,7 @@ extension AppState {
         guard routed, mixersDone, connection.helperEpoch == helperEpoch else {
             usbRestoreOwed = true
             usbRestoreRetryAttempts += 1
-            let wait = min(30.0, pow(2.0, Double(min(usbRestoreRetryAttempts, 5))))
+            let wait = Self.restoreRetryPause(usbRestoreRetryAttempts)
             usbRestoreRetryAfter = max(usbRestoreRetryAfter, Date().addingTimeInterval(wait))
             print("[Maestro] USB restore not complete (mixers written: \(mixers), routes written: \(routed)); retry in \(Int(wait)) s")
             updateRestoreStatus()

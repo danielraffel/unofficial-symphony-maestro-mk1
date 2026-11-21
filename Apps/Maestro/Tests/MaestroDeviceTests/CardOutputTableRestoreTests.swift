@@ -312,6 +312,68 @@ struct CardMixerChokepointTests {
         #expect(CardWriteLogChecker.violations(driver.log, required: needed).isEmpty)
     }
 
+    @Test("64 channels: every card channel is declared and written; one the plan does not route is disabled, also when an earlier session left it on a mixer")
+    func twoUnitReplayWritesEveryChannel() throws {
+        let (tb, b, driver, layoutB) = twoUnits()
+        // An earlier session, with other cards fitted, left Mixer 2 here.
+        driver.seedRoute(channel: 50, mixer: 1)
+        var plan = twoUnitPlan(layoutB: layoutB)
+        // The plan routes only the outputs the fitted cards have: unit B's
+        // slot 2 is empty, so its channels 48-63 are not in it.
+        plan.card.removeAll {
+            if case .card(.output(let route)) = $0 { return route.channel >= 48 }
+            return false
+        }
+        try tb.replayTwoUnits(plan, unitB: b, recoveryCount: 0, unitBGeneration: 1)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0, 32: 1, 33: 1])
+        #expect(driver.routes.count == 64)
+        #expect((48..<64).allSatisfy { driver.routes[UInt8($0)]?.enabled == false })
+        #expect(tb.cardMixers.writtenMixers == [0, 1])
+        #expect(CardWriteLogChecker.violations(driver.log, required: CardWriteLogChecker.required(layout: layout, second: layoutB)) == [])
+    }
+
+    @Test("the in-memory driver re-inits a card as the real one: the app's last routes and mixer controls, and no unit B channel without unit B")
+    func fakeDriverReinit() throws {
+        let (tb, driver) = make()
+        try clearTable(tb)
+        _ = try tb.setCardOutputRoute(direct(0))
+        _ = try tb.setCardOutputRoute(direct(1))
+        // The app's routes: Mixer 2 on channels 6/7, the main pair direct.
+        driver.seedRoute(channel: 9, mixer: 0)          // not a route the app wrote
+        try driver.sendVendorCommand(command: 0xB5, value: 0, payload: mixerRoute(6, mixer: 1).payload, port: 0)
+        try driver.sendVendorCommand(command: 0xB3, value: 2 << 16 | 3, payload: Data([1]), port: 0)
+        driver.simulateCardReinit()
+        // Replayed: the app's route to Mixer 2, and the direct main pair
+        // (not the start-up default, Mixer 1). The seeded route is the
+        // card's own state and is gone.
+        #expect(driver.mixerFeeds == [6: 1])
+        #expect(driver.routes[6] == mixerRoute(6, mixer: 1))
+        // The mixer the app wrote keeps its controls; the other is at default.
+        #expect(driver.control(mixer: 1, command: 0xB3, channel: 3) == 1)
+        #expect(driver.control(mixer: 0, command: 0xB3, channel: 3) == nil)
+        guard case .driverState(let feeds)? = driver.log.last else { Issue.record("no driver state event"); return }
+        #expect(feeds == [6: 1])
+        // The ledger does not trust any of it: the marks are gone.
+        _ = tb.probeEndpoint()
+        #expect(tb.cardMixers.writtenMixers.isEmpty)
+        #expect(tb.cardMixers.mayFeed(1))
+        // A link recovery and a restart are the start-up default table.
+        driver.simulateLinkRecovery()
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        // Unit B's channels do not exist at 32 channels.
+        let before = driver.sent.count
+        #expect(throws: (any Error).self) {
+            try driver.sendVendorCommand(command: 0xB5, value: 0, payload: self.direct(32).payload, port: 0)
+        }
+        #expect(throws: (any Error).self) {
+            try driver.sendVendorCommand(command: 0xB5, value: 0, payload: Data([64, 64, 1]), port: 0)
+        }
+        #expect(driver.sent.count == before && driver.routes[32] == nil)
+        let (_, _, both, _) = twoUnits()
+        try both.sendVendorCommand(command: 0xB5, value: 0, payload: direct(32).payload, port: 0)
+        #expect(both.routes[32] == direct(32))
+    }
+
     @Test("64 channels: a plan that leaves one of unit B's strips out does not mark the mixer, and its route is not sent")
     func twoUnitReplayIncomplete() {
         let (tb, b, driver, layoutB) = twoUnits()

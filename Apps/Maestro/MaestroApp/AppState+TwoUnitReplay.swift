@@ -55,7 +55,7 @@ extension AppState {
     @MainActor
     func replayUnitBSettings() async {
         guard usesTwoUnitReplay, twoUnitReplayNeeded, !twoUnitReplayRunning,
-              !recallInFlight,
+              !recallInFlight, Date() >= twoUnitRetryAfter,
               !twoUnitSleeping, connectionMode == .hardware, isHardwareInitialized,
               let tb = device as? ThunderboltDeviceConnection,
               let b = unitBDevice as? ThunderboltUnitBConnection,
@@ -80,6 +80,8 @@ extension AppState {
         let edits = tb.mixerEdits
         let editGeneration = edits.capture()
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
+        let progress = TwoUnitReplay.Progress(tables: plan.tables.count)
+        let sendsResetDefaults = plan.consumesRoutingReset && !twoUnitResetDefaultsLanded(tb: tb, b: b)
         let replayDeferral = self.replayDeferral
         let recallEpoch = replayDeferral.currentEpoch()
         twoUnitReplayNeeded = false
@@ -89,7 +91,7 @@ extension AppState {
                                       unitBGeneration: bGeneration,
                                       shouldContinue: {
                                           replayDeferral.isValid(recallEpoch) && edits.isCurrent(editGeneration)
-                                      })
+                                      }, progress: progress)
             }.value
             guard device === tb, unitBDevice === b else { return }
             finishTwoUnitReplay(plan, tb: tb, epoch: epoch, owed: owed, routeEdits: routeEdits)
@@ -103,11 +105,29 @@ extension AppState {
             await refreshChannelNaming()
             print("[Maestro] Two-unit routing, mixers and headphones restored")
         } catch {
-            // Retry on the next healthy poll; no tight bus retry loop.
+            guard device === tb, unitBDevice === b else { return }
+            // The reset's default tables and card-input reset reached the
+            // hardware before the failure: the retries do not send them again
+            // (the saved tables over them are sent each time).
+            if sendsResetDefaults, progress.resetDefaultsLanded {
+                twoUnitResetDefaultsSent = (ObjectIdentifier(tb), ObjectIdentifier(b))
+            }
+            // Retried by the health loop with a growing pause, at once when
+            // a recall or a mixer edit stopped it (those are saved, and the
+            // next plan is built from them).
             twoUnitReplayNeeded = true
+            if replayDeferral.isValid(recallEpoch), edits.isCurrent(editGeneration) {
+                twoUnitReplayDidNotComplete()
+            }
             updateRestoreStatus()
             print("[Maestro] Two-unit replay refused: \(error)")
         }
+    }
+
+    /// Whether the reset's default input tables and card-input reset have
+    /// already reached these two connections in a replay that failed later.
+    func twoUnitResetDefaultsLanded(tb: ThunderboltDeviceConnection, b: ThunderboltUnitBConnection) -> Bool {
+        twoUnitResetDefaultsSent.map { $0.a == ObjectIdentifier(tb) && $0.b == ObjectIdentifier(b) } ?? false
     }
 
     /// Capture saved values on the main actor; all hardware work uses the
@@ -130,9 +150,13 @@ extension AppState {
         let cardInputReset = symphonyCardInputs.resetCommand
         plan.consumesRoutingReset = resetPending
             && (symphonyCardInputs.channelCount == 0 || cardInputReset != nil)
-        if resetPending, let cardInputReset { plan.card.append(.card(.cardInput(cardInputReset))) }
+        // Once they have landed on these connections they are not sent again
+        // by a retry of a replay that failed later on (they were sent before
+        // the saved tables on every retry while the flag stayed pending).
+        let sendDefaults = resetPending && !twoUnitResetDefaultsLanded(tb: tb, b: b)
+        if sendDefaults, let cardInputReset { plan.card.append(.card(.cardInput(cardInputReset))) }
         for (unit, layout, cache) in [(DeviceUnit.a, cardLayout, Optional(cacheA)), (.b, layoutB, unitBInputRoutingCache)] {
-            var writes = resetPending
+            var writes = sendDefaults
                 ? SymphonyIODefaultRouting.thunderboltInputRoutes(
                     slot1: unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1)
                 : []

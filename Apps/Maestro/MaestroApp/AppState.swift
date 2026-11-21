@@ -175,6 +175,16 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored var cardOutputRestoreRunning = false
     @ObservationIgnored var cardOutputRetryAttempts = 0
     @ObservationIgnored var cardOutputRetryAfter = Date.distantPast
+    /// Checks in a row that found the cards or the unit's identity unread,
+    /// and the driver state in which the direct defaults were then written
+    /// (`cardRestoreStillBlocked`).
+    @ObservationIgnored var cardBlockedChecks = 0
+    @ObservationIgnored var cardDirectFallback: (connection: ObjectIdentifier, epoch: UInt64)?
+    /// 64 channels: the pause after a replay that did not complete, and the
+    /// connections on which the reset's default input tables have landed.
+    @ObservationIgnored var twoUnitRetryAttempts = 0
+    @ObservationIgnored var twoUnitRetryAfter = Date.distantPast
+    @ObservationIgnored var twoUnitResetDefaultsSent: (a: ObjectIdentifier, b: ObjectIdentifier)?
     /// Whose saved state the connection's card mixer marks were written from.
     @ObservationIgnored var cardRestoreOwner: (connection: ObjectIdentifier, owner: CardRestoreOwner)?
     /// Counts Output Routing edits, so a restore can tell one happened under it.
