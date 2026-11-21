@@ -21,9 +21,9 @@ extension AppState {
     /// The whole ThunderBridge output table for one Symphony I/O: the default
     /// (every output direct, no mixer routed, as the original's
     /// SymphonyPCIeRoutingController::ResetRouting, output branch) with the
-    /// saved choices over it. Never only the saved rows: the driver starts the
-    /// card with the main pair on card mixer 1 and keeps the routes an earlier
-    /// session wrote. A saved source the card cannot play (a unit B playback
+    /// saved choices over it. Never only the saved rows: the card keeps the
+    /// routes an earlier session wrote, and a driver before build 142 starts
+    /// it with the main pair on card mixer 1. A saved source the card cannot play (a unit B playback
     /// pair at 32 channels) does not fail the table: its output is disabled
     /// (and said, unless `quiet`), so that every destination is written and
     /// none is left on whatever the card had. The table has all 32 card
@@ -166,10 +166,11 @@ extension AppState {
     /// (At 64 channels the two-unit replay sends the same writes in the same
     /// order through the same chokepoint, `replayTwoUnits`.)
     ///
-    /// The driver starts the card, and re-programs it after a reset, with the
-    /// main pair on card mixer 1, and the card keeps whatever an earlier
-    /// session routed. Nothing here trusts that state, and nothing trusts the
-    /// driver's "holds app state" flag. In order:
+    /// The card keeps whatever an earlier session routed, and a driver before
+    /// build 142 starts it, and re-programs it after a reset, with the main
+    /// pair on card mixer 1 (from 142 every output starts direct). Nothing
+    /// here trusts the state found, and nothing trusts the driver's "holds
+    /// app state" flag. In order:
     ///
     /// 1. Preconditions. With the cards not detected or the unit not
     ///    identified, the saved table cannot be read at all (its destinations

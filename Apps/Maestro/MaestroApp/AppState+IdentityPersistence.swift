@@ -207,6 +207,11 @@ extension AppState {
         guard isCurrent() else { return }
         usbHelperOutdated = helper == .outdated
         if usbHelperOutdated {
+            // An older helper always moves the speakers: the Mac's volume is
+            // the speaker's, and what was skipped until this was known is
+            // read now.
+            readASPVolume()
+            readASPMute()
             print("[Maestro] USB restore: the installed USB helper is older than this app; mixers are not written. Reinstall Maestro with USB support.")
         }
         // 1. Every headphone and output away from the mixers about to be

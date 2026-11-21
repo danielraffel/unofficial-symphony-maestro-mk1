@@ -14,6 +14,23 @@ struct KeyboardVolumeSent: Equatable {
     var outputs: [DeviceUnit: KeyboardVolumeOutput]
 }
 
+/// What a change of the Mac's volume or mute control (the driver's on
+/// ThunderBridge, "Maestro USB" over USB) means for the levels Maestro shows.
+enum MacVolumeAdoption: Equatable {
+    /// Nothing: whose level the control holds is not known yet, or the keys
+    /// do nothing and the driver holds its control itself.
+    case ignore
+    /// USB, Speaker chosen in Line mode: the helper ignored the change, and
+    /// the Mac's control is put back to the speaker's level and mute.
+    case putBack
+    /// It is this output's level or mute.
+    case level(KeyboardVolumeOutput)
+    /// A driver before build 142, or a helper before version 3: the speakers.
+    case legacySpeaker
+    /// A driver before build 142 in Line mode: Headphone 1.
+    case legacyHeadphone1
+}
+
 // Device Settings › Volume Keys › Audio Output: which output of each unit the
 // Mac's volume and mute keys move. The choice is saved per unit with the
 // unit's other device settings (`DeviceSettingsStore`, under
@@ -61,8 +78,10 @@ extension AppState {
     /// otherwise.
     func keyboardVolumeOutput(for unit: DeviceUnit) -> KeyboardVolumeOutput {
         _ = keyboardVolumeRevision   // the pop-up follows a change
+        let saved = connectionMode == .simulated ? keyboardVolumeSimulated[unit]
+            : keyboardVolumeStore(for: unit)?.value(for: Self.keyboardVolumeAddress)?.asUInt32
         return KeyboardVolumeOutput.resolve(
-            saved: keyboardVolumeStore(for: unit)?.value(for: Self.keyboardVolumeAddress)?.asUInt32,
+            saved: saved,
             hasAnalogOutput: keyboardVolumeHasAnalogOutput(unit),
             convertersOnly: unit == .a && converterVolumeKeys)
     }
@@ -105,12 +124,45 @@ extension AppState {
     /// The Audio Output pop-up was changed.
     @MainActor
     func chooseKeyboardVolumeOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) {
-        guard keyboardVolumeEntries(for: unit).contains(output),
-              let store = keyboardVolumeStore(for: unit) else { return }
+        guard keyboardVolumeEntries(for: unit).contains(output) else { return }
+        if connectionMode == .simulated {
+            keyboardVolumeSimulated[unit] = output.rawValue
+            keyboardVolumeRevision &+= 1
+            return
+        }
+        guard let store = keyboardVolumeStore(for: unit) else { return }
         store.record(.uint32(output.rawValue), for: Self.keyboardVolumeAddress)
         keyboardVolumeRevision &+= 1
         keyboardVolumeRetryAfter = .distantPast
         Task { @MainActor in await self.serviceKeyboardVolumeOutput() }
+    }
+
+    /// Whether the driver or the helper serving now has been told that
+    /// `output` is unit A's. Until then the level its volume control holds
+    /// may belong to another output (the one an earlier session chose, while
+    /// this unit's saved choice is not read yet), and must not be taken for
+    /// this one's: a knob showing another output's level would send that
+    /// level at the next nudge.
+    func keyboardVolumeSettled(_ output: KeyboardVolumeOutput) -> Bool {
+        guard let device, let sent = keyboardVolumeSent else { return false }
+        return sent.connection == ObjectIdentifier(device) && sent.outputs[.a] == output
+    }
+
+    /// See `MacVolumeAdoption`.
+    static func macVolumeAdoption(thunderbolt: Bool, servingBuild: ServingDextBuild?, helperOutdated: Bool,
+                                  output: KeyboardVolumeOutput, settled: Bool, speakerMode: UInt32) -> MacVolumeAdoption {
+        if thunderbolt {
+            // Not read yet: it is not known which rule the driver follows.
+            guard let servingBuild else { return .ignore }
+            guard KeyboardVolumeOutput.driverSupports(servingBuild) else {
+                return speakerMode == 0 ? .legacyHeadphone1 : .legacySpeaker
+            }
+            // The driver holds its control where the keys do nothing.
+            return settled && !output.keysDoNothing(speakerMode: speakerMode) ? .level(output) : .ignore
+        }
+        if helperOutdated { return .legacySpeaker }
+        guard settled else { return .ignore }
+        return output.keysDoNothing(speakerMode: speakerMode) ? .putBack : .level(output)
     }
 
     /// The level and mute Maestro shows for an output of unit A.
@@ -146,14 +198,18 @@ extension AppState {
     @MainActor
     func keyboardVolumeWanted() -> KeyboardVolumeSent? {
         guard connectionMode == .hardware, !hardwareWritesSuspended else { return nil }
+        // A Symphony I/O's choice is saved by its identity: nothing is sent
+        // while that is still being read (the default would be sent first and
+        // the saved choice a moment later).
+        let converters = converterVolumeKeys
         if let tb = device as? ThunderboltDeviceConnection {
             guard KeyboardVolumeOutput.driverSupports(servingDextBuild),
-                  connectedUnit == nil || converterVolumeKeys else { return nil }
+                  converters || (connectedUnit == nil && unitAIdentityState != .pending) else { return nil }
             var outputs: [DeviceUnit: KeyboardVolumeOutput] = [.a: keyboardVolumeOutput(for: .a)]
             // Unit B only while the driver has it configured at 64 channels
             // (it refuses the choice otherwise).
-            if !converterVolumeKeys, unitB?.setupComplete == true, portSelection.selection == .ports1And2,
-               unitBDevice != nil {
+            if !converters, unitB?.setupComplete == true, portSelection.selection == .ports1And2,
+               unitBDevice != nil, unitBIdentityState != .pending {
                 outputs[.b] = keyboardVolumeOutput(for: .b)
             }
             return KeyboardVolumeSent(connection: ObjectIdentifier(tb), epoch: tb.cardMixers.epoch,
@@ -162,7 +218,7 @@ extension AppState {
         if let xpc = device as? XPCDeviceConnection {
             // Not while the unit is starting up, and not under an older helper.
             guard connectedUnit == nil, isHardwareInitialized, !usbHelperOutdated,
-                  usbSettleRemainingNow <= 0 else { return nil }
+                  unitAIdentityState != .pending, usbSettleRemainingNow <= 0 else { return nil }
             return KeyboardVolumeSent(connection: ObjectIdentifier(xpc), epoch: xpc.helperEpoch,
                                       converters: false, outputs: [.a: keyboardVolumeOutput(for: .a)])
         }
@@ -185,11 +241,13 @@ extension AppState {
         } ?? [:]
         var landed = previous
         var complete = true
+        var adopt = false
         if let tb = device as? ThunderboltDeviceConnection {
             for unit in [DeviceUnit.a, .b] {
                 guard let output = wanted.outputs[unit], previous[unit] != output else { continue }
                 if await tb.setMonitorOutput(output, unit: unit) {
                     landed[unit] = output
+                    adopt = adopt || unit == .a
                     // None on converters: the driver has put the mixer level
                     // back to 0 dB, unmuted, and holds its controls there.
                     if output == .none, device === tb {
@@ -205,6 +263,7 @@ extension AppState {
         } else if let xpc = device as? XPCDeviceConnection, let output = wanted.outputs[.a] {
             if await applyUSBKeyboardVolumeOutput(output, to: xpc) {
                 landed[.a] = output
+                adopt = true
             } else {
                 complete = false
             }
@@ -213,6 +272,12 @@ extension AppState {
         keyboardVolumeSent = KeyboardVolumeSent(connection: wanted.connection, epoch: wanted.epoch,
                                                 converters: wanted.converters, outputs: landed)
         keyboardVolumeRetryAfter = complete ? .distantPast : Date().addingTimeInterval(Self.keyboardVolumeRetryPause)
+        // The Mac's control now holds the level of the output Maestro has for
+        // unit A: what was skipped until that was certain is read now.
+        if adopt {
+            readASPVolume()
+            readASPMute()
+        }
     }
 
     /// USB: make `output` the one the helper's volume and mute move. When the
@@ -223,6 +288,9 @@ extension AppState {
     /// of the output chosen before.
     @MainActor
     private func applyUSBKeyboardVolumeOutput(_ output: KeyboardVolumeOutput, to xpc: XPCDeviceConnection) async -> Bool {
+        // Only a helper that knows the command is asked (an older one would
+        // leave each attempt waiting for an answer).
+        guard await xpc.helperStatus() == .current, device === xpc else { return false }
         if await xpc.keyboardVolumeOutputInHelper() == output {
             // Speaker in Line mode: the keys move nothing, and the Mac's
             // control may have drifted while Maestro was closed. It is put

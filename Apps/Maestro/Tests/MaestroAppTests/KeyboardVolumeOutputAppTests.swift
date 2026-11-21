@@ -17,6 +17,9 @@ private final class KeysHelper: XPCTransport, @unchecked Sendable {
     private(set) var monitorOutputs: [(output: UInt64, attenuation: UInt64, muted: Bool)] = []
     var helperOutput: UInt64? = 1
     var accepts = true
+    /// What the helper answers to "helperVersion".
+    var version: UInt64? = XPCDeviceConnection.requiredHelperVersion
+    func helperVersion() async -> UInt64? { version }
 
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
         lock.withLock { writes.append(bRequest) }
@@ -63,7 +66,74 @@ struct KeyboardVolumeOutputAppTests {
         state.secondaryBoardType = slot2
         state.primaryBoardSource = cardsRead ? .detected : .cached
         state.secondaryBoardSource = cardsRead ? .detected : .cached
+        state.unitAIdentity = 0xF2C0_0A01
         return (state, tb, driver)
+    }
+
+    @Test("nothing is sent while the unit's identity, which its saved choice hangs on, is still being read")
+    func waitsForIdentity() async {
+        let (state, _, driver) = thunderbolt()
+        state.unitAIdentityState = .pending
+        await state.serviceKeyboardVolumeOutput()
+        #expect(driver.monitorOutputCalls.isEmpty)
+        // A unit whose identity could not be read still gets its choice.
+        state.unitAIdentityState = .failed
+        await state.serviceKeyboardVolumeOutput()
+        #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .speakers)])
+    }
+
+    @Test("whose level the Mac's volume control holds: nothing is taken for an output before the driver or helper was told it")
+    func macVolumeAdoption() {
+        func tb(_ build: ServingDextBuild?, _ output: KeyboardVolumeOutput, settled: Bool, mode: UInt32 = 2) -> MacVolumeAdoption {
+            AppState.macVolumeAdoption(thunderbolt: true, servingBuild: build, helperOutdated: false,
+                                       output: output, settled: settled, speakerMode: mode)
+        }
+        // Driver build not read yet: nothing.
+        #expect(tb(nil, .speakers, settled: false) == .ignore)
+        // A driver before 142: the speakers, Headphone 1 in Line mode, whatever is chosen.
+        #expect(tb(.build(141), .headphone2, settled: false) == .legacySpeaker)
+        #expect(tb(.build(141), .speakers, settled: false, mode: 0) == .legacyHeadphone1)
+        #expect(tb(.olderThanBuildReporting, .speakers, settled: false) == .legacySpeaker)
+        // Build 142: the chosen output, once the driver was told it.
+        #expect(tb(.build(142), .speakers, settled: false) == .ignore)
+        #expect(tb(.build(142), .headphone1, settled: false) == .ignore)
+        #expect(tb(.build(142), .speakers, settled: true) == .level(.speakers))
+        #expect(tb(.build(142), .headphone1, settled: true) == .level(.headphone1))
+        #expect(tb(.build(142), .headphone2, settled: true, mode: 0) == .level(.headphone2))
+        #expect(tb(.build(142), .mixer1Level, settled: true) == .level(.mixer1Level))
+        // Where the keys do nothing the driver holds its control: nothing follows it.
+        #expect(tb(.build(142), .speakers, settled: true, mode: 0) == .ignore)
+        #expect(tb(.build(142), KeyboardVolumeOutput.none, settled: true) == .ignore)
+
+        func usb(_ output: KeyboardVolumeOutput, settled: Bool, mode: UInt32 = 2, outdated: Bool = false) -> MacVolumeAdoption {
+            AppState.macVolumeAdoption(thunderbolt: false, servingBuild: nil, helperOutdated: outdated,
+                                       output: output, settled: settled, speakerMode: mode)
+        }
+        #expect(usb(.headphone1, settled: false, outdated: true) == .legacySpeaker)
+        #expect(usb(.speakers, settled: false) == .ignore)
+        #expect(usb(.speakers, settled: true) == .level(.speakers))
+        #expect(usb(.headphone2, settled: true) == .level(.headphone2))
+        // Speaker in Line mode over USB: the Mac's control is put back.
+        #expect(usb(.speakers, settled: true, mode: 0) == .putBack)
+        #expect(usb(.headphone1, settled: true, mode: 0) == .level(.headphone1))
+    }
+
+    @Test("the output counts as settled only for the connection it was sent to")
+    func settledPerConnection() async {
+        let (state, _, _) = thunderbolt()
+        #expect(!state.keyboardVolumeSettled(.speakers))
+        await state.serviceKeyboardVolumeOutput()
+        #expect(state.keyboardVolumeSettled(.speakers))
+        #expect(!state.keyboardVolumeSettled(.headphone1))
+        state.chooseKeyboardVolumeOutput(.headphone1, unit: .a)
+        // Chosen, but the driver has not been told yet.
+        #expect(!state.keyboardVolumeSettled(.headphone1))
+        await state.serviceKeyboardVolumeOutput()
+        #expect(state.keyboardVolumeSettled(.headphone1))
+        let other = ThunderboltDeviceConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier,
+                                                audioDeviceID: 0, driver: FakeThunderboltDriver())
+        state.device = other
+        #expect(!state.keyboardVolumeSettled(.headphone1))
     }
 
     @Test("the default is Speaker; it is sent once to a driver that can be told, and again only when something changed")
@@ -110,6 +180,7 @@ struct KeyboardVolumeOutputAppTests {
                                                       audioDeviceID: 0, settingsStore: tb.settingsStore,
                                                       driver: secondDriver)
         again.device = reconnected
+        again.unitAIdentity = 0xF2C0_0A01   // read again for the new connection
         #expect(again.keyboardVolumeOutput(for: .a) == .headphone2)
         await again.serviceKeyboardVolumeOutput()
         #expect(secondDriver.monitorOutputCalls == [.init(unit: .a, output: .headphone2)])
@@ -211,6 +282,7 @@ struct KeyboardVolumeOutputAppTests {
         let b = tb.makeUnitBConnection()
         state.unitB = SecondUnitInfo(slot1: .analogADDA16, slot2: .none)
         state.unitBDevice = b
+        state.unitBIdentity = 0xF2C0_0B01
         state.portSelection.deviceReported(dataSourceID: PortSelection.ports1And2.rawValue, state: nil)
         #expect(state.keyboardVolumeEntries(for: .b) == [.speakers, .headphone1, .headphone2])
         state.chooseKeyboardVolumeOutput(.headphone1, unit: .b)
@@ -250,6 +322,7 @@ struct KeyboardVolumeOutputAppTests {
         state.primaryBoardSource = .detected
         state.secondaryBoardType = .none
         state.secondaryBoardSource = .detected
+        state.unitAIdentity = 0xF2C0_0A02
         return (state, connection)
     }
 
@@ -299,6 +372,14 @@ struct KeyboardVolumeOutputAppTests {
         await state.serviceKeyboardVolumeOutput()
         #expect(helper.monitorOutputs.isEmpty)
         state.usbHelperOutdated = false
+        // An older helper that has not been recognised as one yet is not
+        // asked either, and nothing is read from the unit for it.
+        helper.version = XPCDeviceConnection.requiredHelperVersion - 1
+        let reads = helper.reads.count
+        await state.serviceKeyboardVolumeOutput()
+        #expect(helper.monitorOutputs.isEmpty && helper.reads.count == reads)
+        helper.version = XPCDeviceConnection.requiredHelperVersion
+        state.keyboardVolumeRetryAfter = .distantPast
         await state.serviceKeyboardVolumeOutput()
         #expect(helper.monitorOutputs.first?.output == 2)
         #expect(helper.monitorOutputs.first?.attenuation == 18)

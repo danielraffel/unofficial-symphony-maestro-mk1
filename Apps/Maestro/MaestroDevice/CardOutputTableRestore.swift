@@ -7,13 +7,17 @@ import Synchronization
 //
 // The rule: a mixer's unmuted input strips must never be audible on an output
 // unless the routing and that mixer's strips are the user's saved (or default)
-// state. The driver starts the card, and re-programs it after a reset, with
-// the main pair on card mixer 1 and the mixer inputs muted
-// (Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp, "Output routing:
-// ch0/1 <- Mixer0/1 out" and "inputs start muted"). The default here is every
-// output direct, as the original
+// state. The default here is every output direct, as the original
 // (og_source/maestrolink/Software/SymphonyPCIeRoutingController.cpp,
-// ResetRouting, output branch).
+// ResetRouting, output branch). From build 142 the driver starts the card,
+// and re-programs it after a reset, the same way
+// (Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp, step 21b). A driver
+// before 142 puts the main pair on card mixer 1 with the mixer inputs muted,
+// and can still be the one loaded after an update. With either, the card
+// keeps the routes an earlier session wrote, and a re-init puts the app's
+// last routes back with whatever mixer state the driver holds. So nothing
+// below depends on the driver's build: every part of it is also what keeps a
+// leftover route of an earlier session from being heard.
 //
 // The rule is enforced in one place, `CardMixerLedger`, which every card output
 // route and every card mixer write of a `ThunderboltDeviceConnection` passes:
