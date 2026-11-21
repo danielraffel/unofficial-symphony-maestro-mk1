@@ -1523,8 +1523,16 @@ static void RunMonitorOutputChecks()
               o.name, StoredOn(r, 1, 0x23, 1), StoredOn(r, 1, 0x24, 1));
         CHECK(StoredOn(r, 1, 0x23, 0) == 27 && StoredOn(r, 0, 0x23, 1) == 30, "%s: B HP2 keys reached another output", o.name);
         PressMute(r, false);
-        // Unit B in Line with Speakers chosen: nothing reaches either unit.
+        // Unit B's speakers: its level (12 in the fake), 0x26/0x27 on port 2.
         CHECK(r.drv->SetMonitorOutput(1, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: B speakers refused", o.name);
+        CHECK(ShownDb() == -12.0f, "%s: B speakers show %.1f (want -12)", o.name, ShownDb());
+        PressVolume(r, -29.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 1, 0x26) == 29 && StoredOn(r, 1, 0x27) == 1, "%s: B speaker keys gave %u/%u (want 29/1)",
+              o.name, StoredOn(r, 1, 0x26), StoredOn(r, 1, 0x27));
+        CHECK(StoredOn(r, 0, 0x26) == 25 && StoredOn(r, 0, 0x27) == 0 && StoredOn(r, 1, 0x23, 1) == 28,
+              "%s: B speaker keys reached another output", o.name);
+        PressMute(r, false);
+        // Unit B in Line with Speakers chosen: nothing reaches either unit.
         uint8_t line = 0;
         CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1, 1) == kIOReturnSuccess, "%s: B Line", o.name);
         CHECK(ShownDb() == -20.0f, "%s: B Line with Speakers chosen reads %.1f", o.name, ShownDb());
@@ -1540,6 +1548,13 @@ static void RunMonitorOutputChecks()
         CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP2) == kIOReturnSuccess, "%s: A HP2 refused", o.name);
         PressVolume(r, -35.0f);
         CHECK(StoredOn(r, 0, 0x23, 1) == 35 && StoredOn(r, 1, 0x23, 1) == 28, "%s: A HP2 keys gave %u", o.name, StoredOn(r, 0, 0x23, 1));
+        // A card reset while 64 channels ran: the card comes back on port 1
+        // alone, every output direct, and no unit's mixer inputs are muted.
+        r.card.port[0].vendorWrites.clear();
+        r.card.port[1].vendorWrites.clear();
+        ResetCardAndRecover(r);
+        CheckOutputsDirect("two units, after a card re-init", r, 32, true);
+        CHECK(!Sent(r, 0, 0xB3) && !Sent(r, 1, 0xB3), "%s: a re-init mutes a unit's mixer inputs", o.name);
         Finish(o, r);
     }
     // 6. A Symphony I/O with converters on port 2, and converters on both
