@@ -79,7 +79,7 @@ struct HelpView: View {
             }
             HelpQuestion("Where do I find a setting?") {
                 Text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (sample rate, clock source, Loop Sync and Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, and **Rescan**), **Volume Keys** (which unit the Mac's volume keys control, with two units), **Front Panel** (the meter banks, Peak Hold and Over Hold), **Cards** (Optical Format, and Insert Labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension).")
-                Text("**App Settings** is about Maestro itself: **General** (appearance, tooltips, meter zone coloring, scroll positions, pop-ups), **When a Device Connects** (what happens when a unit is plugged in, and the USB options), **Updates** (automatic checks and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).")
+                Text("**App Settings** is about Maestro itself: **General** (appearance, tooltips, meter zone coloring, scroll positions), **When a Device Connects** (what happens when a unit is plugged in, and the USB options), **Updates** (automatic checks and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).")
                 Text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**.")
             }
             HelpQuestion("When do I hear an input directly through the Symphony?") {
@@ -116,6 +116,9 @@ struct HelpView: View {
             }
             HelpQuestion("What are the Stable and Beta update channels?") {
                 Text("Maestro normally offers stable versions only. In **App Settings › Updates** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable.")
+            }
+            HelpQuestion("How do I set a trim to an exact value?") {
+                Text("Press **Show Trims** on the Input or Output tab, click the trim value under a channel's trim fader, type the value and press **Return**. **Tab** applies it and moves to the next channel's trim, **Shift-Tab** to the previous one, and **Esc** leaves it unchanged. A value outside the fader's range is set to the nearest value the fader allows. The box beside it shows the meter level to a tenth of a dB, for calibrating against a tone. The fader values on the Mixer tab can be typed in the same way.")
             }
             HelpQuestion("Why doesn't the D/A meter move when I change a Trim?") {
                 Text("The D/A meter shows the level **before** conversion, so the trim is applied after the point being measured. This is expected. To calibrate against a trim you need to measure the analog output itself with an external voltmeter — send a 1 kHz sine at the digital reference level and adjust the trim until the meter reads the analog reference you chose (1.228 V AC for +4 dBu).")

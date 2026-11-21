@@ -16,7 +16,8 @@ The Symphony front-panel mode selects the active transport: Symphony mode for Th
 
 - **Input:** channel reference levels, trims and available input options. A compatible microphone-preamp module adds its corresponding controls.
 - **Output:** output reference levels, trims and monitor controls.
-- **Mixer:** hardware monitoring mixes. Input strips have level, pan, mute and solo; Software Return has a stereo fader, mute and solo.
+  - **Trims can be typed.** Press **Show Trims** on the Input or Output tab, click the trim value under a channel's trim fader, type the value and press Return. Tab applies it and moves to the next channel's trim, Shift-Tab to the previous one, and Esc leaves it unchanged. A value outside the fader's range is set to the nearest value the fader allows. The box beside the trim value shows the meter level to a tenth of a dB, for calibrating against a tone.
+- **Mixer:** hardware monitoring mixes. Input strips have level, pan, mute and solo; Software Return has a stereo fader, mute and solo. The value under each fader can be typed in the same way as a trim, and Tab moves along the strips to Software Return and Master.
   - **By default no mixer feeds an output.** Every hardware output plays the matching software output directly (1-2 → Line 1/2 and so on), so you hear your Mac's audio directly and your inputs only through your DAW, and the Mixer page does nothing until you route a mixer to an output.
   - **The Mixer only changes outputs that are fed from a mixer.** In Output Routing, route Mixer 1 or Mixer 2 to an output and that mixer's controls apply to it: your Mac's audio arrives through Software Return, and Master sets the level.
   - **You hear an input directly through the Symphony only when its strip is unmuted in a mixer that feeds an output in Output Routing.** There is no other setting for it.
@@ -26,7 +27,7 @@ The Symphony front-panel mode selects the active transport: Symphony mode for Th
   - **Reset Routing** puts the page you are on back to its default, after asking: each software input records the matching hardware input, and each software output goes to the matching hardware output.
   - **Identify** (Output Routing) lights every front-panel light on the Symphony I/O so you can find it; click again to turn them off. Quitting Maestro also turns them off. With two units there is one button for each.
 - **Device Settings:** the Symphony I/O itself, in the sections **Clock** (sample rate, clock source, Loop Sync, Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, Rescan), **Volume Keys** (with two units), **Front Panel** (meter banks, Peak Hold, Over Hold), **Cards** (Optical Format, Insert Labels with an 8MicPre), **Naming** (Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards, the ThunderBridge driver extension).
-- **App Settings:** Maestro itself, in the sections **General** (appearance, tooltips, meter zone coloring, scroll positions, pop-ups), **When a Device Connects**, **Updates**, **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).
+- **App Settings:** Maestro itself, in the sections **General** (appearance, tooltips, meter zone coloring, scroll positions), **When a Device Connects**, **Updates**, **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).
 
 Controls depend on installed modules and the selected transport. The app's built-in Help provides contextual guidance. A **Simulated** or **no hardware** indicator means the view represents a simulated configuration, not confirmation of connected hardware operation.
 

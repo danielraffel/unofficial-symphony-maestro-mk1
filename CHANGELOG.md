@@ -11,6 +11,7 @@ This beta removes Input Monitoring and puts Output Routing, Input Routing and th
 - **Line 1/2 now plays Software 1-2 directly by default, on every connection.** Until now Maestro put Mixer 1 on Line 1/2: over USB every time the Symphony connected, and over ThunderBridge and PCIe unless you had chosen otherwise. A mixer now reaches an output only when you route it there in Output Routing.
 - **Over USB, your speaker setting is no longer put back to Stereo every time the Symphony connects.** Maestro restores the one you chose on the Output page. If you never chose one, the Symphony keeps its own.
 - **Over USB, your settings come back after the Symphony is switched off and on while Maestro is open:** Output Routing, Input Routing, both mixers and the speaker setting. Before, only Master and Software Return came back.
+- **The "Display pop-ups" setting in App Settings is gone.** It never did anything. Apogee's software showed an on-screen level display; [issue 34](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/34) describes what it would take to add one.
 
 ### Fixed
 
@@ -20,6 +21,9 @@ This beta removes Input Monitoring and puts Output Routing, Input Routing and th
 ### New
 
 - **Help and the user guide are rewritten for this.** Help has a new question, "When do I hear an input directly through the Symphony?", and "Why doesn't the Software Return fader or mute, or Master, change what I hear?" and "The Mixer over USB" now describe the default routing.
+- **Trim values on the Input and Output pages can be typed, as in Apogee's software.** Click the trim value under a trim fader, type a number and press Return. Tab applies it and moves to the next channel's trim, and Shift-Tab to the previous one.
+- **Tab also moves along the fader values on the Mixer page,** from one strip to the next, then Software Return and Master.
+- **The level readout on the Input and Output pages shows tenths of a dB, as in Apogee's software.** It showed whole dB before, which was too coarse for calibrating a trim against a tone.
 
 ### Please test
 

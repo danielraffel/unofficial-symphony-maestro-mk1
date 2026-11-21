@@ -77,6 +77,12 @@ public enum OutputChannelLogic {
         return (trimMinimum...upper, trimStep)
     }
 
+    /// Whether an analog output strip has a trim value that can be typed into:
+    /// the trim fader is showing and is not inert on converters.
+    public static func hasEditableTrimReadout(showTrims: Bool, convertersOnly: Bool) -> Bool {
+        showTrims && !convertersOnly
+    }
+
     /// Clamp a trim into the legal range for a digital reference level.
     public static func clampTrim(_ trim: Double, digitalRefLevel: UInt32) -> Double {
         let spec = trimRange(digitalRefLevel: digitalRefLevel)

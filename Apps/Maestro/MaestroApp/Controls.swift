@@ -979,3 +979,129 @@ struct LEDMeterView: View {
     }
 
 }
+
+// MARK: - Editable level readout (Mixer fader level, Input/Output trim)
+
+/// What a page hands each of its value readouts so they edit one at a time and
+/// Tab can move between them: which readout this is, which one the page is
+/// editing, the page's keyboard focus, and the page's rule for the next and
+/// previous readout.
+struct LevelReadoutEntry<ID: Hashable> {
+    /// This readout's identity among the page's readouts.
+    let id: ID
+    /// The readout the page is editing, or nil.
+    let editing: Binding<ID?>
+    /// The page's keyboard focus, one value per readout.
+    let focus: FocusState<ID?>.Binding
+    /// The readout Tab (`true`) or Shift-Tab (`false`) moves to from `id`, or
+    /// nil at either end. See `LevelEntry.neighbour`.
+    let neighbour: (_ id: ID, _ forward: Bool) -> ID?
+}
+
+/// Scroll identity of an Input or Output channel strip, so Tab can bring the
+/// strip whose trim value is being edited into view.
+struct TrimStripID: Hashable {
+    let strip: Int
+}
+
+/// Compact legacy-style dB readout. It is display-only until clicked, then
+/// accepts a value clamped to `range` and rounded to `step` — the same limits
+/// as the fader it sits under — and commits with Return (Escape cancels). Tab
+/// commits and moves to the next readout on the page, Shift-Tab to the
+/// previous one. Keeping this outside FaderView also lets the parent align one
+/// readout beneath a stereo fader pair, as the original Maestro did.
+///
+/// Used for the Mixer's fader level and for the Input and Output trim values
+/// (Symphony I/O User's Guide p. 55 item 6). The parsing and the Tab order are
+/// `LevelEntry` in MaestroCore, where they are unit-tested.
+struct EditableLevelReadout<ID: Hashable>: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let entry: LevelReadoutEntry<ID>
+    /// Fixed height of the pill, or nil to hug the text with a little padding.
+    var height: CGFloat? = 22
+    @State private var editText = ""
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var isEditing: Bool { entry.editing.wrappedValue == entry.id }
+
+    /// Apply the typed text (unless cancelled or not a number), then either
+    /// hand editing to `next` or stop editing altogether.
+    private func finishEditing(commit: Bool, movingTo next: ID? = nil) {
+        if commit, let typed = LevelEntry.value(typed: editText, range: range, step: step),
+           typed != value {
+            value = typed
+        }
+        if let next {
+            // The next readout takes keyboard focus as its field appears.
+            entry.editing.wrappedValue = next
+            return
+        }
+        entry.editing.wrappedValue = nil
+        entry.focus.wrappedValue = nil
+        NSApp.keyWindow?.endEditing(for: nil)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
+    private var field: some View {
+        TextField("", text: $editText)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .multilineTextAlignment(.center)
+            .textFieldStyle(.plain)
+            .focused(entry.focus, equals: entry.id)
+            .onSubmit { finishEditing(commit: true) }
+            .onExitCommand { finishEditing(commit: false) }
+            // Tab arrives as "\t"; Shift-Tab as the back-tab character.
+            .onKeyPress(keys: [.tab, KeyEquivalent("\u{19}")]) { press in
+                let forward = press.key == .tab && !press.modifiers.contains(.shift)
+                finishEditing(commit: true, movingTo: entry.neighbour(entry.id, forward))
+                return .handled
+            }
+            .onAppear {
+                editText = LevelEntry.text(for: value, step: step)
+                DispatchQueue.main.async {
+                    entry.focus.wrappedValue = entry.id
+                    // Wait for AppKit to install the field editor before
+                    // selecting, so the first keystroke replaces the
+                    // displayed value instead of appending to it.
+                    DispatchQueue.main.async {
+                        NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: nil)
+                    }
+                }
+            }
+    }
+
+    var body: some View {
+        // The value text stays in the layout while editing, so the pill keeps
+        // its size and the strip does not move when the field appears.
+        Text(LevelEntry.text(for: value, step: step))
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .opacity(isEditing ? 0 : 1)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .padding(.vertical, height == nil ? 2 : 0)
+            .overlay { if isEditing { field } }
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if !isEditing { entry.editing.wrappedValue = entry.id }
+            }
+            // Keyboard focus left the field some other way (a click elsewhere):
+            // stop editing and keep the value as it was.
+            .onChange(of: entry.focus.wrappedValue) { old, new in
+                if old == entry.id, new != entry.id, isEditing {
+                    entry.editing.wrappedValue = nil
+                }
+            }
+            // A readout that becomes disabled or hidden is no longer editing.
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled, isEditing { entry.editing.wrappedValue = nil }
+            }
+            .onDisappear {
+                if isEditing { entry.editing.wrappedValue = nil }
+            }
+    }
+}
