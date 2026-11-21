@@ -261,7 +261,7 @@ struct DeviceSettingsView: View {
             // Above everything, and never greyed out by a load: this is the one
             // thing on the page that may explain why the rest misbehaves.
             if let found = appState.originalApogeeDrivers, !found.isEmpty {
-                OriginalApogeeDriversWarning(finding: found)
+                OriginalApogeeDriversWarning(finding: found, conflict: appState.apogeeDriverConflict)
                     .unredacted()
             }
             clockSection
@@ -1372,6 +1372,10 @@ struct DeviceSettingsView: View {
             dextActionStatus = "Maestro ThunderBridge driver extension update is pending; reconnect ThunderBridge after closing audio applications."
             dextAlertTitle = "Driver Update Pending"
             dextAlertMessage = "macOS already has a Maestro ThunderBridge driver extension activation in progress. Close audio applications, then disconnect and reconnect the ThunderBridge to finish the update."
+        case .heldForApogeeDriver:
+            dextActionStatus = ApogeeDriverConflict.consequence
+            dextAlertTitle = ApogeeDriverConflict.heldBannerTitle
+            dextAlertMessage = ApogeeDriverConflict.heldBannerMessage
         case .failed(let message):
             dextActionStatus = "Maestro ThunderBridge driver extension setup failed: \(message)"
             dextAlertTitle = "Maestro ThunderBridge Driver Extension Setup Failed"
@@ -1388,12 +1392,14 @@ struct DeviceSettingsView: View {
         }
         if showAlert {
             switch status {
-            case .needsUserApproval, .willCompleteAfterReboot, .upgradePending, .failed, .notBundled:
+            case .needsUserApproval, .willCompleteAfterReboot, .upgradePending, .heldForApogeeDriver, .failed,
+                 .notBundled:
                 let token: String
                 switch status {
                 case .needsUserApproval: token = "approval"
                 case .willCompleteAfterReboot: token = "reboot"
                 case .upgradePending: token = "upgrade"
+                case .heldForApogeeDriver: token = "apogee-driver"
                 case .failed: token = "failed"
                 case .notBundled: token = "missing"
                 default: token = ""

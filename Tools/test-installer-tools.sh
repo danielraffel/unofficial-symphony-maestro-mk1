@@ -263,7 +263,9 @@ run_find() {
     local dir="$1" loaded="${2:-}"
     mkdir -p "$dir/root"
     printf '%s\n' "$loaded" > "$dir/loaded.txt"
-    mkstub "$dir/kmutil" "cat '$dir/loaded.txt'"
+    # `kmutil inspect` reads the auxiliary collection: aux.txt when the case
+    # has one, a failure otherwise. Anything else is `showloaded`.
+    mkstub "$dir/kmutil" "if [ \"\$1\" = inspect ]; then cat '$dir/aux.txt' 2>/dev/null; else cat '$dir/loaded.txt'; fi"
     (
         # shellcheck source=/dev/null
         . "$PRE"
@@ -333,7 +335,8 @@ Kernel extension: /Library/Extensions/Symphony64.kext" && fail "an installed kex
 ) || exit 1
 ok "preinstall: a kext loaded with its file gone asks for a restart, not Uninstall again"
 
-# The decision: fresh installs are blocked; an update of Maestro goes ahead.
+# The decision: a fresh install is blocked by anything found; an update of
+# Maestro only by a kernel driver for the ThunderBridge or PCIe card.
 # $1 = case dir, $2 = bundle ID of /Applications/Maestro.app ("" = none), $3 = findings.
 decide() {
     local dir="$1" id="$2" found="$3"
@@ -356,13 +359,16 @@ FOUND_LOADED="Loaded kernel extension: com.apogeedigital.driver.Symphony64Thunde
 [ "$(decide "$WORK/d-fresh" "" "$FOUND_FILE")" = block ] || fail "fresh install with the kext: not blocked"
 [ "$(decide "$WORK/d-fresh-hal" "" "$FOUND_HAL")" = block ] || fail "fresh install with a HAL plug-in: not blocked"
 [ "$(decide "$WORK/d-restart" "" "$FOUND_LOADED")" = restart ] || fail "fresh install, loaded only: not restart"
-[ "$(decide "$WORK/d-update" com.danielraffel.maestro "$FOUND_FILE")" = update ] || fail "update with the kext: blocked"
+[ "$(decide "$WORK/d-update" com.danielraffel.maestro "$FOUND_FILE")" = block ] || fail "update with the kext: not blocked"
 [ "$(decide "$WORK/d-update-hal" com.danielraffel.maestro "$FOUND_HAL")" = update ] || fail "update with a HAL plug-in: blocked"
-[ "$(decide "$WORK/d-update-loaded" com.danielraffel.maestro "$FOUND_LOADED")" = update ] || fail "update, loaded only: blocked"
+[ "$(decide "$WORK/d-update-loaded" com.danielraffel.maestro "$FOUND_LOADED")" = restart ] \
+    || fail "update, kext loaded with its file gone: not asked to restart"
+[ "$(decide "$WORK/d-update-loaded-hal" com.danielraffel.maestro "$FOUND_LOADED
+$FOUND_HAL")" = block ] || fail "update, loaded kext and a HAL plug-in: not blocked"
 [ "$(decide "$WORK/d-apogee-app" com.apogee.Maestro "$FOUND_FILE")" = block ] \
     || fail "Apogee's own /Applications/Maestro.app taken for ours"
 [ "$(decide "$WORK/d-update-clear" com.danielraffel.maestro "")" = clear ] || fail "update, nothing found: not clear"
-ok "preinstall: Apogee's drivers block a fresh install, not an update of Maestro (by bundle ID, not name)"
+ok "preinstall: Apogee's drivers block a fresh install; an update only for a ThunderBridge or PCIe kernel driver (Maestro by bundle ID, not name)"
 
 C="$WORK/apogee-kext-pcie"
 OUT="$(run_find "$C" "  191  0 0 0 0 com.apogeedigital.driver.Symphony64 (5.5) ABC <8 6 5 3 2 1>")"
@@ -386,5 +392,137 @@ OUT="$(run_find "$C")"
 [ "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" = 4 ] || fail "daemons, old plug-in and USB override kext: $OUT"
 printf '%s\n' "$OUT" | grep -q usbApogeePlugin && fail "flagged usbApogeePlugin outside Symphony Systems"
 ok "preinstall: the Symphony launch daemons, an old-location Symphony plug-in and the USB override kext block"
+
+# ── Preinstall step 3 as main runs it: update and first install ─────────────
+# Runs original_apogee_gate against the fake root in $1/root with a stubbed
+# kmutil, kextstat and osascript. $2 = bundle ID of /Applications/Maestro.app
+# ("" = a first install), $3 = what kmutil showloaded prints, $4 = "fail" makes
+# kmutil and kextstat both fail. Prints "blocked" or "proceeds"; the dialog text
+# lands in $1/dialog.txt and the install log in $1/log.
+gate() {
+    local dir="$1" id="$2" loaded="${3:-}" tools="${4:-ok}"
+    mkdir -p "$dir/root"
+    if [ -n "$id" ]; then
+        mkdir -p "$dir/root/Applications/Maestro.app/Contents"
+        plutil -create xml1 "$dir/root/Applications/Maestro.app/Contents/Info.plist"
+        plutil -insert CFBundleIdentifier -string "$id" "$dir/root/Applications/Maestro.app/Contents/Info.plist"
+    fi
+    printf '%s\n' "$loaded" > "$dir/loaded.txt"
+    if [ "$tools" = fail ]; then
+        mkstub "$dir/kmutil" "exit 71"
+    else
+        mkstub "$dir/kmutil" "if [ \"\$1\" = inspect ]; then cat '$dir/aux.txt' 2>/dev/null; else cat '$dir/loaded.txt'; fi"
+    fi
+    mkstub "$dir/osascript" "printf '%s' \"\$BLOCKED_TEXT\" > '$dir/dialog.txt'; echo 'button returned:OK'"
+    (
+        # shellcheck source=/dev/null
+        . "$PRE"
+        if APOGEE_ROOT="$dir/root" KMUTIL="$dir/kmutil" KEXTSTAT=/usr/bin/false OSASCRIPT="$dir/osascript" \
+            LOG="$dir/log" original_apogee_gate; then echo proceeds; else echo blocked; fi
+    )
+}
+OURS=com.danielraffel.maestro
+TB_LOADED="  190  0 0 0 0 com.apogeedigital.driver.Symphony64ThunderBridge (1.5) ABC <8 6 5 3 2 1>"
+UPDATE_NOTE_TEXT="You are seeing this while updating because this version now checks for Apogee's original driver, and it found it on this Mac. Your current Maestro is unchanged."
+# The block screen, in order: what, the fix, still blocked, nothing changed.
+check_block_text() {  # $1 = dialog file, $2 = update|install
+    local text; text="$(cat "$1")"
+    case "$text" in
+        "Apogee's original Symphony driver is still installed on this Mac, and Maestro cannot be installed or updated while it is. With both drivers on the ThunderBridge or PCIe card, macOS can crash and restart repeatedly."*"To fix this:"*"1. Run Apogee's own uninstaller"*"https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg"*"2. Restart your Mac."*"3. Run this installer again"*"If it is still blocked after that"*"Open Removal Guide"*"https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers"*"This installer changed nothing on your Mac.") ;;
+        *) fail "block screen text or order ($2): $text" ;;
+    esac
+    if [ "$2" = update ]; then
+        case "$text" in
+            *"restart repeatedly."$'\n\n'"$UPDATE_NOTE_TEXT"$'\n\n'"To fix this:"*) ;;
+            *) fail "an update's block screen lacks the update sentence after the opening: $text" ;;
+        esac
+    else
+        case "$text" in *"while updating"*|*"Your current Maestro"*) fail "a first install's block screen shows the update sentence" ;; esac
+    fi
+    # Maestro's own removal commands are never the installer's advice.
+    case "$text" in *kmutil*|*sudo*) fail "block screen offers removal commands: $text" ;; esac
+    [ "$(printf '%s' "$text" | wc -c)" -le 1400 ] || fail "block screen text is too long for a dialog"
+}
+
+C="$WORK/g-update-loaded"
+mkbundle "$C/root/Library/Extensions/Symphony64Thunderbridge.kext"
+[ "$(gate "$C" "$OURS" "$TB_LOADED")" = blocked ] || fail "update with Apogee's ThunderBridge kext loaded was not blocked"
+check_block_text "$C/dialog.txt" update
+grep -q "BLOCKED (update)" "$C/log" || fail "update block not logged: $(cat "$C/log")"
+ok "preinstall: an update is blocked while Apogee's ThunderBridge kext is loaded, and says why an update was stopped"
+
+C="$WORK/g-update-loaded-only"
+[ "$(gate "$C" "$OURS" "  191  0 0 0 0 com.apogeedigital.driver.Symphony64 (1.5) ABC <8 6>")" = blocked ] \
+    || fail "update with the PCIe kext loaded and its file gone was not blocked"
+grep -q "Restart your Mac, then run this installer again." "$C/dialog.txt" || fail "loaded-only update: $(cat "$C/dialog.txt")"
+grep -qF "$UPDATE_NOTE_TEXT" "$C/dialog.txt" || fail "loaded-only update lacks the update sentence"
+ok "preinstall: an update with only a loaded PCIe kext left is stopped and asked to restart"
+
+for WHERE in "Library/StagedExtensions/Library/Extensions/Symphony64Thunderbridge.kext" \
+    "Library/Extensions/Symphony64.kext" "System/Library/Extensions/Symphony64Thunderbridge.kext"; do
+    C="$WORK/g-update-$(echo "$WHERE" | tr '/ ' '__')"
+    mkbundle "$C/root/$WHERE"
+    [ "$(gate "$C" "$OURS" "$OURS_LOADED")" = blocked ] || fail "update with $WHERE (not loaded) was not blocked"
+    check_block_text "$C/dialog.txt" update
+done
+ok "preinstall: an update is blocked by a ThunderBridge or PCIe kext that is staged or in an Extensions folder, not loaded"
+
+C="$WORK/g-update-aux"
+mkdir -p "$C/root/Library/KernelCollections"; touch "$C/root/Library/KernelCollections/AuxiliaryKernelExtensions.kc"
+printf '%s\n' "com.example.other (1.0)" "com.apogeedigital.driver.Symphony64ThunderBridge (1.5)" > "$C/aux.txt"
+[ "$(gate "$C" "$OURS" "$OURS_LOADED")" = blocked ] || fail "update with the kext in the auxiliary collection was not blocked"
+check_block_text "$C/dialog.txt" update
+grep -q "auxiliary kernel collection): com.apogeedigital.driver.Symphony64ThunderBridge" "$C/log" \
+    || fail "auxiliary collection finding not logged: $(cat "$C/log")"
+ok "preinstall: an update is blocked by a ThunderBridge kext in the auxiliary kernel collection"
+
+# Leftovers that cannot put a second driver on the card: an update goes ahead.
+C="$WORK/g-update-leftovers"
+mkdir -p "$C/root/Library/LaunchDaemons" "$C/root/Library/Application Support/Apogee" "$C/root/Library/Audio/Plug-Ins/HAL/Apogee"
+touch "$C/root/Library/LaunchDaemons/com.SymphonyDaemon.plist" "$C/root/Library/LaunchDaemons/com.SymphonyIOUSBDaemon.plist" \
+    "$C/root/Library/LaunchDaemons/com.apogee.other.plist"
+mkbundle "$C/root/$HAL_DIR/SymphonyPlugin.bundle"
+mkbundle "$C/root/$HAL_DIR/SymphonyIOUSBPlugIn.bundle"
+mkbundle "$C/root/Library/Extensions/SymphonyIOUSBOverideDriver.kext"
+mkbundle "$C/root/Library/Extensions/SymphonyMobile.kext"
+[ "$(gate "$C" "$OURS" "$OURS_LOADED
+    5 0 0 0 0 com.apogee.driver.ApogeeUSBSymphonyIOAudio (1.0)")" = proceeds ] \
+    || fail "update blocked by launch daemons, the HAL folder, Application Support or USB-only parts: $(cat "$C/log")"
+[ ! -e "$C/dialog.txt" ] || fail "a dialog was shown for an update that goes ahead"
+[ "$(grep -c "Found original Apogee driver" "$C/log")" = 7 ] || fail "leftovers not all logged: $(cat "$C/log")"
+ok "preinstall: an update goes ahead with only launch daemons, HAL plug-ins, Application Support or USB-only parts"
+
+# A first install is as before: anything found blocks; no update sentence.
+C="$WORK/g-fresh-leftovers"
+mkdir -p "$C/root/Library/LaunchDaemons"; touch "$C/root/Library/LaunchDaemons/com.SymphonyDaemon.plist"
+[ "$(gate "$C" "" "$OURS_LOADED")" = blocked ] || fail "first install with a Symphony launch daemon was not blocked"
+check_block_text "$C/dialog.txt" install
+C="$WORK/g-fresh-kext"
+mkbundle "$C/root/Library/Extensions/Symphony64Thunderbridge.kext"
+[ "$(gate "$C" "" "$TB_LOADED")" = blocked ] || fail "first install with the kext loaded was not blocked"
+check_block_text "$C/dialog.txt" install
+grep -q "BLOCKED (install)" "$C/log" || fail "first-install block not logged"
+C="$WORK/g-fresh-restart"
+[ "$(gate "$C" "" "$TB_LOADED")" = blocked ] || fail "first install with a loaded kext was not stopped"
+grep -q "Restart your Mac, then run this installer again." "$C/dialog.txt" || fail "first install, loaded only: no restart text"
+grep -q "while updating" "$C/dialog.txt" && fail "first install's restart screen shows the update sentence"
+C="$WORK/g-fresh-clear"
+[ "$(gate "$C" "" "$OURS_LOADED")" = proceeds ] || fail "first install with nothing found was blocked"
+C="$WORK/g-update-clear"
+[ "$(gate "$C" "$OURS" "$OURS_LOADED")" = proceeds ] || fail "update with nothing found was blocked"
+ok "preinstall: a first install is blocked as before, without the update sentence; nothing found goes ahead"
+
+# Detection that fails is not a finding: log it and go ahead.
+C="$WORK/g-detect-fail"
+[ "$(gate "$C" "$OURS" "$TB_LOADED" fail)" = proceeds ] || fail "update blocked when kmutil and kextstat both failed"
+grep -q "Could not check: the loaded kernel extensions" "$C/log" || fail "failed detection not logged: $(cat "$C/log")"
+C="$WORK/g-detect-fail-fresh"
+[ "$(gate "$C" "" "" fail)" = proceeds ] || fail "first install blocked when kmutil and kextstat both failed"
+C="$WORK/g-detect-fail-aux"
+mkdir -p "$C/root/Library/KernelCollections"; touch "$C/root/Library/KernelCollections/AuxiliaryKernelExtensions.kc"
+[ "$(gate "$C" "$OURS" "$OURS_LOADED")" = proceeds ] || fail "update blocked when the auxiliary collection could not be read"
+grep -q "Could not check: the auxiliary kernel collection" "$C/log" || fail "unreadable collection not logged: $(cat "$C/log")"
+[ ! -e "$C/dialog.txt" ] || fail "a dialog was shown for a failed detection"
+ok "preinstall: detection that fails (kmutil and kextstat, or an unreadable collection) is logged and does not block"
 
 echo "Installer tool tests passed ($PASS)"

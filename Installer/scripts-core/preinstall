@@ -15,12 +15,24 @@ set -euo pipefail
 # A bundle counts only while its Contents/Info.plist is present, so one renamed
 # to .disabled-maestro or .disabled-asp is already deactivated.
 #
-# Prints one line per component found and returns 0. APOGEE_ROOT, KMUTIL and
-# KEXTSTAT are overridable for Tools/test-installer-tools.sh.
+# Prints one line per component found and returns 0. A check that could not be
+# made (kmutil and kextstat both failing, a collection that cannot be read) is
+# reported on stderr as "Could not check: ..." and never counts as a finding:
+# original_apogee_gate writes those lines to the install log and carries on.
+# APOGEE_ROOT, KMUTIL and KEXTSTAT are overridable for
+# Tools/test-installer-tools.sh.
 APOGEE_HAL_BUNDLES=("SymphonyPlugin.bundle" "SymphonyIOUSBPlugIn.bundle" "usbApogeePlugin.bundle")
 APOGEE_KEXTS=("Symphony64Thunderbridge.kext" "Symphony64.kext" "SymphonyIOUSBOverideDriver.kext" "SymphonyMobile.kext")
 APOGEE_KEXT_IDS=("com.apogeedigital.driver.Symphony64ThunderBridge" "com.apogeedigital.driver.Symphony64" "com.apogee.driver.ApogeeUSBSymphonyIOAudio")
 APOGEE_DAEMONS=("com.SymphonyDaemon.plist" "com.SymphonyIOUSBDaemon.plist")
+# The two kernel drivers that take the ThunderBridge or the Symphony 64 PCIe
+# card, the device Maestro's driver extension also takes. With one of them and
+# Maestro's driver on the card, macOS's kernel crashed when either let go, about
+# 24 times in two days on a user's Mac. These stop an update as well as a first
+# install (pcie_kernel_drivers). Same pair as `pciKernelExtensions` in
+# MaestroCore/OriginalApogeeDrivers.swift.
+APOGEE_PCIE_KEXTS=("Symphony64Thunderbridge.kext" "Symphony64.kext")
+APOGEE_PCIE_KEXT_IDS=("com.apogeedigital.driver.Symphony64ThunderBridge" "com.apogeedigital.driver.Symphony64")
 
 find_original_apogee() {
     local root="${APOGEE_ROOT:-}"
@@ -53,14 +65,55 @@ find_original_apogee() {
     # removes the file, but the kext stays in the kernel until a restart.
     # Captured first, then matched: piping into `grep -q` under pipefail can
     # report a match as a failure when the producer dies of SIGPIPE.
-    loaded="$("${KMUTIL:-/usr/bin/kmutil}" showloaded --list-only 2>/dev/null \
-        || "${KEXTSTAT:-/usr/sbin/kextstat}" 2>/dev/null || true)"
+    if ! loaded="$("${KMUTIL:-/usr/bin/kmutil}" showloaded --list-only 2>/dev/null \
+        || "${KEXTSTAT:-/usr/sbin/kextstat}" 2>/dev/null)"; then
+        loaded=""
+        echo "Could not check: the loaded kernel extensions (kmutil showloaded and kextstat both failed)" >&2
+    fi
     for id in "${APOGEE_KEXT_IDS[@]}"; do
         # Whole bundle ID only (-w): "...Symphony64" must not match "...Symphony64ThunderBridge".
         if printf '%s\n' "$loaded" | grep -Fqw -- "$id"; then
             echo "Loaded kernel extension: $id"
         fi
     done
+    # The auxiliary kernel collection: the third-party kexts macOS has built
+    # into what it boots with. A kext can still be in it, and load at the next
+    # restart, with no file left in either folder above (GitHub issue 32). The
+    # file exists only on a Mac with a third-party kext approved.
+    local aux="$root/Library/KernelCollections/AuxiliaryKernelExtensions.kc" listed
+    if [ -e "$aux" ]; then
+        if listed="$("${KMUTIL:-/usr/bin/kmutil}" inspect -A "$aux" 2>/dev/null)" && [ -n "$listed" ]; then
+            for id in "${APOGEE_KEXT_IDS[@]}"; do
+                if printf '%s\n' "$listed" | grep -Fqw -- "$id"; then
+                    echo "Kernel extension (in macOS's auxiliary kernel collection): $id"
+                fi
+            done
+        else
+            echo "Could not check: the auxiliary kernel collection (kmutil inspect could not read $aux)" >&2
+        fi
+    fi
+    return 0
+}
+
+# Of what find_original_apogee printed ($1), the lines that are a kernel driver
+# for the ThunderBridge or the Symphony 64 PCIe card: loaded, in an Extensions
+# folder, staged by macOS, or in the auxiliary kernel collection. Not the HAL
+# plug-ins, the launch daemons or the USB override kext: those cannot put a
+# second driver on the card.
+pcie_kernel_drivers() {
+    local line item
+    while IFS= read -r line; do
+        for item in "${APOGEE_PCIE_KEXTS[@]}"; do
+            case "$line" in
+                "Kernel extension"*": "*"/$item") echo "$line" ;;
+            esac
+        done
+        for item in "${APOGEE_PCIE_KEXT_IDS[@]}"; do
+            case "$line" in
+                "Loaded kernel extension: $item"|"Kernel extension (in macOS's auxiliary kernel collection): $item") echo "$line" ;;
+            esac
+        done
+    done <<< "$1"
     return 0
 }
 
@@ -89,29 +142,78 @@ only_awaiting_restart() {
 
 # What step 3 does about what find_original_apogee printed ($1):
 #   clear    nothing found
-#   update   found, but Maestro is already installed: an update goes ahead, so
-#            someone already running both is not stuck on an old version behind
-#            a failed install; Maestro's Device Settings warns them
-#   restart  fresh install, and only a kext still loaded with its file gone
-#   block    fresh install with them installed
+#   update   Maestro is already installed and nothing found can put a second
+#            driver on the card (HAL plug-ins, launch daemons, the USB kext):
+#            the update goes ahead and Maestro's Device Settings warns
+#   restart  only a kext still loaded with its file gone
+#   block    a fresh install with anything found, or an update with a kernel
+#            driver for the ThunderBridge or PCIe card (pcie_kernel_drivers)
 original_apogee_decision() {
     if [ -z "$1" ]; then echo clear
-    elif maestro_already_installed; then echo update
+    elif maestro_already_installed && [ -z "$(pcie_kernel_drivers "$1")" ]; then echo update
     elif only_awaiting_restart "$1"; then echo restart
     else echo block
     fi
 }
 
+REMOVAL_GUIDE_URL="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers"
+APOGEE_RELEASE_URL="https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg"
+
+# The one sentence only an update shows: someone who already has Maestro does
+# not expect to be stopped.
+UPDATE_NOTE="You are seeing this while updating because this version now checks for Apogee's original driver, and it found it on this Mac. Your current Maestro is unchanged."
+
+# The text of the block dialog, the same for a first install and an update.
+# $1 = "update" adds UPDATE_NOTE. A dialog shows plain text only: no bold, no
+# links and nothing collapsible, so both addresses are written out and the
+# guide also has a button (blocked_dialog). Order: what, the fix, what to do if
+# it is still blocked, and that nothing was changed.
+blocked_text() {
+    echo "Apogee's original Symphony driver is still installed on this Mac, and Maestro cannot be installed or updated while it is. With both drivers on the ThunderBridge or PCIe card, macOS can crash and restart repeatedly."
+    echo
+    if [ "${1:-}" = update ]; then
+        echo "$UPDATE_NOTE"
+        echo
+    fi
+    cat <<EOF
+To fix this:
+1. Run Apogee's own uninstaller: download Symphony I/O Release 5.5, open it and choose Uninstall.
+   $APOGEE_RELEASE_URL
+2. Restart your Mac.
+3. Run this installer again (Apogee's Uninstall also removes Maestro; this puts it back).
+
+If it is still blocked after that, or Apogee's uninstaller won't run on your Mac, choose Open Removal Guide ("Removing Apogee's original drivers" in the Maestro user guide):
+$REMOVAL_GUIDE_URL
+
+This installer changed nothing on your Mac.
+EOF
+}
+
+# The text when only a restart is left. $1 = "update" adds UPDATE_NOTE.
+restart_text() {
+    echo "Apogee's original Symphony I/O drivers have been removed, but one is still loaded, and Maestro cannot be installed or updated while it is."
+    echo
+    if [ "${1:-}" = update ]; then
+        echo "$UPDATE_NOTE"
+        echo
+    fi
+    cat <<EOF
+Restart your Mac, then run this installer again.
+
+If you have already restarted and still see this, choose Open Removal Guide:
+$REMOVAL_GUIDE_URL
+
+This installer changed nothing on your Mac.
+EOF
+}
+
 # The dialog a blocked install ends with. A dialog's text cannot be clicked, so
 # the guide gets a button: it opens "Removing Apogee's original drivers" in the
 # browser of whoever is logged in at the console (this script runs as root).
-REMOVAL_GUIDE_URL="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers"
+# OSASCRIPT is for the tests.
 blocked_dialog() {
     local answer user uid
-    # The address is in the text as well, for anyone who would rather copy it.
-    answer="$(BLOCKED_TEXT="$1
-
-$REMOVAL_GUIDE_URL" osascript -e '
+    answer="$(BLOCKED_TEXT="$1" "${OSASCRIPT:-/usr/bin/osascript}" -e '
 display dialog (system attribute "BLOCKED_TEXT") buttons {"Open Removal Guide", "OK"} default button "OK" with icon stop with title "Installation Cannot Continue"
     ' 2>/dev/null || true)"
     case "$answer" in
@@ -124,6 +226,46 @@ display dialog (system attribute "BLOCKED_TEXT") buttons {"Open Removal Guide", 
             echo "[preinstall] Opened the removal guide" >> "${LOG:-/tmp/maestro-installer.log}"
             ;;
     esac
+}
+
+# Step 3 of main: look for Apogee's original drivers, log what was found and
+# what could not be checked, and show the dialog when the install must stop.
+# Returns 1 when it must stop. Changes nothing on the Mac. LOG must be set.
+original_apogee_gate() {
+    local found notes item kind=install
+    notes="$(mktemp "${TMPDIR:-/tmp}/maestro-preinstall.XXXXXX" 2>/dev/null || true)"
+    found="$(find_original_apogee 2>"${notes:-/dev/null}")"
+    if [ -n "$notes" ]; then
+        while IFS= read -r item; do
+            if [ -n "$item" ]; then echo "[preinstall] $item; not treated as a finding" >> "$LOG"; fi
+        done < "$notes"
+        rm -f "$notes"
+    fi
+    if [ -n "$found" ]; then
+        while IFS= read -r item; do
+            echo "[preinstall] Found original Apogee driver: $item" >> "$LOG"
+        done <<< "$found"
+    fi
+    if maestro_already_installed; then kind=update; fi
+    case "$(original_apogee_decision "$found")" in
+        clear)
+            echo "[preinstall] No original Apogee Symphony I/O drivers found (OK)" >> "$LOG"
+            ;;
+        update)
+            echo "[preinstall] Maestro is already installed and no Apogee kernel driver for the ThunderBridge or PCIe card was found: updating; Device Settings will warn" >> "$LOG"
+            ;;
+        restart)
+            echo "[preinstall] BLOCKED ($kind): an original Apogee kext is still loaded; restart needed" >> "$LOG"
+            blocked_dialog "$(restart_text "$kind")"
+            return 1
+            ;;
+        *)
+            echo "[preinstall] BLOCKED ($kind): Original Apogee Symphony I/O drivers found" >> "$LOG"
+            blocked_dialog "$(blocked_text "$kind")"
+            return 1
+            ;;
+    esac
+    return 0
 }
 
 main() {
@@ -150,45 +292,9 @@ fi
 echo "[preinstall] macOS version: $OS_VERSION (OK)" >> "$LOG"
 
 # ── 3. Check for Apogee's original Symphony I/O MkI drivers ────────────────
-ORIGINAL_FOUND="$(find_original_apogee)"
-if [ -n "$ORIGINAL_FOUND" ]; then
-    while IFS= read -r ITEM; do
-        echo "[preinstall] Found original Apogee driver: $ITEM" >> "$LOG"
-    done <<< "$ORIGINAL_FOUND"
-fi
-case "$(original_apogee_decision "$ORIGINAL_FOUND")" in
-    clear)
-        echo "[preinstall] No original Apogee Symphony I/O drivers found (OK)" >> "$LOG"
-        ;;
-    update)
-        echo "[preinstall] Maestro is already installed: updating anyway; Device Settings will warn" >> "$LOG"
-        ;;
-    restart)
-        echo "[preinstall] BLOCKED: an original Apogee kext is still loaded; restart needed" >> "$LOG"
-        blocked_dialog "Apogee's original Symphony I/O drivers have been removed, but one is still loaded.
-
-Restart your Mac, then run this installer again.
-
-If you have already restarted and still see this, choose Open Removal Guide."
-        exit 1
-        ;;
-    *)
-        echo "[preinstall] BLOCKED: Original Apogee Symphony I/O drivers found" >> "$LOG"
-        blocked_dialog "Apogee's original Symphony I/O drivers were detected.
-
-Symphony Maestro cannot be installed while they are installed or loaded. The two interfere with each other and can cause problems, including crashes.
-
-To fix this:
-1. Download Apogee's latest installer, Symphony I/O Release 5.5:
-   https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg
-2. Open the DMG and choose Uninstall
-3. Restart your Mac
-4. Run this installer again (Apogee's Uninstall also removes Maestro; this puts it back)
-
-If you are still blocked after uninstalling and restarting, or Apogee's uninstaller won't run on your Mac, choose Open Removal Guide: \"Removing Apogee's original drivers\" in the Maestro user guide."
-        exit 1
-        ;;
-esac
+# Before anything below is touched: a blocked install or update leaves the Mac
+# as it was.
+original_apogee_gate || exit 1
 
 # ── 4. Kill running Maestro app ─────────────────────────────────────────────
 if pgrep -x MaestroApp > /dev/null 2>&1; then
@@ -258,7 +364,7 @@ echo "[preinstall] All checks passed, proceeding with installation" >> "$LOG"
 exit 0
 }
 
-# Sourced by Tools/test-installer-tools.sh for find_original_apogee; run otherwise.
+# Sourced by Tools/test-installer-tools.sh for its functions; run otherwise.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     main "$@"
 fi

@@ -243,6 +243,9 @@ struct HelpView: View {
             + "Maestro and resets macOS's audio device settings. The two can interfere with each other and cause "
             + "problems, including crashes, and we can't investigate a problem while both are installed. "
             + "**Device Settings** shows a warning at the top while they are there, and lists what it found. "
+            + "While Apogee's driver for the ThunderBridge or PCIe card is loaded, Maestro does not start or "
+            + "update its own driver, and the installer stops: with both drivers on the card, macOS can crash "
+            + "and restart repeatedly. "
             + "If the warning is still there after all that, macOS may be loading its own stored copy of "
             + "Apogee's kernel extension; the warning has a command you can try for that."
         return (try? AttributedString(markdown: md)) ?? AttributedString(md)
