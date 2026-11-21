@@ -104,18 +104,24 @@ enum : uint32_t { kMicPreLanePhase = 0, kMicPreLaneHighPass = 1, kMicPreLaneType
 #define SYMPHONY_MICPRE_NOW_NS() clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
 #endif
 
-// VBus (dext 143): the loopback's state as the IO handler sees it. `channels`
-// is 0 while VBus is off; `out`/`in` are the mapped VBus stream buffers
-// (kNumSampleFrames frames of `channels` Float32 samples each) and are only
-// changed while `channels` is 0 and IO is stopped. [validStart, validEnd) is
-// the span of sample times the host has written to the VBus output and that
-// is still in the ring; the IO thread alone reads and writes it while IO runs.
+// VBus (dext 143): one generation of the loopback: the two VBus stream
+// buffers of one size, their mappings, and what the IO handler needs. A
+// generation's channels, buffers and pointers never change after it is made;
+// the IO handler reaches it through one atomic pointer load
+// (SymphonyThunderbridge_IVars::vbusIO, null while VBus is off), so a callback
+// always works on one consistent set. [validStart, validEnd) is the span of
+// sample times the host has written to the VBus output and that is still in
+// the ring; the IO thread alone reads and writes it while IO runs.
 struct SymphonyVBusIO {
-    uint32_t  channels;      // atomic
-    uint8_t  *out;
+    uint32_t  channels;
+    uint8_t  *out;           // kNumSampleFrames frames of `channels` Float32 samples
     uint8_t  *in;
     uint64_t  validStart;
     uint64_t  validEnd;
+    IOBufferMemoryDescriptor *outBuffer;   // exactly one ring of the format
+    IOBufferMemoryDescriptor *inBuffer;
+    IOMemoryMap              *outMap;
+    IOMemoryMap              *inMap;
 };
 
 struct SymphonyThunderbridge_IVars {
@@ -631,15 +637,17 @@ struct SymphonyThunderbridge_IVars {
     // ── VBus (dext 143): see "VBus" further down ────────────────────────────
     // Everything is null/0 until a size is first requested: a driver that is
     // never asked for VBus allocates nothing and publishes nothing for it.
-    // The objects are created, replaced and released in PerformVBusChange
-    // (IO stopped) and in Stop()'s teardown, both under portPublishLock.
-    IOBufferMemoryDescriptor *vbusOutBuffer;   // exactly one ring of the format in effect
-    IOBufferMemoryDescriptor *vbusInBuffer;
-    IOMemoryMap              *vbusOutMap;
-    IOMemoryMap              *vbusInMap;
+    // The streams are created, replaced and released in PerformVBusChange
+    // (IO stopped) and in Stop()'s teardown, under portPublishLock.
+    // vbusIO is the generation in use (atomic; null = off). vbusRetired is
+    // the one generation it replaced: its memory stays mapped until the NEXT
+    // change, or Stop(), so an IO callback that was still running when a
+    // change swapped the pointer never touches freed memory. Never more than
+    // one retired generation.
     IOUserAudioStream        *vbusOutStream;
     IOUserAudioStream        *vbusInStream;
-    SymphonyVBusIO            vbusIO;          // what the IO handler uses
+    SymphonyVBusIO           *vbusIO;
+    SymphonyVBusIO           *vbusRetired;
     uint32_t  vbusRequested;   // atomic: the size last asked for (selector 16)
     uint32_t  vbusPublished;   // atomic: the size of the streams on the device, 0 = none
     uint32_t  vbusBase;        // atomic: hardware channels before VBus channel 1 (32 or 64)
@@ -6240,27 +6248,33 @@ static inline void VBusRingCopy(uint8_t *dst, const uint8_t *src, size_t frameBy
     if (count > first) memcpy(dst, src, (size_t)(count - first) * frameBytes);
 }
 
-// The loopback, called by both IO handlers for WriteEnd and BeginRead.
-// Real-time: one atomic load when VBus is off; otherwise integer arithmetic
-// and at most four memcpy/memset over memory mapped before IO started. No
-// lock, no allocation, no logging, no register.
+// The loopback, called by both IO handlers for WriteEnd and BeginRead with
+// the generation they loaded (null: VBus is off, nothing to do).
+// Real-time: integer arithmetic and a bounded number of memcpy/memset over
+// memory mapped before IO started. No lock, no allocation, no logging, no
+// register.
 //
 // WriteEnd(t, frames): the host has just written [t, t + frames) of the VBus
 // output. That span is added to [validStart, validEnd). Frames the host
 // skipped between the end of the span and t are cleared (they still hold the
 // previous lap), and the span never covers more than one ring.
+// The host is not trusted to write every cycle (a cycle with no client
+// playing to VBus may leave the buffer as it was): after each WriteEnd the
+// output ring just past the span is zeroed for the next cycle's worth of
+// frames, so a cycle the host does not write holds silence, not the audio of
+// a ring ago. That region is taken out of the span (it costs the oldest
+// frames of a full ring, which nothing reads any more).
 // BeginRead(t, frames): the host is about to read [t, t + frames) of the VBus
 // input. The part inside the span is copied from the output buffer at the
 // same ring position; the rest is silence. A position is therefore never
-// read unless it was written for that very sample time: nothing plays ->
+// read unless it was marked for that very sample time: nothing plays ->
 // silence, and a client that stops playing is not heard again a ring later.
 // Every offset is taken modulo the ring and `frames` is clamped to it, so a
 // wrong sample time can cost audio but never memory.
 static inline void VBusIO(SymphonyVBusIO *v, bool write, uint32_t frames, uint64_t t)
 {
-    const uint32_t channels = __atomic_load_n(&v->channels, __ATOMIC_ACQUIRE);
-    if (!channels) return;
-    const size_t frameBytes = (size_t)channels * kVBusBytesPerSample;
+    if (!v) return;
+    const size_t frameBytes = (size_t)v->channels * kVBusBytesPerSample;
     if (frames > kNumSampleFrames) frames = kNumSampleFrames;
     uint64_t start = v->validStart, end = v->validEnd;
     if (write) {
@@ -6272,7 +6286,11 @@ static inline void VBusIO(SymphonyVBusIO *v, bool write, uint32_t frames, uint64
             start = t;   // the first write, a restart, or a jump of a ring or more
         }
         end = t + frames;
-        if (end - start > kNumSampleFrames) start = end - kNumSampleFrames;
+        // Silence for the next cycle, never over what was just written.
+        uint32_t ahead = frames;
+        if (ahead > kNumSampleFrames - frames) ahead = kNumSampleFrames - frames;
+        if (ahead) VBusRingZero(v->out, frameBytes, end, ahead);
+        if (end + ahead - start > kNumSampleFrames) start = end + ahead - kNumSampleFrames;
         v->validStart = start;
         v->validEnd = end;
         return;
@@ -6289,62 +6307,96 @@ static inline void VBusIO(SymphonyVBusIO *v, bool write, uint32_t frames, uint64
     if (readEnd > to) VBusRingZero(v->in, frameBytes, to, (uint32_t)(readEnd - to));
 }
 
+static inline SymphonyVBusIO *VBusCurrent(SymphonyThunderbridge_IVars *ivars)
+{
+    return __atomic_load_n(&ivars->vbusIO, __ATOMIC_ACQUIRE);
+}
+
 // An empty span: every sample time reads as silence until the host writes it
-// again. Two integer stores and no buffer access, so StartDevice and
-// StopDevice call it without portPublishLock (they must not wait for a
-// configuration change that is publishing on their queue). What a client
-// wrote before IO stopped is therefore never recorded after it starts again.
+// again. Two integer stores and no buffer access (StopDevice).
 static void VBusResetSpan(SymphonyThunderbridge_IVars *ivars)
 {
-    ivars->vbusIO.validStart = 0;
-    ivars->vbusIO.validEnd = 0;
-}
-
-// Silence in both buffers and an empty span. Under portPublishLock with IO
-// stopped (PerformVBusChange).
-static void VBusClear(SymphonyThunderbridge_IVars *ivars)
-{
-    SymphonyVBusIO &v = ivars->vbusIO;
-    const uint32_t channels = __atomic_load_n(&v.channels, __ATOMIC_ACQUIRE);
-    if (!channels || !v.out || !v.in) return;
-    const size_t bytes = (size_t)kNumSampleFrames * channels * kVBusBytesPerSample;
-    memset(v.out, 0, bytes);
-    memset(v.in, 0, bytes);
-    v.validStart = 0;
-    v.validEnd = 0;
-}
-
-// The VBus buffers and their mappings. In a configuration change (IO stopped
-// by Core Audio) right after the streams; in Stop() where the hardware
-// streams' own buffers are released (step 11b), long after the device went.
-static void VBusReleaseMemory(SymphonyThunderbridge_IVars *ivars)
-{
-    __atomic_store_n(&ivars->vbusIO.channels, 0u, __ATOMIC_RELEASE);
-    ivars->vbusIO.out = nullptr;
-    ivars->vbusIO.in = nullptr;
-    OSSafeReleaseNULL(ivars->vbusOutMap);
-    OSSafeReleaseNULL(ivars->vbusInMap);
-    OSSafeReleaseNULL(ivars->vbusOutBuffer);
-    OSSafeReleaseNULL(ivars->vbusInBuffer);
-}
-
-// Take the VBus streams off the device and release them. Under
-// portPublishLock, with IO stopped (a configuration change) or the device
-// already removed from the driver (Stop()). The IO handler is told first: it
-// uses the buffers only while channels != 0. The memory itself is kept when
-// `releaseMemory` is false (Stop(), see VBusReleaseMemory).
-static void VBusUnpublishLocked(SymphonyThunderbridge_IVars *ivars, bool releaseMemory)
-{
-    __atomic_store_n(&ivars->vbusIO.channels, 0u, __ATOMIC_RELEASE);
-    VBusResetSpan(ivars);
-    if (ivars->audioDevice) {
-        if (ivars->vbusOutStream) ivars->audioDevice->RemoveStream(ivars->vbusOutStream);
-        if (ivars->vbusInStream)  ivars->audioDevice->RemoveStream(ivars->vbusInStream);
+    if (SymphonyVBusIO *v = VBusCurrent(ivars)) {
+        v->validStart = 0;
+        v->validEnd = 0;
     }
+}
+
+// Silence in both rings and an empty span, with IO stopped: StartDevice
+// (nothing of an earlier IO session is in the buffers when the host's first
+// cycle comes, whether or not the host writes it) and a move after a Ports
+// change. Takes no lock: the generation it loaded stays mapped until the
+// change after the next one, or Stop() (see vbusRetired).
+static void VBusSilence(SymphonyThunderbridge_IVars *ivars)
+{
+    SymphonyVBusIO *v = VBusCurrent(ivars);
+    if (!v) return;
+    const size_t bytes = (size_t)kNumSampleFrames * v->channels * kVBusBytesPerSample;
+    memset(v->out, 0, bytes);
+    memset(v->in, 0, bytes);
+    v->validStart = 0;
+    v->validEnd = 0;
+}
+
+static void VBusFreeGeneration(SymphonyVBusIO *g)
+{
+    if (!g) return;
+    OSSafeReleaseNULL(g->outMap);
+    OSSafeReleaseNULL(g->inMap);
+    OSSafeReleaseNULL(g->outBuffer);
+    OSSafeReleaseNULL(g->inBuffer);
+    IODelete(g, SymphonyVBusIO, 1);
+}
+
+// The generation in use stops being used and is kept, mapped, as the one
+// retired generation; the generation retired by the change before this one
+// is freed now, a whole configuration change (IO stopped, started and
+// stopped again) after the IO handler last could have loaded it. Under
+// portPublishLock.
+static void VBusRetireLocked(SymphonyThunderbridge_IVars *ivars)
+{
+    SymphonyVBusIO *old = __atomic_exchange_n(&ivars->vbusIO, (SymphonyVBusIO *)nullptr, __ATOMIC_ACQ_REL);
+    if (!old) return;   // nothing in use: what is retired stays until the next real change
+    VBusFreeGeneration(ivars->vbusRetired);
+    ivars->vbusRetired = old;
+}
+
+// Every generation, in Stop() where the hardware streams' own buffers are
+// released (step 11b), long after the device went.
+static void VBusFreeAll(SymphonyThunderbridge_IVars *ivars)
+{
+    VBusFreeGeneration(__atomic_exchange_n(&ivars->vbusIO, (SymphonyVBusIO *)nullptr, __ATOMIC_ACQ_REL));
+    VBusFreeGeneration(ivars->vbusRetired);
+    ivars->vbusRetired = nullptr;
+}
+
+// Take the VBus streams off the device. In a configuration change this is
+// under portPublishLock (the change's own thread); Stop() calls it BEFORE it
+// takes the lock, with the hardware streams' RemoveStream, so that it never
+// waits, holding the lock, for a queue a configuration change is blocked on.
+static void VBusRemoveStreams(SymphonyThunderbridge_IVars *ivars)
+{
+    if (!ivars->audioDevice) return;
+    if (ivars->vbusOutStream) ivars->audioDevice->RemoveStream(ivars->vbusOutStream);
+    if (ivars->vbusInStream)  ivars->audioDevice->RemoveStream(ivars->vbusInStream);
+}
+
+// Drop the driver's references to the VBus streams. Under portPublishLock;
+// makes no call into the device. The memory is not touched.
+static void VBusReleaseStreamsLocked(SymphonyThunderbridge_IVars *ivars)
+{
     OSSafeReleaseNULL(ivars->vbusOutStream);
     OSSafeReleaseNULL(ivars->vbusInStream);
-    if (releaseMemory) VBusReleaseMemory(ivars);
     __atomic_store_n(&ivars->vbusPublished, 0u, __ATOMIC_RELEASE);
+}
+
+// A configuration change takes VBus off the device: the streams go, and the
+// generation is retired (not freed). Under portPublishLock with IO stopped.
+static void VBusUnpublishLocked(SymphonyThunderbridge_IVars *ivars)
+{
+    VBusRetireLocked(ivars);
+    VBusRemoveStreams(ivars);
+    VBusReleaseStreamsLocked(ivars);
 }
 
 // The N-channel Float32 formats, one per supported rate, and the index of
@@ -6373,31 +6425,36 @@ static uint32_t BuildVBusFormats(uint32_t channels, double rate,
 }
 
 // Create the VBus stream pair for `channels` and add it to the device after
-// `base` hardware channels. Under portPublishLock with IO stopped; nothing is
-// published when it fails.
+// `base` hardware channels. Under portPublishLock with IO stopped, after
+// VBusUnpublishLocked; nothing is published when it fails.
 static kern_return_t VBusPublishLocked(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
                                        uint32_t channels, uint32_t base)
 {
+    SymphonyVBusIO *g = IONewZero(SymphonyVBusIO, 1);
+    if (!g) return kIOReturnNoMemory;
+    g->channels = channels;
     // Exactly one ring of the format, like the hardware streams' buffers.
     const uint64_t bytes = (uint64_t)kNumSampleFrames * channels * kVBusBytesPerSample;
-    kern_return_t ret = IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, bytes, 0, &ivars->vbusOutBuffer);
-    if (ret == kIOReturnSuccess && ivars->vbusOutBuffer)
-        ret = IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, bytes, 0, &ivars->vbusInBuffer);
-    if (ret == kIOReturnSuccess && (!ivars->vbusOutBuffer || !ivars->vbusInBuffer)) ret = kIOReturnNoMemory;
+    kern_return_t ret = IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, bytes, 0, &g->outBuffer);
+    if (ret == kIOReturnSuccess && g->outBuffer)
+        ret = IOBufferMemoryDescriptor::Create(kIOMemoryDirectionInOut, bytes, 0, &g->inBuffer);
+    if (ret == kIOReturnSuccess && (!g->outBuffer || !g->inBuffer)) ret = kIOReturnNoMemory;
     if (ret == kIOReturnSuccess) {
-        ivars->vbusOutBuffer->SetLength(bytes);
-        ivars->vbusInBuffer->SetLength(bytes);
-        ret = ivars->vbusOutBuffer->CreateMapping(0, 0, 0, 0, 0, &ivars->vbusOutMap);
+        g->outBuffer->SetLength(bytes);
+        g->inBuffer->SetLength(bytes);
+        ret = g->outBuffer->CreateMapping(0, 0, 0, 0, 0, &g->outMap);
     }
     if (ret == kIOReturnSuccess)
-        ret = ivars->vbusInBuffer->CreateMapping(0, 0, 0, 0, 0, &ivars->vbusInMap);
-    if (ret == kIOReturnSuccess && (!ivars->vbusOutMap || !ivars->vbusInMap)) ret = kIOReturnNoMemory;
+        ret = g->inBuffer->CreateMapping(0, 0, 0, 0, 0, &g->inMap);
+    if (ret == kIOReturnSuccess && (!g->outMap || !g->inMap)) ret = kIOReturnNoMemory;
     if (ret == kIOReturnSuccess) {
+        g->out = (uint8_t *)g->outMap->GetAddress();
+        g->in = (uint8_t *)g->inMap->GetAddress();
         // New memory is never read before it is silence.
-        memset((void *)ivars->vbusOutMap->GetAddress(), 0, (size_t)bytes);
-        memset((void *)ivars->vbusInMap->GetAddress(), 0, (size_t)bytes);
-        auto out = IOUserAudioStream::Create(self, IOUserAudioStreamDirection::Output, ivars->vbusOutBuffer);
-        auto in = IOUserAudioStream::Create(self, IOUserAudioStreamDirection::Input, ivars->vbusInBuffer);
+        memset(g->out, 0, (size_t)bytes);
+        memset(g->in, 0, (size_t)bytes);
+        auto out = IOUserAudioStream::Create(self, IOUserAudioStreamDirection::Output, g->outBuffer);
+        auto in = IOUserAudioStream::Create(self, IOUserAudioStreamDirection::Input, g->inBuffer);
         if (out && in) {
             ivars->vbusOutStream = out.get();
             ivars->vbusOutStream->retain();
@@ -6424,16 +6481,16 @@ static kern_return_t VBusPublishLocked(SymphonyThunderbridge_IVars *ivars, Symph
         if (ret == kIOReturnSuccess) ret = ivars->audioDevice->AddStream(ivars->vbusInStream);
     }
     if (ret != kIOReturnSuccess) {
-        VBusUnpublishLocked(ivars, /*releaseMemory*/true);
+        // The IO handler never saw this generation: it is freed at once.
+        VBusRemoveStreams(ivars);
+        VBusReleaseStreamsLocked(ivars);
+        VBusFreeGeneration(g);
         return ret;
     }
-    ivars->vbusIO.out = (uint8_t *)ivars->vbusOutMap->GetAddress();
-    ivars->vbusIO.in = (uint8_t *)ivars->vbusInMap->GetAddress();
-    VBusResetSpan(ivars);
     __atomic_store_n(&ivars->vbusBase, base, __ATOMIC_RELEASE);
     __atomic_store_n(&ivars->vbusPublished, channels, __ATOMIC_RELEASE);
-    // Last: from here the IO handler uses the buffers.
-    __atomic_store_n(&ivars->vbusIO.channels, channels, __ATOMIC_RELEASE);
+    // Last: from here the IO handler uses the generation.
+    __atomic_store_n(&ivars->vbusIO, g, __ATOMIC_RELEASE);
     return kIOReturnSuccess;
 }
 
@@ -6488,6 +6545,8 @@ kern_return_t SymphonyThunderbridge::ReadVBusState(uint32_t *outWords)
 //   the requested size differs from the published one: the old stream pair
 //     is removed and released, and a new pair on new, silent buffers is added
 //     after the hardware channels. Nothing of the old size can be read again.
+//     The old buffers stay mapped until the change after this one (or Stop()),
+//     so the change does not rely on the last IO callback having returned.
 //   the size is the same but the hardware channels changed (Ports 32 <-> 64):
 //     the VBus channels move to follow them, 33- or 65-; the buffers are
 //     cleared.
@@ -6505,7 +6564,7 @@ kern_return_t SymphonyThunderbridge::PerformVBusChange()
         const uint32_t have = __atomic_load_n(&ivars->vbusPublished, __ATOMIC_ACQUIRE);
         const uint32_t base = VBusHardwareChannels(ivars);
         if (want != have) {
-            VBusUnpublishLocked(ivars, /*releaseMemory*/true);
+            VBusUnpublishLocked(ivars);
             if (want) {
                 result = VBusPublishLocked(ivars, this, want, base);
                 if (result != kIOReturnSuccess) {
@@ -6525,7 +6584,7 @@ kern_return_t SymphonyThunderbridge::PerformVBusChange()
             ivars->vbusOutStream->SetStartingChannel(base + 1);
             ivars->vbusInStream->SetStartingChannel(base + 1);
             __atomic_store_n(&ivars->vbusBase, base, __ATOMIC_RELEASE);
-            VBusClear(ivars);
+            VBusSilence(ivars);
             STLOG("VBus: %u channels moved after %u hardware channels", have, base);
             changed = true;
         }
@@ -6566,7 +6625,7 @@ static kern_return_t InstallTwoPortIOHandler(SymphonyThunderbridge_IVars *ivars)
             const bool write = in_io_operation == IOUserAudioIOOperationWriteEnd;
             if (!write && in_io_operation != IOUserAudioIOOperationBeginRead)
                 return kIOReturnSuccess;
-            VBusIO(&ivars->vbusIO, write, in_io_buffer_frame_size, in_sample_time);   // one atomic load when off
+            VBusIO(VBusCurrent(ivars), write, in_io_buffer_frame_size, in_sample_time);   // one atomic load when off
             const bool both = a2h2 && h2a2 &&
                               __atomic_load_n(&ivars->ioChannels, __ATOMIC_RELAXED) == 64;
             const uint32_t streamFrameBytes = both ? 2 * kPortBytes : kPortBytes;
@@ -8566,7 +8625,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                     // VBus (dext 143): host memory only; one atomic load when off.
                     if (in_io_operation == IOUserAudioIOOperationWriteEnd ||
                         in_io_operation == IOUserAudioIOOperationBeginRead)
-                        VBusIO(&ivars->vbusIO, in_io_operation == IOUserAudioIOOperationWriteEnd,
+                        VBusIO(VBusCurrent(ivars), in_io_operation == IOUserAudioIOOperationWriteEnd,
                                in_io_buffer_frame_size, in_sample_time);
 
                     // Diagnostic logging — first calls + periodic (STLOG is RT-unsafe).
@@ -9556,7 +9615,10 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     ivars->zeroTimestampSampleTime = 0;
     ivars->firstTimestampAfterStart = true;
     ivars->ioOpCount = 0;  // Reset diagnostic counter
-    VBusResetSpan(ivars);  // dext 143: the sample time starts again at 0
+    // dext 143: the sample time starts again at 0, and both VBus rings are
+    // silence, so nothing of an earlier IO session can be read, whether or
+    // not the host writes its first cycles.
+    VBusSilence(ivars);
     // M2: ioRunning is the publication gate between this thread (the AudioDriverKit
     // control queue) and the IRQ queue. Store it with RELEASE so the anchor payload
     // written just above (zeroTimestampSampleTime, firstTimestampAfterStart) is
@@ -9763,6 +9825,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 if (iv->audioDevice) {
                     if (iv->inputStream)  iv->audioDevice->RemoveStream(iv->inputStream);
                     if (iv->outputStream) iv->audioDevice->RemoveStream(iv->outputStream);
+                    VBusRemoveStreams(iv);   // dext 143: here, not under portPublishLock
                     if (iv->outputVolumeControl) iv->audioDevice->RemoveControl(iv->outputVolumeControl);
                     if (iv->outputMuteControl)   iv->audioDevice->RemoveControl(iv->outputMuteControl);
                     if (iv->clockSourceControl)  iv->audioDevice->RemoveControl(iv->clockSourceControl);
@@ -9791,7 +9854,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 // selectors, streams and device under this lock; wait for it.
                 // 'stopping' is set, so it will not start on them afterwards.
                 if (iv->portPublishLock) IOLockLock(iv->portPublishLock);
-                VBusUnpublishLocked(iv, /*releaseMemory*/false);   // dext 143: the device is still held here
+                VBusReleaseStreamsLocked(iv);   // dext 143: references only; no call into the device under the lock
                 for (uint32_t i = 0; i < 2; i++)
                     OSSafeReleaseNULL(iv->portSourceControl[i]);
                 OSSafeReleaseNULL(iv->vendorProperty);
@@ -9873,7 +9936,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 // ── 11b. Release memory maps, stream buffers, and DMA buffers
                 OSSafeReleaseNULL(iv->a2hDMAMap);
                 OSSafeReleaseNULL(iv->h2aDMAMap);
-                VBusReleaseMemory(iv);   // dext 143 (null unless VBus was on)
+                VBusFreeAll(iv);   // dext 143: the VBus buffers in use and retired (none unless VBus was on)
                 OSSafeReleaseNULL(iv->a2hStreamMap);
                 OSSafeReleaseNULL(iv->h2aStreamMap);
                 OSSafeReleaseNULL(iv->a2hStreamBuffer);
@@ -9920,6 +9983,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
             // path above). Missing Remove* leaves a child alive that retains the driver → orphan.
             if (ivars->inputStream)  ivars->audioDevice->RemoveStream(ivars->inputStream);
             if (ivars->outputStream) ivars->audioDevice->RemoveStream(ivars->outputStream);
+            VBusRemoveStreams(ivars);   // dext 143: here, not under portPublishLock
             if (ivars->outputVolumeControl) ivars->audioDevice->RemoveControl(ivars->outputVolumeControl);
             if (ivars->outputMuteControl)   ivars->audioDevice->RemoveControl(ivars->outputMuteControl);
             if (ivars->clockSourceControl)  ivars->audioDevice->RemoveControl(ivars->clockSourceControl);
@@ -9940,7 +10004,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
             RemoveObject(ivars->audioDevice);
         }
         if (ivars->portPublishLock) IOLockLock(ivars->portPublishLock);
-        VBusUnpublishLocked(ivars, /*releaseMemory*/false);   // dext 143: the device is still held here
+        VBusReleaseStreamsLocked(ivars);   // dext 143: references only; no call into the device under the lock
         for (uint32_t i = 0; i < 2; i++)
             OSSafeReleaseNULL(ivars->portSourceControl[i]);
         OSSafeReleaseNULL(ivars->vendorProperty);
@@ -9998,7 +10062,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
         }
         OSSafeReleaseNULL(ivars->a2hDMAMap);
         OSSafeReleaseNULL(ivars->h2aDMAMap);
-        VBusReleaseMemory(ivars);   // dext 143 (null unless VBus was on)
+        VBusFreeAll(ivars);   // dext 143: the VBus buffers in use and retired (none unless VBus was on)
         OSSafeReleaseNULL(ivars->a2hStreamMap);
         OSSafeReleaseNULL(ivars->h2aStreamMap);
         OSSafeReleaseNULL(ivars->a2hStreamBuffer);

@@ -26,6 +26,7 @@
 #include "SymphonyConverters.h"
 #endif
 
+#include <set>
 #include <cstdarg>
 #include <algorithm>
 #include <functional>
@@ -80,6 +81,10 @@ static bool gVerbose = false;
 static int gFailures = 0;
 
 void HostNoteBuffer(IOBufferMemoryDescriptor *b) { gHostAudio.buffers.push_back(b); }
+static std::set<const void *> gLiveBuffers;
+void HostBufferBorn(IOBufferMemoryDescriptor *b) { gLiveBuffers.insert(b); }
+void HostBufferDied(IOBufferMemoryDescriptor *b) { gLiveBuffers.erase(b); }
+static bool HostBufferAlive(const void *b) { return gLiveBuffers.count(b) != 0; }
 
 void HostLog(const char *fmt, ...)
 {
@@ -5080,16 +5085,28 @@ static void CheckVBusLoopback(const char *what, Run &r, uint32_t channels, uint3
     }
 
     // More than a ring played without a pause: a sample time whose position
-    // has since been written again for a later time is silence, not the
-    // later audio; the newest ring's worth is still read exactly.
+    // has since been written again for a later time, or cleared for the next
+    // cycle, is silence, not the later audio; the rest of the newest ring is
+    // still read exactly.
     {
         const uint64_t l = ring * 24;
         for (uint64_t at = l; at < l + ring + 2048; at += 1024) v.play(at, 1024);
         v.poisonInput();
-        CHECK(v.record(l, 512, 0, 0) == 0, "%s: a sample time overwritten a ring later is not silence", what);
-        CHECK(v.record(l + 2048, 1024, l + 2048, l + ring + 2048) == 0 &&
-              v.record(l + ring + 1024, 1024, l + 2048, l + ring + 2048) == 0,
+        CHECK(v.record(l, 512, 0, 0) == 0 && v.record(l + 2048, 1024, 0, 0) == 0,
+              "%s: a sample time overwritten a ring later is not silence", what);
+        CHECK(v.record(l + 3072, 1024, l + 3072, l + ring + 2048) == 0 &&
+              v.record(l + ring + 1024, 1024, l + 3072, l + ring + 2048) == 0,
               "%s: the newest ring of VBus audio is not read back exactly", what);
+        // The host reports cycles it did not write (WriteEnd, the buffer left
+        // as it was, which here still holds the audio of a ring ago): silence.
+        const uint64_t e = l + ring + 2048;
+        for (uint32_t k = 0; k < 4; k++) v.handler(1, IOUserAudioIOOperationWriteEnd, 512, e + k * 512, 0);
+        v.poisonInput();
+        CHECK(v.record(e, 4 * 512, 0, 0) == 0, "%s: a cycle the host did not write is not silence on VBin", what);
+        // And playing again after them is read exactly.
+        v.play(e + 4 * 512, 512);
+        CHECK(v.record(e + 4 * 512, 512, e + 4 * 512, e + 5 * 512) == 0,
+              "%s: audio after cycles the host did not write is not read back", what);
     }
 
     // IO stops and starts again: nothing of the last session is recorded.
@@ -5102,6 +5119,20 @@ static void CheckVBusLoopback(const char *what, Run &r, uint32_t channels, uint3
     CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: IO did not start", what);
     v.poison();
     CHECK(v.record(100, 256, 0, 0) == 0, "%s: audio from before IO started is recorded after it", what);
+    r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    // A previous session's audio is still in the output ring; IO starts, and
+    // the host's first cycles are reported without being written: silence.
+    // Both rings are silence from the moment IO starts.
+    v.play(100, 256);
+    r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+    v.poisonInput();
+    CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: IO did not start", what);
+    bad = 0;
+    for (size_t n = 0; n < (size_t)ring * channels; n++) if (v.out[n] != 0.0f || v.in[n] != 0.0f) bad++;
+    CHECK(bad == 0, "%s: the VBus rings are not silence when IO starts (%u samples)", what, bad);
+    v.handler(1, IOUserAudioIOOperationWriteEnd, 256, 100, 0);
+    v.poisonInput();
+    CHECK(v.record(100, 256, 0, 0) == 0, "%s: a previous IO session's audio reappears after StartDevice", what);
     r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
 }
 
@@ -5167,12 +5198,15 @@ static void RunVBusChecks()
             // The same size again: no configuration change.
             VBusSet(what, r, n, false, /*expectChange*/false);
         }
+        const void *old64[2] = {}, *old8[2] = {};
+        const size_t liveAt64 = gLiveBuffers.size();   // 64 in use, 48 retired
         // 64 -> 8 with a client streaming: the old pair is gone, the new
         // buffers are silent, and what was played at 64 is not recorded at 8.
         {
             r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
             Irq(r, 1);
             VBusBuffers big;
+            old64[0] = VBusStream(false)->memory; old64[1] = VBusStream(true)->memory;
             const uint64_t t = (uint64_t)kNumSampleFrames * 40 + 10;
             big.play(t, 300);
             const uint32_t removed = gHostAudio.streamsRemoved;
@@ -5185,6 +5219,15 @@ static void RunVBusChecks()
                 CHECK(LastElementName(r.card, 0, "in", ch) == "(none)" && LastElementName(r.card, 0, "out", ch) == "(none)",
                       "%s: channel %u kept its VBus name after 64 -> 8", o.name, ch);
             }
+            // The 64-channel buffers are retired, not freed: an IO callback
+            // that was still running on them cannot touch freed memory. The
+            // generation before them (48 channels) is gone: one is kept.
+            CHECK(HostBufferAlive(old64[0]) && HostBufferAlive(old64[1]),
+                  "%s: the replaced VBus buffers were freed inside the configuration change", o.name);
+            CHECK(gLiveBuffers.size() == liveAt64, "%s: %zu buffers alive after 64 -> 8 (want %zu: one retired generation)",
+                  o.name, gLiveBuffers.size(), liveAt64);
+            old8[0] = VBusStream(false)->memory; old8[1] = VBusStream(true)->memory;
+            big.handler(1, IOUserAudioIOOperationBeginRead, 64, t, 0);   // the new generation is what IO uses
             VBusBuffers small;
             uint32_t nonzero = 0;
             for (size_t n = 0; n < (size_t)kNumSampleFrames * 8; n++) if (small.out[n] != 0.0f || small.in[n] != 0.0f) nonzero++;
@@ -5226,6 +5269,12 @@ static void RunVBusChecks()
             Irq(r, 1);
             const size_t mark = VBusSet("VBus off while streaming", r, 0, /*ioRunning*/true);
             CheckVBusPublished("VBus off while streaming", r, 0, 32);
+            // One change later the 64-channel buffers are freed, and the
+            // 8-channel ones are the retired generation.
+            CHECK(!HostBufferAlive(old64[0]) && !HostBufferAlive(old64[1]),
+                  "%s: buffers retired two changes ago are still alive", o.name);
+            CHECK(HostBufferAlive(old8[0]) && HostBufferAlive(old8[1]),
+                  "%s: the buffers just replaced were freed at once", o.name);
             for (uint32_t ch = 33; ch <= 40; ch++)
                 CHECK(LastElementName(r.card, 0, "in", ch) == "(none)" && LastElementName(r.card, 0, "out", ch) == "(none)",
                       "%s: channel %u kept its VBus name after VBus was turned off", o.name, ch);
@@ -5238,6 +5287,7 @@ static void RunVBusChecks()
         }
         // A size that cannot be published leaves the device without VBus and says so.
         for (int succeed : { 0, 1 }) {   // the output stream is refused, then the input stream
+            const size_t liveBefore = gLiveBuffers.size();
             gHostAudio.failAddStreamAfter = succeed;
             SymphonyVBusStateOutput s = {};
             CHECK(CallVBus(r, kSymphonyVBusOperationSet, 16, &s) == kIOReturnSuccess, "%s: 16 refused", o.name);
@@ -5248,16 +5298,30 @@ static void RunVBusChecks()
                   gHostAudio.deviceStreams.size() == 2 && gHostLocksHeld == 0,
                   "%s: a failed publication left published=%u requested=%u flags=0x%x streams=%zu", o.name,
                   s.published, s.requested, s.flags, gHostAudio.deviceStreams.size());
+            CHECK(gLiveBuffers.size() == liveBefore, "%s: a failed publication left %zu buffers (was %zu)", o.name,
+                  gLiveBuffers.size(), liveBefore);
             HostPerformConfigChange(r, true);   // and is not tried again by itself
             CHECK(VBusState(r).published == 0, "%s: a failed size was published by a later configuration change", o.name);
         }
         // Teardown with VBus on.
         VBusSet("VBus 16 before Stop", r, 16, /*ioRunning*/true);
         CheckVBusPublished("VBus 16 before Stop", r, 16, 32);
+        const void *last16[2] = { VBusStream(false)->memory, VBusStream(true)->memory };
+        const uint32_t underLock = gHostAudio.streamsRemovedUnderLock;
+        const uint32_t removedBefore = gHostAudio.streamsRemoved;
         const size_t stop = r.card.lines.size();
         Finish(o, r);
         CHECK(gHostAudio.deviceStreams.empty(), "%s: %zu stream(s) still on the device after Stop", o.name,
               gHostAudio.deviceStreams.size());
+        // Stop() takes the VBus streams off the device before it takes the
+        // publish lock, like the hardware streams, and frees every VBus
+        // buffer, the retired generation included.
+        CHECK(gHostAudio.streamsRemoved == removedBefore + 4 && gHostAudio.streamsRemovedUnderLock == underLock,
+              "%s: Stop removed %u streams, %u of them while holding the publish lock", o.name,
+              gHostAudio.streamsRemoved - removedBefore, gHostAudio.streamsRemovedUnderLock - underLock);
+        CHECK(!HostBufferAlive(old8[0]) && !HostBufferAlive(old8[1]) &&
+              !HostBufferAlive(last16[0]) && !HostBufferAlive(last16[1]),
+              "%s: a VBus buffer is still alive after Stop", o.name);
         CHECK(gHostLocksHeld == 0, "%s: a lock is still held after Stop", o.name);
         (void)stop;
     }

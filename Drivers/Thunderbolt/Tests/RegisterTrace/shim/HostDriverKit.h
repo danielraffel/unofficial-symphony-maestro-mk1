@@ -302,9 +302,13 @@ public:
 
 class IOBufferMemoryDescriptor;
 void HostNoteBuffer(IOBufferMemoryDescriptor *b);
+// Every buffer that exists now (dext 143: a test can see when one is freed).
+void HostBufferBorn(IOBufferMemoryDescriptor *b);
+void HostBufferDied(IOBufferMemoryDescriptor *b);
 
 class IOBufferMemoryDescriptor : public IOMemoryDescriptor {
 public:
+    ~IOBufferMemoryDescriptor() override { HostBufferDied(this); }
     static kern_return_t Create(uint64_t, uint64_t capacity, uint64_t, IOBufferMemoryDescriptor **out) {
         auto *b = new IOBufferMemoryDescriptor;
         b->mem_ = calloc(1, capacity);
@@ -314,6 +318,7 @@ public:
         gHostBackend->HostEvent(buf);
         *out = b;
         HostNoteBuffer(b);
+        HostBufferBorn(b);
         return kIOReturnSuccess;
     }
     kern_return_t SetLength(uint64_t) { return kIOReturnSuccess; }
@@ -482,6 +487,7 @@ struct HostAudioRegistry {
     // two hardware streams first), and what was removed.
     std::vector<IOUserAudioStream *> deviceStreams;
     uint32_t streamsRemoved = 0;
+    uint32_t streamsRemovedUnderLock = 0;   // RemoveStream calls made while an IOLock was held
     int failAddStreamAfter = -1;         // >= 0: that many AddStream calls succeed, then one fails
 };
 extern HostAudioRegistry gHostAudio;
@@ -697,6 +703,7 @@ public:
         return kIOReturnSuccess;
     }
     kern_return_t RemoveStream(IOUserAudioStream *st) {
+        if (gHostLocksHeld > 0) gHostAudio.streamsRemovedUnderLock++;
         for (size_t i = 0; i < gHostAudio.deviceStreams.size(); i++) {
             if (gHostAudio.deviceStreams[i] != st) continue;
             gHostAudio.deviceStreams.erase(gHostAudio.deviceStreams.begin() + (long)i);
