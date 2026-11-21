@@ -58,7 +58,7 @@ This is a test build; two units have not been tried on hardware yet. Connect the
 
 Audio MIDI Setup shows a **Source** menu for the ThunderBridge, on the Input and Output tabs, with two entries: **Symphony I/O: ThunderBridge** (32 channels, the default) and **Symphony I/O: ThunderBridge 64** (64 channels; 33-64 are the unit on port 2). The macOS Sound menu in the menu bar shows the selected entry's name in place of the device name, which is why the default entry reads like the device name. Apogee's software called these "Port 1: 32ch" and "Port 1-2: 64ch".
 
-In Maestro the same setting is **Ports** in Device Settings › Connection, with the choices **32 channels** and **64 channels (two units)**. If no second unit is found on port 2, 64 channels is refused, the device stays at 32 and Device Settings › Connection says why. Your DAW should keep the device selected when you switch.
+In Maestro the same setting is **Ports** in Device Settings › Connection, with the choices **32 channels** and **64 channels (two units)**. If no second unit is found on port 2, 64 channels is refused, the device stays at 32 and Device Settings › Connection says why.
 
 ## VBus
 
@@ -66,7 +66,7 @@ VBus adds virtual channels to the Symphony's audio device for sending audio from
 
 Choose the number of channels in Device Settings › **VBus**: **None** (the default), or 2, 4, 8, 16, 32, 48 or 64 channels, as in Apogee's software. VBus is available on ThunderBridge and the Symphony 64 PCIe card, with a Symphony I/O or with converters alone, and not over USB. The VBus channels come after the hardware channels: from channel 33, or from 65 when 64 channels are selected under Ports (they move when you change Ports); **Device channels** under the pop-up shows which, for example 33–40. The ⓘ button next to **VBus** explains it and links to Apogee's article. The choice is kept for each card and set again when Maestro opens; after a restart of the Mac the VBus channels appear once Maestro is open.
 
-Applications that are open pick the VBus channels up without being relaunched (tested with Logic and Reaper). If an open audio application doesn't show them, quit and reopen it; Maestro says so under the pop-up after you change the size. Logic lists the VBus channels as numbered inputs and outputs after the hardware ones (for example Input 33–40), unless its I/O Labels are set to the driver's names.
+Applications that are open pick the VBus channels up without being relaunched. If an open audio application doesn't show them, quit and reopen it; Maestro says so under the pop-up after you change the size. Logic lists the VBus channels as numbered inputs and outputs after the hardware ones (for example Input 33–40), unless its I/O Labels are set to the driver's names.
 
 ## Appearance and updates
 
