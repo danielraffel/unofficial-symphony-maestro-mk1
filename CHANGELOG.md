@@ -45,6 +45,7 @@ This beta removes Input Monitoring and puts Output Routing, Input Routing and th
 - **When the card is there but no Symphony answers, the status bar says "No hardware detected", or "Bus error", in a few words.** With 64 channels selected it names the port, for example "No hardware detected on port 1". The ⓘ button next to it shows the whole message, which the status bar used to show the first sentence of.
 - **The Reset Routing confirmation is shorter and plainer.** It lists what each block of channels goes back to, one line each, for example "Software 1–8: Card 1 analog in 1–8", with the cards named Card 1 and Card 2 as in Device Settings. What the reset does is unchanged.
 - **Help and the user guide are rewritten for all of this.** Help has three new questions: "When do I hear an input directly through the Symphony?", "What do the Mac's volume and mute keys control?" and "What is VBus, and how do I send audio from one application to another?". "Why doesn't the Software Return fader or mute, or Master, change what I hear?" and "The Mixer over USB" now describe the default routing, and the user guide describes Volume Keys and VBus.
+- **Help has a list of sections, a search field, and text you can select and copy.** The info buttons for Ports, VBus, Audio Interface Mode and the status bar message end with "See Help for more.", which opens Help at that section.
 
 ### Please test
 

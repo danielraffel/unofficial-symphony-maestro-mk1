@@ -583,12 +583,15 @@ struct DeviceSettingsView: View {
                             // left-aligned (the row's trailing alignment
                             // would otherwise carry into the popover).
                             .popover(isPresented: $showPortsInfo, arrowEdge: .bottom) {
-                                Text(PortSelection.infoText)
-                                    .font(.callout)
-                                    .multilineTextAlignment(.leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(width: 340, alignment: .leading)
-                                    .padding(14)
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(PortSelection.infoText)
+                                    SeeHelpLink(section: .twoUnits, appState: appState, popover: $showPortsInfo)
+                                }
+                                .font(.callout)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(width: 340, alignment: .leading)
+                                .padding(14)
                             }
                         }
                     }
@@ -680,6 +683,7 @@ struct DeviceSettingsView: View {
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 Link(VBusChannels.apogeeArticleTitle, destination: VBusChannels.apogeeArticleURL)
+                                SeeHelpLink(section: .vbus, appState: appState, popover: $showVBusInfo)
                             }
                             .font(.callout)
                             .multilineTextAlignment(.leading)
@@ -986,6 +990,7 @@ struct DeviceSettingsView: View {
                             Text("Maestro works in Symphony and USB modes. What each "
                                  + "of the four modes is for is in Help.")
                                 .foregroundStyle(.secondary)
+                            SeeHelpLink(section: .interfaceMode, appState: appState, popover: $showAIMInfo)
                         }
                         .font(.callout)
                         .multilineTextAlignment(.leading)

@@ -308,7 +308,7 @@ struct MaestroApp: App {
             // Help menu — user manual + legal pages
             CommandGroup(replacing: .help) {
                 Button("Maestro Help") {
-                    appState.showHelp = true
+                    appState.openHelp()
                 }
                 .keyboardShortcut("?", modifiers: .command)
 

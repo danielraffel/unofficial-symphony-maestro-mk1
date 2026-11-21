@@ -95,12 +95,15 @@ struct StatusBarView: View {
                         .accessibilityLabel(PortStatusMessage.infoLabel)
                         .maestroHelp(fullMessage)
                         .popover(isPresented: $showPortMessageInfo, arrowEdge: .bottom) {
-                            Text(fullMessage)
-                                .font(.callout)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(width: 340, alignment: .leading)
-                                .padding(14)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(fullMessage)
+                                SeeHelpLink(section: .troubleshooting, appState: appState, popover: $showPortMessageInfo)
+                            }
+                            .font(.callout)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: 340, alignment: .leading)
+                            .padding(14)
                         }
                     }
                 } else {

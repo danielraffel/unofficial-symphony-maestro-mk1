@@ -246,7 +246,7 @@ struct ApogeeStillThereSteps: View {
 /// Device Settings warning and in Help: what has to be removed if Apogee's
 /// uninstaller won't run. Never the primary instruction.
 struct ManualApogeeRemovalSteps: View {
-    static let title = "If you can't run Apogee's uninstaller"
+    nonisolated static let title = "If you can't run Apogee's uninstaller"
     @State private var isExpanded = false
 
     var body: some View {

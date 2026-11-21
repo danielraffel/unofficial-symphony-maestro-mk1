@@ -284,6 +284,13 @@ final class AppState: @unchecked Sendable {
     var showAbout: Bool = false
     /// Whether to show the Help panel.
     var showHelp: Bool = false
+    /// The section Help opens at, once (a pop-up's "See Help for more.").
+    var helpSection: HelpSectionID?
+
+    func openHelp(at section: HelpSectionID? = nil) {
+        helpSection = section
+        showHelp = true
+    }
     /// Connection mode.
     var connectionMode: ConnectionMode = .disconnected {
         didSet {
