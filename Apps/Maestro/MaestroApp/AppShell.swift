@@ -383,6 +383,7 @@ struct SidebarView: View {
                         ConnectionBadge(mode: appState.connectionMode, status: appState.statusMessage,
                                         transportType: appState.transportType,
                                         transportPresent: appState.transportPresent,
+                                        cardName: appState.connectionShortName,
                                         isSimulatingCards: appState.cardSimulation != nil)
                     } else {
                         HStack {
@@ -394,7 +395,8 @@ struct SidebarView: View {
                         }
                         ConnectionBadge(mode: .disconnected, status: appState.statusMessage,
                                         transportType: appState.transportType,
-                                        transportPresent: appState.transportPresent)
+                                        transportPresent: appState.transportPresent,
+                                        cardName: appState.connectionShortName)
                     }
                 }
                 .listRowBackground(Color.clear)
@@ -431,6 +433,9 @@ struct ConnectionBadge: View {
     var status: String = ""
     var transportType: TransportType? = nil
     var transportPresent: Bool = false
+    /// "Symphony 64 PCIe" on that card, otherwise the transport's name
+    /// (`ConnectionLabel.shortName`); nil falls back to the transport's.
+    var cardName: String? = nil
     /// The debug card-simulation harness is driving this session.
     var isSimulatingCards: Bool = false
 
@@ -458,7 +463,7 @@ struct ConnectionBadge: View {
     }
 
     private var transportName: String {
-        transportType?.displayName ?? "USB"
+        cardName ?? transportType?.displayName ?? "USB"
     }
 
     private var hasError: Bool {

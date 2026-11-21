@@ -183,4 +183,16 @@ public enum ConnectionLabel {
         }
         return "Thunderbolt (ThunderBridge)"
     }
+
+    /// The short name for the sidebar badge ("… Connected") and the status
+    /// bar ("Connected via …"): "Symphony 64 PCIe" when the driver is on that
+    /// card (`pci19c2,2100`), otherwise the transport's own name
+    /// ("ThunderBridge", "USB"). Same test as `text`.
+    public static func shortName(transport: TransportType?, pciIdentifier: String?) -> String {
+        guard let transport else { return "USB" }
+        if transport == .thunderbolt, let pciIdentifier, pciIdentifier.lowercased().hasSuffix(",2100") {
+            return "Symphony 64 PCIe"
+        }
+        return transport.displayName
+    }
 }

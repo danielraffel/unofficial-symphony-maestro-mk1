@@ -1028,6 +1028,14 @@ final class AppState: @unchecked Sendable {
 
     /// "Connection" as shown in Device Info and the copied details: names the
     /// Symphony 64 PCIe card when that is what the driver is attached to.
+    /// The short connection name for the sidebar badge and the status bar.
+    var connectionShortName: String {
+        ConnectionLabel.shortName(
+            transport: transportType,
+            pciIdentifier: transportType == .thunderbolt
+                ? SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier() : nil)
+    }
+
     var connectionLabel: String {
         ConnectionLabel.text(
             isThunderbolt: transportType == .thunderbolt,
@@ -2355,7 +2363,7 @@ final class AppState: @unchecked Sendable {
                 self.connectionMode = .hardware
                 self.transportType = .thunderbolt
                 self.transportPresent = true
-                self.statusMessage = "Connected via ThunderBridge"
+                self.statusMessage = "Connected via \(self.connectionShortName)"
                 self.isHardwareInitialized = true
                 self.activeAudioDeviceID = audioDeviceID
                 // Store TB device ID for volume sync — media keys change this device directly
@@ -3022,7 +3030,7 @@ final class AppState: @unchecked Sendable {
         guard !hardwareWritesSuspended else { return }
         guard connectionMode == .hardware else { return }
         if transportType == .thunderbolt {
-            statusMessage = "Connected via ThunderBridge"
+            statusMessage = "Connected via \(connectionShortName)"
         } else {
             statusMessage = "Connected via XPC proxy"
         }
@@ -3214,7 +3222,7 @@ final class AppState: @unchecked Sendable {
                     self.connectionMode = .hardware
                     self.transportType = .thunderbolt
                     self.transportPresent = true
-                    self.statusMessage = "Connected via ThunderBridge"
+                    self.statusMessage = "Connected via \(self.connectionShortName)"
                     self.isHardwareInitialized = !hardwareWritesSuspended
                     self.activeAudioDeviceID = audioDeviceID
                     self.aspDeviceID = audioDeviceID
