@@ -79,7 +79,8 @@ struct SettingsPagesTests {
         let sections = try #require(view.range(of: "// MARK: - Sections, in page order"))
         let titles = try sectionTitles(view[sections.upperBound...])
         // No "Input Monitoring": Apogee had no such setting, and it was removed in 0.9.19.
-        let expected = ["Clock", "Connection", "Volume Keys", "Front Panel",
+        // VBus (ThunderBridge and PCIe only) comes directly after Connection.
+        let expected = ["Clock", "Connection", "VBus", "Volume Keys", "Front Panel",
                         "Cards", "Naming", "Info"]
         #expect(titles == expected)
         let bodyTitles = try sectionTitles(view[..<sections.lowerBound])

@@ -72,6 +72,7 @@ struct DeviceSettingsView: View {
     @State private var board2Reading: BoardTypeReading = .unknown
     @State private var showCopied: Bool = false
     @State private var showPortsInfo = false
+    @State private var showVBusInfo = false
     @State private var showClockStatusInfo = false
     @State private var dextActionInFlight = false
     @State private var dextActionStatus: String?
@@ -276,6 +277,7 @@ struct DeviceSettingsView: View {
             }
             clockSection
             connectionSection
+            vbusSection
             if showsVolumeKeys { volumeKeysSection }
             frontPanelSection
             cardsSection
@@ -608,8 +610,6 @@ struct DeviceSettingsView: View {
                     .foregroundStyle(.secondary)
                 }
 
-                vbusRows
-
                 // Same action as the View > Rescan menu item; one concept,
                 // one name. This copy is gated on connectionMode == .hardware
                 // so it is only ever visible once a device is ALREADY found,
@@ -636,41 +636,83 @@ struct DeviceSettingsView: View {
 
     // The original's System Setup › "VBus" pop-up
     // (og_source/symphonymk1/ext/maestro2/App/Views/
-    // APSystemSymphonySetupView.xib:131-230, the label at :283), next to
-    // Ports, which was the same panel's "Symphony Source". ThunderBridge and
-    // the PCIe card only.
-    @ViewBuilder private var vbusRows: some View {
+    // APSystemSymphonySetupView.xib:131-230, the label at :283), in its own
+    // section after Connection. ThunderBridge and the PCIe card only.
+    @ViewBuilder private var vbusSection: some View {
         if appState.vbusShown {
             let reason = appState.vbusUnavailableReason
             let choice = appState.vbusChoice
-            Picker("VBus", selection: Binding(
-                get: { reason == nil ? choice : VBusChannels.none },
-                set: { appState.chooseVBus($0) }
-            )) {
-                ForEach(VBusChannels.allCases) { entry in
-                    Text(entry.label).tag(entry)
+            let status = reason == nil ? appState.vbusStatusLine : nil
+            let note = reason == nil ? appState.vbusReopenNote : nil
+            Section("VBus") {
+                LabeledContent {
+                    Picker("VBus", selection: Binding(
+                        get: { reason == nil ? choice : VBusChannels.none },
+                        set: { appState.chooseVBus($0) }
+                    )) {
+                        ForEach(VBusChannels.allCases) { entry in
+                            Text(entry.label).tag(entry)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .maestroHelp("Add virtual channels for sending audio between applications.")
+                    .disabled(reason != nil || !appState.vbusDriverSupports)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("VBus")
+                        Button { showVBusInfo.toggle() } label: {
+                            Image(systemName: "info.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(VBusChannels.infoTitle)
+                        .maestroHelp("Explain VBus.")
+                        // Same look as the Ports and Clock Status popovers:
+                        // left-aligned, with Apogee's article as a link.
+                        .popover(isPresented: $showVBusInfo, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(VBusChannels.infoTitle)
+                                    .font(.headline)
+                                ForEach(VBusChannels.infoParagraphs, id: \.self) { paragraph in
+                                    Text(paragraph)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                Link(VBusChannels.apogeeArticleTitle, destination: VBusChannels.apogeeArticleURL)
+                            }
+                            .font(.callout)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: 340, alignment: .leading)
+                            .padding(14)
+                        }
+                    }
+                }
+                if let range = appState.vbusDeviceChannels {
+                    LabeledContent("Device channels", value: range)
+                }
+                if reason != nil || status != nil || note != nil {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let reason {
+                            Label(reason, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        if let status {
+                            Text(status)
+                        }
+                        // Same caution style as the Ports message for a
+                        // refused 64 channels.
+                        if let note {
+                            Label(note, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .padding(.top, status == nil ? 0 : 4)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
-            .pickerStyle(.menu)
-            .maestroHelp("Add virtual channels for sending audio between applications.")
-            .disabled(reason != nil || !appState.vbusDriverSupports)
-            VStack(alignment: .leading, spacing: 2) {
-                if let reason {
-                    Label(reason, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                } else {
-                    ForEach(VBusChannels.explanationLines, id: \.self) { Text($0) }
-                    if let placement = VBusChannels.placementLine(
-                        channels: choice, hardwareChannels: appState.thunderboltHardwareChannels) {
-                        Text(placement)
-                    }
-                    if let status = appState.vbusStatusLine {
-                        Text(status).padding(.top, 2)
-                    }
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
     }
 

@@ -4,7 +4,7 @@ import Testing
 import MaestroCore
 import MaestroDevice
 
-/// Device Settings › Connection › VBus, on the app's own code over an
+/// Device Settings › VBus, on the app's own code over an
 /// in-memory driver.
 @Suite("VBus in the app", .serialized)
 @MainActor
@@ -255,11 +255,72 @@ struct VBusAppTests {
             let filtered = source.components(separatedBy: "hardwareSoftwarePeaks(self.meterDevice?.\(call))").count - 1
             #expect(all > 0 && all == filtered, "\(call): \(filtered) of \(all) reads filtered")
         }
-        // The Ports picker and the VBus pop-up are in the same section.
+    }
+
+    @Test("VBus has its own section directly after Connection, with the About VBus button, Device channels and the note")
+    func ownSectionAfterConnection() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let settings = try String(contentsOf: root.appendingPathComponent("MaestroApp/SettingsViews.swift"), encoding: .utf8)
-        let section = try #require(settings.range(of: "@ViewBuilder private var connectionSection"))
-        let next = try #require(settings.range(of: "@ViewBuilder private var vbusRows"))
-        let body = settings[section.upperBound..<next.lowerBound]
-        #expect(body.contains("LabeledContent(\"Ports\")") && body.contains("vbusRows"))
+        #expect(settings.contains("            connectionSection\n            vbusSection\n"))
+        let connection = try #require(settings.range(of: "@ViewBuilder private var connectionSection"))
+        let vbus = try #require(settings.range(of: "@ViewBuilder private var vbusSection"))
+        let end = try #require(settings.range(of: "@ViewBuilder private var volumeKeysSection"))
+        // Ports and Rescan stay in Connection; nothing of VBus is left there.
+        let connectionBody = settings[connection.upperBound..<vbus.lowerBound]
+        #expect(connectionBody.contains("LabeledContent(\"Ports\")") && connectionBody.contains("Button(\"Rescan\")"))
+        #expect(!connectionBody.contains("appState.vbus") && !connectionBody.contains("VBusChannels"))
+        let body = settings[vbus.upperBound..<end.lowerBound]
+        for piece in ["if appState.vbusShown", "Section(\"VBus\")", ".accessibilityLabel(VBusChannels.infoTitle)",
+                      "VBusChannels.infoParagraphs", "Link(VBusChannels.apogeeArticleTitle, destination: VBusChannels.apogeeArticleURL)",
+                      "LabeledContent(\"Device channels\", value: range)", "appState.vbusDeviceChannels",
+                      "appState.vbusReopenNote", "appState.vbusStatusLine", "appState.vbusUnavailableReason"] {
+            #expect(body.contains(piece), "\(piece)")
+        }
+    }
+
+    @Test("Device channels: shown while VBus is on and the device has the channels, after the hardware channels")
+    func deviceChannelsRow() async {
+        let (state, _, driver, _) = thunderbolt()
+        await state.serviceVBus()
+        #expect(state.vbusDeviceChannels == nil)   // None
+        state.chooseVBus(.eight)
+        #expect(state.vbusDeviceChannels == nil)   // chosen, the device does not have them yet
+        await state.serviceVBus()
+        #expect(driver.vbusPublished == 8)
+        #expect(state.vbusDeviceChannels == "33–40")
+        state.chooseVBus(.none)
+        await state.serviceVBus()
+        #expect(state.vbusDeviceChannels == nil)
+        // Not over USB.
+        let usb = AppState()
+        usb.connectionMode = .hardware
+        usb.device = SimulatedDevice.symphonyIO32ch()
+        #expect(usb.vbusDeviceChannels == nil && usb.vbusReopenNote == nil)
+    }
+
+    @Test("the note about open applications: not at launch or when the saved size is sent, from the first change on, not saved")
+    func reopenNoteAfterAChange() async {
+        let (first, _, _, store) = thunderbolt()
+        await first.serviceVBus()
+        #expect(first.vbusReopenNote == nil)
+        first.chooseVBus(.none)   // the same size again: nothing changed
+        #expect(first.vbusReopenNote == nil)
+        first.chooseVBus(.eight)
+        await first.serviceVBus()
+        #expect(first.vbusReopenNote == "If an open audio application doesn't show the new channels, quit and reopen it.")
+        first.chooseVBus(.none)
+        #expect(first.vbusReopenNote == "If an open audio application still shows the VBus channels, quit and reopen it.")
+        first.chooseVBus(.sixteen)
+        await first.serviceVBus()
+        #expect(first.vbusReopenNote?.contains("new channels") == true)
+        // The next launch: the saved size is sent on connect, without the note.
+        let (second, _, driver, _) = thunderbolt(defaults: store)
+        await second.serviceVBus()
+        #expect(driver.vbusSetCalls == [.sixteen] && second.vbusChoice == .sixteen)
+        #expect(second.vbusReopenNote == nil)
+        // An older driver: the pop-up is disabled, nothing is changed, no note.
+        let (old, _, _, _) = thunderbolt(build: 142)
+        old.chooseVBus(.eight)
+        #expect(old.vbusReopenNote == nil)
     }
 }

@@ -12,7 +12,7 @@ struct VBusSent: Equatable {
     let channels: VBusChannels
 }
 
-// Device Settings › Connection › VBus (`VBusChannels`). The driver holds the
+// Device Settings › VBus (`VBusChannels`). The driver holds the
 // size only while it runs: a driver that starts, or replaces another after an
 // update, has no VBus channels. So the choice is saved here, per card, and
 // sent to the driver on connect, after a recovery or a driver restart, and
@@ -74,6 +74,21 @@ extension AppState {
         return state.statusLine(chosen: vbusChoice, retrying: vbusRetries < Self.vbusMaxRetries)
     }
 
+    /// The "Device channels" row: the range the VBus channels have, while
+    /// VBus is on and the device has the chosen channels.
+    var vbusDeviceChannels: String? {
+        let choice = vbusChoice
+        guard vbusShown, vbusDriverSupports, choice != .none,
+              let state = vbusState, state.published == choice.rawValue else { return nil }
+        return VBusChannels.deviceChannelsRange(channels: choice, hardwareChannels: thunderboltHardwareChannels)
+    }
+
+    /// The note under the rows after the size was changed in the pop-up.
+    var vbusReopenNote: String? {
+        guard vbusShown else { return nil }
+        return VBusChannels.reopenNote(changedThisSession: vbusChangedThisSession, channels: vbusChoice)
+    }
+
     /// The diagnostics report's VBus line; nil when not on ThunderBridge/PCIe.
     var vbusReportLine: String? {
         guard vbusShown else { return nil }
@@ -84,6 +99,7 @@ extension AppState {
     @MainActor
     func chooseVBus(_ channels: VBusChannels) {
         guard vbusShown, vbusDriverSupports, let uid = vbusDeviceUID else { return }
+        if channels != vbusChoice { vbusChangedThisSession = true }
         channels.save(in: vbusDefaults, deviceUID: uid)
         vbusRevision &+= 1
         // Sent again even when it is the size already sent: after a change

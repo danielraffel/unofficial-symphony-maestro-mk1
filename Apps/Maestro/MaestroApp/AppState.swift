@@ -1473,6 +1473,9 @@ final class AppState: @unchecked Sendable {
     /// Bumped when the VBus choice changes, so the pop-up follows (the choice
     /// itself is saved per card, `VBusChannels.saved`).
     var vbusRevision = 0
+    /// The VBus size was changed in the pop-up since Maestro opened (not
+    /// saved): the note about open applications is shown from then on.
+    var vbusChangedThisSession = false
     /// The driver's last VBus report; nil until read, and over USB.
     var vbusState: VBusState?
     /// What has reached the driver (`serviceVBus`).

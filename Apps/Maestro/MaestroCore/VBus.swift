@@ -1,6 +1,6 @@
 import Foundation
 
-/// Device Settings › Connection › VBus: Apogee's "virtual buses".
+/// Device Settings › VBus: Apogee's "virtual buses".
 ///
 /// VBus adds channels to the Symphony's Core Audio device that never reach
 /// the hardware: what one application plays to a VBus output is what another
@@ -62,20 +62,40 @@ public enum VBusChannels: UInt32, CaseIterable, Sendable, Identifiable {
     public static func outputName(_ number: Int) -> String { "VBout \(number)" }
     public static func inputName(_ number: Int) -> String { "VBin \(number)" }
 
-    /// The grey lines under the pop-up.
-    public static let explanationLines = [
-        "Extra channels for sending audio from one application to another, or within one: "
-            + "what is played to VBout 1 is recorded from VBin 1, and so on. They do not reach the hardware.",
-        "After changing this, quit and reopen your audio applications; "
-            + "if they still do not show the VBus channels, restart the Mac.",
-    ]
+    /// The ⓘ popover next to the pop-up's label.
+    public static let infoTitle = "About VBus"
+    public static var infoParagraphs: [String] {
+        [
+            "Extra channels for sending audio from one application to another, or within one. "
+                + "What an application plays to \(outputName(1)) is what you record from \(inputName(1)), "
+                + "and so on. They don't reach the hardware.",
+            "VBus is off by default. It is available on ThunderBridge and PCIe.",
+            "Some applications show these as numbered inputs and outputs after the hardware channels, "
+                + "unless set to use the driver's names.",
+        ]
+    }
+    /// The popover's link: Apogee's own article.
+    public static let apogeeArticleTitle = "Apogee: What is VBus and how do you use it?"
+    public static let apogeeArticleURL =
+        URL(string: "https://knowledge.apogeedigital.com/what-is-vbus-and-how-do-you-use-it")!
 
-    /// Where the VBus channels are: after the hardware channels.
-    public static func placementLine(channels: VBusChannels, hardwareChannels: Int) -> String? {
+    /// The "Device channels" row: where the VBus channels are, after the
+    /// hardware channels, as a range ("33–40"). nil with VBus off.
+    public static func deviceChannelsRange(channels: VBusChannels, hardwareChannels: Int) -> String? {
         guard channels != .none else { return nil }
-        let first = hardwareChannels + 1
-        let last = hardwareChannels + Int(channels.rawValue)
-        return "VBus channels are device channels \(first)–\(last), after the \(hardwareChannels) hardware channels."
+        return "\(hardwareChannels + 1)–\(hardwareChannels + Int(channels.rawValue))"
+    }
+
+    /// The note under the rows once the size has been changed in this
+    /// session of Maestro (not at launch, and not when Maestro sends the
+    /// saved size again): an application that was open may need reopening.
+    /// In testing with Logic and Reaper, open applications followed the
+    /// change by themselves.
+    public static func reopenNote(changedThisSession: Bool, channels: VBusChannels) -> String? {
+        guard changedThisSession else { return nil }
+        return channels == .none
+            ? "If an open audio application still shows the VBus channels, quit and reopen it."
+            : "If an open audio application doesn't show the new channels, quit and reopen it."
     }
 
     /// Help's answer.
@@ -86,12 +106,15 @@ public enum VBusChannels: UInt32, CaseIterable, Sendable, Identifiable {
                 + "**\(outputName(1))** is recorded from **\(inputName(1))**, and so on; nothing on these channels "
                 + "reaches the hardware. For example, in Logic set the output of several tracks to VBout 1-2 and "
                 + "record a new track from VBin 1-2 to print a submix.",
-            "Choose the number of channels under **VBus** in Device Settings › Connection. It is **None** until "
+            "Choose the number of channels in Device Settings › **VBus**. It is **None** until "
                 + "you choose a size. VBus is available on ThunderBridge and the Symphony 64 PCIe card, with a "
                 + "Symphony I/O or with converters, and not over USB. The VBus channels come after the hardware "
-                + "channels: from channel 33, or from 65 when 64 channels are selected under Ports.",
-            "After changing it, quit and reopen your audio applications; if they still do not show the VBus "
-                + "channels, restart the Mac.",
+                + "channels: from channel 33, or from 65 when 64 channels are selected under Ports; "
+                + "**Device channels** under the pop-up shows which.",
+            "Applications that are open pick the channels up without being relaunched (tested with Logic and "
+                + "Reaper). If an open audio application doesn't show them, quit and reopen it. Logic lists them "
+                + "as numbered inputs and outputs after the hardware ones (for example Input 33–40), unless its "
+                + "I/O Labels are set to the driver's names.",
         ]
     }
 

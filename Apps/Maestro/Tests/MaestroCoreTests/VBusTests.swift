@@ -89,26 +89,58 @@ struct VBusTests {
         }
     }
 
-    @Test("the page says to quit and reopen applications, then to restart the Mac, and never calls VBus experimental")
+    @Test("the popover and Help: reopen an application only if it doesn't show the channels, no restart of the Mac, and never experimental")
     func text() {
-        let all = VBusChannels.explanationLines + VBusChannels.helpText
-        #expect(VBusChannels.explanationLines.contains {
-            $0.contains("quit and reopen your audio applications") && $0.contains("restart the Mac")
-        })
-        #expect(VBusChannels.helpText.contains {
-            $0.contains("quit and reopen your audio applications") && $0.contains("restart the Mac")
-        })
-        for line in all { #expect(!line.lowercased().contains("experiment"), "\(line)") }
-        #expect(VBusChannels.helpText.joined().contains("not over USB"))
-        #expect(VBusChannels.helpText.joined().contains("VBout 1") && VBusChannels.helpText.joined().contains("VBin 1"))
+        #expect(VBusChannels.infoTitle == "About VBus")
+        #expect(VBusChannels.infoParagraphs == [
+            "Extra channels for sending audio from one application to another, or within one. What an application plays to VBout 1 is what you record from VBin 1, and so on. They don't reach the hardware.",
+            "VBus is off by default. It is available on ThunderBridge and PCIe.",
+            "Some applications show these as numbered inputs and outputs after the hardware channels, unless set to use the driver's names.",
+        ])
+        #expect(VBusChannels.apogeeArticleTitle == "Apogee: What is VBus and how do you use it?")
+        #expect(VBusChannels.apogeeArticleURL.absoluteString
+                == "https://knowledge.apogeedigital.com/what-is-vbus-and-how-do-you-use-it")
+        let help = VBusChannels.helpText.joined(separator: " ")
+        #expect(help.contains("Device Settings › **VBus**") && !help.contains("Connection"))
+        #expect(help.contains("If an open audio application doesn't show them, quit and reopen it."))
+        #expect(help.contains("Input 33–40") && help.contains("I/O Labels"))
+        #expect(help.contains("not over USB"))
+        #expect(help.contains("VBout 1") && help.contains("VBin 1"))
+        for line in VBusChannels.infoParagraphs + VBusChannels.helpText {
+            #expect(!line.lowercased().contains("experiment"), "\(line)")
+            #expect(!line.lowercased().contains("restart the mac"), "\(line)")
+        }
     }
 
-    @Test("the VBus channels are placed after the hardware channels")
-    func placement() {
-        #expect(VBusChannels.placementLine(channels: .none, hardwareChannels: 32) == nil)
-        #expect(VBusChannels.placementLine(channels: .eight, hardwareChannels: 32)?.contains("33–40") == true)
-        #expect(VBusChannels.placementLine(channels: .eight, hardwareChannels: 64)?.contains("65–72") == true)
-        #expect(VBusChannels.placementLine(channels: .sixtyFour, hardwareChannels: 64)?.contains("65–128") == true)
+    @Test("Device channels: the range after the hardware channels, for 32 and 64 hardware channels and every size",
+          arguments: [
+            (VBusChannels.two, "33–34", "65–66"), (.four, "33–36", "65–68"), (.eight, "33–40", "65–72"),
+            (.sixteen, "33–48", "65–80"), (.thirtyTwo, "33–64", "65–96"), (.fortyEight, "33–80", "65–112"),
+            (.sixtyFour, "33–96", "65–128"),
+          ] as [(VBusChannels, String, String)])
+    func deviceChannels(channels: VBusChannels, at32: String, at64: String) {
+        #expect(VBusChannels.deviceChannelsRange(channels: channels, hardwareChannels: 32) == at32)
+        #expect(VBusChannels.deviceChannelsRange(channels: channels, hardwareChannels: 64) == at64)
+    }
+
+    @Test("Device channels: nothing with VBus off, and every size has a case above")
+    func deviceChannelsOff() {
+        #expect(VBusChannels.deviceChannelsRange(channels: .none, hardwareChannels: 32) == nil)
+        #expect(VBusChannels.deviceChannelsRange(channels: .none, hardwareChannels: 64) == nil)
+        #expect(VBusChannels.allCases.count == 8)
+    }
+
+    @Test("the note about open applications: only after a change in this session, worded for a size and for None")
+    func reopenNote() {
+        for channels in VBusChannels.allCases {
+            #expect(VBusChannels.reopenNote(changedThisSession: false, channels: channels) == nil)
+        }
+        for channels in VBusChannels.allCases where channels != .none {
+            #expect(VBusChannels.reopenNote(changedThisSession: true, channels: channels)
+                    == "If an open audio application doesn't show the new channels, quit and reopen it.")
+        }
+        #expect(VBusChannels.reopenNote(changedThisSession: true, channels: .none)
+                == "If an open audio application still shows the VBus channels, quit and reopen it.")
     }
 
     @Test("per-channel values read from the device keep the hardware channels only")

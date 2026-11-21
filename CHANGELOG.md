@@ -13,11 +13,12 @@ This beta adds VBus, Apogee's virtual channels for sending audio from one applic
 ### New
 
 - **VBus: virtual channels for sending audio from one application to another, or within one,** as in Apogee's software. What an application plays to a VBus output is what an application records from the VBus input with the same number; nothing on these channels reaches the Symphony. For example, in Logic set the output of several tracks to VBout 1-2 and record a new track from VBin 1-2 to print a submix.
-- **The setting is VBus in Device Settings › Connection:** None, or 2, 4, 8, 16, 32, 48 or 64 channels, as in Apogee's software. It is None until you choose a size, and Maestro remembers the choice for each ThunderBridge or PCIe card.
+- **The setting is in Device Settings › VBus:** None, or 2, 4, 8, 16, 32, 48 or 64 channels, as in Apogee's software. It is None until you choose a size, and Maestro remembers the choice for each ThunderBridge or PCIe card. **Device channels** shows which channels of the device they are (for example 33–40), and the ⓘ button explains VBus and links to Apogee's article.
 - **Applications show the channels as "VBout 1", "VBout 2"… for playing and "VBin 1", "VBin 2"… for recording.**
 - **VBus is available on ThunderBridge and the Symphony 64 PCIe card, with a Symphony I/O or with converters only (AD-16X, DA-16X, DD-16X or Rosetta). It is not available over USB,** as in Apogee's software.
-- **After changing VBus, quit and reopen your audio applications; if they still do not show the VBus channels, restart the Mac.**
+- **An open application picks the VBus channels up without being relaunched** (tested with Logic and Reaper). If an open audio application doesn't show them, quit and reopen it. Logic lists them as numbered inputs and outputs after the hardware ones (for example Input 33–40), unless its I/O Labels are set to the driver's names.
 - **Help has a new question, "What is VBus, and how do I send audio from one application to another?"**, and the user guide describes VBus.
+- **The Reset Routing confirmation is shorter and plainer.** It lists what each block of channels goes back to, one line each, for example "Software 1–8: Card 1 analog in 1–8", with the cards named Card 1 and Card 2 as in Device Settings. What the reset does is unchanged.
 
 ### Please test
 
