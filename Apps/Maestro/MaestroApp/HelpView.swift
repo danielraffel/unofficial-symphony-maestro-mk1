@@ -31,6 +31,8 @@ struct HelpView: View {
     @State private var query = ""
     /// The section to scroll to: one clicked in the list, or the one a pop-up asked for.
     @State private var jump: HelpSectionID?
+    /// The section at the top of the page, marked in the list as you scroll.
+    @State private var current: HelpSectionID?
 
     /// What is shown: everything, or what the search field matches.
     private var sections: [HelpSection] {
@@ -55,6 +57,11 @@ struct HelpView: View {
                             }
                             ForEach(sections) { section in
                                 sectionView(section).id(section.id)
+                                    .background(GeometryReader { geometry in
+                                        Color.clear.preference(
+                                            key: HelpSectionTops.self,
+                                            value: [section.id: geometry.frame(in: .named("helpScroll")).minY])
+                                    })
                             }
                         }
                         .padding(24)
@@ -62,6 +69,10 @@ struct HelpView: View {
                         // Help is reference material people quote back in bug reports and forum
                         // posts, so every paragraph is selectable, not just the uninstall command.
                         .textSelection(.enabled)
+                    }
+                    .coordinateSpace(name: "helpScroll")
+                    .onPreferenceChange(HelpSectionTops.self) { tops in
+                        current = HelpSearch.currentSection(tops: tops, order: sections.map(\.id))
                     }
                     .onChange(of: jump) { _, section in
                         guard let section else { return }
@@ -127,16 +138,21 @@ struct HelpView: View {
                         jump = section.id
                     } label: {
                         Text(section.title)
+                            .fontWeight(current == section.id ? .semibold : .regular)
                             .multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 4)
+                            .padding(.horizontal, 6)
+                            .background(current == section.id ? Color.primary.opacity(0.08) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 5))
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(current == section.id ? .isSelected : [])
                 }
             }
             .font(.callout)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 8)
             .padding(.vertical, 16)
         }
         .frame(width: 190)
@@ -663,5 +679,13 @@ extension HelpSection {
     /// Feedback line with inline, clickable links.
     private static var feedbackText: String {
         "Found a bug or have a request? [Report a bug on GitHub](\(FeedbackLinks.reportBug.absoluteString)) or ask on [the Gearspace thread](\(FeedbackLinks.discussion.absoluteString)); both are also in **App Settings › Diagnostics & Feedback**, and in the **Help** menu. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail))."
+    }
+}
+
+/// Each section's top edge in the Help page's scroll area.
+private struct HelpSectionTops: PreferenceKey {
+    static let defaultValue: [HelpSectionID: CGFloat] = [:]
+    static func reduce(value: inout [HelpSectionID: CGFloat], nextValue: () -> [HelpSectionID: CGFloat]) {
+        value.merge(nextValue()) { $1 }
     }
 }

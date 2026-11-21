@@ -231,4 +231,14 @@ struct HelpSearchTests {
                 == "VBus\nIntro.\n\nWhat is it?\nExtra channels.\n\nOff by default.\n\nHow?\nChoose a size.")
         #expect(String(last.characters) == "Then reopen.")
     }
+
+    @Test("the list marks the section at the top of the page")
+    func currentSection() {
+        let order: [HelpSectionID] = [.whatItDoes, .clock, .vbus]
+        #expect(HelpSearch.currentSection(tops: [.whatItDoes: 0, .clock: 300, .vbus: 900], order: order) == .whatItDoes)
+        #expect(HelpSearch.currentSection(tops: [.whatItDoes: -400, .clock: 10, .vbus: 500], order: order) == .clock)
+        #expect(HelpSearch.currentSection(tops: [.whatItDoes: -900, .clock: -500, .vbus: -20], order: order) == .vbus)
+        #expect(HelpSearch.currentSection(tops: [:], order: order) == .whatItDoes)
+        #expect(HelpSearch.currentSection(tops: [:], order: []) == nil)
+    }
 }

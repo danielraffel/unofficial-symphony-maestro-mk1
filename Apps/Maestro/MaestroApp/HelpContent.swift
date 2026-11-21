@@ -52,6 +52,19 @@ enum HelpBlock {
 }
 
 enum HelpSearch {
+    /// The section to mark in the list: the last one, in page order, whose
+    /// top has reached the top of the scroll area (within `slack` points);
+    /// before any has, the first.
+    static func currentSection(tops: [HelpSectionID: CGFloat], order: [HelpSectionID],
+                               slack: CGFloat = 40) -> HelpSectionID? {
+        var result = order.first
+        for id in order {
+            guard let top = tops[id] else { continue }
+            if top <= slack { result = id } else { break }
+        }
+        return result
+    }
+
     /// What Help draws for an answer: runs of paragraphs and bullets joined
     /// into one text each, and the other blocks one by one.
     enum Run {
