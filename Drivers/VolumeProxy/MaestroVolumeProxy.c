@@ -198,16 +198,8 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
 
 /* Routing enums (from SymphonyIORouting.h / SymphonyIOMainFPGA.h) */
 #define ROUTE_SRC_USB(n)     (0xC0u + (n))  /* eSymphonyIORoutingSource_FromP2Pch0..15 */
-#define ROUTE_SRC_USB_CH0    0xC0u
-#define ROUTE_SRC_USB_CH1    0xC1u
-#define ROUTE_DST_IO0(ch)    (0x20u + (ch)) /* IOBoard0 ch0..15 (Line 1-8, ADAT 1-8) */
+#define ROUTE_DST_IO0(ch)    (0x20u + (ch)) /* IOBoard0 ch0..15 (Line 1-8, ADAT 1-8); ch0/1 = DAC L/R */
 #define ROUTE_DST_IO1(ch)    (0x30u + (ch)) /* IOBoard1 ch0..15 (ADAT 9-24) */
-#define ROUTE_DST_DAC_L      0x20u   /* eSymphonyIORoutingDestination_IOBoard0Ch0 */
-#define ROUTE_DST_DAC_R      0x21u
-#define ROUTE_DST_MIX0_SWR_L 0xE4u   /* Mixer0 AppInput Ch0 (SW Return L) */
-#define ROUTE_DST_MIX0_SWR_R 0xE5u   /* Mixer0 AppInput Ch1 (SW Return R) */
-#define ROUTE_SRC_MIX0_OUT_L 0x40u   /* Mixer0 Output Ch0 (Master L) */
-#define ROUTE_SRC_MIX0_OUT_R 0x41u   /* Mixer0 Output Ch1 (Master R) */
 #define ROUTE_SRC_NONE       0xECu   /* Digital silence (null route) */
 static IOUSBDeviceInterface245 **gUSBDev = NULL;
 
@@ -404,18 +396,6 @@ static void load_digital_state(void)
     fclose(f);
 }
 
-/* ── Routing mode ──────────────────────────────────────────────────────── */
-/*
- * DAW mode (default): Null all IOBoard output destinations except DAC L/R,
- *   disabling XMOS default 1:1 input passthrough. DAW controls what goes to outputs.
- * Direct Monitor mode: Leave XMOS defaults, enabling zero-latency 1:1 passthrough
- *   from IOBoard inputs to IOBoard outputs for monitoring without a DAW.
- */
-#define ROUTING_MODE_DAW     0
-#define ROUTING_MODE_DIRECT  1
-
-static int gRoutingMode = ROUTING_MODE_DAW;
-
 /* ── Audio shared buffer ────────────────────────────────────────────────── */
 /*
  * Layout, semantics and the rationale for the v2 timeline-indexed design live
@@ -481,9 +461,14 @@ static float gSwReturnPeakR = 0.0f;
 static float gSwPeak[MAESTRO_SHM_CHANNELS];
 
 /* Software mute for USB channels 1-2 rendered by this helper ("Maestro USB").
-   The app sends the unit's own SW Return mute (0xB3, strip 32) AND this
-   software mute, so it works whichever output device plays. We zero ch 1-2 in
-   the render callback when muted. Toggled via XPC command. */
+   It silences everything USB 1-2 feeds, a direct output included, so Maestro
+   turns it on only while a mixer that takes USB 1-2 as its Software Return is
+   routed to an output and every such mixer is muted (the rule lives in the
+   app, USBHelperSoftwareReturn). With the default routing, where no mixer
+   feeds an output, it stays off: Apogee's Software Return mute was the mixer's
+   strip 32 and never touched a direct output
+   (og_source/maestrolink/Software/SymphonyIOMixer.cpp:287-452). We zero
+   ch 1-2 in the render callback when muted. Toggled via XPC command. */
 static atomic_int gSwReturnMuted = 0;
 
 /* Software gain for USB channels 1-2. The app now keeps this at unity: the
@@ -495,46 +480,32 @@ static _Atomic float gSwReturnGain = 1.0f;
 static _Atomic float gSwReturnGainL = 1.0f;
 static _Atomic float gSwReturnGainR = 1.0f;
 
-/* Stereo SW Return balance, not a mono-to-stereo panner. Center must preserve
-   each existing channel at unity; the old cos/sin mono pan law attenuated only
-   outputs 1-2 by 3.01 dB even with every mixer control at its neutral value.
-   Store coefficients off the audio thread. Outputs 3-16 are independent. */
-static _Atomic float gSwReturnPanL = 1.0f;
-static _Atomic float gSwReturnPanR = 1.0f;
-/* Whether any mixer uses USB channels 1-2 as its Software Return. When false,
-   Software Return gain/pan/mute are handled by the FPGA mixer for selected
-   non-default pairs. */
-static atomic_int gSwReturnSoftwareProcessing = 1;
+/* There is no Software Return balance: the original's Software Return had a
+   stereo fader, solo and mute and no pan
+   (og_source/maestrolink/Software/SymphonyIOMixer.cpp:262-290 pans input
+   channels only), so channels 1-2 always pass centred.
 
-/* The requested state of a mixer solo (0xB2) or mute (0xB3) write, 0 or 1,
-   for the setProperty log line; -1 for every other request or an empty
-   payload. EP0 "OK" alone does not say which state a click asked for. */
-static int mixer_toggle_payload(uint8_t bReq, const uint8_t *data, uint32_t len)
-{
-    if ((bReq != 0xB2 && bReq != 0xB3) || !data || len < 1) return -1;
-    return data[0] ? 1 : 0;
-}
+   Whether the software gain/mute stage above is in the path at all. Maestro
+   turns it on only while a mixer that takes USB 1-2 as its Software Return is
+   routed to an output; off, channels 1-2 pass untouched like 3-16. Off until
+   the app says otherwise, which is the default routing's state. */
+static atomic_int gSwReturnSoftwareProcessing = 0;
 
-static void set_sw_return_pan(double pan)
+/* The one-byte value of a mixer write, for the setProperty log line: the
+   fader (0xB0) or pan (0xB1) byte as sent, or 0/1 for solo (0xB2) and mute
+   (0xB3). -1 for every other request or an empty payload. EP0 "OK" alone does
+   not say what a fader move or a click asked for. */
+static int mixer_param_payload(uint8_t bReq, const uint8_t *data, uint32_t len)
 {
-    if (!isfinite(pan)) pan = 0.0;
-    if (pan < -1.0) pan = -1.0;
-    if (pan >  1.0) pan =  1.0;
-    /* Keep the selected side at unity and attenuate only the opposite side.
-       Exact endpoints avoid cosf(pi/2)'s tiny negative rounding residual. */
-    float lGain = pan <= 0.0 ? 1.0f : pan >= 1.0 ? 0.0f
-                        : cosf((float)pan * (float)M_PI_2);
-    float rGain = pan >= 0.0 ? 1.0f : pan <= -1.0 ? 0.0f
-                        : cosf((float)-pan * (float)M_PI_2);
-    atomic_store_explicit(&gSwReturnPanL, lGain, memory_order_relaxed);
-    atomic_store_explicit(&gSwReturnPanR, rGain, memory_order_relaxed);
-    LOG("SW Return software balance: %.2f → L=%.3f R=%.3f", pan, lGain, rGain);
+    if (bReq < 0xB0 || bReq > 0xB3 || !data || len < 1) return -1;
+    return (bReq == 0xB2 || bReq == 0xB3) ? (data[0] ? 1 : 0) : (int)data[0];
 }
 
 /* Render callback: called on the USB device's IO thread.
    Pulls interleaved 16-channel Float32 from the shared ring buffer.
-   Channels 1-2 get software gain/pan/mute (mixer path for Line 1/2).
-   Channels 3-16 pass through at unity (direct FPGA routes to IOBoard outputs). */
+   Channels 1-2 get the software gain/mute stage while Maestro has it on (a
+   mixer on USB 1-2 feeds an output); otherwise they pass at unity.
+   Channels 3-16 always pass through at unity. */
 static OSStatus render_callback(
     void*                       inRefCon,
     AudioUnitRenderActionFlags* ioActionFlags,
@@ -659,20 +630,17 @@ static OSStatus render_callback(
         maestro_shm_read_at(shm, readFrame, ioData->mBuffers[0].mData, inNumberFrames);
         ioData->mBuffers[0].mDataByteSize = totalBytes;
         float* samp = (float*)ioData->mBuffers[0].mData;
-        /* Software gain + pan on channels 1-2 only (mixer/DAC path).
-           Channels 3-16 pass through at unity — they're routed directly
-           to IOBoard outputs by the FPGA crosspoint switch. */
+        /* Software gain on channels 1-2 only, and only while processing is
+           on. Channels 3-16 pass through at unity. */
         float gainL = atomic_load_explicit(&gSwReturnGainL, memory_order_relaxed);
         float gainR = atomic_load_explicit(&gSwReturnGainR, memory_order_relaxed);
-        float panL = atomic_load_explicit(&gSwReturnPanL, memory_order_relaxed);
-        float panR = atomic_load_explicit(&gSwReturnPanR, memory_order_relaxed);
         if (atomic_load_explicit(&gSwReturnSoftwareProcessing, memory_order_relaxed)) {
             for (UInt32 f = 0; f < inNumberFrames; f++) {
-                samp[f * nChannels + 0] *= gainL * panL;  /* ch1 (Line 1) */
-                samp[f * nChannels + 1] *= gainR * panR;  /* ch2 (Line 2) */
+                samp[f * nChannels + 0] *= gainL;  /* USB ch1 */
+                samp[f * nChannels + 1] *= gainR;  /* USB ch2 */
             }
         }
-        /* Peak detection on ch1-2 post-gain/pan so meters reflect actual output */
+        /* Peak detection on ch1-2 post-gain so meters reflect actual output */
         float pkL = gSwReturnPeakL, pkR = gSwReturnPeakR;
         for (UInt32 f = 0; f < inNumberFrames; f++) {
             float aL = fabsf(samp[f * nChannels + 0]);
@@ -691,7 +659,7 @@ static OSStatus render_callback(
             }
             gSwPeak[ch] = pk;
         }
-        /* Software mute zeros ch1-2 only (Line 1/2 through mixer). */
+        /* Software mute zeros ch1-2 only, while processing is on. */
         if (atomic_load_explicit(&gSwReturnMuted, memory_order_relaxed)
             && atomic_load_explicit(&gSwReturnSoftwareProcessing, memory_order_relaxed)) {
             for (UInt32 f = 0; f < inNumberFrames; f++) {
@@ -706,15 +674,13 @@ static OSStatus render_callback(
         float tmp[16384]; /* 1024 frames × 16 ch max */
         uint32_t maxFrames = inNumberFrames < 1024u ? inNumberFrames : 1024u;
         maestro_shm_read_at(shm, readFrame, tmp, maxFrames);
-        /* Software gain + pan on ch1-2 only */
+        /* Software gain on ch1-2 only, while processing is on */
         float gainL = atomic_load_explicit(&gSwReturnGainL, memory_order_relaxed);
         float gainR = atomic_load_explicit(&gSwReturnGainR, memory_order_relaxed);
-        float panL = atomic_load_explicit(&gSwReturnPanL, memory_order_relaxed);
-        float panR = atomic_load_explicit(&gSwReturnPanR, memory_order_relaxed);
         if (atomic_load_explicit(&gSwReturnSoftwareProcessing, memory_order_relaxed)) {
             for (UInt32 f = 0; f < maxFrames; f++) {
-                tmp[f * nChannels + 0] *= gainL * panL;
-                tmp[f * nChannels + 1] *= gainR * panR;
+                tmp[f * nChannels + 0] *= gainL;
+                tmp[f * nChannels + 1] *= gainR;
             }
         }
         float pkL = gSwReturnPeakL, pkR = gSwReturnPeakR;
@@ -1780,12 +1746,17 @@ static void close_usb_device(void)
     LOG("USB device closed");
 }
 
-/* Configure the FPGA routing matrix for stereo USB playback → DAC output.
-   This replicates the daemon's ApplySettingsToHardware() sequence:
+/* Bring the unit up for USB playback. The original's ApplySettingsToHardware
+   (og_source/maestrolink/Software/SymphonyIO.cpp:4660-4708) wrote the saved
+   settings under one PreferenceLoadLock; this helper holds none of the
+   user's settings, so it writes only what audio needs and leaves the rest to
+   Maestro, which restores the saved state after every connect and recovery:
      1. PreferenceLoadLock(true)  — mute XMOS while configuring
-     2. Speaker output mode/volume/mute
-     3. Clock source → Internal/Master
-     4. FPGA routing: USB ch0,1 → DAC L,R
+     2. Speaker volume/mute (the cached values; the speaker MODE is the
+        user's setting and is not touched here)
+     3. Clock source → Internal/Master (the USB mode's only clock)
+     4. Routing: every USB playback channel straight to the matching output,
+        no mixer routed to any output (the original's default)
      5. PreferenceLoadLock(false) — unlock XMOS, audio can flow
    The PreferenceLoadLock handshake is CRITICAL — without step 5 the XMOS
    stays muted and no audio reaches the DAC even though USB frames arrive. */
@@ -1817,11 +1788,14 @@ static int configure_fpga_routing(void)
     err = usb_vendor_write(VCMD_PREF_LOAD_LOCK, 0, &lock, 1);
     LOG("PreferenceLoadLock(true): %s", err ? "FAILED" : "OK");
 
-    /* ── Step 2: Speaker output settings ───────────────────────────────── */
-    /* Set speaker output mode to stereo (2) */
-    uint8_t stereo = 2;
-    err = usb_vendor_write(VCMD_SPEAKER_MODE, 0, &stereo, 1);
-    LOG("SpeakerMode(stereo=2): %s", err ? "FAILED" : "OK");
+    /* ── Step 2: Speaker volume and mute ───────────────────────────────── */
+    /* The speaker output mode (0x25) is not written here. It used to be
+       forced to stereo on every configure, which undid the user's choice
+       (Output page, Speaker mode) on each connect and recovery. It is one of
+       the settings the Mac owns: Maestro writes the saved one back after
+       every connect and recovery, as the original did first thing in
+       ApplySettingsToHardware (og_source/maestrolink/Software/SymphonyIO.cpp:4669),
+       and a unit nobody set a mode for keeps its own. */
 
     /* Set volume and mute using cached state if available, otherwise safe defaults.
        This avoids a momentary jump to the hardcoded 20dB before restore_cached_volume()
@@ -1840,8 +1814,12 @@ static int configure_fpga_routing(void)
         err ? "FAILED" : "OK");
 
     /* ── Step 3: Clock source → Internal, Master mode ──────────────────── */
-    /* ClockMode command 0x50: the daemon sends SetClockSource(internal, true)
-       Payload: 4 bytes — [source, master, loopSync, boardClockSrc]
+    /* Over USB the clock is always Internal: Apogee's user guide says of
+       Clock Source "Only available in Symphony & Standalone AIMs ... USB AIM
+       is always Internal", and Maestro offers only Internal over USB
+       (ClockSourceMenu.usb). So this is not a user setting being overridden,
+       and a source saved under ThunderBridge must never be applied here.
+       ClockMode command 0x50, payload 4 bytes — [source, master, loopSync, boardClockSrc]
        Source enum (1-based): 1=Internal, 2=WordClock, 3=LoopSync, 4=IOBoard1, 5=IOBoard2
        Master flag: 0=Slave, 1=Master
        LoopSync: 0=off, 1=on
@@ -1899,36 +1877,29 @@ static int configure_fpga_routing(void)
         }
     }
 
-    /* ── Step 4: FPGA routing — USB → Mixer → DAC ────────────────────── */
-    /* Route USB playback through the FPGA mixer, enabling hardware
-       fader/pan/mute/solo and Master output control.
-       Path: USB ch0/1 → Mixer0 SW Return → Mixer processing → Mixer out → DAC
-       The XMOS firmware initializes mixer to 0dB/center/unmuted at boot,
-       so audio passes through at unity gain until the app adjusts levels. */
-    uint8_t mixer_routes[] = {
-        ROUTE_DST_MIX0_SWR_L, ROUTE_SRC_USB_CH0,    /* USB ch0 → Mixer0 SW Return L */
-        ROUTE_DST_MIX0_SWR_R, ROUTE_SRC_USB_CH1,    /* USB ch1 → Mixer0 SW Return R */
-        ROUTE_DST_DAC_L,      ROUTE_SRC_MIX0_OUT_L,  /* Mixer0 out L → DAC left     */
-        ROUTE_DST_DAC_R,      ROUTE_SRC_MIX0_OUT_R,  /* Mixer0 out R → DAC right    */
-    };
-    err = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, mixer_routes, sizeof(mixer_routes));
-    if (err) { LOG_ERR("FPGA mixer routing FAILED"); }
-    else     { LOG("FPGA mixer routing: USB→Mixer0→DAC (4 pairs, 8 bytes)"); }
-
-    /* ── Step 4a: IOBoard0 direct routes — Line 3-8, ADAT 1-8 ────────── */
-    /* Route USB ch2-15 directly to IOBoard0 ch2-15, bypassing mixer.
-       Line 1/2 stays on mixer path above for volume/mute control.
-       Each route sent individually (2 bytes) matching original daemon's
-       ResetOutputRouting() pattern in SymphonyIOUSBAudioRoutingController.cpp.
-       Evidence: og_source SymphonyIORouting.h IOBoard0Ch2=0x22 .. Ch15=0x2F */
+    /* ── Step 4: Output routing — every output direct ─────────────────── */
+    /* USB ch0-15 straight to IOBoard0 ch0-15, Line 1/2 included, and no
+       mixer routed to any output. This is the original's default: its reset
+       routes every hardware output from a USB playback channel and no mixer
+       output anywhere (og_source/maestrolink/Software/
+       SymphonyIOUSBAudioRoutingController.cpp:623-712), and the firmware powers
+       on the same way (SymphonyIOAudioRouteManager.cpp:226-439). Line 1/2 used
+       to be sent through Mixer 1 here (USB → Mixer0 → DAC), with the mixer's
+       hardware inputs then muted to hide them; that was ours, not Apogee's.
+       A mixer reaches an output only when the user routes it there in Output
+       Routing, and Maestro writes those saved routes (and each mixer's
+       Software Return source) after this runs, on connect and on recovery.
+       Each route sent individually (2 bytes) matching the original daemon's
+       ResetOutputRouting() pattern.
+       Evidence: og_source SymphonyIORouting.h IOBoard0Ch0=0x20 .. Ch15=0x2F */
     {
         int io0_ok = 0, io0_fail = 0;
-        for (unsigned ch = 2; ch <= 15; ch++) {
+        for (unsigned ch = 0; ch <= 15; ch++) {
             uint8_t pair[2] = { ROUTE_DST_IO0(ch), ROUTE_SRC_USB(ch) };
             int rerr = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, pair, 2);
             if (rerr) io0_fail++; else io0_ok++;
         }
-        LOG("IOBoard0 direct routes (Line 3-8, ADAT 1-8): %d OK, %d failed",
+        LOG("IOBoard0 direct routes (USB 1-16 → outputs 1-16): %d OK, %d failed",
             io0_ok, io0_fail);
     }
 
@@ -1951,29 +1922,10 @@ static int configure_fpga_routing(void)
             io1_ok, io1_fail);
     }
 
-    /* ── Step 4c: Mute mixer hardware input channels ──────────────────── */
-    /* The XMOS firmware boots with all mixer inputs at 0dB/unmuted, and
-       IOBoard inputs feed into mixer inputs by default. Without muting,
-       every hardware input passes through: IOBoard→Mixer→DAC.
-
-       DAW mode:     Mute all 32 HW input channels on Mixer0. Only the
-                     SW Return (USB/DAW audio) is left unmuted. The app's
-                     syncMixerToHardware() restores the user's persisted
-                     mixer state after connecting.
-       Direct Monitor: Leave HW inputs unmuted for zero-latency monitoring. */
-    if (!err) {
-        uint8_t muteVal = (gRoutingMode == ROUTING_MODE_DAW) ? 1 : 0;
-        int muteOk = 0, muteFail = 0;
-        for (uint16_t ch = 0; ch < 32; ch++) {
-            uint32_t nValue = ((uint32_t)0 << 16) | (uint32_t)ch; /* mixer 0, channel ch */
-            uint8_t val = muteVal;
-            int merr = usb_vendor_write(0xB3, nValue, &val, 1);
-            if (merr) muteFail++; else muteOk++;
-        }
-        LOG("Mixer0 HW inputs %s: %d OK, %d failed (mode=%s)",
-            muteVal ? "muted" : "unmuted", muteOk, muteFail,
-            gRoutingMode == ROUTING_MODE_DAW ? "DAW" : "Direct Monitor");
-    }
+    /* No mixer strip is muted here. All 32 hardware inputs of Mixer 1 used to
+       be muted (or unmuted) on every configure for the removed Input
+       Monitoring setting; a strip now only ever holds what Maestro shows for
+       it, and Maestro restores both mixers after every connect and recovery. */
 
     /* NOTE: SW Return meter taps (destinations 0xB0-0xB3) cannot be set via
        command 0x31 — the firmware only accepts audio routing destinations
@@ -1990,7 +1942,7 @@ static int configure_fpga_routing(void)
         err ? "FAILED" : "OK",
         err ? "STILL MUTED" : "UNLOCKED, audio should flow");
 
-    LOG("Hardware init complete — stereo, %s, vol=%ddB, clock=Internal/Master",
+    LOG("Hardware init complete — %s, vol=%ddB, clock=Internal/Master, outputs direct",
         muteVal ? "muted" : "unmuted", vol);
     /* Only a unit that took the final unlock counts as configured. */
     gConfiguredAtNs = err ? 0 : clock_gettime_nsec_np(CLOCK_MONOTONIC);
@@ -2722,10 +2674,10 @@ static void handle_peer(xpc_connection_t peer) {
                 /* Reconstruct nValue from wValue/wIndex for usb_vendor_write */
                 uint32_t nValue = ((uint32_t)wVal << 16) | (uint32_t)wIdx;
                 int err = usb_vendor_write(bReq, nValue, dataCopy, copyLen);
-                int toggle = mixer_toggle_payload(bReq, dataCopy, copyLen);
-                if (toggle >= 0)
+                int mixerVal = mixer_param_payload(bReq, dataCopy, copyLen);
+                if (mixerVal >= 0)
                     LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u val=%d: %s",
-                        bReq, wVal, wIdx, copyLen, toggle, err ? "FAILED" : "OK");
+                        bReq, wVal, wIdx, copyLen, mixerVal, err ? "FAILED" : "OK");
                 else
                     LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
                         bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
@@ -2898,9 +2850,8 @@ static void handle_peer(xpc_connection_t peer) {
 
         } else if (strcmp(cmd, "setSwReturnMute") == 0) {
             /* Software mute — zeros ch1-2 of the "Maestro USB" render while
-               software processing is on (a mixer uses the default 1-2 pair).
-               Maestro sends this together with the unit's 0xB3 to strip 32 on
-               every Software Return mute and restore; it is not forced off. */
+               software processing is on. Maestro decides when: only while a
+               mixer on USB 1-2 feeds an output (see gSwReturnMuted). */
             int muted = (int)xpc_dictionary_get_int64(msg, "muted");
             atomic_store_explicit(&gSwReturnMuted, muted, memory_order_relaxed);
             LOG("SW Return software mute: %s", muted ? "MUTED" : "unmuted");
@@ -2913,8 +2864,9 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
         } else if (strcmp(cmd, "setSwReturnLevel") == 0) {
-            /* Software fader — USB audio bypasses FPGA mixer, so hardware fader
-               commands (0xB0) have no effect. We scale samples in the render callback.
+            /* Software level for USB channels 1-2, applied only while software
+               processing is on. Maestro keeps it at 0 dB: the unit's mixer owns
+               the Software Return fader (0xB0, strip 32).
                Input: dB value (double). -48 to +6 range, or <= -96 for silence. */
             double dB = xpc_dictionary_get_double(msg, "dB");
             float gain;
@@ -2952,20 +2904,9 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
-        } else if (strcmp(cmd, "setSwReturnPan") == 0) {
-            /* Stereo balance: -1.0 full left, 0.0 unity on both, +1.0 full right. */
-            set_sw_return_pan(xpc_dictionary_get_double(msg, "pan"));
-
-            xpc_object_t reply = xpc_dictionary_create_reply(msg);
-            if (reply) {
-                xpc_dictionary_set_int64(reply, "status", 0);
-                xpc_connection_send_message(peer, reply);
-                xpc_release(reply);
-            }
-
         } else if (strcmp(cmd, "setSwReturnProcessing") == 0) {
-            /* Select whether software gain/pan/mute should process USB 1-2.
-               Other source pairs use the FPGA mixer controls directly. */
+            /* Whether the software gain/mute stage processes USB 1-2: on only
+               while a mixer on USB 1-2 feeds an output (the app's rule). */
             int enabled = xpc_dictionary_get_int64(msg, "enabled") != 0;
             atomic_store_explicit(&gSwReturnSoftwareProcessing, enabled, memory_order_relaxed);
             LOG("SW Return software processing: %s", enabled ? "enabled" : "disabled");
@@ -3000,31 +2941,6 @@ static void handle_peer(xpc_connection_t peer) {
                     LOG("resetAudioOutput: no ring buffer — skipping recreate");
                 }
             });
-        } else if (strcmp(cmd, "setRoutingMode") == 0) {
-            /* Switch between DAW mode (null passthrough) and Direct Monitor mode
-               (1:1 input passthrough for zero-latency monitoring without a DAW). */
-            int64_t mode = xpc_dictionary_get_int64(msg, "mode");
-
-            xpc_object_t reply = xpc_dictionary_create_reply(msg);
-            if (reply) {
-                xpc_dictionary_set_int64(reply, "status", 0);
-                xpc_connection_send_message(peer, reply);
-                xpc_release(reply);
-            }
-
-            dispatch_async(gQueue, ^{
-                int newMode = (mode == ROUTING_MODE_DIRECT) ? ROUTING_MODE_DIRECT : ROUTING_MODE_DAW;
-                if (newMode == gRoutingMode) {
-                    LOG("Routing mode already %s — skipping FPGA reconfig",
-                        gRoutingMode ? "Direct Monitor" : "DAW");
-                    return;
-                }
-                gRoutingMode = newMode;
-                LOG("Routing mode changed to %s — reconfiguring FPGA",
-                    gRoutingMode ? "Direct Monitor" : "DAW");
-                configure_fpga_routing();
-            });
-
         } else if (strcmp(cmd, "setHardwareRate") == 0) {
             /* Move the REAL USB device's sample rate.
              *
