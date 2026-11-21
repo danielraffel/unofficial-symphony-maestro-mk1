@@ -103,8 +103,10 @@ struct OriginalApogeeDriversWarning: View {
     /// What Maestro is doing about it; nil shows the warning as it always was.
     var conflict: ApogeeDriverConflict.Decision?
 
-    static let headline = "Apogee's original Symphony I/O drivers are installed"
-    static let message = "Maestro doesn't support running alongside them. The two can interfere with each other and cause problems, including crashes."
+    /// The installer's dialog opens with the same two sentences
+    /// (DIALOG_OPENING in Installer/scripts-core/preinstall).
+    static let headline = String(ApogeeDriverConflict.detected.dropLast())
+    static let message = ApogeeDriverConflict.crashRisk
 
     @State private var showFound = false
 
@@ -138,26 +140,28 @@ struct OriginalApogeeDriversWarning: View {
                     if finding.isAwaitingRestartOnly {
                         Text(OriginalApogeeDrivers.restartAdvice)
                             .fontWeight(.semibold)
+                    } else if finding.isKeptCopyOnly {
+                        // Apogee's uninstaller would not remove this copy and
+                        // would remove Maestro: the steps for it, not the uninstaller.
+                        Text(.init(OriginalApogeeDrivers.keptCopyAdvice))
                     } else {
-                        if conflict?.consequence != nil {
-                            ForEach(Array(ApogeeDriverConflict.fixSteps.enumerated()), id: \.offset) { index, step in
-                                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                    Text("\(index + 1).")
-                                    Text(LocalizedStringKey(step))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                        // The installer's steps, in its words.
+                        ForEach(Array(ApogeeDriverConflict.fixSteps.enumerated()), id: \.offset) { index, step in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text("\(index + 1).")
+                                Text(LocalizedStringKey(step))
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
-                        } else {
-                            Text(.init(OriginalApogeeDrivers.removalAdvice))
                         }
+                        Text(OriginalApogeeDrivers.uninstallSideEffect)
                         Link(destination: OriginalApogeeDrivers.releaseDMGURL) {
                             Label("Download Apogee's Symphony I/O Release 5.5", systemImage: "arrow.down.circle")
                         }
                         .buttonStyle(.bordered)
                         .padding(.top, 2)
-                    }
-                    if finding.hasStagedCopy {
-                        Text(OriginalApogeeDrivers.stagedAdvice)
+                        if finding.hasStagedCopy {
+                            Text(OriginalApogeeDrivers.stagedAdvice)
+                        }
                     }
                     DisclosureGroup("What was found", isExpanded: $showFound) {
                         VStack(alignment: .leading, spacing: 3) {
@@ -179,6 +183,16 @@ struct OriginalApogeeDriversWarning: View {
                         .fixedSize(horizontal: false, vertical: true)
                     ApogeeStillThereSteps()
                     if !finding.isAwaitingRestartOnly { ManualApogeeRemovalSteps() }
+                    // We do not troubleshoot removing Apogee's software; this
+                    // is where users help each other (AGENTS.md).
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(OriginalApogeeDrivers.communityNote)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Link(OriginalApogeeDrivers.communityIssueURL.absoluteString,
+                             destination: OriginalApogeeDrivers.communityIssueURL)
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 }
             }
             .padding(12)

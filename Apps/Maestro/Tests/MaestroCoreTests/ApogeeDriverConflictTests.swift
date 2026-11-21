@@ -79,27 +79,41 @@ struct ApogeeDriverConflictTests {
         #expect((d.updateNote != nil) == c.updateNote)
     }
 
-    @Test("The text: the consequence, the caution, the update sentence and the fix in the installer's order")
+    @Test("The text: the installer's opening, the consequence, the caution, the update sentence and the installer's steps")
     func text() {
+        #expect(ApogeeDriverConflict.detected == "Apogee's original Symphony I/O drivers were detected.")
+        #expect(ApogeeDriverConflict.crashRisk == "Running both can crash your Mac and make it restart repeatedly.")
         #expect(ApogeeDriverConflict.consequence
             == "Maestro's driver is not being updated or started until Apogee's driver is removed.")
         let held = ApogeeDriverConflict.decide(kextLoaded: true, copyOnDisk: false, maestroDriverActive: false,
                                                updatePending: true)
-        #expect(held.what?.contains("macOS can crash and restart repeatedly") == true)
-        #expect(held.updateNote == "You are seeing this after updating because this version now checks for "
-            + "Apogee's original driver, and it found it on this Mac. Earlier versions did not check.")
-        #expect(held.banner?.message.contains(ApogeeDriverConflict.consequence) == true)
+        #expect(held.what == ApogeeDriverConflict.crashRisk)
+        #expect(held.updateNote == "You are seeing this after updating because this version now checks for them. "
+            + "Earlier versions did not check.")
+        #expect(held.banner?.title == "Apogee's original Symphony I/O drivers were detected")
+        #expect(held.banner?.message == ApogeeDriverConflict.crashRisk + " " + ApogeeDriverConflict.consequence
+            + " Device Settings has the steps.")
         let both = ApogeeDriverConflict.decide(kextLoaded: true, copyOnDisk: true, maestroDriverActive: true,
                                                updatePending: false)
-        #expect(both.caution == "Do not unplug the ThunderBridge and do not update Maestro. Run Apogee's own "
-            + "uninstaller, then restart your Mac.")
+        #expect(both.what == "Apogee's driver and Maestro's driver are both running now. "
+            + ApogeeDriverConflict.crashRisk)
+        // Both running: the user guide's safest order. Shut down and disconnect
+        // first, never "unplug" or "uninstall" with the card live.
+        #expect(both.caution == "Do not unplug the ThunderBridge or PCIe chassis while your Mac is on, and do not "
+            + "update Maestro. Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up "
+            + "again, before you remove Apogee's drivers.")
         #expect(both.banner?.title == "Do not unplug the ThunderBridge or update Maestro")
+        #expect(both.banner?.message == ApogeeDriverConflict.detected + " One is running alongside Maestro's driver. "
+            + ApogeeDriverConflict.crashRisk + " Shut down your Mac and disconnect the ThunderBridge or PCIe "
+            + "chassis, then start up again. Device Settings has the steps.")
+        #expect(both.banner?.message.contains("uninstaller") == false)
         #expect(both.updateNote == nil)
         // Apogee's uninstaller, restart, install again: never a command of ours.
-        #expect(ApogeeDriverConflict.fixSteps.count == 3)
-        #expect(ApogeeDriverConflict.fixSteps[0].contains("Apogee's own uninstaller"))
-        #expect(ApogeeDriverConflict.fixSteps[1] == "Restart your Mac.")
-        #expect(ApogeeDriverConflict.fixSteps[2].hasPrefix("Install Maestro again."))
+        #expect(ApogeeDriverConflict.fixSteps.count == 4)
+        #expect(ApogeeDriverConflict.fixSteps[0].contains("Apogee's latest installer"))
+        #expect(ApogeeDriverConflict.fixSteps[1].contains("**Uninstall**"))
+        #expect(ApogeeDriverConflict.fixSteps[2] == "Restart your Mac")
+        #expect(ApogeeDriverConflict.fixSteps[3].hasPrefix("Install Maestro again"))
         let all = [ApogeeDriverConflict.heldWhat, ApogeeDriverConflict.bothActiveWhat,
                    ApogeeDriverConflict.bothActiveCaution, ApogeeDriverConflict.consequence,
                    ApogeeDriverConflict.updateNote, ApogeeDriverConflict.heldBannerMessage,
@@ -108,7 +122,7 @@ struct ApogeeDriverConflictTests {
         for line in all {
             #expect(!line.contains("kmutil") && !line.contains("sudo") && !line.lowercased().contains("experimental"))
         }
-        #expect(ApogeeDriverConflict.updateRefusal.contains("Apogee's own uninstaller"))
+        #expect(ApogeeDriverConflict.updateRefusal.contains(ApogeeDriverConflict.crashRisk))
     }
 
     private let thunderBridge = "com.apogeedigital.driver.Symphony64ThunderBridge"

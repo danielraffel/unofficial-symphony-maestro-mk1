@@ -124,8 +124,12 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     /// path (`activateWhenThunderBridgePresent`), the header banner and the
     /// Device Settings button. So this is where a loaded Apogee kernel driver
     /// stops it: an activation would start Maestro's driver on the card next
-    /// to Apogee's, and a replacement would stop a running one, which is what
-    /// panicked a user's Mac (ApogeeDriverConflict.swift). The check is a few
+    /// to Apogee's, and a replacement would stop a running one. With both on
+    /// the card, macOS's kernel crashes when either lets go of the card's
+    /// interrupt, so no request of any kind is submitted and nothing here
+    /// ever stops our own running driver (ApogeeDriverConflict.swift; the
+    /// account is in AGENTS.md, "Apogee's original drivers: what we do and
+    /// why"). Keep this the only place a request is submitted. The check is a few
     /// file lookups and one loaded-kext query for two identifiers, made only
     /// when a request is about to be submitted, never on a timer.
     public func activate() {

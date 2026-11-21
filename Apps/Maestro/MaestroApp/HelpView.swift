@@ -187,7 +187,15 @@ struct HelpView: View {
             }
             HelpQuestion("Can I keep Apogee's original drivers installed?") {
                 Text(originalDriversAnswer)
+                // The installer's steps, in its words (ApogeeDriverConflict.fixSteps).
+                ForEach(Array(ApogeeDriverConflict.fixSteps.enumerated()), id: \.offset) { index, step in
+                    Text(LocalizedStringKey("\(index + 1). \(step)"))
+                }
+                Text(originalDriversAfterword)
                 ManualApogeeRemovalSteps()
+                Text(.init("\(OriginalApogeeDrivers.communityNote) "
+                    + "[\(OriginalApogeeDrivers.communityIssueURL.absoluteString)]"
+                    + "(\(OriginalApogeeDrivers.communityIssueURL.absoluteString))"))
             }
 
             HelpQuestion("Can I connect more than one Symphony I/O?") {
@@ -246,21 +254,29 @@ struct HelpView: View {
         return (try? AttributedString(markdown: md)) ?? AttributedString(md)
     }
 
-    /// "Can I keep Apogee's original drivers installed?" The download is the
-    /// same disk image the installer's warning page links to.
+    /// "Can I keep Apogee's original drivers installed?" Opens as the
+    /// installer's dialog and the Device Settings warning do; the steps follow
+    /// it (`ApogeeDriverConflict.fixSteps`), then `originalDriversAfterword`.
+    /// The download is the same disk image the installer's warning page links to.
     private var originalDriversAnswer: AttributedString {
-        let md = "No. Remove Apogee's original Symphony I/O drivers before using Maestro: open Apogee's "
-            + "[Symphony I/O Release 5.5](\(OriginalApogeeDrivers.releaseDMGURL.absoluteString)) installer, "
-            + "choose **Uninstall**, restart your Mac, then reinstall Maestro and restart once more. Always use "
-            + "Apogee's latest installer: older ones leave parts behind. Apogee's Uninstall also removes "
-            + "Maestro and resets macOS's audio device settings. The two can interfere with each other and cause "
-            + "problems, including crashes, and we can't investigate a problem while both are installed. "
-            + "**Device Settings** shows a warning at the top while they are there, and lists what it found. "
-            + "While Apogee's driver for the ThunderBridge or PCIe card is loaded, Maestro does not start or "
-            + "update its own driver, and the installer stops: with both drivers on the card, macOS can crash "
-            + "and restart repeatedly. "
-            + "If the warning is still there after all that, macOS may be loading its own stored copy of "
-            + "Apogee's kernel extension; the warning has a command you can try for that."
+        let md = "No. If the installer or Maestro says: \"\(ApogeeDriverConflict.detected)\" Symphony Maestro "
+            + "cannot be installed or updated while they are installed or loaded. \(ApogeeDriverConflict.crashRisk) "
+            + "To fix this, use Apogee's own uninstaller, from "
+            + "[Symphony I/O Release 5.5](\(OriginalApogeeDrivers.releaseDMGURL.absoluteString)):"
+        return (try? AttributedString(markdown: md)) ?? AttributedString(md)
+    }
+
+    private var originalDriversAfterword: AttributedString {
+        let md = "Then restart once more. Always use Apogee's latest installer: older ones leave parts behind. "
+            + "\(OriginalApogeeDrivers.uninstallSideEffect) "
+            + "**Device Settings** shows a warning at the top while Apogee's drivers are there, and lists what it "
+            + "found. An update is stopped while Apogee's driver for the ThunderBridge or PCIe card is loaded, or "
+            + "is in an Extensions folder; while it is loaded, Maestro also does not start or update its own "
+            + "driver. If Maestro says both drivers are running, shut down your Mac and disconnect the "
+            + "ThunderBridge or PCIe chassis, then start up again, before you remove anything. "
+            + "If the warning is still there after all that, macOS may be keeping its own stored copy of "
+            + "Apogee's kernel extension, which Apogee's uninstaller does not remove; that copy alone does not "
+            + "stop an update, and the warning has steps you can try for it."
         return (try? AttributedString(markdown: md)) ?? AttributedString(md)
     }
 

@@ -191,7 +191,7 @@ To remove everything this project installs, run this one command in Terminal (in
 sudo /Applications/Maestro.app/Contents/Resources/uninstall.sh
 ```
 
-It removes the Unofficial Symphony Maestro app, its audio plug-in, its ThunderBridge driver and its background service, and restores Apogee's original audio plug-in if our installer had set it aside. Audio stops briefly while it runs. macOS may not let the script remove the driver itself; if so, the script says so, and you turn off **Symphony Thunderbridge** under **System Settings › General › Login Items & Extensions › Driver Extensions**.
+It removes the Unofficial Symphony Maestro app, its audio plug-in, its ThunderBridge driver and its background service, and restores Apogee's original audio plug-in if our installer had set it aside. Audio stops briefly while it runs. macOS may not let the script remove the driver itself; if so, the script says so, and you turn off **Symphony Thunderbridge** under **System Settings › General › Login Items & Extensions › Driver Extensions**. The script does not run while Apogee's original ThunderBridge or PCIe driver is loaded and Maestro's driver is active: stopping Maestro's driver then can crash your Mac. It says so and changes nothing; shut down your Mac, disconnect the ThunderBridge or PCIe chassis, start up again, and run it again.
 
 If you have already deleted the app from Applications, the same script is in this repository at [Installer/uninstall.sh](Installer/uninstall.sh).
 
@@ -208,7 +208,14 @@ Apogee's software is theirs, not ours: we don't provide, test or support it, and
 
 ## Coming from Apogee's official software
 
-Going the other way, remove Apogee's Symphony I/O software before installing Unofficial Symphony Maestro: open Apogee's [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg) installer, choose **Uninstall**, and restart. Our installer stops, for a first install and for an update, while Apogee's original Symphony driver is on your Mac: with both drivers on a ThunderBridge or PCIe card, macOS can crash and restart repeatedly. It changes nothing, and the fix is Apogee's uninstaller and a restart. The details are in the user guide under [Removing Apogee's original drivers](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers).
+Going the other way, remove Apogee's Symphony I/O software before installing Unofficial Symphony Maestro. If it is still there, our installer stops and says: "Apogee's original Symphony I/O drivers were detected. Symphony Maestro cannot be installed or updated while they are installed or loaded. Running both can crash your Mac and make it restart repeatedly." To fix this:
+
+1. Download Apogee's latest installer, [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg)
+2. Open the DMG and choose **Uninstall**
+3. Restart your Mac
+4. Run this installer again (Apogee's Uninstall also removes Maestro; this puts it back)
+
+A first install stops while any part of Apogee's original Symphony I/O software is found. An update stops while Apogee's driver for the ThunderBridge or PCIe card is loaded or is in an Extensions folder; a copy that only macOS has kept does not stop an update, and Maestro's Device Settings warns about it. The details, and what to do if you are still blocked, are in the user guide under [Removing Apogee's original drivers](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers). We can't troubleshoot removing Apogee's software ourselves. If you found something that worked, or are stuck, other users compare notes in this issue: https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32
 
 On some Macs, macOS keeps loading Apogee's old drivers even after their uninstaller has run. One user worked out why and how they cleared it, and wrote it up in detail: [their report](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371). It's one person's experience on their own Mac, shared in case it helps, and not a procedure we've tested.
 

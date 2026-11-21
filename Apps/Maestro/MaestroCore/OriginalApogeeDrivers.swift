@@ -1,14 +1,17 @@
 // OriginalApogeeDrivers.swift — is Apogee's original Symphony I/O MkI software installed?
 //
-// Maestro is not supported alongside Apogee's own Symphony I/O MkI drivers. A
-// tester's Mac kernel-panicked with Apogee's ThunderBridge kernel extension
-// loaded next to Maestro's driver (GitHub issue 31). The installer refuses a
-// first install over them, and an update too while one of Apogee's kernel
-// drivers for the ThunderBridge or PCIe card is present; other leftovers let
-// an update go ahead (Installer/scripts-core/preinstall). This is the app's
+// Maestro is not supported alongside Apogee's own Symphony I/O MkI drivers:
+// with Apogee's ThunderBridge or PCIe kernel extension loaded next to
+// Maestro's driver, macOS's kernel crashes (GitHub issue 31; the account is in
+// AGENTS.md, "Apogee's original drivers: what we do and why"). The installer
+// refuses a first install over them, and an update while one of Apogee's
+// kernel drivers for the ThunderBridge or PCIe card is loaded or in an
+// Extensions folder; a copy only macOS keeps, and other leftovers, let an
+// update go ahead (Installer/scripts-core/preinstall). This is the app's
 // read-only version of the same check, for that update and for a Mac where
 // they came back or were installed afterwards. What the app does about a
-// loaded kernel driver is in ApogeeDriverConflict.swift.
+// loaded kernel driver is in ApogeeDriverConflict.swift. The app only looks:
+// it never removes, unloads or changes anything of Apogee's.
 //
 // Only the Symphony I/O MkI release installs these. The same release also
 // installs Apogee Maestro 2, ApogeePopup and ApogeeServices.framework, which
@@ -135,6 +138,13 @@ public struct OriginalApogeeDriverFinding: Sendable, Equatable {
                 && item.bundleID.map(OriginalApogeeDrivers.pciKernelExtensionBundleIDs.contains) == true
         }
     }
+    /// macOS is keeping its own copy and nothing Apogee's uninstaller removes
+    /// is installed. The uninstaller would not remove that copy and would
+    /// remove Maestro, so the warning points to the steps for it instead (the
+    /// installer's "guide" case).
+    public var isKeptCopyOnly: Bool {
+        hasStagedCopy && !items.contains { !$0.staged && $0.path != nil }
+    }
     public var lines: [String] { items.map(\.line) }
 
     /// The block the diagnostics text carries, found or not.
@@ -215,17 +225,14 @@ public enum OriginalApogeeDrivers {
         return list
     }()
 
-    /// What the warning tells people to do. Apogee's Uninstall also deletes
-    /// /Applications/Maestro.app and macOS's audio device settings, hence the
-    /// reinstall.
-    public static let removalAdvice = "Remove them with **Uninstall** in Apogee's latest Symphony I/O installer "
-        + "(Release 5.5), restart your Mac, then reinstall Maestro and restart once more. Apogee's Uninstall "
-        + "also removes Maestro and resets macOS's audio device settings."
+    /// Under the fix steps (`ApogeeDriverConflict.fixSteps`): the other thing
+    /// Apogee's Uninstall does (uninstaller_info.xml:31-34).
+    public static let uninstallSideEffect = "Apogee's Uninstall also resets macOS's audio device settings."
 
     /// What the warning says when only a restart is left (`isAwaitingRestartOnly`).
     public static let restartAdvice = "They have been removed, but one is still loaded. Restart your Mac to finish."
 
-    /// Added under `removalAdvice` when `hasStagedCopy`. States what was found;
+    /// Added under the fix steps when `hasStagedCopy`. States what was found;
     /// what to try is in `stillThereSteps`.
     public static let stagedAdvice = "macOS is also keeping its own copy of an Apogee kernel extension in "
         + "/Library/StagedExtensions. Apogee's Uninstall doesn't remove that copy; macOS normally discards it "
@@ -242,6 +249,19 @@ public enum OriginalApogeeDrivers {
     public static let lessCommonIntro = "You shouldn't need anything below. It is future-proofing, for two "
         + "situations: the warning is still here after you've followed the steps above, or Apogee's uninstaller "
         + "can't run on your Mac. It is an older Intel app, and a future macOS may no longer run it."
+
+    /// Shown instead of the uninstaller steps when `isKeptCopyOnly`.
+    public static let keptCopyAdvice = "macOS has kept its own copy of an Apogee kernel extension in "
+        + "/Library/StagedExtensions, and Apogee's uninstaller does not remove it. Open **If the warning is still "
+        + "here after uninstalling and restarting**, below."
+
+    /// Where users help each other with removing Apogee's software. The project
+    /// does not troubleshoot or maintain that removal, and a reply there is not
+    /// a support commitment (AGENTS.md).
+    public static let communityIssueURL = URL(string:
+        "https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32")!
+    public static let communityNote = "We can't troubleshoot removing Apogee's software ourselves. If you found "
+        + "something that worked, or are stuck, other users compare notes in this issue:"
 
     public static let stillThereTitle = "If the warning is still here after uninstalling and restarting"
     public static let stillThereIntro = "macOS may still be loading its own stored copy of Apogee's kernel "

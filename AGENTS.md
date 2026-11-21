@@ -43,6 +43,83 @@ can deliver software to existing installations; source/site changes must not tri
 it. Do not replace published release assets. Test upgrades with a separate feed and
 record the exact signed/stapled package hash before release approval.
 
+## Apogee's original drivers: what we do and why
+
+This is the full account. The code comments in `Installer/scripts-core/preinstall`,
+`Installer/uninstall.sh`, `Apps/Maestro/MaestroCore/ApogeeDriverConflict.swift` and
+`SystemExtensionInstaller.activate` point here.
+
+**The incident.** Apogee's original kernel extension for the ThunderBridge
+(`com.apogeedigital.driver.Symphony64ThunderBridge`; the Symphony 64 PCIe card's is
+`com.apogeedigital.driver.Symphony64`) and Maestro's driver extension can both
+attach to the same PCI card. Both register the card's interrupt, and macOS's
+kernel then crashes (a NULL dereference in
+`IOSharedInterruptController::unregisterInterrupt`) when either one releases it:
+our driver's `Stop`, or the kext being terminated. A user's Mac restarted about
+24 times in two days this way (stable 0.8.40, driver build 123, November 2026).
+The fault is in macOS, but we are the second driver on the card, so we prevent
+the combination.
+
+**Therefore.**
+
+- Never install, update, activate or replace our driver while that kext is loaded
+  or can load.
+- Never stop, deactivate or retire our own running driver while it is loaded:
+  that `Stop` is the crash. This includes `Installer/uninstall.sh`, which refuses
+  to run when the kext is loaded and our driver extension is registered.
+
+**What blocks, what does not, and why.**
+
+| Found | First install | Update | Why |
+| --- | --- | --- | --- |
+| Kext for the card loaded now | blocked | blocked | Both drivers would be on the card. |
+| Kext for the card in `/Library/Extensions` or `/System/Library/Extensions` | blocked | blocked | macOS can load it at the next start. |
+| Only a copy macOS keeps (`/Library/StagedExtensions`, or the auxiliary kernel collection) | blocked (as shipped since 0.9.12) | not blocked; the app warns | Apogee's uninstaller does not remove that copy and does remove Maestro, so blocking an update there would leave the person with neither. |
+| Harmless leftovers (launch daemons, the HAL plug-in folder, Application Support, USB-only pieces) | blocked | not blocked; the app warns | They cannot put a second driver on the card. |
+| A check that failed or timed out | not blocked | not blocked | We do not lock people out on our own tooling's failure. It is logged. |
+
+In the app, only a kext that is loaded now changes behaviour
+(`ApogeeDriverConflict.decide`): no activation, replacement or update, and nothing
+that stops our running driver. A copy on disk only shows the warning.
+
+**The policy: we do not touch Apogee's software.** We deliberately do not ship an
+uninstaller for Apogee's software, and we do not remove, unload or modify anything
+of Apogee's ourselves. Doing so, in the owner's words, "opens up a can of worms we
+prefer not to be involved in": we would become responsible for the state of
+software we do not build or maintain, across every Apogee product and macOS
+version, and for anything that goes wrong on someone's Mac as a result. So the
+line is firm: detect, stop, explain, point to Apogee's own uninstaller first, and
+then to the removal guide (`docs/UserManual.md`, "Removing Apogee's original
+drivers"), which presents the extra commands as one user's untested report. Do not
+add automatic removal, `kmutil` or `kextunload` calls that change anything, or
+deletion of Apogee's files to the installer, the app or any script. (Read-only
+probes such as `kmutil showloaded` are how we detect.) If a future change seems to
+need more than that, it is a decision for the owner.
+
+One older exception exists and must not be extended: the developer-only
+`Drivers/AudioServerPlugin/Scripts/install.sh` sets Apogee's old USB HAL plug-in
+aside by renaming its `Info.plist`, and the uninstall scripts put it back. The
+installer package shipped to users does not do this.
+
+**No troubleshooting of the removal either.** The project does not troubleshoot or
+maintain the removal of Apogee's software. The removal guide and GitHub issue 32
+are where users help each other, and a reply there is not a support commitment.
+The guide and the app's warning say so and link to the issue; the installer's
+dialog does not (it is at its length limit and already links to the guide).
+
+**One message.** Every block dialog is assembled in the preinstall from shared
+parts (the opening, the optional update sentence, "To fix this:" with the case's
+steps, the closing), so each variant is the same message with small differences.
+The app's warning, Help, the user guide, README, the website and the installer's
+warning page use the same opening sentences and the same steps; tests compare
+them. Keep it that way: change the shared part, not one copy.
+
+**Never hang an unattended install.** The dialog closes by itself after five
+minutes, is not shown when no one is logged in at the console, and every probe
+(`kmutil`, `kextstat`) has a deadline. A blocked install always fails, and always
+writes the reason and the guide's address to stderr and the install log, so
+`sudo installer -pkg`, SSH and Sparkle's installer show why.
+
 ## Release channels
 
 There are two lines and one update feed.

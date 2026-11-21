@@ -87,6 +87,25 @@ struct OriginalApogeeDriversTests {
         #expect(OriginalApogeeDrivers.restartAdvice.contains("Restart your Mac"))
     }
 
+    @Test("Only the copy macOS keeps: the steps for it, never Apogee's uninstaller (which removes Maestro, not the copy)")
+    func keptCopyOnly() {
+        let id = "com.apogeedigital.driver.Symphony64ThunderBridge"
+        let staged = "\(OriginalApogeeDrivers.stagedExtensionsDirectory)/Symphony64Thunderbridge.kext/Contents/Info.plist"
+        #expect(detect([staged]).isKeptCopyOnly)
+        // Loaded from that copy: still nothing the uninstaller removes.
+        #expect(detect([staged], loaded: [id]).isKeptCopyOnly)
+        #expect(!detect([staged], loaded: [id]).isAwaitingRestartOnly)
+        // Anything the uninstaller removes, and it is the uninstaller again.
+        #expect(!detect([staged, "/Library/Extensions/Symphony64Thunderbridge.kext/Contents/Info.plist"]).isKeptCopyOnly)
+        #expect(!detect([staged, "/Library/LaunchDaemons/com.SymphonyDaemon.plist"]).isKeptCopyOnly)
+        #expect(!detect(["/Library/Extensions/Symphony64Thunderbridge.kext/Contents/Info.plist"]).isKeptCopyOnly)
+        #expect(!detect(loaded: [id]).isKeptCopyOnly)
+        #expect(!detect().isKeptCopyOnly)
+        #expect(OriginalApogeeDrivers.keptCopyAdvice.contains("Apogee's uninstaller does not remove it"))
+        #expect(OriginalApogeeDrivers.keptCopyAdvice.contains(OriginalApogeeDrivers.stillThereTitle))
+        #expect(!OriginalApogeeDrivers.keptCopyAdvice.contains("kmutil"))
+    }
+
     @Test("Each Symphony launch daemon is found", arguments: [
         "com.SymphonyDaemon.plist", "com.SymphonyIOUSBDaemon.plist",
     ])
@@ -168,9 +187,18 @@ struct OriginalApogeeDriversTests {
 
     @Test("The advice: uninstaller first, then reinstall Maestro; the last resort names parts, not commands")
     func advice() {
-        #expect(OriginalApogeeDrivers.removalAdvice.contains("**Uninstall**"))
-        #expect(OriginalApogeeDrivers.removalAdvice.contains("reinstall Maestro"))
-        #expect(OriginalApogeeDrivers.removalAdvice.contains("Release 5.5"))
+        #expect(ApogeeDriverConflict.fixSteps == [
+            "Download Apogee's latest installer, Symphony I/O Release 5.5",
+            "Open the DMG and choose **Uninstall**",
+            "Restart your Mac",
+            "Install Maestro again (Apogee's Uninstall also removes Maestro; this puts it back)",
+        ])
+        #expect(OriginalApogeeDrivers.uninstallSideEffect == "Apogee's Uninstall also resets macOS's audio device settings.")
+        // Where users help each other; the project does not troubleshoot this.
+        #expect(OriginalApogeeDrivers.communityNote == "We can't troubleshoot removing Apogee's software ourselves. "
+            + "If you found something that worked, or are stuck, other users compare notes in this issue:")
+        #expect(OriginalApogeeDrivers.communityIssueURL.absoluteString
+            == "https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32")
         // The self-help for a copy macOS still loads: macOS's own command, with
         // protection left on, offered as a suggestion.
         #expect(OriginalApogeeDrivers.clearStagingCommand == "sudo kmutil clear-staging")

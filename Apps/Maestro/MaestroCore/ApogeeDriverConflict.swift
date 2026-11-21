@@ -1,24 +1,33 @@
 // ApogeeDriverConflict.swift — what Maestro does while one of Apogee's kernel
 // drivers for the ThunderBridge or PCIe card is loaded.
 //
-// A user's Mac kernel-panicked about 24 times in two days. Apogee's kernel
-// extension com.apogeedigital.driver.Symphony64ThunderBridge (1.5) was loaded
-// while Maestro's driver extension was attached to the same PCI device. Both
-// had registered the card's interrupt, and macOS's kernel dereferenced NULL in
-// IOSharedInterruptController::unregisterInterrupt when either one let go: our
-// driver's Stop cancelling its interrupt source, or the kext being terminated.
+// Why (the full account, and what the installer and uninstall script do, is in
+// AGENTS.md, "Apogee's original drivers: what we do and why"):
+//
+// Apogee's kernel extension (com.apogeedigital.driver.Symphony64ThunderBridge,
+// or the PCIe card's com.apogeedigital.driver.Symphony64) and Maestro's driver
+// extension can both attach to the same PCI card. Both register the card's
+// interrupt, and macOS's kernel then crashes (a NULL dereference in
+// IOSharedInterruptController::unregisterInterrupt) when either one releases
+// it: our driver's Stop, or the kext being terminated. A Mac restarted about
+// 24 times in two days this way. The fault is in macOS, but we are the second
+// driver on the card, so Maestro keeps the combination from happening.
 //
 // So, while such a kext is loaded:
 // - Maestro submits no activation or replacement request for its driver
 //   extension. A request starts our driver on the card, or replaces a running
 //   one, which stops it.
 // - If our driver is already on the card, Maestro does not stop, retire or
-//   replace it either: any Stop of it in that state is what panics. It warns,
-//   and tells the user not to unplug the ThunderBridge or update.
+//   replace it either: that Stop is the crash. It warns, and says to shut the
+//   Mac down and disconnect the card before anything is removed.
 //
-// The fix is always Apogee's own uninstaller and a restart. A copy that is on
-// disk or staged but not loaded keeps the existing warning and blocks nothing
-// in the app (the installer stops an install or update over it).
+// A copy that is on disk or staged but not loaded keeps the plain warning and
+// blocks nothing in the app. (The installer stops an install or update over a
+// copy in an Extensions folder, and a first install over a staged one.)
+//
+// Maestro never removes, unloads or changes anything of Apogee's: it detects,
+// holds back, explains, and points to Apogee's own uninstaller and then the
+// removal guide. That is a firm decision of the owner's (AGENTS.md).
 
 import Foundation
 
@@ -89,6 +98,14 @@ public enum ApogeeDriverConflict {
 
     /// The decision, from four facts.
     ///
+    /// Only a kext that is loaded now changes what the app does: with it in
+    /// the kernel, starting, replacing or stopping our driver is what crashes
+    /// the Mac, so all three are off and so is updating (an update replaces
+    /// the driver). A copy that is merely on disk cannot be on the card until
+    /// the next start, so the app only warns; the installer is what stops an
+    /// install or update over one. Background: AGENTS.md, "Apogee's original
+    /// drivers: what we do and why".
+    ///
     /// - Parameters:
     ///   - kextLoaded: one of Apogee's kernel drivers for the ThunderBridge or
     ///     PCIe card is loaded in the kernel right now.
@@ -109,38 +126,49 @@ public enum ApogeeDriverConflict {
     }
 
     // MARK: Text
+    //
+    // The same message as the installer's dialog (DIALOG_OPENING and
+    // dialog_fix_steps in Installer/scripts-core/preinstall), in the app's
+    // terms; OriginalApogeeDriversWiringTests keeps the two in step.
 
-    public static let heldWhat = "Apogee's original Symphony driver is loaded on this Mac. With both drivers on the "
-        + "ThunderBridge or PCIe card, macOS can crash and restart repeatedly."
-    public static let bothActiveWhat = "Apogee's original Symphony driver and Maestro's driver are both running on "
-        + "this Mac. With both drivers on the ThunderBridge or PCIe card, macOS can crash and restart repeatedly."
-    public static let bothActiveCaution = "Do not unplug the ThunderBridge and do not update Maestro. Run Apogee's "
-        + "own uninstaller, then restart your Mac."
+    /// The warning's title and how the installer's dialog opens.
+    public static let detected = "Apogee's original Symphony I/O drivers were detected."
+    /// Its next sentence, here and in the dialog.
+    public static let crashRisk = "Running both can crash your Mac and make it restart repeatedly."
+
+    public static let heldWhat = crashRisk
+    public static let bothActiveWhat = "Apogee's driver and Maestro's driver are both running now. " + crashRisk
+    /// The safest order the user guide gives ("Removing Apogee's original
+    /// drivers"): with both running, pulling the cable or removing a driver
+    /// stops one of them on the card, which is the crash.
+    public static let bothActiveCaution = "Do not unplug the ThunderBridge or PCIe chassis while your Mac is on, "
+        + "and do not update Maestro. Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then "
+        + "start up again, before you remove Apogee's drivers."
     public static let consequence = "Maestro's driver is not being updated or started until Apogee's driver is removed."
     /// Someone who has just updated does not expect this. One sentence, the
-    /// same idea as the installer's (UPDATE_NOTE in Installer/scripts-core/preinstall).
-    public static let updateNote = "You are seeing this after updating because this version now checks for Apogee's "
-        + "original driver, and it found it on this Mac. Earlier versions did not check."
-    /// The fix, in the order the installer gives it.
+    /// same as the installer's (UPDATE_NOTE in Installer/scripts-core/preinstall)
+    /// in the app's tense.
+    public static let updateNote = "You are seeing this after updating because this version now checks for them. "
+        + "Earlier versions did not check."
+    /// The fix, in the installer's words and order.
     public static let fixSteps: [String] = [
-        "Run Apogee's own uninstaller: open Apogee's Symphony I/O Release 5.5 installer and choose **Uninstall**.",
-        "Restart your Mac.",
-        "Install Maestro again. Apogee's Uninstall also removes Maestro and resets macOS's audio device settings.",
+        "Download Apogee's latest installer, Symphony I/O Release 5.5",
+        "Open the DMG and choose **Uninstall**",
+        "Restart your Mac",
+        "Install Maestro again (Apogee's Uninstall also removes Maestro; this puts it back)",
     ]
 
-    public static let heldBannerTitle = "Apogee's original Symphony driver is loaded"
-    public static let heldBannerMessage = consequence + " Run Apogee's own uninstaller, then restart your Mac. "
-        + "Device Settings has the steps."
+    public static let heldBannerTitle = "Apogee's original Symphony I/O drivers were detected"
+    public static let heldBannerMessage = crashRisk + " " + consequence + " Device Settings has the steps."
     public static let bothActiveBannerTitle = "Do not unplug the ThunderBridge or update Maestro"
-    public static let bothActiveBannerMessage = "Apogee's original Symphony driver is running alongside Maestro's, "
-        + "and macOS can crash when either one lets go of the card. Run Apogee's own uninstaller, then restart "
-        + "your Mac. Device Settings has the steps."
+    public static let bothActiveBannerMessage = detected + " One is running alongside Maestro's driver. "
+        + crashRisk + " Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up "
+        + "again. Device Settings has the steps."
 
     /// What the updater says when it declines an update (Sparkle shows it for a
     /// check the user started).
-    public static let updateRefusal = "Maestro can't update while Apogee's original Symphony driver is loaded. With "
-        + "both drivers on the ThunderBridge or PCIe card, macOS can crash and restart repeatedly. Run Apogee's own "
-        + "uninstaller, restart your Mac, then install Maestro again. Device Settings has the steps."
+    public static let updateRefusal = "Maestro can't update while Apogee's original Symphony I/O drivers are "
+        + "loaded. " + crashRisk + " Device Settings has the steps to remove them."
 }
 
 extension OriginalApogeeDriverFinding {

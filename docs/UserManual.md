@@ -76,13 +76,25 @@ In **App Settings › General**, choose Auto, Light or Dark appearance; **Show t
 
 ## Removing Apogee's original drivers
 
-Maestro isn't supported alongside Apogee's original Symphony I/O drivers: the two can interfere with each other and cause problems, including crashes. The installer stops, for a first install and for an update, while Apogee's original Symphony driver is on your Mac: with both drivers on a ThunderBridge or PCIe card, macOS can crash and restart repeatedly. It changes nothing when it stops. While Apogee's driver is loaded, Maestro also does not start or update its own driver. The fix is Apogee's own uninstaller and a restart, as below. **Device Settings** shows a warning at the top while any of Apogee's original Symphony I/O software is found.
+Maestro isn't supported alongside Apogee's original Symphony I/O drivers. When the installer finds them, it stops and says:
 
-To remove them:
+> Apogee's original Symphony I/O drivers were detected. Symphony Maestro cannot be installed or updated while they are installed or loaded. Running both can crash your Mac and make it restart repeatedly.
 
-1. Download Apogee's latest installer, [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg), open the disk image and choose **Uninstall**. Use this one even if you installed from an older release: older uninstallers leave parts behind.
-2. Restart your Mac.
-3. Reinstall Maestro, then restart once more.
+The installer stops:
+
+- **a first install** while any part of Apogee's original Symphony I/O software is found;
+- **an update** while Apogee's driver for the ThunderBridge or PCIe card is loaded, or is in an Extensions folder (macOS can load it the next time the Mac starts).
+
+A copy of Apogee's driver that only macOS has kept (see below) does not stop an update: Apogee's uninstaller does not remove that copy, and it does remove Maestro. **Device Settings** shows a warning at the top while any of Apogee's original Symphony I/O software is found, and while Apogee's driver is loaded Maestro does not start or update its own driver.
+
+To fix this:
+
+1. Download Apogee's latest installer, [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg). Use this one even if you installed from an older release: older uninstallers leave parts behind.
+2. Open the DMG and choose **Uninstall**
+3. Restart your Mac
+4. Run Maestro's installer again (Apogee's Uninstall also removes Maestro; this puts it back), then restart once more.
+
+**If Maestro says both drivers are running,** do this first: shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up again. Don't unplug it while the Mac is on, and don't update or remove Maestro until then: with both drivers on the card, the Mac can crash when either one lets go of it. Maestro's uninstall script refuses to run in that state for the same reason.
 
 Apogee's Uninstall also removes Maestro and Apogee Maestro 2, and resets macOS's audio device settings. If you use Apogee Maestro 2 with another Apogee interface, reinstall it from Apogee afterwards.
 
@@ -112,6 +124,8 @@ sudo kmutil rebuild
 This is one user's experience on their own Mac, shared in case it helps. It is not a tested fix and Maestro can't do it for you. Leave System Integrity Protection on.
 
 [Read the user's report](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371).
+
+We can't troubleshoot removing Apogee's software ourselves. If you found something that worked, or are stuck, other users compare notes in this issue: https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32
 
 </details>
 

@@ -33,13 +33,62 @@ struct OriginalApogeeDriversWiringTests {
         let preinstall = try file("../../Installer/scripts-core/preinstall")
         let ids = OriginalApogeeDrivers.pciKernelExtensionBundleIDs.map { "\"\($0)\"" }.joined(separator: " ")
         #expect(preinstall.contains("APOGEE_PCIE_KEXT_IDS=(\(ids))"))
-        // The same idea in both, each in its own tense.
-        let shared = "because this version now checks for Apogee's original driver, and it found it on this Mac."
+        // The same sentence in both, each in its own tense.
+        let shared = "because this version now checks for them."
         #expect(preinstall.contains("UPDATE_NOTE=\"You are seeing this while updating \(shared) Your current Maestro is unchanged.\""))
-        #expect(ApogeeDriverConflict.updateNote.contains(shared))
+        #expect(ApogeeDriverConflict.updateNote == "You are seeing this after updating \(shared) Earlier versions did not check.")
         // Maestro's own removal commands are never the installer's advice.
         #expect(!preinstall.contains("clear-staging") && !preinstall.contains("kmutil rebuild"))
         #expect(preinstall.contains(OriginalApogeeDrivers.releaseDMGURL.absoluteString))
+    }
+
+    @Test("One message: the installer's dialog, the app's warning, Help, the user guide, README, the website and the installer's page open the same way and give the same steps")
+    func oneMessage() throws {
+        let preinstall = try file("../../Installer/scripts-core/preinstall")
+        // The dialog's opening, written once in the preinstall, is the app's two sentences.
+        #expect(preinstall.contains("DIALOG_OPENING=\"\(ApogeeDriverConflict.detected)\n\nSymphony Maestro cannot be "
+            + "installed or updated while they are installed or loaded. \(ApogeeDriverConflict.crashRisk)\""))
+        #expect(OriginalApogeeDriversWarning.headline + "." == ApogeeDriverConflict.detected)
+        #expect(OriginalApogeeDriversWarning.message == ApogeeDriverConflict.crashRisk)
+        // The app's steps are the dialog's, with "Install Maestro" for "Run this installer".
+        let dialogSteps = [
+            "1. Download Apogee's latest installer, Symphony I/O Release 5.5:",
+            "2. Open the DMG and choose Uninstall",
+            "3. Restart your Mac",
+            "4. Run this installer again (Apogee's Uninstall also removes Maestro; this puts it back)",
+        ]
+        for step in dialogSteps { #expect(preinstall.contains(step + "\n"), "\(step)") }
+        let appSteps = ApogeeDriverConflict.fixSteps.enumerated().map {
+            "\($0.offset + 1). " + $0.element.replacingOccurrences(of: "**", with: "")
+        }
+        #expect(appSteps == [
+            String(dialogSteps[0].dropLast()), dialogSteps[1], dialogSteps[2],
+            dialogSteps[3].replacingOccurrences(of: "Run this installer again", with: "Install Maestro again"),
+        ])
+        // Everything else a person can read says the same two sentences.
+        let opening = "\(ApogeeDriverConflict.detected) Symphony Maestro cannot be installed or updated while they "
+            + "are installed or loaded. \(ApogeeDriverConflict.crashRisk)"
+        func plain(_ html: String) -> String {
+            html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "&rsquo;", with: "'").replacingOccurrences(of: "’", with: "'")
+        }
+        #expect(try file("../../docs/UserManual.md").contains(opening))
+        #expect(try file("../../README.md").contains(opening))
+        #expect(plain(try file("../../website/index.html")).contains(opening))
+        #expect(plain(try file("../../Installer/resources/warning.html")).contains(opening))
+        let help = try file("MaestroApp/HelpView.swift")
+        #expect(help.contains("ApogeeDriverConflict.detected") && help.contains("ApogeeDriverConflict.crashRisk"))
+        // Where users help each other: the guide and the app, not the dialog.
+        let issue = OriginalApogeeDrivers.communityIssueURL.absoluteString
+        #expect(try file("../../docs/UserManual.md").contains("\(OriginalApogeeDrivers.communityNote) \(issue)"))
+        let warning = try file("MaestroApp/OriginalApogeeDriverCheck.swift")
+        #expect(warning.contains("Text(OriginalApogeeDrivers.communityNote)"))
+        #expect(warning.contains("destination: OriginalApogeeDrivers.communityIssueURL"))
+        #expect(!preinstall.contains("issues/32\"") && !preinstall.contains("compare notes"))
+        // Only the copy macOS keeps: the app does not send anyone to Apogee's uninstaller.
+        let keptOnly = try #require(warning.range(of: "} else if finding.isKeptCopyOnly {"))
+        let steps = try #require(warning.range(of: "ApogeeDriverConflict.fixSteps.enumerated()"))
+        #expect(keptOnly.lowerBound < steps.lowerBound)
     }
 
     @Test("No driver request while Apogee's kernel driver is loaded: one gate, before every submit")
