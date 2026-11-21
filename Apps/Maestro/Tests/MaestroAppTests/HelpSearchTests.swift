@@ -215,4 +215,20 @@ struct HelpSearchTests {
         #expect(command == "ls")
         #expect(String(last.characters) == "After.")
     }
+
+    @Test("a section is one text from its heading to its end, broken only by a command, link or the removal steps")
+    func sectionRuns() {
+        let section = HelpSection(id: .vbus, title: "VBus", items: [
+            HelpItem(blocks: [.text("Intro.")]),
+            HelpItem(title: "What is it?", blocks: [.text("Extra channels."), .text("Off by default.")]),
+            HelpItem(title: "How?", blocks: [.text("Choose a size."), .command("ls"), .text("Then reopen.")]),
+        ])
+        let runs = HelpSearch.runs(section)
+        #expect(runs.count == 3)
+        guard case .prose(let first) = runs[0], case .block(.command) = runs[1], case .prose(let last) = runs[2]
+        else { Issue.record("unexpected runs"); return }
+        #expect(String(first.characters)
+                == "VBus\nIntro.\n\nWhat is it?\nExtra channels.\n\nOff by default.\n\nHow?\nChoose a size.")
+        #expect(String(last.characters) == "Then reopen.")
+    }
 }

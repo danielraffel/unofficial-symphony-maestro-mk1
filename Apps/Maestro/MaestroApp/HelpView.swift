@@ -142,40 +142,28 @@ struct HelpView: View {
         .frame(width: 190)
     }
 
-    /// A titled block with consistent spacing.
+    /// A section: its heading, questions and answers as one selectable text
+    /// (`HelpSearch.runs(_:)`), with commands, links and the removal steps
+    /// as rows of their own between.
     private func sectionView(_ section: HelpSection) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(section.title).font(.headline)
-            ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(HelpSearch.runs(section).enumerated()), id: \.offset) { _, run in
                 Group {
-                    if let title = item.title {
-                        HelpQuestion(title) { blocks(item) }
-                    } else {
-                        blocks(item)
+                    switch run {
+                    case .prose(let text):
+                        Text(text).lineSpacing(3)
+                    case .block(.command(let command)):
+                        commandRow(command)
+                    case .block(.link(let title, let url)):
+                        Link(title, destination: url)
+                    case .block(.manualApogeeRemoval):
+                        ManualApogeeRemovalSteps()
+                    case .block:
+                        EmptyView()
                     }
                 }
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// An answer's paragraphs and bullets are drawn as one piece of text, so a
-    /// selection can run across them (SwiftUI selects within one `Text`
-    /// only). Commands, links and the removal steps stay views of their own.
-    private func blocks(_ item: HelpItem) -> some View {
-        ForEach(Array(HelpSearch.runs(item.blocks).enumerated()), id: \.offset) { _, run in
-            switch run {
-            case .prose(let text):
-                Text(text)
-            case .block(.command(let command)):
-                commandRow(command)
-            case .block(.link(let title, let url)):
-                Link(title, destination: url)
-            case .block(.manualApogeeRemoval):
-                ManualApogeeRemovalSteps()
-            case .block:
-                EmptyView()
             }
         }
     }

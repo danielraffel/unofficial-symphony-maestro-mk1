@@ -59,6 +59,59 @@ enum HelpSearch {
         case block(HelpBlock)
     }
 
+    /// A whole section as runs: its heading, each question's title and the
+    /// answers are one text wherever nothing but text lies between them, so
+    /// a selection can run from the heading to the end of the section.
+    /// Commands, links and the removal steps stay blocks of their own.
+    static func runs(_ section: HelpSection) -> [Run] {
+        var result: [Run] = []
+        var prose: AttributedString?
+        func add(_ piece: AttributedString, gap: String) {
+            if var text = prose {
+                text += AttributedString(gap)
+                text += piece
+                prose = text
+            } else {
+                prose = piece
+            }
+        }
+        func flush() {
+            if let text = prose { result.append(.prose(text)) }
+            prose = nil
+        }
+        var heading = AttributedString(section.title)
+        heading.font = .headline
+        add(heading, gap: "")
+        for item in section.items {
+            var first = true
+            if let title = item.title {
+                var question = AttributedString(title)
+                question.font = .callout.weight(.semibold)
+                add(question, gap: "\n\n")
+                first = false
+            }
+            for run in runs(item.blocks) {
+                switch run {
+                case .prose(let text):
+                    // Straight under a heading or a question: next line.
+                    add(text, gap: prose == nil ? "" : (first ? "\n" : (item.title != nil && isJustTitle(prose, item.title) ? "\n" : "\n\n")))
+                case .block:
+                    flush(); result.append(run)
+                }
+                first = false
+            }
+        }
+        flush()
+        return result
+    }
+
+    /// Whether the text so far ends with this question title (the answer's
+    /// first paragraph then follows on the next line, not after a gap).
+    private static func isJustTitle(_ text: AttributedString?, _ title: String?) -> Bool {
+        guard let text, let title else { return false }
+        return String(text.characters).hasSuffix(title)
+    }
+
     /// Consecutive paragraphs and bullets become one attributed text:
     /// paragraphs a blank line apart, bullets on consecutive lines.
     static func runs(_ blocks: [HelpBlock]) -> [Run] {
