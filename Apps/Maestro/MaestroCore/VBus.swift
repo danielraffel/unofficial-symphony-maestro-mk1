@@ -157,8 +157,13 @@ public struct VBusState: Sendable, Equatable {
     public var publishFailed: Bool { flags & Self.publishFailedFlag != 0 }
 
     /// The line under the pop-up when the device is not (yet) what was chosen.
-    public func statusLine(chosen: VBusChannels) -> String? {
-        if publishFailed { return "The driver could not add the VBus channels. Choose the size again, or restart the Mac." }
+    /// `retrying`: Maestro will still send the size again by itself.
+    public func statusLine(chosen: VBusChannels, retrying: Bool = false) -> String? {
+        if publishFailed {
+            return retrying
+                ? "The driver could not add the VBus channels. Maestro will try again."
+                : "The driver could not add the VBus channels. Choose None, then the size again, or restart the Mac."
+        }
         if published != chosen.rawValue { return "Changing…" }
         return nil
     }

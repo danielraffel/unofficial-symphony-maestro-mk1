@@ -147,13 +147,68 @@ struct VBusAppTests {
         await state.serviceVBus()
         #expect(state.vbusState?.published == 8 && state.vbusStatusLine == nil)
         #expect(driver.vbusSetCalls == [.eight])   // followed by reading, not by sending again
-        // A size the driver could not publish is shown, and not sent in a loop.
-        driver.vbusFlags = VBusState.publishFailedFlag
-        driver.vbusPublished = 0
-        state.chooseVBus(.sixteen)
+    }
+
+    @Test("a size the driver could not add is sent again after the pause, and the page says Maestro will try again")
+    func failedPublishIsRetried() async {
+        let (state, _, driver, _) = thunderbolt()
+        driver.vbusFailPublishes = 1
+        state.chooseVBus(.eight)
         await state.serviceVBus()
-        driver.vbusPublished = 0
-        #expect(state.vbusSent?.channels == .sixteen)
+        #expect(driver.vbusSetCalls == [.eight] && state.vbusState?.publishFailed == true)
+        #expect(state.vbusStatusLine == "The driver could not add the VBus channels. Maestro will try again.")
+        // Not on every cycle: the pause comes first.
+        await state.serviceVBus()
+        await state.serviceVBus()
+        #expect(driver.vbusSetCalls == [.eight])
+        state.vbusSentAt = .distantPast
+        await state.serviceVBus()
+        #expect(driver.vbusSetCalls == [.eight, .eight])
+        #expect(state.vbusState == VBusState(published: 8, requested: 8, firstChannel: 33, flags: 0))
+        #expect(state.vbusStatusLine == nil)
+        await state.serviceVBus()
+        #expect(state.vbusRetries == 0 && driver.vbusSetCalls.count == 2)
+    }
+
+    @Test("a size that keeps failing is sent a few times, not for ever; choosing it again sends it again")
+    func failedPublishGivesUp() async {
+        let (state, _, driver, _) = thunderbolt()
+        driver.vbusFailPublishes = 100
+        state.chooseVBus(.eight)
+        for _ in 0..<12 {
+            state.vbusSentAt = .distantPast
+            await state.serviceVBus()
+        }
+        #expect(driver.vbusSetCalls.count == 1 + AppState.vbusMaxRetries)
+        #expect(state.vbusStatusLine
+                == "The driver could not add the VBus channels. Choose None, then the size again, or restart the Mac.")
+        let calls = driver.vbusCallCount
+        await state.serviceVBus()
+        #expect(driver.vbusCallCount == calls)   // nothing more is asked of the driver
+        // The same size chosen again (through None, as the page says, or directly).
+        driver.vbusFailPublishes = 0
+        state.chooseVBus(.eight)
+        await state.serviceVBus()
+        #expect(driver.vbusSetCalls.last == .eight && driver.vbusSetCalls.count == 2 + AppState.vbusMaxRetries)
+        #expect(state.vbusState?.published == 8 && state.vbusStatusLine == nil && state.vbusRetries == 0)
+    }
+
+    @Test("a change that never finishes is sent again after the pause")
+    func abortedChangeIsRetried() async {
+        let (state, _, driver, _) = thunderbolt()
+        driver.vbusPublishesAtOnce = false
+        state.chooseVBus(.eight)
+        await state.serviceVBus()
+        await state.serviceVBus()
+        #expect(driver.vbusSetCalls == [.eight] && state.vbusStatusLine == "Changing…")
+        state.vbusSentAt = .distantPast
+        await state.serviceVBus()
+        #expect(driver.vbusSetCalls == [.eight, .eight])
+        driver.performVBusChange()
+        await state.serviceVBus()
+        #expect(state.vbusState?.published == 8 && state.vbusStatusLine == nil)
+        await state.serviceVBus()
+        #expect(driver.vbusSetCalls.count == 2 && state.vbusRetries == 0)
     }
 
     @Test("nothing is sent while the hardware is asleep")

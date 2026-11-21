@@ -21,8 +21,13 @@ struct VBusSent: Equatable {
 // ApplySettingsToHardware; saved at :3312-3314, None when nothing is saved,
 // SymphonyDeviceServer.cpp:331).
 extension AppState {
-    /// The pause after a size the driver did not take.
+    /// The pause after a size the driver did not take, and how long a change
+    /// is given before the size is sent again.
     static let vbusRetryPause: TimeInterval = 5
+    /// How often Maestro sends a size again by itself when the driver could
+    /// not add the channels or the change did not finish. Each attempt stops
+    /// audio on the device for a moment, so it does not go on for ever.
+    static let vbusMaxRetries = 3
 
     /// The pop-up is shown on ThunderBridge and the PCIe card only (with a
     /// Symphony I/O or with converters), never over USB.
@@ -66,7 +71,7 @@ extension AppState {
     /// The line under the pop-up while the device is not what was chosen.
     var vbusStatusLine: String? {
         guard vbusShown, vbusDriverSupports, let state = vbusState else { return nil }
-        return state.statusLine(chosen: vbusChoice)
+        return state.statusLine(chosen: vbusChoice, retrying: vbusRetries < Self.vbusMaxRetries)
     }
 
     /// The diagnostics report's VBus line; nil when not on ThunderBridge/PCIe.
@@ -81,6 +86,10 @@ extension AppState {
         guard vbusShown, vbusDriverSupports, let uid = vbusDeviceUID else { return }
         channels.save(in: vbusDefaults, deviceUID: uid)
         vbusRevision &+= 1
+        // Sent again even when it is the size already sent: after a change
+        // the driver could not make, choosing it again is how to retry.
+        vbusSent = nil
+        vbusRetries = 0
         vbusRetryAfter = .distantPast
         Task { @MainActor in await self.serviceVBus() }
     }
@@ -107,26 +116,47 @@ extension AppState {
             return
         }
         if wanted != vbusSent {
+            // Another driver state or another choice: the retries start again.
+            if vbusSent != nil, vbusRetries != 0 { vbusRetries = 0 }
             guard Date() >= vbusRetryAfter else { return }
-            // The saved size is sent whatever the driver has, None included,
-            // as the original's daemon did at start-up. The driver does
-            // nothing when it already has that size.
-            let reply = await tb.vbus(wanted.channels)
-            guard device === tb else { return }
-            guard let reply else {
-                vbusRetryAfter = Date().addingTimeInterval(Self.vbusRetryPause)
-                print("[Maestro] VBus: the driver did not take \(wanted.channels.label); trying again")
-                return
-            }
-            if vbusState != reply { vbusState = reply }
-            vbusSent = wanted
-            vbusRetryAfter = .distantPast
-            print("[Maestro] VBus: \(wanted.channels.label) sent to the driver")
+            await sendVBus(wanted, to: tb)
             return
         }
         // Sent: follow the driver until Core Audio has made the change.
-        if let state = vbusState, state.published == wanted.channels.rawValue, !state.publishFailed { return }
-        if vbusState?.publishFailed == true { return }   // shown; the user chooses again
+        if let state = vbusState, state.published == wanted.channels.rawValue, !state.publishFailed {
+            if vbusRetries != 0 { vbusRetries = 0 }
+            return
+        }
+        let givenUp = vbusRetries >= Self.vbusMaxRetries
+        if givenUp, vbusState?.publishFailed == true { return }   // shown; the user chooses again
         if let reply = await tb.vbus(nil), device === tb, reply != vbusState { vbusState = reply }
+        guard device === tb, let state = vbusState,
+              state.publishFailed || state.published != wanted.channels.rawValue else { return }
+        // The driver could not add the channels, or the change has not
+        // finished in the time it was given (Core Audio dropped it): the
+        // size is sent again, a few times, with the pause between.
+        guard !givenUp, Date() >= vbusSentAt.addingTimeInterval(Self.vbusRetryPause) else { return }
+        vbusRetries += 1
+        print("[Maestro] VBus: the device does not have \(wanted.channels.label) yet; sending it again (\(vbusRetries) of \(Self.vbusMaxRetries))")
+        await sendVBus(wanted, to: tb)
+    }
+
+    /// Send the saved size. It is sent whatever the driver has, None
+    /// included, as the original's daemon did at start-up; the driver does
+    /// nothing when it already has that size.
+    @MainActor
+    private func sendVBus(_ wanted: VBusSent, to tb: ThunderboltDeviceConnection) async {
+        let reply = await tb.vbus(wanted.channels)
+        guard device === tb else { return }
+        guard let reply else {
+            vbusRetryAfter = Date().addingTimeInterval(Self.vbusRetryPause)
+            print("[Maestro] VBus: the driver did not take \(wanted.channels.label); trying again")
+            return
+        }
+        if vbusState != reply { vbusState = reply }
+        vbusSent = wanted
+        vbusSentAt = Date()   // the change is given `vbusRetryPause` before the size is sent again
+        vbusRetryAfter = .distantPast
+        print("[Maestro] VBus: \(wanted.channels.label) sent to the driver")
     }
 }

@@ -131,7 +131,11 @@ struct VBusTests {
         #expect(VBusState(words: [0, 0, 0, 1])?.publishFailed == true)
         #expect(s.statusLine(chosen: .sixteen) == "Changing…")
         #expect(s.statusLine(chosen: .eight) == nil)
-        #expect(VBusState(words: [0, 0, 0, 1])?.statusLine(chosen: .eight)?.contains("could not add") == true)
+        let failed = VBusState(words: [0, 0, 0, 1])
+        #expect(failed?.statusLine(chosen: .eight, retrying: true)
+                == "The driver could not add the VBus channels. Maestro will try again.")
+        #expect(failed?.statusLine(chosen: .eight, retrying: false)
+                == "The driver could not add the VBus channels. Choose None, then the size again, or restart the Mac.")
     }
 
     @Test("the diagnostics line carries the choice and what the driver reports")

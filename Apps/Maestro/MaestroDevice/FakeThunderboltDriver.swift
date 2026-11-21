@@ -92,6 +92,9 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     /// False: a request stays "requested" until `performVBusChange()` (Core
     /// Audio has not made the configuration change yet).
     public var vbusPublishesAtOnce = true
+    /// That many of the next sizes cannot be published: VBus is off and the
+    /// driver's failed flag is set, as when AddStream fails.
+    public var vbusFailPublishes = 0
     public var vbusPublished: UInt32 = 0
     public var vbusRequested: UInt32 = 0
     public var vbusFlags: UInt32 = 0
@@ -249,8 +252,16 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
             if let channels {
                 guard acceptsVBus else { return nil }
                 vbusSets.append(channels)
-                vbusRequested = channels.rawValue
-                if vbusPublishesAtOnce { vbusPublished = channels.rawValue }
+                vbusFlags &= ~VBusState.publishFailedFlag   // a new request clears the flag
+                if channels != .none, vbusFailPublishes > 0 {
+                    // The configuration change could not add the streams.
+                    vbusFailPublishes -= 1
+                    vbusRequested = 0; vbusPublished = 0
+                    vbusFlags |= VBusState.publishFailedFlag
+                } else {
+                    vbusRequested = channels.rawValue
+                    if vbusPublishesAtOnce { vbusPublished = channels.rawValue }
+                }
             }
             return VBusState(published: vbusPublished, requested: vbusRequested,
                              firstChannel: vbusPublished > 0 ? vbusHardwareChannels + 1 : 0, flags: vbusFlags)

@@ -1478,6 +1478,12 @@ final class AppState: @unchecked Sendable {
     /// What has reached the driver (`serviceVBus`).
     @ObservationIgnored var vbusSent: VBusSent?
     @ObservationIgnored var vbusRetryAfter = Date.distantPast
+    /// When the size was last sent (`serviceVBus` sends it again a pause later
+    /// if the device still does not have it).
+    @ObservationIgnored var vbusSentAt = Date.distantPast
+    /// How often the size was sent again by itself (`vbusMaxRetries`); the
+    /// status line under the pop-up follows it.
+    var vbusRetries = 0
     @ObservationIgnored var vbusServiceRunning = false
     /// Where the VBus choice is saved (the app's preferences; tests give their own).
     @ObservationIgnored var vbusDefaults: UserDefaults = .standard
