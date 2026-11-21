@@ -18,6 +18,7 @@ struct StatusBarView: View {
     @State private var clockLocked: Bool = false
     @State private var clockSourceDisplayName: String = "Internal"
     @State private var sampleRate: Double?
+    @State private var showPortMessageInfo = false
 
     var body: some View {
         HStack(spacing: 16) {
@@ -81,6 +82,27 @@ struct StatusBarView: View {
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
                     .maestroHelp(appState.portStatusMessage ?? appState.endpointStatusMessage)
+                    // "No hardware detected" / "Bus error" is the short form:
+                    // the whole message is one click away, in the same
+                    // pop-up as About Clock Status, About Ports and About VBus.
+                    if let fullMessage = appState.portStatusMessage {
+                        Button { showPortMessageInfo.toggle() } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(PortStatusMessage.infoLabel)
+                        .maestroHelp(fullMessage)
+                        .popover(isPresented: $showPortMessageInfo, arrowEdge: .bottom) {
+                            Text(fullMessage)
+                                .font(.callout)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(width: 340, alignment: .leading)
+                                .padding(14)
+                        }
+                    }
                 } else {
                     if appState.connectionMode == .hardware {
                         Image(systemName: "cable.connector")

@@ -254,6 +254,23 @@ struct PortStatusMessageTests {
         #expect(PortStatusMessage.headline(bus) == busHeadline)
     }
 
+    /// The status bar's short text: the port is named only when both ports are
+    /// in use, and the full message is untouched (it is the pop-up's text).
+    @Test func shortStatusNamesThePortOnlyWhenBothAreInUse() {
+        typealias M = PortStatusMessage
+        #expect(M.shortStatus(.noHardware, port: .primary, bothPortsInUse: false) == "No hardware detected")
+        #expect(M.shortStatus(.noHardware, port: .secondary, bothPortsInUse: false) == "No hardware detected")
+        #expect(M.shortStatus(.busError, port: .primary, bothPortsInUse: false) == "Bus error")
+        #expect(M.shortStatus(.busError, port: .secondary, bothPortsInUse: false) == "Bus error")
+        #expect(M.shortStatus(.noHardware, port: .primary, bothPortsInUse: true) == "No hardware detected on port 1")
+        #expect(M.shortStatus(.noHardware, port: .secondary, bothPortsInUse: true) == "No hardware detected on port 2")
+        #expect(M.shortStatus(.busError, port: .primary, bothPortsInUse: true) == "Bus error on port 1")
+        #expect(M.shortStatus(.busError, port: .secondary, bothPortsInUse: true) == "Bus error on port 2")
+        #expect(M.shortStatus(.other, port: .primary, bothPortsInUse: false) == nil)
+        #expect(M.shortStatus(.other, port: .secondary, bothPortsInUse: true) == nil)
+        #expect(M.infoLabel == "About this message")
+    }
+
     @Test func secondPortNotFound() {
         // 64 channels refused because nothing answered on port 2 (reason 1).
         let refused = SecondPortState(portCount: 2, audio: 0x11 | (1 << 8))

@@ -80,8 +80,28 @@ public enum PortStatusMessage {
         }
     }
 
-    /// The first sentence, for the one-line status bar (the whole message is
-    /// its tooltip).
+    /// Accessibility label of the info button after the short status-bar text;
+    /// its pop-up shows the whole message.
+    public static let infoLabel = "About this message"
+
+    /// The short status-bar text for a failed link: "No hardware detected" or
+    /// "Bus error". The port is named only when both ports are in use (64
+    /// channels), where "which one" is the question. Nil when the link has
+    /// nothing to report. The whole message (`noHardware`, `busError`) is the
+    /// tooltip and the info button's pop-up.
+    public static func shortStatus(_ link: Link, port: Port, bothPortsInUse: Bool) -> String? {
+        let what: String
+        switch link {
+        case .noHardware: what = "No hardware detected"
+        case .busError: what = "Bus error"
+        case .other: return nil
+        }
+        guard bothPortsInUse else { return what }
+        return what + " on port " + (port == .primary ? "1" : "2")
+    }
+
+    /// The first sentence of a message. The status bar used this until 0.9.21;
+    /// it now shows `shortStatus`.
     public static func headline(_ message: String) -> String {
         guard let end = message.range(of: ".\n") else { return message }
         return String(message[..<end.lowerBound]) + "."

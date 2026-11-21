@@ -382,7 +382,11 @@ final class AppState: @unchecked Sendable {
         if let hardwareSuspendedNote { return hardwareSuspendedNote }
         if connectionMode == .hardware, let restoreStatusNote { return restoreStatusNote }
         if endpointDisconnected {
-            if let portStatusMessage { return PortStatusMessage.headline(portStatusMessage) }
+            if portStatusMessage != nil,
+               let short = PortStatusMessage.shortStatus(thunderboltPortLink, port: .primary,
+                                                         bothPortsInUse: thunderboltBothPortsInUse) {
+                return short
+            }
             return connectionPresentation.endpointLabel
         }
         return statusMessage
@@ -409,10 +413,22 @@ final class AppState: @unchecked Sendable {
     /// health loop when the link state changes (an IOKit query).
     var thunderboltCardPhrase: String = PortStatusMessage.defaultCard
 
+    /// 64 channels (both ports) are selected on the device. Read by the
+    /// health loop while the link is down, because `portSelection` is cleared
+    /// when the unit stops answering. The short status names the port only
+    /// then ("No hardware detected on port 1").
+    var thunderboltBothPortsInUse = false
+
     /// The health loop's link reading: store it (and which card it is) only
     /// when it changes, so the 2 s loop does not churn the views.
+    /// `bothPortsInUse` is asked for only while the link is down.
     @MainActor
-    func updateThunderboltPortLink(_ link: PortStatusMessage.Link) {
+    func updateThunderboltPortLink(_ link: PortStatusMessage.Link,
+                                   bothPortsInUse: @autoclosure () -> Bool = false) {
+        if link != .other {
+            let both = bothPortsInUse()
+            if both != thunderboltBothPortsInUse { thunderboltBothPortsInUse = both }
+        }
         guard link != thunderboltPortLink else { return }
         if link != .other {
             let phrase = PortStatusMessage.cardPhrase(
@@ -592,7 +608,9 @@ final class AppState: @unchecked Sendable {
                 self.observeCardMixerInstance(tb.lastLinkState)
                 let audioRunning = tb.isAudioRunning
                 let healthy = verdict.isLive
-                self.updateThunderboltPortLink(tb.lastLinkState?.state.portStatusLink ?? .other)
+                self.updateThunderboltPortLink(
+                    tb.lastLinkState?.state.portStatusLink ?? .other,
+                    bothPortsInUse: PortSelection(dataSourceID: tb.portSelectionID()) == .ports1And2)
                 // Registrations come from the list AppShell refreshes every two
                 // seconds; populate it once here if nothing has yet, rather
                 // than re-reading sysextd's database every second.

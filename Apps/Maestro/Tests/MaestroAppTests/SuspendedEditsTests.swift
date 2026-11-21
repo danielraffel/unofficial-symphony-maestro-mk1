@@ -25,6 +25,53 @@ struct SuspendedEditsTests {
         #expect(state.hardwareSuspendedNote == nil)
     }
 
+    /// Card present, no unit answering: the status bar shows the short text
+    /// and the whole Apogee message stays available for the tooltip and the
+    /// info button's pop-up, naming the card.
+    @Test func statusBarShowsTheShortPortMessageAndKeepsTheFullOne() {
+        let state = AppState()
+        state.connectionMode = .disconnected
+        state.transportType = .thunderbolt
+        state.transportPresent = true
+        state.thunderboltCardPhrase = "the Symphony 64 PCIe card"
+        state.thunderboltPortLink = .noHardware
+        #expect(state.endpointStatusMessage == "No hardware detected")
+        #expect(state.portStatusMessage
+                == "No hardware has been detected on the primary port of the Symphony 64 PCIe card.\n"
+                + "Verify that the hardware is properly connected and powered on.")
+        state.thunderboltBothPortsInUse = true
+        #expect(state.endpointStatusMessage == "No hardware detected on port 1")
+        state.thunderboltPortLink = .busError
+        #expect(state.endpointStatusMessage == "Bus error on port 1")
+        state.thunderboltBothPortsInUse = false
+        #expect(state.endpointStatusMessage == "Bus error")
+        #expect(state.portStatusMessage
+                == "A bus error has occurred on the Primary port of the Symphony 64 PCIe card.\n"
+                + "Verify that the hardware is properly connected and powered on.")
+        // Not one of the two messages: unchanged.
+        state.thunderboltPortLink = .other
+        #expect(state.portStatusMessage == nil)
+        #expect(state.endpointStatusMessage == state.connectionPresentation.endpointLabel)
+    }
+
+    /// The info button after the short text: the About Clock Status / Ports /
+    /// VBus pop-up, showing the whole message.
+    @Test func statusBarInfoButtonShowsTheWholeMessage() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("MaestroApp/MonitorViews.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        let start = try #require(source.range(of: "if let fullMessage = appState.portStatusMessage {"))
+        let block = String(source[start.lowerBound...].prefix(1200))
+        #expect(block.contains("Image(systemName: \"info.circle\")"))
+        #expect(block.contains(".accessibilityLabel(PortStatusMessage.infoLabel)"))
+        #expect(block.contains(".maestroHelp(fullMessage)"))
+        #expect(block.contains(".popover(isPresented: $showPortMessageInfo, arrowEdge: .bottom)"))
+        #expect(block.contains("Text(fullMessage)"))
+        #expect(block.contains(".multilineTextAlignment(.leading)"))
+        #expect(block.contains(".frame(width: 340, alignment: .leading)"))
+    }
+
     @Test func everyDevicePageButAppSettingsIsDisabledWhileSuspended() {
         let state = AppState()
         for area in NavigationArea.allCases {
