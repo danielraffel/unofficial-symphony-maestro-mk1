@@ -5097,9 +5097,12 @@ static void CheckVBusLoopback(const char *what, Run &r, uint32_t channels, uint3
     r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
     v.poisonInput();
     CHECK(v.record(ring * 30, 256, 0, 0) == 0, "%s: audio from before IO stopped is recorded after it", what);
-    bad = 0;
-    for (size_t n = 0; n < (size_t)ring * channels; n++) if (v.out[n] != 0.0f) bad++;
-    CHECK(bad == 0, "%s: the VBus output buffer is not cleared when IO stops", what);
+    // The same when only a start is seen (the sample time begins at 0 again).
+    v.play(100, 256);
+    CHECK(r.drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: IO did not start", what);
+    v.poison();
+    CHECK(v.record(100, 256, 0, 0) == 0, "%s: audio from before IO started is recorded after it", what);
+    r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
 }
 
 static void CheckVBusSelector(const char *name, Run &r)

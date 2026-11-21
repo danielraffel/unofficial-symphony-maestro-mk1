@@ -6287,8 +6287,19 @@ static inline void VBusIO(SymphonyVBusIO *v, bool write, uint32_t frames, uint64
     if (readEnd > to) VBusRingZero(v->in, frameBytes, to, (uint32_t)(readEnd - to));
 }
 
-// Silence in both buffers and an empty span. Only with IO stopped
-// (StopDevice, PerformVBusChange).
+// An empty span: every sample time reads as silence until the host writes it
+// again. Two integer stores and no buffer access, so StartDevice and
+// StopDevice call it without portPublishLock (they must not wait for a
+// configuration change that is publishing on their queue). What a client
+// wrote before IO stopped is therefore never recorded after it starts again.
+static void VBusResetSpan(SymphonyThunderbridge_IVars *ivars)
+{
+    ivars->vbusIO.validStart = 0;
+    ivars->vbusIO.validEnd = 0;
+}
+
+// Silence in both buffers and an empty span. Under portPublishLock with IO
+// stopped (PerformVBusChange).
 static void VBusClear(SymphonyThunderbridge_IVars *ivars)
 {
     SymphonyVBusIO &v = ivars->vbusIO;
@@ -6301,27 +6312,36 @@ static void VBusClear(SymphonyThunderbridge_IVars *ivars)
     v.validEnd = 0;
 }
 
-// Take the VBus streams off the device and release them and their buffers.
-// Under portPublishLock, with IO stopped (a configuration change) or the
-// device already removed from the driver (Stop()).
-static void VBusUnpublishLocked(SymphonyThunderbridge_IVars *ivars)
+// The VBus buffers and their mappings. In a configuration change (IO stopped
+// by Core Audio) right after the streams; in Stop() where the hardware
+// streams' own buffers are released (step 11b), long after the device went.
+static void VBusReleaseMemory(SymphonyThunderbridge_IVars *ivars)
 {
-    // The IO handler first: it uses the buffers only while channels != 0.
     __atomic_store_n(&ivars->vbusIO.channels, 0u, __ATOMIC_RELEASE);
     ivars->vbusIO.out = nullptr;
     ivars->vbusIO.in = nullptr;
-    ivars->vbusIO.validStart = 0;
-    ivars->vbusIO.validEnd = 0;
+    OSSafeReleaseNULL(ivars->vbusOutMap);
+    OSSafeReleaseNULL(ivars->vbusInMap);
+    OSSafeReleaseNULL(ivars->vbusOutBuffer);
+    OSSafeReleaseNULL(ivars->vbusInBuffer);
+}
+
+// Take the VBus streams off the device and release them. Under
+// portPublishLock, with IO stopped (a configuration change) or the device
+// already removed from the driver (Stop()). The IO handler is told first: it
+// uses the buffers only while channels != 0. The memory itself is kept when
+// `releaseMemory` is false (Stop(), see VBusReleaseMemory).
+static void VBusUnpublishLocked(SymphonyThunderbridge_IVars *ivars, bool releaseMemory)
+{
+    __atomic_store_n(&ivars->vbusIO.channels, 0u, __ATOMIC_RELEASE);
+    VBusResetSpan(ivars);
     if (ivars->audioDevice) {
         if (ivars->vbusOutStream) ivars->audioDevice->RemoveStream(ivars->vbusOutStream);
         if (ivars->vbusInStream)  ivars->audioDevice->RemoveStream(ivars->vbusInStream);
     }
     OSSafeReleaseNULL(ivars->vbusOutStream);
     OSSafeReleaseNULL(ivars->vbusInStream);
-    OSSafeReleaseNULL(ivars->vbusOutMap);
-    OSSafeReleaseNULL(ivars->vbusInMap);
-    OSSafeReleaseNULL(ivars->vbusOutBuffer);
-    OSSafeReleaseNULL(ivars->vbusInBuffer);
+    if (releaseMemory) VBusReleaseMemory(ivars);
     __atomic_store_n(&ivars->vbusPublished, 0u, __ATOMIC_RELEASE);
 }
 
@@ -6402,13 +6422,12 @@ static kern_return_t VBusPublishLocked(SymphonyThunderbridge_IVars *ivars, Symph
         if (ret == kIOReturnSuccess) ret = ivars->audioDevice->AddStream(ivars->vbusInStream);
     }
     if (ret != kIOReturnSuccess) {
-        VBusUnpublishLocked(ivars);
+        VBusUnpublishLocked(ivars, /*releaseMemory*/true);
         return ret;
     }
     ivars->vbusIO.out = (uint8_t *)ivars->vbusOutMap->GetAddress();
     ivars->vbusIO.in = (uint8_t *)ivars->vbusInMap->GetAddress();
-    ivars->vbusIO.validStart = 0;
-    ivars->vbusIO.validEnd = 0;
+    VBusResetSpan(ivars);
     __atomic_store_n(&ivars->vbusBase, base, __ATOMIC_RELEASE);
     __atomic_store_n(&ivars->vbusPublished, channels, __ATOMIC_RELEASE);
     // Last: from here the IO handler uses the buffers.
@@ -6484,7 +6503,7 @@ kern_return_t SymphonyThunderbridge::PerformVBusChange()
         const uint32_t have = __atomic_load_n(&ivars->vbusPublished, __ATOMIC_ACQUIRE);
         const uint32_t base = VBusHardwareChannels(ivars);
         if (want != have) {
-            VBusUnpublishLocked(ivars);
+            VBusUnpublishLocked(ivars, /*releaseMemory*/true);
             if (want) {
                 result = VBusPublishLocked(ivars, this, want, base);
                 if (result != kIOReturnSuccess) {
@@ -9535,6 +9554,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     ivars->zeroTimestampSampleTime = 0;
     ivars->firstTimestampAfterStart = true;
     ivars->ioOpCount = 0;  // Reset diagnostic counter
+    VBusResetSpan(ivars);  // dext 143: the sample time starts again at 0
     // M2: ioRunning is the publication gate between this thread (the AudioDriverKit
     // control queue) and the IRQ queue. Store it with RELEASE so the anchor payload
     // written just above (zeroTimestampSampleTime, firstTimestampAfterStart) is
@@ -9600,7 +9620,7 @@ kern_return_t SymphonyThunderbridge::StopDevice(
     STLOG("StopDevice: playback buffers cleared (the card plays silence until IO starts again)");
     // VBus (dext 143): IO has stopped, so nothing a client wrote in this
     // session can be read in the next one (the sample time starts again).
-    VBusClear(ivars);
+    VBusResetSpan(ivars);
     return ret;
 }
 
@@ -9769,7 +9789,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 // selectors, streams and device under this lock; wait for it.
                 // 'stopping' is set, so it will not start on them afterwards.
                 if (iv->portPublishLock) IOLockLock(iv->portPublishLock);
-                VBusUnpublishLocked(iv);   // dext 143: the device is still held here
+                VBusUnpublishLocked(iv, /*releaseMemory*/false);   // dext 143: the device is still held here
                 for (uint32_t i = 0; i < 2; i++)
                     OSSafeReleaseNULL(iv->portSourceControl[i]);
                 OSSafeReleaseNULL(iv->vendorProperty);
@@ -9851,6 +9871,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
                 // ── 11b. Release memory maps, stream buffers, and DMA buffers
                 OSSafeReleaseNULL(iv->a2hDMAMap);
                 OSSafeReleaseNULL(iv->h2aDMAMap);
+                VBusReleaseMemory(iv);   // dext 143 (null unless VBus was on)
                 OSSafeReleaseNULL(iv->a2hStreamMap);
                 OSSafeReleaseNULL(iv->h2aStreamMap);
                 OSSafeReleaseNULL(iv->a2hStreamBuffer);
@@ -9917,7 +9938,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
             RemoveObject(ivars->audioDevice);
         }
         if (ivars->portPublishLock) IOLockLock(ivars->portPublishLock);
-        VBusUnpublishLocked(ivars);   // dext 143: the device is still held here
+        VBusUnpublishLocked(ivars, /*releaseMemory*/false);   // dext 143: the device is still held here
         for (uint32_t i = 0; i < 2; i++)
             OSSafeReleaseNULL(ivars->portSourceControl[i]);
         OSSafeReleaseNULL(ivars->vendorProperty);
@@ -9975,6 +9996,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
         }
         OSSafeReleaseNULL(ivars->a2hDMAMap);
         OSSafeReleaseNULL(ivars->h2aDMAMap);
+        VBusReleaseMemory(ivars);   // dext 143 (null unless VBus was on)
         OSSafeReleaseNULL(ivars->a2hStreamMap);
         OSSafeReleaseNULL(ivars->h2aStreamMap);
         OSSafeReleaseNULL(ivars->a2hStreamBuffer);
