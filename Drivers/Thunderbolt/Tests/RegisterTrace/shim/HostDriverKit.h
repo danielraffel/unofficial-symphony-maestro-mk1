@@ -216,7 +216,64 @@ public:
     }
 };
 
-class IOUserClient : public IOService {};
+// ── IOUserClient, as far as SymphonyUserClient.cpp uses it ──────────────────
+// Built with TRACE_HAVE_USERCLIENT (run-tests.sh), so the real ExternalMethod
+// runs in the harness. The size checks model the DriverKit SDK's description
+// of IOUserClient::ExternalMethod with a null function: every check passing
+// returns kIOReturnNoCompletion, a mismatch kIOReturnBadArgument.
+class OSData : public OSObject {
+public:
+    static OSData *withBytes(const void *bytes, size_t length) {
+        auto *d = new OSData;
+        d->bytes_.assign((const uint8_t *)bytes, (const uint8_t *)bytes + length);
+        return d;
+    }
+    size_t getLength() const { return bytes_.size(); }
+    const void *getBytesNoCopy() const { return bytes_.data(); }
+private:
+    std::vector<uint8_t> bytes_;
+};
+#ifndef kIOReturnNoCompletion
+#define kIOReturnNoCompletion ((kern_return_t)0xe00002e3)
+#endif
+static constexpr uint32_t kIOUserClientVariableStructureSize = 0xffffffffu;
+struct IOUserClientMethodArguments {
+    uint64_t        selector = 0;
+    void           *completion = nullptr;
+    const uint64_t *scalarInput = nullptr;
+    uint32_t        scalarInputCount = 0;
+    OSData         *structureInput = nullptr;
+    uint64_t       *scalarOutput = nullptr;
+    uint32_t        scalarOutputCount = 0;
+    OSData         *structureOutput = nullptr;
+    uint64_t        structureOutputMaximumSize = 0;
+};
+struct IOUserClientMethodDispatch {
+    void    *function;
+    bool     checkCompletionExists;
+    uint32_t checkScalarInputCount;
+    uint32_t checkStructureInputSize;
+    uint32_t checkScalarOutputCount;
+    uint32_t checkStructureOutputSize;
+};
+class IOUserClient : public IOService {
+public:
+    kern_return_t ExternalMethod(uint64_t, IOUserClientMethodArguments *a, const IOUserClientMethodDispatch *d,
+                                 OSObject *, void *) {
+        if (!a || !d) return kIOReturnBadArgument;
+        if (d->checkScalarInputCount != kIOUserClientVariableStructureSize && d->checkScalarInputCount != a->scalarInputCount)
+            return kIOReturnBadArgument;
+        const size_t in = a->structureInput ? a->structureInput->getLength() : 0;
+        if (d->checkStructureInputSize != kIOUserClientVariableStructureSize && d->checkStructureInputSize != in)
+            return kIOReturnBadArgument;
+        if (d->checkScalarOutputCount != kIOUserClientVariableStructureSize && d->checkScalarOutputCount != a->scalarOutputCount)
+            return kIOReturnBadArgument;
+        if (d->checkStructureOutputSize != kIOUserClientVariableStructureSize &&
+            d->checkStructureOutputSize != a->structureOutputMaximumSize)
+            return kIOReturnBadArgument;
+        return d->function ? kIOReturnSuccess : kIOReturnNoCompletion;
+    }
+};
 
 // ── Memory / DMA ────────────────────────────────────────────────────────────
 static constexpr uint64_t kIOMemoryDirectionIn    = 1;
@@ -668,10 +725,25 @@ public:
     void SetPortModeDriver(SymphonyThunderbridge *d) { portModeDriver = d; }
     SymphonyThunderbridge *portModeDriver = nullptr;
 };
+#ifdef TRACE_HAVE_USERCLIENT
+// Source/SymphonyUserClient.cpp is compiled into the harness.
+struct SymphonyUserClient_IVars;
+class SymphonyUserClient : public IOUserClient {
+public:
+    using super = IOUserClient;
+    bool init() override;
+    void free() override;
+    kern_return_t ExternalMethod(uint64_t selector, IOUserClientMethodArguments *arguments,
+                                 const IOUserClientMethodDispatch *dispatch, OSObject *target, void *reference);
+    void SetDriver(SymphonyThunderbridge *driver);
+    SymphonyUserClient_IVars *ivars = nullptr;
+};
+#else
 class SymphonyUserClient : public IOUserClient {
 public:
     void SetDriver(SymphonyThunderbridge *) {}
 };
+#endif
 class SymphonyClockSelectorControl : public IOUserAudioSelectorControl {
 public:
     void SetDriver(SymphonyThunderbridge *) {}

@@ -1351,6 +1351,52 @@ static bool Sent(Run &r, unsigned port, uint8_t cmd)
     return std::find(w.begin(), w.end(), cmd) != w.end();
 }
 
+#ifdef TRACE_HAVE_USERCLIENT
+// Selector 15 as the app calls it: through SymphonyUserClient::ExternalMethod.
+static kern_return_t CallMonitorOutputRaw(Run &r, const void *bytes, size_t length, uint64_t selector = kSelectorSetMonitorOutput)
+{
+    auto *client = new SymphonyUserClient;
+    client->init();
+    client->SetDriver(r.drv);
+    IOUserClientMethodArguments arguments;
+    arguments.selector = selector;
+    arguments.structureInput = length ? OSData::withBytes(bytes, length) : nullptr;
+    const kern_return_t result = client->ExternalMethod(selector, &arguments, nullptr, nullptr, nullptr);
+    if (arguments.structureInput) arguments.structureInput->release();
+    if (arguments.structureOutput) arguments.structureOutput->release();
+    client->release();
+    return result;
+}
+
+static kern_return_t CallMonitorOutput(Run &r, uint32_t unit, uint32_t output, uint32_t magic = kSymphonyUCMagic)
+{
+    const SymphonyMonitorOutputInput input = { magic, unit, output };
+    return CallMonitorOutputRaw(r, &input, sizeof(input));
+}
+
+static void CheckMonitorOutputSelector(const char *name, Run &r)
+{
+    const float before = ShownDb();
+    const size_t writes = r.card.port[0].vendorWrites.size();
+    const uint32_t words[4] = { kSymphonyUCMagic, 0, kSymphonyMonitorOutputHP1, 0 };
+    CHECK(CallMonitorOutputRaw(r, words, 8) == kIOReturnBadArgument, "%s: selector 15 took an 8-byte input", name);
+    CHECK(CallMonitorOutputRaw(r, words, 16) == kIOReturnBadArgument, "%s: selector 15 took a 16-byte input", name);
+    CHECK(CallMonitorOutputRaw(r, nullptr, 0) == kIOReturnBadArgument, "%s: selector 15 took no input", name);
+    CHECK(CallMonitorOutput(r, 0, kSymphonyMonitorOutputHP1, 0x12345678u) == kIOReturnBadArgument, "%s: selector 15 took a bad magic", name);
+    CHECK(CallMonitorOutput(r, 2, kSymphonyMonitorOutputHP1) == kIOReturnBadArgument, "%s: selector 15 took unit 2", name);
+    CHECK(CallMonitorOutput(r, 0, 4) == kIOReturnBadArgument, "%s: selector 15 took output 4", name);
+    CHECK(CallMonitorOutput(r, 0, kSymphonyMonitorOutputNone) == kIOReturnBadArgument, "%s: selector 15 took None for a Symphony I/O", name);
+    CHECK(CallMonitorOutput(r, 1, kSymphonyMonitorOutputHP1) == kIOReturnNotReady, "%s: selector 15 took unit B at 32 channels", name);
+    CHECK(CallMonitorOutputRaw(r, words, 12, kSelectorCount) == kIOReturnBadArgument, "%s: a selector past the table was taken", name);
+    CHECK(ShownDb() == before && r.card.port[0].vendorWrites.size() == writes, "%s: a refused selector 15 call changed something", name);
+    // A valid call reaches the driver: Headphone 1 (18 in the fake), and back.
+    CHECK(CallMonitorOutput(r, 0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: selector 15 refused Headphone 1", name);
+    CHECK(ShownDb() == -18.0f, "%s: selector 15 did not reach the driver (control %.1f, want -18)", name, ShownDb());
+    CHECK(CallMonitorOutput(r, 0, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: selector 15 refused Speakers", name);
+    CHECK(ShownDb() == before, "%s: selector 15 did not go back to the speakers (%.1f)", name, ShownDb());
+}
+#endif
+
 static void RunMonitorOutputChecks()
 {
     // 1. One Symphony I/O.
@@ -1366,6 +1412,9 @@ static void RunMonitorOutputChecks()
         CHECK(StoredOn(r, 0, 0x26) == 31 && StoredOn(r, 0, 0x27) == 1, "%s: default output is not the speakers (%u/%u)",
               o.name, StoredOn(r, 0, 0x26), StoredOn(r, 0, 0x27));
         PressMute(r, false);
+#ifdef TRACE_HAVE_USERCLIENT
+        CheckMonitorOutputSelector(o.name, r);
+#endif
         // Refusals.
         CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputNone) == kIOReturnBadArgument, "%s: None accepted for a Symphony I/O", o.name);
         CHECK(r.drv->SetMonitorOutput(0, 4) == kIOReturnBadArgument, "%s: output 4 accepted", o.name);
@@ -1607,6 +1656,13 @@ static void RunMonitorOutputChecks()
         CheckOutputsDirect("converters, after Start", r, 32, false);
         CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnUnsupported, "%s: HP1 accepted on converters", o.name);
         CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP2) == kIOReturnUnsupported, "%s: HP2 accepted on converters", o.name);
+#ifdef TRACE_HAVE_USERCLIENT
+        CHECK(CallMonitorOutput(r, 0, kSymphonyMonitorOutputHP1) == kIOReturnUnsupported, "%s: selector 15 took HP1 on converters", o.name);
+        CHECK(CallMonitorOutput(r, 0, kSymphonyMonitorOutputHP2) == kIOReturnUnsupported, "%s: selector 15 took HP2 on converters", o.name);
+        CHECK(CallMonitorOutput(r, 1, kSymphonyMonitorOutputSpeakers) == kIOReturnUnsupported, "%s: selector 15 took unit B on converters", o.name);
+        CHECK(CallMonitorOutput(r, 0, kSymphonyMonitorOutputNone, 0x12345678u) == kIOReturnBadArgument, "%s: selector 15 took a bad magic", o.name);
+        CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: a refused selector 15 call trimmed the mixer", o.name);
+#endif
         PressVolume(r, -31.0f); PressMute(r, true);
         CHECK(Mixer1Return(r) == kMixerMuteCoeff, "%s: mute gives 0x%08x", o.name, Mixer1Return(r));
         // None: the trim is back at 0 dB, unmuted, and the keys do nothing.

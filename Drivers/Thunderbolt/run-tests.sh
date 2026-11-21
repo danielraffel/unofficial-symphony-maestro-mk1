@@ -176,6 +176,12 @@ build_and_run() {
     for control in SymphonyPhaseControl SymphonyHighPassControl SymphonyInputTypeControl; do
         if [[ -f "$src/$control.cpp" ]]; then controls+=("$src/$control.cpp"); fi
     done
+    # dext 142: the user client's own source, so selector 15 is called through
+    # ExternalMethod (its size and magic checks) rather than the driver alone.
+    if grep -q 'kSelectorSetMonitorOutput' "$src/SymphonyUserClient.cpp" 2>/dev/null; then
+        defs+=(-DTRACE_HAVE_USERCLIENT)
+        controls+=("$src/SymphonyUserClient.cpp")
+    fi
     mkdir -p "$out"
     echo "[trace] compiling the driver source ($label) for the host..."
     clang++ -std=c++17 -fblocks -O1 -Wall -Wno-unused-function -Wno-unused-variable \
