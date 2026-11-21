@@ -29,7 +29,7 @@ public enum RoutingMixerReset {
     /// Each flag is set by the reset and cleared once the defaults have been
     /// written to that part of the hardware.
     public enum Pending: String, CaseIterable, Sendable {
-        case usbInputRouting, thunderboltInputRouting, thunderboltCardMixer
+        case usbInputRouting, usbOutputRouting, thunderboltInputRouting, thunderboltCardMixer
         var key: String { "routingMixerReset.pending.\(rawValue)" }
     }
 

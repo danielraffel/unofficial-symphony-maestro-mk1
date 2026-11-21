@@ -149,11 +149,15 @@ extension AppState {
     /// it configures the unit, so no mixer feeds an output until this writes
     /// one, and that is the last thing it does:
     ///
-    /// 1. both mixers: every input strip, then Software Return and Master;
-    /// 2. the input routing;
-    /// 3. the device settings (speaker mode first);
-    /// 4. the output routing, and a route fed by a mixer only if that mixer
-    ///    took every write of step 1.
+    /// 1. every headphone crosspoint and every saved output route away from
+    ///    the mixers: direct ones as saved, mixer-fed ones disabled. The unit
+    ///    keeps its routing until it is power-cycled, and the helper's direct
+    ///    table is not relied on for it;
+    /// 2. both mixers: every input strip, then Software Return and Master;
+    /// 3. the input routing;
+    /// 4. the device settings (speaker mode first);
+    /// 5. the output routes a mixer feeds, then the headphone crosspoints,
+    ///    each from a mixer only if that mixer took every write of step 2.
     ///
     /// With the routing written before the mixers (as it was), a saved
     /// "Mixer 1 to Line 1/2" put live inputs and full-level playback on the
@@ -188,12 +192,34 @@ extension AppState {
         usbRestoreOwed = false
         let helperEpoch = connection.helperEpoch
         updateRestoreStatus()
+        // Mixers this connection already holds in full (a retry of something
+        // owed) stay in step and keep their routes.
+        let kept = Set((0..<2).filter { usbMixerIsWritten($0) })
         // Until step 1 has finished nothing may route a mixer to an output.
         usbMixersWritten = nil
         var mixers = [false, false]
-        // Mixer state that cannot be read for this unit is not written, and
-        // then no mixer is routed either; the rest is still put back.
-        if preferences.isWritable {
+        let symphony = !converterRoutingSurface && connectedUnit == nil
+        // 0. An older helper puts Line 1/2 on Mixer 1 with that mixer's
+        //    inputs muted every time it configures the unit: under it no
+        //    mixer is written (nothing is unmuted), and it is said.
+        let helper = await connection.helperStatus()
+        guard isCurrent() else { return }
+        usbHelperOutdated = helper == .outdated
+        if usbHelperOutdated {
+            print("[Maestro] USB restore: the installed USB helper is older than this app; mixers are not written. Reinstall Maestro with USB support.")
+        }
+        // 1. Every headphone and output away from the mixers about to be
+        //    written (`usbPointRoutesAwayFromMixers`).
+        var away = true
+        if symphony {
+            away = await usbPointRoutesAwayFromMixers(connection, keeping: kept)
+            guard isCurrent() else { return }
+        }
+        // 2. The mixers. Mixer state that cannot be read for this unit is
+        //    not written, and then no mixer is routed either; the rest is
+        //    still put back. Nor is one written while a destination could
+        //    not be taken off it.
+        if preferences.isWritable, away, !usbHelperOutdated {
             usbMixerLifecycleRestoreGeneration = generation
             mixers = await restoreUSBMixer(connection, generation: generation, helperMixer: helperMixer,
                                            preferences: preferences)
@@ -210,7 +236,7 @@ extension AppState {
             await syncDeviceSettingsToHardware()
             guard isCurrent() else { return }
         }
-        let routed: Bool
+        var routed: Bool
         if converterRoutingSurface {
             // Converters: their own routes, not the Symphony I/O table.
             await syncOutputRoutingToHardware()
@@ -218,8 +244,14 @@ extension AppState {
         } else if hardwareWritesSuspended || (connectionMode == .hardware && unitAIdentity == nil) {
             routed = false
         } else {
-            routed = await syncUSBOutputRouting(connection)
+            // 5. Last: the routes a mixer feeds, then the headphones.
+            routed = await syncUSBOutputRouting(connection, mixerFedOnly: symphony)
+            if symphony, isCurrent() {
+                let headphones = await syncUSBHeadphoneCrosspoints(connection)
+                routed = routed && headphones
+            }
         }
+        routed = routed && away
         // Launch reads the cards (and so runs this) only after the hardware is
         // marked ready; a run before that skipped the stored settings and
         // must not count as the connection's restore.
@@ -229,7 +261,7 @@ extension AppState {
         // waits for its mixer, is owed: the connection does not count as
         // restored, and the meter loop tries again with a growing pause.
         // Without readable mixer state only a waiting route is owed.
-        let mixersDone = mixers == [true, true] || !preferences.isWritable
+        let mixersDone = (mixers == [true, true] || !preferences.isWritable) && !usbHelperOutdated
         guard routed, mixersDone, connection.helperEpoch == helperEpoch else {
             usbRestoreOwed = true
             usbRestoreRetryAttempts += 1

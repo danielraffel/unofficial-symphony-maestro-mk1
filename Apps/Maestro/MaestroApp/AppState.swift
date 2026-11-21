@@ -156,6 +156,9 @@ final class AppState: @unchecked Sendable {
     /// The USB restore did not finish (a mixer or a route is still owed):
     /// tried again by the meter loop, with a growing pause.
     @ObservationIgnored var usbRestoreOwed = false
+    /// The installed USB helper is older than this app (a custom install
+    /// that left the USB support out): no mixer is written under it.
+    @ObservationIgnored var usbHelperOutdated = false
     @ObservationIgnored var usbRestoreServiceTask: Task<Void, Never>?
     @ObservationIgnored var usbRestoreRetryAttempts = 0
     @ObservationIgnored var usbRestoreRetryAfter = Date.distantPast
@@ -2592,9 +2595,12 @@ final class AppState: @unchecked Sendable {
     /// earlier session's route may still be on the unit, so its destination
     /// is disabled (the "no source" byte the grid writes when a route is
     /// removed) and the route stays owed until the mixer is written.
+    ///
+    /// `mixerFedOnly`: the last step of the USB restore. Its first step
+    /// (`usbPointRoutesAwayFromMixers`) has already written the direct routes.
     @MainActor
     @discardableResult
-    func syncUSBOutputRouting(_ device: any DeviceConnection) async -> Bool {
+    func syncUSBOutputRouting(_ device: any DeviceConnection, mixerFedOnly: Bool = false) async -> Bool {
         let id = device.identifier
         let cache = peripheralRoutingCache(direction: "output")
         let routes = cache.loadMulti() ?? [:]
@@ -2622,6 +2628,7 @@ final class AppState: @unchecked Sendable {
                 } else if row == swPairs + 1 {
                     srcLeft = SymphonyIORoutingAddress.mixer1Base
                 } else { continue }
+                if mixerFedOnly, CardOutputTableOrder.mixer(ofSource: srcLeft) == nil { continue }
                 do {
                     // A mixer is routed only once its strips are on the unit
                     // (`restoreUSBUnit`); `writeOutputRoute` disables the
@@ -2806,20 +2813,7 @@ final class AppState: @unchecked Sendable {
             }
             return result
         }
-        let address = PropertyAddress(selector: .routing, scope: .output, element: UInt32(destination))
-        if let mixer = CardOutputTableOrder.mixer(ofSource: source),
-           device is XPCDeviceConnection, !usbMixerIsWritten(mixer) {
-            try await device.setProperty(address, value: .uint32(UInt32(SymphonyIORoutingAddress.none)))
-            usbRestoreOwed = true
-            if !restoring {
-                outputRouteDeferredSinceSave = true
-                usbRestoreRetryAfter = .distantPast
-            }
-            updateRestoreStatus()
-            return .deferred
-        }
-        try await device.setProperty(address, value: .uint32(UInt32(source)))
-        return .written
+        return try await writeUSBRoute(destination: destination, source: source, device: device, restoring: restoring)
     }
 
     /// Write a stereo output route (left + right channel) — see ``writeOutputRoute``.
@@ -2920,14 +2914,16 @@ final class AppState: @unchecked Sendable {
         let store = (device as? ThunderboltDeviceConnection)?.settingsStore
             ?? (device as? XPCDeviceConnection)?.settingsStore
         let replaysHeadphones = !(device is XPCDeviceConnection) || XPCDeviceConnection.replaysOnConnect
-        if let store, replaysHeadphones, !usesTwoUnitReplay {
+        // Over USB the restore writes them itself: away from the mixers
+        // before any strip, the saved source last (`performUSBRestore`).
+        if let store, replaysHeadphones, !usesTwoUnitReplay, !(device is XPCDeviceConnection) {
             let saved: [(SymphonyIOHeadphoneRouting.Headphone, AudioPropertySelector)] =
                 [(.headphone1, .headphone1RoutingID), (.headphone2, .headphone2RoutingID)]
             for (headphone, selector) in saved {
                 guard let id = store.value(for: PropertyAddress(selector: selector))?.asUInt32 else { continue }
                 await HeadphoneCrosspoint.apply(headphone, sourceID: id, device: device,
                                                 cachedRoutes: cachedOutputRouteMap(),
-                                                transport: transportType ?? .usb)
+                                                transport: transportType ?? .usb, state: self)
             }
         }
         guard replay.applied > 0 || !replay.failed.isEmpty

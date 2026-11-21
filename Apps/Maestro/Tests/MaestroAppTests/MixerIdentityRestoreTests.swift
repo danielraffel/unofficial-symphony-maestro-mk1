@@ -41,7 +41,9 @@ private final class MixerRestoreTransport: XPCTransport, @unchecked Sendable {
 /// The speaker mode (0x25) goes out with every restore, saved or Stereo; the
 /// counts below are of the mixer writes.
 private func mixerWrites(_ capture: MixerRestoreTransport.Capture) -> [(UInt8, UInt16, UInt16, Data)] {
-    capture.writes.filter { $0.0 != 0x25 }
+    // Not the speaker mode, and not the headphone crosspoints (224-227) the
+    // restore points away from the mixers before it writes a strip.
+    capture.writes.filter { $0.0 != 0x25 && !($0.0 == 0x31 && (224...227).contains($0.3.first ?? 0)) }
 }
 
 extension StandardDefaultsSuites {
@@ -191,12 +193,20 @@ struct MixerIdentityRestoreTests {
             let result = transport.snapshot
             // Output routes are 0x31 writes of [destination, source]; Line 1/2 is 32/33, Mixer 1 out 64/65.
             let outputRoutes = result.writes.filter { $0.0 == 0x31 && ($0.3.first ?? 0) < 64 }.map { Array($0.3) }
-            #expect(outputRoutes == (routed ? [[32, 64], [33, 65]] : []))
+            // Disabled before the strips are written, routed after them.
+            #expect(outputRoutes == (routed ? [[32, 236], [33, 236], [32, 64], [33, 65]] : []))
+            // Both headphones are taken off any mixer first too (nobody
+            // chose a source here: USB 1-2, the firmware's default).
+            let headphones = result.writes.filter { $0.0 == 0x31 && (224...227).contains($0.3.first ?? 0) }.map { Array($0.3) }
+            #expect(headphones == [[224, 192], [225, 193], [226, 192], [227, 193]])
             // The mixer follows: strips, source, Master and return, on the unit.
-            #expect(mixerWrites(result).filter { $0.0 != 0x31 || ($0.3.first ?? 0) >= 0xE0 }.count == restoreWriteCount(state))
+            #expect(mixerWrites(result).filter { $0.0 != 0x31 || ($0.3.first ?? 0) >= 228 }.count == restoreWriteCount(state))
             // ...and before the route: no mixer is routed until its strips are written.
             if routed {
-                let firstRoute = result.writes.firstIndex { $0.0 == 0x31 && ($0.3.first ?? 0) < 64 } ?? -1
+                let firstRoute = result.writes.firstIndex { $0.0 == 0x31 && Array($0.3) == [32, 64] } ?? -1
+                let firstStrip = result.writes.firstIndex { (0xB0...0xB4).contains($0.0) } ?? -1
+                let disabled = result.writes.firstIndex { $0.0 == 0x31 && Array($0.3) == [33, 236] } ?? Int.max
+                #expect(disabled < firstStrip)
                 let lastStrip = result.writes.lastIndex { (0xB0...0xB4).contains($0.0) } ?? Int.max
                 #expect(lastStrip < firstRoute)
             }

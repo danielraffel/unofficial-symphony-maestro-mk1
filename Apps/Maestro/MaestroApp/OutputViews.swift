@@ -1432,7 +1432,7 @@ struct OutputControlsView: View {
         // every destination — Docs/issue-1-research.md).
         await HeadphoneCrosspoint.apply(headphone, sourceID: sourceID, device: device,
                                         cachedRoutes: appState.cachedOutputRouteMap(),
-                                        transport: appState.transportType ?? .usb)
+                                        transport: appState.transportType ?? .usb, state: appState)
     }
 
     /// Restore the monitor section to the daemon's defaults.

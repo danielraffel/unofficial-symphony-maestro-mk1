@@ -201,8 +201,33 @@ static void check_mixer_param_payload(void)
     CHECK(mixer_param_payload(0xB0, NULL, 0) == -1, "empty fader payload is not logged as a value");
 }
 
+/* What a configure leaves on the unit: every audible destination (both I/O
+   boards and both headphones) on a USB playback channel, none on a mixer. */
+static void check_direct_route_table(void)
+{
+    uint8_t table[DIRECT_ROUTE_COUNT][2];
+    unsigned count = direct_route_table(table);
+    CHECK(count == DIRECT_ROUTE_COUNT, "the table has every I/O board and headphone destination");
+    bool seen[256] = { false };
+    for (unsigned i = 0; i < count; i++) {
+        seen[table[i][0]] = true;
+        CHECK(!ROUTE_SRC_IS_MIXER(table[i][1]), "no destination is routed from a mixer");
+        CHECK(table[i][1] >= 0xC0 && table[i][1] <= 0xCF, "every source is a USB playback channel");
+    }
+    for (unsigned d = 0x20; d <= 0x3F; d++) CHECK(seen[d], "every I/O board output is written");
+    for (unsigned d = 224; d <= 227; d++) CHECK(seen[d], "both headphones' crosspoints are written");
+    /* Headphones 1 and 2 play USB 1-2, as the firmware powers on. */
+    for (unsigned i = 0; i < count; i++)
+        if (table[i][0] >= 224)
+            CHECK(table[i][1] == 0xC0 + (table[i][0] & 1), "a headphone plays USB 1-2, left and right");
+    CHECK(ROUTE_SRC_IS_MIXER(64) && ROUTE_SRC_IS_MIXER(65) && ROUTE_SRC_IS_MIXER(96) && ROUTE_SRC_IS_MIXER(97)
+          && !ROUTE_SRC_IS_MIXER(0xC0) && !ROUTE_SRC_IS_MIXER(0xEC), "the mixer outputs are 64/65 and 96/97");
+    CHECK(MAESTRO_HELPER_VERSION >= 2, "the version Maestro asks for says headphones are direct after a configure");
+}
+
 int main(void)
 {
+    check_direct_route_table();
     check_mixer_param_payload();
     check_optical_format_gate();
     check_digital_settings();

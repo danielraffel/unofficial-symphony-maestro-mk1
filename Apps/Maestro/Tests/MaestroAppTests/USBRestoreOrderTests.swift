@@ -10,16 +10,32 @@ private final class RecordingUnit: XPCTransport, @unchecked Sendable {
     struct Write: Equatable {
         let request: UInt8, value: UInt16, index: UInt16, data: [UInt8]
         /// Input strips, Software Return and Master of the unit's mixers.
-        var isMixer: Bool { (0xB0...0xB4).contains(request) || (request == 0x31 && (data.first ?? 0) >= 0xE0) }
+        /// (0x31 to 228-231 is a mixer's Software Return source.)
+        var isMixer: Bool { (0xB0...0xB4).contains(request) || (request == 0x31 && (data.first ?? 0) >= 228) }
         /// An output route: 0x31 [destination, source], outputs are 32-63.
         var isOutputRoute: Bool { request == 0x31 && (32..<64).contains(data.first ?? 0) }
+        /// A headphone crosspoint: 0x31 to 224/225 (headphone 1) or 226/227.
+        var isHeadphoneRoute: Bool { request == 0x31 && (224...227).contains(data.first ?? 0) }
+        /// Anything a listener hears: an output or a headphone.
+        var isAudibleRoute: Bool { isOutputRoute || isHeadphoneRoute }
         var isMixerFedRoute: Bool { isOutputRoute && data.count > 1 && (64..<128).contains(data[1]) }
+        var isMixerFedHeadphone: Bool { isHeadphoneRoute && data.count > 1 && (64..<128).contains(data[1]) }
         var isInputRoute: Bool { request == 0x31 && !isOutputRoute && (data.first ?? 0) < 0xE0 }
+        /// The mixer (0 or 1) a mixer write belongs to.
+        var mixer: Int? {
+            if (0xB0...0xB4).contains(request) { return (1...2).contains(value) ? Int(value) - 1 : nil }
+            guard request == 0x31, let destination = data.first, destination >= 228 else { return nil }
+            return destination < 230 ? 0 : 1
+        }
         var isSpeakerMode: Bool { request == 0x25 }
     }
     private let lock = NSLock()
     private var recorded: [Write] = []
     private var helper: [String] = []
+    /// What the helper answers to "helperVersion"; nil for one that predates
+    /// the question (it still answers the meter read).
+    var version: UInt64? = XPCDeviceConnection.requiredHelperVersion
+    func helperVersion() async -> UInt64? { version }
     var shouldFail: (@Sendable (Write) -> Bool)?
     var onWrite: (@Sendable (Write) async -> Void)?
 
@@ -41,7 +57,7 @@ private final class RecordingUnit: XPCTransport, @unchecked Sendable {
     func sendGetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, dataLength: UInt16) async throws -> XPCPropertyReply {
         throw DeviceConnectionError.transportError("no reads")
     }
-    func getSoftwareMeterLevels() async -> (Float, Float)? { nil }
+    func getSoftwareMeterLevels() async -> (Float, Float)? { (0, 0) }
     func setSwReturnMute(_ muted: Bool) { lock.withLock { helper.append("mute \(muted)") } }
     func setSwReturnLevel(_ dB: Double) {}
     func setSwReturnProcessing(_ enabled: Bool) { lock.withLock { helper.append("processing \(enabled)") } }
@@ -51,6 +67,64 @@ private final class RecordingUnit: XPCTransport, @unchecked Sendable {
     /// What the unit holds for one mixer command at one strip: the last write.
     func last(_ request: UInt8, mixer: UInt16, strip: UInt16) -> [UInt8]? {
         writes.last { $0.request == request && $0.value == mixer && $0.index == strip }?.data
+    }
+}
+
+/// Replays a recording unit's write log from what the unit held before it and
+/// reports every point at which the rule was broken, for the outputs (32-63)
+/// and the headphones (224-227) alike:
+///
+/// * a route was written that plays a mixer which had not been written in
+///   full (every strip, Software Return and Master);
+/// * a control of a mixer was written while an output or a headphone was
+///   playing that mixer and it had not been written in full (this is what put
+///   live inputs in a headphone left on Mixer 1);
+/// * at the end, something still plays a mixer that was not written in full.
+private enum USBWriteLogChecker {
+    static func mixer(ofSource source: UInt8) -> Int? {
+        source == 64 || source == 65 ? 0 : source == 96 || source == 97 ? 1 : nil
+    }
+
+    /// - Parameters:
+    ///   - onUnit: destination to source as the unit holds them before the
+    ///     log (a unit that was not power-cycled keeps an earlier session's).
+    ///   - written: mixers already written in full before the log.
+    ///   - strips: the unit's strip numbers of the fitted cards' inputs.
+    static func violations(_ writes: [RecordingUnit.Write], onUnit: [UInt8: UInt8] = [:],
+                           written: Set<Int> = [], strips: [Int], settled: Bool = true) -> [String] {
+        var required: Set<[UInt16]> = []
+        for strip in strips { for command in 0xB0...0xB3 { required.insert([UInt16(command), UInt16(strip)]) } }
+        required.formUnion([[0xB0, 33], [0xB0, 32], [0xB3, 32], [0xB2, 32]])
+        var routes = onUnit
+        var written = written
+        var seen: [Int: Set<[UInt16]>] = [:]
+        var problems: [String] = []
+        func fed(_ mixer: Int) -> [UInt8] { routes.filter { self.mixer(ofSource: $0.value) == mixer }.keys.sorted() }
+        for (index, write) in writes.enumerated() {
+            if write.isAudibleRoute, write.data.count > 1 {
+                if let mixer = mixer(ofSource: write.data[1]), !written.contains(mixer) {
+                    problems.append("write \(index): destination \(write.data[0]) routed from mixer \(mixer + 1) before that mixer was written")
+                }
+                routes[write.data[0]] = write.data[1]
+            } else if let mixer = write.mixer, !written.contains(mixer) {
+                let playing = fed(mixer)
+                if !playing.isEmpty {
+                    problems.append("write \(index): mixer \(mixer + 1) control 0x\(String(write.request, radix: 16))/\(write.index) written while destination(s) \(playing) played it and it was not written")
+                    seen[mixer] = []
+                    continue
+                }
+                seen[mixer, default: []].insert([UInt16(write.request), write.index])
+                if required.isSubset(of: seen[mixer] ?? []) { written.insert(mixer) }
+            }
+        }
+        if settled {
+            for (destination, source) in routes.sorted(by: { $0.key < $1.key }) {
+                if let mixer = mixer(ofSource: source), !written.contains(mixer) {
+                    problems.append("end: destination \(destination) is still on mixer \(mixer + 1), which was not written")
+                }
+            }
+        }
+        return problems
     }
 }
 
@@ -94,15 +168,36 @@ struct USBRestoreOrderTests {
         return (state, usb, unit)
     }
 
-    /// Strips, Software Return and Master of both mixers; then the input
-    /// routing; then the device settings, speaker mode first; then the output
-    /// routing, last.
-    private func expectOrder(_ writes: [RecordingUnit.Write], sourceLocation: SourceLocation = #_sourceLocation) {
+    /// What an earlier version left on a unit that was not power-cycled: Line
+    /// 1/2 and a headphone following it on Mixer 1 (then the default).
+    private static let staleMixer1: [UInt8: UInt8] = [32: 64, 33: 65, 224: 64, 225: 65]
+
+    private func strips(_ state: AppState) -> [Int] {
+        state.cardLayout.mixerChannels.map(\.hardwareIndex).filter { (0...31).contains($0) }
+    }
+
+    private func saveHeadphone1Source(_ id: UInt32, _ usb: XPCDeviceConnection) {
+        usb.settingsStore.record(.uint32(id), for: PropertyAddress(selector: .headphone1RoutingID))
+    }
+
+    /// Every output and headphone a mixer feeds disabled first; then strips,
+    /// Software Return and Master of both mixers; then the input routing;
+    /// then the device settings, speaker mode first; then the mixer-fed
+    /// routes, last.
+    private func expectOrder(_ writes: [RecordingUnit.Write], strips: [Int],
+                             sourceLocation: SourceLocation = #_sourceLocation) {
+        // Whatever the unit held, also an earlier session's mixer routes.
+        #expect(USBWriteLogChecker.violations(writes, onUnit: Self.staleMixer1, strips: strips) == [],
+                sourceLocation: sourceLocation)
+        let firstMixer = writes.firstIndex { $0.isMixer } ?? -1
+        let disabled = writes.prefix(max(0, firstMixer)).filter { $0.isOutputRoute }.map { $0.data }
+        #expect(disabled == [[32, SymphonyIORoutingAddress.none], [33, SymphonyIORoutingAddress.none]],
+                "the mixer-fed pair is disabled before any strip is written", sourceLocation: sourceLocation)
         let lastMixer = writes.lastIndex { $0.isMixer } ?? -1
         let firstInput = writes.firstIndex { $0.isInputRoute } ?? -1
         let lastInput = writes.lastIndex { $0.isInputRoute } ?? -1
         let speaker = writes.firstIndex { $0.isSpeakerMode } ?? -1
-        let firstOutput = writes.firstIndex { $0.isOutputRoute } ?? -1
+        let firstOutput = writes.indices.first { $0 > firstMixer && writes[$0].isOutputRoute } ?? -1
         let firstMixerRoute = writes.firstIndex { $0.isMixerFedRoute } ?? -1
         let mixerRoutes = writes.filter { $0.isMixerFedRoute }.map { $0.data }
         let mixerWrites = writes.filter { $0.isMixer }.count
@@ -129,7 +224,7 @@ struct USBRestoreOrderTests {
         // The reset's default input table is still owed, so step 2 has writes.
         UserDefaults.standard.set(true, forKey: "routingMixerReset.pending.usbInputRouting")
         await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
-        expectOrder(unit.writes)
+        expectOrder(unit.writes, strips: strips(state))
         // Consumed only now that every input route was written.
         #expect(!RoutingMixerReset.isPending(.usbInputRouting))
     }
@@ -144,7 +239,7 @@ struct USBRestoreOrderTests {
         // A fresh connection: identity not read yet.
         state.unitAIdentityState = .pending
         await state.resolveUnitIdentity(for: .a, connection: usb) { identity }
-        expectOrder(unit.writes)
+        expectOrder(unit.writes, strips: strips(state))
         // Launch and reconnect call this next; the restore is not repeated.
         let count = unit.writes.count
         await state.syncSavedStateToHardware()
@@ -180,7 +275,8 @@ struct USBRestoreOrderTests {
         // Not skipped: an earlier session's mixer route may still be on the
         // unit, so Line 1/2 is disabled until the mixer is written.
         let none = SymphonyIORoutingAddress.none
-        #expect(unit.writes.suffix(2).map { $0.data } == [[32, none], [33, none]])
+        #expect(unit.writes.filter { $0.isOutputRoute }.suffix(2).map { $0.data } == [[32, none], [33, none]])
+        #expect(USBWriteLogChecker.violations(unit.writes, onUnit: Self.staleMixer1, strips: strips(state)) == [])
         // The connection does not count as restored, and it is said.
         #expect(state.usbRestoredGeneration != state.unitAGeneration)
         #expect(state.usbRestoreOwed)
@@ -227,6 +323,167 @@ struct USBRestoreOrderTests {
         // With its mixer written a mixer route is immediate.
         #expect(try await state.writeOutputRoute(destination: 36, source: SymphonyIORoutingAddress.mixer1Base,
                                                  device: usb) == .written)
+    }
+
+    @Test("first launch after updating, unit not power-cycled: a headphone left on Mixer 1 is pointed away before any strip is written")
+    func staleHeadphoneOnMixer() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-hp-stale", identity: 0xF2A0_0010, routeMixer1ToLine12: false)
+        // The reset removed the saved routing; the headphone's source (Line
+        // 1-2) is a device setting and was kept.
+        for item in RoutingMixerReset.Pending.allCases { UserDefaults.standard.set(true, forKey: "routingMixerReset.pending.\(item.rawValue)") }
+        saveHeadphone1Source(0, usb)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let writes = unit.writes
+        #expect(USBWriteLogChecker.violations(writes, onUnit: Self.staleMixer1, strips: strips(state)) == [])
+        let firstMixer = try #require(writes.firstIndex { $0.isMixer })
+        let before = writes[..<firstMixer]
+        // Headphone 1 on what feeds Line 1/2 now (USB 1-2); headphone 2,
+        // which nobody chose a source for, on the firmware's default.
+        #expect(before.filter { $0.isHeadphoneRoute }.map { $0.data } == [[224, 192], [225, 193], [226, 192], [227, 193]])
+        // What the unit holds is unknown after the reset: every output direct.
+        let direct: [[UInt8]] = (0..<32).map { (n: Int) -> [UInt8] in [UInt8(32 + n), UInt8(192 + n % 16)] }
+        let outputs: [[UInt8]] = before.filter { $0.isOutputRoute }.map { $0.data }
+        #expect(outputs == direct)
+        #expect(!RoutingMixerReset.isPending(.usbOutputRouting))
+        // Every strip came back unmuted, with nothing listening to it.
+        #expect(writes.filter { $0.request == 0xB3 && $0.index < 32 }.allSatisfy { $0.data == [0] })
+        #expect(writes.filter { $0.isMixer }.count == 16 * 8 + 10)
+        // The headphone's saved source is written again last.
+        #expect(writes.suffix(2).map { $0.data } == [[224, 192], [225, 193]])
+        #expect(!state.usbRestoreOwed)
+        #expect(state.restoreStatusNote == nil)
+        // The next restore does not write the whole direct table again.
+        let count = unit.writes.count
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.writes[count...].filter { $0.isOutputRoute }.isEmpty)
+    }
+
+    @Test("a headphone following a mixer-fed pair is disabled while the mixer is written and routed after it, last")
+    func headphoneFollowsMixerFedPair() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-hp-follow", identity: 0xF2A0_0011)
+        saveHeadphone1Source(0, usb)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let writes = unit.writes
+        #expect(USBWriteLogChecker.violations(writes, onUnit: Self.staleMixer1, strips: strips(state)) == [])
+        let none = SymphonyIORoutingAddress.none
+        let firstMixer = try #require(writes.firstIndex { $0.isMixer })
+        #expect(writes[..<firstMixer].filter { $0.isAudibleRoute }.map { $0.data }
+                == [[224, none], [225, none], [226, 192], [227, 193], [32, none], [33, none]])
+        // Outputs, then the headphone that follows them.
+        #expect(writes.suffix(4).map { $0.data } == [[32, 64], [33, 65], [224, 64], [225, 65]])
+        #expect(!state.usbRestoreOwed)
+        // A retry of something owed does not silence a mixer that is written.
+        state.usbRestoreOwed = true
+        state.usbRestoreRetryAfter = .distantPast
+        let count = writes.count
+        state.serviceUSBRestore(usb)
+        await state.usbRestoreServiceTask?.value
+        #expect(unit.writes[count...].filter { $0.isAudibleRoute && $0.data[1] == none }.isEmpty)
+        #expect(unit.writes.suffix(2).map { $0.data } == [[224, 64], [225, 65]])
+    }
+
+    @Test("a headphone whose mixer is not written is disabled and owed, also when its source is picked, and sent by the retry")
+    func headphoneDeferredThenSent() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-hp-deferred", identity: 0xF2A0_0012)
+        saveHeadphone1Source(0, usb)
+        unit.shouldFail = { $0.request == 0xB3 && $0.value == 1 && $0.index == 5 }
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let none = SymphonyIORoutingAddress.none
+        #expect(unit.writes.filter { $0.isMixerFedRoute || $0.isMixerFedHeadphone }.isEmpty)
+        #expect(unit.writes.suffix(2).map { $0.data } == [[224, none], [225, none]])
+        #expect(USBWriteLogChecker.violations(unit.writes, onUnit: Self.staleMixer1, strips: strips(state)) == [])
+        #expect(state.usbRestoreOwed)
+        #expect(state.restoreStatusNote == PortStatusMessage.restoringMixerAndRouting)
+        // Picking the source on the Output page meanwhile: the same gate.
+        state.usbRestoreOwed = false
+        let before = unit.writes.count
+        #expect(await !HeadphoneCrosspoint.apply(.headphone2, sourceID: 0, device: usb,
+                                                 cachedRoutes: state.cachedOutputRouteMap(), state: state))
+        #expect(unit.writes[before...].map { $0.data } == [[226, none], [227, none]])
+        #expect(state.usbRestoreOwed)
+        // A headphone on a direct pair is not held back.
+        #expect(await HeadphoneCrosspoint.apply(.headphone2, sourceID: 1, device: usb,
+                                                cachedRoutes: state.cachedOutputRouteMap(), state: state))
+        #expect(unit.writes.suffix(2).map { $0.data } == [[226, 194], [227, 195]])
+        // The unit takes the write: the mixer, its routes, then the headphone.
+        unit.shouldFail = nil
+        state.usbRestoreRetryAfter = .distantPast
+        state.serviceUSBRestore(usb)
+        await state.usbRestoreServiceTask?.value
+        #expect(unit.writes.suffix(4).map { $0.data } == [[32, 64], [33, 65], [224, 64], [225, 65]])
+        #expect(USBWriteLogChecker.violations(unit.writes, onUnit: Self.staleMixer1, strips: strips(state)) == [])
+        #expect(!state.usbRestoreOwed)
+        #expect(state.restoreStatusNote == nil)
+        // With its mixer written a headphone takes the mixer at once.
+        #expect(await HeadphoneCrosspoint.apply(.headphone2, sourceID: 0, device: usb,
+                                                cachedRoutes: state.cachedOutputRouteMap(), state: state))
+        #expect(unit.writes.suffix(2).map { $0.data } == [[226, 64], [227, 65]])
+    }
+
+    @Test("a route that cannot be taken off a mixer: that run writes no strip")
+    func noStripWhileARouteCannotBeMoved() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-hp-refused", identity: 0xF2A0_0013)
+        saveHeadphone1Source(0, usb)
+        unit.shouldFail = { $0.isHeadphoneRoute }
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.writes.filter { $0.isMixer }.isEmpty)
+        #expect(unit.writes.filter { $0.isMixerFedRoute }.isEmpty)
+        #expect(state.usbRestoreOwed)
+        unit.shouldFail = nil
+        state.usbRestoreRetryAfter = .distantPast
+        state.serviceUSBRestore(usb)
+        await state.usbRestoreServiceTask?.value
+        #expect(USBWriteLogChecker.violations(unit.writes, onUnit: Self.staleMixer1, strips: strips(state)) == [])
+        #expect(unit.writes.suffix(2).map { $0.data } == [[224, 64], [225, 65]])
+        #expect(!state.usbRestoreOwed)
+    }
+
+    @Test("an older USB helper under this app: no strip is written, the status bar asks for a reinstall, and a current helper is restored in full")
+    func outdatedHelper() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-old-helper", identity: 0xF2A0_0014)
+        // It does not know the version question but answers the meter read.
+        unit.version = nil
+        #expect(await usb.helperStatus() == .outdated)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.writes.filter { $0.isMixer }.isEmpty)
+        #expect(unit.writes.filter { $0.isMixerFedRoute }.isEmpty)
+        #expect(state.restoreStatusNote == PortStatusMessage.usbHelperOutdated)
+        #expect(state.endpointStatusMessage == PortStatusMessage.usbHelperOutdated)
+        #expect(state.usbRestoreOwed)
+        // One that answers with an older number is old too.
+        unit.version = XPCDeviceConnection.requiredHelperVersion - 1
+        #expect(await usb.helperStatus() == .outdated)
+        // Reinstalled with USB support: the retry writes the mixers and routes.
+        unit.version = XPCDeviceConnection.requiredHelperVersion
+        state.usbRestoreRetryAfter = .distantPast
+        state.serviceUSBRestore(usb)
+        await state.usbRestoreServiceTask?.value
+        #expect(unit.writes.filter { $0.isMixer }.count == 16 * 8 + 10)
+        #expect(unit.writes.suffix(2).map { $0.data } == [[32, 64], [33, 65]])
+        #expect(state.restoreStatusNote == nil)
+        #expect(!state.usbRestoreOwed)
+    }
+
+    @Test("the helper source answers the version this app asks for")
+    func helperSourceVersion() throws {
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Drivers/VolumeProxy/MaestroVolumeProxy.c")
+        let text = try String(contentsOf: source, encoding: .utf8)
+        let line = try #require(text.split(separator: "\n").first { $0.hasPrefix("#define MAESTRO_HELPER_VERSION ") })
+        let number = try #require(UInt64(line.split(separator: " ").last?.dropLast() ?? ""))
+        #expect(number == XPCDeviceConnection.requiredHelperVersion)
+        #expect(text.contains("strcmp(cmd, \"helperVersion\") == 0"))
     }
 
     @Test("a helper that restarts under the app: no mixer route until the restore has run again on it")

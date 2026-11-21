@@ -116,6 +116,29 @@ struct ThunderboltCardRoutingTests {
         }
     }
 
+    @Test("A ThunderBridge headphone never takes a mixer source, whatever Output Routing feeds the pair it follows")
+    func headphoneNeverOnAMixer() throws {
+        // Every output saved as fed by Mixer 1 or Mixer 2.
+        var cached: [UInt8: UInt8] = [:]
+        for destination in UInt8(32)..<64 {
+            cached[destination] = (destination < 48 ? SymphonyIORoutingAddress.mixer0Base
+                                                    : SymphonyIORoutingAddress.mixer1Base) + destination % 2
+        }
+        for id in UInt32(0)...SymphonyIOHeadphoneRouting.maximumSourceID {
+            let pair = try #require(SymphonyIOHeadphoneRouting.outputPairDestinations(sourceID: id))
+            for destination in [pair.left, pair.right] {
+                let source = try #require(SymphonyIOHeadphoneRouting.inheritedSource(
+                    forDestination: destination, cachedRoutes: cached, transport: .thunderbolt))
+                #expect(CardOutputTableOrder.mixer(ofSource: source) == nil)
+                // The XLink channel of the output it follows.
+                #expect(source == destination - 32)
+                // Over USB the same pair does inherit the mixer (and passes the app's gate).
+                #expect(CardOutputTableOrder.mixer(ofSource: SymphonyIOHeadphoneRouting.inheritedSource(
+                    forDestination: destination, cachedRoutes: cached, transport: .usb) ?? 0) != nil)
+            }
+        }
+    }
+
     @Test("Headphone inherit on ThunderBridge ignores the cache: the Symphony side is fixed")
     func headphoneInheritIgnoresCache() {
         let cached: [UInt8: UInt8] = [34: 0, 35: 1]

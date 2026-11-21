@@ -364,6 +364,8 @@ extension AppState {
                     note = cardRestoreBlockedReason() == nil ? PortStatusMessage.restoringMixerAndRouting
                         : PortStatusMessage.mixerWaitsForIdentity
                 }
+            } else if device is XPCDeviceConnection, usbHelperOutdated {
+                note = PortStatusMessage.usbHelperOutdated
             } else if device is XPCDeviceConnection, usbRestoreOwed || usbRestoreTask != nil {
                 note = unitAIdentityState == .pending || !mixerPreferences.isWritable
                     ? PortStatusMessage.mixerWaitsForIdentity : PortStatusMessage.restoringMixerAndRouting

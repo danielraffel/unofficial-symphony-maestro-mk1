@@ -86,6 +86,11 @@ public protocol XPCTransport: Sendable {
     /// rate, recomputes the presentation delay and bumps the clock generation.
     func resetAudioOutput()
 
+    /// The installed helper's version (`MAESTRO_HELPER_VERSION` in
+    /// Drivers/VolumeProxy/MaestroVolumeProxy.c), nil when it did not answer:
+    /// a helper from before the question existed, or one that is not there.
+    func helperVersion() async -> UInt64?
+
     /// Whether the transport is connected.
     var isConnected: Bool { get }
 }
@@ -94,6 +99,9 @@ public extension XPCTransport {
     /// Transports that predate per-channel software peaks report nothing; the
     /// app then keeps its SW Return L/R path and shows no software output meters.
     func getSoftwareOutputPeaks() async -> [Float]? { nil }
+
+    /// Test transports stand for the helper this app ships.
+    func helperVersion() async -> UInt64? { XPCDeviceConnection.requiredHelperVersion }
 
     func setSwReturnChannelLevel(channel: Int, dB: Double) {
         // Older test transports and proxies use the linked command.  The real
@@ -257,6 +265,23 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
         }
     }
 
+    /// An older helper has no "helperVersion" command and sends no reply; the
+    /// question is given two seconds.
+    public func helperVersion() async -> UInt64? {
+        let msg = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_string(msg, "command", "helperVersion")
+        let once = ResumeOnce<UInt64?>()
+        return await withCheckedContinuation { continuation in
+            once.set(continuation)
+            xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
+                guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY else { once.resume(nil); return }
+                let version = xpc_dictionary_get_uint64(reply, "helperVersion")
+                once.resume(version == 0 ? nil : version)
+            }
+            queue.asyncAfter(deadline: .now() + 2) { once.resume(nil) }
+        }
+    }
+
     public func getSoftwareMeterLevels() async -> (Float, Float)? {
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "getSoftwareMeterLevels")
@@ -361,6 +386,20 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
 
 }
 
+/// Resumes a continuation with the first answer only.
+private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    func set(_ continuation: CheckedContinuation<T, Never>) { lock.withLock { self.continuation = continuation } }
+    func resume(_ value: T) {
+        let pending = lock.withLock { () -> CheckedContinuation<T, Never>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
+    }
+}
+
 // MARK: - XPC Device Connection
 
 /// DeviceConnection implementation that routes through XPC to MaestroVolumeProxy.
@@ -422,6 +461,32 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     /// See `XPCTransport.helperEpoch`.
     public var helperEpoch: UInt64 { transport.helperEpoch }
+
+    /// The helper version this app is built for. From 2 on, every configure of
+    /// the unit leaves both I/O boards and both headphones on direct sources
+    /// and the helper mutes no mixer strip. An older helper puts Line 1/2 on
+    /// Mixer 1 each time it configures the unit, with that mixer's inputs
+    /// muted to hide them, so Maestro must not unmute them under it.
+    public static let requiredHelperVersion: UInt64 = 2
+
+    public enum HelperStatus: Sendable, Equatable {
+        /// The helper this app ships, or a newer one.
+        case current
+        /// An older helper: it answers, but not with a version this app
+        /// accepts (or not the version question at all).
+        case outdated
+        /// No helper answered anything; nothing is concluded.
+        case unknown
+    }
+
+    /// Asks the helper which one it is. A helper that does not know the
+    /// question but answers the meter read it has always had is an old one.
+    public func helperStatus() async -> HelperStatus {
+        if let version = await transport.helperVersion() {
+            return version >= Self.requiredHelperVersion ? .current : .outdated
+        }
+        return await transport.getSoftwareMeterLevels() != nil ? .outdated : .unknown
+    }
 
     public init(identifier: USBDeviceIdentifier, transport: XPCTransport? = nil,
                 settingsStore: DeviceSettingsStore = DeviceSettingsStore()) {

@@ -201,6 +201,43 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
 #define ROUTE_DST_IO0(ch)    (0x20u + (ch)) /* IOBoard0 ch0..15 (Line 1-8, ADAT 1-8); ch0/1 = DAC L/R */
 #define ROUTE_DST_IO1(ch)    (0x30u + (ch)) /* IOBoard1 ch0..15 (ADAT 9-24) */
 #define ROUTE_SRC_NONE       0xECu   /* Digital silence (null route) */
+#define ROUTE_DST_HP(n)      (0xE0u + (n))  /* Headphone 1 L/R (224/225), Headphone 2 L/R (226/227) */
+#define ROUTE_SRC_IS_MIXER(s) ((s) >= 0x40u && (s) < 0x80u) /* Mixer 1 out 64/65, Mixer 2 out 96/97 */
+
+/* What Maestro asks with the "helperVersion" XPC command. 2: every configure
+   leaves every audible destination (both I/O boards and both headphones) on a
+   direct source, and no mixer strip is muted or unmuted by the helper. A
+   helper from before this constant does not answer the command at all, which
+   is how Maestro recognises one. */
+#define MAESTRO_HELPER_VERSION 2u
+
+/* The routes every configure writes: each audible destination from a USB
+   playback channel, none from a mixer.
+     IOBoard0 ch0-15 and IOBoard1 ch0-15 <- USB 1-16 (see step 4 / 4b below);
+     Headphone 1 and 2 <- USB 1-2, the firmware's own power-on default
+     (og_source/symphonymk1/ext/SymphonyIO/Software/XMOS/SymphonyIO/src/XMOS/
+     XCore/Core3/MainFPGAThread/SymphonyIOAudioRouteManager/
+     SymphonyIOAudioRouteManager.cpp:389-397: "Software output 1&2 to
+     headphone1 & headphone2").
+   The unit keeps its routing until it is power-cycled, so a headphone an
+   earlier Maestro pointed at a mixer would otherwise stay there while Maestro
+   writes that mixer's strips. Maestro writes the saved headphone source after
+   this, once the mixer it follows (if any) is set. */
+#define DIRECT_ROUTE_COUNT 36u
+static unsigned direct_route_table(uint8_t table[DIRECT_ROUTE_COUNT][2])
+{
+    unsigned n = 0;
+    for (unsigned ch = 0; ch <= 15; ch++, n++) {
+        table[n][0] = (uint8_t)ROUTE_DST_IO0(ch); table[n][1] = (uint8_t)ROUTE_SRC_USB(ch);
+    }
+    for (unsigned ch = 0; ch <= 15; ch++, n++) {
+        table[n][0] = (uint8_t)ROUTE_DST_IO1(ch); table[n][1] = (uint8_t)ROUTE_SRC_USB(ch);
+    }
+    for (unsigned ch = 0; ch <= 3; ch++, n++) {
+        table[n][0] = (uint8_t)ROUTE_DST_HP(ch); table[n][1] = (uint8_t)ROUTE_SRC_USB(ch & 1u);
+    }
+    return n;
+}
 static IOUSBDeviceInterface245 **gUSBDev = NULL;
 
 static os_log_t sLog;
@@ -1893,33 +1930,23 @@ static int configure_fpga_routing(void)
        ResetOutputRouting() pattern.
        Evidence: og_source SymphonyIORouting.h IOBoard0Ch0=0x20 .. Ch15=0x2F */
     {
-        int io0_ok = 0, io0_fail = 0;
-        for (unsigned ch = 0; ch <= 15; ch++) {
-            uint8_t pair[2] = { ROUTE_DST_IO0(ch), ROUTE_SRC_USB(ch) };
-            int rerr = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, pair, 2);
-            if (rerr) io0_fail++; else io0_ok++;
+        uint8_t table[DIRECT_ROUTE_COUNT][2];
+        unsigned count = direct_route_table(table);
+        int ok[3] = {0, 0, 0}, fail[3] = {0, 0, 0};
+        for (unsigned i = 0; i < count; i++) {
+            int group = i < 16 ? 0 : i < 32 ? 1 : 2;
+            int rerr = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, table[i], 2);
+            if (rerr) fail[group]++; else ok[group]++;
         }
-        LOG("IOBoard0 direct routes (USB 1-16 → outputs 1-16): %d OK, %d failed",
-            io0_ok, io0_fail);
-    }
-
-    /* ── Step 4b: IOBoard1 dual routes — ADAT 9-24 ──────────────────── */
-    /* Route USB ch0-15 to IOBoard1 ch0-15 (dual routing). Same USB sources
-       feed both IOBoard0 and IOBoard1 — the FPGA crosspoint allows multiple
-       destinations per source. This matches the original daemon's two-X-per-row
-       routing pattern (each USB pair drives primary + secondary outputs).
-       Evidence: og_source SymphonyIOUSBAudioRoutingController.cpp:681-689
-       uses nSourceOffset % 16 wrapping to map same USB channels to IOBoard1.
-       Board-agnostic: harmless if IOBoard1 slot is empty. */
-    {
-        int io1_ok = 0, io1_fail = 0;
-        for (unsigned ch = 0; ch <= 15; ch++) {
-            uint8_t pair[2] = { ROUTE_DST_IO1(ch), ROUTE_SRC_USB(ch) };
-            int rerr = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, pair, 2);
-            if (rerr) io1_fail++; else io1_ok++;
-        }
-        LOG("IOBoard1 dual routes (ADAT 9-24): %d OK, %d failed",
-            io1_ok, io1_fail);
+        LOG("IOBoard0 direct routes (USB 1-16 → outputs 1-16): %d OK, %d failed", ok[0], fail[0]);
+        /* Step 4b: the same USB channels feed IOBoard1 ch0-15 (ADAT 9-24);
+           the FPGA crosspoint allows several destinations per source, as the
+           original's two-X-per-row pattern
+           (og_source SymphonyIOUSBAudioRoutingController.cpp:681-689).
+           Harmless if the slot is empty. */
+        LOG("IOBoard1 dual routes (ADAT 9-24): %d OK, %d failed", ok[1], fail[1]);
+        /* Step 4c: both headphones direct (USB 1-2), never left on a mixer. */
+        LOG("Headphone direct routes (USB 1-2 → headphones 1 and 2): %d OK, %d failed", ok[2], fail[2]);
     }
 
     /* No mixer strip is muted here. All 32 hardware inputs of Mixer 1 used to
@@ -2817,6 +2844,14 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_dictionary_set_data(reply, "levels", peaks, sizeof(peaks));
                 xpc_dictionary_set_data(reply, "levels16", peaks16, sizeof(peaks16));
                 xpc_connection_send_message(peer, reply);
+            }
+        } else if (strcmp(cmd, "helperVersion") == 0) {
+            /* Which helper this is (see MAESTRO_HELPER_VERSION). */
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (reply) {
+                xpc_dictionary_set_uint64(reply, "helperVersion", MAESTRO_HELPER_VERSION);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
             }
         } else if (strcmp(cmd, "setMixerParam") == 0) {
             /* Dedicated mixer parameter command — bypasses generic setProperty.
