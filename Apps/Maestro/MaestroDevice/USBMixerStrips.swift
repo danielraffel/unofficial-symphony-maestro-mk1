@@ -194,21 +194,14 @@ public struct USBMixerSavedState: Equatable, Sendable {
         }
     }
 
-    /// Whether the helper's one software mute should be on. The helper renders
-    /// "Maestro USB" into USB playback 1-2 before either mixer, so it may only
-    /// mute when every mixer that takes that pair is muted; a mixer on another
-    /// source does not hear the helper at all.
-    public var helperMuted: Bool {
-        Self.helperMuted(mixes.map { (source: $0.softwareReturnSource, muted: $0.softwareReturn.isMuted) })
+    /// What the helper's software stage should do, given which mixers are
+    /// routed to an output (see ``USBHelperSoftwareReturn``).
+    public func helper(routedToOutput: [Bool]) -> USBHelperSoftwareReturn.State {
+        USBHelperSoftwareReturn.state(mixes.enumerated().map { index, mix in
+            .init(source: mix.softwareReturnSource, muted: mix.softwareReturn.isMuted,
+                  routedToOutput: index < routedToOutput.count && routedToOutput[index])
+        })
     }
-
-    public static func helperMuted(_ mixers: [(source: UInt32, muted: Bool)]) -> Bool {
-        let onDefaultPair = mixers.filter { $0.source == 0 }
-        return !onDefaultPair.isEmpty && onDefaultPair.allSatisfy { $0.muted }
-    }
-
-    /// The one Software Return pan (shared by both mixers).
-    public var softwareReturnPan: Double { mixes.first?.softwareReturn.pan ?? 0 }
 
     public var mixes: [Mix]
     public var masterLinked: Bool
@@ -245,16 +238,65 @@ public struct USBMixerSavedState: Equatable, Sendable {
     }
 }
 
+/// The one rule for the helper's software Software Return stage over USB.
+///
+/// The helper renders "Maestro USB" into USB playback 1-2, ahead of the unit:
+/// a mute there silences everything that pair feeds, a direct output included.
+/// Apogee's Software Return mute lived in the mixer and never touched a direct
+/// output (og_source/maestrolink/Software/SymphonyIOMixer.cpp:287-452 writes
+/// strip 32 of the mixer only). So the helper acts only while a mixer that
+/// takes USB 1-2 as its Software Return is routed to some output, and then
+/// mutes only when every such mixer is muted. With the default routing (no
+/// mixer on any output) it is neutral: not processing, not muted.
+///
+/// There is no balance: Software Return has no pan, and the helper's stays
+/// centred.
+public enum USBHelperSoftwareReturn {
+    public struct Mixer: Equatable, Sendable {
+        /// Software Return source pair, 0 = USB 1-2.
+        public var source: UInt32
+        public var muted: Bool
+        /// Whether this mixer feeds at least one output in Output Routing.
+        public var routedToOutput: Bool
+
+        public init(source: UInt32, muted: Bool, routedToOutput: Bool) {
+            self.source = source; self.muted = muted; self.routedToOutput = routedToOutput
+        }
+    }
+
+    public struct State: Equatable, Sendable {
+        /// Whether the helper's software stage is in the path at all.
+        public var processing: Bool
+        public var muted: Bool
+
+        public init(processing: Bool, muted: Bool) {
+            self.processing = processing; self.muted = muted
+        }
+
+        public static let neutral = State(processing: false, muted: false)
+    }
+
+    public static func state(_ mixers: [Mixer]) -> State {
+        let heard = mixers.filter { $0.source == 0 && $0.routedToOutput }
+        guard !heard.isEmpty else { return .neutral }
+        return State(processing: true, muted: heard.allSatisfy(\.muted))
+    }
+
+    /// Which of the two mixers feed an output, from the Output Routing rows
+    /// (software pairs first, then Mixer 1 and Mixer 2).
+    public static func mixersRouted(rows: [Int: Set<Int>], softwarePairs: Int) -> [Bool] {
+        (0..<2).map { !(rows[softwarePairs + $0] ?? []).isEmpty }
+    }
+}
+
 /// The writes that put the unit and the helper back to what Maestro shows.
 public enum USBMixerRestorePlan {
     public enum Step: Equatable, Sendable {
         /// A write to the unit's mixer, addressed with the real strip numbers.
         case hardware(PropertyAddress, PropertyValue)
-        /// The helper's software level to 0 dB, with the saved Software
-        /// Return mute (the helper renders "Maestro USB", so a mute applies
-        /// there as well as on the unit). Solo has no helper step.
+        /// The helper's software level to 0 dB, with the mute
+        /// ``USBHelperSoftwareReturn`` allows. Solo has no helper step.
         case helperNeutral(muted: Bool)
-        case helperPan(Double)
         case helperProcessing(Bool)
     }
 
@@ -263,14 +305,23 @@ public enum USBMixerRestorePlan {
     /// so it is only made neutral once the unit has taken its values: no
     /// sequence is louder than the faders show.
     ///
-    /// - Parameter helperMixer: kept for the pan rule (the helper has one pan
-    ///   for both mixers, shared state); the level is no longer split.
-    public static func steps(for state: USBMixerSavedState, helperMixer: Int = 0) -> [Step] {
+    /// - Parameter helperMixer: unused (the helper has no per-mixer state).
+    /// - Parameter routedToOutput: which mixers feed an output in Output
+    ///   Routing; the helper is neutral for the rest (``USBHelperSoftwareReturn``).
+    public static func steps(for state: USBMixerSavedState, helperMixer: Int = 0,
+                             routedToOutput: [Bool] = [false, false]) -> [Step] {
         var steps: [Step] = []
         for (m, mix) in state.mixes.enumerated() {
             let id = UInt32(m + 1) << 16
             func at(_ selector: AudioPropertySelector, _ strip: UInt16) -> PropertyAddress {
                 PropertyAddress(selector: selector, element: id | UInt32(strip))
+            }
+            // The Software Return source first: the helper no longer programs
+            // it, and a power-cycled unit comes back on its own default. A
+            // source the USB modes cannot carry is left alone.
+            if mix.softwareReturnSource < 8 {
+                steps.append(.hardware(PropertyAddress(selector: .mixerSoftwareReturnID, element: id),
+                                       .uint32(mix.softwareReturnSource)))
             }
             steps.append(.hardware(
                 at(.mixerChannelLevel, USBMixerStrip.master),
@@ -289,10 +340,37 @@ public enum USBMixerRestorePlan {
                 at(.mixerChannelSolo, USBMixerStrip.softwareReturn),
                 .bool(mix.softwareReturn.isSoloed)))
         }
-        steps.append(.helperNeutral(muted: state.helperMuted))
-        steps.append(.helperPan(state.softwareReturnPan))
-        // Same rule as the Mixer page: on when either mixer uses the default pair.
-        steps.append(.helperProcessing(state.mixes.contains { $0.softwareReturnSource == 0 }))
+        let helper = state.helper(routedToOutput: routedToOutput)
+        steps.append(.helperNeutral(muted: helper.muted))
+        steps.append(.helperProcessing(helper.processing))
+        return steps
+    }
+
+    /// The input strips of both mixers, saved or default (0 dB, centre,
+    /// unmuted, no solo: og_source/maestrolink/Software/SymphonyIOMixer.h:28-33).
+    /// The unit keeps its mixer until it is power-cycled and comes back at its
+    /// own defaults after one, so every strip is written, not only saved ones:
+    /// a strip then always does what Maestro shows. Level before mute, so an
+    /// unmute never precedes its level.
+    ///
+    /// - Parameter hardwareIndexes: the unit's channel number of each strip,
+    ///   in strip order (`CardLayout.mixerChannels`).
+    public static func stripSteps(saved: [[MixerChannelState]], hardwareIndexes: [Int]) -> [Step] {
+        var steps: [Step] = []
+        for mixer in 0..<2 {
+            let states = mixer < saved.count ? saved[mixer] : []
+            for (strip, channel) in hardwareIndexes.enumerated() where (0...31).contains(channel) {
+                let state = strip < states.count ? states[strip]
+                    : MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
+                func at(_ selector: AudioPropertySelector) -> PropertyAddress {
+                    PropertyAddress(selector: selector, element: UInt32(mixer + 1) << 16 | UInt32(channel))
+                }
+                steps.append(.hardware(at(.mixerChannelLevel), .float64(state.level)))
+                steps.append(.hardware(at(.mixerChannelPan), .float64(state.pan)))
+                steps.append(.hardware(at(.mixerChannelMute), .bool(state.isMuted)))
+                steps.append(.hardware(at(.mixerChannelSolo), .bool(state.isSoloed)))
+            }
+        }
         return steps
     }
 }

@@ -7,12 +7,12 @@ import MaestroDevice
 private final class MixerRestoreTransport: XPCTransport, @unchecked Sendable {
     struct Capture {
         var writes: [(UInt8, UInt16, UInt16, Data)] = []
-        var modes: [Int] = []
         var mutes: [(UInt8, UInt16, UInt16, UInt8)] = []
+        var helperMutes: [Bool] = []
+        var helperProcessing: [Bool] = []
     }
     private let lock = NSLock()
     private var captured = Capture()
-    var sendDelay: UInt64 = 0
     var snapshot: Capture { lock.withLock { captured } }
     var isConnected: Bool { true }
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
@@ -22,75 +22,26 @@ private final class MixerRestoreTransport: XPCTransport, @unchecked Sendable {
         throw DeviceConnectionError.transportError("identity unavailable")
     }
     func getSoftwareMeterLevels() async -> (Float, Float)? { nil }
-    func setSwReturnMute(_ muted: Bool) {}
+    func setSwReturnMute(_ muted: Bool) { lock.withLock { captured.helperMutes.append(muted) } }
     func setSwReturnLevel(_ dB: Double) {}
-    func setSwReturnPan(_ pan: Double) {}
-    func setSwReturnProcessing(_ enabled: Bool) {}
+    func setSwReturnProcessing(_ enabled: Bool) { lock.withLock { captured.helperProcessing.append(enabled) } }
     func resetAudioOutput() {}
-    func setRoutingMode(_ mode: Int) { lock.withLock { captured.modes.append(mode) } }
     func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {
-        if sendDelay > 0 { Thread.sleep(forTimeInterval: Double(sendDelay) / 1_000_000_000) }
         lock.withLock { captured.mutes.append((usbCmd, mixer, channel, value)) }
     }
+}
+
+/// Writes of one complete USB mixer restore: every input strip of both
+/// mixers (level, pan, mute, solo), then per mixer the Software Return
+/// source, Master, return level, mute and solo.
+@MainActor private func restoreWriteCount(_ state: AppState) -> Int {
+    state.cardLayout.mixerChannels.filter { (0...31).contains($0.hardwareIndex) }.count * 8 + 10
 }
 
 extension StandardDefaultsSuites {
 @Suite("Mixer identity completion", .serialized)
 @MainActor
 struct MixerIdentityRestoreTests {
-    @Test func routingModeRaceCancelsStaleDawMuteLoop() async throws {
-        let state = AppState()
-        state.connectionMode = .hardware
-        let transport = MixerRestoreTransport()
-        transport.sendDelay = 2_000_000
-        let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
-            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "fix18-route-race"))
-        let usb = XPCDeviceConnection(identifier: id, transport: transport)
-        state.device = usb
-        state.unitAIdentity = 42
-        state.unitAIdentityState = .known(42)
-        state.mixerPreferences.set(0, forKey: "routingMode")
-        let first = Task { await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
-                                                                  preferences: state.mixerPreferences) }
-        try await Task.sleep(for: .milliseconds(3))
-        state.mixerPreferences.set(1, forKey: "routingMode")
-        let second = Task { await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
-                                                                   preferences: state.mixerPreferences) }
-        await first.value
-        await second.value
-        let result = transport.snapshot
-        // The stale DAW sync may be cancelled before it sends anything ([1]) or
-        // after its mode write ([0, 1]); either way Direct Monitor wins and no
-        // DAW mute lands after it.
-        let finalMode = result.modes.last
-        #expect(finalMode == 1)
-        #expect(result.modes == [1] || result.modes == [0, 1])
-        #expect(result.mutes.last?.3 == 0)
-    }
-
-    @Test func lifecycleSyncCarriesExplicitDirectMonitorMutes() async throws {
-        let state = AppState()
-        state.connectionMode = .hardware
-        let transport = MixerRestoreTransport()
-        transport.sendDelay = 2_000_000
-        let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
-            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "fix21-carry-mutes"))
-        let usb = XPCDeviceConnection(identifier: id, transport: transport)
-        state.device = usb
-        state.unitAIdentity = 42
-        state.unitAIdentityState = .known(42)
-        state.mixerPreferences.set(1, forKey: "routingMode")
-        let explicit = Task {
-            await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
-                                                  preferences: state.mixerPreferences, applyInputMutes: true)
-        }
-        try await Task.sleep(for: .milliseconds(3))
-        await state.synchronizeUSBRoutingMode(usb, generation: state.unitAGeneration,
-                                              preferences: state.mixerPreferences, applyInputMutes: false)
-        await explicit.value
-        #expect(transport.snapshot.mutes.count >= 64)
-    }
-
     @Test func cancelledViewStillDiscoversCards() async {
         let defaults = UserDefaults.standard
         let before = defaults.dictionaryRepresentation()
@@ -165,7 +116,7 @@ struct MixerIdentityRestoreTests {
         #expect(preferences.object(forKey: "mixerMasterLevel_0") as? Double == -30)
     }
 
-    @Test func pendingRecoveryDoesNotMuteDirectMonitorAndRetryDoesNotRestoreTwice() async throws {
+    @Test func pendingRecoveryWritesNothingAndRetryDoesNotRestoreTwice() async throws {
         let defaults = UserDefaults.standard
         let before = defaults.dictionaryRepresentation()
         defer {
@@ -173,26 +124,78 @@ struct MixerIdentityRestoreTests {
             for (key, value) in before { defaults.set(value, forKey: key) }
         }
         defaults.removeObject(forKey: "mixerWideState.migratedTo")
-        defaults.set(1, forKey: "routingMode")
         let state = AppState()
+        state.usbMixerStripSpacing = .zero
         state.connectionMode = .hardware
         let transport = MixerRestoreTransport()
         let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
             productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "fix17-pending"))
         let usb = XPCDeviceConnection(identifier: id, transport: transport)
         state.device = usb
-        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0, restoreRoutingMode: true)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
         #expect(transport.snapshot.writes.isEmpty)
-        #expect(transport.snapshot.modes.isEmpty)
         #expect(transport.snapshot.mutes.isEmpty)
         await state.resolveUnitIdentity(for: .a, connection: usb) { nil }
-        #expect(transport.snapshot.writes.count == 8)
-        #expect(transport.snapshot.modes == [1])
+        let count = restoreWriteCount(state)
+        #expect(transport.snapshot.writes.count == count)
         #expect(transport.snapshot.mutes.isEmpty)
         state.retryFailedIdentityOnRecovery()
         await state.resolveUnitIdentity(for: .a, connection: usb) { nil }
-        #expect(transport.snapshot.writes.count == 8)
-        #expect(transport.snapshot.modes == [1])
+        #expect(transport.snapshot.writes.count == count)
+    }
+
+    /// The reported gap: a recovery (unit power-cycled while connected) put
+    /// back Master and Software Return only. Output routing came from the
+    /// helper, which forced Line 1/2 through Mixer 1; now the helper programs
+    /// the direct default and the saved routes must come from here.
+    @Test func recoveryRestoresSavedOutputRoutingAndSetsTheHelperByIt() async throws {
+        let defaults = UserDefaults.standard
+        let before = defaults.dictionaryRepresentation()
+        defer {
+            for key in defaults.dictionaryRepresentation().keys where before[key] == nil { defaults.removeObject(forKey: key) }
+            for (key, value) in before { defaults.set(value, forKey: key) }
+        }
+        defaults.removeObject(forKey: "mixerWideState.migratedTo")
+        for routed in [false, true] {
+            let state = AppState()
+            state.usbMixerStripSpacing = .zero
+            state.connectionMode = .hardware
+            state.transportType = .usb
+            let transport = MixerRestoreTransport()
+            let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+                productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "recovery-routing-\(routed)"))
+            let usb = XPCDeviceConnection(identifier: id, transport: transport)
+            state.device = usb
+            state.primaryBoardType = .optical
+            state.primaryBoardSource = .detected
+            state.secondaryBoardType = .none
+            state.secondaryBoardSource = .detected
+            let identity = UInt64(0xF190_0000) + UInt64(routed ? 1 : 0)
+            state.unitAIdentity = identity
+            state.unitAIdentityState = .known(identity)
+            let cache = state.peripheralRoutingCache(direction: "output")
+            // 16-channel mode: 8 software pairs, so row 8 is Mixer 1. Column 0 is Line 1/2.
+            if routed { cache.save([8: Set([0])]) }
+            var muted = MixerChannelState(level: 0, pan: 0, isMuted: true, isSoloed: false)
+            muted.isMuted = true
+            MixerStateSnapshot.saveSoftwareReturn(muted, mixer: 0, preferences: state.mixerPreferences)
+            #expect(state.mixersRoutedToOutput() == [routed, false])
+
+            await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+            let result = transport.snapshot
+            // Output routes are 0x31 writes of [destination, source]; Line 1/2 is 32/33, Mixer 1 out 64/65.
+            let outputRoutes = result.writes.filter { $0.0 == 0x31 && ($0.3.first ?? 0) < 64 }.map { Array($0.3) }
+            #expect(outputRoutes == (routed ? [[32, 64], [33, 65]] : []))
+            // The mixer follows: strips, source, Master and return, on the unit.
+            #expect(result.writes.filter { $0.0 != 0x31 || ($0.3.first ?? 0) >= 0xE0 }.count == restoreWriteCount(state))
+            // Strip 32 of mixer 1 is muted on the unit either way...
+            #expect(result.writes.last { $0.0 == 0xB3 && $0.1 == 1 && $0.2 == 32 }?.3 == Data([1]))
+            // ...but the helper only mutes "Maestro USB" while that mixer feeds an output.
+            #expect(result.helperMutes.last == routed)
+            #expect(result.helperProcessing.last == routed)
+            // No input strip is muted: nothing was saved muted.
+            #expect(result.writes.filter { $0.0 == 0xB3 && $0.2 < 32 }.allSatisfy { $0.3 == Data([0]) })
+        }
     }
 
     @Test func openingUnsavedMixerDoesNotQualifyDefaultsForReplay() {
@@ -211,7 +214,7 @@ struct MixerIdentityRestoreTests {
     }
 
     @Test(arguments: [0, 1], ["nil", "cancel", "callerCancel", "success"])
-    func connectAndReconnect(mode: Int, outcome: String) async throws {
+    func connectAndReconnect(staleMode: Int, outcome: String) async throws {
         let defaults = UserDefaults.standard
         let before = defaults.dictionaryRepresentation()
         defer {
@@ -219,12 +222,15 @@ struct MixerIdentityRestoreTests {
             for (key, value) in before { defaults.set(value, forKey: key) }
         }
         defaults.removeObject(forKey: "mixerWideState.migratedTo")
-        defaults.set(mode, forKey: "routingMode")
+        // A leftover of the removed Input Monitoring setting (0 was "DAW",
+        // which muted all 64 input strips on connect). It must change nothing.
+        defaults.set(staleMode, forKey: "routingMode")
         defaults.set(-12.0, forKey: "mixerMasterLevel_0")
         defaults.set(true, forKey: "mixerMasterFadersLinked")
         defaults.set(true, forKey: "mixerSWReturnFadersLinked")
         defaults.set(-17.0, forKey: "mixerSWReturnLeftLevel_0")
         let state = AppState()
+        state.usbMixerStripSpacing = .zero
         state.connectionMode = .hardware
         state.transportType = .usb
         let identity: UInt64 = 0xF1501234
@@ -232,7 +238,7 @@ struct MixerIdentityRestoreTests {
             identity: identity, allowLegacyMigration: false).mixerPreferences
         scoped.set(-24.0, forKey: "mixerMasterLevel_0")
         scoped.set(-29.0, forKey: "mixerSWReturnLeftLevel_0")
-        scoped.set(mode, forKey: "routingMode")
+        scoped.set(staleMode, forKey: "routingMode")
         let legacyBefore = MixerPreferences.legacyKeys.map { defaults.object(forKey: $0) as? NSObject }
         let ownerBefore = defaults.object(forKey: "mixerWideState.migratedTo") as? NSObject
         for _ in 0..<2 { // initial connection, then a new connection to the same unit
@@ -257,25 +263,30 @@ struct MixerIdentityRestoreTests {
                 return nil
             }
             let result = transport.snapshot
-            #expect(result.writes.count == 8)
-            #expect(result.modes == [mode])
-            #expect(result.mutes.count == (mode == 0 ? 64 : 0))
-            #expect(result.mutes.allSatisfy { $0.0 == 0xB3 && $0.2 < 32 && $0.3 == 1 })
+            #expect(result.writes.count == restoreWriteCount(state))
+            // Every input strip of both mixers is written, and none is muted:
+            // nothing was saved muted, and no setting forces a mute.
+            let stripMutes = result.writes.filter { $0.0 == 0xB3 && $0.2 < 32 }
+            #expect(stripMutes.count == (restoreWriteCount(state) - 10) / 4)
+            #expect(stripMutes.allSatisfy { $0.3 == Data([0]) })
+            #expect(result.mutes.isEmpty)
+            // Default routing: no mixer feeds an output, so the helper is neutral.
+            #expect(result.helperMutes == [false])
+            #expect(result.helperProcessing == [false])
             let master = result.writes.first { $0.0 == 0xB0 && $0.1 == 1 && $0.2 == 33 }?.3
             let softwareReturn = result.writes.first { $0.0 == 0xB0 && $0.1 == 1 && $0.2 == 32 }?.3
             #expect(master == Data([outcome == "success" ? 24 : 36]))
             #expect(softwareReturn == Data([outcome == "success" ? 19 : 31]))
             if outcome != "success" {
-                state.mixerPreferences.set(1 - mode, forKey: "routingMode")
                 let tbSnapshot = MixerStateSnapshot(channelCount: 32, mixer: 0,
                     store: state.channelStateStore, preferences: state.mixerPreferences)
                 #expect(tbSnapshot.masterLevel == -12)
                 // Unidentified unit: the legacy keys are read and written, as
                 // before per-unit scoping, so the pages stay editable.
                 #expect(state.mixerPreferences.isWritable)
-                let written = state.mixerPreferences.integer(forKey: "routingMode")
-                #expect(written == 1 - mode)
-                state.mixerPreferences.set(mode, forKey: "routingMode")
+                state.mixerPreferences.set(-3.0, forKey: "mixerMasterLevel_1")
+                #expect(defaults.object(forKey: "mixerMasterLevel_1") as? Double == -3)
+                defaults.removeObject(forKey: "mixerMasterLevel_1")
                 #expect(defaults.object(forKey: "mixerWideState.migratedTo") as? NSObject == ownerBefore)
             }
         }

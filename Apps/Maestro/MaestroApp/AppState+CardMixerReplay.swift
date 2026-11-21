@@ -18,6 +18,10 @@ extension AppState {
     @MainActor
     func syncCardMixerToHardware() {
         guard let tb = device as? ThunderboltDeviceConnection else { return }
+        // Once after the routing and mixer reset: both mixers are written in
+        // full even if the driver holds app state, because that state is what
+        // the reset removed from this Mac (the driver kept running).
+        cardMixerLedger.restoresHeldMixers = RoutingMixerReset.isPending(.thunderboltCardMixer)
         cardMixerRestoreRequested = true
         if let run = cardMixerRestoreRun, run.connection === tb { return }
         cancelCardMixerRestore()
@@ -33,7 +37,13 @@ extension AppState {
             guard let self else { return }
             let outcome = await CardMixerRestoreRunner.run(self.cardMixerRestoreEnvironment(tb))
             print("[Maestro] D5 card mixer restore: \(outcome)")
-            if case .restored = outcome { self.refreshSoftwareReturnMeterGains() }
+            if case .restored = outcome {
+                self.refreshSoftwareReturnMeterGains()
+                if self.cardMixerLedger.restoresHeldMixers {
+                    RoutingMixerReset.clearPending(.thunderboltCardMixer)
+                    self.cardMixerLedger.restoresHeldMixers = false
+                }
+            }
             if self.cardMixerRestoreRun?.token == token {
                 self.cardMixerRestoreRun = nil
                 self.cardMixerLedger.endAttempt()
@@ -125,7 +135,8 @@ extension AppState {
             plan: { [weak self] mixers in
                 guard let self else { return [] }
                 return CardMixerReplay.plan(mixers: mixers, layout: layout, store: self.channelStateStore,
-                                            preferences: self.mixerPreferences)
+                                            preferences: self.mixerPreferences,
+                                            complete: self.cardMixerLedger.restoresHeldMixers)
             },
             replay: { plan, recovery, epoch, generation, progress in
                 let started = Date()

@@ -77,7 +77,7 @@ struct MixerEditorState {
                                       saved: UInt32(clamping: appState.mixerPreferences.integer(forKey: sourceKey)),
                                       pairCount: appState.softwareReturnPairCount),
             forKey: sourceKey)
-        // Keep the ThunderBridge SW Return meters in step with the faders/pan/mute.
+        // Keep the Software Return and USB Master meters in step with the faders and mute.
         appState.refreshSoftwareReturnMeterGains()
     }
 }

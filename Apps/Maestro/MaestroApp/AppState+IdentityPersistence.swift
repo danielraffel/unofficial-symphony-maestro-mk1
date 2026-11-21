@@ -103,87 +103,96 @@ extension AppState {
             usbMixerLifecycleRestoreGeneration = generation
             // The first restore must wait for UID/layout migration, otherwise
             // an unchanged USB unit would receive defaults before its settings.
-            await usb.restoreReturnAndMaster(helperMixer: lastSelectedMixer, preferences: preferences)
-            guard isCurrent() else { return }
-            // Connection/recovery restores the routing selector.  Direct
-            // Monitor deliberately leaves the input-mute registers alone;
-            // those writes belong only to an explicit settings switch.
-            await synchronizeUSBRoutingMode(usb, generation: generation, preferences: preferences,
-                                            applyInputMutes: false)
+            await restoreUSBMixer(usb, generation: generation, helperMixer: lastSelectedMixer,
+                                  preferences: preferences)
         }
     }
 
-    /// Pending discovery owns restoration. Recovery must not synthesize a DAW
-    /// mode from an unreadable preference handle and mute Direct Monitor inputs.
+    /// Pending discovery owns restoration. A recovery (the unit was
+    /// power-cycled or re-enumerated while Maestro stayed connected) puts back
+    /// everything the Mac owns, as the original did for a returning unit
+    /// (og_source/maestrolink/Software/SymphonyIO.cpp:4660-4708
+    /// ApplySettingsToHardware, called from :6373-6381): the saved output and
+    /// input routing, the stored device settings (speaker mode among them),
+    /// then the mixer. The helper programs only the direct default routing and
+    /// no longer sets the speaker mode, so without this a recovered unit kept
+    /// its own defaults while Maestro showed the saved state.
     @MainActor
-    func restoreUSBMixerAfterRecovery(_ connection: XPCDeviceConnection, helperMixer: Int,
-                                      restoreRoutingMode: Bool) async {
+    func restoreUSBMixerAfterRecovery(_ connection: XPCDeviceConnection, helperMixer: Int) async {
         let generation = unitAGeneration
         let preferences = mixerPreferences
         guard device === connection, preferences.isWritable,
               unitAIdentityState != .pending else { return }
         usbMixerLifecycleRestoreGeneration = generation
-        await connection.restoreReturnAndMaster(helperMixer: helperMixer, preferences: preferences)
-        guard device === connection, unitAGeneration == generation,
-              mixerPreferences.isWritable, restoreRoutingMode else { return }
-        await synchronizeUSBRoutingMode(connection, generation: generation, preferences: preferences,
-                                        applyInputMutes: false)
+        await syncOutputRoutingToHardware()
+        await syncInputRoutingToHardware()
+        await syncDeviceSettingsToHardware()
+        guard device === connection, unitAGeneration == generation, mixerPreferences.isWritable else { return }
+        await restoreUSBMixer(connection, generation: generation, helperMixer: helperMixer,
+                              preferences: preferences)
     }
 
+    /// Both mixers, complete: every input strip (saved or default), then the
+    /// Software Return source, Master and Software Return, then the helper.
+    /// The unit keeps its mixer until it is power-cycled, so strips are not
+    /// left to whatever an earlier session wrote: a strip does what it shows.
     @MainActor
-    func synchronizeUSBRoutingMode(_ connection: XPCDeviceConnection, generation: UUID,
-                                    preferences: MixerPreferences,
-                                    applyInputMutes: Bool = true) async {
-        let mode = preferences.integer(forKey: "routingMode")
-        let savedMutes: [[UInt8]] = (0..<2).map { mixerIdx in
-            let key = "mixerState_\(mixerIdx)"
-            guard let data = channelStateStore.loadData(key),
-                  let saved = try? JSONDecoder().decode([MixerChannelState].self, from: data)
-            else { return Array(repeating: UInt8(0), count: 32) }
-            return saved.prefix(32).map { $0.isMuted ? 1 : 0 }
-                + Array(repeating: UInt8(0), count: max(0, 32 - saved.count))
+    func restoreUSBMixer(_ connection: XPCDeviceConnection, generation: UUID, helperMixer: Int,
+                         preferences: MixerPreferences) async {
+        let saved: [[MixerChannelState]] = (0..<2).map {
+            channelStateStore.load(ChannelStateStore.mixerKey($0)) ?? []
         }
-        routingModeEpoch &+= 1
-        let epoch = routingModeEpoch
-        // A lifecycle sync may pre-empt an explicit Direct Monitor switch.
-        // Preserve that switch's mute work when it targets the same mode.
-        let carriesInputMutes = applyInputMutes ||
-            (routingModeTaskAppliesInputMutes && routingModeTaskMode == mode)
-        routingModeTask?.cancel()
-        if let old = routingModeTask { await old.value }
         let current: @Sendable () async -> Bool = { @MainActor [weak self] in
             guard let self else { return false }
             return self.device === connection && self.unitAGeneration == generation
-                && self.mixerPreferences.isWritable
-                && self.mixerPreferences.storageKey == preferences.storageKey
-                && self.routingModeEpoch == epoch
-                && self.mixerPreferences.integer(forKey: "routingMode") == mode
+                && !self.hardwareWritesSuspended
         }
-        let task = Task.detached(priority: .utility) {
-            guard await current(), !Task.isCancelled else { return }
-            connection.setRoutingMode(mode)
-            // A lifecycle restore must preserve Direct Monitor's existing
-            // input-mute state. DAW still asserts its traditional 64 mutes
-            // once per connection; an explicit settings switch applies the
-            // saved Direct Monitor state (or unmutes missing strips).
-            guard carriesInputMutes || mode == 0 else { return }
-            for mixer: UInt16 in 1...2 {
-                for channel: UInt16 in 0..<32 {
-                    guard await current(), !Task.isCancelled else { return }
-                    let value = mode == 0 ? UInt8(1) : savedMutes[Int(mixer - 1)][Int(channel)]
-                    connection.sendMixerParam(usbCmd: 0xB3, mixer: mixer, channel: channel, value: value)
-                }
+        let strips = await connection.restoreMixerStrips(
+            saved: saved, hardwareIndexes: cardLayout.mixerChannels.map(\.hardwareIndex),
+            spacing: usbMixerStripSpacing, isCurrent: current)
+        guard device === connection, unitAGeneration == generation else { return }
+        print("[Maestro] USB mixer restore: \(strips.applied) strip writes, \(strips.failed) refused")
+        await connection.restoreReturnAndMaster(helperMixer: helperMixer, preferences: preferences,
+                                                routedToOutput: mixersRoutedToOutput())
+    }
+
+    /// Which of the two mixers feed an output, from the saved Output Routing
+    /// (the default routes no mixer to any output).
+    @MainActor
+    func mixersRoutedToOutput() -> [Bool] {
+        guard let device else { return [false, false] }
+        return USBHelperSoftwareReturn.mixersRouted(
+            rows: peripheralRoutingCache(direction: "output").loadMulti() ?? [:],
+            softwarePairs: device.identifier.mode.channelCount / 2)
+    }
+
+    /// The helper's software stage for the saved mixers and routing, with
+    /// `editing` standing in for a mixer whose Software Return is being changed
+    /// and not saved yet (``USBHelperSoftwareReturn``).
+    @MainActor
+    func usbHelperSoftwareReturn(
+        editing: (mixer: Int, source: UInt32, muted: Bool)? = nil
+    ) -> USBHelperSoftwareReturn.State {
+        let preferences = mixerPreferences
+        let routed = mixersRoutedToOutput()
+        return USBHelperSoftwareReturn.state((0..<2).map { mixer in
+            if let editing, editing.mixer == mixer {
+                return .init(source: editing.source, muted: editing.muted, routedToOutput: routed[mixer])
             }
-        }
-        routingModeTaskAppliesInputMutes = carriesInputMutes
-        routingModeTaskMode = mode
-        routingModeTask = task
-        await task.value
-        if routingModeEpoch == epoch {
-            routingModeTask = nil
-            routingModeTaskAppliesInputMutes = false
-            routingModeTaskMode = nil
-        }
+            return .init(
+                source: UInt32(clamping: preferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")),
+                muted: MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: preferences).isMuted,
+                routedToOutput: routed[mixer])
+        })
+    }
+
+    /// Output Routing changed over USB: a mixer may have started or stopped
+    /// feeding an output, which is what decides whether the helper acts.
+    @MainActor
+    func syncUSBHelperSoftwareReturn() {
+        guard let usb = device as? XPCDeviceConnection, mixerPreferences.isWritable,
+              !hardwareWritesSuspended else { return }
+        usb.applyHelperSoftwareReturn(usbHelperSoftwareReturn())
     }
 
 

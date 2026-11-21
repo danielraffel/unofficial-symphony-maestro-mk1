@@ -1082,10 +1082,10 @@ struct OutputRoutingView: View {
     /// `SymphonyIODefaultRouting.usbChannelCount`); ThunderBridge carries 32,
     /// board 1 ← playback 17-32, as XLink sources.
     private func defaultOutputRouteList(board1: IOCardType, board2: IOCardType) -> [SymphonyIODefaultRouting.Route] {
-        // On ThunderBridge: what the driver and card program at start-up, Mac
-        // output n on slot 1 output n (1-16) and slot 2 output n-16 (17-32),
-        // with the main pair on Mixer 1. The grid shows it and Reset Routing
-        // writes it, so the picture matches the sound.
+        // On ThunderBridge: Mac output n on slot 1 output n (1-16) and slot 2
+        // output n-16 (17-32), every output direct and no mixer routed, as in
+        // the original. The grid shows it, Maestro writes it on connect and
+        // Reset Routing writes it, so the picture matches the sound.
         if appState.transportType == .thunderbolt {
             return SymphonyIODefaultRouting.thunderboltOutputRoutes(
                 board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
@@ -1228,6 +1228,8 @@ struct OutputRoutingView: View {
             errorMessage = nil
             userChosenRows.insert(row)
             persistChosenRows()
+            // A mixer may have started or stopped feeding an output (USB helper rule).
+            appState.syncUSBHelperSoftwareReturn()
             print("[Maestro] OutputRouting: wrote row \(row) → col \(col) (dest \(destLeft), src \(srcLeft), clear=\(clear))")
             // Legacy re-runs RouteHeadphones() after every routing change, because a
             // headphone's crosspoint source is inherited from the output pair it
@@ -1321,13 +1323,8 @@ struct OutputRoutingView: View {
         // which the proxy never renders. ThunderBridge renders all 32.
         // On ThunderBridge/PCIe, Reset writes Apogee's reset layout (every software
         // output on the matching output, the main pair on Software 1-2, no mixer
-        // routed), not the start-up default with the main pair on Mixer 1.
-        let thunderbolt = appState.transportType == .thunderbolt
-        let routeList = thunderbolt
-            ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
-                board0Outputs: b1.card.totalOutputChannels, board1Outputs: b2.card.totalOutputChannels,
-                mainPairOnMixer: false)
-            : defaultOutputRouteList(board1: b1.card, board2: b2.card)
+        // routed), which is also the default.
+        let routeList = defaultOutputRouteList(board1: b1.card, board2: b2.card)
 
         var newRoutes: [Int: Set<Int>] = [:]
         var failures = 0
@@ -1349,17 +1346,11 @@ struct OutputRoutingView: View {
         }
 
         routes = newRoutes
-        if thunderbolt {
-            // The driver puts the main pair back on Mixer 1 at every start, and the
-            // app replays only chosen rows: keep the rows where the reset layout
-            // differs from that start-up default as chosen, so it survives a restart.
-            let startup = defaultRouteGrid()
-            userChosenRows = Set(newRoutes.keys.filter { $0 < swOutputPairCount && newRoutes[$0] != startup[$0] })
-        } else {
-            // The defaults are now on the hardware; there are no overrides left.
-            userChosenRows.removeAll()
-        }
+        // The defaults are now on the hardware; there are no overrides left.
+        // (On ThunderBridge Maestro writes the default table on every connect.)
+        userChosenRows.removeAll()
         persistChosenRows()
+        appState.syncUSBHelperSoftwareReturn()
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] OutputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")
         await HeadphoneCrosspoint.reapplyAll(

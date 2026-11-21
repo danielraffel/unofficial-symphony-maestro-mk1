@@ -15,7 +15,7 @@ public struct MixerPreferences: @unchecked Sendable {
 
     public var isWritable: Bool { enabled && !readOnly }
 
-    public static let legacyKeys = ["mixerState_swReturn", "routingMode",
+    public static let legacyKeys = ["mixerState_swReturn",
         "mixerMasterFadersLinked", "mixerSWReturnFadersLinked"] + (0..<2).flatMap { mixer in
         ["mixerMasterLevel", "mixerMasterLeftLevel", "mixerMasterRightLevel",
          "mixerSWReturnLeftLevel", "mixerSWReturnRightLevel", "mixerSoftwareReturnSource",

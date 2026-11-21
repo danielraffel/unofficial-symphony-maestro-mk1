@@ -23,7 +23,7 @@ struct CardMixerReplayTests {
         for mixer in 0..<2 { store.save(Array(repeating: state, count: layout.mixerChannelCount), for: ChannelStateStore.mixerKey(mixer)) }
         let groups = (0..<2).map { mixer in
             let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: mixer, store: store)
-            return CardMixerReplay.writes(mixer: mixer, layout: layout, snapshot: snapshot, directMonitor: true)
+            return CardMixerReplay.writes(mixer: mixer, layout: layout, snapshot: snapshot)
         }
         #expect(layout.mixerChannelCount == 32)
         #expect(CardMixerReplay.commandCount(groups) == 270)
@@ -44,12 +44,39 @@ struct CardMixerReplayTests {
             let expected = mixer == 0 ? -27.0 : -12.0
             store.mixerPreferences.set(expected, forKey: "mixerSWReturnLeftLevel_\(mixer)")
             let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: mixer, store: store, defaults: defaults)
-            let writes = CardMixerReplay.writes(mixer: mixer, layout: layout, snapshot: snapshot, directMonitor: true)
+            let writes = CardMixerReplay.writes(mixer: mixer, layout: layout, snapshot: snapshot)
             let base = UInt32(mixer + 1) << 16
             let level = value(writes, .mixerChannelLevel, base | 1000)?.asFloat64
             #expect(level == expected)
             #expect(value(writes, .mixerChannelMute, base | 1000)?.asBool == true)
             #expect(value(writes, .mixerChannelSolo, base | 1000)?.asBool == true)
+            // Software Return has no pan: the saved 0.25 is ignored, centre is written.
+            #expect(value(writes, .mixerChannelPan, base | 1000)?.asFloat64 == 0)
+            let saved = CardMixerReplay.savedWrites(mixer: mixer, layout: layout, store: store)
+            #expect(value(saved, .mixerChannelPan, base | 1000)?.asFloat64 == 0)
+        }
+    }
+
+    @Test("A strip is muted only when it was saved muted: nothing is forced, whatever routingMode says")
+    func noForcedMute() throws {
+        let name = "d5-nomute-\(UUID())"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        // The removed setting's old value for "DAW" (0), in the scoped store and globally.
+        store.mixerPreferences.set(0, forKey: "routingMode")
+        defaults.set(0, forKey: "routingMode")
+        var strips = Array(repeating: MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: false),
+                           count: layout.mixerChannelCount)
+        strips[3].isMuted = true
+        store.save(strips, for: ChannelStateStore.mixerKey(0))
+        let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: 0, store: store)
+        for writes in [CardMixerReplay.writes(mixer: 0, layout: layout, snapshot: snapshot),
+                       CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store)] {
+            for (index, strip) in layout.mixerChannels.enumerated() {
+                #expect(value(writes, .mixerChannelMute, 0x10000 | UInt32(strip.hardwareIndex))?.asBool == (index == 3))
+            }
         }
     }
 
@@ -86,7 +113,7 @@ extension CardMixerReplayTests {
                 let snapA = MixerStateSnapshot(channelCount: a.mixerChannelCount, mixer: mixer, store: storeA, defaults: defaults)
                 let snapB = MixerStateSnapshot(channelCount: b.mixerChannelCount, mixer: mixer, store: storeB, defaults: defaults)
                 let writes = CardMixerReplay.writes(mixer: mixer, layout: a, snapshot: snapA,
-                    second: activeB ? (b, snapB) : nil, directMonitor: true)
+                    second: activeB ? (b, snapB) : nil)
                 let base = UInt32(mixer + 1) << 16
                 let expectedSource = UInt32(activeB ? 23 + mixer : 0)
                 #expect(value(writes, .mixerSoftwareReturnID, base)?.asUInt32 == expectedSource)
@@ -120,18 +147,38 @@ extension CardMixerReplayTests {
         #expect(storeA.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_0") == 23)
     }
 
-    @Test("An unconfigured mixer adds no single-unit startup writes")
+    @Test("An unconfigured mixer gets only its strips unmuted and the return centred")
     func noSavedState() {
         let name = "d45-empty-\(UUID())"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        // The driver starts its card mixer with the inputs muted; an untouched
+        // strip shows unmuted. So each strip gets an unmute and nothing else.
         let empty = CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store)
-        #expect(empty.isEmpty)
+        #expect(empty.count == layout.mixerChannelCount + 1)
+        for strip in layout.mixerChannels {
+            #expect(value(empty, .mixerChannelMute, 0x10000 | UInt32(strip.hardwareIndex))?.asBool == false)
+            #expect(value(empty, .mixerChannelLevel, 0x10000 | UInt32(strip.hardwareIndex)) == nil)
+        }
+        #expect(value(empty, .mixerChannelPan, 0x10000 | 1000)?.asFloat64 == 0)
+        #expect(value(empty, .mixerChannelLevel, 0x10000 | 1000) == nil)
+        #expect(value(empty, .mixerChannelLevel, 0x10000 | 2000) == nil)
         store.mixerPreferences.set(-18.0, forKey: "mixerSWReturnLeftLevel_0")
         let restored = CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store)
         #expect(value(restored, .mixerChannelLevel, 0x10000 | 1000)?.asFloat64 == -18)
+        // The whole mixer, defaults included: once after the reset.
+        let complete = CardMixerReplay.plan(mixers: [0, 1], layout: layout, store: store, complete: true)
+        #expect(complete.count == 2)
+        #expect(value(complete[1], .mixerChannelLevel, 0x20000 | 2000)?.asFloat64 == 0)
+        #expect(value(complete[1], .mixerChannelLevel, 0x20000 | 1000)?.asFloat64 == 0)
+        #expect(value(complete[1], .mixerSoftwareReturnID, 0x20000)?.asUInt32 == 0)
+        for strip in layout.mixerChannels {
+            let element = 0x20000 | UInt32(strip.hardwareIndex)
+            #expect(value(complete[1], .mixerChannelLevel, element)?.asFloat64 == 0)
+            #expect(value(complete[1], .mixerChannelMute, element)?.asBool == false)
+        }
     }
 
     @Test("Every failed mixer step ends with unlock")
@@ -144,7 +191,7 @@ extension CardMixerReplayTests {
         let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: 0, store: store, defaults: defaults)
         let routes: [UInt8: UInt8] = [32: SymphonyIORoutingAddress.mixer0Base, 33: SymphonyIORoutingAddress.mixer0Base + 1]
         let writes = CardMixerReplay.outputWrites(routes)
-            + CardMixerReplay.writes(mixer: 0, layout: layout, snapshot: snapshot, directMonitor: false)
+            + CardMixerReplay.writes(mixer: 0, layout: layout, snapshot: snapshot)
         for failure in writes.indices {
             var sends = 0
             var unlocks = 0

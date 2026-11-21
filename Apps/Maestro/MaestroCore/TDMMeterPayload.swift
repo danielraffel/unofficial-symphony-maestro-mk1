@@ -116,10 +116,8 @@ public enum SoftwareOutputMeterMap {
     /// routing (`destinationByte -> sourceByte`).
     ///
     /// With no cached route for a destination the proxy's boot routing applies
-    /// (`configure_fpga_routing`): `IOBoard0 ch n <- USB n` for n >= 2,
-    /// `IOBoard0 ch 0/1 <- Mixer0 out <- USB 0/1`, and `IOBoard1 ch n <- USB n`.
-    /// The proxy measures USB 0/1 after its software gain/pan/mute, i.e. at the
-    /// level the mixer actually delivers to the DAC, so both collapse to
+    /// (`configure_fpga_routing`): `IOBoard0 ch n <- USB n` and
+    /// `IOBoard1 ch n <- USB n`, every output direct, so it is
     /// `usbChannel(n % 16)`.
     public static func source(forWord word: Int, routes: [UInt8: UInt8]) -> Source {
         guard let dest = destinationByte(forWord: word) else { return .unknown }

@@ -233,7 +233,7 @@ struct CardMixerRestoreTests {
 
     // MARK: Finding 3 and 8: saved state only, held sources held
 
-    @Test("A mixer with only the shared return strip saved writes nothing")
+    @Test("A mixer with only the shared return strip saved gets its strips unmuted and nothing else")
     func unsavedMixer() throws {
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let (store, defaults, suite) = Self.store("unsaved", layout: layout)
@@ -241,14 +241,23 @@ struct CardMixerRestoreTests {
         store.mixerPreferences.set(try JSONEncoder().encode(MixerChannelState(level: -3, pan: 0, isMuted: false, isSoloed: false)),
                                    forKey: "mixerState_swReturn")
         store.mixerPreferences.set(-6.0, forKey: "mixerMasterLevel_0")
-        #expect(CardMixerReplay.savedWrites(mixer: 1, layout: layout, store: store).isEmpty)
-        #expect(CardMixerReplay.plan(mixers: [0, 1], layout: layout, store: store).count == 1)
-        // Mixer 0 has only its Master saved: one write, no strip is unmuted.
+        // The driver starts with the inputs muted and an untouched strip shows
+        // unmuted, so each strip gets its unmute, and the return its centre pan.
+        let untouched = layout.mixerChannelCount + 1
+        let one = CardMixerReplay.savedWrites(mixer: 1, layout: layout, store: store)
+        #expect(one.count == untouched)
+        #expect(one.allSatisfy {
+            guard case .property(let address, let value) = $0 else { return false }
+            return (address.selector == .mixerChannelMute && value == .bool(false))
+                || (address.selector == .mixerChannelPan && address.element == 0x20000 | 1000 && value == .float64(0))
+        })
+        #expect(CardMixerReplay.plan(mixers: [0, 1], layout: layout, store: store).count == 2)
+        // Mixer 0 has only its Master saved: that one write more.
         let zero = CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store)
-        #expect(zero.count == 1 && Self.value(zero, .mixerChannelLevel, 0x10000 | 2000)?.asFloat64 == -6)
+        #expect(zero.count == untouched + 1 && Self.value(zero, .mixerChannelLevel, 0x10000 | 2000)?.asFloat64 == -6)
     }
 
-    @Test("Only saved strips; return and Master only when their keys exist; DAW mutes")
+    @Test("Saved strips as saved, the rest unmuted; return and Master only when their keys exist; no forced mutes")
     func savedOnly() throws {
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let (store, defaults, suite) = Self.store("partial", layout: layout)
@@ -256,20 +265,24 @@ struct CardMixerRestoreTests {
         let strip = MixerChannelState(level: -9, pan: 0.5, isMuted: false, isSoloed: true)
         store.save(Array(repeating: strip, count: 5), for: ChannelStateStore.mixerKey(1))
         store.mixerPreferences.set(-12.0, forKey: "mixerSWReturnLeftLevel_1")
-        store.mixerPreferences.set(1, forKey: "routingMode")   // Direct Monitor
-        let writes = CardMixerReplay.savedWrites(mixer: 1, layout: layout, store: store)
-        #expect(writes.count == 5 * 4 + 1)
         let base: UInt32 = 0x20000
+        let writes = CardMixerReplay.savedWrites(mixer: 1, layout: layout, store: store)
+        // 5 saved strips x 4, an unmute for each other strip, return level, return pan centre.
+        #expect(writes.count == 5 * 4 + (layout.mixerChannelCount - 5) + 2)
+        #expect(Self.value(writes, .mixerChannelMute, base | 5)?.asBool == false)
         #expect(Self.value(writes, .mixerChannelMute, base | 4)?.asBool == false)
         #expect(Self.value(writes, .mixerChannelLevel, base | 5) == nil)
         #expect(Self.value(writes, .mixerChannelLevel, base | 1000)?.asFloat64 == -12)
-        #expect(Self.value(writes, .mixerChannelPan, base | 1000) == nil)   // no shared strip saved
+        #expect(Self.value(writes, .mixerChannelPan, base | 1000)?.asFloat64 == 0)   // always centre
         #expect(Self.value(writes, .mixerChannelLevel, base | 0x1002) == nil)
         #expect(Self.value(writes, .mixerChannelLevel, base | 2000) == nil)
         #expect(Self.value(writes, .mixerSoftwareReturnID, base) == nil)
-        store.mixerPreferences.set(0, forKey: "routingMode")   // DAW: strips stay muted
-        let daw = CardMixerReplay.savedWrites(mixer: 1, layout: layout, store: store)
-        #expect(Self.value(daw, .mixerChannelMute, base | 0)?.asBool == true)
+        // A leftover of the removed Input Monitoring setting ("DAW" was 0 and
+        // muted every strip) changes nothing: a strip saved unmuted is unmuted.
+        store.mixerPreferences.set(0, forKey: "routingMode")
+        let stale = CardMixerReplay.savedWrites(mixer: 1, layout: layout, store: store)
+        #expect(stale == writes)
+        #expect(Self.value(stale, .mixerChannelMute, base | 0)?.asBool == false)
         store.mixerPreferences.set(-15.0, forKey: "mixerSWReturnRightLevel_1")
         store.mixerPreferences.set(-4.0, forKey: "mixerMasterLevel_1")
         let more = CardMixerReplay.savedWrites(mixer: 1, layout: layout, store: store)
@@ -286,7 +299,8 @@ struct CardMixerRestoreTests {
         #expect(Self.value(CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store),
                            .mixerSoftwareReturnID, 0x10000)?.asUInt32 == 3)
         store.mixerPreferences.set(12, forKey: "mixerSoftwareReturnSource_0")
-        #expect(CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store).isEmpty)
+        #expect(Self.value(CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store),
+                           .mixerSoftwareReturnID, 0x10000) == nil)
     }
 
     @Test("16x16 + 8x8 fully saved: 135 commands per mixer, 17,692 card register writes")

@@ -78,7 +78,8 @@ struct SettingsPagesTests {
         // Each section is a property, declared in page order; the body adds Status last.
         let sections = try #require(view.range(of: "// MARK: - Sections, in page order"))
         let titles = try sectionTitles(view[sections.upperBound...])
-        let expected = ["Clock", "Connection", "Input Monitoring", "Volume Keys", "Front Panel",
+        // No "Input Monitoring": Apogee had no such setting, and it was removed in 0.9.19.
+        let expected = ["Clock", "Connection", "Volume Keys", "Front Panel",
                         "Cards", "Naming", "Info"]
         #expect(titles == expected)
         let bodyTitles = try sectionTitles(view[..<sections.lowerBound])
@@ -89,7 +90,8 @@ struct SettingsPagesTests {
         #expect(view.contains(".navigationTitle(\"Device Settings\")"))
         // The body lays the sections out in the same order.
         let body = try #require(view.range(of: "var body: some View {"))
-        let calls = ["clockSection", "connectionSection", "inputMonitoringSection", "volumeKeysSection",
+        #expect(!text.contains("inputMonitoringSection") && !text.contains("Monitoring Mode"))
+        let calls = ["clockSection", "connectionSection", "volumeKeysSection",
                      "frontPanelSection", "cardsSection", "namingSection", "infoSection", "Section(\"Status\")"]
         var cursor = body.upperBound
         for call in calls {

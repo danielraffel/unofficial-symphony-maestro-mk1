@@ -1468,7 +1468,7 @@ struct OutputControlsView: View {
         // outs and therefore mode Off -- and Off hands monitoring to Headphone 1
         // and greys out the speaker knob, while the confirmation text promises
         // "returns to Stereo". Defaulting to Stereo on unknown provenance keeps
-        // the dialog honest and matches what the proxy writes at every boot.
+        // the dialog honest.
         let boardsMeasured = appState.unitPrimaryBoardSource == .detected
                           && appState.unitSecondaryBoardSource == .detected
         let mode: SymphonyIOSpeakerMode

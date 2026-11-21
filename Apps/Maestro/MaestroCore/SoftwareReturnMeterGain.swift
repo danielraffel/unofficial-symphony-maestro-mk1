@@ -1,14 +1,13 @@
 /// Trims applied to the host-playback peaks that drive the Software Return
 /// meters on ThunderBridge.
 ///
-/// On USB the proxy meters SW Return *after* its own level / pan / mute, so
-/// the strip's meters follow the faders and the pan knob (panning hard right
-/// drops the left meter). On ThunderBridge the card FPGA mixer applies those
-/// trims and the app only sees the host playback before the mixer, so the
-/// meters stayed full regardless of pan. Applying the same trims here makes
-/// both transports read the same.
+/// On ThunderBridge the card FPGA mixer applies the Software Return fader and
+/// mute and the app only sees the host playback before the mixer, so the
+/// meters stayed full whatever the strip said. Applying the same trims here
+/// makes the meters follow the strip.
 ///
-/// The pan law mirrors the card mixer's balance law exactly
+/// Software Return has no pan (0.9.19): callers pass centre. The pan law is
+/// kept because the card mixer still has one; it mirrors that balance law exactly
 /// (`Drivers/Thunderbolt/Source/SymphonyMixerPan.h`): the centre and the
 /// favoured side stay at unity, the opposite side fades linearly in dB to a
 /// -48 dB floor. The pan byte is the same `(pan + 1) * 64` encoding the

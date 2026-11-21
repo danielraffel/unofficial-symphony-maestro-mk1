@@ -87,26 +87,36 @@ public enum CardMixerReplay {
 
     // MARK: - Plan
 
-    /// Only what was saved for this mixer, as the Mixer page's own sync does
-    /// (MixerViews.swift syncMixerToHardware): per-mixer keys only, strips only
-    /// for the saved count, Master and the return only when their keys exist,
-    /// and a held Software Return source (8 or more at 32 channels) not sent.
-    /// The mixer's Software Return strip does not make a mixer "saved";
-    /// it only supplies the return's mute and solo once the mixer's own
-    /// return level was saved (MixerEditorState.save writes both together).
+    /// What was saved for this mixer: per-mixer keys only, Master and the
+    /// return only when their keys exist, and a held Software Return source
+    /// (8 or more at 32 channels) not sent. The mixer's Software Return strip
+    /// does not make a mixer "saved"; it only supplies the return's mute and
+    /// solo once the mixer's own return level was saved (MixerEditorState.save
+    /// writes both together).
+    ///
+    /// Every input strip of the layout is written, saved or not. The driver
+    /// starts its card mixer with the inputs muted (SymphonyThunderbridge.cpp,
+    /// "inputs start muted"), while a strip nobody has touched shows unmuted at
+    /// 0 dB, centre, as the original's did
+    /// (og_source/maestrolink/Software/SymphonyIOMixer.h:28-33). An unsaved
+    /// strip therefore gets its unmute (the driver's level and pan already are
+    /// the defaults), so a strip always does what it shows. Nothing is muted
+    /// that the strip does not show muted.
+    ///
+    /// The return's pan is always written centre: Software Return has no pan
+    /// (see `MixerStateSnapshot.savedSoftwareReturn`), and a driver that kept
+    /// running may still hold one from an earlier version.
     public static func savedWrites(mixer: Int, layout: CardLayout, store: ChannelStateStore,
                                    preferences: MixerPreferences? = nil,
                                    pairCount: Int = 8) -> [ThunderboltPreset.Write] {
         let defaults = preferences ?? store.mixerPreferences
         let saved: [MixerChannelState] = store.load(ChannelStateStore.mixerKey(mixer)) ?? []
-        let strips = Array(saved.prefix(layout.mixerChannels.count))
         let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double
         let right = defaults.object(forKey: "mixerSWReturnRightLevel_\(mixer)") as? Double
         let master = defaults.object(forKey: "mixerMasterLevel_\(mixer)") as? Double
         let sourceKey = "mixerSoftwareReturnSource_\(mixer)"
         let savedSource: UInt32? = defaults.object(forKey: sourceKey) != nil
             ? UInt32(clamping: defaults.integer(forKey: sourceKey)) : nil
-        let directMonitor = defaults.integer(forKey: "routingMode") != 0
 
         var writes: [ThunderboltPreset.Write] = []
         let base = UInt32(mixer + 1) << 16
@@ -119,12 +129,17 @@ public enum CardMixerReplay {
                 put(.mixerSoftwareReturnID, .uint32(shown))
             }
         }
-        for (strip, state) in zip(layout.mixerChannels, strips) {
+        for (index, strip) in layout.mixerChannels.enumerated() {
             let id = strip.hardwareIndex
+            guard index < saved.count else {
+                put(.mixerChannelMute, .bool(false), id)
+                continue
+            }
+            let state = saved[index]
             // Level, pan, mute: never an unmute before its level.
             put(.mixerChannelLevel, .float64(state.level), id)
             put(.mixerChannelPan, .float64(state.pan), id)
-            put(.mixerChannelMute, .bool(state.isMuted || !directMonitor), id)
+            put(.mixerChannelMute, .bool(state.isMuted), id)
             put(.mixerChannelSolo, .bool(state.isSoloed), id)
         }
         if let left {
@@ -132,11 +147,11 @@ public enum CardMixerReplay {
             put(.mixerChannelLevel, .float64(left), 1000)
             if MixerStateSnapshot.hasSavedSoftwareReturn(mixer: mixer, preferences: defaults) {
                 let own = MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: defaults)
-                put(.mixerChannelPan, .float64(own.pan), 1000)
                 put(.mixerChannelMute, .bool(own.isMuted), 1000)
                 put(.mixerChannelSolo, .bool(own.isSoloed), 1000)
             }
         }
+        put(.mixerChannelPan, .float64(0), 1000)
         // SymphonyPCIeCardMixer uses a distinct right-side return ID.
         // Evidence: og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:27-46,249-261.
         if let right { put(.mixerChannelLevel, .float64(right), 0x1002) }
@@ -144,12 +159,28 @@ public enum CardMixerReplay {
         return writes
     }
 
-    /// One group per mixer the driver reported empty, rebuilt from the store
-    /// each time it is called.
+    /// One group per mixer, rebuilt from the store each time it is called.
+    /// `complete` writes the whole mixer, defaults included
+    /// (``writes(mixer:layout:snapshot:second:)``): used once after the
+    /// routing and mixer reset, when a driver that kept running may still hold
+    /// the state the reset removed.
     public static func plan(mixers: [Int], layout: CardLayout, store: ChannelStateStore,
-                            preferences: MixerPreferences? = nil) -> [[ThunderboltPreset.Write]] {
-        mixers.map { savedWrites(mixer: $0, layout: layout, store: store, preferences: preferences) }
-            .filter { !$0.isEmpty }
+                            preferences: MixerPreferences? = nil,
+                            complete: Bool = false) -> [[ThunderboltPreset.Write]] {
+        mixers.map { mixer in
+            guard complete else {
+                return savedWrites(mixer: mixer, layout: layout, store: store, preferences: preferences)
+            }
+            let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: mixer,
+                                              store: store, preferences: preferences)
+            return writes(mixer: mixer, layout: layout, snapshot: snapshot).filter {
+                // A source held for unit B (8 or more at 32 channels) is not sent.
+                guard case .property(let address, _) = $0, address.selector == .mixerSoftwareReturnID
+                else { return true }
+                return snapshot.softwareReturnSource < 8
+            }
+        }
+        .filter { !$0.isEmpty }
     }
 
     public static func commandCount(_ groups: [[ThunderboltPreset.Write]]) -> Int {
@@ -212,8 +243,7 @@ public enum CardMixerReplay {
     }
 
     public static func writes(mixer: Int, layout: CardLayout, snapshot: MixerStateSnapshot,
-                              second: (CardLayout, MixerStateSnapshot)? = nil,
-                              directMonitor: Bool) -> [ThunderboltPreset.Write] {
+                              second: (CardLayout, MixerStateSnapshot)? = nil) -> [ThunderboltPreset.Write] {
         var writes: [ThunderboltPreset.Write] = []
         let base = UInt32(mixer + 1) << 16
         func put(_ selector: AudioPropertySelector, _ value: PropertyValue, _ channel: Int = 0) {
@@ -227,8 +257,9 @@ public enum CardMixerReplay {
         let states = snapshot.channels + (second?.1.channels ?? []) + [snapshot.swReturnChannel]
         for (id, state) in zip(ids, states) {
             put(.mixerChannelLevel, .float64(state.level), id)
-            put(.mixerChannelPan, .float64(state.pan), id)
-            put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && !directMonitor)), id)
+            // Software Return has no pan: always centre.
+            put(.mixerChannelPan, .float64(id == 1000 ? 0 : state.pan), id)
+            put(.mixerChannelMute, .bool(state.isMuted), id)
             put(.mixerChannelSolo, .bool(state.isSoloed), id)
         }
         put(.mixerChannelLevel, .float64(snapshot.swReturnRightLevel), 0x1002)
@@ -272,6 +303,10 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     public private(set) var attempts = 0
     /// A run has begun an attempt and not yet ended (see `endAttempt`).
     public private(set) var running = false
+    /// Restore both mixers on the next instance seen even if the driver holds
+    /// app state for them: set while the routing and mixer reset's defaults
+    /// have not reached the card yet (`RoutingMixerReset.Pending.thunderboltCardMixer`).
+    public var restoresHeldMixers = false
 
     public init() {}
 
@@ -279,9 +314,11 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     public mutating func observe(_ link: LinkState?) {
         guard let link, let instance = link.mixerInstance else { return }
         if nonce != instance.nonce {
+            let force = restoresHeldMixers
             self = CardMixerRestoreLedger()
+            restoresHeldMixers = force
             nonce = instance.nonce
-            needs = instance.holdsAppState.prefix(2).map { !$0 }
+            needs = force ? [true, true] : instance.holdsAppState.prefix(2).map { !$0 }
         }
         if baselineRecovery == nil, CardMixerReplay.isUsable(link) {
             baselineRecovery = link.recoveryCount
@@ -332,7 +369,7 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     /// D5 owns a mixer the driver reported empty on this instance only while
     /// the restore is still to come (pending or running). Once it finished or
     /// gave up (an in-place recovery, attempts used up, too many rebuilds),
-    /// the page syncs as it always did, so a Monitoring Mode or card layout
+    /// the page syncs as it always did, so a card layout
     /// change still reaches the card, and a mixer D5 never wrote is not left
     /// at the driver's defaults. Only while D5 can run here at all
     /// (`eligible`: one Symphony I/O at 32 channels, no converters, identity

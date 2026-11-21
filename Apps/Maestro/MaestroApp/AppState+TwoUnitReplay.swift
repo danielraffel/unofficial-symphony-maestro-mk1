@@ -103,9 +103,17 @@ extension AppState {
         plan.unitBBoards = [layoutB.slot1.rawValue, layoutB.slot2.rawValue]
         let cacheA = peripheralRoutingCache(direction: "input")
         _ = ThunderboltInputRoutingMigration.run(routingKey: cacheA.key)
+        // After the routing and mixer reset the default tables go first (a
+        // driver that kept running still has the units on the removed
+        // routes); the single-unit replay clears the flag.
+        let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
         for (unit, layout, cache) in [(DeviceUnit.a, cardLayout, Optional(cacheA)), (.b, layoutB, unitBInputRoutingCache)] {
-            let writes = InputRoutingReplay.writes(saved: cache?.load() ?? [:],
-                                                   columns: layout.inputRoutingColumns, pairCount: 16)
+            var writes = resetPending
+                ? SymphonyIODefaultRouting.thunderboltInputRoutes(
+                    slot1: unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1)
+                : []
+            writes += InputRoutingReplay.writes(saved: cache?.load() ?? [:],
+                                                columns: layout.inputRoutingColumns, pairCount: 16)
             for write in writes {
                 plan.tables.append(.unit(unit, PropertyAddress(selector: .routing, scope: .input,
                                                               element: UInt32(write.destination)),
@@ -116,15 +124,17 @@ extension AppState {
             plan.card.append(.card(.cardInput(command)))
         }
         let outputCache = peripheralRoutingCache(direction: "output")
-        Self.migrateMainPairToMixer(cache: outputCache, mixerRow: tb.identifier.mode.channelCount / 2,
-                                   board1: primaryBoardType, board2: secondaryBoardType)
         let savedA = outputCache.loadMulti() ?? [:]
         let completeA = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { savedA[$0] != nil }
         let defaultsA = SymphonyIODefaultRouting.thunderboltOutputRoutes(
             board0Outputs: primaryBoardType.totalOutputChannels,
             board1Outputs: secondaryBoardType.totalOutputChannels)
         let defaultSourcesA = Dictionary(uniqueKeysWithValues: defaultsA.map { ($0.destination, $0.source) })
-        if !savedA.isEmpty {
+        // Always the whole table, with nothing saved too: the driver starts the
+        // card with the main pair on card mixer 1 and keeps an earlier
+        // session's routes, and the default is every output direct
+        // (see syncOutputRoutingToHardware).
+        do {
             let sources = cachedOutputRouteMap()
             let destinations = cardLayout.outputRoutingColumns.flatMap { [$0.routingByte, $0.routingByte &+ 1] }
             let merged = Self.replayOutputSources(defaults: defaultSourcesA, saved: sources,
@@ -136,7 +146,8 @@ extension AppState {
                     }
             }
         }
-        if let rows = unitBOutputRoutingCache?.loadMulti() {
+        do {
+            let rows = unitBOutputRoutingCache?.loadMulti() ?? [:]
             let completeB = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { rows[$0] != nil }
             for (index, column) in layoutB.outputRoutingColumns.enumerated() {
                 let row = rows.keys.sorted().last { rows[$0]?.contains(index) == true }
@@ -162,8 +173,9 @@ extension AppState {
             let channels = a.channels + b.channels + [a.swReturnChannel]
             for (id, state) in zip(ids, channels) {
                 put(.mixerChannelLevel, .float64(state.level), id)
-                put(.mixerChannelPan, .float64(state.pan), id)
-                put(.mixerChannelMute, .bool(state.isMuted || (id != 1000 && mixerPreferences.integer(forKey: "routingMode") == 0)), id)
+                // Software Return has no pan: always centre.
+                put(.mixerChannelPan, .float64(id == 1000 ? 0 : state.pan), id)
+                put(.mixerChannelMute, .bool(state.isMuted), id)
                 put(.mixerChannelSolo, .bool(state.isSoloed), id)
             }
             put(.mixerChannelLevel, .float64(a.masterLevel), 2000)

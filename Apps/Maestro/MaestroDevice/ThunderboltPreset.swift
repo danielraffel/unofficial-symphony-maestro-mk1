@@ -17,6 +17,9 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public var cardInputRoutes: [Int]?
     public var outputRoutes: [UInt8] = []
     public var mixers: [Mixer] = []
+    /// The removed Input Monitoring setting (0 = DAW, 1 = Direct Monitor).
+    /// Still read and written so presets move between versions, and ignored:
+    /// a strip is muted only when the preset saved it muted.
     public var routingMode: Int = 1
     public var frontPanelSelection: UInt8?
     public var unitID: Data?
@@ -308,8 +311,9 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                 let id = channel == mixer.channels.count ? 1000 : layout.mixerChannels[channel].hardwareIndex
                 let element = base | UInt32(id)
                 put(.mixerChannelLevel, .float64(s.level), element: element)
-                put(.mixerChannelPan, .float64(s.pan), element: element)
-                put(.mixerChannelMute, .bool(s.isMuted || (routingMode == 0 && id != 1000)), element: element)
+                // Software Return has no pan: a preset's saved one is not applied.
+                put(.mixerChannelPan, .float64(id == 1000 ? 0 : s.pan), element: element)
+                put(.mixerChannelMute, .bool(s.isMuted), element: element)
                 put(.mixerChannelSolo, .bool(s.isSoloed), element: element)
             }
             put(.mixerChannelLevel, .float64(mixer.master), element: base | 2000)

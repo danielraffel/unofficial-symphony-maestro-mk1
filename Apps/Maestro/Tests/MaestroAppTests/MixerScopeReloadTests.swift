@@ -30,7 +30,6 @@ struct MixerScopeReloadTests {
         prefs.set(-24.0, forKey: "mixerMasterLevel_\(mixer)")
         prefs.set(-29.0, forKey: "mixerSWReturnLeftLevel_\(mixer)")
         prefs.set(2, forKey: "mixerSoftwareReturnSource_\(mixer)")
-        prefs.set(1, forKey: "routingMode")
         let strip = MixerChannelState(level: -13, pan: 0.25, isMuted: false, isSoloed: false)
         store.save([strip], for: ChannelStateStore.mixerKey(mixer))
         var input = InputChannelState()
@@ -69,7 +68,6 @@ struct MixerScopeReloadTests {
         #expect(restored.swReturnRightLevel == -29)
         #expect(restored.softwareReturnSource == 2)
         #expect(restored.channels.first?.level == -13)
-        #expect(state.mixerPreferences.integer(forKey: "routingMode") == 1)
         let inputs: [InputChannelState]? = state.unitChannelStateStore.load(ChannelStateStore.inputKey)
         let outputs: [OutputChannelState]? = state.unitChannelStateStore.load(ChannelStateStore.outputKey)
         #expect(inputs?.first?.gain == 17)
@@ -80,7 +78,6 @@ struct MixerScopeReloadTests {
         // Ordinary refreshes must not recreate the editor during a user edit.
         let loadedScopes = state.mixerViewScopes
         state.viewReloadToken = UUID()
-        state.routingModeChangeCount += 1
         #expect(state.mixerViewScopes == loadedScopes)
         #expect(restored.canEdit(state))
         restored.save(appState: state, selectedMixer: mixer)

@@ -8,7 +8,7 @@ import MaestroDevice
 
 /// Device Settings — everything about the Symphony I/O hardware, on one page.
 ///
-/// Sections, in this order: Clock, Connection, Input Monitoring, Volume Keys,
+/// Sections, in this order: Clock, Connection, Volume Keys,
 /// Front Panel, Cards, Naming, Info (then Status when there is an error).
 /// While Apogee's original Symphony I/O drivers are installed, a warning comes
 /// first (`OriginalApogeeDriversWarning`).
@@ -181,22 +181,6 @@ struct DeviceSettingsView: View {
         return available.isEmpty ? allMeterSourceOptions : available
     }
 
-    private var routingMode: Int {
-        _ = appState.routingModeChangeCount
-        return appState.mixerPreferences.integer(forKey: "routingMode")
-    }
-
-    private func setRoutingMode(_ newMode: Int) {
-        guard !isLoading, appState.preferenceViewScope(for: .a).isWritable else { return }
-        appState.mixerPreferences.set(newMode, forKey: "routingMode")
-        if let xpcDev = appState.device as? XPCDeviceConnection {
-            let generation = appState.unitAGeneration
-            let preferences = appState.mixerPreferences
-            Task { await appState.synchronizeUSBRoutingMode(xpcDev, generation: generation, preferences: preferences) }
-        }
-        appState.routingModeChangeCount += 1
-    }
-
     /// The original exposed this popup only when more than one monitor device
     /// existed (`og_source/maestro2/App/Controllers/
     /// APSystemKeyboardVolumeControlViewController.m:48-83`).
@@ -282,7 +266,6 @@ struct DeviceSettingsView: View {
             }
             clockSection
             connectionSection
-            inputMonitoringSection
             if hasTwoMonitorDevices { volumeKeysSection }
             frontPanelSection
             cardsSection
@@ -636,20 +619,6 @@ struct DeviceSettingsView: View {
             } else {
                 LabeledContent("Connection", value: "Offline")
             }
-        }
-    }
-
-    // What you hear: hardware input passthrough, not an app preference.
-    @ViewBuilder private var inputMonitoringSection: some View {
-        Section("Input Monitoring") {
-            Picker("Monitoring Mode", selection: Binding(get: { routingMode }, set: { setRoutingMode($0) })) {
-                Text("DAW").tag(0)
-                Text("Direct Monitor").tag(1)
-            }
-            .pickerStyle(.segmented)
-            // Hardware-backed, so it carries the load gate itself.
-            .disabled(isLoading || !appState.preferenceViewScope(for: .a).isWritable)
-            .maestroHelp("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
         }
     }
 
