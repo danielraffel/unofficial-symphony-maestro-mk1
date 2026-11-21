@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.9.21 (beta)
+
+This beta adds VBus, Apogee's virtual channels for sending audio from one application to another, on ThunderBridge and the PCIe card. It contains everything in 0.9.20.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.17, build 143).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **Nothing changes unless you turn VBus on.** VBus is set to None, and the Symphony's audio device then has the same channels as before.
+- **With VBus on, the Symphony's audio device has more channels than the hardware.** They come after the hardware channels (from channel 33, or from 65 when 64 channels are selected under Ports), so the hardware channels keep their numbers. An application that lists every channel of the device shows them too.
+
+### New
+
+- **VBus: virtual channels for sending audio from one application to another, or within one,** as in Apogee's software. What an application plays to a VBus output is what an application records from the VBus input with the same number; nothing on these channels reaches the Symphony. For example, in Logic set the output of several tracks to VBout 1-2 and record a new track from VBin 1-2 to print a submix.
+- **The setting is VBus in Device Settings › Connection:** None, or 2, 4, 8, 16, 32, 48 or 64 channels, as in Apogee's software. It is None until you choose a size, and Maestro remembers the choice for each ThunderBridge or PCIe card.
+- **Applications show the channels as "VBout 1", "VBout 2"… for playing and "VBin 1", "VBin 2"… for recording.**
+- **VBus is available on ThunderBridge and the Symphony 64 PCIe card, with a Symphony I/O or with converters only (AD-16X, DA-16X, DD-16X or Rosetta). It is not available over USB,** as in Apogee's software.
+- **After changing VBus, quit and reopen your audio applications; if they still do not show the VBus channels, restart the Mac.**
+- **Help has a new question, "What is VBus, and how do I send audio from one application to another?"**, and the user guide describes VBus.
+
+### Please test
+
+On ThunderBridge or the PCIe card. Please say which you used, and which applications.
+
+- **Turning it on:** with your DAW closed, choose 2 Channels, then open the DAW. Does it list VBout 1/2 among the outputs and VBin 1/2 among the inputs, after the hardware channels? Do the same with 8 and with 16 Channels.
+- **With the DAW open:** change the size while the DAW is open. Does it show the new channels, or only after you quit and reopen it? Did you have to restart the Mac?
+- **The loopback:** play a track to VBout 1/2 and record a new track from VBin 1/2. Is the recording the same audio, and is anything heard on the Symphony's outputs that should not be?
+- **Changing the size while audio plays in another application:** does the audio continue after a short gap, and do the hardware channels still play and record correctly?
+- **Ports with VBus on (two units):** switch Ports between 32 and 64 channels. Do the VBus channels move to follow the hardware channels (33 on, then 65 on), and does the loopback still work?
+- **Sleep and wake, and unplug and replug:** are the VBus channels still there, and does the loopback still work?
+- **Converters only:** the same checks with an AD-16X, DA-16X or Rosetta chain.
+- **With VBus set to None:** is everything as it was in 0.9.20: the same channels, the same sound, the volume keys, your routing?
+
+### Release notes
+
+- The VBus size is put in place when Maestro opens. After the Mac restarts, until Maestro is open, the device has no VBus channels; an audio application opened before Maestro may need to be reopened to see them.
+- Changing the VBus size, like changing Ports, stops audio on the device for a moment in every application.
+- After the VBus size changes, turning the volume up or unmuting with the Mac's keys waits about five seconds, as after a Ports change. Turning down and muting work at once.
+- When Ports changes between 32 and 64 channels, the VBus channels move so that they stay after the hardware channels. A project that used them at channels 33 on needs them chosen again at 65 on.
+- VBus is offered once the new driver is the one running. If macOS has not switched to it yet (Device Settings › Info shows build 142 or older), the VBus pop-up is disabled and says so.
+- The VBus channels carry audio exactly as it is played to them, without a level control, and cannot be routed to hardware outputs or mixers in Maestro, as in Apogee's software.
+
 ## 0.9.20 (beta)
 
 This beta lets you choose which output the Mac's volume and mute keys control, as in Apogee's software, and makes the ThunderBridge and PCIe card start with every output played directly. It contains everything in 0.9.19.

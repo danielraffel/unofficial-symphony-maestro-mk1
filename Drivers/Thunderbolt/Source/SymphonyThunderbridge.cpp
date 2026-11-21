@@ -6179,9 +6179,10 @@ kern_return_t SymphonyThunderbridge::PerformPortModeChange()
 //     beginConfigurationChange / completeConfigurationChange.
 //   No latency or safety offset of their own: the engine's offsets and
 //     latency (setLatenciesForSampleRate, :1318-1337) apply to every stream,
-//     and only the cards' streams get a stream latency
-//     (SymphonyBaseCard.cpp:441-447). Sample T of the output is sample T of
-//     the input, because both streams are one buffer.
+//     the VBus streams included, and no stream has a latency of its own
+//     (SymphonyBaseCard::setLatenciesForStream, SymphonyBaseCard.cpp:441-447,
+//     is never called). Sample T of the output is sample T of the input,
+//     because both streams are one buffer.
 //   The output buffer was cleared by IOAudioFamily's erase head, which the
 //     original held back 1200 frames "for correct VBUS operation" (:1849) so
 //     an input read came before the erase.
@@ -6207,7 +6208,8 @@ kern_return_t SymphonyThunderbridge::PerformPortModeChange()
 //   chosen in Maestro is offered (the original also listed every size as a
 //   stream format in Audio MIDI Setup, performFormatChange :1239-1260).
 //   The device's timing is not changed: like the original's, the VBus streams
-//   have no latency of their own.
+//   have no latency of their own and run under the device's safety offsets
+//   and latency, exactly as the hardware streams do.
 // ══════════════════════════════════════════════════════════════════════════
 
 static constexpr uint64_t kSymphonyConfigChangeVBus = 0x56425553ULL;   // 'VBUS'
