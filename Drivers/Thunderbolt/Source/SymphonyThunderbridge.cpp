@@ -211,9 +211,10 @@ struct SymphonyThunderbridge_IVars {
     // (og_source/symphonymk1/ext/maestrolink/Software/SymphonyIO.cpp:131).
     // Nothing changes it but the app: with Speakers chosen and the speaker
     // mode Off (Line) the control does nothing (SymphonyIO.cpp:2345-2351).
-    // (The original also changed its own choice to Headphone 1 when the mode
-    // was set to Off, SymphonyIO.cpp:6142-6168; builds up to 141 followed the
-    // mode both ways. From 142 the choice is the app's alone.)
+    // (The original changed its own choice to Headphone 1 when the user set
+    // the mode to Off, SymphonyIO.cpp:6142-6168, and left it there afterwards;
+    // Maestro does the same and sends the choice. Builds up to 141 followed
+    // the mode both ways here.)
     uint8_t   monitorOutputTarget;
     bool      lineMode;               // unit A's speaker mode is Off (Line)
     // Per-monitor state behind the single Core Audio volume/mute control.
@@ -4162,8 +4163,10 @@ static unsigned SelectedMonitorKind(const SymphonyThunderbridge_IVars *ivars, bo
 
 // Speakers chosen while the speaker mode is Off (Line): the original ignored
 // a Core Audio volume set there (SymphonyIO.cpp:2345-2351) and listed the
-// entry as "Speaker (0ch)" (:3562-3571). The keys then move nothing; a
-// headphone is moved only when the user chose it.
+// entry as "Speaker (0ch)" (:3562-3571). The volume keys then move nothing
+// (the mute key still sets the speaker mute, :2239-2251). The original
+// changed its choice to Headphone 1 itself when the user set the mode to Off
+// (:6142-6168); Maestro does that and sends the choice (SetMonitorOutput).
 static bool SelectedMonitorInert(const SymphonyThunderbridge_IVars *ivars, bool b)
 {
     return SelectedMonitorKind(ivars, b) == 0 && (b ? ivars->unitBLineMode : ivars->lineMode);
@@ -8351,9 +8354,14 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                                 }
                             }
                         }
+                        // The mute key is ignored only with "None" on converters.
+                        // With Speakers chosen in Line mode the original still
+                        // set the speaker mute (SymphonyIO.cpp:2239-2251 has no
+                        // mode check; only the volume set has one, :2345-2351).
+                        const bool muteInert = converter && ivars->converterKeysOff;
                         if (ivars->outputMuteControl) {
                             const bool muted = ivars->outputMuteControl->GetControlValue();
-                            if (muted != ivars->lastMuteState && inert) {
+                            if (muted != ivars->lastMuteState && muteInert) {
                                 ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
                             } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
                                 ivars->lastMuteState = muted;

@@ -221,7 +221,8 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
    (og_source/symphonymk1/ext/maestrolink/Software/SymphonyIO.cpp:131). A
    volume set went to the chosen output's attenuation and a mute to its mute
    (SymphonyIO.cpp:2239-2276, :2345-2395); with Speakers chosen and the speaker
-   mode Off (Line) the volume set was ignored (:2345-2351). */
+   mode Off (Line) the volume set was ignored (:2345-2351) and the mute still
+   set the speaker mute. */
 #define MONITOR_OUTPUT_SPEAKERS 1u
 #define MONITOR_OUTPUT_HP1      2u
 #define MONITOR_OUTPUT_HP2      3u
@@ -245,7 +246,9 @@ static MonitorKeyWrite monitor_key_write(uint32_t output, bool lineMode, bool mu
         w.send = true;
         w.request = (uint8_t)(mute ? VCMD_HEADPHONE_MUTE : VCMD_HEADPHONE_VOL);
         w.nValue = output - MONITOR_OUTPUT_HP1;
-    } else if (!lineMode) {
+    } else if (mute || !lineMode) {
+        /* In Line mode the volume set is ignored (SymphonyIO.cpp:2345-2351);
+           the mute is still the speaker's (:2239-2251 has no mode check). */
         w.send = true;
         w.request = (uint8_t)(mute ? VCMD_SPEAKER_MUTE : VCMD_SPEAKER_VOL);
     }
@@ -259,6 +262,7 @@ static MonitorKeyWrite monitor_restore_write(uint32_t output, bool mute)
 {
     return monitor_key_write(output, false, mute);
 }
+
 
 /* The routes every configure writes: each audible destination from a USB
    playback channel, none from a mixer.

@@ -4435,7 +4435,7 @@ final class AppState: @unchecked Sendable {
         var size = UInt32(MemoryLayout<UInt32>.size)
         if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &muted) == noErr {
             // Whose mute the control holds (`macVolumeAdoption`).
-            switch currentMacVolumeAdoption() {
+            switch currentMacVolumeAdoption(mute: true) {
             case .level(let output): setKeyboardVolumeMute(muted != 0, of: output)
             case .legacyHeadphone1: hp1Muted = muted != 0
             case .legacySpeaker: speakerMuted = muted != 0
@@ -4446,12 +4446,12 @@ final class AppState: @unchecked Sendable {
     }
 
     /// What a change of the Mac's volume or mute control means right now.
-    private func currentMacVolumeAdoption() -> MacVolumeAdoption {
+    private func currentMacVolumeAdoption(mute: Bool = false) -> MacVolumeAdoption {
         let output = keyboardVolumeOutput(for: .a)
         return Self.macVolumeAdoption(
             thunderbolt: transportType == .thunderbolt, servingBuild: servingDextBuild,
             helperOutdated: usbHelperOutdated, output: output,
-            settled: keyboardVolumeSettled(output), speakerMode: speakerOutputMode)
+            settled: keyboardVolumeSettled(output), speakerMode: speakerOutputMode, mute: mute)
     }
 
     /// USB, Speaker chosen in Line mode: put the Mac's "Maestro USB" volume
@@ -4459,7 +4459,6 @@ final class AppState: @unchecked Sendable {
     func showSpeakerLevelOnMacVolume() {
         guard transportType != .thunderbolt else { return }
         writeMacVolume(speakerLevel)
-        writeMacMute(speakerMuted)
     }
 
     /// Write the current speakerLevel to the synced audio device.

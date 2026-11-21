@@ -56,11 +56,40 @@ public enum KeyboardVolumeOutput: UInt32, Sendable, Equatable, CaseIterable {
     /// The saved choice if this unit offers it, the default otherwise (a
     /// saved Speaker on a unit whose analog card was taken out becomes
     /// Headphone 1, as `SymphonyIO::changeMonitorOutput` did).
-    public static func resolve(saved: UInt32?, hasAnalogOutput: Bool, convertersOnly: Bool) -> KeyboardVolumeOutput {
+    ///
+    /// With nothing saved and the unit in Line mode the choice is Headphone
+    /// 1: in the original a unit with an analog output card only got into
+    /// Line mode by the user setting it, which made Headphone 1 the choice
+    /// (see `afterUserChange`), and Maestro versions before 0.9.20 moved
+    /// Headphone 1 in Line mode without saving anything.
+    public static func resolve(saved: UInt32?, hasAnalogOutput: Bool, convertersOnly: Bool,
+                               speakerMode: UInt32? = nil) -> KeyboardVolumeOutput {
         let offered = entries(hasAnalogOutput: hasAnalogOutput, convertersOnly: convertersOnly)
         if let saved, let output = KeyboardVolumeOutput(rawValue: saved), offered.contains(output) { return output }
+        if saved == nil, !convertersOnly, speakerMode == 0 { return .headphone1 }
         return offered[0]
     }
+
+    /// The choice after the user changed the speaker mode on the Output page,
+    /// as `SymphonyIO::UpdateMainOutputChannelMode` did
+    /// (SymphonyIO.cpp:6107-6258): setting the mode to Off (Line) from
+    /// another mode makes Headphone 1 the choice, whatever it was
+    /// (:6142-6168), and the Mac's volume then shows Headphone 1's level. No
+    /// other change touches it: leaving Line keeps the choice (Headphone 1
+    /// unless the user picked another since), and setting the mode it already
+    /// has does nothing (:6111). The original did this only here: a mode
+    /// restored from saved settings (:4890-4930) or read from the unit
+    /// (:1305-1322) was assigned without it, and the saved choice was then
+    /// restored as it was (:4945-4950).
+    public func afterUserChange(ofSpeakerModeFrom old: UInt32, to new: UInt32) -> KeyboardVolumeOutput {
+        guard self != .none, self != .mixer1Level else { return self }
+        return new == 0 && old != 0 ? .headphone1 : self
+    }
+
+    /// Whether the mute key does nothing with this choice: only None. With
+    /// Speaker chosen in Line mode the original still set the speaker mute
+    /// (SymphonyIO.cpp:2239-2251; only the volume set checks the mode).
+    public var muteKeyDoesNothing: Bool { self == .none }
 
     /// How many speaker channels a speaker mode has, as the original counted
     /// them for the entry's name (SymphonyIO.cpp:3562-3571): 0 with the
@@ -87,17 +116,11 @@ public enum KeyboardVolumeOutput: UInt32, Sendable, Equatable, CaseIterable {
         }
     }
 
-    /// Whether the keys move nothing with this choice: None, or Speaker while
-    /// the speaker mode is Off (Line), where the original ignored the volume
-    /// set (SymphonyIO.cpp:2345-2351).
-    ///
-    /// One difference from the original, by the maintainer's decision: when
-    /// the speaker mode was changed to Off, the original also changed the
-    /// choice itself to Headphone 1
-    /// (`SymphonyIO::UpdateMainOutputChannelMode`, SymphonyIO.cpp:6142-6168),
-    /// and left it there when the mode was changed back. Here the choice
-    /// changes only when the user changes it, so Speaker in Line mode is
-    /// reached by setting Line, not only by choosing Speaker again afterwards.
+    /// Whether the volume keys move nothing with this choice: None, or
+    /// Speaker while the speaker mode is Off (Line), where the original
+    /// ignored the volume set (SymphonyIO.cpp:2345-2351). Speaker in Line
+    /// mode is reached by choosing Speaker again after setting Line, which
+    /// makes Headphone 1 the choice (`afterUserChange`).
     public func keysDoNothing(speakerMode: UInt32) -> Bool {
         switch self {
         case .none: return true

@@ -157,8 +157,8 @@ struct OutputControlsView: View {
     /// **"Line"** (`SymphonyIO.cpp:3502`) — it disables the speaker knob and,
     /// in the original, changed the keyboard volume's Audio Output to
     /// Headphone 1 (`SymphonyIO.cpp:6142-6168`), which is what the guide
-    /// describes under Line. Maestro leaves that choice to the user (Device
-    /// Settings › Volume Keys; see `KeyboardVolumeOutput`). Calling the mode
+    /// describes under Line. Maestro does the same
+    /// (`AppState.speakerModeChangedByUser`). Calling the mode
     /// "Off" made it look like a mute.
     ///
     /// Analog Out Format — the speaker modes this unit can actually drive, in
@@ -796,6 +796,8 @@ struct OutputControlsView: View {
                                 let oldMode = speakerConfig
                                 speakerConfig = val
                                 speakerOutputMode = val
+                                // Line makes Headphone 1 the volume keys' output, as in the original.
+                                appState.speakerModeChangedByUser(from: oldMode, to: val, unit: monitorTarget.unit)
                                 guard SpeakerOutputLogic.modeChangeClearsMonitorState(from: oldMode,
                                                                                        to: val) else { return }
                                 // Legacy clears these controls on every user
@@ -1531,6 +1533,7 @@ struct OutputControlsView: View {
         speakerConfig = UInt32(mode.rawValue)
         speakerOutputMode = UInt32(mode.rawValue)
         await writeMonitorProperty(.speakerOutputMode, value: .uint32(UInt32(mode.rawValue)))
+        appState.resetKeyboardVolumeOutput(unit: monitorTarget.unit)
 
         await writeMonitorProperty(.peakHoldMode,
                                    value: .uint32(UInt32(SymphonyIOMonitorDefaults.peakHoldMode)))

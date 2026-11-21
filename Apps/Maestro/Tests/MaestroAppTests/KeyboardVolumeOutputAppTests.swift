@@ -104,6 +104,15 @@ struct KeyboardVolumeOutputAppTests {
         // Where the keys do nothing the driver holds its control: nothing follows it.
         #expect(tb(.build(142), .speakers, settled: true, mode: 0) == .ignore)
         #expect(tb(.build(142), KeyboardVolumeOutput.none, settled: true) == .ignore)
+        // The mute control: still the speaker's with Speaker chosen in Line mode.
+        func mute(_ thunderbolt: Bool, _ output: KeyboardVolumeOutput, mode: UInt32) -> MacVolumeAdoption {
+            AppState.macVolumeAdoption(thunderbolt: thunderbolt, servingBuild: .build(142), helperOutdated: false,
+                                       output: output, settled: true, speakerMode: mode, mute: true)
+        }
+        #expect(mute(true, .speakers, mode: 0) == .level(.speakers))
+        #expect(mute(false, .speakers, mode: 0) == .level(.speakers))
+        #expect(mute(true, .headphone1, mode: 0) == .level(.headphone1))
+        #expect(mute(true, KeyboardVolumeOutput.none, mode: 2) == .ignore)
 
         func usb(_ output: KeyboardVolumeOutput, settled: Bool, mode: UInt32 = 2, outdated: Bool = false) -> MacVolumeAdoption {
             AppState.macVolumeAdoption(thunderbolt: false, servingBuild: nil, helperOutdated: outdated,
@@ -217,22 +226,79 @@ struct KeyboardVolumeOutputAppTests {
         #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .speakers)])
     }
 
-    @Test("Line mode: Speaker stays chosen, reads Speaker (0ch), and the keys do nothing; a headphone must be chosen")
+    @Test("choosing Line on the Output page makes Headphone 1 the Audio Output, saved and sent; leaving Line keeps it; Speaker (0ch) can be chosen by hand")
     func lineMode() async {
-        let (state, _, driver) = thunderbolt()
+        let (state, tb, driver) = thunderbolt()
+        await state.serviceKeyboardVolumeOutput()
+        #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .speakers)])
+        // The user sets Line (the Output page does both).
         state.speakerOutputMode = 0
+        state.speakerModeChangedByUser(from: 2, to: 0, unit: .a)
+        await state.serviceKeyboardVolumeOutput()
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        #expect(tb.settingsStore.value(for: AppState.keyboardVolumeAddress)?.asUInt32 == 2)
+        #expect(driver.monitorOutputCalls.last == .init(unit: .a, output: .headphone1))
+        #expect(!state.keyboardVolumeKeysDoNothing)
+        // Back to Stereo: still Headphone 1, as in the original.
+        state.speakerOutputMode = 2
+        state.speakerModeChangedByUser(from: 0, to: 2, unit: .a)
+        await state.serviceKeyboardVolumeOutput()
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        // Headphone 2 chosen, then Line again: Headphone 1 again.
+        state.chooseKeyboardVolumeOutput(.headphone2, unit: .a)
+        state.speakerOutputMode = 0
+        state.speakerModeChangedByUser(from: 2, to: 0, unit: .a)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        // Speaker chosen by hand in Line mode: Speaker (0ch), volume keys do nothing.
+        state.chooseKeyboardVolumeOutput(.speakers, unit: .a)
+        await state.serviceKeyboardVolumeOutput()
         #expect(state.keyboardVolumeOutput(for: .a) == .speakers)
         #expect(state.keyboardVolumeOutput(for: .a).label(speakerMode: state.keyboardVolumeSpeakerMode(for: .a)) == "Speaker (0ch)")
         #expect(state.keyboardVolumeKeysDoNothing)
-        await state.serviceKeyboardVolumeOutput()
-        // Nothing but Speaker reaches the driver: no headphone by itself.
-        #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .speakers)])
-        state.chooseKeyboardVolumeOutput(.headphone1, unit: .a)
-        await state.serviceKeyboardVolumeOutput()
-        #expect(!state.keyboardVolumeKeysDoNothing)
-        #expect(driver.monitorOutputCalls.last == .init(unit: .a, output: .headphone1))
+        #expect(driver.monitorOutputCalls.last == .init(unit: .a, output: .speakers))
+        // A mode that is restored or read from the unit changes nothing.
+        state.speakerOutputMode = 2
+        state.speakerOutputMode = 0
+        #expect(state.keyboardVolumeOutput(for: .a) == .speakers)
+        // Reset Defaults: Speaker again.
+        state.chooseKeyboardVolumeOutput(.headphone2, unit: .a)
+        state.speakerOutputMode = 2
+        state.resetKeyboardVolumeOutput(unit: .a)
+        #expect(state.keyboardVolumeOutput(for: .a) == .speakers)
         state.speakerOutputMode = 6
         #expect(KeyboardVolumeOutput.speakers.label(speakerMode: state.keyboardVolumeSpeakerMode(for: .a)) == "Speaker (6ch)")
+    }
+
+    @Test("a unit found in Line mode with nothing saved (an update from 0.9.19) has Headphone 1; with a driver before 142 nothing is saved by a mode change")
+    func lineModeWithNothingSaved() async {
+        let (state, tb, driver) = thunderbolt()
+        state.speakerOutputMode = 0
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        await state.serviceKeyboardVolumeOutput()
+        #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .headphone1)])
+        #expect(tb.settingsStore.value(for: AppState.keyboardVolumeAddress) == nil)
+        // Leaving Line by hand keeps Headphone 1, and saves it.
+        state.speakerOutputMode = 2
+        state.speakerModeChangedByUser(from: 0, to: 2, unit: .a)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        let (old, oldTB, _) = thunderbolt(build: 141)
+        old.speakerOutputMode = 0
+        old.speakerModeChangedByUser(from: 2, to: 0, unit: .a)
+        #expect(oldTB.settingsStore.value(for: AppState.keyboardVolumeAddress) == nil)
+    }
+
+    @Test("no analog output card: Headphone 1, also after Line is set, after a reset, and when Speaker was saved")
+    func noAnalogCardForcesHeadphone1() async {
+        let (state, tb, _) = thunderbolt(slot1: .analogAD16, slot2: .none)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        state.speakerModeChangedByUser(from: 2, to: 0, unit: .a)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        state.resetKeyboardVolumeOutput(unit: .a)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        tb.settingsStore.record(.uint32(1), for: AppState.keyboardVolumeAddress)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        state.chooseKeyboardVolumeOutput(.speakers, unit: .a)   // not offered
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
     }
 
     @Test("a unit without an analog output card offers the headphones only; cards not read yet keep Speaker")
@@ -389,8 +455,10 @@ struct KeyboardVolumeOutputAppTests {
     @Test("USB, Speaker in Line mode: the speaker's own level is read from the unit and nothing is sent to the helper")
     func usbLineMode() async throws {
         let helper = KeysHelper()
-        let (state, _) = try usb(helper)
+        let (state, connection) = try usb(helper)
         state.speakerOutputMode = 0
+        // Speaker chosen by hand in Line mode.
+        connection.settingsStore.record(.uint32(1), for: AppState.keyboardVolumeAddress)
         state.speakerLevel = -3   // what a drifted Mac volume would have left
         await state.serviceKeyboardVolumeOutput()
         #expect(state.keyboardVolumeKeysDoNothing)

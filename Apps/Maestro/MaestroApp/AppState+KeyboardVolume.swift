@@ -83,7 +83,34 @@ extension AppState {
         return KeyboardVolumeOutput.resolve(
             saved: saved,
             hasAnalogOutput: keyboardVolumeHasAnalogOutput(unit),
-            convertersOnly: unit == .a && converterVolumeKeys)
+            convertersOnly: unit == .a && converterVolumeKeys,
+            speakerMode: unit == .a ? speakerOutputMode : unitBSpeakerOutputMode)
+    }
+
+    /// The user changed a unit's Analog Out Format on the Output page. As in
+    /// the original, setting it to Line makes Headphone 1 the Audio Output
+    /// (`KeyboardVolumeOutput.afterUserChange`); the result is saved either
+    /// way, so that leaving Line keeps the choice. Only a user's change does
+    /// this: not a restored or recalled mode, nor one read from the unit.
+    @MainActor
+    func speakerModeChangedByUser(from old: UInt32, to new: UInt32, unit: DeviceUnit) {
+        guard old != new, keyboardVolumeOutputAvailable, !(unit == .a && converterVolumeKeys) else { return }
+        let hasAnalog = keyboardVolumeHasAnalogOutput(unit)
+        let saved = connectionMode == .simulated ? keyboardVolumeSimulated[unit]
+            : keyboardVolumeStore(for: unit)?.value(for: Self.keyboardVolumeAddress)?.asUInt32
+        let before = KeyboardVolumeOutput.resolve(saved: saved, hasAnalogOutput: hasAnalog,
+                                                  convertersOnly: false, speakerMode: old)
+        chooseKeyboardVolumeOutput(before.afterUserChange(ofSpeakerModeFrom: old, to: new), unit: unit)
+    }
+
+    /// Reset Defaults on the Output page: the Audio Output goes back to
+    /// Speaker, Headphone 1 without an analog output card, as the original's
+    /// reset did after setting the mode (SymphonyIO.cpp:1587-1597).
+    @MainActor
+    func resetKeyboardVolumeOutput(unit: DeviceUnit) {
+        guard keyboardVolumeOutputAvailable, !(unit == .a && converterVolumeKeys) else { return }
+        chooseKeyboardVolumeOutput(KeyboardVolumeOutput.defaultOutput(
+            hasAnalogOutput: keyboardVolumeHasAnalogOutput(unit), convertersOnly: false), unit: unit)
     }
 
     /// The speaker mode a unit's Speaker entry is named after.
@@ -149,8 +176,12 @@ extension AppState {
     }
 
     /// See `MacVolumeAdoption`.
+    /// `mute`: the change is of the mute control. With Speaker chosen in Line
+    /// mode the volume is not the speaker's, but the mute still is.
     static func macVolumeAdoption(thunderbolt: Bool, servingBuild: ServingDextBuild?, helperOutdated: Bool,
-                                  output: KeyboardVolumeOutput, settled: Bool, speakerMode: UInt32) -> MacVolumeAdoption {
+                                  output: KeyboardVolumeOutput, settled: Bool, speakerMode: UInt32,
+                                  mute: Bool = false) -> MacVolumeAdoption {
+        let nothing = mute ? output.muteKeyDoesNothing : output.keysDoNothing(speakerMode: speakerMode)
         if thunderbolt {
             // Not read yet: it is not known which rule the driver follows.
             guard let servingBuild else { return .ignore }
@@ -158,11 +189,11 @@ extension AppState {
                 return speakerMode == 0 ? .legacyHeadphone1 : .legacySpeaker
             }
             // The driver holds its control where the keys do nothing.
-            return settled && !output.keysDoNothing(speakerMode: speakerMode) ? .level(output) : .ignore
+            return settled && !nothing ? .level(output) : .ignore
         }
         if helperOutdated { return .legacySpeaker }
         guard settled else { return .ignore }
-        return output.keysDoNothing(speakerMode: speakerMode) ? .putBack : .level(output)
+        return nothing ? .putBack : .level(output)
     }
 
     /// The level and mute Maestro shows for an output of unit A.

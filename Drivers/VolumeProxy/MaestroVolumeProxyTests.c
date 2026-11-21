@@ -243,7 +243,8 @@ static void check_monitor_output(void)
     CHECK(w.send && w.request == 0x24 && w.nValue == 1, "Headphone 2: the mute key is HeadphoneMute (0x24) index 1");
     /* Line mode: the speakers are not moved, a chosen headphone is. */
     CHECK(!monitor_key_write(MONITOR_OUTPUT_SPEAKERS, true, false).send, "speakers in Line mode: a volume key writes nothing");
-    CHECK(!monitor_key_write(MONITOR_OUTPUT_SPEAKERS, true, true).send, "speakers in Line mode: the mute key writes nothing");
+    w = monitor_key_write(MONITOR_OUTPUT_SPEAKERS, true, true);
+    CHECK(w.send && w.request == 0x27 && w.nValue == 0, "speakers in Line mode: the mute key is still SpeakerMute (0x27)");
     w = monitor_key_write(MONITOR_OUTPUT_HP1, true, false);
     CHECK(w.send && w.request == 0x23 && w.nValue == 0, "Headphone 1 in Line mode is still moved");
     w = monitor_key_write(MONITOR_OUTPUT_HP2, true, true);

@@ -75,6 +75,49 @@ struct KeyboardVolumeOutputTests {
         }
     }
 
+    @Test("setting Line makes Headphone 1 the choice, whatever it was; nothing else changes it, and leaving Line keeps it")
+    func speakerModeChangedByTheUser() {
+        for old: UInt32 in [2, 6, 8, 9, 10] {
+            for output in [KeyboardVolumeOutput.speakers, .headphone1, .headphone2] {
+                #expect(output.afterUserChange(ofSpeakerModeFrom: old, to: 0) == .headphone1)
+                // Between speaker modes, and out of Line: unchanged.
+                #expect(output.afterUserChange(ofSpeakerModeFrom: old, to: 6) == output)
+                #expect(output.afterUserChange(ofSpeakerModeFrom: 0, to: old) == output)
+            }
+        }
+        // Line chosen while already in Line: nothing (a Speaker (0ch) chosen by hand stays).
+        #expect(KeyboardVolumeOutput.speakers.afterUserChange(ofSpeakerModeFrom: 0, to: 0) == .speakers)
+        #expect(KeyboardVolumeOutput.headphone2.afterUserChange(ofSpeakerModeFrom: 0, to: 0) == .headphone2)
+        // The converter choices have no speaker mode.
+        #expect(KeyboardVolumeOutput.none.afterUserChange(ofSpeakerModeFrom: 2, to: 0) == KeyboardVolumeOutput.none)
+        #expect(KeyboardVolumeOutput.mixer1Level.afterUserChange(ofSpeakerModeFrom: 2, to: 0) == .mixer1Level)
+    }
+
+    @Test("nothing saved in Line mode is Headphone 1; a saved choice, Speaker included, is kept in Line mode")
+    func nothingSavedInLineMode() {
+        #expect(KeyboardVolumeOutput.resolve(saved: nil, hasAnalogOutput: true, convertersOnly: false, speakerMode: 0) == .headphone1)
+        #expect(KeyboardVolumeOutput.resolve(saved: nil, hasAnalogOutput: true, convertersOnly: false, speakerMode: 2) == .speakers)
+        #expect(KeyboardVolumeOutput.resolve(saved: nil, hasAnalogOutput: true, convertersOnly: false, speakerMode: nil) == .speakers)
+        #expect(KeyboardVolumeOutput.resolve(saved: 1, hasAnalogOutput: true, convertersOnly: false, speakerMode: 0) == .speakers)
+        #expect(KeyboardVolumeOutput.resolve(saved: 3, hasAnalogOutput: true, convertersOnly: false, speakerMode: 0) == .headphone2)
+        // No analog output card: Headphone 1 in every mode, and never Speaker.
+        for mode: UInt32? in [0, 2, nil] {
+            #expect(KeyboardVolumeOutput.resolve(saved: nil, hasAnalogOutput: false, convertersOnly: false, speakerMode: mode) == .headphone1)
+            #expect(KeyboardVolumeOutput.resolve(saved: 1, hasAnalogOutput: false, convertersOnly: false, speakerMode: mode) == .headphone1)
+        }
+        // Converters have no Line mode.
+        #expect(KeyboardVolumeOutput.resolve(saved: nil, hasAnalogOutput: true, convertersOnly: true, speakerMode: 0) == .mixer1Level)
+    }
+
+    @Test("the mute key is ignored only with None: Speaker in Line mode still mutes the speaker")
+    func muteKey() {
+        #expect(KeyboardVolumeOutput.none.muteKeyDoesNothing)
+        for output in [KeyboardVolumeOutput.speakers, .headphone1, .headphone2, .mixer1Level] {
+            #expect(!output.muteKeyDoesNothing)
+        }
+        #expect(KeyboardVolumeOutput.speakers.keysDoNothing(speakerMode: 0))
+    }
+
     @Test("what the driver is sent: the original's 1, 2, 3; on converters 1 for the level and 0 for None")
     func driverValues() {
         #expect(KeyboardVolumeOutput.speakers.driverValue == 1)

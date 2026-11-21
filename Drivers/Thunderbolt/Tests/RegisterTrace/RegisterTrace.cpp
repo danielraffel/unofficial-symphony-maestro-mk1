@@ -1392,14 +1392,24 @@ static void RunMonitorOutputChecks()
         Irq(r, 1); HostPump();
         const uint64_t seen = r.card.port[0].commandsSeen;
         const size_t writes = r.card.port[0].vendorWrites.size();
-        PressVolume(r, -5.0f); PressMute(r, true);
-        PressVolume(r, -60.0f); PressMute(r, false);
+        PressVolume(r, -5.0f);
+        PressVolume(r, -60.0f);
         CHECK(r.card.port[0].commandsSeen == seen && r.card.port[0].vendorWrites.size() == writes,
-              "%s: Line with Speakers chosen wrote to the unit (%llu commands)", o.name,
+              "%s: a volume key in Line with Speakers chosen wrote to the unit (%llu commands)", o.name,
               (unsigned long long)(r.card.port[0].commandsSeen - seen));
         CHECK(StoredOn(r, 0, 0x26) == 9 && StoredOn(r, 0, 0x23, 0) == 9 && StoredOn(r, 0, 0x23, 1) == 44,
               "%s: Line with Speakers chosen moved a level", o.name);
-        CHECK(ShownDb() == -20.0f && !gHostAudio.mute->GetControlValue(), "%s: the controls were not put back (%.1f)", o.name, ShownDb());
+        CHECK(ShownDb() == -20.0f, "%s: the volume control was not put back (%.1f)", o.name, ShownDb());
+        // The mute key still reaches the speaker mute, and only it.
+        const uint8_t hpMutes[2] = { StoredOn(r, 0, 0x24, 0), StoredOn(r, 0, 0x24, 1) };
+        PressMute(r, true);
+        CHECK(StoredOn(r, 0, 0x27) == 1 && gHostAudio.mute->GetControlValue(), "%s: mute in Line did not reach the speaker mute (%u)",
+              o.name, StoredOn(r, 0, 0x27));
+        CHECK(r.card.port[0].vendorWrites.size() == writes + 1 && r.card.port[0].vendorWrites.back() == 0x27,
+              "%s: mute in Line wrote something other than one speaker mute", o.name);
+        CHECK(StoredOn(r, 0, 0x24, 0) == hpMutes[0] && StoredOn(r, 0, 0x24, 1) == hpMutes[1], "%s: mute in Line reached a headphone", o.name);
+        PressMute(r, false);
+        CHECK(StoredOn(r, 0, 0x27) == 0, "%s: unmute in Line did not reach the speaker mute", o.name);
         // A headphone chosen in Line mode is moved.
         CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: HP1 in Line refused", o.name);
         CHECK(ShownDb() == -9.0f, "%s: HP1 in Line reads %.1f (want -9)", o.name, ShownDb());
@@ -1426,9 +1436,12 @@ static void RunMonitorOutputChecks()
         r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
         CHECK(ShownDb() == -20.0f, "%s: control at %.1f (want -20)", o.name, ShownDb());
         const size_t writes = r.card.port[0].vendorWrites.size();
-        PressVolume(r, -50.0f); PressMute(r, true);
-        CHECK(r.card.port[0].vendorWrites.size() == writes, "%s: the keys wrote to a unit in Line mode", o.name);
-        CHECK(StoredOn(r, 0, 0x23, 0) == 18, "%s: Headphone 1 moved by itself (%u)", o.name, StoredOn(r, 0, 0x23, 0));
+        PressVolume(r, -50.0f);
+        CHECK(r.card.port[0].vendorWrites.size() == writes, "%s: a volume key wrote to a unit in Line mode", o.name);
+        PressMute(r, true);
+        CHECK(r.card.port[0].vendorWrites.size() == writes + 1 && StoredOn(r, 0, 0x27) == 1,
+              "%s: mute in Line is not the speaker mute", o.name);
+        CHECK(StoredOn(r, 0, 0x23, 0) == 18 && StoredOn(r, 0, 0x24, 0) == 0, "%s: Headphone 1 moved by itself (%u)", o.name, StoredOn(r, 0, 0x23, 0));
         Finish(o, r);
     }
     // 2. The original PCIe card: the same table.
@@ -1538,10 +1551,14 @@ static void RunMonitorOutputChecks()
         CHECK(ShownDb() == -20.0f, "%s: B Line with Speakers chosen reads %.1f", o.name, ShownDb());
         Irq(r, 1); HostPump();
         const size_t a = r.card.port[0].vendorWrites.size(), b = r.card.port[1].vendorWrites.size();
-        PressVolume(r, -3.0f); PressMute(r, true);
+        PressVolume(r, -3.0f);
         CHECK(r.card.port[0].vendorWrites.size() == a && r.card.port[1].vendorWrites.size() == b,
-              "%s: B Line with Speakers chosen wrote to a unit", o.name);
-        CHECK(ShownDb() == -20.0f && !gHostAudio.mute->GetControlValue(), "%s: B Line, controls not put back", o.name);
+              "%s: a volume key in B Line with Speakers chosen wrote to a unit", o.name);
+        CHECK(ShownDb() == -20.0f, "%s: B Line, volume control not put back", o.name);
+        PressMute(r, true);
+        CHECK(r.card.port[0].vendorWrites.size() == a && r.card.port[1].vendorWrites.size() == b + 1 &&
+              StoredOn(r, 1, 0x27) == 1, "%s: mute in B Line is not unit B's speaker mute", o.name);
+        PressMute(r, false);
         // Back to unit A: its own output (the speakers), its own level.
         CHECK(r.drv->SetMonitorDevice(0) == kIOReturnSuccess, "%s: select A", o.name);
         CHECK(ShownDb() == -25.0f, "%s: unit A shows %.1f (want -25)", o.name, ShownDb());

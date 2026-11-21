@@ -672,7 +672,7 @@ struct DeviceSettingsView: View {
         } footer: {
             if appState.keyboardVolumeOutputAvailable {
                 if output == .speakers, output.keysDoNothing(speakerMode: speakerMode) {
-                    Text("With Analog Out Format set to Line on the Output page, the volume keys do nothing. Choose Headphone 1 or Headphone 2 to control a headphone.")
+                    Text("With Analog Out Format set to Line on the Output page, the volume keys do not change a level with Speaker chosen; the mute key still mutes the speaker output. Choose Headphone 1 or Headphone 2 to control a headphone.")
                 } else if output == .mixer1Level {
                     Text("The keys turn Mixer 1 down and up. It is heard only on outputs fed from Mixer 1 in Output Routing.")
                 } else if output == .none {
