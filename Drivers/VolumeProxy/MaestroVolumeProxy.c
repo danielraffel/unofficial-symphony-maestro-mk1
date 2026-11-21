@@ -187,6 +187,8 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
 #define SYMPH_IO_PID    16u
 
 /* Vendor command codes (from SymphonyIOVendorSpecific.h) */
+#define VCMD_HEADPHONE_VOL   0x23u   /* nValue = headphone index (0 = HP1, 1 = HP2); 1 byte, attenuation in dB */
+#define VCMD_HEADPHONE_MUTE  0x24u   /* nValue = headphone index; 1 byte, 0 = unmuted, 1 = muted */
 #define VCMD_SPEAKER_MODE    0x25u
 #define VCMD_SPEAKER_VOL     0x26u
 #define VCMD_SPEAKER_MUTE    0x27u
@@ -206,10 +208,57 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
 
 /* What Maestro asks with the "helperVersion" XPC command. 2: every configure
    leaves every audible destination (both I/O boards and both headphones) on a
-   direct source, and no mixer strip is muted or unmuted by the helper. A
-   helper from before this constant does not answer the command at all, which
-   is how Maestro recognises one. */
-#define MAESTRO_HELPER_VERSION 2u
+   direct source, and no mixer strip is muted or unmuted by the helper. 3: the
+   "setMonitorOutput" command (which output the volume and mute of
+   "Maestro USB" move). A helper from before this constant does not answer the
+   command at all, which is how Maestro recognises one. */
+#define MAESTRO_HELPER_VERSION 3u
+
+/* ── Which output the volume and mute of "Maestro USB" move ─────────────── */
+/* The original's "Audio Output" choice for the keyboard volume
+   (eSymphonyIO_MonitorOutput, og_source/symphonymk1/ext/SymphonyIO/generic/
+   Products/SymphonyIO/SymphonyIOVendorSpecific.h:977-982): Speakers by default
+   (og_source/symphonymk1/ext/maestrolink/Software/SymphonyIO.cpp:131). A
+   volume set went to the chosen output's attenuation and a mute to its mute
+   (SymphonyIO.cpp:2239-2276, :2345-2395); with Speakers chosen and the speaker
+   mode Off (Line) the volume set was ignored (:2345-2351). */
+#define MONITOR_OUTPUT_SPEAKERS 1u
+#define MONITOR_OUTPUT_HP1      2u
+#define MONITOR_OUTPUT_HP2      3u
+
+typedef struct {
+    bool     send;      /* false: the key does nothing */
+    uint8_t  request;   /* vendor command */
+    uint32_t nValue;    /* headphone index for 0x23/0x24, else 0 */
+} MonitorKeyWrite;
+
+static bool monitor_output_valid(uint32_t output)
+{
+    return output >= MONITOR_OUTPUT_SPEAKERS && output <= MONITOR_OUTPUT_HP2;
+}
+
+/* What a volume key (mute = false) or the mute key (mute = true) writes. */
+static MonitorKeyWrite monitor_key_write(uint32_t output, bool lineMode, bool mute)
+{
+    MonitorKeyWrite w = { false, 0, 0 };
+    if (output == MONITOR_OUTPUT_HP1 || output == MONITOR_OUTPUT_HP2) {
+        w.send = true;
+        w.request = (uint8_t)(mute ? VCMD_HEADPHONE_MUTE : VCMD_HEADPHONE_VOL);
+        w.nValue = output - MONITOR_OUTPUT_HP1;
+    } else if (!lineMode) {
+        w.send = true;
+        w.request = (uint8_t)(mute ? VCMD_SPEAKER_MUTE : VCMD_SPEAKER_VOL);
+    }
+    return w;
+}
+
+/* What a configure or a recovery writes to put the kept level and mute back
+   on the chosen output. The speakers get theirs in Line mode too, as every
+   configure wrote it before there was a choice. */
+static MonitorKeyWrite monitor_restore_write(uint32_t output, bool mute)
+{
+    return monitor_key_write(output, false, mute);
+}
 
 /* The routes every configure writes: each audible destination from a USB
    playback channel, none from a mixer.
@@ -249,6 +298,11 @@ static os_log_t sLog;
 static uint8_t  gCachedAttenuation = 20;  /* safe default: -20 dB */
 static bool     gCachedMuted       = false;
 static bool     gHasReceivedVolume = false; /* true after first ASP setAttenuation */
+/* The output the cached level and mute belong to (MONITOR_OUTPUT_*), set by
+   Maestro with "setMonitorOutput", and whether the speaker mode Maestro last
+   wrote is Off (Line). Both are kept with the volume. */
+static uint32_t gMonitorOutput     = MONITOR_OUTPUT_SPEAKERS;
+static bool     gSpeakerLineMode   = false;
 
 /*
  * Where the volume survives a reboot.
@@ -269,6 +323,43 @@ static bool     gHasReceivedVolume = false; /* true after first ASP setAttenuati
 #define VOLUME_STATE_PATH VOLUME_STATE_DIR "/volume-state"
 #define VOLUME_STATE_LEGACY_PATH "/var/run/maestro-volume-state"
 
+/* One line: attenuation, mute, then (helper version 3 on) the chosen output
+   and whether the speaker mode is Line. An older helper reads the first two
+   and ignores the rest; a file from an older helper has only those two, and
+   the output is then the speakers. Returns false for a line without a usable
+   attenuation and mute. */
+static int format_volume_state(char *buf, size_t size, unsigned att, bool muted, unsigned output, bool line)
+{
+    return snprintf(buf, size, "%u %d %u %d\n", att, muted ? 1 : 0, output, line ? 1 : 0);
+}
+
+static bool parse_volume_state(const char *text, unsigned *att, bool *muted, unsigned *output, bool *line)
+{
+    unsigned a = 20, o = MONITOR_OUTPUT_SPEAKERS;
+    int m = 0, l = 0;
+    const int n = sscanf(text, "%u %d %u %d", &a, &m, &o, &l);
+    if (n < 2 || a > 64) return false;
+    *att = a;
+    *muted = m != 0;
+    /* A choice that cannot be read is the speakers, not in Line mode. */
+    const bool chosen = n >= 3 && monitor_output_valid(o);
+    *output = chosen ? o : MONITOR_OUTPUT_SPEAKERS;
+    *line = chosen && n >= 4 && l != 0;
+    return true;
+}
+
+/* A speaker mode write Maestro sent through the helper (0x25, one byte, 0 =
+   Off, the mode the Output page calls Line). Returns true when the kept
+   state changed. */
+static bool note_speaker_mode(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
+{
+    if (bRequest != VCMD_SPEAKER_MODE || nValue != 0 || !data || len < 1) return false;
+    const bool line = data[0] == 0;
+    if (line == gSpeakerLineMode) return false;
+    gSpeakerLineMode = line;
+    return true;
+}
+
 /* Persist volume/mute to disk. Called on every setAttenuation/setMute. */
 static void save_volume_state(void)
 {
@@ -280,7 +371,9 @@ static void save_volume_state(void)
         LOG("Could not save volume state to %s: %s", VOLUME_STATE_PATH, strerror(errno));
         return;
     }
-    fprintf(f, "%u %d\n", gCachedAttenuation, gCachedMuted ? 1 : 0);
+    char text[64];
+    format_volume_state(text, sizeof(text), gCachedAttenuation, gCachedMuted, gMonitorOutput, gSpeakerLineMode);
+    fputs(text, f);
     fclose(f);
 }
 
@@ -289,15 +382,19 @@ static bool read_volume_state_file(const char *path)
 {
     FILE *f = fopen(path, "r");
     if (!f) return false;
-    unsigned att = 20;
-    int muted = 0;
-    bool ok = (fscanf(f, "%u %d", &att, &muted) == 2 && att <= 64);
+    unsigned att = 20, output = MONITOR_OUTPUT_SPEAKERS;
+    bool muted = false, line = false;
+    char text[64] = "";
+    bool ok = fgets(text, sizeof(text), f) != NULL && parse_volume_state(text, &att, &muted, &output, &line);
     fclose(f);
     if (!ok) return false;
     gCachedAttenuation = (uint8_t)att;
-    gCachedMuted = (muted != 0);
+    gCachedMuted = muted;
+    gMonitorOutput = output;
+    gSpeakerLineMode = line;
     gHasReceivedVolume = true;
-    LOG("Loaded persisted volume state from %s: %udB atten, mute=%d", path, att, muted);
+    LOG("Loaded persisted volume state from %s: %udB atten, mute=%d, output=%u, line=%d",
+        path, att, (int)muted, output, (int)line);
     return true;
 }
 
@@ -1295,8 +1392,8 @@ static int configure_fpga_routing(void);
 static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
                            void *outBuf, uint16_t len);
 static void restore_cached_volume(void);
-static int set_hw_volume(uint8_t attenuation);
-static int set_hw_mute(bool muted);
+static int set_hw_volume(uint32_t output, uint8_t attenuation);
+static int set_hw_mute(uint32_t output, bool muted);
 
 /* Check if an IOReturn code indicates a stale/dead USB handle */
 static int is_stale_handle_error(IOReturn kr)
@@ -1838,17 +1935,28 @@ static int configure_fpga_routing(void)
        This avoids a momentary jump to the hardcoded 20dB before restore_cached_volume()
        overwrites it — the hardware hears only one volume value. */
     uint8_t vol = gHasReceivedVolume ? gCachedAttenuation : 20;
-    err = usb_vendor_write(VCMD_SPEAKER_VOL, 0, &vol, 1);
-    LOG("SpeakerVolume(%ddB atten%s): %s", vol,
-        gHasReceivedVolume ? " [cached]" : " [default]",
-        err ? "FAILED" : "OK");
-
     uint8_t muteVal = gHasReceivedVolume ? (gCachedMuted ? 1 : 0) : 0;
-    err = usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &muteVal, 1);
-    LOG("SpeakerMute(%s%s): %s",
-        muteVal ? "muted" : "unmuted",
-        gHasReceivedVolume ? " [cached]" : " [default]",
-        err ? "FAILED" : "OK");
+    if (gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
+        err = usb_vendor_write(VCMD_SPEAKER_VOL, 0, &vol, 1);
+        LOG("SpeakerVolume(%ddB atten%s): %s", vol,
+            gHasReceivedVolume ? " [cached]" : " [default]",
+            err ? "FAILED" : "OK");
+
+        err = usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &muteVal, 1);
+        LOG("SpeakerMute(%s%s): %s",
+            muteVal ? "muted" : "unmuted",
+            gHasReceivedVolume ? " [cached]" : " [default]",
+            err ? "FAILED" : "OK");
+    } else if (gHasReceivedVolume) {
+        /* The kept level belongs to the chosen headphone: it goes there, and
+           the speakers are not written (the unit keeps their level). */
+        MonitorKeyWrite v = monitor_restore_write(gMonitorOutput, false);
+        MonitorKeyWrite m = monitor_restore_write(gMonitorOutput, true);
+        err = usb_vendor_write(v.request, v.nValue, &vol, 1);
+        LOG("HeadphoneVolume(HP%u, %ddB atten [cached]): %s", v.nValue + 1, vol, err ? "FAILED" : "OK");
+        err = usb_vendor_write(m.request, m.nValue, &muteVal, 1);
+        LOG("HeadphoneMute(HP%u, %s [cached]): %s", m.nValue + 1, muteVal ? "muted" : "unmuted", err ? "FAILED" : "OK");
+    }
 
     /* ── Step 3: Clock source → Internal, Master mode ──────────────────── */
     /* Over USB the clock is always Internal: Apogee's user guide says of
@@ -1983,10 +2091,10 @@ static int configure_fpga_routing(void)
 static void restore_cached_volume(void)
 {
     if (gHasReceivedVolume) {
-        set_hw_volume(gCachedAttenuation);
-        set_hw_mute(gCachedMuted);
-        LOG("Restored cached volume: %udB atten, mute=%d",
-            gCachedAttenuation, (int)gCachedMuted);
+        set_hw_volume(gMonitorOutput, gCachedAttenuation);
+        set_hw_mute(gMonitorOutput, gCachedMuted);
+        LOG("Restored cached volume: %udB atten, mute=%d, output=%u",
+            gCachedAttenuation, (int)gCachedMuted, gMonitorOutput);
     }
     /* else: first boot, keep configure_fpga_routing() defaults (20dB, unmuted) */
 }
@@ -2025,19 +2133,22 @@ static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
     return -1;
 }
 
-/* Set hardware speaker output volume directly via USB.
+/* Set the chosen output's level directly via USB (the speakers, or a
+   headphone; see monitor_restore_write).
    attenuation: 0 = 0dB (full), 64 = -64dB (silent). */
-static int set_hw_volume(uint8_t attenuation)
+static int set_hw_volume(uint32_t output, uint8_t attenuation)
 {
     if (attenuation > 64) attenuation = 64;
-    return usb_vendor_write(VCMD_SPEAKER_VOL, 0, &attenuation, 1);
+    MonitorKeyWrite w = monitor_restore_write(output, false);
+    return usb_vendor_write(w.request, w.nValue, &attenuation, 1);
 }
 
-/* Set hardware speaker mute directly via USB. */
-static int set_hw_mute(bool muted)
+/* Set the chosen output's mute directly via USB. */
+static int set_hw_mute(uint32_t output, bool muted)
 {
     uint8_t val = muted ? 1 : 0;
-    return usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &val, 1);
+    MonitorKeyWrite w = monitor_restore_write(output, true);
+    return usb_vendor_write(w.request, w.nValue, &val, 1);
 }
 
 /* Open USB device and configure FPGA routing.
@@ -2555,14 +2666,22 @@ static void handle_peer(xpc_connection_t peer) {
             }
 
             dispatch_async(gQueue, ^{
+                /* Speakers chosen in Line mode: the set is ignored, as the
+                   original did (SymphonyIO.cpp:2345-2351). Nothing is kept
+                   either, so the speaker level is what it was. */
+                MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, false);
+                if (!w.send) {
+                    LOG("setAttenuation %u ignored: Speaker is the output and the speaker mode is Line", att);
+                    return;
+                }
                 /* Cache before writing — used by restore_cached_volume() after recovery */
                 gCachedAttenuation = (uint8_t)att;
                 gHasReceivedVolume = true;
                 save_volume_state();
                 if (gUSBDev) {
-                    set_hw_volume((uint8_t)att);
-                    LOG("setAttenuation %u → USB direct", att);
-                } else {
+                    set_hw_volume(gMonitorOutput, (uint8_t)att);
+                    LOG("setAttenuation %u → USB direct (output %u)", att, gMonitorOutput);
+                } else if (gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
                     /* Fallback to daemon if USB not open */
                     daemon_set_uint32(&gDaemon, PROP_OUTPUT_LEVEL, 0, 0, att);
                     LOG("setAttenuation %u → daemon (fallback)", att);
@@ -2581,15 +2700,53 @@ static void handle_peer(xpc_connection_t peer) {
             }
 
             dispatch_async(gQueue, ^{
+                MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, true);
+                if (!w.send) {
+                    LOG("setMute %d ignored: Speaker is the output and the speaker mode is Line", (int)muted);
+                    return;
+                }
                 /* Cache before writing — used by restore_cached_volume() after recovery */
                 gCachedMuted = muted;
                 save_volume_state();
                 if (gUSBDev) {
-                    set_hw_mute(muted);
-                    LOG("setMute %d → USB direct", (int)muted);
-                } else {
+                    set_hw_mute(gMonitorOutput, muted);
+                    LOG("setMute %d → USB direct (output %u)", (int)muted, gMonitorOutput);
+                } else if (gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
                     daemon_set_uint32(&gDaemon, PROP_OUTPUT_MUTE, 0, 0, muted ? 1 : 0);
                     LOG("setMute %d → daemon (fallback)", (int)muted);
+                }
+            });
+
+        } else if (strcmp(cmd, "setMonitorOutput") == 0) {
+            /* Maestro's "Audio Output" choice: which output the volume and
+               mute of "Maestro USB" move from now on, with that output's
+               current level and mute (read from the unit by Maestro), which
+               become the kept ones. Nothing is written to the unit.
+               XPC dict: { command, output (1 speakers, 2 HP1, 3 HP2),
+               attenuation (0-64), muted }. Refused without all three. */
+            uint64_t output = xpc_dictionary_get_uint64(msg, "output");
+            uint64_t att = xpc_dictionary_get_uint64(msg, "attenuation");
+            bool muted = xpc_dictionary_get_bool(msg, "muted");
+            bool complete = xpc_dictionary_get_value(msg, "attenuation") != NULL &&
+                            xpc_dictionary_get_value(msg, "muted") != NULL &&
+                            monitor_output_valid((uint32_t)output) && att <= 64;
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            dispatch_async(gQueue, ^{
+                if (complete) {
+                    gMonitorOutput = (uint32_t)output;
+                    gCachedAttenuation = (uint8_t)att;
+                    gCachedMuted = muted;
+                    gHasReceivedVolume = true;
+                    save_volume_state();
+                    LOG("setMonitorOutput %u (level %udB atten, mute=%d)", gMonitorOutput,
+                        gCachedAttenuation, (int)gCachedMuted);
+                } else {
+                    LOG_ERR("setMonitorOutput refused: output=%llu attenuation=%llu", output, att);
+                }
+                if (reply) {
+                    xpc_dictionary_set_int64(reply, "status", complete ? 0 : -1);
+                    xpc_connection_send_message(peer, reply);
+                    xpc_release(reply);
                 }
             });
 
@@ -2708,6 +2865,10 @@ static void handle_peer(xpc_connection_t peer) {
                 else
                     LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
                         bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
+                /* The speaker mode decides whether the speakers can be moved
+                   by the keys (Off, i.e. Line: they cannot). */
+                if (!err && note_speaker_mode(bReq, nValue, dataCopy, copyLen))
+                    save_volume_state();
                 if (!err && digital_setting_index(bReq) >= 0 && nValue <= 1 &&
                     note_digital_write(bReq, nValue, dataCopy, copyLen,
                                        current_board_type(nValue)))
@@ -2850,6 +3011,10 @@ static void handle_peer(xpc_connection_t peer) {
             xpc_object_t reply = xpc_dictionary_create_reply(msg);
             if (reply) {
                 xpc_dictionary_set_uint64(reply, "helperVersion", MAESTRO_HELPER_VERSION);
+                /* The output the volume and mute move now, so that Maestro
+                   only sends "setMonitorOutput" when it differs. Read without
+                   the queue: a stale answer costs one repeated command. */
+                xpc_dictionary_set_uint64(reply, "monitorOutput", gMonitorOutput);
                 xpc_connection_send_message(peer, reply);
                 xpc_release(reply);
             }

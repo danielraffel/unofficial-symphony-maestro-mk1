@@ -154,10 +154,12 @@ struct OutputControlsView: View {
     /// list always carries the ID beside the name and never a row index.
     ///
     /// Mode `0` is `eSymphonyIOSpeakerOutputMode_Off`, but Apogee's UI calls it
-    /// **"Line"** (`SymphonyIO.cpp:3502`) — it hands monitoring to HP1 and
-    /// disables the speaker knob (`SymphonyIO.cpp:6142-6168`), which is exactly
-    /// what the guide describes under Line. Calling it "Off" made it look like a
-    /// mute.
+    /// **"Line"** (`SymphonyIO.cpp:3502`) — it disables the speaker knob and,
+    /// in the original, changed the keyboard volume's Audio Output to
+    /// Headphone 1 (`SymphonyIO.cpp:6142-6168`), which is what the guide
+    /// describes under Line. Maestro leaves that choice to the user (Device
+    /// Settings › Volume Keys; see `KeyboardVolumeOutput`). Calling the mode
+    /// "Off" made it look like a mute.
     ///
     /// Analog Out Format — the speaker modes this unit can actually drive, in
     /// Apogee's own order and under Apogee's own names.
@@ -178,7 +180,12 @@ struct OutputControlsView: View {
     /// outputs 1/2 into plain line outputs and takes the monitor functions with
     /// it (`SymphonyIO.cpp:7327-7333`; User's Guide p. 60).
     private var speakerControlsEnabled: Bool {
-        appState.converterVolumeKeys || SpeakerOutputLogic.speakerControlsEnabled(
+        if appState.converterVolumeKeys {
+            // Volume Keys › Audio Output on None: the mixer level stays at
+            // 0 dB and there is nothing to turn.
+            return !(appState.keyboardVolumeOutputAvailable && appState.keyboardVolumeOutput(for: .a) == .none)
+        }
+        return SpeakerOutputLogic.speakerControlsEnabled(
             mode: speakerConfig, analogOutputChannels: analogOutputStripCount)
     }
 
@@ -804,6 +811,8 @@ struct OutputControlsView: View {
                                     await writeMonitorProperty(.outputDim, value: .bool(false))
                                     await writeMonitorProperty(.outputSumToMono, value: .bool(false))
                                     await writeMonitorProperty(.speakerOutputMode, value: .uint32(val))
+                                    // Volume Keys names unit B's Speaker entry after its mode.
+                                    if monitorTarget.unit == .b { appState.unitBSpeakerOutputMode = val }
                                 }
                             })
                         }
@@ -836,6 +845,7 @@ struct OutputControlsView: View {
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             Task { await writeMonitorProperty(.headphone1Level, value: .uint32(UInt32(max(0, -level)))) }
+                            if monitorTarget.unit == .a { appState.writeASPVolume(level, output: .headphone1) }
                         }
                     )
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Level)))
@@ -845,6 +855,7 @@ struct OutputControlsView: View {
                     outputToggle("M", isOn: hp1MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 1.") {
                         Task { await writeMonitorProperty(.headphone1Mute, value: .bool(hp1Muted)) }
+                        if monitorTarget.unit == .a { appState.writeASPMute(hp1Muted, output: .headphone1) }
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Mute)))
                     outputToggle("D", isOn: hp1DimBinding, tint: .orange,
@@ -895,6 +906,7 @@ struct OutputControlsView: View {
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             Task { await writeMonitorProperty(.headphone2Level, value: .uint32(UInt32(max(0, -level)))) }
+                            if monitorTarget.unit == .a { appState.writeASPVolume(level, output: .headphone2) }
                         }
                     )
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Level)))
@@ -904,6 +916,7 @@ struct OutputControlsView: View {
                     outputToggle("M", isOn: hp2MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 2.") {
                         Task { await writeMonitorProperty(.headphone2Mute, value: .bool(hp2Muted)) }
+                        if monitorTarget.unit == .a { appState.writeASPMute(hp2Muted, output: .headphone2) }
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Mute)))
                     outputToggle("D", isOn: hp2DimBinding, tint: .orange,
@@ -1472,7 +1485,13 @@ struct OutputControlsView: View {
         await writeMonitorProperty(.outputLevel, value: .uint32(attenuation))
         await writeMonitorProperty(.headphone1Level, value: .uint32(attenuation))
         await writeMonitorProperty(.headphone2Level, value: .uint32(attenuation))
-        if monitorTarget.unit == .a { appState.writeASPVolume(level) }
+        // All three outputs got the same level; the Mac's control shows the
+        // one chosen under Volume Keys.
+        if monitorTarget.unit == .a {
+            for output in [KeyboardVolumeOutput.speakers, .headphone1, .headphone2] {
+                appState.writeASPVolume(level, output: output)
+            }
+        }
 
         for (selector, flag) in [
             (AudioPropertySelector.outputMute, SymphonyIOMonitorDefaults.muted),
@@ -1487,12 +1506,16 @@ struct OutputControlsView: View {
         ] {
             await writeMonitorProperty(selector, value: .bool(flag))
         }
-        if monitorTarget.unit == .a { appState.writeASPMute(SymphonyIOMonitorDefaults.muted) }
+        if monitorTarget.unit == .a {
+            for output in [KeyboardVolumeOutput.speakers, .headphone1, .headphone2] {
+                appState.writeASPMute(SymphonyIOMonitorDefaults.muted, output: output)
+            }
+        }
 
         // Speaker mode from board types, but ONLY when those types were actually
         // measured. Unprovenanced boards read as .none, which yields 0 analog
-        // outs and therefore mode Off -- and Off hands monitoring to Headphone 1
-        // and greys out the speaker knob, while the confirmation text promises
+        // outs and therefore mode Off -- and Off greys out the speaker knob
+        // and leaves the volume keys nothing to move, while the confirmation text promises
         // "returns to Stereo". Defaulting to Stereo on unknown provenance keeps
         // the dialog honest.
         let boardsMeasured = appState.unitPrimaryBoardSource == .detected

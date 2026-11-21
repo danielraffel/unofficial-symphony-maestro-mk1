@@ -261,9 +261,13 @@ struct MonitorToolbarView: View {
         let prevHP1Level = undoHP1Level
         let prevHP2Level = undoHP2Level
         let convertersOnly = appState.converterVolumeKeys
-        let speakerControlsEnabled = convertersOnly || SpeakerOutputLogic.speakerControlsEnabled(
+        // Converters with Volume Keys › Audio Output on None: the mixer level
+        // stays at 0 dB and there is nothing to turn.
+        let converterKeysOff = convertersOnly && appState.keyboardVolumeOutputAvailable
+            && appState.keyboardVolumeOutput(for: .a) == .none
+        let speakerControlsEnabled = (convertersOnly && !converterKeysOff) || (!convertersOnly && SpeakerOutputLogic.speakerControlsEnabled(
             mode: appState.speakerOutputMode,
-            analogOutputChannels: appState.cardLayout.analogOutputStripCount)
+            analogOutputChannels: appState.cardLayout.analogOutputStripCount))
         HStack(spacing: 12) {
             // Speaker: mute icon + knob
             HStack(spacing: 4) {
@@ -350,6 +354,7 @@ struct MonitorToolbarView: View {
                     }
                     um?.setActionName("Headphone 1 Mute")
                     Task { await writeProperty(.headphone1Mute, value: .bool(muted)) }
+                    appState.writeASPMute(muted, output: .headphone1)
                 }
                 .maestroHelp(appState.hp1Muted ? "HP 1: Unmute" : "HP 1: Mute")
 
@@ -379,6 +384,7 @@ struct MonitorToolbarView: View {
                         um?.setActionName("Headphone 1 Level")
                         undoHP1Level = level
                         Task { await writeProperty(.headphone1Level, value: .uint32(UInt32(max(0, -level)))) }
+                        appState.writeASPVolume(level, output: .headphone1)
                     }
                 )
                 .maestroHelp("Headphone 1 level — drag to adjust, double-tap to reset")
@@ -407,6 +413,7 @@ struct MonitorToolbarView: View {
                     }
                     um?.setActionName("Headphone 2 Mute")
                     Task { await writeProperty(.headphone2Mute, value: .bool(muted)) }
+                    appState.writeASPMute(muted, output: .headphone2)
                 }
                 .maestroHelp(appState.hp2Muted ? "HP 2: Unmute" : "HP 2: Mute")
 
@@ -436,6 +443,7 @@ struct MonitorToolbarView: View {
                         um?.setActionName("Headphone 2 Level")
                         undoHP2Level = level
                         Task { await writeProperty(.headphone2Level, value: .uint32(UInt32(max(0, -level)))) }
+                        appState.writeASPVolume(level, output: .headphone2)
                     }
                 )
                 .maestroHelp("Headphone 2 level — drag to adjust, double-tap to reset")

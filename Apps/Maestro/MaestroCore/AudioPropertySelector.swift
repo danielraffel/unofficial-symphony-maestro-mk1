@@ -223,12 +223,12 @@ extension AudioPropertySelector {
     /// Custom selector (opcode 0xA6).
     public static let deviceMode = AudioPropertySelector("AEdm")
 
-    /// Keyboard volume control — peripheral ID. `UInt32`.
-    /// FourCC: `AEkp` — custom for Symphony IO USB control.
-    public static let keyboardVolumePeripheralID = AudioPropertySelector("AEkp")
-
-    /// Keyboard volume control — audio output ID. `UInt32`.
-    /// FourCC: `AEko` — custom for Symphony IO USB control.
+    /// Volume Keys › Audio Output: which output of the unit the Mac's volume
+    /// and mute keys move. `UInt32`, a `KeyboardVolumeOutput` raw value.
+    /// The key the choice is saved under in the unit's `DeviceSettingsStore`;
+    /// it is not a property a connection reads or writes. The choice reaches
+    /// the driver through its selector 15 and the USB helper through
+    /// "setMonitorOutput" (`AppState.serviceKeyboardVolumeOutput`).
     public static let keyboardVolumeOutputID = AudioPropertySelector("AEko")
 
     /// Primary I/O option board type. `UInt32` (IOCardType raw value).

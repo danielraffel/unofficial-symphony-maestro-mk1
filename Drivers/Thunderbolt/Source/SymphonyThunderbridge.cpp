@@ -211,6 +211,9 @@ struct SymphonyThunderbridge_IVars {
     // (og_source/symphonymk1/ext/maestrolink/Software/SymphonyIO.cpp:131).
     // Nothing changes it but the app: with Speakers chosen and the speaker
     // mode Off (Line) the control does nothing (SymphonyIO.cpp:2345-2351).
+    // (The original also changed its own choice to Headphone 1 when the mode
+    // was set to Off, SymphonyIO.cpp:6142-6168; builds up to 141 followed the
+    // mode both ways. From 142 the choice is the app's alone.)
     uint8_t   monitorOutputTarget;
     bool      lineMode;               // unit A's speaker mode is Off (Line)
     // Per-monitor state behind the single Core Audio volume/mute control.

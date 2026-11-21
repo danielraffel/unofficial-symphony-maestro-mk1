@@ -106,7 +106,8 @@ struct SettingsPagesTests {
         let view = String(try declaration("struct DeviceSettingsView: View {", in: text))
         let lines = view.components(separatedBy: "\n")
         let notes = lines.indices.filter { lines[$0].contains("Applies to both units.") }
-        #expect(notes.count == 2)
+        // Volume Keys no longer says it: its Audio Output is each unit's own.
+        #expect(notes.count == 1)
         for index in notes {
             #expect(lines[index].contains("if showsBothUnitsFooter"))
             #expect(lines[index - 1].contains("} footer: {"))

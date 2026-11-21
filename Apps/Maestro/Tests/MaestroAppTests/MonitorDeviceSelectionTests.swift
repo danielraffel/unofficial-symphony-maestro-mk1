@@ -23,7 +23,20 @@ struct MonitorDeviceSelectionTests {
             .appendingPathComponent("MaestroApp/SettingsViews.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
         #expect(source.contains("Text(\"Volume Keys\")"))
-        #expect(source.contains("if hasTwoMonitorDevices { volumeKeysSection }"))
+        // The section is shown for the unit choice (two units) or the output
+        // choice; the Peripheral pop-up itself only with two units, named as
+        // the original named it.
+        #expect(source.contains("if showsVolumeKeys { volumeKeysSection }"))
+        #expect(source.contains("private var showsVolumeKeys: Bool { hasTwoMonitorDevices || appState.keyboardVolumeOutputAvailable }"))
+        let section = try #require(source.range(of: "private var volumeKeysSection: some View {"))
+        let body = source[section.upperBound...]
+        let peripheral = try #require(body.range(of: "Picker(\"Peripheral\""))
+        let gate = try #require(body.range(of: "if hasTwoMonitorDevices {"))
+        let audioOutput = try #require(body.range(of: "Picker(\"Audio Output\""))
+        #expect(gate.lowerBound < peripheral.lowerBound && peripheral.lowerBound < audioOutput.lowerBound)
+        #expect(!source.contains("Picker(\"Monitor Device\""))
+        #expect(source.contains("KeyboardVolumeOutput.peripheralName(prefix: appState.peripheralPrefix, name: \"Symphony I/O\")"))
+        #expect(source.contains("KeyboardVolumeOutput.peripheralName(prefix: appState.unitBPeripheralPrefix, name: \"Symphony I/O\")"))
         #expect(source.contains("appState.portSelection.selection == .ports1And2"))
         #expect(source.contains("appState.unitB?.setupComplete == true"))
     }

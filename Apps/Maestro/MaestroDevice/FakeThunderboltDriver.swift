@@ -9,10 +9,12 @@ import MaestroCore
 /// driver does (a link recovery, a card re-init, a restart).
 ///
 /// It starts, and comes back after a link recovery or a restart, in the
-/// driver's default state: the main pair (card channels 0 and 1) on card mixer
-/// 1, every other channel direct, mixer inputs muted, Software Return and
-/// Master at 0 dB (Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp,
-/// "Output routing: ch0/1 <- Mixer0/1 out" and "inputs start muted").
+/// default state of a driver before build 142: the main pair (card channels 0
+/// and 1) on card mixer 1, every other channel direct, mixer inputs muted,
+/// Software Return and Master at 0 dB. From build 142 the driver starts with
+/// every channel direct (Drivers/Thunderbolt/Source/SymphonyThunderbridge.cpp,
+/// step 21b); the older default is kept here because it is the harder case
+/// and such a driver can still be the one loaded after an update.
 ///
 /// A card re-init is different, as in the driver (`ReprogramCardAfterReset`):
 /// each channel gets the last route the app wrote to it where there is one
@@ -68,6 +70,16 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     public var port2: SecondPortState?
     public var portSelectionOverride: UInt32? = PortSelection.port1.rawValue
     public var linkReported = true
+    /// The Volume Keys output choices that reached the driver (selector 15).
+    public struct MonitorOutputCall: Equatable, Sendable {
+        public let unit: DeviceUnit
+        public let output: KeyboardVolumeOutput
+        public init(unit: DeviceUnit, output: KeyboardVolumeOutput) { self.unit = unit; self.output = output }
+    }
+    private var monitorOutputs: [MonitorOutputCall] = []
+    public var monitorOutputCalls: [MonitorOutputCall] { lock.withLock { monitorOutputs } }
+    /// False: the driver refuses the choice (unit B not configured, a failed read).
+    public var acceptsMonitorOutput = true
 
     public init(primary: IOCardType = .analogADDA16, secondary: IOCardType = .analogADDA16) {
         boards = (primary.rawValue, secondary.rawValue)
@@ -205,6 +217,13 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     }
 
     public func setMonitorDevice(_ unit: DeviceUnit) -> Bool { true }
+    public func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool {
+        lock.withLock {
+            guard connected, acceptsMonitorOutput else { return false }
+            monitorOutputs.append(MonitorOutputCall(unit: unit, output: output))
+            return true
+        }
+    }
     public func readMeters() -> [UInt32]? { nil }
     public func probeHardwareResponse() -> Bool { isConnected }
     public func readDriverBuild() -> UInt32? { 200 }

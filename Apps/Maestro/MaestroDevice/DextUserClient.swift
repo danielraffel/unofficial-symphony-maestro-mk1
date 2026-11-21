@@ -192,6 +192,35 @@ public final class DextUserClient: @unchecked Sendable {
         return kr == KERN_SUCCESS
     }
 
+    private static let selectorSetMonitorOutput: UInt32 = 15
+
+    /// The input of selector 15 (`SymphonyMonitorOutputInput`): magic, unit,
+    /// output.
+    static func monitorOutputInput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> [UInt32] {
+        [magic, UInt32(unit.rawValue), output.driverValue]
+    }
+
+    /// Tell the driver which output of a unit the Core Audio volume and mute
+    /// controls move (Volume Keys › Audio Output). Only a driver from build
+    /// 142 on is asked; an older or unknown one never receives the selector.
+    @discardableResult
+    public func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
+        lock.lock()
+        let supported = KeyboardVolumeOutput.driverSupports(cachedDriverBuild.map { ServingDextBuild.build($0) })
+        let conn = supported ? connection : IO_OBJECT_NULL
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        let input = Self.monitorOutputInput(output, unit: unit)
+        var outSize = 0
+        let kr = input.withUnsafeBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorSetMonitorOutput,
+                                      p.baseAddress, input.count * MemoryLayout<UInt32>.size,
+                                      nil, &outSize)
+        }
+        return kr == KERN_SUCCESS
+    }
+
     // kSelectorReadMeters — snapshot the card FPGA meter DMA buffer (256 words).
     private static let selectorReadMeters: UInt32 = 1
 
@@ -659,6 +688,7 @@ public protocol ThunderboltDriverClient: VendorTransport {
     func connect(audioDeviceID: AudioDeviceID)
     func disconnect()
     func setMonitorDevice(_ unit: DeviceUnit) -> Bool
+    func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool
     func readMeters() -> [UInt32]?
     func probeHardwareResponse() -> Bool
     func readLinkState() -> LinkState?

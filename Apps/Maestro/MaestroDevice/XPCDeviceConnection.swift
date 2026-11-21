@@ -91,6 +91,16 @@ public protocol XPCTransport: Sendable {
     /// a helper from before the question existed, or one that is not there.
     func helperVersion() async -> UInt64?
 
+    /// The output the helper's volume and mute move now (1 speakers, 2
+    /// Headphone 1, 3 Headphone 2), nil when it did not say.
+    func helperMonitorOutput() async -> UInt64?
+
+    /// Tell the helper which output the volume and mute of "Maestro USB" move
+    /// from now on ("setMonitorOutput"), with that output's current level
+    /// (attenuation, 0-64 dB) and mute. Nothing is written to the unit.
+    /// False when the helper refused or did not answer.
+    func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool
+
     /// Whether the transport is connected.
     var isConnected: Bool { get }
 }
@@ -102,6 +112,11 @@ public extension XPCTransport {
 
     /// Test transports stand for the helper this app ships.
     func helperVersion() async -> UInt64? { XPCDeviceConnection.requiredHelperVersion }
+
+    /// Transports that do not model the helper's volume output say nothing
+    /// and accept nothing.
+    func helperMonitorOutput() async -> UInt64? { nil }
+    func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool { false }
 
     func setSwReturnChannelLevel(channel: Int, dB: Double) {
         // Older test transports and proxies use the linked command.  The real
@@ -282,6 +297,42 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
         }
     }
 
+    public func helperMonitorOutput() async -> UInt64? {
+        let msg = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_string(msg, "command", "helperVersion")
+        let once = ResumeOnce<UInt64?>()
+        return await withCheckedContinuation { continuation in
+            once.set(continuation)
+            xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
+                guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY else { once.resume(nil); return }
+                let output = xpc_dictionary_get_uint64(reply, "monitorOutput")
+                once.resume(output == 0 ? nil : output)
+            }
+            queue.asyncAfter(deadline: .now() + 2) { once.resume(nil) }
+        }
+    }
+
+    /// A helper from before version 3 does not know the command and sends no
+    /// reply; the question is given two seconds.
+    public func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
+        let msg = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_string(msg, "command", "setMonitorOutput")
+        xpc_dictionary_set_uint64(msg, "output", output)
+        xpc_dictionary_set_uint64(msg, "attenuation", attenuation)
+        xpc_dictionary_set_bool(msg, "muted", muted)
+        let once = ResumeOnce<Bool>()
+        return await withCheckedContinuation { continuation in
+            once.set(continuation)
+            xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
+                guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
+                      xpc_dictionary_get_value(reply, "status") != nil else { once.resume(false); return }
+                once.resume(xpc_dictionary_get_int64(reply, "status") == 0)
+            }
+            queue.asyncAfter(deadline: .now() + 2) { once.resume(false) }
+        }
+    }
+
     public func getSoftwareMeterLevels() async -> (Float, Float)? {
         let msg = xpc_dictionary_create(nil, nil, 0)
         xpc_dictionary_set_string(msg, "command", "getSoftwareMeterLevels")
@@ -424,8 +475,6 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     private var cachedPeakHoldMode: UInt32 = 0
     private var cachedOversHoldMode: UInt32 = 0
     private var cachedPrefix: String = "A"
-    private var cachedKBVolPeripheralID: UInt32 = 0
-    private var cachedKBVolOutputID: UInt32 = 0
 
     /// Settings that are saved on the Mac and written back to the unit on
     /// connect: the same list as ThunderBridge, see
@@ -467,7 +516,47 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// and the helper mutes no mixer strip. An older helper puts Line 1/2 on
     /// Mixer 1 each time it configures the unit, with that mixer's inputs
     /// muted to hide them, so Maestro must not unmute them under it.
-    public static let requiredHelperVersion: UInt64 = 2
+    /// From 3 on the helper has "setMonitorOutput" (Volume Keys › Audio
+    /// Output).
+    public static let requiredHelperVersion: UInt64 = 3
+
+    /// The level and mute an output had when it became the keys' output.
+    public struct KeyboardVolumeState: Sendable, Equatable {
+        public let attenuation: UInt32
+        public let muted: Bool
+    }
+
+    /// The output the helper's volume and mute move now, nil when unknown.
+    public func keyboardVolumeOutputInHelper() async -> KeyboardVolumeOutput? {
+        guard let value = await transport.helperMonitorOutput() else { return nil }
+        return [KeyboardVolumeOutput.speakers, .headphone1, .headphone2].first { $0.helperValue == value }
+    }
+
+    /// The level and mute of an output, read from the unit; nil when either
+    /// read failed or the output is not one of the unit's.
+    public func keyboardVolumeState(of output: KeyboardVolumeOutput) async -> KeyboardVolumeState? {
+        guard let level = output.levelSelector, let mute = output.muteSelector,
+              let reading = try? await getProperty(PropertyAddress(selector: level)),
+              let muted = (try? await getProperty(PropertyAddress(selector: mute)))?.asBool else { return nil }
+        // Levels are read as dB (0 to -64) over USB; an attenuation is taken too.
+        let attenuation: Double
+        if case .float64(let dB) = reading { attenuation = -dB }
+        else if let value = reading.asUInt32 { attenuation = Double(value) }
+        else { return nil }
+        return KeyboardVolumeState(attenuation: UInt32(max(0, min(64, attenuation.rounded()))), muted: muted)
+    }
+
+    /// Make `output` the one the volume and mute of "Maestro USB" move. The
+    /// helper is given the output's own level and mute, read from the unit
+    /// first, so that what it keeps (and puts back after a reconnect) belongs
+    /// to that output and not to the one chosen before. Nothing is sent when
+    /// they cannot be read. Returns what was read, nil when nothing changed.
+    public func setKeyboardVolumeOutput(_ output: KeyboardVolumeOutput) async -> KeyboardVolumeState? {
+        guard let value = output.helperValue, let state = await keyboardVolumeState(of: output),
+              await transport.setMonitorOutput(value, attenuation: UInt64(state.attenuation), muted: state.muted)
+        else { return nil }
+        return state
+    }
 
     public enum HelperStatus: Sendable, Equatable {
         /// The helper this app ships, or a newer one.
@@ -550,8 +639,6 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         case .peakHoldMode:     return .uint32(cachedPeakHoldMode)
         case .oversHoldMode:    return .uint32(cachedOversHoldMode)
         case .prefix:           return .string(cachedPrefix)
-        case .keyboardVolumePeripheralID: return .uint32(cachedKBVolPeripheralID)
-        case .keyboardVolumeOutputID:     return .uint32(cachedKBVolOutputID)
         default:                return .uint32(0)
         }
     }
@@ -574,10 +661,6 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             if let mode = value.asUInt32 { cachedOversHoldMode = mode }
         case .prefix:
             if let pfx = value.asString { cachedPrefix = pfx }
-        case .keyboardVolumePeripheralID:
-            if let pid = value.asUInt32 { cachedKBVolPeripheralID = pid }
-        case .keyboardVolumeOutputID:
-            if let oid = value.asUInt32 { cachedKBVolOutputID = oid }
         default:
             break
         }
@@ -785,15 +868,9 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             throw DeviceConnectionError.readOnly(address.selector)
         }
 
-        // keyboardVolume* are daemon-only prefs with no mapper write case; cache
-        // them directly. Other cache-only properties (prefix, front-panel meter
-        // config) surface as DeviceConnectionError.cacheOnly from the mapper below.
-        let noOpcodeSelectors: Set<AudioPropertySelector> = [
-            .keyboardVolumePeripheralID, .keyboardVolumeOutputID
-        ]
-        if noOpcodeSelectors.contains(address.selector) {
-            updateCacheForWriteOnly(address, value: value)
-        } else {
+        // Cache-only properties (prefix, front-panel meter config) surface as
+        // DeviceConnectionError.cacheOnly from the mapper below.
+        do {
             do {
                 // USB strip numbers (Software Return 32, Master 33); see readFromUnit.
                 let usbRequest = try SymphonyIOPropertyMapper.buildWriteRequest(

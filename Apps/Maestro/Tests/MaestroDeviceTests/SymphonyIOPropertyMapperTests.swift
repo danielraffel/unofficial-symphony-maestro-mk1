@@ -515,8 +515,9 @@ struct SymphonyIOPropertyMapperTests {
         #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.peakHoldMode))
         #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.oversHoldMode))
         #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.prefix))
-        #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.keyboardVolumePeripheralID))
-        #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.keyboardVolumeOutputID))
+        // The Volume Keys output is not a property of the connection: it is
+        // sent to the driver or the helper by its own command.
+        #expect(!SymphonyIOPropertyMapper.writeOnlySelectors.contains(.keyboardVolumeOutputID))
     }
 
     @Test func meterSourcesAreReadableNotWriteOnly() {

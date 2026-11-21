@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.20 (beta)
+
+This beta lets you choose which output the Mac's volume and mute keys control, as in Apogee's software, and makes the ThunderBridge and PCIe card start with every output played directly. It contains everything in 0.9.19.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.16, build 142).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **With the outputs set to Line, the Mac's volume keys no longer move Headphone 1 by themselves.** On ThunderBridge and PCIe, Maestro used to point the keys at Headphone 1 whenever Analog Out Format was Line, and back at the speakers in any other format. Now the keys control the output you choose under **Device Settings › Volume Keys › Audio Output**: choose **Headphone 1** or **Headphone 2** there to use the keys for a headphone. With **Speaker** chosen, the keys do nothing in Line mode, as in Apogee's software, and the entry reads "Speaker (0ch)".
+- **Over USB, the volume keys now leave the speaker level alone in Line mode.** Before, the keys still set the speaker level there, although nothing could be heard of it in Line mode.
+- **On ThunderBridge and PCIe, the card now starts with every output playing its software output directly, even before Maestro opens.** Before, Line 1/2 went through Mixer 1 from the moment the Mac started until Maestro opened and set your routing. A mixer you route to an output in Output Routing is still put back by Maestro when it connects.
+- **This beta updates the USB helper.** The standard install does this for you. If you installed with a custom install that left out "USB support" and you connect over USB, the status bar asks you to reinstall Maestro with USB support; until you do, Maestro does not set the mixers and Audio Output is not offered.
+
+### New
+
+- **Device Settings › Volume Keys has an Audio Output choice: Speaker, Headphone 1 or Headphone 2,** as in Apogee's software. The Mac's volume and mute keys, and the volume slider in the menu bar, control the output you choose, and show its level. Speaker is the default. Maestro remembers the choice for each Symphony I/O. A unit without an analog output card offers the two headphones only. Over USB this applies to "Symphony I/O : Maestro USB".
+- **With two Symphony I/Os at 64 channels, the unit choice is now called Peripheral and lists each unit by its prefix and name,** as in Apogee's software. Audio Output then lists the outputs of the unit you chose, and each unit keeps its own Audio Output.
+- **With converters only (AD-16X, DA-16X, DD-16X or Rosetta), Audio Output offers Mixer 1 level and None.** Mixer 1 level is what the keys did until now: they turn Mixer 1 down and up. With None the keys do nothing and Mixer 1 goes back to full level, unmuted. This level control is our own addition; Apogee's software had no volume control for converters.
+- **Help has a new question, "What do the Mac's volume and mute keys control?"**, and the user guide describes Volume Keys.
+
+### Please test
+
+On USB and on ThunderBridge. Please say which connection you used.
+
+- **Each Audio Output choice:** choose Speaker, then Headphone 1, then Headphone 2. Do the Mac's volume keys and the mute key move that output and no other? Does the Mac's volume slider jump to that output's level when you change the choice? Does it follow when you turn that output's knob in Maestro or on the front panel?
+- **Line mode:** set Analog Out Format to Line with Speaker chosen. Do the keys do nothing, and does the entry read "Speaker (0ch)"? Then choose Headphone 1: do the keys move it?
+- **Two units at 64 channels:** choose each unit under Peripheral, and a different Audio Output for each. Do the keys follow, and does each unit keep its own choice after you reconnect?
+- **Converters only:** with Mixer 1 routed to an output, do the keys turn it down with Mixer 1 level chosen, and leave it at full level with None?
+- **ThunderBridge or PCIe, after restarting the Mac with Maestro closed:** play audio from the Mac. Do Line 1/2 play, and are the inputs silent on the outputs?
+- **Unplug and replug, or sleep and wake:** do the keys still control the output you chose?
+
+### Release notes
+
+- On ThunderBridge and PCIe the Audio Output choice is put in place when Maestro opens. After the Mac restarts, the keys control the speaker until then. Over USB the choice is kept while Maestro is closed.
+- Audio Output is offered once the new driver is the one running. If macOS has not switched to it yet (Device Settings › Info shows build 141 or older), the keys behave as before.
+- With Speaker chosen in Line mode the Mac's volume slider goes back to where it was after each key press.
+
 ## 0.9.19 (beta)
 
 This beta removes Input Monitoring and puts Output Routing, Input Routing and the mixer back to how Apogee's software worked. It contains everything in 0.9.18.

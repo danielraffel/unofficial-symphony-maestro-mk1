@@ -40,7 +40,23 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
     func sendGetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, dataLength: UInt16) async throws -> XPCPropertyReply {
         getPropertyCalls.append((bRequest, wValue, wIndex, dataLength))
         if let err = nextError { throw err }
+        if let data = replies[bRequest] { return XPCPropertyReply(status: 0, data: data) }
         return nextReply
+    }
+
+    /// Replies by vendor request, ahead of `nextReply`.
+    var replies: [UInt8: Data] = [:]
+    var monitorOutputCalls: [(output: UInt64, attenuation: UInt64, muted: Bool)] = []
+    var acceptsMonitorOutput = true
+    var monitorOutput: UInt64?
+
+    func helperMonitorOutput() async -> UInt64? { monitorOutput }
+
+    func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool {
+        guard acceptsMonitorOutput else { return false }
+        monitorOutputCalls.append((output, attenuation, muted))
+        monitorOutput = output
+        return true
     }
 
     func getSoftwareMeterLevels() async -> (Float, Float)? {
@@ -465,50 +481,62 @@ struct XPCDeviceConnectionTests {
         #expect(cached == .string("B"))
     }
 
-    @Test func keyboardVolumePeripheralIDReturnsCachedDefault() async throws {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+    // MARK: - Volume Keys › Audio Output
 
-        let value = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumePeripheralID))
-        #expect(value == .uint32(0))
-        #expect(transport.getPropertyCalls.isEmpty)
+    @Test("the keys' output is sent to the helper with that output's own level and mute")
+    func keyboardVolumeOutputReachesTheHelper() async throws {
+        for (output, value, levelRequest, muteRequest, index) in [
+            (KeyboardVolumeOutput.speakers, UInt64(1), UInt8(0x26), UInt8(0x27), UInt16(0)),
+            (.headphone1, 2, 0x23, 0x24, 0),
+            (.headphone2, 3, 0x23, 0x24, 1),
+        ] {
+            let transport = MockXPCTransport()
+            transport.replies = [levelRequest: Data([37]), muteRequest: Data([1])]
+            let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+            let state = await conn.setKeyboardVolumeOutput(output)
+            #expect(state == XPCDeviceConnection.KeyboardVolumeState(attenuation: 37, muted: true))
+            #expect(transport.monitorOutputCalls.count == 1)
+            #expect(transport.monitorOutputCalls.first?.output == value)
+            #expect(transport.monitorOutputCalls.first?.attenuation == 37)
+            #expect(transport.monitorOutputCalls.first?.muted == true)
+            // The level and mute were read from that output, by its index.
+            #expect(transport.getPropertyCalls.map(\.bRequest) == [levelRequest, muteRequest])
+            #expect(transport.getPropertyCalls.allSatisfy { $0.wIndex == index })
+            // Choosing an output writes nothing to the unit.
+            #expect(transport.setPropertyCalls.isEmpty)
+        }
     }
 
-    @Test func keyboardVolumePeripheralIDSetDoesNotSendUSB() async throws {
+    @Test("nothing is sent when the output's level cannot be read, or for a converter choice")
+    func keyboardVolumeOutputNeedsItsLevel() async throws {
+        let transport = MockXPCTransport()
+        transport.nextError = DeviceConnectionError.transportError("no answer")
+        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        #expect(await conn.setKeyboardVolumeOutput(.headphone1) == nil)
+        #expect(transport.monitorOutputCalls.isEmpty)
+        transport.nextError = nil
+        #expect(await conn.setKeyboardVolumeOutput(.none) == nil)
+        #expect(await conn.setKeyboardVolumeOutput(.mixer1Level) == nil)
+        #expect(transport.monitorOutputCalls.isEmpty)
+        // A helper that refuses (an older one never answers) changes nothing.
+        transport.acceptsMonitorOutput = false
+        #expect(await conn.setKeyboardVolumeOutput(.headphone2) == nil)
+        // What the helper says it moves now.
+        transport.monitorOutput = 3
+        #expect(await conn.keyboardVolumeOutputInHelper() == .headphone2)
+        transport.monitorOutput = nil
+        #expect(await conn.keyboardVolumeOutputInHelper() == nil)
+    }
+
+    @Test("the saved choice is not a connection property")
+    func keyboardVolumeOutputIsNotAProperty() async throws {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        try await conn.setProperty(
-            PropertyAddress(selector: .keyboardVolumePeripheralID),
-            value: .uint32(5))
-
+        await #expect(throws: (any Error).self) {
+            try await conn.setProperty(PropertyAddress(selector: .keyboardVolumeOutputID), value: .uint32(3))
+        }
         #expect(transport.setPropertyCalls.isEmpty)
-
-        let cached = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumePeripheralID))
-        #expect(cached == .uint32(5))
-    }
-
-    @Test func keyboardVolumeOutputIDReturnsCachedDefault() async throws {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        let value = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumeOutputID))
-        #expect(value == .uint32(0))
-        #expect(transport.getPropertyCalls.isEmpty)
-    }
-
-    @Test func keyboardVolumeOutputIDSetDoesNotSendUSB() async throws {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        try await conn.setProperty(
-            PropertyAddress(selector: .keyboardVolumeOutputID),
-            value: .uint32(3))
-
-        #expect(transport.setPropertyCalls.isEmpty)
-
-        let cached = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumeOutputID))
-        #expect(cached == .uint32(3))
+        #expect(conn.settingsStore.value(for: PropertyAddress(selector: .keyboardVolumeOutputID)) == nil)
     }
 
     // MARK: - USB Health Check Probe

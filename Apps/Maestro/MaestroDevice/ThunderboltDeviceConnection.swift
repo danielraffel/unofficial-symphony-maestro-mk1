@@ -1166,6 +1166,22 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return dextClient.setMonitorDevice(unit)
     }
 
+    /// Tell the driver which output of a unit the Mac's volume and mute keys
+    /// move (Volume Keys › Audio Output). The driver refuses unit B unless it
+    /// is configured at 64 channels, and a driver before build 142 is not
+    /// asked at all.
+    @discardableResult
+    public func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) async -> Bool {
+        await Task.detached { self.setMonitorOutputOffMain(output, unit: unit) }.value
+    }
+
+    private func setMonitorOutputOffMain(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected else { return false }
+        return dextClient.setMonitorOutput(output, unit: unit)
+    }
+
     /// A connection to unit B through this connection's driver client: the
     /// same calls with port byte 1. Unit A's bytes are not affected.
     public func makeUnitBConnection(settingsStore: DeviceSettingsStore = DeviceSettingsStore()) -> ThunderboltUnitBConnection {

@@ -225,8 +225,70 @@ static void check_direct_route_table(void)
     CHECK(MAESTRO_HELPER_VERSION >= 2, "the version Maestro asks for says headphones are direct after a configure");
 }
 
+/* The volume and mute keys of "Maestro USB": which vendor command and index
+   each chosen output gets, the Line-mode no-op, and the kept state. */
+static void check_monitor_output(void)
+{
+    MonitorKeyWrite w = monitor_key_write(MONITOR_OUTPUT_SPEAKERS, false, false);
+    CHECK(w.send && w.request == 0x26 && w.nValue == 0, "speakers: a volume key is SpeakerVolume (0x26)");
+    w = monitor_key_write(MONITOR_OUTPUT_SPEAKERS, false, true);
+    CHECK(w.send && w.request == 0x27 && w.nValue == 0, "speakers: the mute key is SpeakerMute (0x27)");
+    w = monitor_key_write(MONITOR_OUTPUT_HP1, false, false);
+    CHECK(w.send && w.request == 0x23 && w.nValue == 0, "Headphone 1: a volume key is HeadphoneVolume (0x23) index 0");
+    w = monitor_key_write(MONITOR_OUTPUT_HP1, false, true);
+    CHECK(w.send && w.request == 0x24 && w.nValue == 0, "Headphone 1: the mute key is HeadphoneMute (0x24) index 0");
+    w = monitor_key_write(MONITOR_OUTPUT_HP2, false, false);
+    CHECK(w.send && w.request == 0x23 && w.nValue == 1, "Headphone 2: a volume key is HeadphoneVolume (0x23) index 1");
+    w = monitor_key_write(MONITOR_OUTPUT_HP2, false, true);
+    CHECK(w.send && w.request == 0x24 && w.nValue == 1, "Headphone 2: the mute key is HeadphoneMute (0x24) index 1");
+    /* Line mode: the speakers are not moved, a chosen headphone is. */
+    CHECK(!monitor_key_write(MONITOR_OUTPUT_SPEAKERS, true, false).send, "speakers in Line mode: a volume key writes nothing");
+    CHECK(!monitor_key_write(MONITOR_OUTPUT_SPEAKERS, true, true).send, "speakers in Line mode: the mute key writes nothing");
+    w = monitor_key_write(MONITOR_OUTPUT_HP1, true, false);
+    CHECK(w.send && w.request == 0x23 && w.nValue == 0, "Headphone 1 in Line mode is still moved");
+    w = monitor_key_write(MONITOR_OUTPUT_HP2, true, true);
+    CHECK(w.send && w.request == 0x24 && w.nValue == 1, "Headphone 2 in Line mode is still muted");
+    /* Anything else is the speakers (the default), never a headphone. */
+    w = monitor_key_write(0, false, false);
+    CHECK(w.send && w.request == 0x26, "an unknown output is the speakers");
+    CHECK(!monitor_output_valid(0) && !monitor_output_valid(4) && monitor_output_valid(1) &&
+          monitor_output_valid(2) && monitor_output_valid(3), "outputs 1-3 only");
+    /* A configure or recovery puts the kept level on the chosen output; the
+       speakers get theirs in Line mode too, as before. */
+    w = monitor_restore_write(MONITOR_OUTPUT_SPEAKERS, false);
+    CHECK(w.send && w.request == 0x26, "restore: speakers");
+    w = monitor_restore_write(MONITOR_OUTPUT_HP2, true);
+    CHECK(w.send && w.request == 0x24 && w.nValue == 1, "restore: Headphone 2 mute");
+
+    /* The speaker mode Maestro writes through the helper. */
+    uint8_t off = 0, stereo = 2;
+    gSpeakerLineMode = false;
+    CHECK(note_speaker_mode(0x25, 0, &off, 1) && gSpeakerLineMode, "speaker mode 0 is Line");
+    CHECK(!note_speaker_mode(0x25, 0, &off, 1), "the same mode again changes nothing");
+    CHECK(!note_speaker_mode(0x26, 0, &stereo, 1) && gSpeakerLineMode, "another command is not a speaker mode");
+    CHECK(!note_speaker_mode(0x25, 0, &stereo, 0) && gSpeakerLineMode, "an empty write is not a speaker mode");
+    CHECK(note_speaker_mode(0x25, 0, &stereo, 1) && !gSpeakerLineMode, "speaker mode 2 is not Line");
+
+    /* The kept state: written with the output and Line, read back the same;
+       a file from an older helper (two numbers) is the speakers. */
+    char text[64];
+    unsigned att = 0, output = 0; bool muted = false, line = false;
+    format_volume_state(text, sizeof(text), 37, true, MONITOR_OUTPUT_HP2, true);
+    CHECK(strcmp(text, "37 1 3 1\n") == 0, "state line format");
+    CHECK(parse_volume_state(text, &att, &muted, &output, &line) && att == 37 && muted &&
+          output == MONITOR_OUTPUT_HP2 && line, "state round trip");
+    CHECK(parse_volume_state("12 0\n", &att, &muted, &output, &line) && att == 12 && !muted &&
+          output == MONITOR_OUTPUT_SPEAKERS && !line, "an older helper's file is the speakers");
+    CHECK(parse_volume_state("12 0 9 1\n", &att, &muted, &output, &line) && output == MONITOR_OUTPUT_SPEAKERS && !line,
+          "an output that cannot be one is the speakers, not in Line mode");
+    CHECK(!parse_volume_state("65 0 2 0\n", &att, &muted, &output, &line), "an attenuation above 64 is refused");
+    CHECK(!parse_volume_state("garbage", &att, &muted, &output, &line), "a damaged file is refused");
+    CHECK(MAESTRO_HELPER_VERSION >= 3, "the version Maestro asks for has setMonitorOutput");
+}
+
 int main(void)
 {
+    check_monitor_output();
     check_direct_route_table();
     check_mixer_param_payload();
     check_optical_format_gate();

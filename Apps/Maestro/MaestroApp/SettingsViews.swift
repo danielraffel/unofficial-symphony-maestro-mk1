@@ -253,6 +253,14 @@ struct DeviceSettingsView: View {
         appState.converterSystem?.source == .driver && appState.converterSystem?.port2Counted == true
     }
 
+    /// Volume Keys is shown when there is something to choose: the unit
+    /// (two Symphony I/Os at 64 channels) or the output the keys move.
+    private var showsVolumeKeys: Bool { hasTwoMonitorDevices || appState.keyboardVolumeOutputAvailable }
+
+    /// The unit whose outputs the Audio Output pop-up lists: the one chosen
+    /// as Peripheral, as in the original; unit A when there is one unit.
+    private var volumeKeysUnit: DeviceUnit { hasTwoMonitorDevices ? appState.monitorDevice : .a }
+
     /// Is the device in Pro Tools HD mode?
     private var isProToolsMode: Bool { deviceMode == 3 }
 
@@ -266,7 +274,7 @@ struct DeviceSettingsView: View {
             }
             clockSection
             connectionSection
-            if hasTwoMonitorDevices { volumeKeysSection }
+            if showsVolumeKeys { volumeKeysSection }
             frontPanelSection
             cardsSection
             namingSection
@@ -622,21 +630,58 @@ struct DeviceSettingsView: View {
         }
     }
 
+    // The original's "Keyboard Volume Control": Peripheral (hidden with one
+    // monitor device or none) and Audio Output
+    // (og_source/symphonymk1/ext/maestro2/App/Controllers/
+    // APSystemKeyboardVolumeControlViewController.m:41-84; the labels are in
+    // Views/APSystemKeyboardVolumeControlView.xib:175, 210, 233).
     @ViewBuilder private var volumeKeysSection: some View {
+        let unit = volumeKeysUnit
+        let output = appState.keyboardVolumeOutput(for: unit)
+        let speakerMode = appState.keyboardVolumeSpeakerMode(for: unit)
         Section {
-            Picker("Monitor Device", selection: Binding(
-                get: { appState.monitorDevice },
-                set: { appState.chooseMonitorDevice($0) }
-            )) {
-                Text("Unit A").tag(DeviceUnit.a)
-                Text("Unit B").tag(DeviceUnit.b)
+            if hasTwoMonitorDevices {
+                Picker("Peripheral", selection: Binding(
+                    get: { appState.monitorDevice },
+                    set: { appState.chooseMonitorDevice($0) }
+                )) {
+                    Text(KeyboardVolumeOutput.peripheralName(prefix: appState.peripheralPrefix, name: "Symphony I/O"))
+                        .tag(DeviceUnit.a)
+                    Text(KeyboardVolumeOutput.peripheralName(prefix: appState.unitBPeripheralPrefix, name: "Symphony I/O"))
+                        .tag(DeviceUnit.b)
+                }
+                .pickerStyle(.menu)
+                .maestroHelp("Which Symphony I/O the Mac's volume and mute keys control.")
             }
-            .pickerStyle(.menu)
-            .maestroHelp("Choose which Symphony I/O supplies keyboard volume control.")
+            if appState.keyboardVolumeOutputAvailable {
+                Picker("Audio Output", selection: Binding(
+                    get: { appState.keyboardVolumeOutput(for: unit) },
+                    set: { appState.chooseKeyboardVolumeOutput($0, unit: unit) }
+                )) {
+                    ForEach(appState.keyboardVolumeEntries(for: unit), id: \.self) { entry in
+                        Text(entry.label(speakerMode: speakerMode)).tag(entry)
+                    }
+                }
+                .pickerStyle(.menu)
+                .maestroHelp(appState.converterVolumeKeys
+                    ? "What the Mac's volume and mute keys control: the level of Mixer 1, or nothing."
+                    : "Which output the Mac's volume and mute keys control.")
+            }
         } header: {
             Text("Volume Keys")
         } footer: {
-            if showsBothUnitsFooter { Text("Applies to both units.") }
+            if appState.keyboardVolumeOutputAvailable {
+                if output == .speakers, output.keysDoNothing(speakerMode: speakerMode) {
+                    Text("With Analog Out Format set to Line on the Output page, the volume keys do nothing. Choose Headphone 1 or Headphone 2 to control a headphone.")
+                } else if output == .mixer1Level {
+                    Text("The keys turn Mixer 1 down and up. It is heard only on outputs fed from Mixer 1 in Output Routing.")
+                } else if output == .none {
+                    Text("The volume keys do nothing, and Mixer 1 is not turned down by them.")
+                }
+            }
+        }
+        .task(id: unit) {
+            if unit == .b { await appState.refreshUnitBSpeakerMode() }
         }
     }
 

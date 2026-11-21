@@ -346,8 +346,10 @@ final class AppState: @unchecked Sendable {
     var speakerLevel: Double = -20
     /// Current speaker mute state (shared between monitor panel and volume key handler).
     var speakerMuted: Bool = false
-    /// Current Analog Out Format. Line mode disables the speaker monitor controls
-    /// while Core Audio volume/mute writes are redirected to Headphone 1.
+    /// Current Analog Out Format. Line mode disables the speaker monitor
+    /// controls, and the Mac's volume keys then do nothing unless a headphone
+    /// is chosen under Volume Keys › Audio Output (a ThunderBridge driver
+    /// before build 142 moves Headphone 1 by itself in Line mode).
     var speakerOutputMode: UInt32 = SpeakerOutputLogic.stereo
     /// HP1 level (shared between output tab and monitor panel).
     var hp1Level: Double = -20
@@ -657,6 +659,9 @@ final class AppState: @unchecked Sendable {
                     // count change, a failed write, a deferred route or mixer
                     // edit: the restore runs again until nothing is owed.
                     await self.serviceCardOutputTable(tb)
+                    // The volume keys' output, where the driver now serving
+                    // has not been told it.
+                    await self.serviceKeyboardVolumeOutput()
                     if self.inputRoutingReplayNeeded, !self.recallInFlight,
                        self.connectionMode == .hardware {
                         self.inputRoutingReplayNeeded = false
@@ -1433,6 +1438,15 @@ final class AppState: @unchecked Sendable {
     /// the picker is only shown for two configured Symphony I/Os at 64 channels.
     var monitorDevice: DeviceUnit = .a
     @ObservationIgnored private var monitorSelectionTask: Task<Void, Never>?
+    /// Bumped when a unit's Volume Keys › Audio Output choice changes, so the
+    /// pop-up follows (the choice itself lives in the unit's settings store).
+    var keyboardVolumeRevision = 0
+    /// Unit B's speaker mode, for the name of its Speaker entry; nil until read.
+    var unitBSpeakerOutputMode: UInt32?
+    /// What has reached the driver or the helper (`serviceKeyboardVolumeOutput`).
+    @ObservationIgnored var keyboardVolumeSent: KeyboardVolumeSent?
+    @ObservationIgnored var keyboardVolumeRetryAfter = Date.distantPast
+    @ObservationIgnored var keyboardVolumeServiceRunning = false
     @ObservationIgnored private var monitorSelectionGeneration = 0
     /// Unit B's naming state (its optical formats and Replaces).
     var unitBChannelNaming = CardLayout.ChannelNaming()
@@ -1823,6 +1837,11 @@ final class AppState: @unchecked Sendable {
 
     /// Seconds still to wait before a unit that appeared at `appearedAt` may be
     /// written to. Zero for a unit that has been up for a while (launch, Rescan).
+    /// How much of the USB settle interval is left for the unit connected now.
+    var usbSettleRemainingNow: TimeInterval {
+        Self.usbSettleRemaining(appearedAt: symphonyAppearedAt, now: Date())
+    }
+
     nonisolated static func usbSettleRemaining(appearedAt: Date?, now: Date) -> TimeInterval {
         guard let appearedAt else { return 0 }
         let elapsed = now.timeIntervalSince(appearedAt)
@@ -2860,8 +2879,8 @@ final class AppState: @unchecked Sendable {
         // (og_source/maestrolink/Software/SymphonyIO.cpp:4669, default :128).
         // The helper used to force Stereo each time it configured the unit and
         // no longer writes the mode at all. Over ThunderBridge the driver
-        // reads the unit's mode at start, writes it back and points the volume
-        // keys at the output that mode uses, so nothing is added there.
+        // reads the unit's mode at start and writes it back, so nothing is
+        // added there.
         if let xpc = device as? XPCDeviceConnection, connectionMode == .hardware, connectedUnit == nil,
            let mode = await xpc.applySpeakerOutputMode() {
             guard self.device === xpc else { return }
@@ -3457,6 +3476,9 @@ final class AppState: @unchecked Sendable {
                         // A USB restore that did not finish, or a helper that
                         // restarted under the app, is put right here.
                         self.serviceUSBRestore(xpcDev)
+                        // The volume keys' output, where the helper now
+                        // answering has not been told it.
+                        await self.serviceKeyboardVolumeOutput()
                         // FPGA meter registers return all-zero when no new data is ready.
                         // Real data arrives ~3Hz (every ~300ms). All-zero means "no update" —
                         // NOT silence. Skip zero reads to hold the last valid meter values.
@@ -3952,7 +3974,7 @@ final class AppState: @unchecked Sendable {
     // MARK: - Front Panel Sync
 
     private var frontPanelSyncTask: Task<Void, Never>?
-    private var lastFrontPanelSpeakerPush: Double?
+    private var lastFrontPanelSpeakerPush: (output: KeyboardVolumeOutput, dB: Double)?
 
     /// Off only with `MAESTRO_FRONT_PANEL_SYNC=0`.
     static let frontPanelSyncEnabled: Bool =
@@ -4108,8 +4130,14 @@ final class AppState: @unchecked Sendable {
         case .level(.speaker, let dB, _):
             if speakerLevel != dB { speakerLevel = dB }
             if transportType != .thunderbolt || frontPanelNeedsHALEcho { scheduleSpeakerLevelPush(dB) }
-        case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
-        case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
+        // Over USB a headphone that is the volume keys' output is passed on
+        // to the Mac's control too, with the same wait as the speaker.
+        case .level(.headphone1, let dB, _):
+            if hp1Level != dB { hp1Level = dB }
+            if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB, output: .headphone1) }
+        case .level(.headphone2, let dB, _):
+            if hp2Level != dB { hp2Level = dB }
+            if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB, output: .headphone2) }
         case .level: break   // MicPre selections arrive as .micPreGain
         case .muteAll(let muted):
             speakerMuted = muted
@@ -4154,7 +4182,7 @@ final class AppState: @unchecked Sendable {
     /// levels were written back mid-turn and the volume jumped around
     /// (2026-11-13). Each new front panel reading restarts the wait.
     @MainActor
-    private func scheduleSpeakerLevelPush(_ dB: Double) {
+    private func scheduleSpeakerLevelPush(_ dB: Double, output: KeyboardVolumeOutput = .speakers) {
         guard !hardwareWritesSuspended else { return }
         speakerPushGeneration += 1
         let generation = speakerPushGeneration
@@ -4162,16 +4190,18 @@ final class AppState: @unchecked Sendable {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: self?.frontPanelPushQuietInterval ?? Self.frontPanelPushQuietInterval)
             guard let self, !self.hardwareWritesSuspended, generation == self.speakerPushGeneration, self.device === sourceDevice,
-                  self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
+                  self.keyboardVolumeLevel(of: output)?.dB == dB,
+                  self.lastFrontPanelSpeakerPush.map({ $0.output != output || $0.dB != dB }) ?? true else { return }
             if self.transportType != .thunderbolt {
-                self.lastFrontPanelSpeakerPush = dB
-                self.writeASPVolume(dB)
-            } else if self.frontPanelNeedsHALEcho {
+                self.lastFrontPanelSpeakerPush = (output, dB)
+                // Only the output the keys move is shown on the Mac's control.
+                self.writeASPVolume(dB, output: output)
+            } else if output == .speakers, self.frontPanelNeedsHALEcho {
                 // Driver before build 132 (re-checked: a handover may have
                 // happened during the wait). Its volume control is the
                 // driver's own; setting the level through the connection
                 // updates it, as 0.9.9 did.
-                self.lastFrontPanelSpeakerPush = dB
+                self.lastFrontPanelSpeakerPush = (output, dB)
                 let attenuation = UInt32(max(0, min(64, -dB)))
                 try? await self.device?.setProperty(
                     PropertyAddress(selector: .outputLevel), value: .uint32(attenuation))
@@ -4345,8 +4375,21 @@ final class AppState: @unchecked Sendable {
             var dB: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
             if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &dB) == noErr {
-                if speakerOutputMode == 0 { hp1Level = Double(dB) }
-                else { speakerLevel = Double(dB) }
+                if KeyboardVolumeOutput.driverSupports(servingDextBuild) {
+                    // The control is the level of the output chosen under
+                    // Volume Keys. Where the keys do nothing (Speaker in Line
+                    // mode, None on converters) the driver holds the control
+                    // and no level of Maestro's follows it.
+                    let output = keyboardVolumeOutput(for: .a)
+                    if !output.keysDoNothing(speakerMode: speakerOutputMode) {
+                        setKeyboardVolumeLevel(Double(dB), of: output)
+                    }
+                } else if speakerOutputMode == 0 {
+                    // A driver before build 142 moves Headphone 1 in Line mode.
+                    hp1Level = Double(dB)
+                } else {
+                    speakerLevel = Double(dB)
+                }
             }
         } else {
             // USB/ASP: read VolumeScalar and convert to dB
@@ -4360,7 +4403,21 @@ final class AppState: @unchecked Sendable {
             if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &scalar) == noErr {
                 // ASP maps: scalar 0.0 → raw 0 → -64 dB, scalar 1.0 → raw 64 → 0 dB
                 let dB = Double(scalar) * 64.0 - 64.0
-                speakerLevel = dB
+                // The level of the output chosen under Volume Keys. With
+                // Speaker chosen in Line mode the helper ignored the change:
+                // the Mac's control is put back to the speaker level, so the
+                // next key press after leaving Line does not step from a
+                // level that was never applied.
+                let output = keyboardVolumeOutput(for: .a)
+                if usbHelperOutdated {
+                    speakerLevel = dB
+                } else if output.keysDoNothing(speakerMode: speakerOutputMode) {
+                    // Only once the speaker level has been read from the unit
+                    // for this connection (`serviceKeyboardVolumeOutput`).
+                    if usbSpeakerLevelIsFromUnit, abs(dB - speakerLevel) > 0.5 { showSpeakerLevelOnMacVolume() }
+                } else {
+                    setKeyboardVolumeLevel(dB, of: output)
+                }
             }
         }
     }
@@ -4378,23 +4435,61 @@ final class AppState: @unchecked Sendable {
         var muted: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &muted) == noErr {
-            if transportType == .thunderbolt && speakerOutputMode == 0 { hp1Muted = muted != 0 }
-            else { speakerMuted = muted != 0 }
+            let newDriver = transportType == .thunderbolt && KeyboardVolumeOutput.driverSupports(servingDextBuild)
+            if newDriver || (transportType != .thunderbolt && !usbHelperOutdated) {
+                // The mute of the output chosen under Volume Keys; nothing
+                // where the keys do nothing.
+                let output = keyboardVolumeOutput(for: .a)
+                if !output.keysDoNothing(speakerMode: speakerOutputMode) {
+                    setKeyboardVolumeMute(muted != 0, of: output)
+                } else if transportType != .thunderbolt, usbSpeakerLevelIsFromUnit, (muted != 0) != speakerMuted {
+                    writeMacMute(speakerMuted)
+                }
+            } else if transportType == .thunderbolt && speakerOutputMode == 0 {
+                hp1Muted = muted != 0
+            } else {
+                speakerMuted = muted != 0
+            }
         }
+    }
+
+    /// USB: the volume keys' output has been settled with the helper for the
+    /// connection now serving, which includes reading the speaker's level
+    /// from the unit when the keys do nothing.
+    private var usbSpeakerLevelIsFromUnit: Bool {
+        guard let device, let sent = keyboardVolumeSent else { return false }
+        return sent.connection == ObjectIdentifier(device) && sent.outputs[.a] != nil
+    }
+
+    /// USB, Speaker chosen in Line mode: put the Mac's "Maestro USB" volume
+    /// and mute back to the speaker's (the helper ignores both there).
+    func showSpeakerLevelOnMacVolume() {
+        guard transportType != .thunderbolt else { return }
+        writeMacVolume(speakerLevel)
+        writeMacMute(speakerMuted)
     }
 
     /// Write the current speakerLevel to the synced audio device.
     /// For USB: writes VolumeScalar to ASP so macOS Sound slider reflects the change.
     /// For Thunderbolt: no-op — ThunderboltDeviceConnection already writes VolumeDecibels
     /// directly, and the listener callback keeps the UI in sync.
-    func writeASPVolume(_ dB: Double) {
-        guard !hardwareWritesSuspended else { return }
-        guard aspDeviceID != kAudioObjectUnknown else { return }
+    ///
+    /// `output` is the output whose level changed: only the one chosen under
+    /// Volume Keys › Audio Output is shown on the Mac's control (a helper
+    /// before version 3 always moves the speakers).
+    func writeASPVolume(_ dB: Double, output: KeyboardVolumeOutput = .speakers) {
         if transportType == .thunderbolt {
             // ThunderboltDeviceConnection.setProperty already wrote VolumeDecibels
             // to this same device. No need to double-write.
             return
         }
+        guard (usbHelperOutdated ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
+        writeMacVolume(dB)
+    }
+
+    private func writeMacVolume(_ dB: Double) {
+        guard !hardwareWritesSuspended else { return }
+        guard aspDeviceID != kAudioObjectUnknown, transportType != .thunderbolt else { return }
         aspWriteTimestamp = Date()
         // Convert dB (-64..0) to scalar (0..1): scalar = (dB + 64) / 64
         let scalar = Float32(max(0, min(1, (dB + 64.0) / 64.0)))
@@ -4411,10 +4506,15 @@ final class AppState: @unchecked Sendable {
 
     /// Write mute state to the synced audio device.
     /// For Thunderbolt: no-op (same reason as writeASPVolume).
-    func writeASPMute(_ muted: Bool) {
-        guard !hardwareWritesSuspended else { return }
-        guard aspDeviceID != kAudioObjectUnknown else { return }
+    func writeASPMute(_ muted: Bool, output: KeyboardVolumeOutput = .speakers) {
         if transportType == .thunderbolt { return }
+        guard (usbHelperOutdated ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
+        writeMacMute(muted)
+    }
+
+    private func writeMacMute(_ muted: Bool) {
+        guard !hardwareWritesSuspended else { return }
+        guard aspDeviceID != kAudioObjectUnknown, transportType != .thunderbolt else { return }
         aspWriteTimestamp = Date()
         let targetID = aspDeviceID
         var addr = AudioObjectPropertyAddress(

@@ -94,7 +94,6 @@ public enum SymphonyIOPropertyMapper {
 
     /// Properties that are write-only and must be cached by the caller.
     /// The XMOS firmware accepts writes for these but doesn't support reads.
-    /// keyboardVolumePeripheralID/OutputID are daemon-only prefs with no USB opcode.
     ///
     /// `peakHoldMode` and `oversHoldMode` ARE readable — bytes 3 and 2 of the
     /// same `0xDE` block that answers the meter sources — and
@@ -108,7 +107,6 @@ public enum SymphonyIOPropertyMapper {
     public static let writeOnlySelectors: Set<AudioPropertySelector> = [
         .sampleRate, .clockSource,
         .peakHoldMode, .oversHoldMode, .prefix,
-        .keyboardVolumePeripheralID, .keyboardVolumeOutputID
     ]
 
     // MARK: - Read Request
