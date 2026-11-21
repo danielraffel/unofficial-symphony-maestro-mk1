@@ -8367,6 +8367,408 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
 // Also called after sample rate changes (host stops IO, changes rate, restarts).
 // Resets zero timestamp and starts delivering timestamps from interrupts.
 
+// The rate-change transaction: mute, stop DMA, the rate to every unit, lock,
+// the external clock source again, frame size, restart DMA, unmute. DMA runs
+// whether or not Core Audio has IO started, so this is the same with audio
+// idle. Callers: StartDevice (a nominal rate the hardware is not at yet) and,
+// dext 141, SymphonySyncHardwareRate below (the moment the rate is set).
+// Runs on the AudioDriverKit control thread, never on xlinkQueue.
+static kern_return_t ApplyRequestedSampleRate(SymphonyThunderbridge_IVars *ivars,
+                                              SymphonyThunderbridge *self,
+                                              double requestedRate, const char *why)
+{
+    STLOG("%{public}s: sample rate changed %.0f → %.0f, reprogramming hardware",
+          why, ivars->lastSampleRate, requestedRate);
+
+    // #1: Abort early if a Stop has already begun. Stop() sets 'stopping'
+    // (RELEASE) before it tears anything down; if we observe it here we must
+    // not touch the hardware at all — Stop owns mute + DMA-stop + teardown.
+    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE)) {
+        STERR("StartDevice: stop in progress — aborting rate change");
+        return kIOReturnOffline;
+    }
+
+    // ── Full rate-change transaction, SERIALIZED on the XLink queue (#1) ──
+    // The ENTIRE transaction — mute, stop DMA, XLink rate change, restart
+    // DMA, unmute — runs inside ONE serial-queue block. This is the fix for
+    // the Stop-vs-StartDevice race: Stop()'s teardown drains this same queue
+    // (a synchronous barrier) BEFORE it releases the DMA mappings and closes
+    // PCI, so the whole transaction is guaranteed to run either entirely
+    // before teardown (with a valid pciDevice + live DMA mappings) or not at
+    // all. Previously only the XLink SetSampleRate ran on the queue while the
+    // DMA restart + unmute ran on this thread AFTER the barrier returned —
+    // that could restart DMA / MMIO after Close()/buffer-release.
+    //
+    // Legacy kext: performAudioEngineStop() → StopDMA() → rate change →
+    //              performAudioEngineStart() → StartDMA() → unmute.
+    // Without stopping DMA, the FPGA PLL clock jump misaligns the DMA engine
+    // at large rate changes (1x→4x): garbled audio at 176.4/192 kHz.
+    //
+    // StartDevice runs on the AudioDriverKit control thread (never the XLink
+    // queue), so DispatchSync is deadlock-free and preserves the synchronous
+    // success/failure status the host expects.
+    // Roll DDS back to the rate the XLink units are ACTUALLY at (xlinkRate),
+    // not lastSampleRate (which lags after a post-broadcast failure). Fixes the
+    // sequential-failure mismatch Codex round 4 found.
+    const double oldXlinkRate = ivars->xlinkRate;
+    __block bool rateOk   = false;
+    __block bool aborted  = false;
+
+    void (^rateTxn)(void) = ^{
+        // Re-check under serialization. If Stop began after our early check
+        // (or the device is already closed), abort WITHOUT restarting DMA or
+        // unmuting — leave the hardware for Stop() to finish tearing down.
+        if (!XLinkTxAdmissible(ivars)) {
+            aborted = true;
+            STERR("StartDevice: stop began or endpoint unreachable mid-transaction — aborting");
+            return;
+        }
+
+        // 1. Mute FPGA outputs (legacy: MuteOutputs before StopDMA)
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
+                       0, kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute);
+
+        // 2. Stop DMA (clear enable + trigger bits, re-assert write-only ch count)
+        {
+            uint32_t gcsr = 0;
+            ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, &gcsr);
+            gcsr = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
+            gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
+                       kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
+                       kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
+            WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
+            STLOG("StartDevice: DMA stopped for rate change (GCSR=0x%08x)", gcsr);
+        }
+        // EXPERIMENT (64ch, stage 2): with both ports running, port 2's
+        // engine stops too (og StopDMA clears GCSR and GCSR2). Never true
+        // in a one-port build.
+        const bool bothPorts = ivars->portCount == 2 &&
+            __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64;
+        if (bothPorts)
+            ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2,
+                           kGCSR2_DMAOutSize32 | kGCSR2_DMAInSize32,
+                           kGCSR2_DMAEnableMask | kGCSR2_DMAMask);
+        IOSleep(10);  // Let last DMA transfer complete
+
+        // 3. Change sample rate via XLink (full lock/verify/lock sequence).
+        bool cmdIssued = false;
+        // EXPERIMENT: with two ports and a unit found on port 2, the
+        // rate goes there too (null otherwise: one-port path unchanged).
+        Port2RateChange port2Rate;
+        port2Rate.ivars = ivars;
+        Port2RateChange *port2 = Port2TakesRateChanges(ivars) ? &port2Rate : nullptr;
+        rateOk = ChangeSampleRate(ivars->pciDevice,
+                                  ivars->barMemoryIndex, requestedRate, &cmdIssued,
+                                  port2, ivars->isLegacyPCIe2100);
+        if (port2)
+            FinishPort2RateChange(ivars, requestedRate, oldXlinkRate, cmdIssued, port2Rate);
+        // Stage 2: port 1 changed rate but port 2 did not follow while it
+        // was carrying audio. The original failed the whole change; here
+        // port 1 carries on alone. Port 2's engine is already stopped, so
+        // only its routing and buffer registers are put back, and Core
+        // Audio is asked to return the streams to 32 channels.
+        bool restartBothPorts = bothPorts;
+        if (bothPorts && rateOk && !(port2 && port2Rate.ok)) {
+            Port2ProgramRouting(ivars, false);
+            Port2ProgramBuffers(ivars, false);
+            SetPort2Enabled(ivars, false);   // back at 32: port 2 disabled, as SetNumPorts(1)
+            // Port 2 had no unit clock at all: its units are gone.
+            if (port2 && port2Rate.attempted && !port2Rate.clock) {
+                const uint32_t failed = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE)
+                                      & kSymphonyPort2FlagRateFailed;
+                ClearPort2Units(ivars, ivars->port2Clocking);
+                __atomic_fetch_or(&ivars->port2Flags, failed, __ATOMIC_ACQ_REL);
+            }
+            Port2AudioFallBack(ivars, self, kSymphonyPort2ReasonRateChange, false);
+            restartBothPorts = false;
+        }
+
+        // If the SetSampleRate command was actually broadcast, the XLink units are
+        // now at requestedRate — record that as the true hardware XLink rate BEFORE
+        // any early return, regardless of whether the subsequent lock/verify passed.
+        // This keeps xlinkRate accurate across a sequence of post-broadcast failures
+        // (Codex round 4).
+        if (cmdIssued) {
+            ivars->xlinkRate = requestedRate;
+        }
+
+        // #3 (Codex rounds 2-4): On ANY rate-change failure, keep DMA STOPPED and
+        // outputs MUTED, and return an error — NEVER restart DMA / unmute against a
+        // mismatched or unstable clock. Keep DDS and the XLink units CONSISTENT:
+        //   - command WAS broadcast (cmdIssued): XLink and DDS are both at requestedRate
+        //     (ChangeSampleRate set DDS, then broadcast) — already consistent, no rollback.
+        //   - command NOT issued (unsupported rate or TX-busy timeout): XLink is still at
+        //     its prior rate (oldXlinkRate), but DDS may have been moved to requestedRate —
+        //     roll DDS back to oldXlinkRate so DDS matches the un-changed XLink units.
+        // Either way the device is muted/stopped/offline until the next StartDevice
+        // performs a full clean reconfiguration.
+        if (!rateOk) {
+            if (!cmdIssued) {
+                SetDDSSampleRate(ivars->pciDevice, ivars->barMemoryIndex, oldXlinkRate,
+                                 ivars->isLegacyPCIe2100);
+            }
+            STERR("StartDevice: rate change FAILED (cmdIssued=%d) — DMA stopped, outputs "
+                  "muted, DDS+XLink consistent (offline pending reinit)", cmdIssued);
+            return;
+        }
+
+        // 3b. dext 140: an external clock source is sent again once the
+        // units run at the new rate. On a cold start Core Audio restores
+        // the saved source (Word Clock, say) through the selector while
+        // the hardware is still at its start-up 44.1 kHz, and this is
+        // the first moment it is at the rate the external clock runs at;
+        // without it the unit kept blinking until the source was
+        // switched away and back by hand (issue 31). The original tied
+        // the two together from the other side: changing external lock
+        // forced a full rate re-sync, and a rate set that had trouble
+        // re-set the word-clock setting (Symphony64 Driver/XLink.cpp
+        // :149-160, :352-356). DMA is stopped and the card muted here.
+        // Internal (the default) sends nothing: unchanged traces.
+        // Not with unit B set up: there unit A's ClockMode carries the
+        // Loop Sync output and master choice, which SendUnitAClock and
+        // the Loop Sync configuration own, and the recorded bytes do
+        // not include them.
+        if (!ivars->convPort1 && !ivars->unitBConfigured && ivars->unitAClockKnown &&
+            ivars->unitAClock[0] >= 2 && ivars->unitAClock[0] <= 5) {
+            uint8_t clockData[4];
+            memcpy(clockData, ivars->unitAClock, 4);
+            const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                              ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
+                                              clockData, sizeof(clockData), ivars->runtimeTxSeq);
+            // Give the unit up to a second to lock to its external
+            // clock before DMA restarts and the card is unmuted (it
+            // goes on either way, as before this change).
+            uint8_t clk[5] = {};
+            bool read = false;
+            for (int poll = 0; ok && poll < 10; poll++) {
+                IOSleep(100);
+                memset(clk, 0, sizeof(clk));
+                read = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                         ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, clk, 5,
+                                         ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
+                if (!read || clk[0]) break;
+            }
+            const uint32_t measured = ((uint32_t)clk[1] << 24) | ((uint32_t)clk[2] << 16) |
+                                      ((uint32_t)clk[3] << 8) | clk[4];
+            STLOG("StartDevice: ClockMode(source %u) sent again after the rate change to %.0f Hz: %{public}s; "
+                  "unit reports %{public}s, measured %u Hz",
+                  clockData[0], requestedRate, ok ? "OK" : "FAILED",
+                  !read ? "nothing" : clk[0] ? "locked" : "not locked", read ? measured : 0u);
+        }
+
+        // 4. Reprogram ClkCtrl frame size (legacy does this in every
+        // StartDMA).  The legacy High Performance profile changes the
+        // FPGA period with sample-rate tier: 4, 8, then 32 frames.
+        const TimingProfile profile = TimingProfileForRate(requestedRate);
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
+                       ((profile.frameSize - 1) << kClkCtrl_FrameShift) & kClkCtrl_FrameMask,
+                       kClkCtrl_FrameMask);
+        uint32_t convIn = 0, convOut = 0;
+        ConverterLatencyFor(ivars, requestedRate, &convIn, &convOut);
+        ivars->convLatencyIn = convIn;
+        ivars->convLatencyOut = convOut;
+        const kern_return_t timingResult =
+            ApplyAudioTimingProfile(ivars->audioDevice, requestedRate, convIn, convOut);
+        if (timingResult != kIOReturnSuccess) {
+            // Do not restart DMA or unmute with a partially published
+            // Core Audio timing tuple.  The device stays stopped and
+            // muted so the host can retry or tear it down safely.
+            STERR("StartDevice: timing profile publication failed: 0x%x — "
+                  "leaving DMA stopped + outputs muted", timingResult);
+            rateOk = false;
+            return;
+        }
+        uint32_t clkCtrlReadback = 0;
+        ReadRegister(ivars->pciDevice, ivars->barMemoryIndex,
+                     kRegClkCtrl, &clkCtrlReadback);
+        const uint32_t frameReadback =
+            ((clkCtrlReadback & kClkCtrl_FrameMask) >> kClkCtrl_FrameShift) + 1;
+        STLOG("StartDevice: FPGA frame size set to %u samples (%{public}s profile)",
+              profile.frameSize, kUseHighPerformanceProfile ? "High Performance" : "Standard");
+        STLOG("StartDevice: FPGA ClkCtrl readback=0x%08x frame=%u expected=%u",
+              clkCtrlReadback, frameReadback, profile.frameSize);
+        if (frameReadback != profile.frameSize) {
+            // Do not restart DMA against a hardware period that differs
+            // from the profile used for Core Audio's published timing.
+            // A setter can succeed while the FPGA rejects or clamps the
+            // frame field, leaving the host timing tuple inconsistent.
+            // Keep the device muted and stopped so the next start can
+            // retry a clean configuration instead of publishing a false
+            // low-latency rate.
+            STERR("StartDevice: FPGA frame readback mismatch (got=%u expected=%u) — "
+                  "leaving DMA stopped + outputs muted", frameReadback, profile.frameSize);
+            rateOk = false;
+            return;
+        }
+
+        // 5. Clear stale interrupt status before restarting DMA
+        WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegIntStatus, 0xFFFFFFFF);
+
+        // #1: FINAL stopping re-check before we RE-ENABLE DMA + unmute.
+        // ChangeSampleRate above can run for many seconds (FPGA PLL relock +
+        // stability wait). Stop() may have set 'stopping' (RELEASE) during that
+        // window — AFTER the entry re-check at 2559 already passed. If we
+        // restarted DMA now, the cancel-handler barrier (which waits for THIS
+        // in-flight transaction) would then CompleteDMA()/unmap buffers the FPGA
+        // master engine is actively DMAing to → DART/IOMMU fault on a
+        // still-present device. Aborting HERE (before the DMA re-enable) leaves the
+        // hardware where step 1 (muted) + step 2 (DMA stopped) already put it. This
+        // check narrows the window but is NOT sufficient on its own: a stop that
+        // arrives between this check and the DMA re-enable below would still leave
+        // DMA on — which is exactly why Stop()'s teardown ALSO re-clears the GCSR
+        // DMA-enable bits after its drain barrier (belt and suspenders). rateOk may
+        // already be true (ChangeSampleRate succeeded), but 'aborted' is checked
+        // first by the caller and returns offline.
+        if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) ||
+            !ivars->pciDevice) {
+            aborted = true;
+            STERR("StartDevice: stop began during rate change — leaving DMA "
+                  "stopped + muted for teardown");
+            return;
+        }
+
+        // EXPERIMENT (64ch, stage 2): both ports were running and both
+        // followed the rate. Align the phase as the original did after
+        // every rate change, then start both engines, port 2 first, and
+        // unmute. Never taken in a one-port build.
+        if (restartBothPorts) {
+            AlignXLinkPhase(ivars);
+            // The alignment asks each unit a question; check for a stop
+            // again so DMA is not enabled after one has begun.
+            if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) || !ivars->pciDevice) {
+                aborted = true;
+                STERR("StartDevice: stop began during the phase alignment — leaving both "
+                      "ports stopped + muted for teardown");
+                return;
+            }
+            Port2StartBothEngines(ivars);
+            STLOG("StartDevice: both ports restarted and unmuted after rate change to %.0f Hz",
+                  requestedRate);
+            return;
+        }
+
+        // dext 130, Symphony 64 PCIe card: after a rate change the original
+        // jams the sample-count phase (XLink::SetSampleRate :1074-1150) and
+        // then pulses frame sync on every card (syncComponents), before the
+        // engine starts DMA. Card muted, DMA stopped here.
+        // dext 131: converters on either card get the same alignment
+        // (the original ran it in every SetSampleRate); a Symphony I/O on
+        // the ThunderBridge is unchanged.
+        if (ivars->isLegacyPCIe2100 || ConvPort1(ivars)) {
+            AlignXLinkPhase(ivars);
+            __atomic_store_n(&ivars->convRecoveryPending, false, __ATOMIC_RELEASE);
+            __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvRecoveryPending, __ATOMIC_RELEASE);
+            if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) || !ivars->pciDevice) {
+                aborted = true;
+                STERR("StartDevice: stop began during the phase alignment — leaving DMA "
+                      "stopped + muted for teardown");
+                return;
+            }
+            if (ivars->isLegacyPCIe2100)
+                PulseFrameSyncLegacyPCIe(ivars->pciDevice, ivars->barMemoryIndex, "rate change");
+        }
+
+        // 6. Restart DMA (same sequence as Start() step 29)
+        {
+            uint32_t gcsr = 0;
+            ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, &gcsr);
+            gcsr = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
+            gcsr |= kGCSR_OnlyMasterDMA;
+            WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
+
+            gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
+                       kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
+                       kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
+            WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
+
+            gcsr |= kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect;
+            if (ivars->meterDMAActive) gcsr |= kGCSR_MeterTrigSelect;
+            WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
+
+            gcsr |= kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
+            if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
+            WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
+            STLOG("StartDevice: DMA restarted (GCSR=0x%08x%{public}s)", gcsr,
+                  ivars->meterDMAActive ? " +Meters" : "");
+        }
+
+        // 7. Unmute after DMA is running (legacy: unmute AFTER StartDMA + delay)
+        IOSleep(10);
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
+                       kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+        STLOG("StartDevice: unmuted after rate change to %.0f Hz", requestedRate);
+    };
+
+    IODispatchQueue *rateQ = ivars->xlinkQueue;
+    if (rateQ) {
+        rateQ->DispatchSync(rateTxn);
+    } else {
+        // No serial queue (DMA/interrupt setup failed). No concurrent TX
+        // source exists in that degraded state, so run inline.
+        rateTxn();
+    }
+
+    if (aborted) {
+        return kIOReturnOffline;
+    }
+    if (!rateOk) {
+        // #3: propagate failure — hardware is muted with DMA stopped.
+        return kIOReturnIOError;
+    }
+    ivars->lastSampleRate = requestedRate;
+    __atomic_store_n(&ivars->namingSampleRate, SymphonyNamingRateHz(requestedRate), __ATOMIC_RELEASE);
+    STLOG("StartDevice: hardware now at %.0f Hz", requestedRate);
+    // Optical channel names follow the rate (ADAT / SMUX / N.A.).
+    ScheduleChannelNames(ivars, self);
+    return kIOReturnSuccess;
+}
+
+// dext 141: the hardware takes a new nominal rate when it is set, not at the
+// next IO start. The original did this in performFormatChange, which called
+// setSampleRateInHardware straight away (Symphony64 SymphonyAPI/
+// SymphonyBaseAudioEngine.cpp:1232-1236, :2046-2096). Before this, a rate that
+// Core Audio restored after a start or a reconnect stayed on the device only:
+// with nothing playing, the Symphony sat at its start-up 44.1 kHz, could not
+// lock to an external clock at another rate, and blinked (issue 31).
+// Called by SymphonyAudioDevice with IO stopped by Core Audio: after a nominal
+// rate change, and at every configuration change (which is how a rate set
+// while the link was still coming up is caught once it is up).
+void SymphonySyncHardwareRate(IOUserAudioDevice *device, const char *why)
+{
+    IOLock *lock = __atomic_load_n(&sNominalRateLock, __ATOMIC_ACQUIRE);
+    if (!lock || !device) return;
+    SymphonyThunderbridge *driver = nullptr;
+    SymphonyThunderbridge_IVars *ivars = nullptr;
+    IOLockLock(lock);
+    for (auto &o : sNominalRateObservers) {
+        if (o.device == device) {
+            driver = o.driver;
+            ivars = o.ivars;
+            driver->retain();
+            break;
+        }
+    }
+    IOLockUnlock(lock);
+    if (!driver) return;
+    const double requestedRate = device->GetSampleRate();
+    if (requestedRate != ivars->lastSampleRate) {
+        const char *skip = nullptr;
+        if (__atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE)) skip = "IO is running";
+        else if (!ivars->symphonyLinkConfigured) skip = "the link is not configured yet";
+        else if (__atomic_load_n(&ivars->linkRecoveryInFlight, __ATOMIC_ACQUIRE)) skip = "a link recovery is running";
+        else if (!HardwareReachable(ivars)) skip = "the endpoint is not reachable";
+        if (skip) {
+            STLOG("Rate sync (%{public}s): device at %.0f Hz, hardware at %.0f Hz; not applied now (%{public}s)",
+                  why, requestedRate, ivars->lastSampleRate, skip);
+        } else {
+            const kern_return_t rc = ApplyRequestedSampleRate(ivars, driver, requestedRate, why);
+            STLOG("Rate sync (%{public}s): %.0f Hz applied to the hardware with no IO start: 0x%x",
+                  why, requestedRate, rc);
+        }
+    }
+    driver->release();
+}
+
 kern_return_t SymphonyThunderbridge::StartDevice(
     IOUserAudioObjectID in_object_id,
     IOUserAudioStartStopFlags in_flags)
@@ -8408,349 +8810,9 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     if (ivars->audioDevice) {
         double requestedRate = ivars->audioDevice->GetSampleRate();
         if (requestedRate != ivars->lastSampleRate) {
-            STLOG("StartDevice: sample rate changed %.0f → %.0f, reprogramming hardware",
-                  ivars->lastSampleRate, requestedRate);
-
-            // #1: Abort early if a Stop has already begun. Stop() sets 'stopping'
-            // (RELEASE) before it tears anything down; if we observe it here we must
-            // not touch the hardware at all — Stop owns mute + DMA-stop + teardown.
-            if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE)) {
-                STERR("StartDevice: stop in progress — aborting rate change");
-                return kIOReturnOffline;
-            }
-
-            // ── Full rate-change transaction, SERIALIZED on the XLink queue (#1) ──
-            // The ENTIRE transaction — mute, stop DMA, XLink rate change, restart
-            // DMA, unmute — runs inside ONE serial-queue block. This is the fix for
-            // the Stop-vs-StartDevice race: Stop()'s teardown drains this same queue
-            // (a synchronous barrier) BEFORE it releases the DMA mappings and closes
-            // PCI, so the whole transaction is guaranteed to run either entirely
-            // before teardown (with a valid pciDevice + live DMA mappings) or not at
-            // all. Previously only the XLink SetSampleRate ran on the queue while the
-            // DMA restart + unmute ran on this thread AFTER the barrier returned —
-            // that could restart DMA / MMIO after Close()/buffer-release.
-            //
-            // Legacy kext: performAudioEngineStop() → StopDMA() → rate change →
-            //              performAudioEngineStart() → StartDMA() → unmute.
-            // Without stopping DMA, the FPGA PLL clock jump misaligns the DMA engine
-            // at large rate changes (1x→4x): garbled audio at 176.4/192 kHz.
-            //
-            // StartDevice runs on the AudioDriverKit control thread (never the XLink
-            // queue), so DispatchSync is deadlock-free and preserves the synchronous
-            // success/failure status the host expects.
-            // Roll DDS back to the rate the XLink units are ACTUALLY at (xlinkRate),
-            // not lastSampleRate (which lags after a post-broadcast failure). Fixes the
-            // sequential-failure mismatch Codex round 4 found.
-            const double oldXlinkRate = ivars->xlinkRate;
-            __block bool rateOk   = false;
-            __block bool aborted  = false;
-
-            void (^rateTxn)(void) = ^{
-                // Re-check under serialization. If Stop began after our early check
-                // (or the device is already closed), abort WITHOUT restarting DMA or
-                // unmuting — leave the hardware for Stop() to finish tearing down.
-                if (!XLinkTxAdmissible(ivars)) {
-                    aborted = true;
-                    STERR("StartDevice: stop began or endpoint unreachable mid-transaction — aborting");
-                    return;
-                }
-
-                // 1. Mute FPGA outputs (legacy: MuteOutputs before StopDMA)
-                ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                               0, kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute);
-
-                // 2. Stop DMA (clear enable + trigger bits, re-assert write-only ch count)
-                {
-                    uint32_t gcsr = 0;
-                    ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, &gcsr);
-                    gcsr = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
-                    gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
-                               kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
-                               kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
-                    WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
-                    STLOG("StartDevice: DMA stopped for rate change (GCSR=0x%08x)", gcsr);
-                }
-                // EXPERIMENT (64ch, stage 2): with both ports running, port 2's
-                // engine stops too (og StopDMA clears GCSR and GCSR2). Never true
-                // in a one-port build.
-                const bool bothPorts = ivars->portCount == 2 &&
-                    __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64;
-                if (bothPorts)
-                    ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR2,
-                                   kGCSR2_DMAOutSize32 | kGCSR2_DMAInSize32,
-                                   kGCSR2_DMAEnableMask | kGCSR2_DMAMask);
-                IOSleep(10);  // Let last DMA transfer complete
-
-                // 3. Change sample rate via XLink (full lock/verify/lock sequence).
-                bool cmdIssued = false;
-                // EXPERIMENT: with two ports and a unit found on port 2, the
-                // rate goes there too (null otherwise: one-port path unchanged).
-                Port2RateChange port2Rate;
-                port2Rate.ivars = ivars;
-                Port2RateChange *port2 = Port2TakesRateChanges(ivars) ? &port2Rate : nullptr;
-                rateOk = ChangeSampleRate(ivars->pciDevice,
-                                          ivars->barMemoryIndex, requestedRate, &cmdIssued,
-                                          port2, ivars->isLegacyPCIe2100);
-                if (port2)
-                    FinishPort2RateChange(ivars, requestedRate, oldXlinkRate, cmdIssued, port2Rate);
-                // Stage 2: port 1 changed rate but port 2 did not follow while it
-                // was carrying audio. The original failed the whole change; here
-                // port 1 carries on alone. Port 2's engine is already stopped, so
-                // only its routing and buffer registers are put back, and Core
-                // Audio is asked to return the streams to 32 channels.
-                bool restartBothPorts = bothPorts;
-                if (bothPorts && rateOk && !(port2 && port2Rate.ok)) {
-                    Port2ProgramRouting(ivars, false);
-                    Port2ProgramBuffers(ivars, false);
-                    SetPort2Enabled(ivars, false);   // back at 32: port 2 disabled, as SetNumPorts(1)
-                    // Port 2 had no unit clock at all: its units are gone.
-                    if (port2 && port2Rate.attempted && !port2Rate.clock) {
-                        const uint32_t failed = __atomic_load_n(&ivars->port2Flags, __ATOMIC_ACQUIRE)
-                                              & kSymphonyPort2FlagRateFailed;
-                        ClearPort2Units(ivars, ivars->port2Clocking);
-                        __atomic_fetch_or(&ivars->port2Flags, failed, __ATOMIC_ACQ_REL);
-                    }
-                    Port2AudioFallBack(ivars, this, kSymphonyPort2ReasonRateChange, false);
-                    restartBothPorts = false;
-                }
-
-                // If the SetSampleRate command was actually broadcast, the XLink units are
-                // now at requestedRate — record that as the true hardware XLink rate BEFORE
-                // any early return, regardless of whether the subsequent lock/verify passed.
-                // This keeps xlinkRate accurate across a sequence of post-broadcast failures
-                // (Codex round 4).
-                if (cmdIssued) {
-                    ivars->xlinkRate = requestedRate;
-                }
-
-                // #3 (Codex rounds 2-4): On ANY rate-change failure, keep DMA STOPPED and
-                // outputs MUTED, and return an error — NEVER restart DMA / unmute against a
-                // mismatched or unstable clock. Keep DDS and the XLink units CONSISTENT:
-                //   - command WAS broadcast (cmdIssued): XLink and DDS are both at requestedRate
-                //     (ChangeSampleRate set DDS, then broadcast) — already consistent, no rollback.
-                //   - command NOT issued (unsupported rate or TX-busy timeout): XLink is still at
-                //     its prior rate (oldXlinkRate), but DDS may have been moved to requestedRate —
-                //     roll DDS back to oldXlinkRate so DDS matches the un-changed XLink units.
-                // Either way the device is muted/stopped/offline until the next StartDevice
-                // performs a full clean reconfiguration.
-                if (!rateOk) {
-                    if (!cmdIssued) {
-                        SetDDSSampleRate(ivars->pciDevice, ivars->barMemoryIndex, oldXlinkRate,
-                                         ivars->isLegacyPCIe2100);
-                    }
-                    STERR("StartDevice: rate change FAILED (cmdIssued=%d) — DMA stopped, outputs "
-                          "muted, DDS+XLink consistent (offline pending reinit)", cmdIssued);
-                    return;
-                }
-
-                // 3b. dext 140: an external clock source is sent again once the
-                // units run at the new rate. On a cold start Core Audio restores
-                // the saved source (Word Clock, say) through the selector while
-                // the hardware is still at its start-up 44.1 kHz, and this is
-                // the first moment it is at the rate the external clock runs at;
-                // without it the unit kept blinking until the source was
-                // switched away and back by hand (issue 31). The original tied
-                // the two together from the other side: changing external lock
-                // forced a full rate re-sync, and a rate set that had trouble
-                // re-set the word-clock setting (Symphony64 Driver/XLink.cpp
-                // :149-160, :352-356). DMA is stopped and the card muted here.
-                // Internal (the default) sends nothing: unchanged traces.
-                // Not with unit B set up: there unit A's ClockMode carries the
-                // Loop Sync output and master choice, which SendUnitAClock and
-                // the Loop Sync configuration own, and the recorded bytes do
-                // not include them.
-                if (!ivars->convPort1 && !ivars->unitBConfigured && ivars->unitAClockKnown &&
-                    ivars->unitAClock[0] >= 2 && ivars->unitAClock[0] <= 5) {
-                    uint8_t clockData[4];
-                    memcpy(clockData, ivars->unitAClock, 4);
-                    const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                                      ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
-                                                      clockData, sizeof(clockData), ivars->runtimeTxSeq);
-                    // Give the unit up to a second to lock to its external
-                    // clock before DMA restarts and the card is unmuted (it
-                    // goes on either way, as before this change).
-                    uint8_t clk[5] = {};
-                    bool read = false;
-                    for (int poll = 0; ok && poll < 10; poll++) {
-                        IOSleep(100);
-                        memset(clk, 0, sizeof(clk));
-                        read = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                                 ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, clk, 5,
-                                                 ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
-                        if (!read || clk[0]) break;
-                    }
-                    const uint32_t measured = ((uint32_t)clk[1] << 24) | ((uint32_t)clk[2] << 16) |
-                                              ((uint32_t)clk[3] << 8) | clk[4];
-                    STLOG("StartDevice: ClockMode(source %u) sent again after the rate change to %.0f Hz: %{public}s; "
-                          "unit reports %{public}s, measured %u Hz",
-                          clockData[0], requestedRate, ok ? "OK" : "FAILED",
-                          !read ? "nothing" : clk[0] ? "locked" : "not locked", read ? measured : 0u);
-                }
-
-                // 4. Reprogram ClkCtrl frame size (legacy does this in every
-                // StartDMA).  The legacy High Performance profile changes the
-                // FPGA period with sample-rate tier: 4, 8, then 32 frames.
-                const TimingProfile profile = TimingProfileForRate(requestedRate);
-                ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                               ((profile.frameSize - 1) << kClkCtrl_FrameShift) & kClkCtrl_FrameMask,
-                               kClkCtrl_FrameMask);
-                uint32_t convIn = 0, convOut = 0;
-                ConverterLatencyFor(ivars, requestedRate, &convIn, &convOut);
-                ivars->convLatencyIn = convIn;
-                ivars->convLatencyOut = convOut;
-                const kern_return_t timingResult =
-                    ApplyAudioTimingProfile(ivars->audioDevice, requestedRate, convIn, convOut);
-                if (timingResult != kIOReturnSuccess) {
-                    // Do not restart DMA or unmute with a partially published
-                    // Core Audio timing tuple.  The device stays stopped and
-                    // muted so the host can retry or tear it down safely.
-                    STERR("StartDevice: timing profile publication failed: 0x%x — "
-                          "leaving DMA stopped + outputs muted", timingResult);
-                    rateOk = false;
-                    return;
-                }
-                uint32_t clkCtrlReadback = 0;
-                ReadRegister(ivars->pciDevice, ivars->barMemoryIndex,
-                             kRegClkCtrl, &clkCtrlReadback);
-                const uint32_t frameReadback =
-                    ((clkCtrlReadback & kClkCtrl_FrameMask) >> kClkCtrl_FrameShift) + 1;
-                STLOG("StartDevice: FPGA frame size set to %u samples (%{public}s profile)",
-                      profile.frameSize, kUseHighPerformanceProfile ? "High Performance" : "Standard");
-                STLOG("StartDevice: FPGA ClkCtrl readback=0x%08x frame=%u expected=%u",
-                      clkCtrlReadback, frameReadback, profile.frameSize);
-                if (frameReadback != profile.frameSize) {
-                    // Do not restart DMA against a hardware period that differs
-                    // from the profile used for Core Audio's published timing.
-                    // A setter can succeed while the FPGA rejects or clamps the
-                    // frame field, leaving the host timing tuple inconsistent.
-                    // Keep the device muted and stopped so the next start can
-                    // retry a clean configuration instead of publishing a false
-                    // low-latency rate.
-                    STERR("StartDevice: FPGA frame readback mismatch (got=%u expected=%u) — "
-                          "leaving DMA stopped + outputs muted", frameReadback, profile.frameSize);
-                    rateOk = false;
-                    return;
-                }
-
-                // 5. Clear stale interrupt status before restarting DMA
-                WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegIntStatus, 0xFFFFFFFF);
-
-                // #1: FINAL stopping re-check before we RE-ENABLE DMA + unmute.
-                // ChangeSampleRate above can run for many seconds (FPGA PLL relock +
-                // stability wait). Stop() may have set 'stopping' (RELEASE) during that
-                // window — AFTER the entry re-check at 2559 already passed. If we
-                // restarted DMA now, the cancel-handler barrier (which waits for THIS
-                // in-flight transaction) would then CompleteDMA()/unmap buffers the FPGA
-                // master engine is actively DMAing to → DART/IOMMU fault on a
-                // still-present device. Aborting HERE (before the DMA re-enable) leaves the
-                // hardware where step 1 (muted) + step 2 (DMA stopped) already put it. This
-                // check narrows the window but is NOT sufficient on its own: a stop that
-                // arrives between this check and the DMA re-enable below would still leave
-                // DMA on — which is exactly why Stop()'s teardown ALSO re-clears the GCSR
-                // DMA-enable bits after its drain barrier (belt and suspenders). rateOk may
-                // already be true (ChangeSampleRate succeeded), but 'aborted' is checked
-                // first by the caller and returns offline.
-                if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) ||
-                    !ivars->pciDevice) {
-                    aborted = true;
-                    STERR("StartDevice: stop began during rate change — leaving DMA "
-                          "stopped + muted for teardown");
-                    return;
-                }
-
-                // EXPERIMENT (64ch, stage 2): both ports were running and both
-                // followed the rate. Align the phase as the original did after
-                // every rate change, then start both engines, port 2 first, and
-                // unmute. Never taken in a one-port build.
-                if (restartBothPorts) {
-                    AlignXLinkPhase(ivars);
-                    // The alignment asks each unit a question; check for a stop
-                    // again so DMA is not enabled after one has begun.
-                    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) || !ivars->pciDevice) {
-                        aborted = true;
-                        STERR("StartDevice: stop began during the phase alignment — leaving both "
-                              "ports stopped + muted for teardown");
-                        return;
-                    }
-                    Port2StartBothEngines(ivars);
-                    STLOG("StartDevice: both ports restarted and unmuted after rate change to %.0f Hz",
-                          requestedRate);
-                    return;
-                }
-
-                // dext 130, Symphony 64 PCIe card: after a rate change the original
-                // jams the sample-count phase (XLink::SetSampleRate :1074-1150) and
-                // then pulses frame sync on every card (syncComponents), before the
-                // engine starts DMA. Card muted, DMA stopped here.
-                // dext 131: converters on either card get the same alignment
-                // (the original ran it in every SetSampleRate); a Symphony I/O on
-                // the ThunderBridge is unchanged.
-                if (ivars->isLegacyPCIe2100 || ConvPort1(ivars)) {
-                    AlignXLinkPhase(ivars);
-                    __atomic_store_n(&ivars->convRecoveryPending, false, __ATOMIC_RELEASE);
-                    __atomic_and_fetch(&ivars->convFlags, ~kSymphonyConvRecoveryPending, __ATOMIC_RELEASE);
-                    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) || !ivars->pciDevice) {
-                        aborted = true;
-                        STERR("StartDevice: stop began during the phase alignment — leaving DMA "
-                              "stopped + muted for teardown");
-                        return;
-                    }
-                    if (ivars->isLegacyPCIe2100)
-                        PulseFrameSyncLegacyPCIe(ivars->pciDevice, ivars->barMemoryIndex, "rate change");
-                }
-
-                // 6. Restart DMA (same sequence as Start() step 29)
-                {
-                    uint32_t gcsr = 0;
-                    ReadRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, &gcsr);
-                    gcsr = (gcsr & ~kGCSR_DMAMask) | (kGCSR_DMAOutSize32 | kGCSR_DMAInSize32);
-                    gcsr |= kGCSR_OnlyMasterDMA;
-                    WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
-
-                    gcsr &= ~(kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable |
-                               kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect |
-                               kGCSR_MeterDMAEnable | kGCSR_MeterTrigSelect);
-                    WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
-
-                    gcsr |= kGCSR_A2HTrigSelect | kGCSR_H2ATrigSelect;
-                    if (ivars->meterDMAActive) gcsr |= kGCSR_MeterTrigSelect;
-                    WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
-
-                    gcsr |= kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable;
-                    if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
-                    WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegGCSR, gcsr);
-                    STLOG("StartDevice: DMA restarted (GCSR=0x%08x%{public}s)", gcsr,
-                          ivars->meterDMAActive ? " +Meters" : "");
-                }
-
-                // 7. Unmute after DMA is running (legacy: unmute AFTER StartDMA + delay)
-                IOSleep(10);
-                ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                               kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
-                STLOG("StartDevice: unmuted after rate change to %.0f Hz", requestedRate);
-            };
-
-            IODispatchQueue *rateQ = ivars->xlinkQueue;
-            if (rateQ) {
-                rateQ->DispatchSync(rateTxn);
-            } else {
-                // No serial queue (DMA/interrupt setup failed). No concurrent TX
-                // source exists in that degraded state, so run inline.
-                rateTxn();
-            }
-
-            if (aborted) {
-                return kIOReturnOffline;
-            }
-            if (!rateOk) {
-                // #3: propagate failure — hardware is muted with DMA stopped.
-                return kIOReturnIOError;
-            }
-            ivars->lastSampleRate = requestedRate;
-            __atomic_store_n(&ivars->namingSampleRate, SymphonyNamingRateHz(requestedRate), __ATOMIC_RELEASE);
-            STLOG("StartDevice: hardware now at %.0f Hz", requestedRate);
-            // Optical channel names follow the rate (ADAT / SMUX / N.A.).
-            ScheduleChannelNames(ivars, this);
+            const kern_return_t rateResult =
+                ApplyRequestedSampleRate(ivars, this, requestedRate, "StartDevice");
+            if (rateResult != kIOReturnSuccess) return rateResult;
         }
     }
 
