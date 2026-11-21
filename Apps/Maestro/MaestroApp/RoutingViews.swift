@@ -439,7 +439,7 @@ struct InputRoutingView: View {
                 && appState.unitBBoardSource(slot: 0) == .detected && appState.unitBBoardSource(slot: 1) == .detected
             resetPrompt = RoutingResetPrompt(title: "Reset Input Routing",
                 message: ready ? "Reset input routing for the whole card and both Symphony I/Os (channels 1–64)?"
-                    : (refusal ?? "Unit B I/O cards were not detected this session."), isRefusal: !ready)
+                    : (refusal ?? "Maestro has not read the second Symphony I/O's cards since it connected."), isRefusal: !ready)
             return
         }
         guard canWrite, let device else { return }
@@ -451,22 +451,15 @@ struct InputRoutingView: View {
             print("[Maestro] InputRouting: reset refused — slot provenance \(b1.source.rawValue)/\(b2.source.rawValue)")
             return
         }
-        let plan = RoutingResetGuard.inputPlanLines(
-            board1: b1.card, board2: b2.card,
-            usbChannelCount: device.identifier.mode.channelCount,
-            routes: unit == .b ? unitBResetRoutes : appState.transportType == .thunderbolt
-                ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1) : nil,
-            hostChannelOffset: unit == .b ? 32 : 0)
         resetPrompt = RoutingResetPrompt(
             title: "Reset Input Routing",
-            message: """
-                Detected cards — Slot 1: \(b1.displayText), Slot 2: \(b2.displayText).
-
-                Every software input will be re-pointed to the default:
-
-                \(plan.joined(separator: "\n"))
-                \(appState.showsSymphonyCardInputGrid ? "The card’s software-input mapping for all connected units will also return to its default." : "")
-                """,
+            message: RoutingResetGuard.inputResetMessage(
+                board1: b1.card, board2: b2.card,
+                usbChannelCount: device.identifier.mode.channelCount,
+                routes: unit == .b ? unitBResetRoutes : appState.transportType == .thunderbolt
+                    ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1) : nil,
+                hostChannelOffset: unit == .b ? 32 : 0,
+                alsoResetsCardMapping: appState.showsSymphonyCardInputGrid),
             isRefusal: false)
     }
 
@@ -1262,7 +1255,7 @@ struct OutputRoutingView: View {
                 && appState.unitBBoardSource(slot: 0) == .detected && appState.unitBBoardSource(slot: 1) == .detected
             resetPrompt = RoutingResetPrompt(title: "Reset Output Routing",
                 message: ready ? "Reset output routing for the whole card and both Symphony I/Os (channels 1–64)?"
-                    : (refusal ?? "Unit B I/O cards were not detected this session."), isRefusal: !ready)
+                    : (refusal ?? "Maestro has not read the second Symphony I/O's cards since it connected."), isRefusal: !ready)
             return
         }
         guard appState.device != nil else { return }
@@ -1274,17 +1267,10 @@ struct OutputRoutingView: View {
             print("[Maestro] OutputRouting: reset refused — slot provenance \(b1.source.rawValue)/\(b2.source.rawValue)")
             return
         }
-        let plan = RoutingResetGuard.outputPlanLines(board1: b1.card, board2: b2.card,
-                                                     transport: appState.transportType ?? .usb)
         resetPrompt = RoutingResetPrompt(
             title: "Reset Output Routing",
-            message: """
-                Detected cards — Slot 1: \(b1.displayText), Slot 2: \(b2.displayText).
-
-                Every hardware output will be re-pointed to the default:
-
-                \(plan.joined(separator: "\n"))
-                """,
+            message: RoutingResetGuard.outputResetMessage(
+                board1: b1.card, board2: b2.card, transport: appState.transportType ?? .usb),
             isRefusal: false)
     }
 

@@ -127,7 +127,7 @@ struct UnitBConnectionTests {
         #expect(t.sent.map { $0.payload.first! } == Array(UInt8(192)...223))
         let plan = RoutingResetGuard.inputPlanLines(board1: .analogADDA16, board2: .none,
                                                     usbChannelCount: 32, hostChannelOffset: 32)
-        #expect(plan.first?.hasPrefix("DAW in 33-48") == true)
+        #expect(plan.first == "Software 33–48: Card 1 analog in 1–16")
 
     }
 

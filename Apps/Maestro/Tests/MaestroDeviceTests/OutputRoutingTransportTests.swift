@@ -141,10 +141,11 @@ struct OutputRoutingTransportTests {
         let text = RoutingResetGuard.outputPlanLines(board1: .optical, board2: .optical, transport: .thunderbolt)
             .joined(separator: "\n")
         // Reset writes Apogee's reset layout: the main pair plays DAW 1-2 directly.
-        #expect(text.contains("Slot 1 (8x8 OPT) analog out 1-8 ← DAW 1-8"), "\(text)")
-        #expect(!text.contains("Mixer 1"), "\(text)")
-        #expect(text.contains("Slot 1 (8x8 OPT) ADAT out 1-8 ← DAW 9-16"), "\(text)")
-        #expect(text.contains("Slot 2 (8x8 OPT) analog out 1-8 ← DAW 17-24"), "\(text)")
-        #expect(text.contains("Slot 2 (8x8 OPT) ADAT out 1-8 ← DAW 25-32"), "\(text)")
+        #expect(text == """
+            Card 1 analog out 1–8: Software 1–8
+            Card 1 ADAT out 1–8: Software 9–16
+            Card 2 analog out 1–8: Software 17–24
+            Card 2 ADAT out 1–8: Software 25–32
+            """, "\(text)")
     }
 }

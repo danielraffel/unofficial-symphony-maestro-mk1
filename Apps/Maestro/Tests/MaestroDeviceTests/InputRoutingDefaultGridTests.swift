@@ -146,7 +146,7 @@ struct ThunderboltInputRoutingTests {
             board1: .optical, board2: .analogAD16, usbChannelCount: 32,
             routes: SymphonyIODefaultRouting.thunderboltInputRoutes())
         let text = plan.joined(separator: "\n")
-        #expect(text.contains("17-32"), "\(text)")
+        #expect(text.contains("Software 17–32: Card 2 analog in 1–16"), "\(text)")
     }
 
     // MARK: - Channel packing per slot
@@ -191,7 +191,8 @@ struct ThunderboltInputRoutingTests {
         let plan = RoutingResetGuard.inputPlanLines(
             board1: .twoBySix, board2: .analogAD16, usbChannelCount: 32, routes: routes)
         let text = plan.joined(separator: "\n")
-        #expect(text.contains("DAW in 13-28 ← Slot 2 Analog in 1-16"), "\(text)")
+        #expect(text.contains("Software 13–28: Card 2 analog in 1–16"), "\(text)")
+        #expect(text.contains("Software 29–32: no hardware input, silent."), "\(text)")
     }
 
     /// The common setups do not move: slot 2 stays on Mac 17-32.

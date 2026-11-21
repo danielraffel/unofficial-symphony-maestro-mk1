@@ -8,9 +8,11 @@ private func converterResetPrompt() -> RoutingResetPrompt {
     RoutingResetPrompt(
         title: "Reset Routing",
         message: """
-            Every converter output and every DAW input goes back to the default placement: \
-            DAW output n to the converter output Apogee's software put there, and DAW input n \
-            from the converter input it put there. This resets both Output Routing and Input Routing.
+            Every converter output and every software input goes back to its default: \
+            software output n plays on the converter output Apogee's software put it on, and software \
+            input n records the converter input Apogee's software gave it.
+
+            This resets both Output Routing and Input Routing.
             """,
         isRefusal: false)
 }

@@ -2267,29 +2267,68 @@ public enum RoutingResetGuard {
     ) -> String? {
         var untrusted: [String] = []
         if !board1.source.isTrustworthy {
-            untrusted.append("Slot 1: \(board1.displayText)")
+            untrusted.append("Card 1: \(board1.displayText)")
         }
         if !board2.source.isTrustworthy {
-            untrusted.append("Slot 2: \(board2.displayText)")
+            untrusted.append("Card 2: \(board2.displayText)")
         }
         guard !untrusted.isEmpty else { return nil }
         return """
-            Reset Routing is unavailable because the installed I/O cards were not \
-            detected this session.
+            Reset Routing is not available, because Maestro has not read the installed \
+            cards since it connected.
 
             \(untrusted.joined(separator: "\n"))
 
-            The default routing table is built from the card types, so a wrong card \
-            would re-point real outputs — on a unit with an Optical card, the ADAT \
-            outputs would change which DAW channels they carry. Nothing was written.
+            The default routing depends on which cards are installed. With the wrong \
+            card, hardware outputs would play the wrong software outputs: with an \
+            optical card, the ADAT outputs. Nothing was changed.
             """
     }
 
-    /// Human-readable description of exactly what an OUTPUT reset would do.
+    /// The Reset Output Routing confirmation: the opening sentence, one line
+    /// for each block of hardware outputs, and, after a blank line, the
+    /// closing sentence (left out if a mixer does feed an output).
+    public static func outputResetMessage(board1: IOCardType, board2: IOCardType,
+                                          transport: TransportType = .usb) -> String {
+        let lines = outputPlanLines(board1: board1, board2: board2, transport: transport)
+        var parts = ["Each hardware output goes back to playing its default software output:",
+                     lines.joined(separator: "\n")]
+        if !lines.contains(where: { $0.contains("Mixer") }) { parts.append(outputResetClosing) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    public static let outputResetClosing = "No mixer will feed an output."
+
+    /// The Reset Input Routing confirmation: the opening sentence, one line
+    /// for each block of software inputs, and, after a blank line, the
+    /// closing sentence. `alsoResetsCardMapping`: with two units on the card,
+    /// the card's own software-input mapping goes back too.
+    public static func inputResetMessage(
+        board1: IOCardType,
+        board2: IOCardType,
+        usbChannelCount: Int,
+        routes table: [SymphonyIODefaultRouting.Route]? = nil,
+        hostChannelOffset: Int = 0,
+        alsoResetsCardMapping: Bool = false
+    ) -> String {
+        let lines = inputPlanLines(board1: board1, board2: board2, usbChannelCount: usbChannelCount,
+                                   routes: table, hostChannelOffset: hostChannelOffset)
+        var parts = ["Each software input goes back to its default hardware input:",
+                     lines.joined(separator: "\n"),
+                     inputResetClosing]
+        if alsoResetsCardMapping { parts.append(inputResetCardMappingNote) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    public static let inputResetClosing = "Only what your Mac records from changes. Outputs are not affected."
+    public static let inputResetCardMappingNote =
+        "The card's software inputs for all connected units also go back to their default."
+
+    /// What an OUTPUT reset would do, one line for each block of outputs:
+    /// "Card 1 analog out 1–8: Software 1–8".
     ///
     /// Derived from the same table the reset writes, so the text cannot drift from
-    /// the behaviour. One line per destination run, naming the card and the DAW
-    /// channels that will feed it.
+    /// the behaviour.
     /// Over ThunderBridge it is the position table the reset writes there
     /// (`SymphonyIODefaultRouting.thunderboltOutputRoutes`).
     public static func outputPlanLines(board1: IOCardType, board2: IOCardType,
@@ -2311,18 +2350,18 @@ public enum RoutingResetGuard {
                 ? SymphonyIORoutingAddress.ioBoard0Base
                 : SymphonyIORoutingAddress.ioBoard1Base
             guard card != .none else {
-                lines.append("Slot \(slot + 1): no card — nothing written.")
+                lines.append("Card \(slot + 1): no card.")
                 continue
             }
             let analog = card.analogOutputChannels
             let digital = card.digitalOutputChannels
             if analog == 0 && digital == 0 {
-                lines.append("Slot \(slot + 1) (\(card.productName)): no outputs.")
+                lines.append("Card \(slot + 1): no outputs.")
                 continue
             }
             if analog > 0 {
                 let sources = (0..<analog).map { byDestination[base &+ UInt8($0)] ?? SymphonyIORoutingAddress.none }
-                lines.append("Slot \(slot + 1) (\(card.productName)) analog out 1-\(analog) ← \(describe(sources))")
+                lines.append("Card \(slot + 1) analog out \(range((1, analog))): \(describe(sources))")
             }
             if digital > 0 {
                 let start = analog
@@ -2335,7 +2374,8 @@ public enum RoutingResetGuard {
                     let sources = (0..<count).map {
                         byDestination[base &+ UInt8(start + channel + $0)] ?? SymphonyIORoutingAddress.none
                     }
-                    lines.append("Slot \(slot + 1) (\(card.productName)) \(label) out 1-\(count) ← \(describe(sources))")
+                    let first = card.digitalChannelNumber(forChannel: channel)
+                    lines.append("Card \(slot + 1) \(label) out \(range((first, first + count - 1))): \(describe(sources))")
                     channel += count
                 }
             }
@@ -2343,11 +2383,12 @@ public enum RoutingResetGuard {
         return lines
     }
 
-    /// Human-readable description of exactly what an INPUT reset would do.
+    /// What an INPUT reset would do, one line for each block of software
+    /// inputs: "Software 1–8: Card 1 analog in 1–8".
     ///
     /// Input reset writes only P2P (USB record) destinations, so it can never
-    /// touch a hardware output — ADAT included. That fact is stated outright in
-    /// the confirmation so the user is not asked to fear the wrong thing.
+    /// touch a hardware output — ADAT included. The confirmation's closing
+    /// sentence (`inputResetClosing`) says so.
     /// `usbChannelCount` is the number of USB record destinations the current
     /// device mode actually streams — a COUNT here, not the wrapping modulo it is
     /// on the output side.
@@ -2382,13 +2423,13 @@ public enum RoutingResetGuard {
             guard channelOnBoard < card.analogInputChannels + card.digitalInputChannels else { return nil }
             let isDigital = channelOnBoard >= card.analogInputChannels
             let digitalOffset = channelOnBoard - card.analogInputChannels
-            let label = isDigital ? card.digitalLabel(forChannel: digitalOffset) : "Analog"
+            let label = isDigital ? card.digitalLabel(forChannel: digitalOffset) : "analog"
             let number = isDigital ? card.digitalChannelNumber(forChannel: digitalOffset) : channelOnBoard + 1
             return (Group(slot: slot, label: label), number)
         }
 
         // Collapse the per-channel table into contiguous runs so the dialog says
-        // "DAW in 1-8 ← Slot 1 Analog in 1-8", not sixteen separate lines.
+        // "Software 1–8: Card 1 analog in 1–8", not sixteen separate lines.
         var lines: [String] = []
         var silent: [Int] = []
         var runGroup: Group?
@@ -2398,7 +2439,7 @@ public enum RoutingResetGuard {
         func flush() {
             guard let current = runGroup else { return }
             lines.append(
-                "DAW in \(range(runDAW)) ← Slot \(current.slot) \(current.label) in \(range(runSource))")
+                "Software \(range(runDAW)): Card \(current.slot) \(current.label) in \(range(runSource))")
             runGroup = nil
         }
 
@@ -2424,7 +2465,7 @@ public enum RoutingResetGuard {
         flush()
 
         if !silent.isEmpty {
-            lines.append("DAW in \(compactRuns(silent)): no hardware input behind them — left silent.")
+            lines.append("Software \(compactRuns(silent)): no hardware input, silent.")
         }
         // What will NOT reach the DAW: hardware inputs the default table never
         // assigns, because the USB record channels ran out before they were
@@ -2435,9 +2476,9 @@ public enum RoutingResetGuard {
             let assigned = routes.compactMap { group(for: $0.source) }
                 .filter { $0.group.slot == slot }
             let analog = card.analogInputChannels
-            let analogAssigned = assigned.filter { $0.group.label == "Analog" }.count
+            let analogAssigned = assigned.filter { $0.group.label == "analog" }.count
             if analog > analogAssigned {
-                lines.append("Slot \(slot) Analog in \(analogAssigned + 1)-\(analog): NOT routed to the DAW.")
+                lines.append("Card \(slot) analog in \(range((analogAssigned + 1, analog))): not recorded by any software input.")
             }
             // Per digital plug type (the 2x6 has AES then optical).
             for label in ["AES", "ADAT"] {
@@ -2445,20 +2486,19 @@ public enum RoutingResetGuard {
                 guard digital > 0 else { continue }
                 let digitalAssigned = assigned.filter { $0.group.label == label }.count
                 if digital > digitalAssigned {
-                    lines.append("Slot \(slot) \(label) in \(digitalAssigned + 1)-\(digital): NOT routed to the DAW.")
+                    lines.append("Card \(slot) \(label) in \(range((digitalAssigned + 1, digital))): not recorded by any software input.")
                 }
             }
         }
-        lines.append("Only the Mac's record channels change. No hardware output is touched — ADAT outputs are unaffected.")
         return lines
     }
 
-    /// "1-8" for a run, "3" for a single channel.
+    /// "1–8" for a run, "3" for a single channel.
     private static func range(_ run: (first: Int, last: Int)) -> String {
-        run.first == run.last ? "\(run.first)" : "\(run.first)-\(run.last)"
+        run.first == run.last ? "\(run.first)" : "\(run.first)–\(run.last)"
     }
 
-    /// Render a list of source bytes as DAW channel numbers, collapsing runs.
+    /// Render a list of source bytes as software output numbers, collapsing runs.
     private static func describe(_ sources: [UInt8]) -> String {
         var daw: [Int] = []
         var hasSilence = false
@@ -2476,13 +2516,13 @@ public enum RoutingResetGuard {
                 daw.append(Int(source &- SymphonyIORoutingAddress.xlinkPlaybackBase) + 1)
             }
         }
-        let parts = mixers + (daw.isEmpty ? [] : ["DAW \(compactRuns(daw))"])
-        if parts.isEmpty { return "silence" }
+        let parts = mixers + (daw.isEmpty ? [] : ["Software \(compactRuns(daw))"])
+        if parts.isEmpty { return "silent" }
         let text = parts.joined(separator: ", ")
-        return hasSilence ? "\(text) (remainder silent)" : text
+        return hasSilence ? "\(text), the rest silent" : text
     }
 
-    /// "1, 2, 3, 5" -> "1-3, 5".
+    /// "1, 2, 3, 5" -> "1–3, 5".
     private static func compactRuns(_ values: [Int]) -> String {
         guard !values.isEmpty else { return "none" }
         var parts: [String] = []
@@ -2490,11 +2530,11 @@ public enum RoutingResetGuard {
         var previous = values[0]
         for value in values.dropFirst() {
             if value == previous + 1 { previous = value; continue }
-            parts.append(runStart == previous ? "\(runStart)" : "\(runStart)-\(previous)")
+            parts.append(runStart == previous ? "\(runStart)" : "\(runStart)–\(previous)")
             runStart = value
             previous = value
         }
-        parts.append(runStart == previous ? "\(runStart)" : "\(runStart)-\(previous)")
+        parts.append(runStart == previous ? "\(runStart)" : "\(runStart)–\(previous)")
         return parts.joined(separator: ", ")
     }
 }

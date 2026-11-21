@@ -819,7 +819,8 @@ struct RoutingResetGuardTests {
         let staleSlot2 = RoutingResetGuard.refusalReason(
             board1: .detected(.optical), board2: .cached(.optical))
         #expect(staleSlot2 != nil)
-        #expect(staleSlot2?.contains("Slot 2") == true)
+        #expect(staleSlot2?.contains("Card 2: 8x8 OPT") == true)
+        #expect(staleSlot2?.contains("Card 1") == false && staleSlot2?.contains("Slot") == false)
         #expect(staleSlot2?.contains("ADAT") == true, "the refusal must name the consequence")
 
         #expect(RoutingResetGuard.refusalReason(
@@ -831,39 +832,40 @@ struct RoutingResetGuardTests {
                 "a simulated card is not a measurement either")
     }
 
-    @Test("The output confirmation names the cards and the concrete ADAT consequence")
+    @Test("The output confirmation says what each block of outputs plays, ADAT included")
     func outputConfirmationNamesADAT() {
         let lines = RoutingResetGuard.outputPlanLines(board1: .optical, board2: .analogAD16)
-        let text = lines.joined(separator: "\n")
-        #expect(text.contains("8x8 OPT"))
-        #expect(text.contains("16 Analog In / 16 Digital Out"))
-        #expect(text.contains("ADAT out 1-8 ← DAW 9-16"),
-                "the ADAT consequence must be spelled out, got:\n\(text)")
-        #expect(text.contains("analog out 1-8 ← DAW 1-8"))
-        // Slot 1's 16 ADAT outputs wrap back to DAW 1-16.
-        #expect(text.contains("ADAT out 1-16 ← DAW 1-16"))
+        // Over USB, card 2's 16 ADAT outputs wrap back to software 1-16.
+        #expect(lines == [
+            "Card 1 analog out 1–8: Software 1–8",
+            "Card 1 ADAT out 1–8: Software 9–16",
+            "Card 2 ADAT out 1–16: Software 1–16",
+        ])
     }
 
     @Test("The input confirmation states plainly that no hardware output is touched")
     func inputConfirmationStatesScope() {
-        let lines = RoutingResetGuard.inputPlanLines(
+        let text = RoutingResetGuard.inputResetMessage(
             board1: .optical, board2: .analogAD16, usbChannelCount: 16)
-        let text = lines.joined(separator: "\n")
-        #expect(text.contains("No hardware output is touched"))
-        #expect(text.contains("ADAT outputs are unaffected"))
         // Optical slot 0 gives 8 analog + 8 ADAT inputs; AD16 slot 1 gives 16
         // analog inputs. Analog is consumed across both boards before digital, so
         // the 16 USB record channels run out before any ADAT input is reached.
-        #expect(text.contains("DAW in 1-8 ← Slot 1 Analog in 1-8"))
-        #expect(text.contains("DAW in 9-16 ← Slot 2 Analog in 1-8"))
-        // "…and what will NOT reach the DAW" — stated, not left to be discovered.
-        #expect(text.contains("Slot 1 ADAT in 1-8: NOT routed to the DAW."))
-        #expect(text.contains("Slot 2 Analog in 9-16: NOT routed to the DAW."))
+        // What no software input records is stated, not left to be discovered.
+        #expect(text == """
+            Each software input goes back to its default hardware input:
+
+            Software 1–8: Card 1 analog in 1–8
+            Software 9–16: Card 2 analog in 1–8
+            Card 1 ADAT in 1–8: not recorded by any software input.
+            Card 2 analog in 9–16: not recorded by any software input.
+
+            Only what your Mac records from changes. Outputs are not affected.
+            """)
     }
 
     @Test("An empty slot is described, not silently skipped")
     func emptySlotDescribed() {
         let lines = RoutingResetGuard.outputPlanLines(board1: .optical, board2: .none)
-        #expect(lines.contains { $0.contains("Slot 2") && $0.contains("no card") })
+        #expect(lines.last == "Card 2: no card.")
     }
 }
