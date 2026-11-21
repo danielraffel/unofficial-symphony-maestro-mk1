@@ -18,7 +18,7 @@ private final class KeysHelper: XPCTransport, @unchecked Sendable {
     var helperOutput: UInt64? = 1
     var accepts = true
     /// What the helper answers to "helperVersion".
-    var version: UInt64? = XPCDeviceConnection.requiredHelperVersion
+    var version: UInt64? = XPCDeviceConnection.audioOutputHelperVersion
     func helperVersion() async -> UInt64? { version }
 
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
@@ -35,6 +35,9 @@ private final class KeysHelper: XPCTransport, @unchecked Sendable {
     func setSwReturnLevel(_ dB: Double) {}
     func setSwReturnProcessing(_ enabled: Bool) {}
     func resetAudioOutput() {}
+    private var epoch: UInt64 = 0
+    var helperEpoch: UInt64 { lock.withLock { epoch } }
+    func restart() { lock.withLock { epoch += 1 } }
     func helperMonitorOutput() async -> UInt64? { helperOutput }
     func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool {
         guard accepts else { return false }
@@ -438,18 +441,63 @@ struct KeyboardVolumeOutputAppTests {
         await state.serviceKeyboardVolumeOutput()
         #expect(helper.monitorOutputs.isEmpty)
         state.usbHelperOutdated = false
-        // An older helper that has not been recognised as one yet is not
-        // asked either, and nothing is read from the unit for it.
-        helper.version = XPCDeviceConnection.requiredHelperVersion - 1
-        let reads = helper.reads.count
-        await state.serviceKeyboardVolumeOutput()
-        #expect(helper.monitorOutputs.isEmpty && helper.reads.count == reads)
-        helper.version = XPCDeviceConnection.requiredHelperVersion
-        state.keyboardVolumeRetryAfter = .distantPast
         await state.serviceKeyboardVolumeOutput()
         #expect(helper.monitorOutputs.first?.output == 2)
         #expect(helper.monitorOutputs.first?.attenuation == 18)
         #expect(state.hp1Level == -18 && !state.hp1Muted)
+    }
+
+    @Test("USB, a version-2 helper: still good for mixers, but Audio Output cannot be chosen and the keys are the speaker's",
+          arguments: [UInt64(2), nil])
+    func usbHelperBeforeAudioOutput(version: UInt64?) async throws {
+        let helper = KeysHelper()
+        helper.version = version
+        let (state, connection) = try usb(helper)
+        // The mixer and routing requirement is unchanged: version 2 passes it.
+        #expect(XPCDeviceConnection.requiredHelperVersion == 2 && XPCDeviceConnection.audioOutputHelperVersion == 3)
+        if version == 2 { #expect(await connection.helperStatus() == .current) }
+        connection.settingsStore.record(.uint32(3), for: AppState.keyboardVolumeAddress)
+        await state.serviceKeyboardVolumeOutput()
+        #expect(!state.keyboardVolumeOutputAvailable)
+        #expect(state.keyboardVolumeUnavailableReason != nil)
+        #expect(state.usbKeysMoveSpeakerOnly)
+        // Nothing is asked of it, nothing is read for it, and a Line change saves nothing.
+        #expect(helper.monitorOutputs.isEmpty && helper.reads.isEmpty && helper.writes.isEmpty)
+        state.speakerModeChangedByUser(from: 2, to: 0, unit: .a)
+        #expect(connection.settingsStore.value(for: AppState.keyboardVolumeAddress)?.asUInt32 == 3)
+        #expect(!state.keyboardVolumeKeysDoNothing)
+        // The helper is asked its version once per start, not on every cycle.
+        helper.version = 3
+        await state.serviceKeyboardVolumeOutput()
+        #expect(!state.keyboardVolumeOutputAvailable)
+        helper.restart()
+        await state.serviceKeyboardVolumeOutput()
+        #expect(state.keyboardVolumeOutputAvailable && state.keyboardVolumeUnavailableReason == nil)
+        #expect(helper.monitorOutputs.first?.output == 3)
+    }
+
+    @Test("a choice made while the unit's identity is being read is kept and saved once the unit's own settings are in place")
+    func choiceWhileIdentityPending() async {
+        let (state, tb, driver) = thunderbolt()
+        state.unitAIdentityState = .pending
+        state.chooseKeyboardVolumeOutput(.headphone2, unit: .a)
+        // Shown at once, not written into the temporary store, not sent yet.
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone2)
+        #expect(tb.settingsStore.value(for: AppState.keyboardVolumeAddress) == nil)
+        await state.serviceKeyboardVolumeOutput()
+        #expect(driver.monitorOutputCalls.isEmpty)
+        // Setting Line meanwhile is kept the same way.
+        state.speakerOutputMode = 0
+        state.speakerModeChangedByUser(from: 2, to: 0, unit: .a)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        #expect(tb.settingsStore.value(for: AppState.keyboardVolumeAddress) == nil)
+        // The identity arrives (its settings store replaces the temporary one).
+        state.unitAIdentity = 0xF2C0_0A09
+        await state.serviceKeyboardVolumeOutput()
+        #expect(tb.settingsStore.value(for: AppState.keyboardVolumeAddress)?.asUInt32 == 2)
+        #expect(state.keyboardVolumePending.isEmpty)
+        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .headphone1)])
     }
 
     @Test("USB, Speaker in Line mode: the speaker's own level is read from the unit and nothing is sent to the helper")

@@ -27,7 +27,10 @@ struct MonitorDeviceSelectionTests {
         // choice; the Peripheral pop-up itself only with two units, named as
         // the original named it.
         #expect(source.contains("if showsVolumeKeys { volumeKeysSection }"))
-        #expect(source.contains("private var showsVolumeKeys: Bool { hasTwoMonitorDevices || appState.keyboardVolumeOutputAvailable }"))
+        #expect(source.contains("hasTwoMonitorDevices || appState.keyboardVolumeOutputAvailable || appState.keyboardVolumeUnavailableReason != nil"))
+        // An older USB helper: the pop-up is shown disabled, with the reason below it.
+        #expect(source.contains("Picker(\"Audio Output\", selection: .constant(KeyboardVolumeOutput.speakers))"))
+        #expect(source.contains("if let reason = appState.keyboardVolumeUnavailableReason {"))
         let section = try #require(source.range(of: "private var volumeKeysSection: some View {"))
         let body = source[section.upperBound...]
         let peripheral = try #require(body.range(of: "Picker(\"Peripheral\""))

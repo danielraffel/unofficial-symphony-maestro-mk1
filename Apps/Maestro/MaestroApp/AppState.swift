@@ -1452,6 +1452,15 @@ final class AppState: @unchecked Sendable {
     var keyboardVolumeRevision = 0
     /// Unit B's speaker mode, for the name of its Speaker entry; nil until read.
     var unitBSpeakerOutputMode: UInt32?
+    /// A choice made while the unit's identity, which its saved settings
+    /// hang on, was still being read. Saved once the identity is known
+    /// (`flushPendingKeyboardVolumeChoices`); until then the store is a
+    /// temporary one that the identity's own replaces.
+    @ObservationIgnored var keyboardVolumePending: [DeviceUnit: UInt32] = [:]
+    /// The USB helper's version, with the connection and helper epoch it was
+    /// read for; nil until read.
+    var usbHelperVersion: UInt64?
+    @ObservationIgnored var usbHelperVersionKey: (connection: ObjectIdentifier, epoch: UInt64)?
     /// The choices while no hardware is connected (simulation): not saved.
     @ObservationIgnored var keyboardVolumeSimulated: [DeviceUnit: UInt32] = [:]
     /// What has reached the driver or the helper (`serviceKeyboardVolumeOutput`).
@@ -4450,7 +4459,7 @@ final class AppState: @unchecked Sendable {
         let output = keyboardVolumeOutput(for: .a)
         return Self.macVolumeAdoption(
             thunderbolt: transportType == .thunderbolt, servingBuild: servingDextBuild,
-            helperOutdated: usbHelperOutdated, output: output,
+            helperOutdated: usbKeysMoveSpeakerOnly, output: output,
             settled: keyboardVolumeSettled(output), speakerMode: speakerOutputMode, mute: mute)
     }
 
@@ -4475,7 +4484,7 @@ final class AppState: @unchecked Sendable {
             // to this same device. No need to double-write.
             return
         }
-        guard (usbHelperOutdated ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
+        guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
         writeMacVolume(dB)
     }
 
@@ -4500,7 +4509,7 @@ final class AppState: @unchecked Sendable {
     /// For Thunderbolt: no-op (same reason as writeASPVolume).
     func writeASPMute(_ muted: Bool, output: KeyboardVolumeOutput = .speakers) {
         if transportType == .thunderbolt { return }
-        guard (usbHelperOutdated ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
+        guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
         writeMacMute(muted)
     }
 

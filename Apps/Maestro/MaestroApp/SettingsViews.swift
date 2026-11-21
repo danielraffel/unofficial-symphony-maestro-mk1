@@ -255,7 +255,9 @@ struct DeviceSettingsView: View {
 
     /// Volume Keys is shown when there is something to choose: the unit
     /// (two Symphony I/Os at 64 channels) or the output the keys move.
-    private var showsVolumeKeys: Bool { hasTwoMonitorDevices || appState.keyboardVolumeOutputAvailable }
+    private var showsVolumeKeys: Bool {
+        hasTwoMonitorDevices || appState.keyboardVolumeOutputAvailable || appState.keyboardVolumeUnavailableReason != nil
+    }
 
     /// The unit whose outputs the Audio Output pop-up lists: the one chosen
     /// as Peripheral, as in the original; unit A when there is one unit.
@@ -666,11 +668,21 @@ struct DeviceSettingsView: View {
                 .maestroHelp(appState.converterVolumeKeys
                     ? "What the Mac's volume and mute keys control: the level of Mixer 1, or nothing."
                     : "Which output the Mac's volume and mute keys control.")
+            } else if appState.keyboardVolumeUnavailableReason != nil {
+                // An older USB helper: the keys move the speaker, and that is shown.
+                Picker("Audio Output", selection: .constant(KeyboardVolumeOutput.speakers)) {
+                    Text(KeyboardVolumeOutput.speakers.label(speakerMode: appState.speakerOutputMode))
+                        .tag(KeyboardVolumeOutput.speakers)
+                }
+                .pickerStyle(.menu)
+                .disabled(true)
             }
         } header: {
             Text("Volume Keys")
         } footer: {
-            if appState.keyboardVolumeOutputAvailable {
+            if let reason = appState.keyboardVolumeUnavailableReason {
+                Text(reason)
+            } else if appState.keyboardVolumeOutputAvailable {
                 if output == .speakers, output.keysDoNothing(speakerMode: speakerMode) {
                     Text("With Analog Out Format set to Line on the Output page, the volume keys do not change a level with Speaker chosen; the mute key still mutes the speaker output. Choose Headphone 1 or Headphone 2 to control a headphone.")
                 } else if output == .mixer1Level {

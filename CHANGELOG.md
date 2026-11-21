@@ -10,7 +10,8 @@ This beta lets you choose which output the Mac's volume and mute keys control, a
 - **Choosing Line on the Output page now switches Volume Keys › Audio Output to Headphone 1,** as Apogee's software did. You can change it to Headphone 2, or back to Speaker, under **Device Settings › Volume Keys › Audio Output**; it stays as you set it when you leave Line. Before, on ThunderBridge and PCIe the Mac's volume keys moved Headphone 1 in Line mode and went back to the speakers in any other format, without any setting showing it. If your outputs are already set to Line when you update, Audio Output starts on Headphone 1.
 - **With Speaker chosen in Line mode, the volume keys do not change a level,** as in Apogee's software, and the entry reads "Speaker (0ch)". The mute key still mutes the speaker output there. Over USB, the keys used to set the speaker level in Line mode although nothing could be heard of it.
 - **On ThunderBridge and PCIe, the card now starts with every output playing its software output directly, even before Maestro opens.** Before, Line 1/2 went through Mixer 1 from the moment the Mac started until Maestro opened and set your routing. A mixer you route to an output in Output Routing is still put back by Maestro when it connects.
-- **This beta updates the USB helper.** The standard install does this for you. If you installed with a custom install that left out "USB support" and you connect over USB, the status bar asks you to reinstall Maestro with USB support; until you do, Maestro does not set the mixers and Audio Output is not offered.
+- **On ThunderBridge and PCIe, the Mac's volume and mute keys do nothing for about five seconds after the Mac starts or wakes, or after the Symphony reconnects.** In that time macOS may put back a volume it saved earlier, possibly for another output; Maestro's driver no longer passes that on to the Symphony, so the level cannot jump. Press the key again after a moment.
+- **This beta updates the USB helper.** The standard install does this for you. If you installed with a custom install that left out "USB support" and you connect over USB, the helper from 0.9.19 keeps working for the mixer and routing, but Audio Output cannot be chosen: Device Settings › Volume Keys says so, and the keys control the speaker as before. Reinstall Maestro with USB support to choose another output.
 
 ### New
 
@@ -32,7 +33,9 @@ On USB and on ThunderBridge. Please say which connection you used.
 
 ### Release notes
 
-- On ThunderBridge and PCIe the Audio Output choice is put in place when Maestro opens. After the Mac restarts, the keys control the speaker until then. Over USB the choice is kept while Maestro is closed.
+- On ThunderBridge and PCIe the Audio Output choice is put in place when Maestro opens. After the Mac restarts, until Maestro is open, the keys control the speaker, or Headphone 1 if the outputs are set to Line, as in earlier versions. Over USB the choice is kept while Maestro is closed.
+- When you change Audio Output, the Mac's volume slider moves to that output's level, read from the Symphony. Over USB the keys are ignored for a moment (up to three seconds) while that happens.
+- If the Symphony is switched on after the Mac has started, the slider takes the Symphony's own levels when it connects.
 - Audio Output is offered once the new driver is the one running. If macOS has not switched to it yet (Device Settings › Info shows build 141 or older), the keys behave as before.
 - With Speaker chosen in Line mode the Mac's volume slider goes back to where it was after each key press.
 - **Reset Defaults** on the Output page puts Audio Output back on Speaker (Headphone 1 on a unit without an analog output card), as in Apogee's software.

@@ -206,6 +206,8 @@ extension AppState {
         let helper = await connection.helperStatus()
         guard isCurrent() else { return }
         usbHelperOutdated = helper == .outdated
+        await refreshUSBHelperVersion()
+        guard isCurrent() else { return }
         if usbHelperOutdated {
             // An older helper always moves the speakers: the Mac's volume is
             // the speaker's, and what was skipped until this was known is

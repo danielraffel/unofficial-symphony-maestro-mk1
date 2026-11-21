@@ -111,7 +111,7 @@ public extension XPCTransport {
     func getSoftwareOutputPeaks() async -> [Float]? { nil }
 
     /// Test transports stand for the helper this app ships.
-    func helperVersion() async -> UInt64? { XPCDeviceConnection.requiredHelperVersion }
+    func helperVersion() async -> UInt64? { XPCDeviceConnection.audioOutputHelperVersion }
 
     /// Transports that do not model the helper's volume output say nothing
     /// and accept nothing.
@@ -516,9 +516,17 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// and the helper mutes no mixer strip. An older helper puts Line 1/2 on
     /// Mixer 1 each time it configures the unit, with that mixer's inputs
     /// muted to hide them, so Maestro must not unmute them under it.
-    /// From 3 on the helper has "setMonitorOutput" (Volume Keys › Audio
-    /// Output).
-    public static let requiredHelperVersion: UInt64 = 3
+    /// This is the requirement for mixers and routing only; Volume Keys ›
+    /// Audio Output needs `audioOutputHelperVersion`.
+    public static let requiredHelperVersion: UInt64 = 2
+
+    /// The first helper with "setMonitorOutput" (Volume Keys › Audio
+    /// Output). An older one always moves the speakers with the keys; it is
+    /// still safe for mixers and routing from `requiredHelperVersion` on.
+    public static let audioOutputHelperVersion: UInt64 = 3
+
+    /// The helper's version, nil when it did not say.
+    public func helperVersionNumber() async -> UInt64? { await transport.helperVersion() }
 
     /// The level and mute an output had when it became the keys' output.
     public struct KeyboardVolumeState: Sendable, Equatable {

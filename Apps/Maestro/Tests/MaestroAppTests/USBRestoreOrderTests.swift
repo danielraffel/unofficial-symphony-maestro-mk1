@@ -489,7 +489,10 @@ struct USBRestoreOrderTests {
         let text = try String(contentsOf: source, encoding: .utf8)
         let line = try #require(text.split(separator: "\n").first { $0.hasPrefix("#define MAESTRO_HELPER_VERSION ") })
         let number = try #require(UInt64(line.split(separator: " ").last?.dropLast() ?? ""))
-        #expect(number == XPCDeviceConnection.requiredHelperVersion)
+        // The helper this app ships has everything the app can ask for.
+        #expect(number == XPCDeviceConnection.audioOutputHelperVersion)
+        #expect(XPCDeviceConnection.requiredHelperVersion == 2)
+        #expect(number >= XPCDeviceConnection.requiredHelperVersion)
         #expect(text.contains("strcmp(cmd, \"helperVersion\") == 0"))
     }
 

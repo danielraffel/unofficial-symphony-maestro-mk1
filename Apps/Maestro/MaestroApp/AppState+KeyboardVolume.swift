@@ -78,10 +78,8 @@ extension AppState {
     /// otherwise.
     func keyboardVolumeOutput(for unit: DeviceUnit) -> KeyboardVolumeOutput {
         _ = keyboardVolumeRevision   // the pop-up follows a change
-        let saved = connectionMode == .simulated ? keyboardVolumeSimulated[unit]
-            : keyboardVolumeStore(for: unit)?.value(for: Self.keyboardVolumeAddress)?.asUInt32
         return KeyboardVolumeOutput.resolve(
-            saved: saved,
+            saved: keyboardVolumeSaved(for: unit),
             hasAnalogOutput: keyboardVolumeHasAnalogOutput(unit),
             convertersOnly: unit == .a && converterVolumeKeys,
             speakerMode: unit == .a ? speakerOutputMode : unitBSpeakerOutputMode)
@@ -96,9 +94,7 @@ extension AppState {
     func speakerModeChangedByUser(from old: UInt32, to new: UInt32, unit: DeviceUnit) {
         guard old != new, keyboardVolumeOutputAvailable, !(unit == .a && converterVolumeKeys) else { return }
         let hasAnalog = keyboardVolumeHasAnalogOutput(unit)
-        let saved = connectionMode == .simulated ? keyboardVolumeSimulated[unit]
-            : keyboardVolumeStore(for: unit)?.value(for: Self.keyboardVolumeAddress)?.asUInt32
-        let before = KeyboardVolumeOutput.resolve(saved: saved, hasAnalogOutput: hasAnalog,
+        let before = KeyboardVolumeOutput.resolve(saved: keyboardVolumeSaved(for: unit), hasAnalogOutput: hasAnalog,
                                                   convertersOnly: false, speakerMode: old)
         chooseKeyboardVolumeOutput(before.afterUserChange(ofSpeakerModeFrom: old, to: new), unit: unit)
     }
@@ -111,6 +107,63 @@ extension AppState {
         guard keyboardVolumeOutputAvailable, !(unit == .a && converterVolumeKeys) else { return }
         chooseKeyboardVolumeOutput(KeyboardVolumeOutput.defaultOutput(
             hasAnalogOutput: keyboardVolumeHasAnalogOutput(unit), convertersOnly: false), unit: unit)
+    }
+
+    /// What is saved for a unit: a choice made while its identity was being
+    /// read first, then its settings store.
+    func keyboardVolumeSaved(for unit: DeviceUnit) -> UInt32? {
+        if connectionMode == .simulated { return keyboardVolumeSimulated[unit] }
+        return keyboardVolumePending[unit]
+            ?? keyboardVolumeStore(for: unit)?.value(for: Self.keyboardVolumeAddress)?.asUInt32
+    }
+
+    func keyboardVolumeIdentityPending(_ unit: DeviceUnit) -> Bool {
+        (unit == .a ? unitAIdentityState : unitBIdentityState) == .pending
+    }
+
+    /// Save the choices made while a unit's identity was being read, now
+    /// that its own settings store is in place.
+    @MainActor
+    func flushPendingKeyboardVolumeChoices() {
+        for (unit, value) in keyboardVolumePending where !keyboardVolumeIdentityPending(unit) {
+            if let store = keyboardVolumeStore(for: unit) {
+                store.record(.uint32(value), for: Self.keyboardVolumeAddress)
+            }
+            keyboardVolumePending[unit] = nil
+            keyboardVolumeRevision &+= 1
+        }
+    }
+
+    /// Over USB with a helper before version 3 (or one older still): the
+    /// keys always move the speakers, whatever is chosen.
+    var usbKeysMoveSpeakerOnly: Bool {
+        usbHelperOutdated || (usbHelperVersion.map { $0 < XPCDeviceConnection.audioOutputHelperVersion } ?? false)
+    }
+
+    /// Why Audio Output cannot be chosen although a Symphony I/O is
+    /// connected; nil when it can, or when there is nothing to say.
+    var keyboardVolumeUnavailableReason: String? {
+        guard connectionMode == .hardware, device is XPCDeviceConnection, connectedUnit == nil,
+              usbKeysMoveSpeakerOnly else { return nil }
+        return "The installed USB helper is older than this version of Maestro, so the keys control the speaker. Reinstall Maestro with USB support to choose another output."
+    }
+
+    /// Ask the USB helper its version once per connection and helper start.
+    @MainActor
+    func refreshUSBHelperVersion() async {
+        guard let xpc = device as? XPCDeviceConnection, connectionMode == .hardware else { return }
+        let key = (ObjectIdentifier(xpc), xpc.helperEpoch)
+        if let known = usbHelperVersionKey, known == key { return }
+        let version = await xpc.helperVersionNumber()
+        guard device === xpc else { return }
+        usbHelperVersionKey = key
+        // A helper that does not answer the question is an older one.
+        let answered = version ?? 0
+        if usbHelperVersion != answered { usbHelperVersion = answered }
+        if usbKeysMoveSpeakerOnly {
+            readASPVolume()
+            readASPMute()
+        }
     }
 
     /// The speaker mode a unit's Speaker entry is named after.
@@ -138,7 +191,8 @@ extension AppState {
             return KeyboardVolumeOutput.driverSupports(servingDextBuild)
                 && (connectedUnit == nil || converterVolumeKeys)
         }
-        return device is XPCDeviceConnection && !usbHelperOutdated && connectedUnit == nil
+        return device is XPCDeviceConnection && connectedUnit == nil && !usbHelperOutdated
+            && (usbHelperVersion ?? 0) >= XPCDeviceConnection.audioOutputHelperVersion
     }
 
     /// The keys do nothing for unit A right now: None on converters, or
@@ -157,7 +211,14 @@ extension AppState {
             keyboardVolumeRevision &+= 1
             return
         }
+        if keyboardVolumeIdentityPending(unit) {
+            // The unit's own settings store is not in place yet.
+            keyboardVolumePending[unit] = output.rawValue
+            keyboardVolumeRevision &+= 1
+            return
+        }
         guard let store = keyboardVolumeStore(for: unit) else { return }
+        keyboardVolumePending[unit] = nil
         store.record(.uint32(output.rawValue), for: Self.keyboardVolumeAddress)
         keyboardVolumeRevision &+= 1
         keyboardVolumeRetryAfter = .distantPast
@@ -248,7 +309,7 @@ extension AppState {
         }
         if let xpc = device as? XPCDeviceConnection {
             // Not while the unit is starting up, and not under an older helper.
-            guard connectedUnit == nil, isHardwareInitialized, !usbHelperOutdated,
+            guard connectedUnit == nil, isHardwareInitialized, keyboardVolumeOutputAvailable,
                   unitAIdentityState != .pending, usbSettleRemainingNow <= 0 else { return nil }
             return KeyboardVolumeSent(connection: ObjectIdentifier(xpc), epoch: xpc.helperEpoch,
                                       converters: false, outputs: [.a: keyboardVolumeOutput(for: .a)])
@@ -261,10 +322,13 @@ extension AppState {
     /// it does nothing when everything is already there.
     @MainActor
     func serviceKeyboardVolumeOutput() async {
-        guard !keyboardVolumeServiceRunning, let wanted = keyboardVolumeWanted(),
-              wanted != keyboardVolumeSent, Date() >= keyboardVolumeRetryAfter else { return }
+        guard !keyboardVolumeServiceRunning else { return }
         keyboardVolumeServiceRunning = true
         defer { keyboardVolumeServiceRunning = false }
+        await refreshUSBHelperVersion()
+        flushPendingKeyboardVolumeChoices()
+        guard let wanted = keyboardVolumeWanted(),
+              wanted != keyboardVolumeSent, Date() >= keyboardVolumeRetryAfter else { return }
         // Only what differs, unless the driver or the helper is another one.
         let previous = keyboardVolumeSent.flatMap {
             $0.connection == wanted.connection && $0.epoch == wanted.epoch && $0.converters == wanted.converters
@@ -319,9 +383,6 @@ extension AppState {
     /// of the output chosen before.
     @MainActor
     private func applyUSBKeyboardVolumeOutput(_ output: KeyboardVolumeOutput, to xpc: XPCDeviceConnection) async -> Bool {
-        // Only a helper that knows the command is asked (an older one would
-        // leave each attempt waiting for an answer).
-        guard await xpc.helperStatus() == .current, device === xpc else { return false }
         if await xpc.keyboardVolumeOutputInHelper() == output {
             // Speaker in Line mode: the keys move nothing, and the Mac's
             // control may have drifted while Maestro was closed. It is put

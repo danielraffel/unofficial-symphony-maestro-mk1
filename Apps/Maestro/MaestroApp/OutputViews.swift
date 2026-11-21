@@ -808,6 +808,8 @@ struct OutputControlsView: View {
                                 speakerMuted = false
                                 speakerDim = false
                                 speakerMono = false
+                                // The Mac's mute control follows where the speaker is its output.
+                                if monitorTarget.unit == .a { appState.writeASPMute(false) }
                                 Task {
                                     await writeMonitorProperty(.outputMute, value: .bool(false))
                                     await writeMonitorProperty(.outputDim, value: .bool(false))
