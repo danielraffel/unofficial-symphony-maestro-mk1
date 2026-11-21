@@ -234,10 +234,38 @@ final class UpdateChannelDelegate: NSObject, SPUUpdaterDelegate {
     private let store: ChannelStore
     private let installedVersion: String
     var onChange: (() -> Void)?
+    /// Whether one of Apogee's kernel drivers for the ThunderBridge or PCIe
+    /// card is loaded right now. Asked once per update Sparkle is about to
+    /// offer; a test passes its own.
+    private let apogeeKernelDriverLoaded: () -> Bool
 
-    init(store: ChannelStore, installedVersion: String) {
+    init(store: ChannelStore, installedVersion: String,
+         apogeeKernelDriverLoaded: @escaping () -> Bool = {
+             AppState.currentOriginalApogeeDrivers().hasLoadedPCIKernelDriver
+         }) {
         self.store = store
         self.installedVersion = installedVersion
+        self.apogeeKernelDriverLoaded = apogeeKernelDriverLoaded
+    }
+
+    /// Why an update must not go ahead now, or nil. While Apogee's kernel
+    /// driver is loaded, installing an update replaces Maestro's driver, and
+    /// stopping it next to Apogee's is what crashed a user's Mac
+    /// (ApogeeDriverConflict.swift). The installer's preinstall refuses too;
+    /// this says so before anything is downloaded.
+    func updateRefusal() -> NSError? {
+        guard apogeeKernelDriverLoaded() else { return nil }
+        return NSError(domain: "com.danielraffel.maestro.update", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: ApogeeDriverConflict.updateRefusal,
+        ])
+    }
+
+    /// Sparkle asks before it shows or downloads an update. Throwing stops it;
+    /// for a check the user started, Sparkle shows the error's description.
+    @objc(updater:shouldProceedWithUpdate:updateCheck:error:)
+    func updater(_ updater: SPUUpdater, shouldProceedWithUpdate updateItem: SUAppcastItem,
+                 updateCheck: SPUUpdateCheck) throws {
+        if let refusal = updateRefusal() { throw refusal }
     }
 
     /// The channel set for the current state; `[]` is stable items only.

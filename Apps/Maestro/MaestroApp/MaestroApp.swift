@@ -63,6 +63,7 @@ struct MaestroApp: App {
             case .activated:           print("[Maestro] Driver extension: activated")
             case .willCompleteAfterReboot: print("[Maestro] Driver extension: reboot to finish activation")
             case .upgradePending:      print("[Maestro] Driver extension: upgrade pending; reconnect ThunderBridge")
+            case .heldForApogeeDriver: print("[Maestro] Driver extension: not requested; Apogee's kernel driver for the card is loaded")
             case .failed(let why):     print("[Maestro] Driver extension: activation failed — \(why)")
             }
         }

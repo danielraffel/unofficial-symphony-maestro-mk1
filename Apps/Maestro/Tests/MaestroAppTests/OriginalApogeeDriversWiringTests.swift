@@ -28,6 +28,87 @@ struct OriginalApogeeDriversWiringTests {
         #expect(preinstall.contains("Restart your Mac"))
     }
 
+    @Test("preinstall and the app name the same ThunderBridge and PCIe kernel drivers, and the same update sentence")
+    func sameKernelDriversAndUpdateNote() throws {
+        let preinstall = try file("../../Installer/scripts-core/preinstall")
+        let ids = OriginalApogeeDrivers.pciKernelExtensionBundleIDs.map { "\"\($0)\"" }.joined(separator: " ")
+        #expect(preinstall.contains("APOGEE_PCIE_KEXT_IDS=(\(ids))"))
+        // The same idea in both, each in its own tense.
+        let shared = "because this version now checks for Apogee's original driver, and it found it on this Mac."
+        #expect(preinstall.contains("UPDATE_NOTE=\"You are seeing this while updating \(shared) Your current Maestro is unchanged.\""))
+        #expect(ApogeeDriverConflict.updateNote.contains(shared))
+        // Maestro's own removal commands are never the installer's advice.
+        #expect(!preinstall.contains("clear-staging") && !preinstall.contains("kmutil rebuild"))
+        #expect(preinstall.contains(OriginalApogeeDrivers.releaseDMGURL.absoluteString))
+    }
+
+    @Test("No driver request while Apogee's kernel driver is loaded: one gate, before every submit")
+    func activationGate() throws {
+        let source = try file("MaestroApp/SystemExtensionInstaller.swift")
+        // One place submits a request, and the check comes before it.
+        #expect(source.components(separatedBy: "OSSystemExtensionManager.shared.submitRequest(").count - 1 == 1)
+        #expect(source.components(separatedBy: "OSSystemExtensionRequest.activationRequest(").count - 1 == 1)
+        let activate = try #require(source.range(of: "public func activate() {"))
+        let gate = try #require(source.range(of: "switch Self.admission(dextBundled: isDextBundled, "
+            + "requestInFlight: activationRequestInFlight,\n                              conflict: currentApogeeConflict) {",
+            range: activate.upperBound..<source.endIndex))
+        let held = try #require(source.range(of: "case .heldForApogeeDriver:", range: gate.upperBound..<source.endIndex))
+        let submit = try #require(source.range(of: "OSSystemExtensionManager.shared.submitRequest("))
+        #expect(held.upperBound < submit.lowerBound)
+        // The held case leaves before the request is made.
+        #expect(source[held.upperBound..<submit.lowerBound].contains("            return\n        case .alreadyInFlight:"))
+        // Nothing in the app deactivates, retires or stops the driver.
+        for name in ["SystemExtensionInstaller.swift", "DriverHandover.swift", "AppState.swift", "AppShell.swift",
+                     "SettingsViews.swift"] {
+            let text = try file("MaestroApp/\(name)")
+            #expect(!text.contains("deactivationRequest("), "\(name)")
+        }
+        // The banner for this state replaces the ones that say to activate or replug.
+        let shell = try file("MaestroApp/AppShell.swift")
+        let banner = try #require(shell.range(of: "private var visibleThunderBridgeBanner"))
+        let ours = try #require(shell.range(of: "appState.apogeeDriverConflict?.banner", range: banner.upperBound..<shell.endIndex))
+        let theirs = try #require(shell.range(of: "thunderBridgeReport.thunderBridgeBanner", range: banner.upperBound..<shell.endIndex))
+        #expect(ours.lowerBound < theirs.lowerBound)
+        #expect(try file("MaestroApp/SettingsViews.swift")
+            .contains("OriginalApogeeDriversWarning(finding: found, conflict: appState.apogeeDriverConflict)"))
+    }
+
+    @Test("A call to activate: held while Apogee's kernel driver is loaded, whatever else is true")
+    func admission() {
+        typealias I = SystemExtensionInstaller
+        func decision(loaded: Bool) -> ApogeeDriverConflict.Decision {
+            ApogeeDriverConflict.decide(kextLoaded: loaded, copyOnDisk: true, maestroDriverActive: true,
+                                        updatePending: true)
+        }
+        for inFlight in [false, true] {
+            #expect(I.admission(dextBundled: true, requestInFlight: inFlight) { decision(loaded: true) }
+                == .heldForApogeeDriver)
+        }
+        #expect(I.admission(dextBundled: true, requestInFlight: false) { decision(loaded: false) } == .submit)
+        #expect(I.admission(dextBundled: true, requestInFlight: true) { decision(loaded: false) } == .alreadyInFlight)
+        // No driver in the app: nothing to hold, and nothing is looked up.
+        var asked = 0
+        #expect(I.admission(dextBundled: false, requestInFlight: false) { asked += 1; return decision(loaded: true) }
+            == .notBundled)
+        #expect(asked == 0)
+    }
+
+    @Test("What sysextd's records say: active when enabled, update pending when a registered build differs")
+    func conflictInputs() {
+        func dext(_ build: String, enabled: Bool = true, uninstalling: Bool = false) -> InstalledDextInfo {
+            InstalledDextInfo(bundleVersion: build, bundleShortVersion: "0.11.14", isEnabled: enabled,
+                              isAwaitingUserApproval: false, isAwaitingReboot: false, isUninstalling: uninstalling)
+        }
+        typealias I = SystemExtensionInstaller
+        #expect(I.conflictInputs(registered: nil, bundledBuild: "140") == (false, false))
+        #expect(I.conflictInputs(registered: [], bundledBuild: "140") == (false, false))
+        #expect(I.conflictInputs(registered: [dext("140")], bundledBuild: "140") == (true, false))
+        #expect(I.conflictInputs(registered: [dext("123")], bundledBuild: "140") == (true, true))
+        #expect(I.conflictInputs(registered: [dext("123"), dext("140")], bundledBuild: "140") == (true, true))
+        #expect(I.conflictInputs(registered: [dext("140", enabled: false)], bundledBuild: "140") == (false, false))
+        #expect(I.conflictInputs(registered: [dext("123", uninstalling: true)], bundledBuild: nil) == (false, false))
+    }
+
     @Test("Warning page, Help and the app use the same Release 5.5 download")
     func sameDownload() throws {
         let url = OriginalApogeeDrivers.releaseDMGURL.absoluteString

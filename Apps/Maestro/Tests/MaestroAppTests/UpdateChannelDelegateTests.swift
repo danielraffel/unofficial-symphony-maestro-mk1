@@ -14,6 +14,23 @@ struct UpdateChannelDelegateTests {
         return (ChannelStore(defaults: defaults), defaults, name)
     }
 
+    @Test("An update is refused while Apogee's kernel driver is loaded, and only then", arguments: [true, false])
+    func refusesUpdateWithApogeeDriverLoaded(loaded: Bool) {
+        let (store, defaults, name) = makeStore()
+        defer { defaults.removePersistentDomain(forName: name) }
+        var asked = 0
+        let delegate = UpdateChannelDelegate(store: store, installedVersion: "0.9.18",
+                                             apogeeKernelDriverLoaded: { asked += 1; return loaded })
+        let refusal = delegate.updateRefusal()
+        #expect((refusal != nil) == loaded)
+        #expect(asked == 1)
+        if loaded {
+            #expect(refusal?.localizedDescription == ApogeeDriverConflict.updateRefusal)
+        }
+        // Sparkle finds the hook by this selector.
+        #expect(delegate.responds(to: NSSelectorFromString("updater:shouldProceedWithUpdate:updateCheck:error:")))
+    }
+
     @Test func stableCopyAsksForNoChannels() {
         let (store, defaults, name) = makeStore()
         defer { defaults.removePersistentDomain(forName: name) }

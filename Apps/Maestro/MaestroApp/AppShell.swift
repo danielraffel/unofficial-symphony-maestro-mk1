@@ -93,6 +93,14 @@ struct ContentView: View {
     /// user closes it until its content changes; one that only a finished
     /// update clears (dismissible == false) cannot be closed.
     private var visibleThunderBridgeBanner: (banner: ThunderBridgeBanner, token: String)? {
+        // Apogee's kernel driver for the card is loaded: this replaces every
+        // other driver banner. Those say to activate the driver, or to unplug
+        // the cable to finish an update, and either can crash the Mac in this
+        // state (ApogeeDriverConflict.swift). No button, and it cannot be closed.
+        if let conflict = appState.apogeeDriverConflict?.banner {
+            return (ThunderBridgeBanner(title: conflict.title, message: conflict.message, action: .none,
+                                        dismissible: false, inProgress: false), "apogee-driver")
+        }
         guard let banner = thunderBridgeReport.thunderBridgeBanner else { return nil }
         let report = thunderBridgeReport
         let token = [banner.title, banner.message, report.bundledDextBuild ?? "", report.installedDextBuild ?? ""]

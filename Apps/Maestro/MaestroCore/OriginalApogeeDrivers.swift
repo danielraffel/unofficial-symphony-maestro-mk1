@@ -3,10 +3,12 @@
 // Maestro is not supported alongside Apogee's own Symphony I/O MkI drivers. A
 // tester's Mac kernel-panicked with Apogee's ThunderBridge kernel extension
 // loaded next to Maestro's driver (GitHub issue 31). The installer refuses a
-// first install over them, but lets an update of Maestro go ahead
-// (Installer/scripts-core/preinstall); this is the app's read-only version of
-// the same check, for that update and for a Mac where they came back or were
-// installed afterwards.
+// first install over them, and an update too while one of Apogee's kernel
+// drivers for the ThunderBridge or PCIe card is present; other leftovers let
+// an update go ahead (Installer/scripts-core/preinstall). This is the app's
+// read-only version of the same check, for that update and for a Mac where
+// they came back or were installed afterwards. What the app does about a
+// loaded kernel driver is in ApogeeDriverConflict.swift.
 //
 // Only the Symphony I/O MkI release installs these. The same release also
 // installs Apogee Maestro 2, ApogeePopup and ApogeeServices.framework, which
@@ -117,6 +119,22 @@ public struct OriginalApogeeDriverFinding: Sendable, Equatable {
     /// Uninstall does not look there, and the copy can load again after a
     /// restart (GitHub issue 31, 2026-11-20).
     public var hasStagedCopy: Bool { items.contains { $0.staged } }
+    /// One of Apogee's kernel drivers for the ThunderBridge or the Symphony 64
+    /// PCIe card is loaded in the kernel right now
+    /// (`OriginalApogeeDrivers.pciKernelExtensionBundleIDs`).
+    public var hasLoadedPCIKernelDriver: Bool {
+        items.contains { item in
+            item.loaded && item.bundleID.map(OriginalApogeeDrivers.pciKernelExtensionBundleIDs.contains) == true
+        }
+    }
+    /// A copy of one of those kernel drivers is on disk (an Extensions folder or
+    /// macOS's staged copy) but not loaded.
+    public var hasUnloadedPCIKernelDriverCopy: Bool {
+        items.contains { item in
+            !item.loaded && item.path != nil
+                && item.bundleID.map(OriginalApogeeDrivers.pciKernelExtensionBundleIDs.contains) == true
+        }
+    }
     public var lines: [String] { items.map(\.line) }
 
     /// The block the diagnostics text carries, found or not.
@@ -144,6 +162,17 @@ public enum OriginalApogeeDrivers {
         ("Symphony64.kext", "com.apogeedigital.driver.Symphony64"),
         ("SymphonyIOUSBOverideDriver.kext", "com.apogee.driver.ApogeeUSBSymphonyIOAudio"),
         ("SymphonyMobile.kext", nil),
+    ]
+
+    /// The two kernel drivers that take the ThunderBridge or the Symphony 64
+    /// PCIe card, the device Maestro's driver extension also takes. With one of
+    /// them loaded and Maestro's driver on the card, the kernel crashed when
+    /// either let go (ApogeeDriverConflict.swift). The USB override kext and
+    /// SymphonyMobile.kext are not among them. Same pair as APOGEE_PCIE_KEXT_IDS
+    /// in Installer/scripts-core/preinstall.
+    public static let pciKernelExtensionBundleIDs: [String] = [
+        "com.apogeedigital.driver.Symphony64ThunderBridge",
+        "com.apogeedigital.driver.Symphony64",
     ]
 
     /// Where macOS keeps its own copy of third-party kernel extensions it has

@@ -17,6 +17,7 @@
 import Foundation
 import SystemExtensions
 import IOKit
+import MaestroCore
 import os
 
 /// `@unchecked Sendable`: every delegate callback is delivered on `.main` (we pass
@@ -61,7 +62,35 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
         case activated
         case willCompleteAfterReboot
         case upgradePending
+        /// No request was submitted: one of Apogee's kernel drivers for the
+        /// ThunderBridge or PCIe card is loaded (ApogeeDriverConflict.swift).
+        case heldForApogeeDriver
         case failed(String)
+    }
+
+    /// Posted on the main queue when `activate()` submitted nothing because
+    /// one of Apogee's kernel drivers is loaded, so AppState re-reads what is
+    /// installed and the warning appears without waiting for Device Settings.
+    public static let activationHeldNotification =
+        Notification.Name("com.danielraffel.maestro.driverActivationHeld")
+
+    /// What `activate()` does with a call, decided before anything is submitted.
+    enum Admission: Equatable {
+        case notBundled
+        /// One of Apogee's kernel drivers for the card is loaded: submit nothing.
+        case heldForApogeeDriver
+        case alreadyInFlight
+        case submit
+    }
+
+    /// The order matters: an app with no driver has nothing to hold, and the
+    /// Apogee check comes before the in-flight test so a held call always
+    /// reports why. `conflict` is asked only when a driver is bundled.
+    static func admission(dextBundled: Bool, requestInFlight: Bool,
+                          conflict: () -> ApogeeDriverConflict.Decision) -> Admission {
+        guard dextBundled else { return .notBundled }
+        guard conflict().mayRequestActivation else { return .heldForApogeeDriver }
+        return requestInFlight ? .alreadyInFlight : .submit
     }
 
     private override init() { super.init() }
@@ -90,16 +119,34 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     }
 
     /// Request activation. Safe to call on every launch.
+    ///
+    /// Every request Maestro submits goes through here: the launch and hot-plug
+    /// path (`activateWhenThunderBridgePresent`), the header banner and the
+    /// Device Settings button. So this is where a loaded Apogee kernel driver
+    /// stops it: an activation would start Maestro's driver on the card next
+    /// to Apogee's, and a replacement would stop a running one, which is what
+    /// panicked a user's Mac (ApogeeDriverConflict.swift). The check is a few
+    /// file lookups and one loaded-kext query for two identifiers, made only
+    /// when a request is about to be submitted, never on a timer.
     public func activate() {
-        guard isDextBundled else {
+        switch Self.admission(dextBundled: isDextBundled, requestInFlight: activationRequestInFlight,
+                              conflict: currentApogeeConflict) {
+        case .notBundled:
             log.notice("No dext embedded in app bundle — skipping activation")
             report(.notBundled)
             return
-        }
-
-        guard !activationRequestInFlight else {
+        case .heldForApogeeDriver:
+            log.notice("Apogee's kernel driver for the card is loaded; no activation or replacement request submitted")
+            report(.heldForApogeeDriver)
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: Self.activationHeldNotification, object: self)
+            }
+            return
+        case .alreadyInFlight:
             log.notice("Driver extension activation already in flight; ignoring duplicate request")
             return
+        case .submit:
+            break
         }
 
         log.notice("Requesting activation of \(self.dextBundleID, privacy: .public)")
@@ -321,6 +368,34 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
         -> OSSystemExtensionRequest.ReplacementAction {
         log.notice("Replacing dext \(existing.bundleVersion, privacy: .public) with \(ext.bundleVersion, privacy: .public)")
         return .replace
+    }
+}
+
+// MARK: - Apogee's kernel driver (ApogeeDriverConflict.swift)
+
+extension SystemExtensionInstaller {
+
+    /// What sysextd's records say for `ApogeeDriverConflict.decide`: whether
+    /// Maestro's driver is registered and enabled, and whether this app carries
+    /// a build other than a registered one.
+    static func conflictInputs(registered: [InstalledDextInfo]?, bundledBuild: String?)
+        -> (maestroDriverActive: Bool, updatePending: Bool) {
+        let registered = registered ?? []
+        let active = registered.contains { $0.isEnabled && !$0.isUninstalling }
+        let pending = bundledBuild.map { build in registered.contains { $0.bundleVersion != build } } ?? false
+        return (active, pending)
+    }
+
+    /// The decision for a finding, with this Mac's registered drivers.
+    func apogeeConflict(for finding: OriginalApogeeDriverFinding,
+                        registered: [InstalledDextInfo]?) -> ApogeeDriverConflict.Decision {
+        let inputs = Self.conflictInputs(registered: registered, bundledBuild: bundledDextBuildVersion)
+        return finding.conflict(maestroDriverActive: inputs.maestroDriverActive, updatePending: inputs.updatePending)
+    }
+
+    /// Looks now: the files, the loaded kexts and sysextd's database.
+    func currentApogeeConflict() -> ApogeeDriverConflict.Decision {
+        apogeeConflict(for: AppState.currentOriginalApogeeDrivers(), registered: installedDexts())
     }
 }
 

@@ -18,9 +18,7 @@ extension AppState {
         originalApogeeDriverCheckInFlight = true
         Task { @MainActor [weak self] in
             let finding = await Task.detached(priority: .utility) {
-                Self.previewOriginalApogeeDrivers() ?? OriginalApogeeDrivers.detect(
-                    fileExists: { FileManager.default.fileExists(atPath: $0) },
-                    loadedBundleIDs: Self.loadedOriginalApogeeKextIDs())
+                Self.currentOriginalApogeeDrivers()
             }.value
             guard let self else { return }
             self.originalApogeeDriverCheckInFlight = false
@@ -31,6 +29,24 @@ extension AppState {
                 }
             }
         }
+    }
+
+    /// The check itself: what is on disk and what is loaded, right now. Also
+    /// what SystemExtensionInstaller asks before it submits a driver request.
+    nonisolated static func currentOriginalApogeeDrivers() -> OriginalApogeeDriverFinding {
+        previewOriginalApogeeDrivers() ?? OriginalApogeeDrivers.detect(
+            fileExists: { FileManager.default.fileExists(atPath: $0) },
+            loadedBundleIDs: loadedOriginalApogeeKextIDs())
+    }
+
+    /// What Maestro does about the finding: nothing, the warning only, or no
+    /// driver request while Apogee's kernel driver is loaded
+    /// (ApogeeDriverConflict.swift). Uses the registered-driver list the window
+    /// already keeps current.
+    @MainActor
+    var apogeeDriverConflict: ApogeeDriverConflict.Decision? {
+        guard let finding = originalApogeeDrivers, !finding.isEmpty else { return nil }
+        return SystemExtensionInstaller.shared.apogeeConflict(for: finding, registered: installedDexts)
     }
 
     /// The launch argument that previews the warning for a screenshot without
@@ -84,6 +100,8 @@ extension AppState {
 /// Symphony I/O drivers are installed. Gone once they are; no dismiss button.
 struct OriginalApogeeDriversWarning: View {
     let finding: OriginalApogeeDriverFinding
+    /// What Maestro is doing about it; nil shows the warning as it always was.
+    var conflict: ApogeeDriverConflict.Decision?
 
     static let headline = "Apogee's original Symphony I/O drivers are installed"
     static let message = "Maestro doesn't support running alongside them. The two can interfere with each other and cause problems, including crashes."
@@ -101,12 +119,37 @@ struct OriginalApogeeDriversWarning: View {
                     Text(Self.headline)
                         .font(.headline)
                         .foregroundStyle(.red)
-                    Text(Self.message)
+                    Text(conflict?.what ?? Self.message)
+                    // Apogee's kernel driver is loaded: what not to do, what
+                    // Maestro is not doing, and why someone who has just
+                    // updated is seeing this.
+                    if let caution = conflict?.caution {
+                        Text(caution)
+                            .fontWeight(.bold)
+                            .foregroundStyle(.red)
+                    }
+                    if let consequence = conflict?.consequence {
+                        Text(consequence)
+                            .fontWeight(.semibold)
+                    }
+                    if let updateNote = conflict?.updateNote {
+                        Text(updateNote)
+                    }
                     if finding.isAwaitingRestartOnly {
                         Text(OriginalApogeeDrivers.restartAdvice)
                             .fontWeight(.semibold)
                     } else {
-                        Text(.init(OriginalApogeeDrivers.removalAdvice))
+                        if conflict?.consequence != nil {
+                            ForEach(Array(ApogeeDriverConflict.fixSteps.enumerated()), id: \.offset) { index, step in
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Text("\(index + 1).")
+                                    Text(LocalizedStringKey(step))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        } else {
+                            Text(.init(OriginalApogeeDrivers.removalAdvice))
+                        }
                         Link(destination: OriginalApogeeDrivers.releaseDMGURL) {
                             Label("Download Apogee's Symphony I/O Release 5.5", systemImage: "arrow.down.circle")
                         }
