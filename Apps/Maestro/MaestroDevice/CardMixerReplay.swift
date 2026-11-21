@@ -306,7 +306,13 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     /// Restore both mixers on the next instance seen even if the driver holds
     /// app state for them: set while the routing and mixer reset's defaults
     /// have not reached the card yet (`RoutingMixerReset.Pending.thunderboltCardMixer`).
-    public var restoresHeldMixers = false
+    /// Setting it on an instance already latched (the Mixer page can look at
+    /// the driver before the restore is asked for) takes both mixers too.
+    public var restoresHeldMixers = false {
+        didSet {
+            if restoresHeldMixers, !oldValue, nonce != nil, !completed, !running { needs = [true, true] }
+        }
+    }
 
     public init() {}
 

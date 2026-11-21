@@ -78,14 +78,20 @@ struct HelpView: View {
                 Text("Maestro also has smaller resets that do not need a power cycle: **Reset Defaults** on the Input and Output tabs, **Reset Trims** on either tab, and **Reset Routing** on each routing tab. The Input and Output resets offer the same choice the front panel does — one that keeps your trims, because trims are calibration data, and one that clears them too.")
             }
             HelpQuestion("Where do I find a setting?") {
-                Text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (sample rate, clock source, Loop Sync and Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, and **Rescan**), **Input Monitoring** (DAW or Direct Monitor), **Volume Keys** (which unit the Mac's volume keys control, with two units), **Front Panel** (the meter banks, Peak Hold and Over Hold), **Cards** (Optical Format, and Insert Labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension).")
+                Text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (sample rate, clock source, Loop Sync and Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, and **Rescan**), **Volume Keys** (which unit the Mac's volume keys control, with two units), **Front Panel** (the meter banks, Peak Hold and Over Hold), **Cards** (Optical Format, and Insert Labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension).")
                 Text("**App Settings** is about Maestro itself: **General** (appearance, tooltips, meter zone coloring, scroll positions, pop-ups), **When a Device Connects** (what happens when a unit is plugged in, and the USB options), **Updates** (automatic checks and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions).")
                 Text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**.")
             }
-            HelpQuestion("Why doesn't the Software Return fader, pan or mute, or Master, change what I hear?") {
-                Text("The **Mixer** page only affects outputs that are fed by a mixer. In **Output Routing**, an output fed straight from a software output pair (for example **1-2 → Line 1/2**) plays your Mac's audio directly, so Software Return, Master and the input strips do nothing to it. Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **Software Return**, together with the hardware inputs, and **Master** sets the level.")
+            HelpQuestion("When do I hear an input directly through the Symphony?") {
+                Text("**Only when its strip is unmuted in a mixer that feeds an output in Output Routing.** That is the whole rule, and there is no other setting for it.")
+                Text("**By default no mixer feeds an output.** Every hardware output plays the matching software output directly (**1-2 → Line 1/2** and so on), so you hear your Mac's audio directly and you hear your inputs only through your DAW.")
+                Text("To hear an input without the delay of going through the Mac, route **Mixer 1** or **Mixer 2** to the output you listen on in **Output Routing**, then use that mixer's strips: an unmuted strip is heard, a muted one is not. Your Mac's audio then reaches that output through the mixer's **Software Return**.")
+            }
+            HelpQuestion("Why doesn't the Software Return fader or mute, or Master, change what I hear?") {
+                Text("**By default nothing is fed from a mixer,** so the **Mixer** page does nothing until you route **Mixer 1** or **Mixer 2** to an output in **Output Routing**. An output fed straight from a software output pair (for example **1-2 → Line 1/2**, the default) plays your Mac's audio directly, and Software Return, Master and the input strips do not touch it.")
+                Text("Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **Software Return**, together with the hardware inputs that are unmuted, and **Master** sets the level.")
                 Text("**Mixer 1 and Mixer 2 are separate.** A control on Mixer 2 changes only the outputs fed from Mixer 2. If no output is fed from Mixer 2 in Output Routing, nothing on Mixer 2 can be heard, and the same goes for Mixer 1.")
-                Text("**Over USB there are two more things to check,** both under **The Mixer over USB** further down: only channels 1-2 of your Mac's playback pass through the mixer, and Software Return pan works only when your audio plays through **Symphony I/O : Maestro USB**, not **Symphony I/O : USB Audio**.")
+                Text("**Over USB,** see **The Mixer over USB** further down for how Software Return mute behaves with the two Symphony audio devices.")
             }
             HelpQuestion("What do Reset Routing and Identify do?") {
                 Text("**Reset Routing** is on the Input Routing and Output Routing pages. It puts that page back to its default: on Input Routing each software input records the matching hardware input, and on Output Routing each software output goes to the matching hardware output. Maestro asks before it changes anything, and only the page you are on is reset.")
@@ -330,32 +336,28 @@ struct HelpView: View {
     /// rather than letting people conclude a fader is broken.
     /// What the mixer controls do on the USB path.
     ///
-    /// Software Return level, mute and solo and the Master level are written to
-    /// the Symphony's own mixer (strips 32 and 33) and reach only the outputs
-    /// fed from that mixer in Output Routing. Software Return mute is also
-    /// applied by the proxy to USB channels 1-2 of "Maestro USB" (the proxy
-    /// renders that device), while a mixer uses the default 1-2 pair; a tester
-    /// on "Maestro USB" heard no change from the unit's mute alone. Solo and
-    /// the fader stay on the unit only (the proxy holds its level at 0 dB and
-    /// has no solo). Pan has no hardware control; it is a balance in the proxy
-    /// and only sees "Maestro USB". Only USB channels 1-2 pass through the
-    /// mixer (Step 4a of the routing block in `MaestroVolumeProxy.c` sends USB
-    /// ch2-15 straight to the I/O board). In Direct Monitor mode the hardware
-    /// inputs stay unmuted in the mixer, so a Software Return mute never
-    /// silences them.
+    /// Nothing passes through a mixer until one is routed to an output: the
+    /// default is every output direct (the helper programs USB ch n straight to
+    /// output n). Software Return level, mute and solo and the Master level are
+    /// written to the Symphony's own mixer (strips 32 and 33) and reach only
+    /// the outputs fed from that mixer in Output Routing. Software Return mute
+    /// is also applied by the proxy to USB channels 1-2 of "Maestro USB" (the
+    /// proxy renders that device), but only while a mixer that takes the 1-2
+    /// pair feeds an output (`USBHelperSoftwareReturn`). Solo and the fader
+    /// stay on the unit only (the proxy holds its level at 0 dB and has no
+    /// solo). Software Return has no pan.
     private var mixerOverUSB: some View {
         Section("The Mixer over USB") {
-            Text("Over USB, **channels 1-2 of your Mac's playback pass through Symphony's hardware mixer.** Channels 3 and up go straight to the outputs and do not touch the mixer.")
+            Text("Over USB, as over ThunderBridge, **nothing passes through a mixer until you route Mixer 1 or Mixer 2 to an output** in Output Routing. By default every output plays the matching channels of your Mac's playback directly. Once a mixer feeds an output, your Mac's audio reaches it through that mixer's **SW Return** (the pair chosen in its source menu, **1-2** unless you change it).")
+            bullet("An input is heard only through a mixer", "its strip must be unmuted in a mixer that feeds an output in Output Routing. With no mixer routed, you hear inputs only through your DAW.")
             bullet("SW Return mute and solo belong to each mixer", "muting or soloing SW Return on **Mixer 1** leaves **Mixer 2** as it was, and the reverse, as in Apogee's Maestro.")
-            bullet("SW Return mute with Maestro USB", "Maestro mutes SW Return in that Symphony mixer. When SW Return is muted on every mixer that uses the default **1-2** pair, it also silences channels 1-2 of what you play through **Symphony I/O : Maestro USB**, wherever they go. Unmuting on either mixer clears that.")
+            bullet("SW Return mute with Maestro USB", "Maestro mutes SW Return in that Symphony mixer. While a mixer that uses the **1-2** pair feeds an output, and SW Return is muted on every such mixer, it also silences channels 1-2 of what you play through **Symphony I/O : Maestro USB**, wherever they go. Unmuting on either of those mixers clears that. With no mixer routed to an output, SW Return mute never touches an output that plays your Mac's audio directly.")
             bullet("SW Return mute with USB Audio", "only the Symphony's mixer is muted, so it silences channels 1-2 only on outputs fed from that mixer in Output Routing.")
             bullet("SW Return solo and the SW Return and Master faders", "are done by the Symphony's own mixer alone, with either device. Soloing SW Return silences the other strips in that mixer; there is no software solo.")
             bullet("They change only outputs that are fed from that mixer", "set this in Output Routing. An output fed from somewhere else, such as a headphone output on its own source, does not change (except the Maestro USB mute above, which silences channels 1-2 of your playback wherever they go).")
-            bullet("Direct Monitor is our own addition", "the **DAW / Direct Monitor** choice in Device Settings › Input Monitoring was not in Apogee's Maestro. It was added as a simple way to hear the inputs played straight through without a DAW, and we do not plan to develop it further. For anything more than that, use **DAW** mode and monitor through your DAW or the Mixer.")
-            bullet("Direct Monitor still passes your inputs", "in **Direct Monitor** mode the hardware inputs go through the mixer as before, so muting SW Return does not silence a mic or line input. Mute or turn down that input's strip instead.")
-            bullet("SW Return pan still needs Maestro USB", "the Symphony's mixer has no pan for SW Return. Maestro applies it to your Mac's audio, and only when that audio plays through **Symphony I/O : Maestro USB**. It is one pan, heard on every output and the same on both mixer pages.")
-            bullet("SW Return and Master are each one stereo fader", "it is drawn with a left and a right handle, and the two always move together, as in Apogee's Maestro. This is the same over ThunderBridge.")
-            bullet("SW Return meter", "it shows the signal before the fader. With **Maestro USB** and the default 1-2 source it drops to silence when SW Return is muted.")
+            bullet("SW Return and Master are each one stereo fader", "it is drawn with a left and a right handle, and the two always move together, as in Apogee's Maestro. SW Return has a fader, mute and solo, and no pan. This is the same over ThunderBridge.")
+            bullet("SW Return meter", "it shows the signal before the fader. With **Maestro USB** and the default 1-2 source it drops to silence while Maestro is silencing channels 1-2 (see the mute above).")
+            bullet("Master meter", "it follows that mixer's SW Return fader and mute and its Master fader.")
             bullet("The headphone knobs control their own outputs", "independently of the mixer.")
             bullet("Hardware input faders affect the live inputs being monitored", "not your Mac's playback.")
         }

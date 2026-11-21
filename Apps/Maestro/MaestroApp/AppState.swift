@@ -2523,6 +2523,9 @@ final class AppState: @unchecked Sendable {
         let cache = peripheralRoutingCache(direction: "output")
         let routes = cache.loadMulti() ?? [:]
         if transportType == .thunderbolt {
+            // Symphony I/O routing only: nothing is sent to a unit that is not
+            // one (as syncInputRoutingToHardware).
+            guard connectedUnit == nil else { return }
             // The whole table, not only the saved rows: the default with the
             // saved choices over it. The driver starts the card with the main
             // pair on card mixer 1 and keeps the routes an earlier session

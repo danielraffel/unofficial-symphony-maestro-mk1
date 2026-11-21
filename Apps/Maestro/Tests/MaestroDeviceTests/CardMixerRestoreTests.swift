@@ -124,6 +124,31 @@ struct CardMixerRestoreTests {
         #expect(ledger.decide(Self.link(nonce: 4)) == .nothingToDo)
     }
 
+    /// After the one-time routing and mixer reset the driver may still hold
+    /// the mixer the reset removed from this Mac (it kept running through the
+    /// update), so both mixers are restored even though it reports them held.
+    @Test("After the reset, mixers the driver still holds are restored once, in full")
+    func heldMixersRestoredAfterReset() {
+        var ledger = CardMixerRestoreLedger()
+        ledger.restoresHeldMixers = true
+        #expect(ledger.decide(Self.link(flags: 3)) == .restore(mixers: [0, 1], recoveryCount: 0))
+        #expect(ledger.pageDefersSync(mixer: 0, instance: Self.link(flags: 3).mixerInstance, eligible: true))
+        ledger.complete()
+        #expect(ledger.decide(Self.link(flags: 3)) == .nothingToDo)
+        // Without the flag the same instance is left alone.
+        var plain = CardMixerRestoreLedger()
+        #expect(plain.decide(Self.link(flags: 3)) == .nothingToDo)
+        // The Mixer page may have looked at the driver first: the flag still takes both mixers.
+        var late = CardMixerRestoreLedger()
+        late.observe(Self.link(flags: 3))
+        late.restoresHeldMixers = true
+        #expect(late.decide(Self.link(flags: 3)) == .restore(mixers: [0, 1], recoveryCount: 0))
+        // The flag survives a new driver instance until it is cleared.
+        #expect(late.decide(Self.link(nonce: 9, flags: 3)) == .restore(mixers: [0, 1], recoveryCount: 0))
+        late.restoresHeldMixers = false
+        #expect(late.decide(Self.link(nonce: 10, flags: 3)) == .nothingToDo)
+    }
+
     @Test("First sight with the link down: baseline taken at the first link-up")
     func ledgerBaselineAtFirstLinkUp() {
         var ledger = CardMixerRestoreLedger()
@@ -153,7 +178,7 @@ struct CardMixerRestoreTests {
         let set = DriverMixerInstance(nonce: 7, holdsAppState: [true, true])
         #expect(ledger.pageDefersSync(mixer: 0, instance: set, eligible: true))
         #expect(!ledger.pageDefersSync(mixer: 1, instance: set, eligible: true))
-        // Finished: the page syncs again (Monitoring Mode, layout changes).
+        // Finished: the page syncs again (layout changes).
         var finished = ledger
         finished.complete()
         #expect(!finished.pageDefersSync(mixer: 0, instance: set, eligible: true))
