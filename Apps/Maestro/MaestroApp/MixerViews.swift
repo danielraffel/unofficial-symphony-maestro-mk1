@@ -798,6 +798,12 @@ struct MixerView: View {
     /// may not match the UI, causing silent channels until user interaction.
     private func syncMixerToHardware(recalling: Bool = false) async {
         guard editor.canEdit(appState) else { return }
+        // Over USB the connection's restore writes each mixer in full, in an
+        // order that keeps it off every output until it is done. Until it has
+        // written this mixer, a copy from here could unmute strips on a mixer
+        // that still feeds an output (an older helper, or a restore that has
+        // not reached it yet); afterwards this is the page's usual re-send.
+        if appState.device is XPCDeviceConnection, !recalling, !appState.usbMixerIsWritten(selectedMixer) { return }
         // Two-unit lifecycle recall belongs to AppState even with this page closed.
         if recalling && appState.usesTwoUnitReplay { return }
         guard let device = appState.device else { return }

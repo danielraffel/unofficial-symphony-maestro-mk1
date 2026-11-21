@@ -159,6 +159,9 @@ final class AppState: @unchecked Sendable {
     /// The installed USB helper is older than this app (a custom install
     /// that left the USB support out): no mixer is written under it.
     @ObservationIgnored var usbHelperOutdated = false
+    /// Mixer edits are not sent over USB while the installed helper is older
+    /// than this app (see `MixerEditorState.canEdit`).
+    var usbMixerEditsBlockedByOldHelper: Bool { usbHelperOutdated && device is XPCDeviceConnection }
     @ObservationIgnored var usbRestoreServiceTask: Task<Void, Never>?
     @ObservationIgnored var usbRestoreRetryAttempts = 0
     @ObservationIgnored var usbRestoreRetryAfter = Date.distantPast
@@ -179,6 +182,7 @@ final class AppState: @unchecked Sendable {
     /// and the driver state in which the direct defaults were then written
     /// (`cardRestoreStillBlocked`).
     @ObservationIgnored var cardBlockedChecks = 0
+    @ObservationIgnored var cardBlockedConnection: ObjectIdentifier?
     @ObservationIgnored var cardDirectFallback: (connection: ObjectIdentifier, epoch: UInt64)?
     /// 64 channels: the pause after a replay that did not complete, and the
     /// connections on which the reset's default input tables have landed.

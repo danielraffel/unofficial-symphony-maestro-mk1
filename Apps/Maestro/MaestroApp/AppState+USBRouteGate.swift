@@ -57,7 +57,9 @@ extension AppState {
     /// writes no mixer.
     @MainActor
     func usbPointRoutesAwayFromMixers(_ device: XPCDeviceConnection, keeping kept: Set<Int>) async -> Bool {
-        let unknown = RoutingMixerReset.isPending(.usbOutputRouting)
+        // An older helper puts Line 1/2 back on Mixer 1 at every configure,
+        // so under it every output is written, every time.
+        let unknown = RoutingMixerReset.isPending(.usbOutputRouting) || usbHelperOutdated
         let saved = cachedOutputRouteMap()
         var writes: [(destination: UInt8, source: UInt8)] = []
         func add(_ destination: UInt8, _ source: UInt8) {

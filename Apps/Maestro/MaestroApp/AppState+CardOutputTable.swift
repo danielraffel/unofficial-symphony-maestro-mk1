@@ -140,6 +140,12 @@ extension AppState {
     /// and writes the saved table when it can be read.
     @MainActor
     func cardRestoreStillBlocked(_ tb: ThunderboltDeviceConnection) async {
+        // Counted per connection: a session that stayed blocked must not make
+        // the next connection's first check write the defaults at once.
+        if cardBlockedConnection != ObjectIdentifier(tb) {
+            cardBlockedConnection = ObjectIdentifier(tb)
+            cardBlockedChecks = 0
+        }
         cardBlockedChecks += 1
         let epoch = tb.cardMixers.epoch
         guard cardBlockedChecks >= Self.cardBlockedChecksBeforeDirect, device === tb, !hardwareWritesSuspended,

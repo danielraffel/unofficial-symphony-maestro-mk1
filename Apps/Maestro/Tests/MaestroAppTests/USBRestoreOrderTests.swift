@@ -460,6 +460,13 @@ struct USBRestoreOrderTests {
         #expect(state.restoreStatusNote == PortStatusMessage.usbHelperOutdated)
         #expect(state.endpointStatusMessage == PortStatusMessage.usbHelperOutdated)
         #expect(state.usbRestoreOwed)
+        // The Mixer page sends nothing under it either (it would unmute
+        // strips on the mixer the old helper keeps on Line 1/2), and every
+        // output was written direct although nothing is saved for them.
+        #expect(state.usbMixerEditsBlockedByOldHelper)
+        #expect(!MixerEditorState(appState: state, selectedMixer: 0).canEdit(state))
+        #expect(!state.usbMixerIsWritten(0))
+        #expect(unit.writes.filter { !$0.isMixer && $0.data.count == 2 && (32..<64).contains($0.data[0]) }.count >= 32)
         // One that answers with an older number is old too.
         unit.version = XPCDeviceConnection.requiredHelperVersion - 1
         #expect(await usb.helperStatus() == .outdated)
