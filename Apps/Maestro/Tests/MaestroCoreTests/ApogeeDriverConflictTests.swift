@@ -103,6 +103,13 @@ struct ApogeeDriverConflictTests {
             + "update Maestro. Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up "
             + "again, before you remove Apogee's drivers.")
         #expect(both.banner?.title == "Do not unplug the ThunderBridge or update Maestro")
+        // On the PCIe card the title names that card.
+        let pcie = PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2100")
+        #expect(both.banner(card: pcie)?.title == "Do not unplug the Symphony 64 PCIe card or update Maestro")
+        #expect(both.banner(card: PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2200"))?.title
+            == both.banner?.title)
+        #expect(both.banner(card: pcie)?.message == both.banner?.message)
+        #expect(held.banner(card: pcie)?.title == held.banner?.title)
         #expect(both.banner?.message == ApogeeDriverConflict.detected + " One is running alongside Maestro's driver. "
             + ApogeeDriverConflict.crashRisk + " Shut down your Mac and disconnect the ThunderBridge or PCIe "
             + "chassis, then start up again. Device Settings has the steps.")

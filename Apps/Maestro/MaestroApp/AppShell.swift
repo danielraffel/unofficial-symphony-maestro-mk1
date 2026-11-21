@@ -97,7 +97,8 @@ struct ContentView: View {
         // other driver banner. Those say to activate the driver, or to unplug
         // the cable to finish an update, and either can crash the Mac in this
         // state (ApogeeDriverConflict.swift). No button, and it cannot be closed.
-        if let conflict = appState.apogeeDriverConflict?.banner {
+        let card = PortStatusMessage.cardPhrase(pciIdentifier: thunderBridgeReport.pciDeviceIdentifier)
+        if let conflict = appState.apogeeDriverConflict?.banner(card: card) {
             return (ThunderBridgeBanner(title: conflict.title, message: conflict.message, action: .none,
                                         dismissible: false, inProgress: false), "apogee-driver")
         }

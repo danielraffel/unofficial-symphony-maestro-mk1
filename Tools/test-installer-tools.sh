@@ -605,7 +605,7 @@ mkbundle "$C/root/Library/StagedExtensions/Library/Extensions/Symphony64Thunderb
 [ ! -e "$C/dialog.txt" ] || fail "a dialog was shown for an update over a staged copy"
 [ ! -s "$C/stderr" ] || fail "an update that goes ahead wrote to stderr: $(cat "$C/stderr")"
 grep -q "Found original Apogee driver: Kernel extension (copy kept by macOS)" "$C/log" || fail "staged copy not logged"
-grep -q "only in a copy macOS keeps .*Updating; Device Settings will warn" "$C/log" || fail "staged-only update not explained in the log: $(cat "$C/log")"
+grep -q "only in a copy macOS keeps .*Updating\. Device Settings warns about a staged copy; it does not show one that is only in the auxiliary kernel collection" "$C/log" || fail "staged-only update not explained in the log: $(cat "$C/log")"
 C="$WORK/g-update-aux"
 mkdir -p "$C/root/Library/KernelCollections"; touch "$C/root/Library/KernelCollections/AuxiliaryKernelExtensions.kc"
 printf '%s\n' "com.example.other (1.0)" "com.apogeedigital.driver.Symphony64ThunderBridge (1.5)" > "$C/aux.txt"
@@ -786,7 +786,7 @@ mkstub "$C/kmutil" "echo '  190  0 0 0 0 com.apogeedigital.driver.Symphony64Thun
     OUT="$(MAESTRO_PREINSTALL_TEST=1 APOGEE_ROOT="$C/root" KMUTIL="$C/kmutil" KEXTSTAT="$C/kmutil" find_original_apogee)"
     case "$OUT" in *"$C/root/Library/Extensions/Symphony64Thunderbridge.kext"*"Loaded kernel extension"*) ;; *) fail "guarded overrides not used: $OUT" ;; esac
     # Every override is read through test_override, never straight from the environment.
-    if grep -nE '\$\{?(APOGEE_ROOT|KMUTIL|KEXTSTAT|PLISTBUDDY|OSASCRIPT|CONSOLE_USER|PROBE_TIMEOUT|SYSTEMEXTENSIONSCTL)\b' "$PRE" "$REPO_ROOT/Installer/uninstall.sh" | grep -q .; then
+    if grep -nE '\$\{?(APOGEE_ROOT|KMUTIL|KEXTSTAT|PLISTBUDDY|OSASCRIPT|CONSOLE_USER|PROBE_TIMEOUT|SYSTEMEXTENSIONSCTL|CODESIGN)\b' "$PRE" "$REPO_ROOT/Installer/uninstall.sh" | grep -q .; then
         fail "an override variable is read without test_override"
     fi
 ) || exit 1
@@ -844,8 +844,64 @@ for PATTERN in 'read -p "Proceed with uninstall' 'pkill -x MaestroApp' 'systemex
     [ -n "$FIRST" ] && [ "$CHECK_LINE" -lt "$FIRST" ] || fail "uninstall.sh reaches '$PATTERN' before the Apogee driver check"
 done
 # APP is set before the step that reads the driver's team identifier from it.
-[ "$(grep -n '^APP="/Applications/Maestro.app"$' "$UNINSTALL" | cut -d: -f1)" -lt "$(grep -n 'codesign -dvv "\$APP/' "$UNINSTALL" | cut -d: -f1)" ] \
+[ "$(grep -n '^APP="/Applications/Maestro.app"$' "$UNINSTALL" | cut -d: -f1)" -lt "$(grep -n -- '-dvv "\$APP/' "$UNINSTALL" | cut -d: -f1)" ] \
     || fail "uninstall.sh reads \$APP before setting it"
 ok "uninstall: refuses, changing nothing, while Apogee's ThunderBridge or PCIe kext is loaded and Maestro's driver is registered"
+
+# A driver extension macOS has already terminated is not on the card: it does
+# not count as registered (the app leaves out isUninstalling in the same way).
+SYSEXT_HEAD="1 extension(s)
+--- com.apple.system_extension.driver_extension
+enabled	active	teamID	bundleID (version)	name	[state]"
+SYSEXT_GOING="$SYSEXT_HEAD
+	*	ABCDE12345	com.danielraffel.maestro.thunderbridge (0.11.17/143)	Symphony Thunderbridge	[terminated waiting to uninstall on reboot]"
+SYSEXT_WAITING="$SYSEXT_HEAD
+	*	ABCDE12345	com.danielraffel.maestro.thunderbridge (0.11.17/143)	Symphony Thunderbridge	[activated waiting for user]"
+SYSEXT_OTHER="$SYSEXT_HEAD
+*	*	ABCDE12345	com.example.other (1.0/1)	Other	[activated enabled]"
+[ "$(uninstall_check "$WORK/u-going" "$TB_LOADED" "$SYSEXT_GOING")" = "goes ahead" ] \
+    || fail "uninstall refused for a driver extension that is already terminated and waiting to uninstall"
+[ "$(uninstall_check "$WORK/u-going-and-ours" "$TB_LOADED" "$SYSEXT_GOING
+*	*	ABCDE12345	com.danielraffel.maestro.thunderbridge (0.11.17/143)	Symphony Thunderbridge	[activated enabled]")" = refused ] \
+    || fail "uninstall goes ahead with an activated driver extension listed after a terminated one"
+[ "$(uninstall_check "$WORK/u-waiting" "$TB_LOADED" "$SYSEXT_WAITING")" = refused ] \
+    || fail "uninstall goes ahead with an activated driver extension that waits for approval"
+[ "$(uninstall_check "$WORK/u-other" "$TB_LOADED" "$SYSEXT_OTHER")" = "goes ahead" ] \
+    || fail "uninstall refused for another vendor's activated extension"
+ok "uninstall: a driver extension already terminated and waiting to uninstall is not counted as registered"
+
+# The team identifier: from the driver in the app, else from macOS's list; and
+# never a silent end of the script (set -e, pipefail) when Maestro.app is gone.
+# $1 = case dir, $2 = body of the codesign stub, $3 = what systemextensionsctl
+# list prints. Prints "<team>|reached" when the script carries on.
+team_id_check() {
+    local dir="$1"
+    mkdir -p "$dir"
+    printf '%s\n' "$3" > "$dir/sysext.txt"
+    mkstub "$dir/codesign" "$2"
+    mkstub "$dir/systemextensionsctl" "cat '$dir/sysext.txt'"
+    (
+        # shellcheck source=/dev/null
+        . "$UNINSTALL"
+        set -euo pipefail
+        export MAESTRO_PREINSTALL_TEST=1 CODESIGN="$dir/codesign" SYSTEMEXTENSIONSCTL="$dir/systemextensionsctl"
+        TEAM_ID="$(maestro_dext_team_id)"
+        echo "$TEAM_ID|reached"
+    ) || echo "aborted"
+}
+GONE='echo "/Applications/Maestro.app/Contents/Library/SystemExtensions/x.dext: No such file or directory" >&2; exit 1'
+[ "$(team_id_check "$WORK/t-app" 'echo "Identifier=x" >&2; echo "TeamIdentifier=ZZZZZ99999" >&2' "$SYSEXT_OURS")" = "ZZZZZ99999|reached" ] \
+    || fail "uninstall: the team identifier is not read from the driver in the app"
+[ "$(team_id_check "$WORK/t-gone" "$GONE" "$SYSEXT_OURS")" = "ABCDE12345|reached" ] \
+    || fail "uninstall: with Maestro.app gone, the team identifier is not taken from macOS's list"
+[ "$(team_id_check "$WORK/t-neither" "$GONE" "0 extension(s)")" = "|reached" ] \
+    || fail "uninstall: stops silently when neither the app nor macOS's list gives a team identifier"
+[ "$(team_id_check "$WORK/t-unsigned" 'echo "TeamIdentifier=not set" >&2' "$SYSEXT_OTHER")" = "|reached" ] \
+    || fail "uninstall: takes a team identifier that is not one"
+grep -q '^    TEAM_ID="$(maestro_dext_team_id)"$' "$UNINSTALL" || fail "uninstall.sh does not use maestro_dext_team_id"
+if grep -nE '^[[:space:]]*TEAM_ID=\$\(codesign' "$UNINSTALL" | grep -q .; then
+    fail "uninstall.sh reads the team identifier in a pipeline that can end the script"
+fi
+ok "uninstall: the team identifier comes from the app or from macOS's list, and a missing Maestro.app does not end the script"
 
 echo "Installer tool tests passed ($PASS)"

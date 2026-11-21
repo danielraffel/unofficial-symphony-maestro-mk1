@@ -111,8 +111,8 @@ public enum VBusChannels: UInt32, CaseIterable, Sendable, Identifiable {
                 + "Symphony I/O or with converters, and not over USB. The VBus channels come after the hardware "
                 + "channels: from channel 33, or from 65 when 64 channels are selected under Ports; "
                 + "**Device channels** under the pop-up shows which.",
-            "Applications that are open pick the channels up without being relaunched (tested with Logic and "
-                + "Reaper). If an open audio application doesn't show them, quit and reopen it. Logic lists them "
+            "Applications that are open pick the channels up without being relaunched. "
+                + "If an open audio application doesn't show them, quit and reopen it. Logic lists them "
                 + "as numbered inputs and outputs after the hardware ones (for example Input 33–40), unless its "
                 + "I/O Labels are set to the driver's names.",
         ]

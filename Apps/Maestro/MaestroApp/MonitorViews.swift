@@ -133,6 +133,12 @@ struct StatusBarView: View {
         .padding(.leading, 12)
         .padding(.trailing, 20)
         .padding(.vertical, 6)
+        // The info button goes away with the message. Left true, its pop-up
+        // would open by itself when a message next appears. On the bar, not
+        // the button: the button is gone by the time this changes.
+        .onChange(of: appState.portStatusMessage == nil) { _, gone in
+            if gone { showPortMessageInfo = false }
+        }
         .background(.bar)
         .task(id: statusSourceID) {
             await observeStatus()

@@ -92,13 +92,37 @@ APP="/Applications/Maestro.app"
 DEXT_ID="com.danielraffel.maestro.thunderbridge"
 REMOVAL_GUIDE_URL="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers"
 
-# True when Maestro's driver extension is registered with macOS. The list is
-# captured, then matched: `systemextensionsctl list | grep -q` under pipefail
-# can report a match as a failure.
+# What macOS lists as system extensions; empty when it cannot be asked.
+system_extensions_listed() {
+    "$(test_override SYSTEMEXTENSIONSCTL /usr/bin/systemextensionsctl)" list 2>/dev/null || true
+}
+
+# True when Maestro's driver extension is registered with macOS and activated.
+# A copy macOS has already terminated and is waiting to uninstall
+# ("[terminated waiting to uninstall on reboot]") does not count: it is not on
+# the card, and the app leaves it out too (`isUninstalling`). The list is
+# captured, then matched in one process: `systemextensionsctl list | grep -q`
+# under pipefail can report a match as a failure.
 maestro_dext_registered() {
     local listed
-    listed="$("$(test_override SYSTEMEXTENSIONSCTL /usr/bin/systemextensionsctl)" list 2>/dev/null || true)"
-    grep -Fq -- "$DEXT_ID" <<< "$listed"
+    listed="$(system_extensions_listed)"
+    awk -v id="$DEXT_ID" 'index($0, id) && /\[activated/ && !/uninstall/ { found = 1 } END { exit !found }' <<< "$listed"
+}
+
+# The team identifier that step 7 needs to remove the driver extension, or nothing: from
+# the driver inside Maestro.app, or, when the app is already gone, from the
+# teamID column of macOS's own list. Never fails: under `set -e` and pipefail a
+# codesign that finds no app would otherwise end the script without a word.
+maestro_dext_team_id() {
+    local team listed
+    team="$("$(test_override CODESIGN /usr/bin/codesign)" -dvv "$APP/Contents/Library/SystemExtensions/$DEXT_ID.dext" 2>&1 \
+        | awk -F= '/^TeamIdentifier=/ { print $2; exit }' || true)"
+    if ! [[ "$team" =~ ^[A-Z0-9]{10}$ ]]; then
+        listed="$(system_extensions_listed)"
+        team="$(awk -v id="$DEXT_ID" '{ for (i = 2; i <= NF; i++) if ($i == id) { print $(i - 1); exit } }' <<< "$listed" || true)"
+        [[ "$team" =~ ^[A-Z0-9]{10}$ ]] || team=""
+    fi
+    printf '%s\n' "$team"
 }
 
 # Why this script can refuse to run (the full account is in AGENTS.md,
@@ -239,8 +263,10 @@ if maestro_dext_registered; then
     # `systemextensionsctl uninstall` only works with developer mode on (SIP disabled). On a normal
     # SIP-enabled Mac it fails harmlessly — macOS requires the user to remove driver extensions from
     # System Settings — so we detect that and print instructions.
-    TEAM_ID=$(codesign -dvv "$APP/Contents/Library/SystemExtensions/$DEXT_ID.dext" 2>&1 | awk -F= '/TeamIdentifier=/{print $2; exit}')
-    [ -n "$TEAM_ID" ] && systemextensionsctl uninstall "$TEAM_ID" "$DEXT_ID" 2>/dev/null || true
+    TEAM_ID="$(maestro_dext_team_id)"
+    if [ -n "$TEAM_ID" ]; then
+        systemextensionsctl uninstall "$TEAM_ID" "$DEXT_ID" 2>/dev/null || true
+    fi
     sleep 1
     if maestro_dext_registered; then
         DEXT_NEEDS_MANUAL=1

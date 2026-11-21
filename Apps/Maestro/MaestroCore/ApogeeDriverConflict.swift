@@ -86,12 +86,15 @@ public enum ApogeeDriverConflict {
         }
         public var updateNote: String? { showsUpdateNote ? ApogeeDriverConflict.updateNote : nil }
         /// The header banner's title and message, or nil when there is none.
-        public var banner: (title: String, message: String)? {
+        public var banner: (title: String, message: String)? { banner(card: PortStatusMessage.defaultCard) }
+        /// The same, naming the card that is there: `PortStatusMessage.cardPhrase`.
+        public func banner(card: String) -> (title: String, message: String)? {
             switch state {
             case .clear, .copyNotLoaded: return nil
             case .driverHeld: return (ApogeeDriverConflict.heldBannerTitle, ApogeeDriverConflict.heldBannerMessage)
             case .bothActive:
-                return (ApogeeDriverConflict.bothActiveBannerTitle, ApogeeDriverConflict.bothActiveBannerMessage)
+                return (ApogeeDriverConflict.bothActiveBannerTitle(card: card),
+                        ApogeeDriverConflict.bothActiveBannerMessage)
             }
         }
     }
@@ -160,7 +163,9 @@ public enum ApogeeDriverConflict {
 
     public static let heldBannerTitle = "Apogee's original Symphony I/O drivers were detected"
     public static let heldBannerMessage = crashRisk + " " + consequence + " Device Settings has the steps."
-    public static let bothActiveBannerTitle = "Do not unplug the ThunderBridge or update Maestro"
+    public static let bothActiveBannerTitle = bothActiveBannerTitle(card: PortStatusMessage.defaultCard)
+    /// `card` is "the ThunderBridge" or "the Symphony 64 PCIe card".
+    public static func bothActiveBannerTitle(card: String) -> String { "Do not unplug \(card) or update Maestro" }
     public static let bothActiveBannerMessage = detected + " One is running alongside Maestro's driver. "
         + crashRisk + " Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up "
         + "again. Device Settings has the steps."

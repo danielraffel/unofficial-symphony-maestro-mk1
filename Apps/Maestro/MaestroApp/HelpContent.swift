@@ -7,7 +7,7 @@ import MaestroCore
 /// The sections of Help, in no particular order. A pop-up's "See Help for
 /// more." names one of these.
 enum HelpSectionID: String {
-    case whatItDoes, connecting, worksToday, settings, inputOutput, modules
+    case whatItDoes, connecting, controls, settings, clock, inputOutput, modules
     case micPreStrip, micPreQuestions, routing, mixer, mixerUSB, volumeKeys
     case vbus, usbOutput, interfaceMode, twoUnits, troubleshooting
     case apogeeDrivers, uninstalling, about

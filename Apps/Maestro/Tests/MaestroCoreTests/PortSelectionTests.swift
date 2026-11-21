@@ -280,14 +280,13 @@ struct PortsWordingTests {
         #expect(define("kSymphonyPortSourcePorts1And2")?.hasPrefix("1u") == true)
     }
 
-    @Test("the info popover and Help use the driver's Source names and say \"should keep\"")
+    @Test("the info popover and Help use the driver's Source names, and promise nothing about the DAW")
     func infoAndHelpUseTheDriverNames() {
         let info = PortSelection.infoText
         #expect(info == "In Audio MIDI Setup (Source) and the macOS Sound menu, these choices are named:\n"
                 + "• \(PortSelection.port1.name) — 32 channels\n"
                 + "• \(PortSelection.ports1And2.name) — 64 channels (two units)\n"
-                + "Apogee's software called these \"Port 1: 32ch\" and \"Port 1-2: 64ch\".\n"
-                + "Your DAW should keep the same device either way.")
+                + "Apogee's software called these \"Port 1: 32ch\" and \"Port 1-2: 64ch\".")
         #expect(info.contains("• Symphony I/O: ThunderBridge — 32 channels"))
         #expect(info.contains("• Symphony I/O: ThunderBridge 64 — 64 channels (two units)"))
         let help = PortSelection.helpText.joined(separator: " ")
@@ -295,13 +294,15 @@ struct PortsWordingTests {
         #expect(help.contains("**\(PortSelection.ports1And2.name)**"))
         #expect(help.contains(PortSelection.ports1And2.pickerLabel))
         #expect(help.contains("refuses 64 channels"))
-        #expect(help.contains("Reports from people using it are welcome"))
         // Same bytes become stable at promotion: nothing may call this a test build or a beta.
         for word in ["test build", "Test build", "beta", "Beta", "EXPERIMENT"] {
             #expect(!help.contains(word))
             #expect(!PortSelection.infoText.contains(word))
         }
-        #expect(help.contains("should keep"))
+        // Whether a DAW keeps the device across a switch is not guaranteed by the code.
+        for text in [help, info] {
+            #expect(!text.contains("should keep") && !text.contains("support is new") && !text.contains("welcome"))
+        }
         #expect(help.contains(PortSelection.apogeeNamesSentence))
         #expect(PortSelection.explanationLines == [
             "32 channels: one Symphony I/O on ThunderBridge port 1.",

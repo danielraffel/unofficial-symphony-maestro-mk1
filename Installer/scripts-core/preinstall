@@ -446,7 +446,7 @@ original_apogee_gate() {
             ;;
         update)
             if [ -n "$(pcie_kernel_drivers "$found")" ]; then
-                echo "[preinstall] Maestro is already installed, and Apogee's kernel driver for the ThunderBridge or PCIe card is only in a copy macOS keeps (staged, or in the auxiliary kernel collection): not loaded and not in an Extensions folder. Updating; Device Settings will warn" >> "$LOG"
+                echo "[preinstall] Maestro is already installed, and Apogee's kernel driver for the ThunderBridge or PCIe card is only in a copy macOS keeps (staged, or in the auxiliary kernel collection): not loaded and not in an Extensions folder. Updating. Device Settings warns about a staged copy; it does not show one that is only in the auxiliary kernel collection" >> "$LOG"
             else
                 echo "[preinstall] Maestro is already installed and no Apogee kernel driver for the ThunderBridge or PCIe card was found: updating; Device Settings will warn" >> "$LOG"
             fi

@@ -66,14 +66,12 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
         "64 channels: adds a second unit on port 2 as channels 33–64.",
     ]
 
-    /// The ⓘ popover next to the picker. Whether a DAW keeps the device across
-    /// a switch has not been tried yet, hence "should".
+    /// The ⓘ popover next to the picker.
     public static var infoText: String {
         "In Audio MIDI Setup (Source) and the macOS Sound menu, these choices are named:\n"
             + "• \(PortSelection.port1.name) — 32 channels\n"
             + "• \(PortSelection.ports1And2.name) — 64 channels (two units)\n"
-            + "\(apogeeNamesSentence)\n"
-            + "Your DAW should keep the same device either way."
+            + "\(apogeeNamesSentence)"
     }
 
     /// The Help answer for the two-unit setup (HelpView). Nothing here may
@@ -81,14 +79,13 @@ public enum PortSelection: UInt32, CaseIterable, Sendable, Identifiable {
     /// it is promoted.
     public static var helpText: [String] {
         [
-            "Two-unit (64-channel) support is new. Reports from people using it are welcome.",
             "Connect the first Symphony I/O to ThunderBridge port 1 and the second unit to port 2. "
                 + "Choose **64 channels (two units)** under **Ports** in Device Settings › Connection, "
                 + "or pick **\(PortSelection.ports1And2.name)** in Audio MIDI Setup's **Source** menu "
                 + "or the macOS Sound menu. **\(PortSelection.port1.name)** is the usual 32 channels. "
                 + "Channels 33–64 are the unit on port 2. \(apogeeNamesSentence)",
             "If no second unit is found on port 2, the driver refuses 64 channels and stays at 32; "
-                + "Device Settings › Connection says why. Your DAW should keep the same device either way.",
+                + "Device Settings › Connection says why.",
         ]
     }
 

@@ -20,8 +20,8 @@ struct HelpSearchTests {
             #expect(shown.map(\.id) == all.map(\.id))
             #expect(shown.map(\.items.count) == all.map(\.items.count))
         }
-        #expect(all.count == 20)
-        #expect(HelpSection.all(micPreInstalled: false).count == 18)
+        #expect(all.count == 21)
+        #expect(HelpSection.all(micPreInstalled: false).count == 19)
     }
 
     @Test("A word in a question's title finds that question")
@@ -49,7 +49,7 @@ struct HelpSearchTests {
         let shown = HelpSearch.filter(all, query: "troubleshooting")
         let section = try #require(shown.first { $0.id == .troubleshooting })
         #expect(section.items.count == all.first { $0.id == .troubleshooting }?.items.count)
-        #expect(section.items.count == 7)
+        #expect(section.items.count == 8)
     }
 
     @Test("Every word must match; they need not be together or in order")
@@ -101,7 +101,7 @@ struct HelpSearchTests {
     @Test("Every question has an answer, and titles are not repeated")
     func content() {
         let questions = all.flatMap(\.items).compactMap(\.title)
-        #expect(questions.count == 35)
+        #expect(questions.count == 39)
         #expect(Set(questions).count == questions.count)
         #expect(Set(all.map(\.title)).count == all.count)
         for item in all.flatMap(\.items) {
@@ -114,8 +114,7 @@ struct HelpSearchTests {
         }
     }
 
-    /// The info pop-ups that have a matching Help section end with the link
-    /// to it. About Clock Status has no section in Help, so it has no link.
+    /// The info pop-ups end with the link to their Help section.
     @Test("Info pop-ups end with See Help for more., each at its own section")
     @MainActor
     func popoverLinks() throws {
@@ -128,11 +127,17 @@ struct HelpSearchTests {
         #expect(settings.contains("SeeHelpLink(section: .vbus, appState: appState, popover: $showVBusInfo)"))
         #expect(settings.contains("SeeHelpLink(section: .interfaceMode, appState: appState, popover: $showAIMInfo)"))
         #expect(monitor.contains("SeeHelpLink(section: .troubleshooting, appState: appState, popover: $showPortMessageInfo)"))
-        #expect(settings.components(separatedBy: "SeeHelpLink(").count == 4)
+        #expect(settings.contains("SeeHelpLink(section: .clock, appState: appState, popover: $showClockStatusInfo)"))
+        #expect(settings.components(separatedBy: "SeeHelpLink(").count == 5)
         #expect(SeeHelpLink.title == "See Help for more.")
-        // Every section a link names is in Help, with or without an 8MicPre.
-        let shown = Set(HelpSection.all(micPreInstalled: false).map(\.id))
-        for id in [HelpSectionID.twoUnits, .vbus, .interfaceMode, .troubleshooting] { #expect(shown.contains(id)) }
+        // The status bar's pop-up is closed when its message goes, by the bar
+        // (the button that owns the pop-up is gone by then).
+        let bar = try #require(monitor.range(of: "        .padding(.vertical, 6)\n"))
+        #expect(monitor[bar.upperBound...].contains("""
+                    .onChange(of: appState.portStatusMessage == nil) { _, gone in
+                        if gone { showPortMessageInfo = false }
+                    }
+            """))
 
         let state = AppState()
         state.openHelp(at: .vbus)
@@ -140,5 +145,62 @@ struct HelpSearchTests {
         state.showHelp = false
         state.openHelp()   // the Help menu: at the top
         #expect(state.showHelp && state.helpSection == nil)
+    }
+
+    /// The section each `SeeHelpLink(section: .name, …)` in the app's sources names.
+    static func linkTargets(in source: String) -> [String] {
+        source.components(separatedBy: "SeeHelpLink(section: .").dropFirst().map { rest in
+            String(rest.prefix { $0.isLetter || $0.isNumber })
+        }
+    }
+
+    @Test("Every See Help for more. link names a section that Help shows")
+    func linkTargetsExist() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("MaestroApp")
+        // With or without an 8MicPre.
+        let shown = Set(HelpSection.all(micPreInstalled: false).map(\.id.rawValue))
+        var found: [String] = []
+        for file in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        where file.pathExtension == "swift" {
+            let targets = Self.linkTargets(in: try String(contentsOf: file, encoding: .utf8))
+            for target in targets {
+                #expect(shown.contains(target), "\(file.lastPathComponent): no Help section \(target)")
+            }
+            found += targets
+        }
+        #expect(Set(found) == ["twoUnits", "vbus", "interfaceMode", "troubleshooting", "clock"])
+        // The check itself: a name Help does not have is not in the set.
+        #expect(Self.linkTargets(in: "SeeHelpLink(section: .nowhere, appState: a, popover: $p)") == ["nowhere"])
+        #expect(!shown.contains("nowhere") && !shown.contains("micPreStrip"))
+    }
+
+    /// Help says how things work. It does not report what is or is not
+    /// finished, and never calls anything an experiment (owner's rule).
+    static let statusPhrases = ["experiment", "untested", "not confirmed", "known gap", "rough edges", "works today"]
+
+    static func statusPhrases(in sections: [HelpSection]) -> [String] {
+        let text = sections.flatMap { section in
+            [section.title] + section.items.flatMap { [$0.title ?? ""] + $0.blocks.map { HelpSearch.plain($0.markdown) } }
+        }.joined(separator: "\n").lowercased()
+        return statusPhrases.filter { text.contains($0) }
+    }
+
+    @Test("Help has no status report or hedge, and no \"experiment\"")
+    func noStatusPhrases() {
+        #expect(Self.statusPhrases(in: all) == [])
+        // The check itself: each phrase is found, in a title or an answer, in any case.
+        for phrase in Self.statusPhrases {
+            let inAnswer = [HelpSection(id: .about, title: "T", items: [HelpItem(blocks: [.text("It is **\(phrase.uppercased())**.")])])]
+            #expect(Self.statusPhrases(in: inAnswer) == [phrase])
+            let inTitle = [HelpSection(id: .about, title: "What \(phrase)", items: [HelpItem(blocks: [.text("x")])])]
+            #expect(Self.statusPhrases(in: inTitle) == [phrase])
+        }
+        let more = ["has not been tested", "not been tried", "support is new", "are welcome", "tested with",
+                    "should keep", "limitation of"]
+        let text = all.flatMap { $0.items.flatMap { $0.blocks.map { HelpSearch.plain($0.markdown) } } }
+            .joined(separator: "\n").lowercased()
+        for phrase in more { #expect(!text.contains(phrase), "\(phrase)") }
     }
 }

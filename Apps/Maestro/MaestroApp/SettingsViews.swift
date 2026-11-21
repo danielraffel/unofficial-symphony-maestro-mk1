@@ -503,6 +503,7 @@ struct DeviceSettingsView: View {
                                             Text(LocalizedStringKey(paragraph))
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                         }
+                                        SeeHelpLink(section: .clock, appState: appState, popover: $showClockStatusInfo)
                                     }
                                     .font(.callout)
                                     .multilineTextAlignment(.leading)

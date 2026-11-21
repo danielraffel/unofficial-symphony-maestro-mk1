@@ -5,7 +5,7 @@ import MaestroCore
 // MARK: - Help View
 
 /// In-app rendered help. Deliberately succinct — the goal is to answer the
-/// questions people actually ask (which USB device to pick, what works today,
+/// questions people actually ask (which USB device to pick, what Maestro controls,
 /// how to uninstall) without reproducing the full user manual.
 ///
 /// The text is data (`HelpSection.all`, below), so the page, the section list
@@ -234,7 +234,7 @@ extension HelpSection {
     /// Every section, in the order Help shows them. The Mic Pre sections are
     /// there only when an 8MicPre module is.
     static func all(micPreInstalled: Bool) -> [HelpSection] {
-        [whatItDoes, connecting, worksToday, settings, inputOutput, modules]
+        [whatItDoes, connecting, controls, settings, clock, inputOutput, modules]
             + (micPreInstalled ? [micPreStrip, micPreQuestions] : [])
             + [routing, mixer, mixerUSB, volumeKeys, vbus, usbOutput, interfaceMode, twoUnits,
                troubleshooting, apogeeDrivers, uninstalling, about]
@@ -261,11 +261,11 @@ extension HelpSection {
         ])
     }
 
-    private static var worksToday: HelpSection {
-        HelpSection(id: .worksToday, title: "What works today", items: [
+    private static var controls: HelpSection {
+        HelpSection(id: .controls, title: "What Maestro controls", items: [
             HelpItem(blocks: [
-                .text("Over Thunderbolt: volume, mute, clock source, sample rate, optical format (ADAT/S-PDIF), input routing, the **32-channel low-latency mixer** (SW Return, Master, and input strips — level, pan, mute, solo), and **hardware metering** are all working."),
-                .text("**Output Routing is not confirmed.** The commands are sent, but the hardware gives back nothing we can read to verify them, and we have not measured the result on a unit. Treat that page as untested rather than broken — if you change a route and the audio does not move, that is a known gap and worth telling us about."),
+                .text("Volume, mute, clock source, sample rate, optical format (ADAT/S-PDIF), Input Routing and Output Routing, the two **low-latency mixers** (input strips with level, pan, mute and solo; SW Return with level, mute and solo; Master), and **hardware metering**."),
+                .text("**Output Routing** sends any software output pair or mixer to any hardware output. The page shows what Maestro last set."),
             ]),
         ])
     }
@@ -273,9 +273,10 @@ extension HelpSection {
     private static var settings: HelpSection {
         HelpSection(id: .settings, title: "Settings & updates", items: [
             HelpItem(title: "Where do I find a setting?", blocks: [
-                .text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (sample rate, clock source, Loop Sync and Word Clock Output), **Connection** (device name and connection, the 32 or 64 channel **Ports** choice, and **Rescan**), **VBus** (on ThunderBridge and PCIe: the number of VBus channels, and which device channels they are), **Volume Keys** (which output the Mac's volume and mute keys control, and which unit with two units), **Front Panel** (the meter banks, Peak Hold and Over Hold), **Cards** (Optical Format, and Insert Labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension)."),
-                .text("**App Settings** is about Maestro itself: **General** (appearance, tooltips, meter zone coloring, scroll positions), **When a Device Connects** (what happens when a unit is plugged in, and the USB options), **Updates** (automatic checks and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions)."),
+                .text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (Sample Rate, Clock Source and Clock Status; with two Symphony I/Os at 64 channels, **Use Loop Sync** and **Loop Sync Master**), **Connection** (Device Name and Connection, **Rescan**, and on ThunderBridge and PCIe the 32 or 64 channel **Ports** choice), **VBus** (on ThunderBridge and PCIe: the number of VBus channels, and which device channels they are), **Volume Keys** (**Audio Output**, the output the Mac's volume and mute keys control, and with two units **Peripheral**, the unit they control), **Front Panel** (Bank 1 Source and Bank 2 Source for the front-panel meters, Peak Hold and Over Hold), **Cards** (the optical format of **Card 1** and **Card 2**, and the insert labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension)."),
+                .text("**App Settings** is about Maestro itself: **General** (Appearance, Show tooltips, Meter Zone Coloring, scroll positions), **When a Device Connects** (opening Maestro and switching the Mac's output to the Symphony when a unit is plugged in, and **Preferred USB output**), **Updates** (automatic checks, **Check for Updates…** and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions)."),
                 .text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**."),
+                .text("⌘1 to ⌘7 open the pages in the sidebar's order: Input, Output, Mixer, Input Routing, Output Routing, Device Settings and App Settings. They are also in the **Navigate** menu."),
             ]),
             HelpItem(title: "Can I choose a light or dark appearance?", blocks: [
                 .text("In **App Settings › General**, set **Appearance** to **Auto**, **Light**, or **Dark**. Auto is the default and follows your Mac’s appearance. Light and Dark apply only to Maestro. Your choice is saved and takes effect immediately."),
@@ -283,6 +284,24 @@ extension HelpSection {
             ]),
             HelpItem(title: "What are the Stable and Beta update channels?", blocks: [
                 .text("Maestro normally offers stable versions only. In **App Settings › Updates** you can choose **Beta** to get versions that are still being tested. They may have bugs and can replace the ThunderBridge driver. Choose **Stable** again to stop getting them; Maestro then offers to reinstall the latest stable version. If you install a beta package yourself, Maestro sets that copy to Beta when it next reads the update feed, and it keeps getting betas until you choose Stable."),
+            ]),
+        ])
+    }
+
+    /// Device Settings › Clock. The Clock Status lines are the pop-up's own
+    /// (`PortStatusMessage.clockInfoParagraphs`); the sources per connection
+    /// are `ClockSourceMenu.usb`, `.thunderbolt` and `.converters`.
+    private static var clock: HelpSection {
+        HelpSection(id: .clock, title: "Clock", items: [
+            HelpItem(title: "How do I set the sample rate and the clock source?", blocks: [
+                .text("Both are in **Device Settings › Clock**. **Sample Rate** sets the rate of the Symphony's audio device, and the Symphony changes to it when it is set, from here, from Audio MIDI Setup or from an audio application."),
+                .text("**Clock Source** is where the Symphony takes its clock from. Over USB it is **Internal** only. Over ThunderBridge and PCIe it is **Internal**, **Word Clock**, or a digital input of a card that has one (S/PDIF coax, AES or optical). With converters only it is **Internal** or **External (Word Clock)**."),
+                .text("The Symphony does not follow an external clock's rate by itself: set **Sample Rate** to the rate the external source runs at."),
+            ]),
+            HelpItem(title: "What do Ready and Clock Mismatch mean?",
+                     blocks: PortStatusMessage.clockInfoParagraphs.map { .text($0) }),
+            HelpItem(title: "How are two Symphony I/Os clocked?", blocks: [
+                .text("With two Symphony I/Os at 64 channels, **Device Settings › Clock** has **Use Loop Sync** and **Loop Sync Master**, and shows **Configured Role** and **Clock Status** for the unit chosen in the Unit A / Unit B picker. See \"Can I connect more than one Symphony I/O?\" for the cabling."),
             ]),
         ])
     }
@@ -299,10 +318,10 @@ extension HelpSection {
                 .text("It lights when **three or more consecutive full-scale samples** occur. Three samples on their own are very unlikely to be audible — treat it as an early warning that the level should come down rather than as proof of damage."),
             ]),
             HelpItem(title: "How long are Peaks and Overs held?", blocks: [
-                .text("Both are set in **Device Settings › Front Panel**, independently, to Off, 2 Seconds or Infinite. Infinite holds until you clear it. Clear held peaks and overs with **Clear Meters**, or by clicking the front-panel left-hand encoder — the unit shows \"Meters Cleared\" on its display."),
+                .text("Both are set in **Device Settings › Front Panel**, independently: **Peak Hold** to Off, 2 Seconds or Infinite, and **Over Hold** to Off, 2 Seconds, Infinite or Auto Clear. Infinite holds until you clear it. Clear held peaks and overs with **Clear Meters**, or by clicking the front-panel left-hand encoder — the unit shows \"Meters Cleared\" on its display."),
             ]),
             HelpItem(title: "Why do the outputs still say \"Line\" when I've set up speakers?", blocks: [
-                .text("Output channels keep their **Line 1, Line 2 …** names in every mode. The Analog Out Format setting changes what the outputs *do* — whether the level knob, Mute, Dim and Sum to Mono apply to them — but it does not rename them. Apogee labels the first pair **Monitor Out** on the rear panel; that is a label on the hardware, not a name that changes on screen."),
+                .text("Output channels keep their **Line 1, Line 2 …** names in every mode. The menu under the **Speaker** knob on the Output page (Analog Out Format) changes what the outputs *do* — whether the level knob, Mute, Dim and Sum to Mono apply to them — but it does not rename them. Apogee labels the first pair **Monitor Out** on the rear panel; that is a label on the hardware, not a name that changes on screen."),
             ]),
             HelpItem(title: "Why do some channels say N.A., ADAT, SMUX or SPDIF Opt?", blocks: [
                 .text("Channel names follow each card's optical format and the sample rate, as in Apogee's original Maestro. Optical channels are **ADAT** up to 48 kHz, **SMUX** at 88.2 and 96 kHz, and **SPDIF Opt** when the card's optical format is S/PDIF. **N.A.** means the channel carries nothing at the current setting, for example optical channels at 176.4 or 192 kHz. A pair that the S/PDIF coax input replaces is named **SPDIF Cx**."),
@@ -384,7 +403,7 @@ extension HelpSection {
     private static var routing: HelpSection {
         HelpSection(id: .routing, title: "Routing", items: [
             HelpItem(title: "What do Reset Routing and Identify do?", blocks: [
-                .text("**Reset Routing** is on the Input Routing and Output Routing pages. It puts that page back to its default: on Input Routing each software input records the matching hardware input, and on Output Routing each software output goes to the matching hardware output. Maestro asks before it changes anything, and only the page you are on is reset."),
+                .text("**Reset Routing** is on the Input Routing and Output Routing pages. It puts that page back to its default: on Input Routing each software input records the matching hardware input, and on Output Routing each software output goes to the matching hardware output. Maestro asks before it changes anything. With a Symphony I/O, only the page you are on is reset. With converters only, it resets both pages."),
                 .text("**Identify** is on the Output Routing page. It lights every light on the Symphony I/O's front panel so you can tell which unit is which, for example in a rack. Click it again to turn the lights off; quitting Maestro also turns them off. With two Symphony I/Os at 64 channels there is one button for each unit, **Identify A** and **Identify B**."),
             ]),
         ])
@@ -392,16 +411,20 @@ extension HelpSection {
 
     private static var mixer: HelpSection {
         HelpSection(id: .mixer, title: "Mixer", items: [
+            HelpItem(blocks: [
+                .text("The first time you open this version, Input Routing, Output Routing and both mixers go back to their defaults."),
+            ]),
             HelpItem(title: "When do I hear an input directly through the Symphony?", blocks: [
                 .text("**Only when its strip is unmuted in a mixer that feeds an output in Output Routing.** That is the whole rule, and there is no other setting for it."),
                 .text("**By default no mixer feeds an output.** Every hardware output plays the matching software output directly (**1-2 → Line 1/2** and so on), so you hear your Mac's audio directly and you hear your inputs only through your DAW."),
-                .text("To hear an input without the delay of going through the Mac, route **Mixer 1** or **Mixer 2** to the output you listen on in **Output Routing**, then use that mixer's strips: an unmuted strip is heard, a muted one is not. Your Mac's audio then reaches that output through the mixer's **Software Return**."),
+                .text("To hear an input without the delay of going through the Mac, route **Mixer 1** or **Mixer 2** to the output you listen on in **Output Routing**, then use that mixer's strips: an unmuted strip is heard, a muted one is not. Your Mac's audio then reaches that output through the mixer's **SW Return**. On the Mixer page, **Mix 1** and **Mix 2** choose which mixer is shown."),
+                .text("An output fed from a mixer is silent for a few seconds when Maestro connects, while the status bar shows **Restoring mixer and routing…**; over USB so is a headphone that follows it."),
             ]),
-            HelpItem(title: "Why doesn't the Software Return fader or mute, or Master, change what I hear?", blocks: [
-                .text("**By default nothing is fed from a mixer,** so the **Mixer** page does nothing until you route **Mixer 1** or **Mixer 2** to an output in **Output Routing**. An output fed straight from a software output pair (for example **1-2 → Line 1/2**, the default) plays your Mac's audio directly, and Software Return, Master and the input strips do not touch it."),
-                .text("Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **Software Return**, together with the hardware inputs that are unmuted, and **Master** sets the level."),
+            HelpItem(title: "Why doesn't the SW Return fader or mute, or Master, change what I hear?", blocks: [
+                .text("**By default nothing is fed from a mixer,** so the **Mixer** page does nothing until you route **Mixer 1** or **Mixer 2** to an output in **Output Routing**. An output fed straight from a software output pair (for example **1-2 → Line 1/2**, the default) plays your Mac's audio directly, and SW Return, Master and the input strips do not touch it."),
+                .text("Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **SW Return**, together with the hardware inputs that are unmuted, and **Master** sets the level."),
                 .text("**Mixer 1 and Mixer 2 are separate.** A control on Mixer 2 changes only the outputs fed from Mixer 2. If no output is fed from Mixer 2 in Output Routing, nothing on Mixer 2 can be heard, and the same goes for Mixer 1."),
-                .text("**Over USB,** see **The Mixer over USB** further down for how Software Return mute behaves with the two Symphony audio devices."),
+                .text("**Over USB,** see **The Mixer over USB** further down for how SW Return mute behaves with the two Symphony audio devices."),
             ]),
         ])
     }
@@ -424,7 +447,7 @@ extension HelpSection {
     private static var mixerUSB: HelpSection {
         HelpSection(id: .mixerUSB, title: "The Mixer over USB", items: [
             HelpItem(blocks: [
-                .text("Over USB, as over ThunderBridge, **nothing passes through a mixer until you route Mixer 1 or Mixer 2 to an output** in Output Routing. By default every output plays the matching channels of your Mac's playback directly. Once a mixer feeds an output, your Mac's audio reaches it through that mixer's **SW Return** (the pair chosen in its source menu, **1-2** unless you change it)."),
+                .text("Over USB, as over ThunderBridge, **nothing passes through a mixer until you route Mixer 1 or Mixer 2 to an output** in Output Routing. By default every output plays the matching channels of your Mac's playback directly. Once a mixer feeds an output, your Mac's audio reaches it through that mixer's **SW Return** (the pair chosen in its source menu, **1-2** unless you change it). If the status bar asks you to reinstall Maestro with USB support, the mixers are not set until you do."),
                 .bullet("An input is heard only through a mixer", "its strip must be unmuted in a mixer that feeds an output in Output Routing. With no mixer routed, you hear inputs only through your DAW."),
                 .bullet("SW Return mute and solo belong to each mixer", "muting or soloing SW Return on **Mixer 1** leaves **Mixer 2** as it was, and the reverse, as in Apogee's Maestro."),
                 .bullet("SW Return mute with Maestro USB", "Maestro mutes SW Return in that Symphony mixer. While a mixer that uses the **1-2** pair feeds an output, and SW Return is muted on every such mixer, it also silences channels 1-2 of what you play through **Symphony I/O : Maestro USB**, wherever they go. Unmuting on either of those mixers clears that. With no mixer routed to an output, SW Return mute never touches an output that plays your Mac's audio directly."),
@@ -443,10 +466,10 @@ extension HelpSection {
     private static var volumeKeys: HelpSection {
         HelpSection(id: .volumeKeys, title: "Volume keys", items: [
             HelpItem(title: "What do the Mac's volume and mute keys control?", blocks: [
-                .text("The output chosen under **Device Settings › Volume Keys › Audio Output**: **Speaker**, **Headphone 1** or **Headphone 2**, as in Apogee's software. Speaker is the default. The choice is kept for each Symphony I/O. On ThunderBridge and PCIe Maestro puts it in place when it opens: after the Mac restarts, until Maestro is open, the keys control the speaker, or Headphone 1 if the outputs are set to Line. A unit without an analog output card offers the two headphones only."),
-                .text("The Speaker entry shows how many channels the **Analog Out Format** on the Output page uses, for example **Speaker (2ch)** or **Speaker (6ch)**. When you set the format to **Line**, Audio Output changes to **Headphone 1** by itself, as in Apogee's software, because line outputs have no level control; it stays there when you leave Line, until you change it. In Line mode the Speaker entry reads **Speaker (0ch)**: if you choose it, the volume keys do not change a level, and the mute key still mutes the speaker output."),
+                .text("The output chosen under **Device Settings › Volume Keys › Audio Output**: **Speaker**, **Headphone 1** or **Headphone 2**, as in Apogee's software. Speaker is the default, or Headphone 1 if the outputs are set to Line. The choice is kept for each Symphony I/O. On ThunderBridge and PCIe Maestro puts it in place when it opens: after the Mac restarts, until Maestro is open, the keys control the speaker, or Headphone 1 if the outputs are set to Line. A unit without an analog output card offers the two headphones only."),
+                .text("The Speaker entry shows how many channels the format chosen under the **Speaker** knob on the Output page (Analog Out Format) uses, for example **Speaker (2ch)** or **Speaker (6ch)**. When you set the format to **Line**, Audio Output changes to **Headphone 1** by itself, as in Apogee's software, because line outputs have no level control; it stays there when you leave Line, until you change it. In Line mode the Speaker entry reads **Speaker (0ch)**: if you choose it, the volume keys do not change a level, and the mute key still mutes the speaker output."),
                 .text("With two Symphony I/Os at 64 channels, **Peripheral** chooses which unit the keys control, and **Audio Output** then lists that unit's outputs."),
-                .text("Over USB the keys work when **Symphony I/O : Maestro USB** is the Mac's output device. On ThunderBridge and PCIe, turning up and unmuting wait about five seconds after the Mac starts or wakes, the Symphony reconnects, the Ports setting changes between 32 and 64 channels, the VBus size changes, or macOS restarts its audio, so that a louder volume macOS saved earlier is not sent to the Symphony. Turning down and muting work at once."),
+                .text("Over USB the keys work when **Symphony I/O : Maestro USB** is the Mac's output device. There, turning up and unmuting wait up to three seconds after you change **Audio Output**. On ThunderBridge and PCIe, turning up and unmuting wait about five seconds after the Mac starts or wakes, the Symphony reconnects, the Ports setting changes between 32 and 64 channels, the VBus size changes, or macOS restarts its audio, so that a louder volume macOS saved earlier is not sent to the Symphony. On every connection, turning down and muting work at once."),
                 .text("With converters only (AD-16X, DA-16X, DD-16X or Rosetta) there is no speaker or headphone. There, **Audio Output** offers **Mixer 1 level**, where the keys turn Mixer 1 down and up and mute it (heard only on outputs you feed from Mixer 1 in Output Routing), and **None**, where the keys do nothing and Mixer 1 is left at full level. This level control for converters is our own addition; Apogee's software had no volume control for them."),
             ]),
         ])
@@ -464,11 +487,11 @@ extension HelpSection {
         HelpSection(id: .usbOutput, title: "Choosing your USB output", items: [
             HelpItem(blocks: [
                 .text("Audio MIDI Setup shows two separate USB devices. **Symphony I/O : USB Audio** is the full 16-input/16-output device for recording and playback. **Symphony I/O : Maestro USB** is an output-only 0-input/16-output device: it exists so the keyboard volume keys can control Symphony's hardware volume through Maestro."),
-                .text("Use **USB Audio** when you need the Symphony's inputs in an audio application. Use **Maestro USB** as the macOS output when you want keyboard volume control. Maestro can switch to Maestro USB automatically when you plug in; choose the preference in **Settings › Device › Preferred USB output**."),
+                .text("Use **USB Audio** when you need the Symphony's inputs in an audio application. Use **Maestro USB** as the macOS output when you want keyboard volume control. Maestro can switch to Maestro USB automatically when you plug in. Turn on **Automatically switch to Symphony when connected** in **App Settings › When a Device Connects**, then choose **Preferred USB output**."),
             ]),
             HelpItem(title: "Why does Audio MIDI Setup show Maestro USB with 0 inputs and 16 outputs?", blocks: [
                 .text("That is intentional. **Symphony I/O : USB Audio** is the full 16-input/16-output device and is the one to choose when an audio application needs to record from the Symphony. **Symphony I/O : Maestro USB** is a separate 0-input/16-output output device used by Maestro's volume-control proxy, so the Mac's keyboard volume keys can adjust the Symphony's hardware output level."),
-                .text("Choose **Maestro USB** as the macOS output for keyboard volume control, or choose **USB Audio** when you need inputs. This split is a limitation of the volume-control integration and does not indicate missing hardware inputs."),
+                .text("Choose **Maestro USB** as the macOS output for keyboard volume control, or choose **USB Audio** when you need inputs. The Symphony's inputs are on **USB Audio**."),
             ]),
         ])
     }
@@ -476,7 +499,7 @@ extension HelpSection {
     private static var interfaceMode: HelpSection {
         HelpSection(id: .interfaceMode, title: "Interface mode (Symphony / USB / Pro Tools)", items: [
             HelpItem(blocks: [
-                .text("This is set from the buttons on the front of the unit. The firmware doesn't expose it to the host, so it can't be changed from the app — Maestro shows the current mode on the Device tab for reference."),
+                .text("This is set from the buttons on the front of the unit. The firmware doesn't expose it to the host, so it can't be changed from the app — Maestro shows the current mode in **Device Settings › Info**."),
             ]),
             HelpItem(title: "What do the different Audio Interface Modes (AIM) do?", blocks: [
                 .text("The Symphony I/O runs in one of four modes, and only one at a time. The mode is shown in **Device Settings › Info**, but it can only be changed on the unit: push and hold the right-hand front-panel encoder, turn until the mode you want is on the display, then push the encoder again. The unit restarts into that mode."),
@@ -484,7 +507,7 @@ extension HelpSection {
                 .bullet("Pro Tools HD", "for an Avid HDX, HD Native, HD Accel Core, HD Accel, HD Core or HD Process card with Pro Tools HD or Pro Tools Ultimate. Pro Tools HD 12.6 and later needs a DigiLink I/O license to use third-party interfaces."),
                 .bullet("USB", "for use as a USB audio interface on any USB-equipped Mac. This is the mode the USB path here needs."),
                 .bullet("Standalone", "for use as a standalone converter, with parameter control over USB."),
-                .text("Maestro works in **Symphony** and **USB** modes. In Pro Tools HD mode the unit belongs to the Avid card, so there is nothing here for this app to talk to. Standalone mode does expose parameter control over USB, but this app has not been tested against it."),
+                .text("Maestro works in **Symphony** and **USB** modes. In Pro Tools HD mode the unit belongs to the Avid card, so there is nothing for Maestro to talk to. Maestro is not for Standalone mode either."),
             ]),
         ])
     }
@@ -496,16 +519,15 @@ extension HelpSection {
             HelpItem(title: "Can I connect more than one Symphony I/O?",
                      blocks: (PortSelection.helpText + SecondUnitHelp.lines).map { .text($0) }),
             HelpItem(title: "Does Maestro work with AD-16X, DA-16X or Rosetta converters?", blocks: [
-                .text("We are **experimenting** to see whether we can. These older Apogee converters connect to a ThunderBridge or Symphony 64 card with the same PC-32 cable, and Apogee's original software supported them. We do not own one, so this support is written from Apogee's original source and **has not been tried on the real hardware**. Testing and feedback are very welcome."),
-                .text("What Maestro does: when the connected unit does not answer as a Symphony I/O, the driver asks each unit what it is, up to four units on each port, in cable order with the nearest unit first. Port 1's units take the first channels. Port 2's units continue after them, and only while **64 channels** is chosen. Each unit gets a letter, so the channels are named as in Apogee's software: **A Line 1** for the first unit, **C Line 1** for the third. **Device Settings › Info** lists every unit with its X-Symphony firmware. If a unit does not say what it is, Maestro shows a generic 32-channel layout."),
-                .text("**Device Type.** A DD-16X and an AD-16X or DA-16X in Advanced Routing answer the same way, and so do the Rosetta 800 and Rosetta 200. For those units **Device Settings › Info** has a **Device Type** menu: choose the unit you have. Maestro remembers it for that unit's place on the cable."),
+                .text("Yes. These older Apogee converters connect to a ThunderBridge or Symphony 64 card with the same PC-32 cable. Maestro supports them as Apogee's software did."),
+                .text("When the connected unit does not answer as a Symphony I/O, the driver asks each unit what it is, up to four units on each port, in cable order with the nearest unit first. Port 1's units take the first channels. Port 2's units continue after them, and only while **64 channels** is chosen. Each unit gets a letter, so the channels are named as in Apogee's software: **A Line 1** for the first unit, **C Line 1** for the third. **Device Settings › Info** lists every unit with its X-Symphony firmware. If a unit does not say what it is, Maestro shows a generic 32-channel layout."),
+                .text("**Device Type.** A DD-16X and an AD-16X or DA-16X in Advanced Routing answer the same way, and so do the Rosetta 800 and Rosetta 200. For those units **Device Settings › Info** has a **Device Type** menu, named with the unit's port and unit number: choose the unit you have. Maestro remembers it for that unit's place on the cable."),
                 .text("**Clock and firmware.** With converters, **Device Settings › Clock** offers **Internal** and **External (Word Clock)**. Each unit needs X-Symphony firmware 2.7 or later; **Device Settings › Info** says so if one is older."),
-                .text("**Routing.** As in Apogee's software, the ThunderBridge or PCIe card routes the converters, both ways. **Output Routing** sends any DAW output pair or mixer to any converter output pair, and **Input Routing** picks which converter inputs each DAW input pair records. Both start on the default placement: DAW channel 1 is the first unit's channel 1, and so on through the chain, with port 2's units included while 64 channels run. **Reset Routing** puts both pages back on that default. Maestro remembers your routes for this chain of units and puts them back when you connect; a different chain starts from the default. Routing presets are kept per chain too."),
-                .text("**Known rough edges.** Maestro's pages are still laid out for a Symphony I/O, so with a converter you will see controls that do nothing in Device Settings. The per-channel reference levels, Soft Limit and trims, the headphone knobs and the speaker-only buttons are greyed out, because they are Symphony I/O settings and these converters have no speaker or headphone outputs. Levels and the converter's own routing mode are set on its front panel, as they always were. A Symphony I/O on port 1 with converters on port 2 shows the converters in **Device Settings › Info** only; their channels are not named or metered yet."),
+                .text("**Routing.** As in Apogee's software, the ThunderBridge or PCIe card routes the converters, both ways. **Output Routing** sends any DAW output pair or mixer to any converter output pair, and **Input Routing** picks which converter inputs each DAW input pair records. Both start on the default placement: DAW channel 1 is the first unit's channel 1, and so on through the chain, with port 2's units included while 64 channels run. **Reset Routing**, on either page, puts both pages back on that default. Maestro remembers your routes for this chain of units and puts them back when you connect; a different chain starts from the default. Routing presets are kept per chain too."),
+                .text("**Controls.** With a converter, the Symphony I/O settings are greyed out: the per-channel reference levels, Soft Limit and trims, the headphone knobs and the speaker-only buttons. These converters have no speaker or headphone outputs. Levels and the converter's own routing mode are set on its front panel. With a Symphony I/O on port 1 and converters on port 2, while **64 channels** is chosen **Device Settings › Info** lists the converters as **Port 2 Unit 1**, **Port 2 Unit 2** and so on."),
                 .text("**Volume.** The speaker knob, called **Volume** on the Output page, and the Mac's volume and mute keys turn **Mixer 1** up and down and mute it. As in Apogee's software, no mixer is routed to the converters by default (every DAW output goes straight to its converter output), so route **Mixer 1** to an output pair in **Output Routing** for these to have something to control; outputs routed directly do not follow it. The Master fader in the Mixer is separate. To stop the keys from doing this, choose **None** under **Device Settings › Volume Keys › Audio Output**. This level control is our own addition; Apogee's software had none for converters."),
                 .text("Maestro does not send Symphony I/O settings to a converter on its own. The optical format, S/PDIF coax and per-card clock settings belong to the Symphony I/O's option cards, so they do not apply to these converters, as in Apogee's original software."),
                 .text("If only some outputs play, check the converter's own **routing mode** on its front panel first: in its advanced routing mode the converter decides which incoming channels reach which outputs. Then check Maestro's **Output Routing**."),
-                .text("**To send feedback:** choose **Maestro › About Maestro** and click the **copy button** next to the version number. That copies your device and software details. Paste them into your message, and if you can, add a screenshot of the **Input**, **Output Routing** and **Device Settings** pages. Tell us which converters you have, in what order they are cabled, and which inputs and outputs actually pass audio."),
             ]),
         ])
     }
@@ -520,6 +542,10 @@ extension HelpSection {
     /// rather than approximated.
     private static var troubleshooting: HelpSection {
         HelpSection(id: .troubleshooting, title: "Troubleshooting", items: [
+            HelpItem(title: "The status bar says \"No hardware detected\" or \"Bus error\".", blocks: [
+                .text("The ThunderBridge or PCIe card is there, but the Symphony on its port is not answering. **No hardware detected** means nothing was found on the port: no unit is connected to it, or the unit is off. **Bus error** means a unit was found and the link to it failed. With 64 channels the message names the port. The ⓘ button next to it shows the whole message."),
+                .text("Verify that the hardware is properly connected and powered on: the PC-32 cable from the Symphony's main port to the card's port, the unit's power, and **Symphony** mode on its front panel. Clicking the message in the status bar is the same as **Rescan**."),
+            ]),
             HelpItem(title: "Symphony is powered on and connected, but Maestro can't see it.", blocks: [
                 .text("Use **Rescan** (in the View menu, or ⌘R). It re-establishes the link between Maestro and the hardware, re-resolves which audio device the unit is, and rebuilds the audio path — which is what actually matters after the unit has been unplugged and replugged, or has re-enumerated on a different port. It does not change any of your settings."),
                 .text("If Rescan does not find it, check the front panel for an exclamation mark (!) — that means the unit is not talking to the Mac at all, and the cable is the place to start rather than Maestro."),
@@ -542,7 +568,7 @@ extension HelpSection {
                 .text("If it is listed, check **Hardware › PCI** for **pci19c2,2200** (ThunderBridge) or **pci19c2,2100** (the older Symphony 64 PCIe card). A healthy entry reads *Link Status: Link up* and **Driver Installed: Yes**. *Link up* with **Driver Installed: No** means the PCI function reached the Mac but the Maestro driver has not attached; check Driver Extension approval and include the PCI identifier when reporting the problem."),
                 .text("The physical link has a second, separate half: connect the ThunderBridge's **DC power supply**, then connect the Symphony I/O's **Primary/Main Symphony** port directly to **ThunderBridge Port 1: Ch 1–32** with the PC-32 cable. Set the I/O to **Symphony** mode. A second unit goes on **Port 2**; see \"Can I connect more than one Symphony I/O?\"."),
                 .text("If the ThunderBridge or PCIe card appears but no audio device appears, the PCI function is enumerating but the driver has not attached. Check the power, PC-32 cable, Port 1/Main connection, and Symphony mode. The first installation on a Mac may also need approval under **System Settings › General › Login Items & Extensions**. In the default **By App** view, open **Maestro → Driver Extension** and make sure its switch is on. In **By Category**, the extension is named **Symphony Thunderbridge**. If macOS asks for approval, follow its prompt, then relaunch Maestro. The Symphony 64 PCIe card uses the same banner, driver status, and approval flow as ThunderBridge."),
-                .text("**Device Settings › Info** reports the ThunderBridge driver as **Enabled**, **Installed — approval required**, **Installed — disabled**, or **Ready — no ThunderBridge connected**. When it is installed but not enabled, use **Open Driver Extensions…** in that row; it opens macOS's Driver Extensions panel directly. Maestro refreshes this state while the app is in the foreground and when you return from System Settings. If activation says a restart is required, restart macOS before trying Thunderbolt again."),
+                .text("**Device Settings › Info** reports the ThunderBridge driver as **Enabled**, **Installed — approval required**, **Installed — disabled**, or **Ready — no ThunderBridge connected**. When it is installed but not enabled, use **Open Driver Settings…** in that row; it opens macOS's Driver Extensions panel directly. Maestro refreshes this state while the app is in the foreground and when you return from System Settings. If activation says a restart is required, restart macOS before trying Thunderbolt again."),
                 .text("After a driver update, macOS can keep the previous driver on the ThunderBridge although it already lists the new one. Once Maestro has reopened after the update, **unplug the ThunderBridge cable and plug it back in**. Audio stops for a few seconds. You can instead **turn the Maestro driver off and on** in **System Settings › General › Login Items & Extensions › Driver Extensions**, or **restart your Mac**. Maestro shows a banner at the top of the window until the new driver is running, and **Device Settings › Info** says which driver build is still running."),
             ]),
             HelpItem(title: "How do I reset Symphony I/O to its factory defaults?", blocks: [
@@ -551,7 +577,7 @@ extension HelpSection {
             ]),
             HelpItem(title: "When and how should I use diagnostics?", blocks: [
                 .text("Use it when something doesn't work and you can make it happen again: your Symphony or converter isn't found, there's no sound, your DAW freezes or goes silent when it selects the device, audio drops out or crackles, or a control or the volume keys do nothing. Also use it when the developer asks you to."),
-                .text("**1.** Update Maestro to the latest version (**Maestro › Check for Updates**). **2.** In **App Settings › Updates**, set the update channel to **Beta**, then turn on **Diagnostics** in **App Settings › Diagnostics & Feedback**. **3.** Do what causes the problem, for example open your DAW and press play, then wait until it goes wrong. A minute or two is usually enough; it stops by itself after an hour. If Maestro doesn't find your Symphony or converter, or it shows as connected but nothing works, turn the unit off and on again while diagnostics is on. **4.** Press **Stop Diagnostics** in the red bar at the top of the window. Maestro saves a text file to your Desktop."),
+                .text("**1.** Update Maestro to the latest version (**Maestro › Check for Updates…**). **2.** In **App Settings › Updates**, set the update channel to **Beta**, then turn on **Diagnostics** in **App Settings › Diagnostics & Feedback**. **3.** Do what causes the problem, for example open your DAW and press play, then wait until it goes wrong. A minute or two is usually enough; it stops by itself after an hour. If Maestro doesn't find your Symphony or converter, or it shows as connected but nothing works, turn the unit off and on again while diagnostics is on. **4.** Press **Stop Diagnostics** in the red bar at the top of the window. Maestro saves a text file to your Desktop."),
                 .text("Maestro then asks whether to email it, attached, to the developer to help diagnose the problem. You can tick what hardware you have and how it is connected, describe what is and isn't working, link an existing GitHub issue, and leave your email so we can reply; all are optional. Nothing is sent until you press **Agree and Send**. Diagnostics are never posted publicly, so please don't attach the file to a GitHub issue. If sending doesn't work, email the file to \(DiagnosticsRecorder.sendTo)."),
                 .text("It records what Maestro, the USB helper and the driver are doing, and checks what is installed, including leftover Apogee software. It includes details about this Mac. We remove names, serial numbers and network addresses as best we can. It cannot see inside your DAW."),
             ]),
@@ -584,16 +610,17 @@ extension HelpSection {
     private static var uninstalling: HelpSection {
         HelpSection(id: .uninstalling, title: "Uninstalling", items: [
             HelpItem(blocks: [
-                .text("Run this one command in Terminal. It removes the app, plug-in, Thunderbolt driver, and background service, and restores the original Apogee driver if it was present:"),
+                .text("Run this one command in Terminal. It removes the app, the audio plug-in and the background service. It does not install or remove anything of Apogee's."),
                 .command(uninstallCommand),
+                .text("If it says the driver extension is still registered, turn off **Symphony Thunderbridge** in **System Settings › General › Login Items & Extensions › Driver Extensions**. It does not run while Apogee's driver and Maestro's are both running."),
             ]),
         ])
     }
 
     private static var about: HelpSection {
-        HelpSection(id: .about, title: "Tested hardware & feedback", items: [
+        HelpSection(id: .about, title: "Supported Macs & feedback", items: [
             HelpItem(blocks: [
-                .text("Maestro has only been tested on **Apple Silicon (M-series) Macs**. Intel Macs are not supported."),
+                .text("Maestro runs on Apple Silicon Macs. Intel Macs are not supported."),
                 .text(feedbackText),
             ]),
             HelpItem(title: "Where do I find Apogee's own documentation and software?", blocks: [
@@ -644,14 +671,14 @@ extension HelpSection {
             + "driver. If Maestro says both drivers are running, shut down your Mac and disconnect the "
             + "ThunderBridge or PCIe chassis, then start up again, before you remove anything. "
             + "If the warning is still there after all that, macOS may be keeping its own stored copy of "
-            + "Apogee's kernel extension, which Apogee's uninstaller does not remove; that copy alone does not "
-            + "stop an update, and the warning has steps you can try for it."
+            + "Apogee's kernel extension, which Apogee's uninstaller does not remove; that copy does not stop "
+            + "an update, but it stops a first install; the installer then offers **Open Removal Guide**."
 
     private static let ioModulesLink =
         "Apogee's full list, with photos of each module's rear panel: [Supported I/O modules for Symphony I/O](https://knowledge.apogeedigital.com/can-mkii-i/o-modules-be-used-in-the-older-symphony-i/o)"
 
     /// Feedback line with inline, clickable links.
     private static var feedbackText: String {
-        "Found a bug or have a request? [Report a bug on GitHub](\(FeedbackLinks.reportBug.absoluteString)) or ask on [the Gearspace thread](\(FeedbackLinks.discussion.absoluteString)); both are also in **App Settings › Diagnostics & Feedback**, and in the **Help** menu. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail)) — feedback is genuinely welcome."
+        "Found a bug or have a request? [Report a bug on GitHub](\(FeedbackLinks.reportBug.absoluteString)) or ask on [the Gearspace thread](\(FeedbackLinks.discussion.absoluteString)); both are also in **App Settings › Diagnostics & Feedback**, and in the **Help** menu. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail))."
     }
 }
