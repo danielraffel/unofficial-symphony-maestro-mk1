@@ -347,6 +347,8 @@ struct SymphonyThunderbridge_IVars {
     double    lastSampleRate;  // Last SUCCESSFULLY programmed hardware sample rate
     uint32_t  namingSampleRate; // Hz the channel names follow: Core Audio's nominal rate
                                // (SymphonyNamingRateHz), updated on every HandleChangeSampleRate
+    double    idleRateFailed;  // dext 141: the rate an idle rate sync last failed at (0 = none);
+                               // not tried again with no IO start until the rate changes
     double    xlinkRate;       // Rate actually broadcast to the XLink units (updated on
                                // every successful SetSampleRate broadcast, even if the
                                // subsequent lock/verify then failed). The DDS-rollback
@@ -8731,10 +8733,16 @@ static kern_return_t ApplyRequestedSampleRate(SymphonyThunderbridge_IVars *ivars
 // with nothing playing, the Symphony sat at its start-up 44.1 kHz, could not
 // lock to an external clock at another rate, and blinked (issue 31).
 // Called by SymphonyAudioDevice with IO stopped by Core Audio: after a nominal
-// rate change, and at every configuration change (which is how a rate set
-// while the link was still coming up is caught once it is up).
-void SymphonySyncHardwareRate(IOUserAudioDevice *device, const char *why)
+// rate change, with that rate; and after the driver's own "link recovered"
+// configuration change (rate 0: the device's current rate), which is how a
+// rate set while the link was still coming up is caught once it is up. Not on
+// the host's own configuration changes, where the device can still report the
+// previous rate. A rate that failed here is not tried again until the rate
+// changes or IO starts: the link watch repairs the card after a failure and
+// asks for another configuration change, which would otherwise loop.
+void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t changeAction, const char *why)
 {
+    if (rate <= 0.0 && changeAction != kSymphonyConfigChangeLinkRecovered) return;
     IOLock *lock = __atomic_load_n(&sNominalRateLock, __ATOMIC_ACQUIRE);
     if (!lock || !device) return;
     SymphonyThunderbridge *driver = nullptr;
@@ -8750,18 +8758,21 @@ void SymphonySyncHardwareRate(IOUserAudioDevice *device, const char *why)
     }
     IOLockUnlock(lock);
     if (!driver) return;
-    const double requestedRate = device->GetSampleRate();
+    const double requestedRate = rate > 0.0 ? rate : device->GetSampleRate();
     if (requestedRate != ivars->lastSampleRate) {
+        // No "recovery in flight" gate: the transaction waits its turn behind
+        // a recovery on xlinkQueue, as StartDevice's does.
         const char *skip = nullptr;
         if (__atomic_load_n(&ivars->ioRunning, __ATOMIC_ACQUIRE)) skip = "IO is running";
         else if (!ivars->symphonyLinkConfigured) skip = "the link is not configured yet";
-        else if (__atomic_load_n(&ivars->linkRecoveryInFlight, __ATOMIC_ACQUIRE)) skip = "a link recovery is running";
         else if (!HardwareReachable(ivars)) skip = "the endpoint is not reachable";
+        else if (requestedRate == ivars->idleRateFailed) skip = "this rate already failed with no IO start";
         if (skip) {
             STLOG("Rate sync (%{public}s): device at %.0f Hz, hardware at %.0f Hz; not applied now (%{public}s)",
                   why, requestedRate, ivars->lastSampleRate, skip);
         } else {
             const kern_return_t rc = ApplyRequestedSampleRate(ivars, driver, requestedRate, why);
+            ivars->idleRateFailed = rc == kIOReturnSuccess ? 0.0 : requestedRate;
             STLOG("Rate sync (%{public}s): %.0f Hz applied to the hardware with no IO start: 0x%x",
                   why, requestedRate, rc);
         }
@@ -8810,6 +8821,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
     if (ivars->audioDevice) {
         double requestedRate = ivars->audioDevice->GetSampleRate();
         if (requestedRate != ivars->lastSampleRate) {
+            ivars->idleRateFailed = 0.0;
             const kern_return_t rateResult =
                 ApplyRequestedSampleRate(ivars, this, requestedRate, "StartDevice");
             if (rateResult != kIOReturnSuccess) return rateResult;

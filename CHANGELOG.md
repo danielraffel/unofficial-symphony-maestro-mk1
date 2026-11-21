@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.18 (beta)
+
+This beta makes the Symphony I/O take a new sample rate the moment it is set, on ThunderBridge and PCIe. It contains everything in 0.9.17.
+
+Thanks to the tester whose diagnostics reports showed why Word Clock kept blinking after a restart.
+
+### Changes that may affect your setup
+
+- **This beta updates the ThunderBridge and PCIe driver (0.11.15, build 141).** macOS usually switches to the new driver by itself within a few seconds of installing (audio stops briefly); if Device Settings › Info still shows an older build, restart the Mac or reconnect the ThunderBridge or PCIe chassis.
+- **Changing the sample rate now reaches the Symphony I/O straight away,** as it did with Apogee's driver. Before, the Symphony only took the new rate when audio next started playing. Choosing a rate in Maestro, Audio MIDI Setup or a DAW now takes a second or two while the Symphony changes over, even with nothing playing, and audio then starts without that wait.
+
+### Fixed
+
+- **With Word Clock or a digital input as the clock source, the Symphony I/O now locks after a restart or reconnect without anything having to play first.** After a restart the Symphony started at 44.1 kHz and was only given your sample rate once audio started. Until then it could not lock to an external clock running at another rate, and its sample rate display blinked.
+
+### Please test
+
+- **Word Clock or a digital input as clock source:** after restarting the Mac, or unplugging and replugging the ThunderBridge, does the Symphony lock by itself with nothing playing? If not, a Diagnostics report started before the replug shows us why.
+
+### Release notes
+
+- The Symphony I/O does not follow an external clock's sample rate by itself, and did not with Apogee's software: set the same rate in Maestro or your DAW.
+
 ## 0.9.17 (beta)
 
 This beta gives Mixer 1 and Mixer 2 their own Software Return mute and solo. It contains everything in 0.9.16.

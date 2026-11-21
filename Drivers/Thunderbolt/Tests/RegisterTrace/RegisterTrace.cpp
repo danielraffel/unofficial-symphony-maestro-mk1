@@ -1040,7 +1040,7 @@ static void RunMonitorDeviceChecks()
 // (wake, an FPGA reset, a power-cycled unit, a failed health probe), as the
 // original re-applied its saved source (SymphonyIO.cpp:4660-4695). The first
 // set-up sends Internal.
-void SymphonySyncHardwareRate(IOUserAudioDevice *device, const char *why);
+void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t changeAction, const char *why);
 
 static void RunClockReapplyChecks()
 {
@@ -1094,12 +1094,18 @@ static void RunClockReapplyChecks()
         const uint8_t before = r.card.port[0].rateCode;
         r.card.port[0].clockModes.clear();
         gHostAudio.device->SetSampleRate(48000.0);
-        SymphonySyncHardwareRate(gHostAudio.device, "test, IO running");
+        SymphonySyncHardwareRate(gHostAudio.device, 48000.0, 0, "test, IO running");
         HostPump();
         CHECK(r.card.port[0].rateCode == before && r.card.port[0].clockModes.empty(),
               "%s: hardware touched while IO was running", o.name);
         r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
-        SymphonySyncHardwareRate(gHostAudio.device, "test, idle");
+        // A host configuration change (any action but the driver's own) does nothing.
+        SymphonySyncHardwareRate(gHostAudio.device, 0.0, 3, "test, host change");
+        HostPump();
+        CHECK(r.card.port[0].rateCode == before && r.card.port[0].clockModes.empty(),
+              "%s: hardware touched on a host configuration change", o.name);
+        // The driver's "link recovered" change applies the device's rate.
+        SymphonySyncHardwareRate(gHostAudio.device, 0.0, 0x4C4E4B52ULL, "test, link recovered");
         HostPump();
         const auto &sent = r.card.port[0].clockModes;
         CHECK(r.card.port[0].rateCode != before, "%s: the unit's rate code stayed 0x%02x", o.name, before);
