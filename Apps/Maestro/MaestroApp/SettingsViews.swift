@@ -1974,7 +1974,6 @@ struct AppSettingsView: View {
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .auto
     @AppStorage(MaestroHelpModifier.preferenceKey) private var showTooltips = true
     @AppStorage("rememberControlTabScrollPositions") private var rememberControlTabScrollPositions = true
-    @AppStorage("popupsEnabled") private var popupsEnabled = true
     @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
     @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
     @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
@@ -2003,9 +2002,6 @@ struct AppSettingsView: View {
 
                 Toggle("Remember Input, Output, and Mixer scroll positions", isOn: $rememberControlTabScrollPositions)
                     .maestroHelp("Keep each wide control tab at its current horizontal position until Maestro quits")
-
-                Toggle("Display pop-ups", isOn: $popupsEnabled)
-                    .maestroHelp("Show floating volume overlay when adjusting levels via media keys")
             }
 
             Section("When a Device Connects") {

@@ -441,6 +441,16 @@ public enum InputChannelLogic {
     /// (`APAnalogInputController.m:583-590`).
     public static func usesGainKnob(level: AnalogInputLevel) -> Bool { level.isPreampLevel }
 
+    /// Whether the strip has a trim value that can be typed into: the trim
+    /// fader is showing (Show Trims on a line-level strip — Mic/Instrument
+    /// strips carry the gain knob instead) and is not inert on converters.
+    /// Tab skips the strips where this is false.
+    public static func hasEditableTrimReadout(level: AnalogInputLevel,
+                                              showTrims: Bool,
+                                              convertersOnly: Bool) -> Bool {
+        showTrims && !convertersOnly && !usesGainKnob(level: level)
+    }
+
     /// The selected stage has its own wire command and stored gain.
     /// Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
     public static func gainSelector(for level: AnalogInputLevel) -> AudioPropertySelector {

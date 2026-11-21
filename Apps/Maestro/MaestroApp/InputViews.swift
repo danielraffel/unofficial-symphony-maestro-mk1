@@ -49,6 +49,25 @@ struct InputControlsView: View {
     @State private var micPreDAWReload = MicPreDAWDeferredReload()
     @State private var lastFrontPanelGainRevision = 0
     @State private var scrollPosition: ScrollPosition
+    /// The strip whose trim value is being typed into, if any — one at a time.
+    @State private var editingTrim: Int?
+    /// Keyboard focus among the trim readouts; Tab moves it along the strips.
+    @FocusState private var focusedTrim: Int?
+
+    /// What strip `index`'s trim readout needs to take part in Tab order. A
+    /// strip with no trim readout (trims hidden, a Mic/Instrument strip with
+    /// its gain knob, or converters where the setting does nothing) is skipped.
+    private func trimEntry(_ index: Int) -> LevelReadoutEntry<Int> {
+        LevelReadoutEntry(id: index, editing: $editingTrim, focus: $focusedTrim) { current, forward in
+            let strips = Array(0..<min(channels.count, analogInputStripCount))
+            return LevelEntry.neighbour(of: current, in: strips, forward: forward) { strip in
+                InputChannelLogic.hasEditableTrimReadout(
+                    level: AnalogInputLevel(rawValue: channels[strip].inputType) ?? .plus4dBu,
+                    showTrims: appState.showInputTrims,
+                    convertersOnly: appState.converterRoutingSurface)
+            }
+        }
+    }
     @State private var scrollRestorationPending = true
     @State private var scrollObservationEnabled = false
     @State private var scrollRestorationTarget: CGFloat?
@@ -232,6 +251,7 @@ struct InputControlsView: View {
             // rack scroll vertically instead of imposing its intrinsic height
             // on the NavigationSplitView and displacing the sidebar bottom.
             GeometryReader { viewport in
+            ScrollViewReader { scrollProxy in
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(Array(0..<min(channels.count, analogInputStripCount)), id: \.self) { i in
@@ -296,6 +316,7 @@ struct InputControlsView: View {
                                 Task { await writeChannelProperty(i, .analogIOType,
                                     value: .uint32(analogIOTypeWithTrim(i))) }
                             },
+                            trimEntry: trimEntry(i),
                             showZoneColoring: appState.showMeterZoneColoring,
                             boardType: cardForStrip(i),
                             channelNumber: i + 1,
@@ -317,6 +338,7 @@ struct InputControlsView: View {
                         .background(GeometryReader { geo in
                             Color.clear.preference(key: AnalogStripHeightKey.self, value: geo.size.height)
                         })
+                        .id(TrimStripID(strip: i))
                     }
 
                     // DIGITAL divider + SPDIF + ADAT — inline after analog strips
@@ -426,6 +448,12 @@ struct InputControlsView: View {
                     scrollPosition.scrollTo(x: 0)
                     appState.setControlTabScrollOffset(0, for: .input)
                 }
+            }
+            // Tab can move editing to a strip that is scrolled out of view;
+            // bring it in by the smallest amount (no move when already visible).
+            .onChange(of: editingTrim) { _, strip in
+                if let strip { scrollProxy.scrollTo(TrimStripID(strip: strip)) }
+            }
             }
             }
 
@@ -1291,6 +1319,9 @@ struct InputChannelStripView: View {
     var onInputTypeChange: ((UInt32) -> Void)?
     var onDigitalRefChange: ((UInt32) -> Void)?
     var onTrimChange: ((Double) -> Void)?
+    /// Ties this strip's trim readout into the page's one-at-a-time editing
+    /// and Tab order.
+    let trimEntry: LevelReadoutEntry<Int>
     var showZoneColoring: Bool = false
     /// The I/O card type for this channel's board — determines the soft limit list.
     var boardType: IOCardType = .none
@@ -1377,6 +1408,12 @@ struct InputChannelStripView: View {
 
     /// Whether the strip shows a gain knob (Mic/Instrument) instead of a trim fader.
     private var usesGainKnob: Bool { InputChannelLogic.usesGainKnob(level: level) }
+
+    /// Trim fader range and step at this channel's level; the trim readout
+    /// accepts exactly the same values.
+    private var trimSpec: (range: ClosedRange<Double>, step: Double) {
+        InputChannelLogic.trimRange(for: level) ?? (-2.0...2.0, 0.1)
+    }
 
     /// Whether anything sits beside the meter (gain knob or trim fader).
     /// The gain knob is always present on preamp channels — it is the channel's
@@ -1509,7 +1546,6 @@ struct InputChannelStripView: View {
                           + " When the channel is in a Group, the whole group moves with it and existing offsets between members are preserved.")
                     .transition(.opacity)
                 } else if showTrims {
-                    let trimSpec = InputChannelLogic.trimRange(for: level) ?? (-2.0...2.0, 0.1)
                     FaderView(
                         value: $channel.trim,
                         range: trimSpec.range,
@@ -1554,15 +1590,23 @@ struct InputChannelStripView: View {
             // the whole rack.
             if hasSideControl && !usesGainKnob {
                 HStack(spacing: 3) {
-                    Text(String(format: "%.1f", channel.trim))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                        .maestroHelp("Trim — calibration trim, currently \(String(format: "%.1f", channel.trim)) dB.")
-                    Text(String(format: "%.0f", resolvedMeterLevel))
+                    // Typed values go through the same binding as the fader,
+                    // with the fader's own range and step, so they are written
+                    // and saved by the fader's onChange above. Disabled exactly
+                    // when the fader is.
+                    EditableLevelReadout(
+                        value: $channel.trim,
+                        range: trimSpec.range,
+                        step: trimSpec.step,
+                        entry: trimEntry,
+                        height: nil)
+                        .disabled(convertersOnly)
+                        .maestroHelp("Trim — calibration trim, currently \(String(format: "%.1f", channel.trim)) dB. Click to type a value; Tab moves to the next channel.")
+                    // Tenths of a dB, as the original: this is the number read
+                    // while calibrating a trim against a tone (User's Guide
+                    // p. 55 item 8). Both boxes share the row equally and the
+                    // digits are monospaced, so the width never changes.
+                    Text(String(format: "%.1f", resolvedMeterLevel))
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)

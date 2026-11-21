@@ -39,6 +39,20 @@ struct MixerView: View {
     @State private var outsideClickMonitor: Any?
     @State private var scrollPosition: ScrollPosition
     @AppStorage("rememberControlTabScrollPositions") private var rememberControlTabScrollPositions = true
+    /// The fader level readout being typed into, if any — one at a time.
+    @State private var editingReadout: MixerLevelReadout?
+    /// Keyboard focus among the fader level readouts; Tab moves it along the strips.
+    @FocusState private var focusedReadout: MixerLevelReadout?
+
+    /// What a strip's level readout needs to take part in Tab order: inputs
+    /// that are showing, then Software Return, then Master.
+    private func readoutEntry(_ id: MixerLevelReadout) -> LevelReadoutEntry<MixerLevelReadout> {
+        LevelReadoutEntry(id: id, editing: $editingReadout, focus: $focusedReadout) { current, forward in
+            let inputs = (0..<min(editor.channels.count, channelCount)).filter { isChannelVisible($0) }
+            return LevelEntry.neighbour(of: current, in: MixerLevelReadout.order(visibleInputs: inputs),
+                                        forward: forward) { _ in true }
+        }
+    }
 
     init(appState: AppState) {
         self.appState = appState
@@ -220,6 +234,7 @@ struct MixerView: View {
             // Give the scroll container the available window height so its
             // indicator stays bottom-aligned while strips remain top-aligned.
             GeometryReader { viewport in
+            ScrollViewReader { scrollProxy in
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 0) {
                     Spacer().frame(width: 7)
@@ -287,8 +302,10 @@ struct MixerView: View {
                                 onCustomLabelChange: { value in
                                     setCustomChannelLabel(value, for: i)
                                 },
-                                showZoneColoring: appState.showMeterZoneColoring
+                                showZoneColoring: appState.showMeterZoneColoring,
+                                readoutEntry: readoutEntry(.input(i))
                             )
+                            .id(MixerLevelReadout.input(i))
                         }
                     }
 
@@ -296,6 +313,7 @@ struct MixerView: View {
                     // to the card below, so it cannot stretch to the scroll
                     // viewport's full height.
                     swReturnStrip
+                        .id(MixerLevelReadout.softwareReturn)
 
                     // Master fader strip — pill aligned with SW Return pill,
                     // fader+meter+dB aligned with channel strips, no M/S at bottom.
@@ -362,6 +380,7 @@ struct MixerView: View {
                             .fill(Color.primary.opacity(0.4))
                             .frame(width: 1)
                     }
+                    .id(MixerLevelReadout.master)
                 }
                 // Keep the scroll content at its intrinsic strip height. A
                 // max-height frame here makes Divider stretch to the window
@@ -402,6 +421,12 @@ struct MixerView: View {
                     scrollPosition.scrollTo(x: 0)
                     appState.setControlTabScrollOffset(0, for: .mixer)
                 }
+            }
+            // Tab can move editing to a strip that is scrolled out of view;
+            // bring it in by the smallest amount (no move when already visible).
+            .onChange(of: editingReadout) { _, readout in
+                if let readout { scrollProxy.scrollTo(readout) }
+            }
             }
             }
 
@@ -917,7 +942,8 @@ struct MixerView: View {
         showPan: false,
         stereoLeftLevel: $editor.swReturnLeftLevel,
         stereoRightLevel: $editor.swReturnRightLevel,
-        onStereoLevelChange: { level in swSideChanged(level) }
+        onStereoLevelChange: { level in swSideChanged(level) },
+        readoutEntry: readoutEntry(.softwareReturn)
     )
     }
 
@@ -936,8 +962,9 @@ struct MixerView: View {
                     get: { editor.masterLevel },
                     set: { newLevel in masterSideChanged(newLevel) }),
                 range: -48...6,
-                step: 0.5)
-            .maestroHelp("Master fader level: double-click to edit")
+                step: 0.5,
+                entry: readoutEntry(.master))
+            .maestroHelp("Master fader level: click to edit")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
@@ -1299,6 +1326,9 @@ struct MixerChannelStripView: View {
     var stereoRightLevel: Binding<Double>? = nil
     /// A stereo fader handle or its readout moved: the new level for both sides.
     var onStereoLevelChange: ((Double) -> Void)? = nil
+    /// Ties this strip's level readout into the page's one-at-a-time editing
+    /// and Tab order.
+    let readoutEntry: LevelReadoutEntry<MixerLevelReadout>
     @Environment(\.colorScheme) private var colorScheme
 
     /// Height for the fader+meter area (matches Input/Output strip meter height).
@@ -1500,12 +1530,13 @@ struct MixerChannelStripView: View {
                         get: { stereoLeftLevel?.wrappedValue ?? channel.level },
                         set: { newValue in onStereoLevelChange?(newValue) }),
                     range: -48...6,
-                    step: 0.5)
-                .maestroHelp("Software Return fader level: double-click to edit")
+                    step: 0.5,
+                    entry: readoutEntry)
+                .maestroHelp("Software Return fader level: click to edit")
             } else {
                 // dB readout (level) — single readout, no duplicate
-                EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5)
-                    .maestroHelp("Fader Level: \(String(format: "%.1f", channel.level)) dB — double-click to edit")
+                EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5, entry: readoutEntry)
+                    .maestroHelp("Fader Level: \(String(format: "%.1f", channel.level)) dB — click to edit")
             }
 
             // Mute / Solo buttons — at the very bottom
@@ -1602,70 +1633,5 @@ struct MixerChannelStripView: View {
                 .fill(Color.primary.opacity(0.4))
                 .frame(width: 1)
         }
-    }
-}
-
-/// Compact legacy-style dB readout. It is display-only until double-clicked,
-/// then accepts a bounded, half-dB value and commits with Return (Escape
-/// cancels). Keeping this outside FaderView also lets the parent align one
-/// readout beneath a stereo fader pair, as the original Maestro did.
-private struct EditableLevelReadout: View {
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    @State private var isEditing = false
-    @State private var editText = ""
-    @FocusState private var fieldFocused: Bool
-
-    private func formatted(_ number: Double) -> String {
-        String(format: step >= 1 ? "%.0f" : "%.1f", number)
-    }
-
-    private func finishEditing(commit: Bool) {
-        if commit, let parsed = Double(editText), parsed.isFinite {
-            let clamped = min(max(parsed, range.lowerBound), range.upperBound)
-            value = (clamped / step).rounded() * step
-        }
-        fieldFocused = false
-        isEditing = false
-        NSApp.keyWindow?.endEditing(for: nil)
-        NSApp.keyWindow?.makeFirstResponder(nil)
-    }
-
-    var body: some View {
-        Group {
-            if isEditing {
-                TextField("", text: $editText)
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .multilineTextAlignment(.center)
-                    .textFieldStyle(.plain)
-                    .focused($fieldFocused)
-                    .onSubmit { finishEditing(commit: true) }
-                    .onExitCommand { finishEditing(commit: false) }
-                    .onAppear {
-                        DispatchQueue.main.async {
-                            fieldFocused = true
-                            // Wait for AppKit to install the field editor before
-                            // selecting, so the first keystroke replaces the
-                            // displayed value instead of appending to it.
-                            DispatchQueue.main.async {
-                            NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: nil)
-                            }
-                        }
-                    }
-            } else {
-                Text(formatted(value))
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .onTapGesture {
-                        editText = formatted(value)
-                        isEditing = true
-                    }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 22)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
     }
 }
