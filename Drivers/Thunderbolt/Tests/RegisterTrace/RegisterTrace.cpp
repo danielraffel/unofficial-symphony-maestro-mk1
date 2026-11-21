@@ -674,6 +674,8 @@ static void Attach(Port &p, Port::Kind kind)
 }
 
 static const uint64_t kIrqTime = 0x1000;
+// Longer than the driver's settle window (kHALMicPreSettleNs, 5 s).
+static const uint64_t kKeyPressAfterSettleNs = 6000000000ull;
 
 struct Run {
     FakeCard card;
@@ -756,11 +758,17 @@ static void RunScenario(const Options &o, Run &r)
         card.phase("interrupts while running");
         Irq(r, 1);
         Irq(r, 2);
+        // The recorded key presses happen after the settle window in which the
+        // driver takes a control value for coreaudiod's restore and sends
+        // nothing (dext 142). Only these presses are moved: the clock is put
+        // back, so everything else in the flow is timed as it was recorded.
+        gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;
         if (gHostAudio.volume) gHostAudio.volume->SetDecibelValue(-31.0f);
         Irq(r, 1);
         if (gHostAudio.mute) gHostAudio.mute->SetControlValue(true);
         Irq(r, 1);
         HostPump();
+        gHostMicPreClockOffsetNs -= kKeyPressAfterSettleNs;
         card.intPending |= kInt_MeterTrigger;      // meter-only interrupt: no audio wrap
         drv->InterruptOccurred(nullptr, 1, kIrqTime);
 
@@ -932,15 +940,30 @@ static bool WriteFile(const std::string &dir, const char *name, const std::vecto
 #ifdef TRACE_HAVE_CONVERTER_VOLUME
 static uint32_t Mixer1Return(Run &r) { return r.card.reg[MixerCoefOffset(0, 128)]; }
 
+// A key pressed by a person: after the settle window (see RunScenario).
 static void PressVolume(Run &r, float db)
 {
+    gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;
     gHostAudio.volume->SetDecibelValue(db);
     Irq(r, 1);
     HostPump();
+    gHostMicPreClockOffsetNs -= kKeyPressAfterSettleNs;
 }
 
 static void PressMute(Run &r, bool muted)
 {
+    gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;
+    gHostAudio.mute->SetControlValue(muted);
+    Irq(r, 1);
+    HostPump();
+    gHostMicPreClockOffsetNs -= kKeyPressAfterSettleNs;
+}
+
+// A control value that arrives inside the settle window: coreaudiod putting
+// back what it saved.
+static void RestoreByCoreAudio(Run &r, float db, bool muted)
+{
+    gHostAudio.volume->SetDecibelValue(db);
     gHostAudio.mute->SetControlValue(muted);
     Irq(r, 1);
     HostPump();
@@ -1002,11 +1025,13 @@ static void RunMonitorDeviceChecks()
     Irq(r, 1); HostPump();
     CHECK(gHostAudio.mute->GetControlValue(), "A mute observation not restored");
     // A pending IRQ sample is consumed for A before B selection, never retargeted.
+    gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;   // a person's key press
     gHostAudio.volume->SetDecibelValue(-30.0f);
     gHostAudio.mute->SetControlValue(false);
     Irq(r, 1);
     CHECK(r.drv->SetMonitorDevice(1) == kIOReturnSuccess, "reselect B");
     HostPump();
+    gHostMicPreClockOffsetNs -= kKeyPressAfterSettleNs;
     CHECK(StoredVendorPort(r, 0x26) == 55, "pending A sample retargeted B");
     CHECK(StoredVendor(r, 0x26) == 30, "pending A volume did not stay with A");
     CHECK(StoredVendor(r, 0x27) == 0, "pending A mute did not stay with A");
@@ -1032,14 +1057,9 @@ static void RunMonitorDeviceChecks()
     CHECK(r.drv->SendVendorCommand(0x23, 0, &hp, 1) == kIOReturnSuccess, "seed A HP1");
     CHECK(gHostAudio.volume->GetDecibelValue() == -21.0f, "nonselected HP1 changed speaker HAL");
     CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1) == kIOReturnSuccess, "select A Line");
-#ifdef kSelectorSetMonitorOutput
-    // dext 142: Line mode no longer points the keys at Headphone 1. With
-    // Speakers chosen the control reads the original's fixed -20 dB.
-    CHECK(gHostAudio.volume->GetDecibelValue() == -20.0f, "Line mode with Speakers chosen must read -20 dB (got %.1f)",
-          gHostAudio.volume->GetDecibelValue());
-#else
+    // No output has been chosen by the app here: the keys follow the mode,
+    // Headphone 1 in Line (dext 142 as before).
     CHECK(gHostAudio.volume->GetDecibelValue() == -44.0f, "Line mode failed to restore HP1");
-#endif
     Irq(r, 1); HostPump();
     CHECK(StoredVendor(r, 0x26) == 21, "Line transition overwrote speakers");
     CHECK(StoredVendor(r, 0x23) == 44, "Line transition overwrote HP1");
@@ -1180,6 +1200,24 @@ static void RunVolumeKeyChecks()
         o.symphonyInquire = 0xF0;
         RunScenario(o, r);
         CHECK(!LinkSaysConverterKeys(r), "%s: link state reports converter volume keys", o.name);
+#ifdef kSelectorSetMonitorOutput
+        // dext 142: while its levels cannot be read, a key sends nothing.
+        {
+            r.card.port[0].dropVendorReads = 1;
+            const size_t writes = r.card.port[0].vendorWrites.size();
+            PressVolume(r, -31.0f);
+            CHECK(r.card.port[0].vendorWrites.size() == writes && gHostAudio.volume->GetDecibelValue() == -20.0f,
+                  "%s: a level was sent to a unit whose level could not be read", o.name);
+            r.card.port[0].dropVendorReads = 0;
+        }
+        // dext 142: its levels were never read, so the first key is not sent:
+        // the levels are read and the control shows the unit's (20: the
+        // bring-up wrote its fallback when no read answered, as before).
+        PressVolume(r, -31.0f);
+        CHECK(StoredVendor(r, 0x26) == 20 && gHostAudio.volume->GetDecibelValue() == -20.0f,
+              "%s: a level was sent before the unit's was read (%u, control %.1f)", o.name,
+              StoredVendor(r, 0x26), gHostAudio.volume->GetDecibelValue());
+#endif
         PressVolume(r, -31.0f);
         CHECK(StoredVendor(r, 0x26) == 31, "%s: SpeakerVolume %u (want 31)", o.name, StoredVendor(r, 0x26));
         CHECK(Mixer1Return(r) == kMixerUnityCoeff, "%s: mixer 1 trimmed (0x%08x)", o.name, Mixer1Return(r));
@@ -1370,16 +1408,23 @@ static void RunMonitorOutputChecks()
         CHECK(ShownDb() == -37.0f, "%s: a front-panel HP2 level is not shown (%.1f)", o.name, ShownDb());
         Irq(r, 1); HostPump();
         CHECK(StoredOn(r, 0, 0x23, 1) == 50, "%s: a front-panel observation was echoed to the unit", o.name);
-        // A card reset and the link recovery keep the output, and put the
-        // session's Headphone 2 level back (the fake unit lost nothing, so
-        // the write is what proves it).
-        r.card.port[0].stored.erase(((uint64_t)0x23 << 32) | 1);
+        // A card reset and the link recovery keep the output. Headphone 2's
+        // level is taken from the unit as it comes back (52 here, as if it
+        // were another unit or had been turned on its front panel while the
+        // link was down); the driver's older 37 is neither shown nor sent.
+        r.card.port[0].stored[((uint64_t)0x23 << 32) | 1] = { 52 };
         ResetCardAndRecover(r);
         CheckOutputsDirect("Symphony I/O on port 1, after a card re-init", r, 32, true);
         CHECK(!Sent(r, 0, 0xB3), "%s: the re-init mutes the unit's mixer inputs (0xB3)", o.name);
-        CHECK(StoredOn(r, 0, 0x23, 1) == 37, "%s: recovery did not put HP2 back (%u, want 37)", o.name, StoredOn(r, 0, 0x23, 1));
-        CHECK(ShownDb() == -37.0f, "%s: control at %.1f after recovery (want -37)", o.name, ShownDb());
+        CHECK(StoredOn(r, 0, 0x23, 1) == 52, "%s: recovery sent the unit an HP2 level it did not have (%u, want 52)", o.name, StoredOn(r, 0, 0x23, 1));
+        CHECK(ShownDb() == -52.0f, "%s: control at %.1f after recovery (want -52)", o.name, ShownDb());
         r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        // A value coreaudiod puts back right after the recovery is not sent.
+        RestoreByCoreAudio(r, -6.0f, true);
+        CHECK(StoredOn(r, 0, 0x23, 1) == 52 && StoredOn(r, 0, 0x24, 1) == 0 && ShownDb() == -52.0f &&
+              !gHostAudio.mute->GetControlValue(),
+              "%s: a restored control value reached HP2 after recovery (%u, control %.1f)", o.name,
+              StoredOn(r, 0, 0x23, 1), ShownDb());
         PressVolume(r, -44.0f);
         CHECK(StoredOn(r, 0, 0x23, 1) == 44, "%s: the output was not kept over a re-init (HP2 %u)", o.name, StoredOn(r, 0, 0x23, 1));
         // Line mode with Speakers chosen: nothing is written, and the controls
@@ -1423,10 +1468,11 @@ static void RunMonitorOutputChecks()
         CHECK(StoredOn(r, 0, 0x26) == 15, "%s: speakers after Line gave %u", o.name, StoredOn(r, 0, 0x26));
         Finish(o, r);
     }
-    // 1b. A unit that starts in Line mode: Speakers is still the output, the
-    //     keys write nothing, and Headphone 1 is not moved by itself.
+    // 1b. A unit in Line mode when the link comes up, and no choice from the
+    //     app in this driver instance: the keys move Headphone 1, as builds
+    //     up to 141 did and as the original's state is after Line was set.
     {
-        Options o; o.name = "audio output: starts in Line"; o.shortFlow = true;
+        Options o; o.name = "audio output: Line before the app chose"; o.shortFlow = true;
         Run r;
         RunScenario(o, r);
         // The harness has no hook before Start(), so put the unit in Line and
@@ -1434,14 +1480,94 @@ static void RunMonitorOutputChecks()
         r.card.port[0].stored[(uint64_t)0x25 << 32] = { 0 };
         ResetCardAndRecover(r);
         r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
-        CHECK(ShownDb() == -20.0f, "%s: control at %.1f (want -20)", o.name, ShownDb());
+        CHECK(ShownDb() == -18.0f, "%s: control at %.1f (want Headphone 1's -18)", o.name, ShownDb());
+        PressVolume(r, -50.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 0, 0x23, 0) == 50 && StoredOn(r, 0, 0x24, 0) == 1, "%s: the keys did not move Headphone 1 (%u/%u)",
+              o.name, StoredOn(r, 0, 0x23, 0), StoredOn(r, 0, 0x24, 0));
+        CHECK(StoredOn(r, 0, 0x26) == 12 && StoredOn(r, 0, 0x27) == 0, "%s: the keys moved the speakers in Line mode", o.name);
+        PressMute(r, false);
+        // An app that does not know selector 15 sets Stereo: the speakers again.
+        uint8_t stereo = 2, line = 0;
+        CHECK(r.drv->SendVendorCommand(0x25, 0, &stereo, 1) == kIOReturnSuccess, "%s: Stereo", o.name);
+        CHECK(ShownDb() == -12.0f, "%s: Stereo without a choice shows %.1f (want the speakers' -12)", o.name, ShownDb());
+        // Once the app has chosen, the mode no longer changes the output.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: speakers refused", o.name);
+        CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1) == kIOReturnSuccess, "%s: Line", o.name);
+        CHECK(ShownDb() == -20.0f, "%s: Line with Speakers chosen reads %.1f (want -20)", o.name, ShownDb());
         const size_t writes = r.card.port[0].vendorWrites.size();
-        PressVolume(r, -50.0f);
-        CHECK(r.card.port[0].vendorWrites.size() == writes, "%s: a volume key wrote to a unit in Line mode", o.name);
-        PressMute(r, true);
-        CHECK(r.card.port[0].vendorWrites.size() == writes + 1 && StoredOn(r, 0, 0x27) == 1,
-              "%s: mute in Line is not the speaker mute", o.name);
-        CHECK(StoredOn(r, 0, 0x23, 0) == 18 && StoredOn(r, 0, 0x24, 0) == 0, "%s: Headphone 1 moved by itself (%u)", o.name, StoredOn(r, 0, 0x23, 0));
+        PressVolume(r, -40.0f);
+        CHECK(r.card.port[0].vendorWrites.size() == writes && StoredOn(r, 0, 0x23, 0) == 50,
+              "%s: a volume key wrote with Speakers chosen in Line mode", o.name);
+        // The choice outlives a recovery in the same driver instance.
+        ResetCardAndRecover(r);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        CHECK(ShownDb() == -20.0f, "%s: the app's choice was lost over a recovery (%.1f)", o.name, ShownDb());
+        Finish(o, r);
+    }
+    // 1c. coreaudiod putting a saved slider value back after the driver
+    //     started (or after a wake, or when it reconnects) writes nothing: the
+    //     control goes back to the output's level. A key pressed later is sent.
+    {
+        Options o; o.name = "audio output: restored slider"; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        const size_t writes = r.card.port[0].vendorWrites.size();
+        RestoreByCoreAudio(r, -3.0f, true);
+        CHECK(r.card.port[0].vendorWrites.size() == writes, "%s: a restored value was written to the unit after Start (%zu writes)",
+              o.name, r.card.port[0].vendorWrites.size() - writes);
+        CHECK(StoredOn(r, 0, 0x26) == 12 && StoredOn(r, 0, 0x27) == 0 && StoredOn(r, 0, 0x23, 0) == 18 && StoredOn(r, 0, 0x23, 1) == 30,
+              "%s: a restored value changed a level", o.name);
+        CHECK(ShownDb() == -12.0f && !gHostAudio.mute->GetControlValue(), "%s: the controls were not put back to the speakers' (%.1f)", o.name, ShownDb());
+        PressVolume(r, -31.0f); PressMute(r, true);
+        CHECK(StoredOn(r, 0, 0x26) == 31 && StoredOn(r, 0, 0x27) == 1, "%s: a key pressed after the window was not sent (%u/%u)",
+              o.name, StoredOn(r, 0, 0x26), StoredOn(r, 0, 0x27));
+        PressMute(r, false);
+        // With a headphone chosen, after a wake with an FPGA reset.
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: HP1 refused", o.name);
+        ResetCardAndRecover(r);
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        const size_t after = r.card.port[0].vendorWrites.size();
+        RestoreByCoreAudio(r, -2.0f, false);
+        CHECK(r.card.port[0].vendorWrites.size() == after && StoredOn(r, 0, 0x23, 0) == 18 && ShownDb() == -18.0f,
+              "%s: a restored value reached Headphone 1 after a wake (%u, control %.1f)", o.name, StoredOn(r, 0, 0x23, 0), ShownDb());
+        PressVolume(r, -25.0f);
+        CHECK(StoredOn(r, 0, 0x23, 0) == 25, "%s: Headphone 1 key after the window gave %u", o.name, StoredOn(r, 0, 0x23, 0));
+        Finish(o, r);
+    }
+    // 1d. A unit switched on after the Mac started: no level is shown or sent
+    //     that was not read from it. Headphone 2 was chosen while it was off.
+    {
+        Options o; o.name = "audio output: unit powered on late"; o.port1 = Port::Empty; o.shortFlow = true;
+        Run r;
+        RunScenario(o, r);
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP2) == kIOReturnSuccess, "%s: HP2 refused with no unit", o.name);
+        Attach(r.card.port[0], Port::Symphony);
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        CHECK(ShownDb() == -30.0f, "%s: HP2 shows %.1f (want the unit's -30, not the -20 fallback)", o.name, ShownDb());
+        CHECK(StoredOn(r, 0, 0x26) == 12 && StoredOn(r, 0, 0x23, 0) == 18 && StoredOn(r, 0, 0x23, 1) == 30,
+              "%s: the unit was sent a fallback level (%u/%u/%u, want 12/18/30)", o.name,
+              StoredOn(r, 0, 0x26), StoredOn(r, 0, 0x23, 0), StoredOn(r, 0, 0x23, 1));
+        PressVolume(r, -32.0f);
+        CHECK(StoredOn(r, 0, 0x23, 1) == 32, "%s: HP2 key gave %u (want 32)", o.name, StoredOn(r, 0, 0x23, 1));
+        // The unit is swapped for another whose Headphone 2 is at 55.
+        r.card.port[0] = Port();
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        Attach(r.card.port[0], Port::Symphony);
+        r.card.port[0].stored[((uint64_t)0x23 << 32) | 1] = { 55 };
+        r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+        r.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        CHECK(ShownDb() == -55.0f && StoredOn(r, 0, 0x23, 1) == 55, "%s: after a unit swap HP2 shows %.1f and the unit has %u (want 55)",
+              o.name, ShownDb(), StoredOn(r, 0, 0x23, 1));
+        // Choosing an output reads its level from the unit.
+        r.card.port[0].stored[((uint64_t)0x23 << 32) | 0] = { 41 };
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: HP1 refused", o.name);
+        CHECK(ShownDb() == -41.0f, "%s: a chosen output shows %.1f (want the unit's -41)", o.name, ShownDb());
+        // A choice whose level cannot be read is refused and changes nothing.
+        r.card.port[0].dropVendorReads = 2;
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputSpeakers) == kIOReturnIOError, "%s: a choice was taken without its level", o.name);
+        CHECK(ShownDb() == -41.0f, "%s: a refused choice moved the control", o.name);
         Finish(o, r);
     }
     // 2. The original PCIe card: the same table.

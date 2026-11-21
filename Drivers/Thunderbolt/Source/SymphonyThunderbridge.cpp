@@ -217,6 +217,17 @@ struct SymphonyThunderbridge_IVars {
     // the mode both ways here.)
     uint8_t   monitorOutputTarget;
     bool      lineMode;               // unit A's speaker mode is Off (Line)
+    // The app has chosen a unit's output in this driver instance (selector
+    // 15). Until it has, the output follows the unit's speaker mode as builds
+    // up to 141 did, and as the original's state is after the user set Line
+    // (SymphonyIO.cpp:6142-6168): Headphone 1 in Line mode, else the speakers.
+    // So the keys keep working in Line mode before Maestro runs, and under a
+    // Maestro that does not know selector 15.
+    bool      monitorOutputChosen[2];
+    // Unit A's speaker, HP1 and HP2 levels and mutes below were read from the
+    // unit, or set, in this driver instance. False after a Start() that found
+    // no Symphony I/O: they are then fallbacks, never sent or shown as levels.
+    bool      monitorLevelsKnown;
     // Per-monitor state behind the single Core Audio volume/mute control.
     uint8_t   speakerAttenuation;
     bool      speakerMute;
@@ -962,6 +973,7 @@ static void ClearHalMicPreEdit(SymphonyThunderbridge_IVars *iv, uint32_t port, u
 static void RecordMicPreTrim(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch,
                              uint8_t type, uint8_t byte);
 static void ArmMicPreSettle(SymphonyThunderbridge_IVars *iv);
+static bool MicPreSettling(SymphonyThunderbridge_IVars *iv);
 static bool MicPreTypeKnownOn(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch);
 static void ResetMicPreUnitCaches(SymphonyThunderbridge_IVars *iv, uint32_t port, bool clearEdits);
 static void RereadMicPreTypesA(SymphonyThunderbridge_IVars *iv);
@@ -1900,6 +1912,11 @@ struct SymphonyLinkInitResult {
     bool    hp1Mute;
     uint8_t hp2Attenuation;
     bool    hp2Mute;
+    // As read from the unit (the fields above fold "64 dB" into the mute).
+    bool    levelsRead;          // a Symphony vendor read answered in this set-up
+    bool    speakerMuteRaw;
+    bool    hp1MuteRaw;
+    bool    hp2MuteRaw;
 };
 
 static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
@@ -1948,6 +1965,7 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
         __atomic_store_n(&ivars->hp1Mute, symphony->hp1Mute, __ATOMIC_RELEASE);
         ivars->hp2Attenuation = symphony->hp2Attenuation;
         ivars->hp2Mute = symphony->hp2Mute;
+        ivars->monitorLevelsKnown = symphony->levelsRead;
         if (ivars->outputVolumeControl)
             ivars->outputVolumeControl->SetDecibelValue(-static_cast<float>(symphony->monitorAttenuation));
         if (ivars->outputMuteControl)
@@ -2806,10 +2824,17 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         out->hp1Mute = (startupHP1Mute != 0 || startupHP1Volume >= 64);
         out->hp2Attenuation = startupHP2Volume;
         out->hp2Mute = (startupHP2Mute != 0 || startupHP2Volume >= 64);
-        // What the volume control shows for the app's Audio Output choice
-        // (Speakers until the app chose). No output is picked from the speaker
-        // mode: with Speakers chosen in Line mode the control reads the
-        // original's fixed -20 dB (SymphonyIO.cpp:3145-3152) and does nothing.
+        out->levelsRead = vendorAnswered;
+        out->speakerMuteRaw = startupMute != 0;
+        out->hp1MuteRaw = startupHP1Mute != 0;
+        out->hp2MuteRaw = startupHP2Mute != 0;
+        // What the volume control shows: the app's Audio Output choice, or,
+        // until the app has chosen in this driver instance, Headphone 1 in
+        // Line mode and the speakers otherwise (monitorOutputChosen). With
+        // Speakers chosen in Line mode the control reads the original's fixed
+        // -20 dB (SymphonyIO.cpp:3145-3152) and the volume keys do nothing.
+        if (!ivars->monitorOutputChosen[0])
+            ivars->monitorOutputTarget = out->lineMonitor ? kSymphonyMonitorOutputHP1 : kSymphonyMonitorOutputSpeakers;
         switch (ivars->monitorOutputTarget) {
         case kSymphonyMonitorOutputHP1:
             out->monitorAttenuation = out->hp1Attenuation;
@@ -4209,6 +4234,18 @@ static void PublishSelectedMonitor(SymphonyThunderbridge_IVars *ivars)
     __atomic_fetch_add(&ivars->monitorGeneration, 1, __ATOMIC_RELEASE);
 }
 
+// Whether a control holds a value other than the one last sent or shown.
+static bool MonitorControlsMoved(SymphonyThunderbridge_IVars *ivars)
+{
+    if (ivars->outputVolumeControl) {
+        const float diff = ivars->outputVolumeControl->GetDecibelValue() - ivars->lastVolumeDb;
+        if (diff > 0.5f || diff < -0.5f) return true;
+    }
+    return ivars->outputMuteControl && ivars->outputMuteControl->GetControlValue() != ivars->lastMuteState;
+}
+
+static bool ReadUnitAMonitorLevel(SymphonyThunderbridge_IVars *ivars, uint32_t output);
+
 static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
 {
     ++ivars->unitBGeneration;
@@ -5191,6 +5228,22 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
             STLOG("Link recovery: converter volume trim atten=%u mute=%u",
                   ivars->converterTrimAtten, ivars->converterTrimMuted ? 1 : 0);
         } else {
+            // Levels are only ever sent or shown when they were read from
+            // the unit or set in this driver instance. A Start() that found
+            // no Symphony I/O left fallbacks: take what the unit just reported
+            // instead (the replay below then sends the unit its own values).
+            // Headphone 2 is always taken from the unit: nothing replays it.
+            if (restored.levelsRead) {
+                if (!ivars->monitorLevelsKnown) {
+                    __atomic_store_n(&ivars->speakerAttenuation, restored.speakerAttenuation, __ATOMIC_RELEASE);
+                    __atomic_store_n(&ivars->speakerMute, restored.speakerMuteRaw, __ATOMIC_RELEASE);
+                    __atomic_store_n(&ivars->hp1Attenuation, restored.hp1Attenuation, __ATOMIC_RELEASE);
+                    __atomic_store_n(&ivars->hp1Mute, restored.hp1MuteRaw, __ATOMIC_RELEASE);
+                }
+                ivars->hp2Attenuation = restored.hp2Attenuation;
+                ivars->hp2Mute = restored.hp2MuteRaw;
+                ivars->monitorLevelsKnown = true;
+            }
             uint8_t spkAtten = __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);
             uint8_t spkMute  = __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE) ? 1 : 0;
             uint8_t hpAtten  = __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE);
@@ -5205,19 +5258,9 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
                               kSIOCmd_HeadphoneMute, 0, &hpMute, 1, ivars->runtimeTxSeq);
             STLOG("Link recovery: replayed session monitor state (speaker atten=%u mute=%u, "
                   "HP1 atten=%u mute=%u)", spkAtten, spkMute, hpAtten, hpMute);
-            // Headphone 2 only while the keys move it: the driver has then
-            // been setting its level this session.
-            if (ivars->monitorOutputTarget == kSymphonyMonitorOutputHP2) {
-                uint8_t hp2Atten = ivars->hp2Attenuation;
-                uint8_t hp2Mute  = ivars->hp2Mute ? 1 : 0;
-                SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                                  kSIOCmd_HeadphoneVolume, 1, &hp2Atten, 1, ivars->runtimeTxSeq);
-                SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                                  kSIOCmd_HeadphoneMute, 1, &hp2Mute, 1, ivars->runtimeTxSeq);
-                STLOG("Link recovery: replayed HP2 atten=%u mute=%u (the keys' output)", hp2Atten, hp2Mute);
-            }
-            // The speaker mode the unit came back with decides whether the
-            // keys' output can be moved; the controls show the kept output.
+            // The controls show the keys' output at the level just settled
+            // (the output itself was kept, or follows the unit's speaker
+            // mode while the app has not chosen: ConfigureSymphonyLink).
             if (!ivars->monitorDeviceB) PublishSelectedMonitor(ivars);
         }
         // Start() may have run with no Symphony at all, in which case the
@@ -6231,6 +6274,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     bool initialHP1Mute = false;
     uint8_t initialHP2Attenuation = 20;
     bool initialHP2Mute = false;
+    bool initialLevelsRead = false;
 
     STLOG("Start() — Apogee ThunderBridge DriverKit driver");
 
@@ -6519,6 +6563,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         initialHP1Mute            = linkInit.hp1Mute;
         initialHP2Attenuation     = linkInit.hp2Attenuation;
         initialHP2Mute            = linkInit.hp2Mute;
+        initialLevelsRead         = linkInit.levelsRead;
     } else {
         // No Symphony clock (unit off or PC-32 cable absent). The legacy
         // driver still published its audio engine in this state and let its
@@ -7569,11 +7614,13 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
 
             ivars->lastVolumeDb = initialMonitorDb;
             ivars->lastMuteState = initialMonitorMute;
-            // The keys' output is the speakers until the app chooses another
-            // (selector 15); the speaker mode read above only decides whether
-            // the speakers can be moved.
-            ivars->monitorOutputTarget = kSymphonyMonitorOutputSpeakers;
+            // The keys' output was set with the link (ConfigureSymphonyLink):
+            // Headphone 1 for a unit in Line mode, else the speakers, until
+            // the app chooses (selector 15). With no unit yet: the speakers.
+            if (ivars->monitorOutputTarget == kSymphonyMonitorOutputNone)
+                ivars->monitorOutputTarget = kSymphonyMonitorOutputSpeakers;
             ivars->unitBMonitorOutputTarget = kSymphonyMonitorOutputSpeakers;
+            ivars->monitorLevelsKnown = initialLevelsRead;
             ivars->lineMode = initialLineMonitor;
             ivars->speakerAttenuation = initialSpeakerAttenuation;
             ivars->speakerMute = initialSpeakerMute;
@@ -8332,12 +8379,33 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                         // (SymphonyIO.cpp:2345-2351), or "None" on converters. The
                         // control is put back to what it showed and nothing is written.
                         const bool inert = converter ? ivars->converterKeysOff : SelectedMonitorInert(ivars, b);
+                        // The control's value is not known to belong to this output
+                        // while coreaudiod may be restoring a value it saved earlier,
+                        // possibly for another output (the settle window: Start, a
+                        // coreaudiod connection, wake, link recovery, a configuration
+                        // change; kHALMicPreSettleNs). A level is never sent from such
+                        // a value: the control is put back to the output's level, and
+                        // a key pressed after the window is honoured.
+                        // Unit A's levels were never read (every read was lost when
+                        // the link came up): read them now that a control moved. The
+                        // controls then show the unit's level; that value is not sent.
+                        if (!converter && !b && !ivars->monitorLevelsKnown && ivars->symphonyLinkConfigured &&
+                            !ivars->convPort1 && XLinkTxAdmissible(ivars) && MonitorControlsMoved(ivars)) {
+                            if (ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputSpeakers) &&
+                                ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputHP1) &&
+                                ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputHP2)) {
+                                ivars->monitorLevelsKnown = true;
+                                PublishSelectedMonitor(ivars);
+                            }
+                        }
+                        const bool adopting = MicPreSettling(ivars) ||
+                                              (!converter && !b && !ivars->monitorLevelsKnown);
                         // Target and value are consumed together here. No delayed block
                         // re-resolves a physical destination after selection changes.
                         if (ivars->outputVolumeControl) {
                             const float db = ivars->outputVolumeControl->GetDecibelValue();
                             const float diff = db - ivars->lastVolumeDb;
-                            if ((diff > 0.5f || diff < -0.5f) && inert) {
+                            if ((diff > 0.5f || diff < -0.5f) && (inert || adopting)) {
                                 ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
                             } else if ((diff > 0.5f || diff < -0.5f) && XLinkTxAdmissible(ivars)) {
                                 ivars->lastVolumeDb = db;
@@ -8361,7 +8429,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                         const bool muteInert = converter && ivars->converterKeysOff;
                         if (ivars->outputMuteControl) {
                             const bool muted = ivars->outputMuteControl->GetControlValue();
-                            if (muted != ivars->lastMuteState && muteInert) {
+                            if (muted != ivars->lastMuteState && (muteInert || adopting)) {
                                 ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
                             } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
                                 ivars->lastMuteState = muted;
@@ -10300,10 +10368,10 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             __atomic_store_n(&ivars->sessionCoaxMirror[value], payload[0], __ATOMIC_RELEASE);
             NoteCoaxBoardType(ivars, value);
         }
-        // The speaker mode only decides whether the speakers can be moved by
-        // the keys (Off, i.e. Line: they cannot). It never changes the keys'
-        // output: that is the app's choice (SetMonitorOutput). Remembered
-        // only after the hardware mode write succeeded.
+        // The speaker mode decides whether the speakers can be moved by the
+        // keys (Off, i.e. Line: they cannot). Once the app has chosen the
+        // keys' output (SetMonitorOutput) the mode never changes it.
+        // Remembered only after the hardware mode write succeeded.
         if ((port == 0 || port == 1) && command == kSIOCmd_SpeakerMode && payload && payloadLen >= 1 &&
             !__atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
             const bool line = payload[0] == 0;
@@ -10312,6 +10380,11 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             } else {
                 __atomic_store_n(&ivars->lineMode, line, __ATOMIC_RELEASE);
             }
+            // Until the app has chosen the output (monitorOutputChosen), it
+            // follows the mode, as builds up to 141 did.
+            if (!ivars->monitorOutputChosen[port])
+                (port ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget) =
+                    line ? kSymphonyMonitorOutputHP1 : kSymphonyMonitorOutputSpeakers;
 
             if ((port == 1) == ivars->monitorDeviceB) PublishSelectedMonitor(ivars);
             STLOG("Monitor: unit=%{public}s speaker mode=%u%{public}s", port ? "B" : "A",
@@ -10321,6 +10394,24 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
     });
     if (namesChanged) ScheduleChannelNames(ivars, this);
     return result;
+}
+
+// One of unit A's outputs (kSymphonyMonitorOutput*): its level and mute, read
+// from the unit into the session state. On xlinkQueue.
+static bool ReadUnitAMonitorLevel(SymphonyThunderbridge_IVars *ivars, uint32_t output)
+{
+    const unsigned kind = output == kSymphonyMonitorOutputHP1 ? 1 : (output == kSymphonyMonitorOutputHP2 ? 2 : 0);
+    uint8_t level = 0, mute = 0;
+    if (!ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                           kind ? kSIOCmd_HeadphoneVolume : kSIOCmd_SpeakerVolume, kind ? kind - 1 : 0,
+                           &level, 1, ivars->runtimeTxSeq, ivars->isLegacyPCIe2100) ||
+        !ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                           kind ? kSIOCmd_HeadphoneMute : kSIOCmd_SpeakerMute, kind ? kind - 1 : 0,
+                           &mute, 1, ivars->runtimeTxSeq, ivars->isLegacyPCIe2100))
+        return false;
+    MonitorAttenuation(ivars, false, kind) = level > 64 ? 64 : level;
+    MonitorMute(ivars, false, kind) = mute != 0;
+    return true;
 }
 
 // Unit B's Headphone 2 level and mute, read from the unit. On xlinkQueue.
@@ -10367,6 +10458,8 @@ kern_return_t SymphonyThunderbridge::SetMonitorDevice(uint32_t unit)
                     return;
                 }
             }
+            if (!ivars->monitorOutputChosen[1])
+                ivars->unitBMonitorOutputTarget = values[0] == 0 ? kSymphonyMonitorOutputHP1 : kSymphonyMonitorOutputSpeakers;
             // Headphone 2 only when it is unit B's Audio Output: nothing
             // else needs its level.
             if (ivars->unitBMonitorOutputTarget == kSymphonyMonitorOutputHP2 && !ReadUnitBHeadphone2(ivars)) {
@@ -10432,7 +10525,15 @@ kern_return_t SymphonyThunderbridge::SetMonitorOutput(uint32_t unit, uint32_t ou
             return;
         }
         uint8_t &target = unit ? ivars->unitBMonitorOutputTarget : ivars->monitorOutputTarget;
+        ivars->monitorOutputChosen[unit] = true;
         if (target == output) return;
+        // Unit A: the chosen output's level and mute are read from the unit
+        // before the controls show them, so that no level is shown, or
+        // stepped from by the next key, that the unit does not have. With
+        // no unit on the link the choice is kept and link recovery reads them.
+        if (unit == 0 && ivars->symphonyLinkConfigured && !ivars->convPort1 && XLinkTxAdmissible(ivars)) {
+            if (!ReadUnitAMonitorLevel(ivars, output)) { result = kIOReturnIOError; return; }
+        }
         // Unit B's Headphone 2 has not been read yet when it becomes the
         // output the controls show.
         if (unit == 1 && output == kSymphonyMonitorOutputHP2 && ivars->monitorDeviceB) {
