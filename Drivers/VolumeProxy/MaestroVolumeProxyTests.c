@@ -270,20 +270,67 @@ static void check_monitor_output(void)
     CHECK(!note_speaker_mode(0x25, 0, &stereo, 0) && gSpeakerLineMode, "an empty write is not a speaker mode");
     CHECK(note_speaker_mode(0x25, 0, &stereo, 1) && !gSpeakerLineMode, "speaker mode 2 is not Line");
 
-    /* The kept state: written with the output and Line, read back the same;
-       a file from an older helper (two numbers) is the speakers. */
+    /* The state file. Its first two numbers are always the speaker's, so a
+       helper before version 3 reading it after a downgrade writes the
+       speakers their own level and never a headphone's. */
     char text[64];
-    unsigned att = 0, output = 0; bool muted = false, line = false;
-    format_volume_state(text, sizeof(text), 37, true, MONITOR_OUTPUT_HP2, true);
-    CHECK(strcmp(text, "37 1 3 1\n") == 0, "state line format");
-    CHECK(parse_volume_state(text, &att, &muted, &output, &line) && att == 37 && muted &&
-          output == MONITOR_OUTPUT_HP2 && line, "state round trip");
-    CHECK(parse_volume_state("12 0\n", &att, &muted, &output, &line) && att == 12 && !muted &&
-          output == MONITOR_OUTPUT_SPEAKERS && !line, "an older helper's file is the speakers");
-    CHECK(parse_volume_state("12 0 9 1\n", &att, &muted, &output, &line) && output == MONITOR_OUTPUT_SPEAKERS && !line,
+    VolumeState st = { 12, false, true, MONITOR_OUTPUT_HP2, true, 37, true };
+    format_volume_state(text, sizeof(text), &st);
+    CHECK(strcmp(text, "12 0 3 1 37 1 1\n") == 0, "state line: speaker first, then output, Line, the output's level");
+    {
+        unsigned oldAtt = 99; int oldMuted = 9;   /* what a version-2 helper reads */
+        CHECK(sscanf(text, "%u %d", &oldAtt, &oldMuted) == 2 && oldAtt == 12 && oldMuted == 0,
+              "an older helper reads the speaker's level from a file written with a headphone chosen");
+    }
+    VolumeState back;
+    memset(&back, 0, sizeof(back));
+    CHECK(parse_volume_state(text, &back) && back.speakerAttenuation == 12 && !back.speakerMuted && back.speakerKnown &&
+          back.output == MONITOR_OUTPUT_HP2 && back.line && back.targetAttenuation == 37 && back.targetMuted,
+          "state round trip");
+    CHECK(parse_volume_state("12 0\n", &back) && back.speakerAttenuation == 12 && back.speakerKnown &&
+          back.output == MONITOR_OUTPUT_SPEAKERS && !back.line && back.targetAttenuation == 12 && !back.targetMuted,
+          "an older helper's two-number file is the speakers");
+    CHECK(parse_volume_state("12 1 1 1 40 0 1\n", &back) && back.output == MONITOR_OUTPUT_SPEAKERS && back.line &&
+          back.targetAttenuation == 12 && back.targetMuted, "with the speakers chosen their own level is the output's");
+    CHECK(parse_volume_state("12 0 9 1\n", &back) && back.output == MONITOR_OUTPUT_SPEAKERS && !back.line,
           "an output that cannot be one is the speakers, not in Line mode");
-    CHECK(!parse_volume_state("65 0 2 0\n", &att, &muted, &output, &line), "an attenuation above 64 is refused");
-    CHECK(!parse_volume_state("garbage", &att, &muted, &output, &line), "a damaged file is refused");
+    CHECK(parse_volume_state("12 0 2 0\n", &back) && back.output == MONITOR_OUTPUT_SPEAKERS && back.targetAttenuation == 12,
+          "a headphone without its own level is not taken: the speakers");
+    CHECK(parse_volume_state("12 0 2 0 70 0 1\n", &back) && back.output == MONITOR_OUTPUT_SPEAKERS,
+          "a headphone level above 64 is not taken");
+    CHECK(parse_volume_state("20 0 2 0 33 0 0\n", &back) && !back.speakerKnown && back.output == MONITOR_OUTPUT_HP1 &&
+          back.targetAttenuation == 33, "a speaker level nobody set is marked as such");
+    CHECK(!parse_volume_state("65 0 2 0 10 0 1\n", &back), "a speaker attenuation above 64 is refused");
+    CHECK(!parse_volume_state("garbage", &back), "a damaged file is refused");
+
+    /* The speaker's level is kept apart while a headphone is chosen. */
+    gMonitorOutput = MONITOR_OUTPUT_SPEAKERS; gCachedAttenuation = 15; gCachedMuted = true; gHasReceivedVolume = true;
+    note_target_level();
+    CHECK(gSpeakerAttenuation == 15 && gSpeakerMuted && gHasSpeakerLevel, "with the speakers chosen the kept level is theirs");
+    gMonitorOutput = MONITOR_OUTPUT_HP1; gCachedAttenuation = 44; gCachedMuted = false;
+    note_target_level();
+    CHECK(gSpeakerAttenuation == 15 && gSpeakerMuted, "a headphone's level never becomes the speaker's");
+    uint8_t nine = 9, zero = 0, tooMuch = 70;
+    CHECK(note_speaker_level(0x26, 0, &nine, 1) && gSpeakerAttenuation == 9, "a speaker level Maestro writes is kept");
+    CHECK(note_speaker_level(0x27, 0, &zero, 1) && !gSpeakerMuted, "a speaker mute Maestro writes is kept");
+    CHECK(!note_speaker_level(0x23, 0, &nine, 1) && !note_speaker_level(0x26, 1, &nine, 1) &&
+          !note_speaker_level(0x26, 0, &tooMuch, 1) && gSpeakerAttenuation == 9 && gCachedAttenuation == 44,
+          "nothing else is taken for the speaker level");
+    gMonitorOutput = MONITOR_OUTPUT_SPEAKERS; gCachedAttenuation = 20; gCachedMuted = false; gHasReceivedVolume = false;
+    gSpeakerAttenuation = 20; gSpeakerMuted = false; gHasSpeakerLevel = false;
+
+    /* After the output changed, a volume or mute set is taken only when it is
+       the new output's own value, until Maestro has set the Mac's control or
+       the wait ran out. */
+    uint64_t wait = 0;
+    CHECK(slider_set_admitted(100, &wait, 8, 40), "nothing waited for: every set is taken");
+    wait = 1000;
+    CHECK(!slider_set_admitted(100, &wait, 8, 40) && wait == 1000, "the old output's level is not taken for the new output");
+    CHECK(!slider_set_admitted(999, &wait, 39, 40) && wait == 1000, "nor one step from it");
+    CHECK(slider_set_admitted(500, &wait, 40, 40) && wait == 0, "the new output's own level ends the wait");
+    CHECK(slider_set_admitted(501, &wait, 8, 40), "after that a key is taken");
+    wait = 1000;
+    CHECK(slider_set_admitted(1000, &wait, 8, 40) && wait == 0, "the wait runs out");
     CHECK(MAESTRO_HELPER_VERSION >= 3, "the version Maestro asks for has setMonitorOutput");
 }
 

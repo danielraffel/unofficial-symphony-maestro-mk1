@@ -307,6 +307,60 @@ static bool     gHasReceivedVolume = false; /* true after first ASP setAttenuati
    wrote is Off (Line). Both are kept with the volume. */
 static uint32_t gMonitorOutput     = MONITOR_OUTPUT_SPEAKERS;
 static bool     gSpeakerLineMode   = false;
+/* The speaker's own level and mute, kept apart while a headphone is the
+   chosen output: they stay the first two numbers of the state file, which is
+   all an older helper reads (and writes to the speakers), and they are what
+   a configure puts back on the speakers. gHasSpeakerLevel: they were set by a
+   key, by Maestro, or read from a file; not the built-in 20 dB. */
+static uint8_t  gSpeakerAttenuation = 20;
+static bool     gSpeakerMuted       = false;
+static bool     gHasSpeakerLevel    = false;
+/* After "setMonitorOutput" the Mac's volume control still holds the level of
+   the output chosen before, until Maestro has set it to the new output's.
+   Until then (or until the wait runs out) a volume or mute set that is not
+   the new output's own value is not kept and not sent: a key pressed in that
+   moment would otherwise carry the old output's level to the new one. */
+#define SLIDER_WAIT_NS (3ull * NSEC_PER_SEC)
+static uint64_t gVolumeWaitUntilNs = 0;
+static uint64_t gMuteWaitUntilNs   = 0;
+
+/* Whether a volume (or mute) set is taken. `waitUntil` is 0 when nothing is
+   waited for; a set equal to the chosen output's own value, or the wait
+   running out, ends the wait. */
+static bool slider_set_admitted(uint64_t nowNs, uint64_t *waitUntil, unsigned value, unsigned expected)
+{
+    if (*waitUntil == 0) return true;
+    if (nowNs >= *waitUntil || value == expected) { *waitUntil = 0; return true; }
+    return false;
+}
+
+/* The cached level belongs to the speakers while they are the chosen output. */
+static void note_target_level(void)
+{
+    if (gMonitorOutput != MONITOR_OUTPUT_SPEAKERS) return;
+    gSpeakerAttenuation = gCachedAttenuation;
+    gSpeakerMuted = gCachedMuted;
+    gHasSpeakerLevel = gHasReceivedVolume;
+}
+
+/* A speaker level or mute Maestro wrote through the helper (0x26 / 0x27, one
+   byte). Returns true when the kept speaker state changed. */
+static bool note_speaker_level(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
+{
+    if (nValue != 0 || !data || len < 1) return false;
+    if (bRequest == VCMD_SPEAKER_VOL && data[0] <= 64) {
+        if (gHasSpeakerLevel && gSpeakerAttenuation == data[0]) return false;
+        gSpeakerAttenuation = data[0];
+        gHasSpeakerLevel = true;
+        return true;
+    }
+    if (bRequest == VCMD_SPEAKER_MUTE) {
+        if (gSpeakerMuted == (data[0] != 0)) return false;
+        gSpeakerMuted = data[0] != 0;
+        return true;
+    }
+    return false;
+}
 
 /*
  * Where the volume survives a reboot.
@@ -327,28 +381,50 @@ static bool     gSpeakerLineMode   = false;
 #define VOLUME_STATE_PATH VOLUME_STATE_DIR "/volume-state"
 #define VOLUME_STATE_LEGACY_PATH "/var/run/maestro-volume-state"
 
-/* One line: attenuation, mute, then (helper version 3 on) the chosen output
-   and whether the speaker mode is Line. An older helper reads the first two
-   and ignores the rest; a file from an older helper has only those two, and
-   the output is then the speakers. Returns false for a line without a usable
-   attenuation and mute. */
-static int format_volume_state(char *buf, size_t size, unsigned att, bool muted, unsigned output, bool line)
+/* What the state file holds. */
+typedef struct {
+    unsigned speakerAttenuation;  /* 0-64 */
+    bool     speakerMuted;
+    bool     speakerKnown;        /* false: the two above are the built-in default */
+    unsigned output;              /* MONITOR_OUTPUT_* */
+    bool     line;                /* the speaker mode is Line */
+    unsigned targetAttenuation;   /* the chosen output's level and mute */
+    bool     targetMuted;
+} VolumeState;
+
+/* One line. The first two numbers are ALWAYS the speaker's attenuation and
+   mute: a helper before version 3 reads only those and writes them to the
+   speakers, so a headphone's level must never be there (a downgrade would
+   put it on the speakers). Then, from version 3: the chosen output, whether
+   the speaker mode is Line, the chosen output's attenuation and mute, and
+   whether the speaker numbers are a level anyone set. */
+static int format_volume_state(char *buf, size_t size, const VolumeState *st)
 {
-    return snprintf(buf, size, "%u %d %u %d\n", att, muted ? 1 : 0, output, line ? 1 : 0);
+    return snprintf(buf, size, "%u %d %u %d %u %d %d\n", st->speakerAttenuation, st->speakerMuted ? 1 : 0,
+                    st->output, st->line ? 1 : 0, st->targetAttenuation, st->targetMuted ? 1 : 0,
+                    st->speakerKnown ? 1 : 0);
 }
 
-static bool parse_volume_state(const char *text, unsigned *att, bool *muted, unsigned *output, bool *line)
+/* A file from an older helper has only the first two numbers: the output is
+   then the speakers. A headphone without its own level is not taken either.
+   Returns false for a line without a usable speaker attenuation and mute. */
+static bool parse_volume_state(const char *text, VolumeState *st)
 {
-    unsigned a = 20, o = MONITOR_OUTPUT_SPEAKERS;
-    int m = 0, l = 0;
-    const int n = sscanf(text, "%u %d %u %d", &a, &m, &o, &l);
+    unsigned a = 20, o = MONITOR_OUTPUT_SPEAKERS, t = 20;
+    int m = 0, l = 0, tm = 0, known = 1;
+    const int n = sscanf(text, "%u %d %u %d %u %d %d", &a, &m, &o, &l, &t, &tm, &known);
     if (n < 2 || a > 64) return false;
-    *att = a;
-    *muted = m != 0;
+    st->speakerAttenuation = a;
+    st->speakerMuted = m != 0;
+    st->speakerKnown = n < 7 || known != 0;
     /* A choice that cannot be read is the speakers, not in Line mode. */
-    const bool chosen = n >= 3 && monitor_output_valid(o);
-    *output = chosen ? o : MONITOR_OUTPUT_SPEAKERS;
-    *line = chosen && n >= 4 && l != 0;
+    bool chosen = n >= 3 && monitor_output_valid(o);
+    if (chosen && o != MONITOR_OUTPUT_SPEAKERS && (n < 6 || t > 64)) chosen = false;
+    st->output = chosen ? o : MONITOR_OUTPUT_SPEAKERS;
+    st->line = chosen && n >= 4 && l != 0;
+    const bool headphone = st->output != MONITOR_OUTPUT_SPEAKERS;
+    st->targetAttenuation = headphone ? t : a;
+    st->targetMuted = headphone ? tm != 0 : m != 0;
     return true;
 }
 
@@ -376,7 +452,10 @@ static void save_volume_state(void)
         return;
     }
     char text[64];
-    format_volume_state(text, sizeof(text), gCachedAttenuation, gCachedMuted, gMonitorOutput, gSpeakerLineMode);
+    note_target_level();
+    const VolumeState st = { gSpeakerAttenuation, gSpeakerMuted, gHasSpeakerLevel, gMonitorOutput,
+                             gSpeakerLineMode, gCachedAttenuation, gCachedMuted };
+    format_volume_state(text, sizeof(text), &st);
     fputs(text, f);
     fclose(f);
 }
@@ -386,19 +465,22 @@ static bool read_volume_state_file(const char *path)
 {
     FILE *f = fopen(path, "r");
     if (!f) return false;
-    unsigned att = 20, output = MONITOR_OUTPUT_SPEAKERS;
-    bool muted = false, line = false;
+    VolumeState st;
     char text[64] = "";
-    bool ok = fgets(text, sizeof(text), f) != NULL && parse_volume_state(text, &att, &muted, &output, &line);
+    bool ok = fgets(text, sizeof(text), f) != NULL && parse_volume_state(text, &st);
     fclose(f);
     if (!ok) return false;
-    gCachedAttenuation = (uint8_t)att;
-    gCachedMuted = muted;
-    gMonitorOutput = output;
-    gSpeakerLineMode = line;
-    gHasReceivedVolume = true;
-    LOG("Loaded persisted volume state from %s: %udB atten, mute=%d, output=%u, line=%d",
-        path, att, (int)muted, output, (int)line);
+    gSpeakerAttenuation = (uint8_t)st.speakerAttenuation;
+    gSpeakerMuted = st.speakerMuted;
+    gHasSpeakerLevel = st.speakerKnown;
+    gMonitorOutput = st.output;
+    gSpeakerLineMode = st.line;
+    gCachedAttenuation = (uint8_t)st.targetAttenuation;
+    gCachedMuted = st.targetMuted;
+    gHasReceivedVolume = st.output != MONITOR_OUTPUT_SPEAKERS || st.speakerKnown;
+    LOG("Loaded persisted volume state from %s: speaker %udB atten mute=%d, output=%u (%udB atten mute=%d), line=%d",
+        path, st.speakerAttenuation, (int)st.speakerMuted, st.output, st.targetAttenuation,
+        (int)st.targetMuted, (int)st.line);
     return true;
 }
 
@@ -1396,6 +1478,8 @@ static int configure_fpga_routing(void);
 static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
                            void *outBuf, uint16_t len);
 static void restore_cached_volume(void);
+static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex, void *outBuf, uint16_t len);
+static void save_volume_state(void);
 static int set_hw_volume(uint32_t output, uint8_t attenuation);
 static int set_hw_mute(uint32_t output, bool muted);
 
@@ -1951,15 +2035,35 @@ static int configure_fpga_routing(void)
             muteVal ? "muted" : "unmuted",
             gHasReceivedVolume ? " [cached]" : " [default]",
             err ? "FAILED" : "OK");
-    } else if (gHasReceivedVolume) {
-        /* The kept level belongs to the chosen headphone: it goes there, and
-           the speakers are not written (the unit keeps their level). */
+    } else {
+        /* A headphone is the chosen output. The speakers get their own kept
+           level, as every configure did (never the headphone's), and only
+           when one was ever set. */
+        if (gHasSpeakerLevel) {
+            uint8_t spk = gSpeakerAttenuation, spkMute = gSpeakerMuted ? 1 : 0;
+            err = usb_vendor_write(VCMD_SPEAKER_VOL, 0, &spk, 1);
+            LOG("SpeakerVolume(%ddB atten [kept]): %s", spk, err ? "FAILED" : "OK");
+            err = usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &spkMute, 1);
+            LOG("SpeakerMute(%s [kept]): %s", spkMute ? "muted" : "unmuted", err ? "FAILED" : "OK");
+        }
+        /* The headphone is not written: the unit keeps its level, which may
+           have been changed on the front panel since. It is read instead, so
+           that the level the Mac's control is given belongs to it. */
         MonitorKeyWrite v = monitor_restore_write(gMonitorOutput, false);
         MonitorKeyWrite m = monitor_restore_write(gMonitorOutput, true);
-        err = usb_vendor_write(v.request, v.nValue, &vol, 1);
-        LOG("HeadphoneVolume(HP%u, %ddB atten [cached]): %s", v.nValue + 1, vol, err ? "FAILED" : "OK");
-        err = usb_vendor_write(m.request, m.nValue, &muteVal, 1);
-        LOG("HeadphoneMute(HP%u, %s [cached]): %s", m.nValue + 1, muteVal ? "muted" : "unmuted", err ? "FAILED" : "OK");
+        uint8_t level = 0, mute = 0;
+        if (usb_vendor_read(v.request, 0, (uint16_t)v.nValue, &level, 1) == 1 &&
+            usb_vendor_read(m.request, 0, (uint16_t)m.nValue, &mute, 1) == 1 && level <= 64) {
+            gCachedAttenuation = level;
+            gCachedMuted = mute != 0;
+            gHasReceivedVolume = true;
+            save_volume_state();
+            LOG("Headphone %u level read from the unit: %udB atten, mute=%d", v.nValue + 1, level, (int)gCachedMuted);
+        } else {
+            LOG_ERR("Headphone %u level could not be read; the kept one stays", v.nValue + 1);
+        }
+        vol = gCachedAttenuation;
+        muteVal = gCachedMuted ? 1 : 0;
     }
 
     /* ── Step 3: Clock source → Internal, Master mode ──────────────────── */
@@ -2094,11 +2198,13 @@ static int configure_fpga_routing(void)
    so hardware matches what the ASP expects — prevents loud volume jumps. */
 static void restore_cached_volume(void)
 {
-    if (gHasReceivedVolume) {
+    /* Only the speakers: a headphone's level is the unit's own, read at
+       configure and never written back from a kept copy. */
+    if (gHasReceivedVolume && gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
         set_hw_volume(gMonitorOutput, gCachedAttenuation);
         set_hw_mute(gMonitorOutput, gCachedMuted);
-        LOG("Restored cached volume: %udB atten, mute=%d, output=%u",
-            gCachedAttenuation, (int)gCachedMuted, gMonitorOutput);
+        LOG("Restored cached volume: %udB atten, mute=%d",
+            gCachedAttenuation, (int)gCachedMuted);
     }
     /* else: first boot, keep configure_fpga_routing() defaults (20dB, unmuted) */
 }
@@ -2673,6 +2779,12 @@ static void handle_peer(xpc_connection_t peer) {
                 /* Speakers chosen in Line mode: the set is ignored, as the
                    original did (SymphonyIO.cpp:2345-2351). Nothing is kept
                    either, so the speaker level is what it was. */
+                if (!slider_set_admitted(clock_gettime_nsec_np(CLOCK_MONOTONIC), &gVolumeWaitUntilNs,
+                                         att, gCachedAttenuation)) {
+                    LOG("setAttenuation %u ignored: the Mac's volume has not been given output %u's level yet",
+                        att, gMonitorOutput);
+                    return;
+                }
                 MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, false);
                 if (!w.send) {
                     LOG("setAttenuation %u ignored: Speaker is the output and the speaker mode is Line", att);
@@ -2704,6 +2816,12 @@ static void handle_peer(xpc_connection_t peer) {
             }
 
             dispatch_async(gQueue, ^{
+                if (!slider_set_admitted(clock_gettime_nsec_np(CLOCK_MONOTONIC), &gMuteWaitUntilNs,
+                                         muted ? 1u : 0u, gCachedMuted ? 1u : 0u)) {
+                    LOG("setMute %d ignored: the Mac's mute has not been given output %u's yet",
+                        (int)muted, gMonitorOutput);
+                    return;
+                }
                 MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, true);
                 if (!w.send) {
                     LOG("setMute %d ignored: Speaker is the output and the speaker mode is Line", (int)muted);
@@ -2741,6 +2859,8 @@ static void handle_peer(xpc_connection_t peer) {
                     gCachedAttenuation = (uint8_t)att;
                     gCachedMuted = muted;
                     gHasReceivedVolume = true;
+                    /* Until the Mac's control holds this output's values. */
+                    gVolumeWaitUntilNs = gMuteWaitUntilNs = clock_gettime_nsec_np(CLOCK_MONOTONIC) + SLIDER_WAIT_NS;
                     save_volume_state();
                     LOG("setMonitorOutput %u (level %udB atten, mute=%d)", gMonitorOutput,
                         gCachedAttenuation, (int)gCachedMuted);
@@ -2871,7 +2991,8 @@ static void handle_peer(xpc_connection_t peer) {
                         bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
                 /* The speaker mode decides whether the speakers can be moved
                    by the keys (Off, i.e. Line: they cannot). */
-                if (!err && note_speaker_mode(bReq, nValue, dataCopy, copyLen))
+                if (!err && (note_speaker_mode(bReq, nValue, dataCopy, copyLen) ||
+                             note_speaker_level(bReq, nValue, dataCopy, copyLen)))
                     save_volume_state();
                 if (!err && digital_setting_index(bReq) >= 0 && nValue <= 1 &&
                     note_digital_write(bReq, nValue, dataCopy, copyLen,
