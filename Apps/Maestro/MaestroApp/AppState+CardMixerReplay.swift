@@ -177,7 +177,8 @@ extension AppState {
                 return CardMixerReplay.plan(mixers: mixers, layout: layout, store: self.channelStateStore,
                                             preferences: self.mixerPreferences,
                                             complete: self.cardMixerLedger.restoresHeldMixers,
-                                            routes: self.thunderboltCaptureRoutes(unit: .a))
+                                            routes: self.thunderboltCaptureRoutes(unit: .a),
+                                            pairCount: self.softwareReturnPairCount)
             },
             replay: { plan, recovery, epoch, generation, progress in
                 let started = Date()

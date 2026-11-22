@@ -8,9 +8,11 @@ static constexpr uint8_t kThunderboltMixerSoftwareReturnCommand = 0xB4;
 static constexpr uint32_t kThunderboltCardMixerRoutingRegister = 0x2200;
 static constexpr uint32_t kThunderboltCardMixerHostPlaybackBase = 64;
 
+// One unit: every software pair of the port in use, 16 (PCI_OUT 0-31), as
+// the original offered (SymphonyCard.cpp:741-746).
 static constexpr bool IsThunderboltSoftwareReturnSource(uint8_t source)
 {
-    return source <= 7;
+    return source <= 15;
 }
 
 static constexpr bool IsThunderboltSoftwareReturnSource64(uint8_t source)

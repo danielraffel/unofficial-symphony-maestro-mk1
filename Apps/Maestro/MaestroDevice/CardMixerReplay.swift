@@ -176,18 +176,20 @@ public enum CardMixerReplay {
     public static func plan(mixers: [Int], layout: CardLayout, store: ChannelStateStore,
                             preferences: MixerPreferences? = nil,
                             complete: Bool = false,
-                            routes: [InputRoute]? = nil) -> [[ThunderboltPreset.Write]] {
+                            routes: [InputRoute]? = nil,
+                            pairCount: Int = 8) -> [[ThunderboltPreset.Write]] {
         mixers.map { mixer in
             guard complete else {
-                return savedWrites(mixer: mixer, layout: layout, store: store, preferences: preferences, routes: routes)
+                return savedWrites(mixer: mixer, layout: layout, store: store, preferences: preferences,
+                                   pairCount: pairCount, routes: routes)
             }
             let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: mixer,
                                               store: store, preferences: preferences)
             return writes(mixer: mixer, layout: layout, snapshot: snapshot, routes: routes).filter {
-                // A source held for unit B (8 or more at 32 channels) is not sent.
+                // A source held for unit B (beyond the pairs on offer) is not sent.
                 guard case .property(let address, _) = $0, address.selector == .mixerSoftwareReturnID
                 else { return true }
-                return snapshot.softwareReturnSource < 8
+                return snapshot.softwareReturnSource < UInt32(pairCount)
             }
         }
         .filter { !$0.isEmpty }

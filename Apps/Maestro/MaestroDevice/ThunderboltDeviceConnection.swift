@@ -271,7 +271,9 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                     source: UInt8(clamping: source))
         }
         return try preset.writes(layout: layout, legacy: legacy, currentUnitID: layout.slot2 == .micPre8 ? try? dextClient.readVendorCommand(command: 0xC0, value: 0, responseLength: 8) : nil,
-                                 hostChannels: channels ?? presetChannelCount(), currentInputRoutes: currentRoutes,
+                                 hostChannels: channels ?? presetChannelCount(),
+                                 oneUnitSoftwareReturnPairs: TwoUnitMixer.oneUnitPairs(card: true, build: servingBuild),
+                                 currentInputRoutes: currentRoutes,
                                  cardInputSupported: cardInputSupported, onSkipped: onSkipped)
     }
 

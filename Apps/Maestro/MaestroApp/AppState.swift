@@ -4075,7 +4075,7 @@ final class AppState: @unchecked Sendable {
                            softwarePeaks.count >= 2,
                            self.mixerMeterLevels.count >= 4 {
                             func softwareReturnDBFS(mixer: Int, post: Bool = false) -> (Double, Double) {
-                                let source = max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")))
+                                let source = max(0, min(self.softwareReturnPairCount - 1, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")))
                                 let left = source * 2
                                 guard left + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
                                 // Mirror what the card mixer delivers: USB meters
@@ -4157,7 +4157,7 @@ final class AppState: @unchecked Sendable {
                                     from: softwarePeaks, count: self.outputMeterLevels.count)
                             }
                             let sources = [0, 1].map { mixer in
-                                let pair = max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))) * 2
+                                let pair = max(0, min(self.softwareReturnPairCount - 1, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))) * 2
                                 guard pair + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
                                 return (
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[pair]),
@@ -4931,7 +4931,8 @@ final class AppState: @unchecked Sendable {
         let mixerBase = Int(ThunderboltCardRouting.mixerOutBase)
         // A card mixer's output cannot be measured this way: show its
         // Software Return source, as the Mixer page's fallback does.
-        let returns = [0, 1].map { max(0, min(7, mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\($0)"))) * 2 }
+        let pairs = softwareReturnPairCount
+        let returns = [0, 1].map { max(0, min(pairs - 1, mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\($0)"))) * 2 }
         return { word in
             var channel = word - Int(ThunderboltCardRouting.pciOutBase)
             if word >= mixerBase, word < mixerBase + 4 {

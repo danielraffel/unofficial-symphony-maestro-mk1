@@ -4402,7 +4402,7 @@ static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
     const bool reachable = touchHardware && ivars->pciDevice && XLinkTxAdmissible(ivars);
     if (reachable) SendUnitAClock(ivars, false);
     for (uint16_t m = 1; m <= 2; m++) {
-        if (ivars->mixerSwReturnSource[m - 1] <= 7) continue;
+        if (IsThunderboltSoftwareReturnSource(ivars->mixerSwReturnSource[m - 1])) continue;
         ivars->mixerSwReturnSource[m - 1] = 0;
         if (reachable) ThunderboltWriteSoftwareReturn(ivars, m, 0);
     }
@@ -4414,7 +4414,7 @@ static void ThunderboltWriteSoftwareReturn(SymphonyThunderbridge_IVars *ivars, u
     for (uint8_t side = 0; side < 2; side++)
         WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, ThunderboltMixerReturnRegister(mixerID, side),
                       ThunderboltSoftwareReturnSlot(source, side) | kRoutingEnable);
-    STLOG("Card mixer: mixer %u SW Return source=%u (back within DAW 1-16)", mixerID, source);
+    STLOG("Card mixer: mixer %u SW Return source=%u (back within DAW 1-32)", mixerID, source);
 }
 
 // Two units at 64 channels: configure the Symphony I/O on port 2 ("unit B").

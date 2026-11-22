@@ -356,7 +356,8 @@ extension AppState {
             let plan = CardMixerReplay.plan(mixers: [mixer], layout: layout, store: channelStateStore,
                                             preferences: mixerPreferences,
                                             complete: true,
-                                            routes: routesA).first ?? []
+                                            routes: routesA,
+                                            pairCount: softwareReturnPairCount).first ?? []
             do {
                 let result = try await Task.detached(priority: .utility) {
                     try await tb.writeCompleteCardMixer(mixer, writes: plan, layout: layout,

@@ -150,6 +150,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     /// mapper would otherwise truncate. Old app-only presets have no routes,
     /// mixer, or extra monitor fields; absence means leave that setting alone.
     public func writes(layout: CardLayout, legacy: Bool = false, currentUnitID: Data? = nil, hostChannels: Int = 32, peripheralB: Bool = false,
+                       oneUnitSoftwareReturnPairs: Int = 8,
                        currentInputRoutes: [ThunderboltInputMeterMap.Route]? = nil,
                        cardInputSupported: Bool = true, onSkipped: ((String) -> Void)? = nil) throws -> [Write] {
         func require(_ condition: Bool, _ reason: String) throws {
@@ -218,7 +219,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                         "independent software-return strips are not supported by this preset format.")
         }
         for mixer in mixers {
-            try require(mixer.channels.count == layout.mixerChannelCount && mixer.source < (hostChannels == 64 || outputRoutes.count == 64 ? 32 : 8),
+            try require(mixer.channels.count == layout.mixerChannelCount && mixer.source < (hostChannels == 64 || outputRoutes.count == 64 ? 32 : UInt32(oneUnitSoftwareReturnPairs)),
                         "unsupported mixer channels or software return source.")
             for channel in mixer.channels + [mixer.softwareReturn] {
                 try require(channel.level.isFinite && (-48...6).contains(channel.level)

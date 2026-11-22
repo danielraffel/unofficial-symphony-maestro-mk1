@@ -301,7 +301,11 @@ extension AppState {
     }
 
     /// Software Return pairs the Mixer offers: 8, or 32 with unit B.
-    var softwareReturnPairCount: Int { TwoUnitMixer.softwareReturnPairCount(unitBActive: unitBOnCard) }
+    var softwareReturnPairCount: Int {
+        TwoUnitMixer.softwareReturnPairCount(
+            unitBActive: unitBOnCard,
+            oneUnitPairs: TwoUnitMixer.oneUnitPairs(card: transportType == .thunderbolt, build: servingDextBuild))
+    }
 
     /// Mixer strip states for `mixer`: unit A's saved strips (`unitA`), then
     /// unit B's from unit B's own store.

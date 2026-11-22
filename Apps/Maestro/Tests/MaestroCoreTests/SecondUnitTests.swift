@@ -214,3 +214,16 @@ func softwareReturnMenuNames() {
     #expect(TwoUnitMixer.softwareReturnMenuName(0) == "Out 1-2")
     #expect(TwoUnitMixer.softwareReturnMenuName(31) == "Out 63-64")
 }
+
+@Suite("Software Return pairs with one unit")
+struct OneUnitSoftwareReturnPairsTests {
+    @Test("16 on the card from driver 144, else 8; 32 with unit B")
+    func pairs() {
+        #expect(TwoUnitMixer.oneUnitPairs(card: true, build: .build(144)) == 16)
+        #expect(TwoUnitMixer.oneUnitPairs(card: true, build: .build(143)) == 8)
+        #expect(TwoUnitMixer.oneUnitPairs(card: true, build: nil) == 8)
+        #expect(TwoUnitMixer.oneUnitPairs(card: false, build: .build(144)) == 8)
+        #expect(TwoUnitMixer.softwareReturnPairCount(unitBActive: false, oneUnitPairs: 16) == 16)
+        #expect(TwoUnitMixer.softwareReturnPairCount(unitBActive: true, oneUnitPairs: 16) == 32)
+    }
+}

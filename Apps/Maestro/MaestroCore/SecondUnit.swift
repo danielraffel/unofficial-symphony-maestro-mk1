@@ -258,9 +258,19 @@ public enum TwoUnitMixer {
         return a + unitBChannels(layout: unitB, prefix: prefixB)
     }
 
-    /// Software Return source pairs: 8 (the driver's 0-7) with one unit, 32
-    /// (0-31, the 64 playback channels) with unit B.
-    public static func softwareReturnPairCount(unitBActive: Bool) -> Int { unitBActive ? 32 : 8 }
+    /// Software Return source pairs: with one unit 8 (USB, and the card driver
+    /// before build 144, which takes 0-7) or 16 (the card driver from 144,
+    /// every pair of the port, as the original); 32 (0-31, the 64 playback
+    /// channels) with unit B.
+    public static func softwareReturnPairCount(unitBActive: Bool, oneUnitPairs: Int = 8) -> Int {
+        unitBActive ? 32 : oneUnitPairs
+    }
+
+    /// Pairs with one unit for a connection: 16 on the card from driver 144.
+    public static func oneUnitPairs(card: Bool, build: ServingDextBuild?) -> Int {
+        if card, case .build(let n)? = build, n >= 144 { return 16 }
+        return 8
+    }
 
     /// The Software Return source to show for a saved one: a source beyond
     /// the pairs on offer (DAW 17-64 saved while unit B was there) shows as 1-2.
