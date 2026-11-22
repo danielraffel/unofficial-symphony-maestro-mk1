@@ -130,7 +130,7 @@ static inline uint32_t maestro_shm_compute_delay_tuned(uint32_t proxyBufferFrame
     int64_t need = 2 * (int64_t)proxyBufferFrames + (int64_t)usbSafetyOffset
                  - (int64_t)MAESTRO_SHM_PLUGIN_SAFETY + margin;
     if (need < floor) need = floor;
-    need = (need + 63) & ~(int64_t)63;
+    /* No rounding up here: every frame of D is latency the user hears. */
     if (need > (int64_t)(MAESTRO_SHM_RING_FRAMES / 2)) need = MAESTRO_SHM_RING_FRAMES / 2;
     return (uint32_t)need;
 }
