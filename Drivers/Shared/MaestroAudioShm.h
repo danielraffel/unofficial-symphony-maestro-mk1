@@ -118,6 +118,23 @@ static inline uint32_t maestro_shm_compute_delay(uint32_t proxyBufferFrames,
     return (uint32_t)need;
 }
 
+/// The same with the slack and the floor given, for tuning the latency the
+/// bridge adds (`setLatencyTuning`). Zero for either means the default above.
+static inline uint32_t maestro_shm_compute_delay_tuned(uint32_t proxyBufferFrames,
+                                                       uint32_t usbSafetyOffset,
+                                                       uint32_t jitterMargin,
+                                                       uint32_t minDelay)
+{
+    const int64_t margin = jitterMargin ? (int64_t)jitterMargin : (int64_t)MAESTRO_SHM_JITTER_MARGIN;
+    const int64_t floor  = minDelay ? (int64_t)minDelay : (int64_t)MAESTRO_SHM_MIN_DELAY_FRAMES;
+    int64_t need = 2 * (int64_t)proxyBufferFrames + (int64_t)usbSafetyOffset
+                 - (int64_t)MAESTRO_SHM_PLUGIN_SAFETY + margin;
+    if (need < floor) need = floor;
+    need = (need + 63) & ~(int64_t)63;
+    if (need > (int64_t)(MAESTRO_SHM_RING_FRAMES / 2)) need = MAESTRO_SHM_RING_FRAMES / 2;
+    return (uint32_t)need;
+}
+
 /// Hardware clock anchor, published by the proxy's render callback and consumed
 /// by the plugin's GetZeroTimeStampImpl(). Protected by a seqlock (`clockSeq`
 /// odd == write in progress) because it is written from one realtime thread and

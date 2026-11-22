@@ -107,6 +107,18 @@ static inline const char *log_stamp(void) {
    startup in main() — never touched from the realtime audio render thread. */
 static int sVerbose = 0;
 
+/* Latency tuning: the IO buffer this process asks of the USB device, and the
+   slack and floor of the ring delay D (maestro_shm_compute_delay_tuned). Zero
+   means the built-in default. Set by "setLatencyTuning"; read when the audio
+   output starts. */
+static uint32_t gTuneBufferFrames = 0;
+static uint32_t gTuneJitterMargin = 0;
+static uint32_t gTuneMinDelay     = 0;
+/* Worst headroom (frames the plugin had written beyond what we read) since the
+   output last started or the tuning changed; negative = audio was read before
+   it was written, i.e. a dropout. Written on the render thread only. */
+static _Atomic int64_t gWorstHeadroom = INT64_MAX;
+
 /* Second, louder tier: per-XPC-message tracing, off unless MAESTRO_PROXY_TRACE
  * is set. Read once at startup in main().
  *
@@ -819,6 +831,11 @@ static OSStatus render_callback(
         const int64_t readEnd = (int64_t)llrint(inTimeStamp->mSampleTime) + (int64_t)inNumberFrames;
         const int64_t head    = __atomic_load_n(&shm->lastWriteFrame, __ATOMIC_RELAXED) - readEnd;
         if (head < sMinHeadroom) sMinHeadroom = head;
+        /* Only while the plugin is writing: with nothing playing the write
+           head stands still and the headroom means nothing. */
+        if (head > -(int64_t)MAESTRO_SHM_RING_FRAMES / 4
+            && head < atomic_load_explicit(&gWorstHeadroom, memory_order_relaxed))
+            atomic_store_explicit(&gWorstHeadroom, head, memory_order_relaxed);
     }
 
     /* 94 render cycles is one second at 48 kHz and proportionally less above it
@@ -1193,6 +1210,27 @@ static void start_audio_output(MaestroAudioShm* shm)
             kAudioDevicePropertyBufferFrameSize,
             kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain
         };
+        /* This process's IO buffer on the USB device: the IO buffer size is
+           kept per process, so other apps playing to the device keep theirs.
+           A smaller buffer is what lets D (the latency this bridge adds) be
+           smaller, since D must cover two of our buffers. */
+        if (gTuneBufferFrames) {
+            AudioValueRange range = { 0, 0 };
+            AudioObjectPropertyAddress r = {
+                kAudioDevicePropertyBufferFrameSizeRange,
+                kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+            };
+            UInt32 rsz = (UInt32)sizeof(range);
+            UInt32 want = gTuneBufferFrames;
+            if (AudioObjectGetPropertyData(devID, &r, 0, NULL, &rsz, &range) == noErr && range.mMaximum > 0) {
+                if (want < (UInt32)range.mMinimum) want = (UInt32)range.mMinimum;
+                if (want > (UInt32)range.mMaximum) want = (UInt32)range.mMaximum;
+            }
+            AudioObjectPropertyAddress g = a;
+            g.mScope = kAudioObjectPropertyScopeGlobal;
+            OSStatus serr = AudioObjectSetPropertyData(devID, &g, 0, NULL, (UInt32)sizeof(want), &want);
+            if (serr) LOG_ERR("Set IO buffer %u frames failed %d", want, (int)serr);
+        }
         sz = (UInt32)sizeof(bufFrames);
         if (AudioObjectGetPropertyData(devID, &a, 0, NULL, &sz, &bufFrames) != noErr || !bufFrames)
             bufFrames = 512;
@@ -1201,7 +1239,7 @@ static void start_audio_output(MaestroAudioShm* shm)
         if (AudioObjectGetPropertyData(devID, &a, 0, NULL, &sz, &safety) != noErr)
             safety = 0;
 
-        uint32_t D = maestro_shm_compute_delay(bufFrames, safety);
+        uint32_t D = maestro_shm_compute_delay_tuned(bufFrames, safety, gTuneJitterMargin, gTuneMinDelay);
         if (D >= MAESTRO_SHM_RING_FRAMES / 2)
             LOG_ERR("D clamped at %u — device buffer %u is too large for the ring", D, bufFrames);
         if (shm) {
@@ -1219,8 +1257,9 @@ static void start_audio_output(MaestroAudioShm* shm)
             memset(shm->buf, 0, MAESTRO_SHM_RING_BYTES);
             __atomic_store_n(&shm->lateWrites, 0u, __ATOMIC_RELAXED);
         }
-        LOG("Presentation delay D=%u frames (%.1f ms) from device buffer=%u safety=%u",
-            D, (double)D * 1000.0 / gHwNominalRate, bufFrames, safety);
+        atomic_store_explicit(&gWorstHeadroom, INT64_MAX, memory_order_relaxed);
+        LOG("Presentation delay D=%u frames (%.1f ms) from device buffer=%u safety=%u margin=%u floor=%u",
+            D, (double)D * 1000.0 / gHwNominalRate, bufFrames, safety, gTuneJitterMargin, gTuneMinDelay);
     }
 
     /* Watch for a nominal-rate change. gHwNominalRate is sampled once, here, and
@@ -3247,6 +3286,44 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+        } else if (strcmp(cmd, "setLatencyTuning") == 0) {
+            /* Measurement aid: the IO buffer, slack and floor the ring delay is
+               computed from (0 = default), then the output is rebuilt with them.
+               Clamped so no value can lap the ring. Not saved: a helper restart
+               goes back to the defaults. */
+            uint64_t buf = xpc_dictionary_get_uint64(msg, "bufferFrames");
+            uint64_t margin = xpc_dictionary_get_uint64(msg, "jitterMargin");
+            uint64_t floor = xpc_dictionary_get_uint64(msg, "minDelay");
+            gTuneBufferFrames = buf > 4096 ? 4096 : (uint32_t)buf;
+            gTuneJitterMargin = margin > 4096 ? 4096 : (uint32_t)margin;
+            gTuneMinDelay     = floor > 8192 ? 8192 : (uint32_t)floor;
+            LOG("setLatencyTuning: buffer=%u margin=%u floor=%u", gTuneBufferFrames, gTuneJitterMargin, gTuneMinDelay);
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (reply) {
+                xpc_dictionary_set_int64(reply, "status", 0);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
+            }
+            dispatch_async(gQueue, ^{
+                stop_audio_output();
+                if (gAudioRing) start_audio_output(gAudioRing);
+            });
+        } else if (strcmp(cmd, "getLatencyStats") == 0) {
+            /* Measurement aid: the ring delay now, dropouts (late writes) and
+               the worst headroom since the output started or was retuned. */
+            MaestroAudioShm* shm = gAudioRing;
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (reply) {
+                xpc_dictionary_set_uint64(reply, "delayFrames", shm ? __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED) : 0);
+                xpc_dictionary_set_uint64(reply, "lateWrites", shm ? __atomic_load_n(&shm->lateWrites, __ATOMIC_RELAXED) : 0);
+                int64_t worst = atomic_load_explicit(&gWorstHeadroom, memory_order_relaxed);
+                xpc_dictionary_set_int64(reply, "worstHeadroom", worst == INT64_MAX ? 0 : worst);
+                xpc_dictionary_set_bool(reply, "headroomSeen", worst != INT64_MAX);
+                xpc_dictionary_set_double(reply, "rate", gHwNominalRate);
+                xpc_dictionary_set_uint64(reply, "bufferFrames", gTuneBufferFrames);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
+            }
         } else if (strcmp(cmd, "resetAudioOutput") == 0) {
             /* Tear down and recreate the HAL AudioUnit targeting the USB device.
                Fixes stale AudioUnit sessions after FPGA reconfiguration commands

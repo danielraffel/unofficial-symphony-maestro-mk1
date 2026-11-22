@@ -427,6 +427,22 @@ int main(void)
         CHECK(h >= 0, "computed D=%u insufficient at client buffer %u", D, clientBufs[i]);
     }
 
+    /* Smaller helper buffers and slack (setLatencyTuning): the D the tuned
+       formula gives still holds for every client buffer, writer at deadline. */
+    const uint32_t proxyBufs[] = { 64, 128, 256 };
+    const uint32_t margins[]   = { 64, 128, 256 };
+    for (size_t p = 0; p < 3; p++) for (size_t m = 0; m < 3; m++) {
+        const uint32_t Dt = maestro_shm_compute_delay_tuned(proxyBufs[p], 14, margins[m], 64);
+        for (size_t i = 0; i < sizeof(clientBufs)/sizeof(clientBufs[0]); i++) {
+            long h = test_ordering(proxyBufs[p], 14, clientBufs[i], MAESTRO_SHM_PLUGIN_SAFETY,
+                                   Dt, 50.0, 1.0, 1);
+            CHECK(h >= 0, "tuned D=%u (proxy %u, margin %u) insufficient at client buffer %u",
+                  Dt, proxyBufs[p], margins[m], clientBufs[i]);
+        }
+    }
+    CHECK(maestro_shm_compute_delay_tuned(512, 14, 0, 0) == maestro_shm_compute_delay(512, 14),
+          "tuned with zeros is the default");
+
     printf("== edge cases ==\n");
     test_edges();
 
