@@ -796,10 +796,9 @@ struct OutputControlsView: View {
                                 let oldMode = speakerConfig
                                 speakerConfig = val
                                 speakerOutputMode = val
-                                // Line makes Headphone 1 the volume keys' output, as in the original.
-                                appState.speakerModeChangedByUser(from: oldMode, to: val, unit: monitorTarget.unit)
                                 guard SpeakerOutputLogic.modeChangeClearsMonitorState(from: oldMode,
                                                                                        to: val) else { return }
+                                let changedUnit = monitorTarget.unit
                                 // Legacy clears these controls on every user
                                 // mode transition before applying the new
                                 // format. Keep the UI and both transports in
@@ -817,6 +816,14 @@ struct OutputControlsView: View {
                                     await writeMonitorProperty(.speakerOutputMode, value: .uint32(val))
                                     // Volume Keys names unit B's Speaker entry after its mode.
                                     if monitorTarget.unit == .b { appState.unitBSpeakerOutputMode = val }
+                                    // Line makes Headphone 1 the volume keys' output, as in
+                                    // the original, and leaving Line puts the earlier one
+                                    // back. Only now that the unit has the new format: the
+                                    // driver reads the chosen output's level when it is
+                                    // told the choice, and a speaker level read while the
+                                    // unit was still in Line is not the speakers' level
+                                    // (the keys then had nothing to move).
+                                    appState.speakerModeChangedByUser(from: oldMode, to: val, unit: changedUnit)
                                 }
                             })
                         }
