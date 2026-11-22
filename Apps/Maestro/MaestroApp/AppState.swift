@@ -1500,6 +1500,9 @@ final class AppState: @unchecked Sendable {
     /// (`flushPendingKeyboardVolumeChoices`); until then the store is a
     /// temporary one that the identity's own replaces.
     @ObservationIgnored var keyboardVolumePending: [DeviceUnit: UInt32] = [:]
+    /// The Audio Output that setting Line replaced with Headphone 1, per
+    /// unit, until the user leaves Line or picks an Audio Output themselves.
+    @ObservationIgnored var keyboardVolumeDisplacedByLine: [DeviceUnit: KeyboardVolumeOutput] = [:]
     /// The USB helper's version, with the connection and helper epoch it was
     /// read for; nil until read.
     var usbHelperVersion: UInt64?

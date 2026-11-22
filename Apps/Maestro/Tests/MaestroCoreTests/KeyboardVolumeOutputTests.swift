@@ -75,7 +75,19 @@ struct KeyboardVolumeOutputTests {
         }
     }
 
-    @Test("setting Line makes Headphone 1 the choice, whatever it was; nothing else changes it, and leaving Line keeps it")
+    @Test("leaving Line puts back the choice Line displaced, unless the user chose another meanwhile")
+    func leavingLine() {
+        #expect(KeyboardVolumeOutput.headphone1.afterLeavingLine(displaced: .speakers) == .speakers)
+        #expect(KeyboardVolumeOutput.headphone1.afterLeavingLine(displaced: .headphone2) == .headphone2)
+        // Nothing was displaced (it was already Headphone 1, or the user picked one in Line).
+        #expect(KeyboardVolumeOutput.headphone1.afterLeavingLine(displaced: nil) == .headphone1)
+        #expect(KeyboardVolumeOutput.headphone2.afterLeavingLine(displaced: nil) == .headphone2)
+        #expect(KeyboardVolumeOutput.speakers.afterLeavingLine(displaced: nil) == .speakers)
+        // The choice is no longer the one Line made: it stands.
+        #expect(KeyboardVolumeOutput.headphone2.afterLeavingLine(displaced: .speakers) == .headphone2)
+    }
+
+    @Test("setting Line makes Headphone 1 the choice, whatever it was; nothing else changes it")
     func speakerModeChangedByTheUser() {
         for old: UInt32 in [2, 6, 8, 9, 10] {
             for output in [KeyboardVolumeOutput.speakers, .headphone1, .headphone2] {

@@ -96,7 +96,16 @@ extension AppState {
         let hasAnalog = keyboardVolumeHasAnalogOutput(unit)
         let before = KeyboardVolumeOutput.resolve(saved: keyboardVolumeSaved(for: unit), hasAnalogOutput: hasAnalog,
                                                   convertersOnly: false, speakerMode: old)
-        chooseKeyboardVolumeOutput(before.afterUserChange(ofSpeakerModeFrom: old, to: new), unit: unit)
+        var after = before.afterUserChange(ofSpeakerModeFrom: old, to: new)
+        if new == 0 {
+            // Line moved the choice by itself: remember what it displaced.
+            keyboardVolumeDisplacedByLine[unit] = after != before ? before : nil
+        } else if old == 0 {
+            // Leaving Line: put that choice back (see `afterLeavingLine`).
+            after = after.afterLeavingLine(displaced: keyboardVolumeDisplacedByLine[unit])
+            keyboardVolumeDisplacedByLine[unit] = nil
+        }
+        chooseKeyboardVolumeOutput(after, unit: unit, byUser: false)
     }
 
     /// Reset Defaults on the Output page: the Audio Output goes back to
@@ -204,8 +213,11 @@ extension AppState {
 
     /// The Audio Output pop-up was changed.
     @MainActor
-    func chooseKeyboardVolumeOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) {
+    func chooseKeyboardVolumeOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit, byUser: Bool = true) {
         guard keyboardVolumeEntries(for: unit).contains(output) else { return }
+        // A choice the user made in the pop-up stands: leaving Line no longer
+        // puts back the one Line displaced.
+        if byUser { keyboardVolumeDisplacedByLine[unit] = nil }
         if connectionMode == .simulated {
             keyboardVolumeSimulated[unit] = output.rawValue
             keyboardVolumeRevision &+= 1

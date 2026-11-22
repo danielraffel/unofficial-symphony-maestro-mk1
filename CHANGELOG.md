@@ -8,6 +8,7 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Changes that may affect your setup
 
+- **Leaving Line puts the volume keys back on the output they were on.** Setting Analog Out Format to Line still switches Volume Keys › Audio Output to Headphone 1 by itself, as in Apogee's software. When you set the format back, Audio Output now returns to what it was before (Speaker, usually), unless you chose another Audio Output yourself while in Line. Apogee's software left it on Headphone 1; this is our own change.
 - **On ThunderBridge and PCIe, with some pairs of cards, Mixer strips controlled a different input from the one in their name.** This happened with a card that has digital inputs in slot 1 together with a card that has analog inputs in slot 2 (an 8x8, 16 Digital In / 16 Analog Out or 2x6 in slot 1 with an 8x8, 16 Analog In / 16 Digital Out, 16x16 or 2x6 in slot 2), and with slot 1 empty and a card in slot 2, where no input reached the mixer at all. Faders, pan, mute and solo now act on the input the strip is named for. After updating, each strip's saved settings apply to the input in its name, so an input may be louder or unmuted compared with before: check the mixer before turning your monitors up. Over USB nothing changes.
 
 ### Fixed

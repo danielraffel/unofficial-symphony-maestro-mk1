@@ -86,6 +86,16 @@ public enum KeyboardVolumeOutput: UInt32, Sendable, Equatable, CaseIterable {
         return new == 0 && old != 0 ? .headphone1 : self
     }
 
+    /// The choice after the user left Line. Our own addition (the original
+    /// left Headphone 1 in place, SymphonyIO.cpp:6172-6200): when setting
+    /// Line moved the choice to Headphone 1 by itself, leaving Line puts back
+    /// the one it displaced, unless the user picked an Audio Output of their
+    /// own while in Line (`displaced` is nil then).
+    public func afterLeavingLine(displaced: KeyboardVolumeOutput?) -> KeyboardVolumeOutput {
+        guard let displaced, self == .headphone1 else { return self }
+        return displaced
+    }
+
     /// Whether the mute key does nothing with this choice: only None. With
     /// Speaker chosen in Line mode the original still set the speaker mute
     /// (SymphonyIO.cpp:2239-2251; only the volume set checks the mode).
