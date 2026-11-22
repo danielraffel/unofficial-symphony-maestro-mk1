@@ -592,7 +592,7 @@ extension HelpSection {
                 .bullet("Pro Tools HD", "for an Avid HDX, HD Native, HD Accel Core, HD Accel, HD Core or HD Process card with Pro Tools HD or Pro Tools Ultimate. Pro Tools HD 12.6 and later needs a DigiLink I/O license to use third-party interfaces."),
                 .bullet("USB", "for use as a USB audio interface on any USB-equipped Mac. This is the mode the USB path here needs."),
                 .bullet("Standalone", "for use as a standalone converter, with parameter control over USB."),
-                .text("Maestro works in **Symphony** and **USB** modes. In Pro Tools HD mode the unit belongs to the Avid card, so there is nothing for Maestro to talk to. Maestro is not for Standalone mode either."),
+                .text("Maestro works in **Symphony** and **USB** modes. In Pro Tools HD mode the audio goes to the Avid card; Apogee's Maestro still set levels, formats and headphone routing over USB there, which this Maestro does not do yet. Maestro is not for Standalone mode."),
             ]),
         ])
     }
