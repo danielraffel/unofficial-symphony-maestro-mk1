@@ -556,6 +556,11 @@ struct SymphonyThunderbridge_IVars {
     bool      unitBConfigured;
     // Default enabled: og_source/maestrolink/Software/SymphonyController.cpp:2708.
     uint32_t  loopSyncConfig; // xlinkQueue only, default 0 = enabled, master A
+    // B7: Loop Sync output with one unit, as the app last applied it in this
+    // driver session (LoopSyncConfig). Starts off: the choice is saved in the
+    // app, and a driver default of on would override an unticked box at every
+    // boot until Maestro connected.
+    bool      oneUnitLoopSync;
     bool      loopSyncValid;
     uint8_t   unitBMasterClock[4];
     bool      unitBMasterClockKnown;
@@ -2011,6 +2016,14 @@ static kern_return_t AllocateDMABuffer(
 // Returns false when no Symphony clock is detected (unit powered off or PC-32
 // cable absent). Uses bounded IOSleep polling: XLink init / serialized
 // xlinkQueue path only — never the IRQ queue.
+// B7: with one unit, unit A's Loop Sync output byte follows the app's choice
+// for this driver session (as a master; a Loop Sync slave keeps its 1).
+static void ApplyOneUnitLoopSyncByte(const SymphonyThunderbridge_IVars *ivars, uint8_t bytes[4])
+{
+    if (ivars->unitBConfigured || ivars->convPort1 || bytes[0] == 3 || bytes[1] != 1) return;
+    bytes[2] = ivars->oneUnitLoopSync ? 1 : 0;
+}
+
 struct SymphonyLinkInitResult {
     bool    lineMonitor;
     uint8_t monitorAttenuation;
@@ -3110,6 +3123,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             uint8_t clockData[4] = { 0x01, 0x01, 0x00, 0x00 };  // Internal, Master
             const bool chosen = ivars->unitAClockKnown && ivars->unitAClock[0] >= 1 && ivars->unitAClock[0] <= 5;
             if (chosen) memcpy(clockData, ivars->unitAClock, 4);
+            ApplyOneUnitLoopSyncByte(ivars, clockData);
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                          symphonyAddr, kSIOCmd_ClockMode,
                                          0, clockData, sizeof(clockData), txSeq);
@@ -6002,6 +6016,38 @@ kern_return_t SymphonyThunderbridge::LoopSyncConfig(uint32_t operation, uint32_t
     if (!ivars || !ivars->xlinkQueue) return kIOReturnNotReady;
     __block kern_return_t result = kIOReturnNotReady;
     ivars->xlinkQueue->DispatchSync(^{
+        // B7: one Symphony I/O on port 1: the Loop Sync output on unit A only
+        // (bit 0 of config = off, as with two units; the master bit is
+        // ignored). Applied by re-sending unit A's clock with the new byte.
+        if (!ivars->unitBConfigured && !ivars->convPort1 && ivars->symphonyLinkConfigured &&
+            XLinkTxAdmissible(ivars)) {
+            const bool enabled = !(config & 1);
+            if (operation == 1 && enabled != ivars->oneUnitLoopSync) {
+                ivars->oneUnitLoopSync = enabled;
+                uint8_t bytes[4] = { 0x01, 0x01, 0x00, 0x00 };
+                if (ivars->unitAClockKnown) memcpy(bytes, ivars->unitAClock, 4);
+                ApplyOneUnitLoopSyncByte(ivars, bytes);
+                if (!SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                                       kSIOCmd_ClockMode, 0, bytes, sizeof(bytes), ivars->runtimeTxSeq)) {
+                    result = kIOReturnIOError;
+                    return;
+                }
+                STLOG("Loop Sync (one unit): output %{public}s", enabled ? "on" : "off");
+            }
+            SymphonyLoopSyncOutput out = {};
+            out.config = ivars->oneUnitLoopSync ? 0 : 1;
+            out.valid = 1;
+            out.sourceA = ivars->unitAClockKnown ? ivars->unitAClock[0] | (ivars->unitAClock[3] << 8) : 1;
+            out.sourceB = 0;
+            uint8_t measured[5] = {};
+            const bool ok = ReadVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                kRegXLink1TX, kRegXLink1RX, ivars->symphonyAddr, kSIOCmd_ClockRateAndLock, 0, measured, 5,
+                ivars->runtimeTxSeq, ivars->isLegacyPCIe2100);
+            out.lockA = ok && measured[0] <= 1 ? (measured[0] ? 2 : 1) : 0;
+            memcpy(outWords, &out, sizeof(out));
+            result = kIOReturnSuccess;
+            return;
+        }
         if (!XLinkTxAdmissible(ivars) || !ivars->unitBConfigured || !ivars->port2On ||
             __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != 64 || ivars->convPort1 ||
             (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters)) return;
@@ -9370,6 +9416,7 @@ static kern_return_t ApplyRequestedSampleRate(SymphonyThunderbridge_IVars *ivars
             ivars->unitAClock[0] >= 2 && ivars->unitAClock[0] <= 5) {
             uint8_t clockData[4];
             memcpy(clockData, ivars->unitAClock, 4);
+            ApplyOneUnitLoopSyncByte(ivars, clockData);
             const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                               ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
                                               clockData, sizeof(clockData), ivars->runtimeTxSeq);
@@ -10832,6 +10879,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             }
             memcpy(clockCopy, payload, 4);
             if (ivars->unitBConfigured && clockCopy[1] == 1) clockCopy[2] = 1;
+            ApplyOneUnitLoopSyncByte(ivars, clockCopy);
             memcpy(ivars->unitAClock, payload, 4);
             ivars->unitAClockKnown = true;
             sendPayload = clockCopy;
@@ -11586,7 +11634,8 @@ kern_return_t SymphonyThunderbridge::RequestClockSource(uint32_t source)
                         (uint8_t)(src == 3 ? 0 : 1),
                         // dext 131: with unit B on port 2, unit A stays the
                         // Loop Sync master (output on), as the original.
-                        (uint8_t)((src == 3 || (ivars->unitBConfigured && !(ivars->loopSyncConfig & 1))) ? 1 : 0),
+                        (uint8_t)((src == 3 || (ivars->unitBConfigured && !(ivars->loopSyncConfig & 1))
+                                   || (!ivars->unitBConfigured && ivars->oneUnitLoopSync)) ? 1 : 0),
                         0
                     };
                     SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,

@@ -3675,7 +3675,9 @@ static void RunConverterParityChecks()
             return kIOReturnUnsupported;
 #endif
         };
-        CHECK(change(1) != kIOReturnSuccess, "Loop Sync: accepted at 32");
+        // B7 (0.11.18): with one unit configured Loop Sync is unit A's output
+        // only; turning it off at 32 sends unit A's clock with byte 2 = 0.
+        CHECK(change(1) == kIOReturnSuccess, "Loop Sync: one unit at 32");
         r.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
         Select(r, 1, "Loop Sync: select 64");
         auto clock = [&](unsigned port, std::vector<uint8_t> want) {
@@ -3748,7 +3750,8 @@ static void RunConverterParityChecks()
         CHECK(change(2) == kIOReturnSuccess, "Loop Sync: re-enable B master");
         Select(r, 0, "Loop Sync: leave 64");
         CHECK(clock(0, {1,1,0,0}), "Loop Sync: A not restored on leaving 64");
-        CHECK(change(1) != kIOReturnSuccess, "Loop Sync: accepted after leaving 64");
+        CHECK(change(1) == kIOReturnSuccess && clock(0, {1,1,0,0}),
+              "Loop Sync: one unit after leaving 64 (B7: unit A's output off)");
         Select(r, 1, "Loop Sync: re-enter 64");
         CHECK(clock(1, {1,1,1,0}) && clock(0, {3,0,1,0}), "Loop Sync: lost B master on re-entry");
         gHostAudio.device->SetSampleRate(48000.0);
@@ -3758,7 +3761,9 @@ static void RunConverterParityChecks()
         // A missing master B takes the existing port-loss path back to A alone.
         r.card.port[1].kind = Port::Empty;
         r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
-        CHECK(change(0) != kIOReturnSuccess, "Loop Sync: master loss left controls admitted");
+        // Unit B gone: back to one unit, where only unit A's output is set (B7).
+        CHECK(change(0) == kIOReturnSuccess && r.card.port[1].vendorWrites.empty() == r.card.port[1].vendorWrites.empty(),
+              "Loop Sync: one unit after master loss");
 
 #endif
         r.card.onVendorWrite = nullptr;
@@ -3773,9 +3778,13 @@ static void RunConverterParityChecks()
         Select(r, 1, "Loop Sync: rejected topology");
         const auto a = r.card.port[0].vendorWrites.size(), b = r.card.port[1].vendorWrites.size();
         uint32_t out[6] = {};
-        CHECK(r.drv->LoopSyncConfig(1, 2, out) != kIOReturnSuccess, "Loop Sync: non-Symphony accepted");
-        CHECK(a == r.card.port[0].vendorWrites.size() && b == r.card.port[1].vendorWrites.size(),
-              "Loop Sync: clock sent to converter/missing unit");
+        // B7: one Symphony I/O: only unit A's Loop Sync output changes, and
+        // nothing is sent to port 2.
+        CHECK(r.drv->LoopSyncConfig(1, 2, out) == kIOReturnSuccess, "Loop Sync: one unit refused");
+        CHECK(r.card.port[0].vendorWrites.size() == a + 1 && b == r.card.port[1].vendorWrites.size(),
+              "Loop Sync: one unit must write unit A's clock once and nothing on port 2");
+        CHECK(r.card.port[0].stored[(uint64_t)0x50 << 32] == std::vector<uint8_t>({1,1,1,0}),
+              "Loop Sync: one unit on gives unit A {1,1,1,0}");
         Finish(o, r);
     }
 #endif
