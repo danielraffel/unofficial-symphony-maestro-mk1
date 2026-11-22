@@ -8,6 +8,9 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Changes that may affect your setup
 
+- **A muted speaker stays muted.** Maestro used to unmute the speakers whenever it opened, reconnected, woke with the Mac or recalled a preset. That was our addition; Apogee's software left the mute as it was. If you leave the speakers muted, they are still muted next time, and a preset saved with the speakers muted recalls muted.
+- **Mixer faders move in whole dB.** The Symphony's mixer only takes whole-dB levels, as in Apogee's software, so a strip that read -0.5 was really playing -1. Faders, Software Return and Master now step and read in whole dB, and a level you had at a half shows the level it was already playing. Nothing sounds different.
+- **A digital input chosen as clock source is remembered.** On ThunderBridge and PCIe, if you set Clock Source to an AES, SPDIF or ADAT/SMUX input, Maestro now sets it again when it connects after a restart, as Apogee's software did. Before, the Symphony came back on Internal or Word Clock. If that input has no signal when Maestro connects, Clock Status reads "Clock Mismatch" until it does.
 - **Leaving Line puts the volume keys back on the output they were on.** Setting Analog Out Format to Line still switches Volume Keys › Audio Output to Headphone 1 by itself, as in Apogee's software. When you set the format back, Audio Output now returns to what it was before (Speaker, usually), unless you chose another Audio Output yourself while in Line. Apogee's software left it on Headphone 1; this is our own change.
 - **On ThunderBridge and PCIe, with some pairs of cards, Mixer strips controlled a different input from the one in their name.** This happened with a card that has digital inputs in slot 1 together with a card that has analog inputs in slot 2 (an 8x8, 16 Digital In / 16 Analog Out or 2x6 in slot 1 with an 8x8, 16 Analog In / 16 Digital Out, 16x16 or 2x6 in slot 2), and with slot 1 empty and a card in slot 2, where no input reached the mixer at all. Faders, pan, mute and solo now act on the input the strip is named for. After updating, each strip's saved settings apply to the input in its name, so an input may be louder or unmuted compared with before: check the mixer before turning your monitors up. Over USB nothing changes.
 
@@ -17,6 +20,11 @@ Thanks to the tester who reported that the AES meters did not move while music p
 - **Mixer faders and pan now change the sound while you move them.** A fader, pan knob or Master only took effect once you stopped moving it, so a drag was heard late and as one jump. The level now follows the control as it moves, as in Apogee's software.
 - **Output Routing shows a mixer route again when you come back to the page.** An output you had routed to Mixer 1 or Mixer 2 was drawn back on its default software pair after you left the page and returned, while the Symphony went on playing the mixer. The routing itself was kept; only the grid was wrong.
 - **A Mixer strip's meter no longer jumps when you mute it.** With Pre-Mute Metering on (the default) the meter shows the signal arriving at the strip, whatever the fader and mute are set to; before, it followed the fader until you muted the strip and showed the full signal afterwards. With Pre-Mute Metering off it follows the fader and goes dark on mute, as before.
+- **The Software Return meter shows the pair chosen in its menu, on Mixer 1 and Mixer 2** (ThunderBridge and PCIe). Mixer 1's always showed Mac output 1-2, and Mixer 2's never moved. It also follows Pre-Mute Metering like the other strips: on, it shows what arrives; off, it follows the fader and mute.
+- **The Software Return fader changes the sound while you move it,** like the other faders.
+- **Over USB, Clock Status reads "Ready".** It could read "Clock Mismatch" although the Symphony is always its own clock over USB.
+- **Opening a setup file that Maestro can't use now says so.** A file saved by Apogee's Maestro 2 gave a confusing message or none. Over USB, File › Open Preset now tells you when only channel names were restored.
+- **Command-N no longer opens a second Maestro window.**
 - Mixer strips on ThunderBridge and PCIe now control the card input named by each strip.
 - Mixer strips also follow an Input Routing change.
 
@@ -25,6 +33,13 @@ Thanks to the tester who reported that the AES meters did not move while music p
 - **With an 8x8 or 2x6 card in slot 1 and a card with analog outputs in slot 2, the second card's output meters show its own outputs.** They showed the first card's digital outputs.
 - **Over USB, the Master meter no longer shows Software Return while an input strip is soloed.** The solo itself was right: Software Return was silent, but the Master meter went on showing it. Thanks to the tester who reported it.
 - **Input and output meters follow a routing change within a couple of seconds, however long Maestro has been open.** After opening the Mixer page they could keep showing the old routing for a long time.
+
+### What's new
+
+- **The Master strip names the output its mixer is routed to,** under the fader, or "None" when the mixer is not routed to an output in Output Routing. It is a label, as in Apogee's software.
+- **Mic and instrument gain on an 8MicPre can be typed:** click the number under the gain knob. Tab moves to the next channel.
+- **Software Return's pairs are named "Out 1-2", "Out 3-4"…,** the strip is headed "Software Return", and sample rates read "48 kHz" rather than "48.0 kHz", as in Apogee's software.
+- **Maestro reopens on the page you last used.**
 
 ### Release notes
 
@@ -35,7 +50,8 @@ Thanks to the tester who reported that the AES meters did not move while music p
 - **ThunderBridge or PCIe:** solo each Mixer strip in turn and check the right input plays.
 
 - **ThunderBridge or PCIe, Output page:** play music from the Mac to each output pair in turn, analog and digital. Does that pair's meter move? Try it with Optical Format on ADAT/SMUX and on SPDIF, and with AES if your card has it.
-- **Output Routing:** route a different software pair, then Mixer 1, to an output. Does its meter follow?
+- **Output Routing:** route a different software pair, then Mixer 1, to an output. Does its meter follow? Does the Mixer's Master strip name that output?
+- **USB:** with the Output page open and music playing, do the output meters look right? Please send diagnostics from a USB session if you can: this version records whether the Symphony reports its own output meters over USB.
 - **Two Symphony I/Os at 64 channels:** check unit B's Output page meters, analog and digital.
 - **With the Output page open:** do the knobs, Mute, Dim and the Mac's volume keys still respond as quickly as before?
 
