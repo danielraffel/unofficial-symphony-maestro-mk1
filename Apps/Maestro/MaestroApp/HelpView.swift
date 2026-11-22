@@ -633,9 +633,15 @@ extension HelpSection {
     }
 
     private static var feedback: HelpSection {
-        HelpSection(id: .feedback, title: "Feedback", items: [
+        HelpSection(id: .feedback, title: "How to report a bug", items: [
             HelpItem(blocks: [
-                .text(feedbackText),
+                .text("**Please send a diagnostics report with every bug.** It records what Maestro and the driver were doing when it went wrong. With it we can investigate; without it we are usually guessing."),
+                .bullet("1. Turn it on", "in **App Settings › Updates** set the update channel to **Beta**, then switch on **Diagnostics** in **App Settings › Diagnostics & Feedback**."),
+                .bullet("2. Make it happen", "do what causes the problem and wait until it goes wrong. A minute or two is usually enough."),
+                .bullet("3. Send it", "press **Stop Diagnostics** in the red bar at the top of the window, describe what happened, and press **Agree and Send**. It goes privately to the developer; nothing is posted publicly."),
+                .text("Then [report the bug on GitHub](\(FeedbackLinks.reportBug.absoluteString)) and say that you sent diagnostics. Please don't attach the diagnostics file to the issue."),
+                .text("Community support is available on [Gearspace](\(FeedbackLinks.discussion.absoluteString)) from fellow Apogee users. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail))."),
+                .text("**Troubleshooting** has more on diagnostics under \"When and how should I use diagnostics?\". This is a community project, so please don't contact Apogee for support with it."),
             ]),
         ])
     }
@@ -694,9 +700,6 @@ extension HelpSection {
         "Apogee's full list, with photos of each module's rear panel: [Supported I/O modules for Symphony I/O](https://knowledge.apogeedigital.com/can-mkii-i/o-modules-be-used-in-the-older-symphony-i/o)"
 
     /// Feedback line with inline, clickable links.
-    private static var feedbackText: String {
-        "Found a bug or have a request? [Report a bug on GitHub](\(FeedbackLinks.reportBug.absoluteString)) or ask on [the Gearspace thread](\(FeedbackLinks.discussion.absoluteString)); both are also in **App Settings › Diagnostics & Feedback**, and in the **Help** menu. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail))."
-    }
 }
 
 /// Each section's top edge in the Help page's scroll area.

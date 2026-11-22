@@ -2199,12 +2199,22 @@ struct AppSettingsView: View {
                         .unredacted()
                 }
                 // One row each, so the form draws a separator between them.
-                Link("Report a Bug ↗", destination: FeedbackLinks.reportBug)
-                    .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
-                    .unredacted()
-                Link("Discuss on Gearspace ↗", destination: FeedbackLinks.discussion)
-                    .maestroHelp("Open the Symphony I/O thread on Gearspace in your browser to ask questions and share tips.")
-                    .unredacted()
+                VStack(alignment: .leading, spacing: 4) {
+                    Link("Report a Bug ↗", destination: FeedbackLinks.reportBug)
+                        .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
+                    Text("Please send diagnostics first, so we can investigate. Help › How to report a bug has the steps.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .unredacted()
+                VStack(alignment: .leading, spacing: 4) {
+                    Link("Discuss on Gearspace ↗", destination: FeedbackLinks.discussion)
+                        .maestroHelp("Open the Symphony I/O thread on Gearspace in your browser to ask questions and share tips.")
+                    Text("Community support from fellow Apogee users.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .unredacted()
                 Text("This is a community project. Please don't contact Apogee for support with it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

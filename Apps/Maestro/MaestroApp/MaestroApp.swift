@@ -314,7 +314,9 @@ struct MaestroApp: App {
 
                 Divider()
 
-                Button("Report a Bug…") { NSWorkspace.shared.open(FeedbackLinks.reportBug) }
+                // Opens Help's own section, which asks for diagnostics first
+                // and links to the GitHub issue form from there.
+                Button("How to Report a Bug") { appState.openHelp(at: .feedback) }
                 Button("Discuss on Gearspace…") { NSWorkspace.shared.open(FeedbackLinks.discussion) }
 
                 Divider()

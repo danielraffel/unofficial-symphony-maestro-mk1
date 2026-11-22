@@ -160,7 +160,8 @@ struct SettingsPagesTests {
     @Test("The Help menu links to bug reports and the Gearspace discussion")
     func helpMenuItems() throws {
         let app = try source("MaestroApp/MaestroApp.swift")
-        #expect(app.contains("Button(\"Report a Bug…\") { NSWorkspace.shared.open(FeedbackLinks.reportBug) }"))
+        // The menu opens Help's own section, which asks for diagnostics first and links to GitHub.
+        #expect(app.contains("Button(\"How to Report a Bug\") { appState.openHelp(at: .feedback) }"))
         #expect(app.contains("Button(\"Discuss on Gearspace…\") { NSWorkspace.shared.open(FeedbackLinks.discussion) }"))
     }
 
