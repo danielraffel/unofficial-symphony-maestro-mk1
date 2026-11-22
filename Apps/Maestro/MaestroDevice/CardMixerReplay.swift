@@ -282,6 +282,15 @@ public enum CardMixerReplay {
         let idsB = second.map { inputIDs(layout: $0.0, routes: secondRoutes).map { $0.map { $0 + 32 } } } ?? []
         let ids = idsA + idsB
         let states = snapshot.channels + (second?.1.channels ?? [])
+        // Inputs no strip maps to first, muted and unsoloed: an input that now
+        // arrives on two receive slots is then not heard twice while the
+        // strips are written, and a stale solo cannot silence them.
+        let mapped = Set(ids.compactMap { $0 })
+        let inputCount = second == nil ? 32 : 64
+        for id in 0..<inputCount where !mapped.contains(id) {
+            put(.mixerChannelMute, .bool(true), id)
+            put(.mixerChannelSolo, .bool(false), id)
+        }
         var written = Set<Int>()
         for (id, state) in zip(ids, states) {
             guard let id, written.insert(id).inserted else { continue }
@@ -289,11 +298,6 @@ public enum CardMixerReplay {
             put(.mixerChannelPan, .float64(state.pan), id)
             put(.mixerChannelMute, .bool(state.isMuted), id)
             put(.mixerChannelSolo, .bool(state.isSoloed), id)
-        }
-        let inputCount = second == nil ? 32 : 64
-        for id in 0..<inputCount where !written.contains(id) {
-            put(.mixerChannelMute, .bool(true), id)
-            put(.mixerChannelSolo, .bool(false), id)
         }
         return writes
     }

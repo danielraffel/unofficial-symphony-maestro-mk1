@@ -10,16 +10,30 @@ extension AppState {
     @MainActor
     func thunderboltInputRoutingDidChange() {
         thunderboltInputRoutingWritten = true
+        thunderboltCaptureTableDidChange()
+    }
+
+    /// What arrives on the card's receive slots has changed (an Input
+    /// Routing write, the connect-time replay landing or failing), so each
+    /// Mixer strip's card input may have moved. The mixers are written again
+    /// in full by the restore that already serves a recall's follow-up: the
+    /// connection's ledger counts what is owed, and a run only covers what
+    /// was owed when it began, so a second change during a run is followed by
+    /// another run and none is lost. The mixers stay marked written, so no
+    /// output fed from a mixer is switched off meanwhile. It also works after
+    /// a link recovery or card re-init, which the Mixer page's own one-time
+    /// restore does not follow.
+    @MainActor
+    func thunderboltCaptureTableDidChange() {
         invalidateThunderboltInputMeterMap()
         if usesTwoUnitReplay {
             twoUnitReplayNeeded = true
             Task { await replayUnitBSettings() }
             return
         }
-        guard device is ThunderboltDeviceConnection else { return }
-        cardMixerLedger.noteOwed()
-        cardMixerLedger.restoresHeldMixers = true
-        syncCardMixerToHardware()
+        guard let tb = device as? ThunderboltDeviceConnection else { return }
+        tb.cardMixers.noteOwed()
+        Task { await serviceCardOutputTable(tb) }
     }
 
     /// D5: restore the saved card mixer once on a driver instance that holds no

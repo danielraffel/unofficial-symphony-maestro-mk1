@@ -264,18 +264,24 @@ extension AppState {
     }
 
     func thunderboltCaptureRoutes(unit: DeviceUnit = .a) -> [ThunderboltInputMeterMap.Route] {
-        if let cached = thunderboltCaptureRoutesCache[unit] { return cached }
         let layout = unit == .a ? cardLayout : unitBLayout
         guard let layout else { return [] }
         let slot1 = unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1
+        // The saved routing is the other input; whatever changes it calls
+        // `invalidateThunderboltInputMeterMap`, which empties this cache.
+        let key = ThunderboltCaptureRoutesKey(layout: layout, slot1: slot1, written: thunderboltInputRoutingWritten)
+        if let cached = thunderboltCaptureRoutesCache[unit], cached.key == key { return cached.routes }
         let cache = unit == .a ? peripheralRoutingCache(direction: "input") : unitBInputRoutingCache
         let replayed = thunderboltInputRoutingWritten ? InputRoutingReplay.writes(
             saved: cache?.load() ?? [:], columns: layout.inputRoutingColumns, pairCount: 16) : []
         let routes = ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: replayed)
-        thunderboltCaptureRoutesCache[unit] = routes
+        thunderboltCaptureRoutesCache[unit] = (key, routes)
         return routes
     }
 
+    /// The table the two-unit replay is about to write: numbered from the
+    /// saved routing whatever is on the units now, because the replay writes
+    /// the tables and the mixers in one plan.
     func savedThunderboltCaptureRoutes(unit: DeviceUnit) -> [ThunderboltInputMeterMap.Route] {
         let layout = unit == .a ? cardLayout : unitBLayout
         guard let layout else { return [] }
@@ -765,4 +771,12 @@ final class DeferredFlag: @unchecked Sendable {
     private var value = false
     func set() { lock.withLock { value = true } }
     var isSet: Bool { lock.withLock { value } }
+}
+
+/// What the capture routes of a unit are worked out from, besides its saved
+/// Input Routing: a cached answer is used only while these are unchanged.
+struct ThunderboltCaptureRoutesKey: Equatable {
+    let layout: CardLayout
+    let slot1: IOCardType?
+    let written: Bool
 }

@@ -1821,7 +1821,7 @@ final class AppState: @unchecked Sendable {
     private var thunderboltInputMeterWords = ThunderboltInputMeterMap.Words(channels: [], digital: [])
     private var thunderboltInputMeterWordsPollStamp: Int = -1
     private var thunderboltInputMeterLayout: CardLayout?
-    @ObservationIgnored var thunderboltCaptureRoutesCache: [DeviceUnit: [ThunderboltInputMeterMap.Route]] = [:]
+    @ObservationIgnored var thunderboltCaptureRoutesCache: [DeviceUnit: (key: ThunderboltCaptureRoutesKey, routes: [ThunderboltInputMeterMap.Route])] = [:]
     @ObservationIgnored var thunderboltInputRoutingWritten = false
     /// ThunderBridge: the meter word each analog and digital output strip
     /// reads, from the output table (`ThunderboltOutputMeterMap`); nil while
@@ -2874,7 +2874,12 @@ final class AppState: @unchecked Sendable {
             }
             thunderboltInputRoutingWritten = allSucceeded && written == writes.count
             inputRoutingReplayNeeded = !allSucceeded || written != writes.count
-            invalidateThunderboltInputMeterMap()
+            // The table on the unit is now the saved one, or (after a failed
+            // write) not known to be: the strips' card inputs may have moved,
+            // so the mixers are owed a complete write with the new numbers. At
+            // connect the restore that follows covers it; after a retry here
+            // it runs at once.
+            thunderboltCaptureTableDidChange()
         }
         await replaySymphonyCardInputs()
         await tb.logInputRoutes()

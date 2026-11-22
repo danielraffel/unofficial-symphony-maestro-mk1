@@ -155,4 +155,56 @@ struct CardMixerStripInputTests {
             }
         }
     }
+
+    /// An Input Routing change marks the mixers owed on the connection's
+    /// ledger; the restore snapshots what is owed before it writes them and
+    /// only covers that much, so a second change during the run leaves a
+    /// restore owed and is not lost. The marks stay, so no mixer-fed output
+    /// is switched off for it.
+    @Test("a second routing change during a rewrite leaves another rewrite owed; the mixers stay written")
+    func changeDuringRewriteIsNotLost() {
+        let ledger = CardMixerLedger()
+        // Every channel of the table is written and none is on a mixer.
+        ledger.declareTable(channels: [0])
+        ledger.recordRoute(channel: 0, mixer: nil)
+        let address = PropertyAddress(selector: .mixerChannelMute, element: 0)
+        #expect(ledger.markWritten(0, sent: [address], required: [address], epoch: ledger.epoch))
+        #expect(ledger.markWritten(1, sent: [address], required: [address], epoch: ledger.epoch))
+        #expect(ledger.completeRestore(epoch: ledger.epoch, covering: ledger.owed))
+        #expect(!ledger.needsRestore)
+
+        ledger.noteOwed()                              // first routing change
+        #expect(ledger.needsRestore)
+        let covering = ledger.owed                     // the restore begins
+        ledger.noteOwed()                              // second change, mid-run
+        #expect(ledger.completeRestore(epoch: ledger.epoch, covering: covering))
+        #expect(ledger.needsRestore)                   // still owed: runs again
+        #expect(ledger.writtenMixers == [0, 1])        // nothing was unmarked
+        #expect(ledger.completeRestore(epoch: ledger.epoch, covering: ledger.owed))
+        #expect(!ledger.needsRestore)
+    }
+
+    @Test("a complete mixer write mutes and unsolos the inputs no strip maps to before it writes any strip")
+    func unmappedInputsFirst() throws {
+        // 8x8 OPT alone: strips on receive slots 0-15, 16-31 unmapped.
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: .optical, replayed: [])
+        let name = "strip-order-\(UUID())"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 9)
+        let strip = MixerChannelState(level: -3, pan: 0, isMuted: false, isSoloed: false)
+        store.save(Array(repeating: strip, count: layout.mixerChannelCount), for: ChannelStateStore.mixerKey(0))
+        let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: 0, store: store)
+        let writes = CardMixerReplay.writes(mixer: 0, layout: layout, snapshot: snapshot, routes: routes)
+        let inputs = writes.compactMap { write -> (Int, AudioPropertySelector)? in
+            guard case .property(let address, _) = write else { return nil }
+            let id = Int(address.element & 0xFFFF)
+            return id < 64 && address.selector != .mixerSoftwareReturnID ? (id, address.selector) : nil
+        }
+        let firstStrip = try #require(inputs.firstIndex { $0.0 < 16 })
+        let unmapped = inputs.enumerated().filter { $0.element.0 >= 16 }
+        #expect(unmapped.count == 32)                  // mute and solo for 16-31
+        #expect(unmapped.allSatisfy { $0.offset < firstStrip })
+    }
 }
