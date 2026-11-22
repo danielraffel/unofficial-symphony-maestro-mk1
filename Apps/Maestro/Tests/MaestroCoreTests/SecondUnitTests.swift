@@ -240,3 +240,18 @@ struct OneUnitLoopSyncTests {
         #expect(LoopSyncSettings().enabled)   // the original's default
     }
 }
+
+@Suite("Loop Sync clock status follows the original's rule")
+struct LoopSyncLockTextTests {
+    @Test("Internal is Ready whatever the external flag; other sources follow it")
+    func lockText() throws {
+        let internalOff = try #require(LoopSyncState.decode([1, 1, 1, 0, 1, 0]))
+        #expect(internalOff.lockText(.a) == "Ready")
+        let wordClockUnlocked = try #require(LoopSyncState.decode([0, 1, 1, 0, 2, 0]))
+        #expect(wordClockUnlocked.lockText(.a) == "Clock Mismatch")
+        let wordClockLocked = try #require(LoopSyncState.decode([0, 1, 2, 0, 2, 0]))
+        #expect(wordClockLocked.lockText(.a) == "Ready")
+        let unread = try #require(LoopSyncState.decode([0, 1, 0, 0, 1, 0]))
+        #expect(unread.lockText(.a) == "Not read")
+    }
+}

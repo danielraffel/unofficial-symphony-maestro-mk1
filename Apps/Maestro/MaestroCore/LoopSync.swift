@@ -59,12 +59,18 @@ public struct LoopSyncState: Equatable, Sendable {
         return Self(settings: settings, valid: words[1] == 1, lockA: words[2], lockB: words[3],
                     sourceA: words[4], sourceB: words[5])
     }
+    /// "Ready" or "Clock Mismatch", by the original's rule
+    /// (SymphonyIO.cpp:1553-1568): a unit on its Internal clock is always
+    /// ready; on any other source, its "external clock locked" flag decides.
     public func lockText(_ unit: DeviceUnit) -> String {
-        switch unit == .a ? lockA : lockB {
-        case 2: return "Ready"
-        case 1: return "Clock Mismatch"
-        default: return "Not read"
-        }
+        let flag = unit == .a ? lockA : lockB
+        guard flag != 0 else { return "Not read" }
+        // A unit following the other through Loop Sync runs on Loop Sync
+        // (3), whatever source it has stored.
+        let following = settings.enabled && settings.effectiveMaster != unit
+        let source = following ? UInt32(3) : sourceKey(unit)
+        return ClockSourceMenu.isLocked(sourceKey: source, externalClockLocked: flag == 2)
+            ? "Ready" : "Clock Mismatch"
     }
     public func role(_ unit: DeviceUnit) -> String { valid ? settings.role(unit) : "Not confirmed" }
     public func sourceKey(_ unit: DeviceUnit) -> UInt32 {
