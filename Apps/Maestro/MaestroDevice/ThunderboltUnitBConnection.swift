@@ -150,6 +150,15 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         return data
     }
 
+    /// Unit B's output meter group, carried by the port-1 vendor read.
+    public func readUnitOutputMeters() throws -> Data {
+        try transport.readVendorCommand(
+            command: SymphonyIOCommand.tdmMeterData.rawValue,
+            value: UInt32(SymphonyIOMeterGroup.output.rawValue),
+            responseLength: UnitOutputMeters.payloadLength,
+            port: Self.port)
+    }
+
     public func capturePreset(_ seed: ThunderboltPreset, layout: CardLayout,
                               onSkipped: @Sendable @escaping (String) -> Void = { _ in }) throws -> ThunderboltPreset {
         try sequenceLock.withLock {

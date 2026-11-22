@@ -79,6 +79,25 @@ struct ThunderboltOutputMeterMapTests {
         #expect(ThunderboltOutputMeterMap.words(layout: layout, table: t, unitBActive: false)?.analog[0] == nil)
     }
 
+    @Test("unit B maps its local outputs through the 64-channel card slots")
+    func unitBRouting() throws {
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        let base = SymphonyIORoutingAddress.ioBoard0Base
+        var table: [UInt8: UInt8] = [base: 32, base + 1: 33]
+        let direct = try #require(ThunderboltOutputMeterMap.words(layout: layout, table: table, unitBActive: true, unitB: true))
+        #expect(direct.analog[0] == 96 && direct.analog[1] == 97)
+        table[base] = SymphonyIORoutingAddress.mixer0Base
+        table[base + 1] = SymphonyIORoutingAddress.mixer0Base + 1
+        let mixer = try #require(ThunderboltOutputMeterMap.words(layout: layout, table: table, unitBActive: true, unitB: true))
+        #expect(mixer.analog[0] == 128 && mixer.analog[1] == 129)
+        table[base] = SymphonyIORoutingAddress.none
+        let disabled = try #require(ThunderboltOutputMeterMap.words(layout: layout, table: table, unitBActive: true, unitB: true))
+        #expect(disabled.analog[0] == nil)
+        table[base] = 40
+        let unitAPlayback = try #require(ThunderboltOutputMeterMap.words(layout: layout, table: table, unitBActive: true, unitB: true))
+        #expect(unitAPlayback.analog[0] == 104)
+    }
+
     @Test("2x6: ten digital outputs, the first eight metered; strips past the map are silent")
     func twoBySix() throws {
         let w = try #require(words(.twoBySix, .none, table(.twoBySix, .none)))

@@ -149,13 +149,12 @@ extension AppState {
     var unitDigitalInputPeakHold: [Double] {
         activeUnit == .b ? unitBDigitalInputPeakHold : digitalInputPeakHold
     }
-    /// Unit B's digital output pairs are not metered separately (as unit A's
-    /// on ThunderBridge, these stay at silence).
+    /// Unit B's digital output pairs, in the same board/pair order as unit A.
     var unitDigitalOutputMeterLevels: [Double] {
-        activeUnit == .b ? Array(repeating: -60.0, count: 24) : digitalOutputMeterLevels
+        activeUnit == .b ? unitBDigitalOutputMeterLevels : digitalOutputMeterLevels
     }
     var unitDigitalOutputPeakHold: [Double] {
-        activeUnit == .b ? Array(repeating: -60.0, count: 24) : digitalOutputPeakHold
+        activeUnit == .b ? unitBDigitalOutputPeakHold : digitalOutputPeakHold
     }
 
     // MARK: Unit B's per-slot digital settings
@@ -505,10 +504,50 @@ extension AppState {
         unitBDigitalInputMeterLevels = smoothMeterLevels(
             unitBDigitalInputMeterLevels, raw: ThunderboltInputMeterMap.digitalLevels(host: host, words: words))
         unitBOutputMeterLevels = smoothMeterLevels(
-            unitBOutputMeterLevels, raw: UnitBMeterMap.outputLevels(dB: dB, count: outputs))
+            unitBOutputMeterLevels, raw: unitBOutputLevels(dB: dB, layout: layout))
+        unitBDigitalOutputMeterLevels = smoothMeterLevels(
+            unitBDigitalOutputMeterLevels, raw: unitBDigitalOutputLevels(dB: dB, layout: layout))
         unitBInputPeakHold = advancePeakHold(unitBInputPeakHold, levels: unitBInputMeterLevels)
         unitBDigitalInputPeakHold = advancePeakHold(unitBDigitalInputPeakHold, levels: unitBDigitalInputMeterLevels)
         unitBOutputPeakHold = advancePeakHold(unitBOutputPeakHold, levels: unitBOutputMeterLevels)
+        unitBDigitalOutputPeakHold = advancePeakHold(unitBDigitalOutputPeakHold, levels: unitBDigitalOutputMeterLevels)
+    }
+
+    private func unitBOutputTable(layout: CardLayout) -> [UInt8: UInt8]? {
+        guard let rows = unitBOutputRoutingCache?.loadMulti(), !rows.isEmpty else { return nil }
+        var table: [UInt8: UInt8] = [:]
+        for (index, column) in layout.outputRoutingColumns.enumerated() {
+            let owner = rows.keys.sorted().last { rows[$0]?.contains(index) == true }
+            let destination = column.routingByte
+            if let owner {
+                let source: (Int) -> UInt8 = { side in
+                    if owner < TwoUnitOutputRouting.dawPairCount { return UInt8(owner * 2 + side) }
+                    if owner == TwoUnitOutputRouting.mixer1Row { return SymphonyIORoutingAddress.mixer0Base &+ UInt8(side) }
+                    return SymphonyIORoutingAddress.mixer1Base &+ UInt8(side)
+                }
+                table[destination] = source(0)
+                table[destination &+ 1] = source(1)
+            } else {
+                table[destination] = SymphonyIORoutingAddress.none
+                table[destination &+ 1] = SymphonyIORoutingAddress.none
+            }
+        }
+        return table
+    }
+
+    private func unitBOutputWords(layout: CardLayout) -> ThunderboltOutputMeterMap.Words? {
+        guard let table = unitBOutputTable(layout: layout) else { return nil }
+        return ThunderboltOutputMeterMap.words(layout: layout, table: table, unitBActive: true, unitB: true)
+    }
+
+    private func unitBOutputLevels(dB: (Int) -> Double, layout: CardLayout) -> [Double] {
+        guard let words = unitBOutputWords(layout: layout) else { return UnitBMeterMap.outputLevels(dB: dB, count: 32) }
+        return ThunderboltOutputMeterMap.levels(words.analog, count: 32, level: dB)
+    }
+
+    private func unitBDigitalOutputLevels(dB: (Int) -> Double, layout: CardLayout) -> [Double] {
+        guard let words = unitBOutputWords(layout: layout) else { return Array(repeating: -60, count: 24) }
+        return ThunderboltOutputMeterMap.levels(words.digital, level: dB)
     }
 
     /// Both copy paths use the live connection's cache, even before Device Settings opens.
@@ -590,6 +629,8 @@ extension AppState {
             selectedUnit = .a
             unitBInputMeterLevels = []
             unitBOutputMeterLevels = []
+            unitBDigitalOutputMeterLevels = Array(repeating: -60, count: 24)
+            unitBDigitalOutputPeakHold = Array(repeating: -60, count: 24)
             return
         }
         if newConnection || unitBDevice == nil {
@@ -645,6 +686,7 @@ extension AppState {
         unitBInputPeakHold = Array(repeating: -60, count: unitBInputPeakHold.count)
         unitBOutputPeakHold = Array(repeating: -60, count: unitBOutputPeakHold.count)
         unitBDigitalInputPeakHold = Array(repeating: -60, count: 24)
+        unitBDigitalOutputPeakHold = Array(repeating: -60, count: 24)
         let devices = [device, unitBDevice].compactMap { $0 }
         Task {
             for device in devices {

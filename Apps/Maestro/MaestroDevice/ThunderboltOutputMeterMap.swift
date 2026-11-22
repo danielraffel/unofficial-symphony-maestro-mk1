@@ -35,14 +35,18 @@ public enum ThunderboltOutputMeterMap {
     /// The meter word of the slot that card channel `channel` (board 0:
     /// 0-15, board 1: 16-31) plays, from the app's output table (destination
     /// byte to source byte). Nil when the output is disabled or has no route.
-    public static func word(channel: Int, table: [UInt8: UInt8], unitBActive: Bool) -> Int? {
+    public static func word(channel: Int, table: [UInt8: UInt8], unitBActive: Bool, unitB: Bool = false) -> Int? {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         guard channel >= 0, channel < perBoard * 2 else { return nil }
         let base = channel < perBoard ? SymphonyIORoutingAddress.ioBoard0Base : SymphonyIORoutingAddress.ioBoard1Base
         let destination = base + UInt8(channel % perBoard)
-        guard let source = table[destination],
-              let route = ThunderboltCardRouting.route(destination: destination, source: source,
-                                                       unitBActive: unitBActive),
+        guard let source = table[destination] else { return nil }
+        let route = unitB
+            ? ThunderboltCardRouting.unitBRoute(destination: destination,
+                                                slot: source == SymphonyIORoutingAddress.none ? nil : ThunderboltCardRouting.slot(forSource: source, unitBActive: unitBActive))
+            : ThunderboltCardRouting.route(destination: destination, source: source,
+                                            unitBActive: unitBActive)
+        guard let route,
               route.enabled else { return nil }
         return Int(route.slot)
     }
@@ -51,7 +55,7 @@ public enum ThunderboltOutputMeterMap {
     /// first, then the digital ones (`SymphonyIO.cpp:7041-7100`). Nil for an
     /// unknown layout or an empty table: the caller keeps strip i on software
     /// output i.
-    public static func words(layout: CardLayout, table: [UInt8: UInt8], unitBActive: Bool) -> Words? {
+    public static func words(layout: CardLayout, table: [UInt8: UInt8], unitBActive: Bool, unitB: Bool = false) -> Words? {
         guard layout.isKnown, !table.isEmpty else { return nil }
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         var analog: [Int?] = []
@@ -59,12 +63,12 @@ public enum ThunderboltOutputMeterMap {
         let meteredPerBoard = CardLayout.meteredDigitalPairsPerBoard * 2
         for (board, card) in layout.slots.enumerated() {
             for channel in 0..<card.analogOutputChannels {
-                analog.append(word(channel: board * perBoard + channel, table: table, unitBActive: unitBActive))
+                analog.append(word(channel: board * perBoard + channel, table: table, unitBActive: unitBActive, unitB: unitB))
             }
             for k in 0..<min(meteredPerBoard, card.digitalOutputChannels) {
                 digital[board * meteredPerBoard + k] = word(
                     channel: board * perBoard + card.analogOutputChannels + k,
-                    table: table, unitBActive: unitBActive)
+                    table: table, unitBActive: unitBActive, unitB: unitB)
             }
         }
         return Words(analog: analog, digital: digital)

@@ -11,6 +11,14 @@ import Foundation
 /// level is its low 14 bits, 0x3FFF = full scale, and at or below 0x40 it
 /// reads as silence (`SymphonyIO_Stream.cpp:559-571`).
 public enum UnitOutputMeters {
+    /// Build 144 accepts the 72-byte vendor reply. Build 143 rejects it while
+    /// holding the driver's control queue, so older or unknown builds are gated.
+    public static let requiredDriverBuild: UInt32 = 144
+
+    public static func driverSupports(_ servingBuild: ServingDextBuild?) -> Bool {
+        guard case .build(let build) = servingBuild else { return false }
+        return build >= requiredDriverBuild
+    }
     public static let payloadLength = 64
     public static let wordsPerBoard = 16
     /// Board b's digital output k at `b * 8 + k`, as
