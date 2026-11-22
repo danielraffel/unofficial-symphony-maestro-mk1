@@ -1311,10 +1311,14 @@ static bool XLinkInquire(IOPCIDevice *dev, uint8_t memIndex, uint8_t addr,
 struct SmpResponseParser {
     enum State { Sync, Size, Seq, ReqId, Data, Crc };
     State    state = Sync;
-    uint8_t  buf[80];              // reassembled control payload (data × size)
+    // The original protocol's limit is 80 data bytes
+    // (eSimpleMessageProtocol_MaxDataSize, SimpleMessageProtocol.h:19); a
+    // 64-byte read answers with 8 + 64 = 72.
+    static constexpr uint8_t kMaxData = 80;
+    uint8_t  buf[kMaxData];        // reassembled control payload (data × size)
     uint8_t  size = 0;
     uint8_t  idx  = 0;
-    uint8_t  crcBuf[80];          // bytes the CRC covers: type+size+seq+reqId+data
+    uint8_t  crcBuf[kMaxData + 4]; // bytes the CRC covers: type+size+seq+reqId+data
     uint8_t  crcLen = 0;
 
     bool feed(uint8_t b) {
@@ -1323,7 +1327,7 @@ struct SmpResponseParser {
             if (b != 0xC3) return false;              // resync on start byte 0xC3
             crcLen = 0; crcBuf[crcLen++] = b; state = Size; break;
         case Size:
-            if (b > 64) { state = Sync; return false; }  // MaxDataSize guard
+            if (b > kMaxData) { state = Sync; return false; }  // MaxDataSize guard
             size = b; idx = 0; crcBuf[crcLen++] = b; state = Seq; break;
         case Seq:
             crcBuf[crcLen++] = b; state = ReqId; break;   // device txSeq (value ignored)
@@ -1342,6 +1346,25 @@ struct SmpResponseParser {
         return false;
     }
 };
+
+// Which reply belongs to which read. The unit answers a read with the request
+// packet itself, data filled in (firmware SymphonyIOCommandPacket.cpp:56-60,
+// 83-96): byte 1 is the command, bytes 2-5 the request's nValue. Every read
+// is matched on the command; the reads below, where two different nValues are
+// in use and a wrong answer would be believed, also on nValue:
+//   0x30 meter group (0 input, 1 output, 2 mixer), 0x23 / 0x24 headphone 0 / 1
+//   level and mute, 0xA1 slot 0 / 1, 0x60 channel.
+// A command whose reads time out three times in a row after skipping a
+// CRC-valid frame (firmware that does not echo its request) falls back to the
+// first valid frame for the rest of this driver session.
+static bool ReplyMatchesValue(uint8_t command)
+{
+    return command == 0x30 || command == 0x23 || command == 0x24
+        || command == 0xA1 || command == 0x60;
+}
+static uint8_t  sReplySkipTimeouts[256];
+static bool     sReplyMatchFallback[256];
+static uint32_t sReplySkippedFrames;
 
 // Issue a vendor READ (bmRequestType 0xC0) and collect the Response payload.
 // Sends the request as MSG_BYTE frames (like SendVendorRequest but IN direction),
@@ -1402,11 +1425,16 @@ static bool ReadVendorRequestOn(IOPCIDevice *dev, uint8_t memIndex,
             return false;
         }
     }
-    STLOG("ReadVendorRequest: sent READ cmd=0x%02x nValue=%u wLength=%u (%u MSG_BYTE frames)",
-          command, value, outLen, msgLen);
+    // The app polls 0x30 for meters several times a second: no success lines
+    // for it. Every error and timeout line stays.
+    if (command != 0x30)
+        STLOG("ReadVendorRequest: sent READ cmd=0x%02x nValue=%u wLength=%u (%u MSG_BYTE frames)",
+              command, value, outLen, msgLen);
 
     // ── Poll RX up to 200 ms; feed MSG_BYTE data bytes into the parser ──
     SmpResponseParser parser;
+    const bool fallback = sReplyMatchFallback[command];
+    uint32_t skipped = 0;
     for (int ms = 0; ms < 200; ms++) {
         uint32_t word = 0;
         while (ReadXLinkRXWordOn(dev, memIndex, rxRegister, pcieOrder, &word)) {
@@ -1417,14 +1445,36 @@ static bool ReadVendorRequestOn(IOPCIDevice *dev, uint8_t memIndex,
             if (parser.feed(rxByte)) {
                 // Frame complete + CRC OK. Control payload layout:
                 //   [bmReqType][bReq][nValue:4][wLength:2][data...] — data at offset 8.
-                STLOG("ReadVendorRequest: cmd=0x%02x RESPONSE ok, size=%u, "
-                      "raw[0..3]=%02x %02x %02x %02x",
-                      command, parser.size,
-                      parser.size > 0 ? parser.buf[0] : 0,
-                      parser.size > 1 ? parser.buf[1] : 0,
-                      parser.size > 2 ? parser.buf[2] : 0,
-                      parser.size > 3 ? parser.buf[3] : 0);
-                if (parser.size < (uint8_t)(8u + outLen)) {
+                if (!fallback) {
+                    bool mine = parser.size >= 2 && parser.buf[1] == command;
+                    if (mine && ReplyMatchesValue(command)) {
+                        mine = parser.size >= 6
+                            && parser.buf[2] == (uint8_t)(value >>  0)
+                            && parser.buf[3] == (uint8_t)(value >>  8)
+                            && parser.buf[4] == (uint8_t)(value >> 16)
+                            && parser.buf[5] == (uint8_t)(value >> 24);
+                    }
+                    if (!mine) {
+                        // Another read's answer, arriving late: not this one.
+                        skipped++;
+                        if ((sReplySkippedFrames++ % 100u) == 0)
+                            STLOG("ReadVendorRequest: skipped a reply for cmd=0x%02x while "
+                                  "reading cmd=0x%02x (%u skipped so far)",
+                                  parser.size >= 2 ? parser.buf[1] : 0, command,
+                                  sReplySkippedFrames);
+                        continue;
+                    }
+                }
+                sReplySkipTimeouts[command] = 0;
+                if (command != 0x30)
+                    STLOG("ReadVendorRequest: cmd=0x%02x RESPONSE ok, size=%u, "
+                          "raw[0..3]=%02x %02x %02x %02x",
+                          command, parser.size,
+                          parser.size > 0 ? parser.buf[0] : 0,
+                          parser.size > 1 ? parser.buf[1] : 0,
+                          parser.size > 2 ? parser.buf[2] : 0,
+                          parser.size > 3 ? parser.buf[3] : 0);
+                if ((unsigned)parser.size < 8u + (unsigned)outLen) {
                     STERR("ReadVendorRequest: cmd=0x%02x short payload (size=%u < %u)",
                           command, parser.size, 8u + outLen);
                     return false;
@@ -1436,7 +1486,13 @@ static bool ReadVendorRequestOn(IOPCIDevice *dev, uint8_t memIndex,
         }
         IOSleep(1);
     }
-    STERR("ReadVendorRequest: cmd=0x%02x TIMEOUT (no valid response in 200 ms)", command);
+    if (skipped > 0 && !fallback && ++sReplySkipTimeouts[command] >= 3) {
+        sReplyMatchFallback[command] = true;
+        STERR("ReadVendorRequest: cmd=0x%02x timed out 3 times after skipping replies; "
+              "taking the first valid reply for this command from now on", command);
+    }
+    STERR("ReadVendorRequest: cmd=0x%02x TIMEOUT (no valid response in 200 ms, %u skipped)",
+          command, skipped);
     return false;
 }
 

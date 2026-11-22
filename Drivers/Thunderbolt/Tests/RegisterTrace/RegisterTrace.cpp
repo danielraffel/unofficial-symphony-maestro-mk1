@@ -162,6 +162,11 @@ struct Port {
     std::vector<Unit> units;          // Converters: the chain, nearest first
     bool     answersVendor = true;    // Symphony: replies to vendor reads
     uint32_t dropVendorReads = 0;     // Symphony: the next N vendor reads get no reply
+    // Reply matching (D2): frames sent ahead of the next reply, as a late
+    // answer to an earlier read would arrive (command, nValue, data length).
+    struct StaleReply { uint8_t cmd; uint32_t nValue; uint16_t len; };
+    std::vector<StaleReply> staleReplies;
+    bool noEcho = false;              // replies do not echo the request's command and nValue
     uint8_t  symphonyInquire = 0;     // Symphony: INQUIRE reply byte (0 = none)
     bool     symphonyProbeAnswered = false;
     // A Symphony I/O as an XLink unit (port 2, "unit B"), from field report
@@ -310,8 +315,19 @@ struct Port {
         if (c[0] != 0xC0) return;
         vendorReads.push_back(cmd);
         if (dropVendorReads) { dropVendorReads--; return; }
+        for (const StaleReply &st : staleReplies) {
+            std::vector<uint8_t> o = { 0xC3, (uint8_t)(8 + st.len), devSeq++, f[2],
+                0x01, st.cmd, (uint8_t)st.nValue, (uint8_t)(st.nValue >> 8),
+                (uint8_t)(st.nValue >> 16), (uint8_t)(st.nValue >> 24),
+                (uint8_t)st.len, (uint8_t)(st.len >> 8) };
+            for (uint16_t i = 0; i < st.len; i++) o.push_back(0xEE);
+            o.push_back(Crc8(o.data(), o.size()));
+            for (uint8_t byte : o) reply(1, 0x10, byte);
+        }
+        staleReplies.clear();
         std::vector<uint8_t> out = { 0xC3, (uint8_t)(8 + len), devSeq++, f[2] };
         out.insert(out.end(), c, c + 8);
+        if (noEcho) { out[5] = 0x00; out[6] = out[7] = out[8] = out[9] = 0x00; }
         auto v = vendorValue(cmd, nValue, len);
         out.insert(out.end(), v.begin(), v.end());
         out.push_back(Crc8(out.data(), out.size()));
@@ -5393,6 +5409,54 @@ static void RunVBusChecks()
 }
 #endif
 
+// D1 + D2: replies up to 80 bytes, and each reply taken only for its own read.
+static void RunReplyMatching()
+{
+    Options o; o.name = "reply matching"; o.shortFlow = true;
+    Run r;
+    RunScenario(o, r);
+    auto &unit = r.card.port[0];
+    // A 64-byte read (a 72-byte reply frame) is accepted and returns its bytes.
+    std::vector<uint8_t> meters(64);
+    for (int i = 0; i < 64; i++) meters[i] = (uint8_t)(i + 1);
+    unit.stored[(uint64_t(0x30) << 32) | 1] = meters;
+    uint8_t out[64] = {};
+    CHECK(r.drv->ReadVendorCommand(0x30, 1, out, 64) == kIOReturnSuccess, "D1: 64-byte read accepted");
+    CHECK(!memcmp(out, meters.data(), 64), "D1: 64-byte read returns the unit's bytes");
+    // A late 72-byte meter reply arriving while a 12-byte 0x28 read waits is
+    // skipped, and the 0x28 reply that follows is taken.
+    std::vector<uint8_t> panel = {0,0,172,68,1,0,0,2,2,29,1,0};
+    unit.stored[(uint64_t(0x28) << 32) | 1] = panel;
+    unit.staleReplies.push_back({0x30, 1, 64});
+    uint8_t obs[12] = {};
+    CHECK(r.drv->ReadVendorCommand(0x28, 1, obs, 12) == kIOReturnSuccess, "D2: 0x28 read after a stale meter reply");
+    CHECK(!memcmp(obs, panel.data(), 12), "D2: the stale meter reply was not taken for 0x28");
+    // nValue is matched for 0x30: a group-0 reply is not the answer to group 1.
+    unit.staleReplies.push_back({0x30, 0, 64});
+    memset(out, 0, sizeof(out));
+    CHECK(r.drv->ReadVendorCommand(0x30, 1, out, 64) == kIOReturnSuccess, "D2: 0x30 group 1 after a group 0 reply");
+    CHECK(!memcmp(out, meters.data(), 64), "D2: group 0's reply was not taken for group 1");
+    // ...and for the headphones: HP 0's reply is not HP 1's.
+    unit.stored[(uint64_t(0x23) << 32) | 1] = {33};
+    unit.staleReplies.push_back({0x23, 0, 1});
+    uint8_t hp = 0;
+    CHECK(r.drv->ReadVendorCommand(0x23, 1, &hp, 1) == kIOReturnSuccess && hp == 33, "D2: HP 1 level not taken from HP 0's reply");
+    // A command outside the table takes a reply with another nValue.
+    unit.stored[(uint64_t(0xE9) << 32) | 0] = {2};
+    unit.noEcho = false;
+    uint8_t set = 0;
+    CHECK(r.drv->ReadVendorCommand(0xE9, 0, &set, 1) == kIOReturnSuccess && set == 2, "D2: plain read still works");
+    // A unit that does not echo its request: three timeouts, then the old rule.
+    unit.noEcho = true;
+    for (int i = 0; i < 3; i++) {
+        uint8_t v = 0;
+        CHECK(r.drv->ReadVendorCommand(0x37, 0, &v, 1) != kIOReturnSuccess, "D2: a non-echoing reply is not taken (%d)", i);
+    }
+    uint8_t v = 0;
+    CHECK(r.drv->ReadVendorCommand(0x37, 0, &v, 1) == kIOReturnSuccess, "D2: after three timeouts the command falls back");
+    unit.noEcho = false;
+}
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -5403,6 +5467,7 @@ int main(int argc, char **argv)
     }
     if (outDir.empty()) { fprintf(stderr, "--out <dir> is required\n"); return 2; }
 
+    RunReplyMatching();
     RunSymphonyCardInputRoutes();
     RunPreampHostRoutes();
 #ifdef TRACE_HAVE_MIC_PRE_DAW
