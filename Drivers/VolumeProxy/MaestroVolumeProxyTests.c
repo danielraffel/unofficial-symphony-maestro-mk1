@@ -359,8 +359,22 @@ static void test_startup_volume_window(void)
     gVolumeWaitUntilNs = gMuteWaitUntilNs = 0;
 }
 
+static void test_power_actions(void)
+{
+    CHECK(power_action(kIOMessageSystemWillSleep) == POWER_LOCK, "sleep locks the unit");
+    CHECK(power_action(kIOMessageSystemWillPowerOff) == POWER_LOCK, "shutdown locks the unit");
+    CHECK(power_action(kIOMessageSystemWillRestart) == POWER_LOCK, "restart locks the unit");
+    CHECK(power_action(kIOMessageSystemHasPoweredOn) == POWER_UNLOCK, "wake unlocks it");
+    CHECK(power_action(kIOMessageCanSystemSleep) == POWER_NONE, "a sleep query does nothing");
+    CHECK(power_action(kIOMessageSystemWillNotSleep) == POWER_NONE, "a cancelled sleep does nothing");
+    gUSBDev = NULL; gLockedForPower = true;
+    set_power_lock(true);
+    CHECK(!gLockedForPower, "with no unit on USB nothing is locked");
+}
+
 int main(void)
 {
+    test_power_actions();
     test_startup_volume_window();
     check_monitor_output();
     check_direct_route_table();

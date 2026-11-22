@@ -58,6 +58,8 @@
 #include <IOKit/IOKitLib.h>
 #include <IOKit/usb/IOUSBLib.h>
 #include <IOKit/IOCFPlugIn.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/IOMessage.h>
 
 /* Logging macros: write to both os_log AND stderr (→ /tmp/MaestroVolumeProxy.log).
    os_log alone doesn't appear in the log file because LaunchDaemons redirect
@@ -3511,6 +3513,74 @@ static void start_log_cap_timer(void) {
     dispatch_resume(sLogCapTimer);
 }
 
+/* ── Sleep, shutdown and restart (A3 / J7) ───────────────────────────────
+   As the original's root daemon did (og main.cpp:161-182;
+   SymphonyIOUSBAudioDeviceController.cpp:219-301): before the Mac sleeps,
+   shuts down or restarts, the unit is locked (PreferenceLoadLock = 1, which
+   mutes it) so it makes no noise as USB goes away; when the Mac has woken, it
+   is unlocked. A re-enumeration at wake also unlocks (init_usb_hardware). No
+   lock on SIGTERM: an update restarts this helper and must leave audio on. */
+typedef enum { POWER_NONE, POWER_LOCK, POWER_UNLOCK } PowerAction;
+
+static PowerAction power_action(natural_t message)
+{
+    switch (message) {
+    case kIOMessageSystemWillSleep:
+    case kIOMessageSystemWillPowerOff:
+    case kIOMessageSystemWillRestart:
+        return POWER_LOCK;
+    case kIOMessageSystemHasPoweredOn:
+        return POWER_UNLOCK;
+    default:
+        return POWER_NONE;
+    }
+}
+
+static io_connect_t gPowerRoot = MACH_PORT_NULL;
+static bool gLockedForPower = false;
+
+static void set_power_lock(bool lock)
+{
+    if (!gUSBDev) { gLockedForPower = false; return; }
+    uint8_t value = lock ? 1 : 0;
+    int err = -1;
+    for (int attempt = 0; attempt < 3 && err != 0; attempt++) {
+        err = usb_vendor_write(VCMD_PREF_LOAD_LOCK, 0, &value, 1);
+        if (err && !lock) usleep(200 * 1000);
+        if (lock) break;   /* going to sleep: one try, never delay the Mac */
+    }
+    gLockedForPower = lock && err == 0;
+    LOG("Power: PreferenceLoadLock(%s) %s", lock ? "true" : "false", err ? "FAILED" : "OK");
+}
+
+static void power_callback(void *refcon, io_service_t service, natural_t message, void *argument)
+{
+    (void)refcon; (void)service;
+    const PowerAction action = power_action(message);
+    if (action == POWER_LOCK) set_power_lock(true);
+    /* A shutdown or restart that does not happen (cancelled after this
+       message) must not leave the unit muted: unlock if the Mac is still up
+       a minute later. */
+    if (message == kIOMessageSystemWillPowerOff || message == kIOMessageSystemWillRestart) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), gQueue, ^{
+            if (gLockedForPower) { LOG("Power: still running a minute after shutdown/restart was announced; unlocking"); set_power_lock(false); }
+        });
+    }
+    else if (action == POWER_UNLOCK && gLockedForPower) set_power_lock(false);
+    if (message == kIOMessageCanSystemSleep || message == kIOMessageSystemWillSleep)
+        IOAllowPowerChange(gPowerRoot, (long)argument);
+}
+
+static void register_power_notifications(void)
+{
+    static IONotificationPortRef port = NULL;
+    io_object_t notifier = 0;
+    gPowerRoot = IORegisterForSystemPower(NULL, &port, power_callback, &notifier);
+    if (gPowerRoot == MACH_PORT_NULL) { LOG_ERR("Power: IORegisterForSystemPower failed"); return; }
+    IONotificationPortSetDispatchQueue(port, gQueue);
+    LOG("Power: watching sleep, shutdown and restart");
+}
+
 int main(void) {
     sLog  = os_log_create("com.danielraffel.Maestro.volumeproxy", "main");
     sVerbose = (getenv("MAESTRO_PROXY_DEBUG") != NULL) ? 1 : 0;
@@ -3555,6 +3625,8 @@ int main(void) {
         }
     });
     xpc_connection_resume(listener);
+
+    register_power_notifications();
 
     LOG("Listening on com.danielraffel.Maestro.volumeproxy");
     dispatch_main();
