@@ -459,9 +459,12 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// is not marked: nothing was sent. Card registers only (0xB0-0xB4).
     public func writeCompleteCardMixer(_ mixer: Int, writes: [ThunderboltPreset.Write], layout: CardLayout,
                                        second: CardLayout? = nil,
+                                       routes: [CardMixerReplay.InputRoute]? = nil,
+                                       secondRoutes: [CardMixerReplay.InputRoute]? = nil,
                                        shouldContinue: @escaping @Sendable () -> Bool,
                                        gap: Duration = CardMixerReplay.commandGap) async throws -> CardWriteResult {
-        var required = CardMixerReplay.requiredAddresses(mixer: mixer, layout: layout, second: second)
+        var required = CardMixerReplay.requiredAddresses(mixer: mixer, layout: layout, second: second,
+                                                         routes: routes, secondRoutes: secondRoutes)
         // The Software Return source is left out of a plan only when the card
         // cannot take the saved one (a 64-channel pair at 32 channels).
         let source = PropertyAddress(selector: .mixerSoftwareReturnID, element: UInt32(mixer + 1) << 16)

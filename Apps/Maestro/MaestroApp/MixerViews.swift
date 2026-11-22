@@ -820,7 +820,7 @@ struct MixerView: View {
         for i in 0..<min(editor.channels.count, channelCount) {
             guard loaded.canEdit(appState), appState.device === device else { return }
             let ch = loaded.channels[i]
-            let elem = mixerElement(channel: i)
+            guard let elem = mixerElement(channel: i) else { continue }
             do {
                 try await device.setProperty(
                     PropertyAddress(selector: .mixerChannelLevel, element: elem),
@@ -856,16 +856,23 @@ struct MixerView: View {
         print("[Maestro] syncMixerToHardware: sent \(editor.channels.count) channels + master to mixer \(selectedMixer + 1)")
     }
 
-    /// Encode mixer element: (mixerID << 16) | channelIndex.
+    /// Encode mixer element: (mixerID << 16) | card receive-slot number.
     /// Evidence: SymphonyIOControl.cpp:1904-1942 — (nMixer << 16) | (nChannel & 0xFFFF).
     /// selectedMixer is 0-based in UI; USB protocol mixer IDs are 1-based.
-    private func mixerElement(channel: Int) -> UInt32 {
-        // Strip index != hardware channel ID. Each slot owns a fixed 16-channel
-        // XLink region whether or not its card fills it, so a card that supplies
-        // fewer than 16 channels leaves a gap before the second slot's IDs.
-        let layoutChannels = mixerChannels
-        let hardwareIndex = channel < layoutChannels.count ? layoutChannels[channel].hardwareIndex : channel
-        return (UInt32(selectedMixer + 1) << 16) | UInt32(hardwareIndex)
+    private func mixerElement(channel: Int) -> UInt32? {
+        guard channel >= 0, channel < mixerChannels.count else { return nil }
+        let strip = mixerChannels[channel]
+        let id: Int?
+        if usbDevice != nil {
+            id = strip.hardwareIndex
+        } else {
+            let unit: DeviceUnit = isUnitBChannel(channel) ? .b : .a
+            let local = localChannelIndex(channel)
+            let numbers = appState.thunderboltMixerInputNumbers(unit: unit)
+            id = local < numbers.count ? numbers[local].map { unit == .b ? $0 + 32 : $0 } : nil
+        }
+        guard let id else { return nil }
+        return (UInt32(selectedMixer + 1) << 16) | UInt32(id)
     }
 
     /// Master fader element: (mixerID << 16) | 2000.
@@ -983,9 +990,10 @@ struct MixerView: View {
     private func writeLevel(channel: Int, level: Double) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
+        guard let element = mixerElement(channel: channel) else { return }
         do {
             try await device.setProperty(
-                PropertyAddress(selector: .mixerChannelLevel, element: mixerElement(channel: channel)),
+                PropertyAddress(selector: .mixerChannelLevel, element: element),
                 value: .float64(level)
             )
         } catch {
@@ -996,9 +1004,10 @@ struct MixerView: View {
     private func writePan(channel: Int, pan: Double) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
+        guard let element = mixerElement(channel: channel) else { return }
         do {
             try await device.setProperty(
-                PropertyAddress(selector: .mixerChannelPan, element: mixerElement(channel: channel)),
+                PropertyAddress(selector: .mixerChannelPan, element: element),
                 value: .float64(pan)
             )
         } catch {
@@ -1009,9 +1018,10 @@ struct MixerView: View {
     private func writeMute(channel: Int, muted: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
+        guard let element = mixerElement(channel: channel) else { return }
         do {
             try await device.setProperty(
-                PropertyAddress(selector: .mixerChannelMute, element: mixerElement(channel: channel)),
+                PropertyAddress(selector: .mixerChannelMute, element: element),
                 value: .bool(muted)
             )
         } catch {
@@ -1022,9 +1032,10 @@ struct MixerView: View {
     private func writeSolo(channel: Int, solo: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
+        guard let element = mixerElement(channel: channel) else { return }
         do {
             try await device.setProperty(
-                PropertyAddress(selector: .mixerChannelSolo, element: mixerElement(channel: channel)),
+                PropertyAddress(selector: .mixerChannelSolo, element: element),
                 value: .bool(solo)
             )
         } catch {

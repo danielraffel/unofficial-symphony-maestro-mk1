@@ -2176,6 +2176,17 @@ public enum ThunderboltInputMeterMap {
         return Words(channels: channels, digital: digital)
     }
 
+    /// Card mixer input number for each mixer strip. The capture table is
+    /// supplied by the caller so this never depends on the periodically
+    /// refreshed meter-word cache. Converter and unknown layouts retain their
+    /// existing strip numbers.
+    public static func mixerInputs(layout: CardLayout, routes: [Route]) -> [Int?] {
+        if layout.converterLayout != nil || !layout.isKnown {
+            return layout.mixerChannels.map { $0.hardwareIndex }
+        }
+        return words(layout: layout, routes: routes).channels
+    }
+
     /// Meter words read for converters: both ports' bus slots (port 1 then port 2).
     public static let converterWordCount = 64
 

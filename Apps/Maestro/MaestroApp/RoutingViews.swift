@@ -421,6 +421,7 @@ struct InputRoutingView: View {
             errorMessage = nil
             userChosenRows.insert(row)
             persistChosenRows()
+            if appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
             print("[Maestro] InputRouting: wrote row \(row) → col \(col) (dest \(destLeft), src \(srcLeft))")
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"
@@ -550,6 +551,7 @@ struct InputRoutingView: View {
             userChosenRows.removeAll()
         }
         persistChosenRows()
+        if appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] InputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")
     }

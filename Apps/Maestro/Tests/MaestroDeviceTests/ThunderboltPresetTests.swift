@@ -145,9 +145,14 @@ struct ThunderboltPresetTests {
         modern.routingMode = 1
         let writes = try loaded.writes(layout: layout)
         #expect(writes == (try modern.writes(layout: layout)))
+        let routes = loaded.inputRoutes.enumerated().map {
+            (destination: SymphonyIORoutingAddress.p2pBase + UInt8($0.offset), source: $0.element)
+        }
+        let mixerInputs = ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: routes)
         for (index, mixer) in loaded.mixers.enumerated() {
             for (channel, state) in mixer.channels.enumerated() {
-                let element = UInt32(index + 1) << 16 | UInt32(layout.mixerChannels[channel].hardwareIndex)
+                guard let input = mixerInputs[channel] else { continue }
+                let element = UInt32(index + 1) << 16 | UInt32(input)
                 let expected = ThunderboltPreset.Write.property(
                     PropertyAddress(selector: .mixerChannelMute, element: element), .bool(state.isMuted))
                 #expect(writes.contains(expected), "mixer \(index + 1) strip \(channel)")

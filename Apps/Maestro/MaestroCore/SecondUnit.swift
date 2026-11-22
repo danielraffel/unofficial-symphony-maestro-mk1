@@ -208,11 +208,19 @@ public enum TwoUnitMixer {
     /// Unit B's hardware-input strips, moved into the card mixer's 32–63
     /// channel range.  The underlying layout supplies the board, optical and
     /// sample-rate names; this method supplies only the unit prefix.
-    public static func unitBChannels(layout: CardLayout, prefix: String) -> [CardLayout.MixerChannel] {
-        layout.mixerChannels.map {
-            CardLayout.MixerChannel(label: unitChannelName($0.label, prefix: prefix),
-                                    hardwareIndex: unitBChannelBase + $0.hardwareIndex,
-                                    boardIndex: $0.boardIndex, channelOnBoard: $0.channelOnBoard)
+    public static func unitBChannels(layout: CardLayout, prefix: String,
+                                     inputNumbers: [Int?]? = nil) -> [CardLayout.MixerChannel] {
+        layout.mixerChannels.enumerated().map { index, channel in
+            let hardwareIndex: Int
+            if let inputNumbers, index < inputNumbers.count,
+               let number = inputNumbers[index] {
+                hardwareIndex = unitBChannelBase + number
+            } else {
+                hardwareIndex = unitBChannelBase + channel.hardwareIndex
+            }
+            return CardLayout.MixerChannel(label: unitChannelName(channel.label, prefix: prefix),
+                                           hardwareIndex: hardwareIndex,
+                                           boardIndex: channel.boardIndex, channelOnBoard: channel.channelOnBoard)
         }
     }
 

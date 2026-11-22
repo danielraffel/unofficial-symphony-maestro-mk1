@@ -341,11 +341,17 @@ extension AppState {
             if attempt > 0 { try? await Task.sleep(for: cardMixerEditQuietWindow) }
             guard isCurrent() else { return .superseded }
             let generation = edits.capture()
+            let routesA = thunderboltCaptureRoutes(unit: .a)
+            let routesB = unitBOnCard ? thunderboltCaptureRoutes(unit: .b) : nil
             let plan = CardMixerReplay.plan(mixers: [mixer], layout: layout, store: channelStateStore,
-                                            preferences: mixerPreferences, complete: true).first ?? []
+                                            preferences: mixerPreferences,
+                                            complete: true,
+                                            routes: routesA, secondRoutes: routesB).first ?? []
             do {
                 let result = try await Task.detached(priority: .utility) {
-                    try await tb.writeCompleteCardMixer(mixer, writes: plan, layout: layout, shouldContinue: {
+                    try await tb.writeCompleteCardMixer(mixer, writes: plan, layout: layout,
+                        routes: routesA, secondRoutes: routesB,
+                        shouldContinue: {
                         edits.isCurrent(generation) && deferral.isValid(recallEpoch)
                     }, gap: gap)
                 }.value

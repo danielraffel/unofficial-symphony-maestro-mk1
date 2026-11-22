@@ -8,6 +8,14 @@ import MaestroCore
 /// (og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:1479-1604,
 /// 1750-1755). No unit (XLink) command, no preference lock or ready pair.
 public enum CardMixerReplay {
+    public typealias InputRoute = ThunderboltInputMeterMap.Route
+
+    private static func inputIDs(layout: CardLayout, routes: [InputRoute]?) -> [Int?] {
+        if let routes {
+            return ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: routes)
+        }
+        return layout.mixerChannels.map { $0.hardwareIndex }
+    }
     /// Gap between two commands. Each 0xB0-0xB3 makes the driver recompute
     /// the whole mixer, 66 card register writes at 32 channels
     /// (SymphonyThunderbridge.cpp RecomputeCardMixer); 0xB4 makes 2. At 20 ms
@@ -108,7 +116,8 @@ public enum CardMixerReplay {
     /// running may still hold one from an earlier version.
     public static func savedWrites(mixer: Int, layout: CardLayout, store: ChannelStateStore,
                                    preferences: MixerPreferences? = nil,
-                                   pairCount: Int = 8) -> [ThunderboltPreset.Write] {
+                                   pairCount: Int = 8,
+                                   routes: [InputRoute]? = nil) -> [ThunderboltPreset.Write] {
         let defaults = preferences ?? store.mixerPreferences
         let saved: [MixerChannelState] = store.load(ChannelStateStore.mixerKey(mixer)) ?? []
         let left = defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double
@@ -129,8 +138,9 @@ public enum CardMixerReplay {
                 put(.mixerSoftwareReturnID, .uint32(shown))
             }
         }
-        for (index, strip) in layout.mixerChannels.enumerated() {
-            let id = strip.hardwareIndex
+        let ids = inputIDs(layout: layout, routes: routes)
+        for (index, _) in layout.mixerChannels.enumerated() {
+            guard let id = ids[index] else { continue }
             guard index < saved.count else {
                 put(.mixerChannelMute, .bool(false), id)
                 continue
@@ -166,14 +176,16 @@ public enum CardMixerReplay {
     /// the state the reset removed.
     public static func plan(mixers: [Int], layout: CardLayout, store: ChannelStateStore,
                             preferences: MixerPreferences? = nil,
-                            complete: Bool = false) -> [[ThunderboltPreset.Write]] {
+                            complete: Bool = false,
+                            routes: [InputRoute]? = nil,
+                            secondRoutes: [InputRoute]? = nil) -> [[ThunderboltPreset.Write]] {
         mixers.map { mixer in
             guard complete else {
-                return savedWrites(mixer: mixer, layout: layout, store: store, preferences: preferences)
+                return savedWrites(mixer: mixer, layout: layout, store: store, preferences: preferences, routes: routes)
             }
             let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: mixer,
                                               store: store, preferences: preferences)
-            return writes(mixer: mixer, layout: layout, snapshot: snapshot).filter {
+            return writes(mixer: mixer, layout: layout, snapshot: snapshot, routes: routes, secondRoutes: secondRoutes).filter {
                 // A source held for unit B (8 or more at 32 channels) is not sent.
                 guard case .property(let address, _) = $0, address.selector == .mixerSoftwareReturnID
                 else { return true }
@@ -248,7 +260,9 @@ public enum CardMixerReplay {
     /// live: Master, Software Return (level, mute, solo, source), then every
     /// input strip with its level and pan before its mute and solo.
     public static func writes(mixer: Int, layout: CardLayout, snapshot: MixerStateSnapshot,
-                              second: (CardLayout, MixerStateSnapshot)? = nil) -> [ThunderboltPreset.Write] {
+                              second: (CardLayout, MixerStateSnapshot)? = nil,
+                              routes: [InputRoute]? = nil,
+                              secondRoutes: [InputRoute]? = nil) -> [ThunderboltPreset.Write] {
         var writes: [ThunderboltPreset.Write] = []
         let base = UInt32(mixer + 1) << 16
         func put(_ selector: AudioPropertySelector, _ value: PropertyValue, _ channel: Int = 0) {
@@ -266,14 +280,22 @@ public enum CardMixerReplay {
         let source = TwoUnitMixer.shownSoftwareReturnSource(snapshot.softwareReturnSource,
             pairCount: TwoUnitMixer.softwareReturnPairCount(unitBActive: second != nil))
         put(.mixerSoftwareReturnID, .uint32(source))
-        let ids = layout.mixerChannels.map(\.hardwareIndex)
-            + (second?.0.mixerChannels.map { 32 + $0.hardwareIndex } ?? [])
+        let idsA = inputIDs(layout: layout, routes: routes)
+        let idsB = second.map { inputIDs(layout: $0.0, routes: secondRoutes).map { $0.map { $0 + 32 } } } ?? []
+        let ids = idsA + idsB
         let states = snapshot.channels + (second?.1.channels ?? [])
+        var written = Set<Int>()
         for (id, state) in zip(ids, states) {
+            guard let id, written.insert(id).inserted else { continue }
             put(.mixerChannelLevel, .float64(state.level), id)
             put(.mixerChannelPan, .float64(state.pan), id)
             put(.mixerChannelMute, .bool(state.isMuted), id)
             put(.mixerChannelSolo, .bool(state.isSoloed), id)
+        }
+        let inputCount = second == nil ? 32 : 64
+        for id in 0..<inputCount where !written.contains(id) {
+            put(.mixerChannelMute, .bool(true), id)
+            put(.mixerChannelSolo, .bool(false), id)
         }
         return writes
     }
@@ -284,7 +306,9 @@ public enum CardMixerReplay {
     /// input strip of the layout (and of unit B's at 64 channels). The
     /// Software Return source is added by the caller when the plan carries it.
     public static func requiredAddresses(mixer: Int, layout: CardLayout,
-                                         second: CardLayout? = nil) -> Set<PropertyAddress> {
+                                         second: CardLayout? = nil,
+                                         routes: [InputRoute]? = nil,
+                                         secondRoutes: [InputRoute]? = nil) -> Set<PropertyAddress> {
         let base = UInt32(mixer + 1) << 16
         var required: Set<PropertyAddress> = []
         func need(_ selector: AudioPropertySelector, _ channel: Int) {
@@ -292,14 +316,23 @@ public enum CardMixerReplay {
         }
         need(.mixerChannelLevel, 2000)
         need(.mixerChannelLevel, 0x1002)
-        let strips = layout.mixerChannels.map(\.hardwareIndex)
-            + (second?.mixerChannels.map { 32 + $0.hardwareIndex } ?? []) + [1000]
-        for id in strips {
+        let idsA = inputIDs(layout: layout, routes: routes)
+        let idsB = second.map { inputIDs(layout: $0, routes: secondRoutes).map { $0.map { $0 + 32 } } } ?? []
+        let ids = idsA + idsB
+        var written = Set<Int>()
+        for id in ids.compactMap({ $0 }) where written.insert(id).inserted {
             for selector in [AudioPropertySelector.mixerChannelLevel, .mixerChannelPan,
                              .mixerChannelMute, .mixerChannelSolo] {
                 need(selector, id)
             }
         }
+        let inputCount = second == nil ? 32 : 64
+        for id in 0..<inputCount where !written.contains(id) {
+            need(.mixerChannelMute, id)
+            need(.mixerChannelSolo, id)
+        }
+        for selector in [AudioPropertySelector.mixerChannelLevel, .mixerChannelPan,
+                         .mixerChannelMute, .mixerChannelSolo] { need(selector, 1000) }
         return required
     }
 }

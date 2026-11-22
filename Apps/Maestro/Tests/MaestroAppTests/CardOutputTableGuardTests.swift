@@ -817,7 +817,9 @@ struct CardOutputTableGuardTests {
                 }
                 return nil
             })
-            #expect(CardMixerReplay.requiredAddresses(mixer: mixer, layout: layouts.a, second: layouts.b)
+            #expect(CardMixerReplay.requiredAddresses(mixer: mixer, layout: layouts.a, second: layouts.b,
+                                                      routes: state.thunderboltCaptureRoutes(unit: .a),
+                                                      secondRoutes: state.thunderboltCaptureRoutes(unit: .b))
                 .isSubset(of: addresses))
         }
         // As the connection sends it: no mixer write before every route has

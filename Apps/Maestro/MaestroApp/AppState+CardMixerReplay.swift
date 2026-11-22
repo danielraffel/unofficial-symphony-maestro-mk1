@@ -3,6 +3,18 @@ import MaestroCore
 import MaestroDevice
 
 extension AppState {
+    /// Input routing changes the receive slots under the card mixer. Rebuild
+    /// both mixers immediately after a successful route write. A driver
+    /// in-place recovery with non-default routing can still expose defaults
+    /// until this replay runs, which only a driver change could eliminate.
+    @MainActor
+    func thunderboltInputRoutingDidChange() {
+        invalidateThunderboltInputMeterMap()
+        guard device is ThunderboltDeviceConnection else { return }
+        cardMixerLedger.restoresHeldMixers = true
+        syncCardMixerToHardware()
+    }
+
     /// D5: restore the saved card mixer once on a driver instance that holds no
     /// app mixer state (a fresh dext), even if the Mixer page is never opened.
     /// Launch and reconnect call this after the ThunderBridge health check has
@@ -142,7 +154,9 @@ extension AppState {
                 guard let self else { return [] }
                 return CardMixerReplay.plan(mixers: mixers, layout: layout, store: self.channelStateStore,
                                             preferences: self.mixerPreferences,
-                                            complete: self.cardMixerLedger.restoresHeldMixers)
+                                            complete: self.cardMixerLedger.restoresHeldMixers,
+                                            routes: self.thunderboltCaptureRoutes(unit: .a),
+                                            secondRoutes: self.unitBOnCard ? self.thunderboltCaptureRoutes(unit: .b) : nil)
             },
             replay: { plan, recovery, epoch, generation, progress in
                 let started = Date()

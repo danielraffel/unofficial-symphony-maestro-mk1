@@ -247,7 +247,30 @@ extension AppState {
     /// Every hardware-input strip on the Mixer: unit A's, then unit B's.
     var mixerStripChannels: [CardLayout.MixerChannel] {
         guard unitBOnCard else { return cardLayout.mixerChannels }
-        return TwoUnitMixer.channels(unitA: cardLayout, unitB: unitBLayout, prefixB: unitBPeripheralPrefix)
+        guard let layoutB = unitBLayout else { return cardLayout.mixerChannels }
+        let bNumbers = (device is XPCDeviceConnection) ? nil : thunderboltMixerInputNumbers(unit: .b)
+        return TwoUnitMixer.unitBChannels(layout: layoutB, prefix: unitBPeripheralPrefix,
+                                          inputNumbers: bNumbers)
+            .reduce(into: cardLayout.mixerChannels) { result, channel in result.append(channel) }
+    }
+
+    /// Resolve Mixer strips to the current ThunderBridge receive slots. This
+    /// is computed from the saved capture tables on every use, independently
+    /// of the throttled meter-word refresh.
+    func thunderboltMixerInputNumbers(unit: DeviceUnit = .a) -> [Int?] {
+        let layout = unit == .a ? cardLayout : unitBLayout
+        guard let layout else { return [] }
+        return ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: thunderboltCaptureRoutes(unit: unit))
+    }
+
+    func thunderboltCaptureRoutes(unit: DeviceUnit = .a) -> [ThunderboltInputMeterMap.Route] {
+        let layout = unit == .a ? cardLayout : unitBLayout
+        guard let layout else { return [] }
+        let slot1 = unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1
+        let cache = unit == .a ? peripheralRoutingCache(direction: "input") : unitBInputRoutingCache
+        let replayed = InputRoutingReplay.writes(
+            saved: cache?.load() ?? [:], columns: layout.inputRoutingColumns, pairCount: 16)
+        return ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: replayed)
     }
 
     /// Unit B cannot be there: USB, or a port selection that is not 64
@@ -489,7 +512,8 @@ extension AppState {
     func updateUnitBMeters(dB: (Int) -> Double, pollCount: Int = 0, preferUnitRead: Bool = false) {
         guard unitBOnCard, let layout = unitBLayout else { return }
         let host = (0..<UnitBMeterMap.inputWordCount).map(dB)
-        let words = UnitBMeterMap.inputWords(layout: layout)
+        let words = UnitBMeterMap.inputWords(layout: layout,
+                                             routes: thunderboltCaptureRoutes(unit: .b))
         let count = layout.mixerChannels.count
         if unitBInputMeterLevels.count != count {
             unitBInputMeterLevels = Array(repeating: -60.0, count: count)

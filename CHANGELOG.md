@@ -4,6 +4,14 @@
 
 This beta fixes the output meters on ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.21.
 
+### Changes that may affect your setup
+
+- **On ThunderBridge and PCIe, with some pairs of cards, Mixer strips controlled a different input from the one in their name.** This happened with a card that has digital inputs in slot 1 together with a card that has analog inputs in slot 2 (an 8x8, 16 Digital In / 16 Analog Out or 2x6 in slot 1 with an 8x8, 16 Analog In / 16 Digital Out, 16x16 or 2x6 in slot 2), and with slot 1 empty and a card in slot 2, where no input reached the mixer at all. Faders, pan, mute and solo now act on the input the strip is named for. After updating, each strip's saved settings apply to the input in its name, so an input may be louder or unmuted compared with before: check the mixer before turning your monitors up. Over USB nothing changes.
+
+### Fixed
+
+- Mixer strips on ThunderBridge and PCIe now control the card input named by each strip.
+
 Thanks to the tester who reported that the AES meters did not move while music played through AES 3/4.
 
 ### Fixed
@@ -19,6 +27,8 @@ Thanks to the tester who reported that the AES meters did not move while music p
 - The driver is unchanged from 0.9.21 (0.11.17, build 143). Over USB nothing changes. As before, the Output page meters the first four digital pairs of each card.
 
 ### Please test
+
+- Solo each Mixer strip in turn and check the right input plays.
 
 - **ThunderBridge or PCIe, Output page:** play music from the Mac to each output pair in turn, analog and digital. Does that pair's meter move? Try it with Optical Format on ADAT/SMUX and on SPDIF, and with AES if your card has it.
 - **Output Routing:** route a different software pair, then Mixer 1, to an output. Does its meter follow?

@@ -20,13 +20,18 @@ public enum UnitBMeterMap {
 
     /// Unit B's strip words (offset into the 64 input words), in the order of
     /// `layout.mixerChannels`, and its digital strips. Empty for an unknown layout.
-    public static func inputWords(layout: CardLayout) -> ThunderboltInputMeterMap.Words {
+    public static func inputWords(layout: CardLayout, routes: [ThunderboltInputMeterMap.Route]? = nil) -> ThunderboltInputMeterMap.Words {
         let slot1: IOCardType? = layout.isKnown ? layout.slot1 : nil
-        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: [])
-        let words = ThunderboltInputMeterMap.words(layout: layout, routes: routes)
+        let capture = routes ?? ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: [])
+        let words = ThunderboltInputMeterMap.words(layout: layout, routes: capture)
         return ThunderboltInputMeterMap.Words(
             channels: words.channels.map { $0.map { $0 + inputWordBase } },
             digital: words.digital.map { $0.map { $0 + inputWordBase } })
+    }
+
+    public static func mixerInputs(layout: CardLayout,
+                                   routes: [ThunderboltInputMeterMap.Route]) -> [Int?] {
+        ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: routes)
     }
 
     /// The meter word of unit B's output channel `channel` (0-based, as

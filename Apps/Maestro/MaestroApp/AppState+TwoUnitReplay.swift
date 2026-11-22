@@ -215,7 +215,9 @@ extension AppState {
             // (Master, Software Return, then strips with level and pan
             // before mute and solo).
             plan.card += CardMixerReplay.writes(mixer: mixer, layout: cardLayout, snapshot: a,
-                                                second: (layoutB, b)).map { .card($0) }
+                                                second: (layoutB, b),
+                                                routes: thunderboltCaptureRoutes(unit: .a),
+                                                secondRoutes: thunderboltCaptureRoutes(unit: .b)).map { .card($0) }
         }
         // The connection orders these when it runs the plan: every route
         // first with one fed by a mixer it has not seen written disabled,

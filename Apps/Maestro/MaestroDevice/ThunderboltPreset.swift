@@ -300,6 +300,12 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             put(.routing, .uint32(UInt32(pair.left - 32)), scope: .output, element: UInt32(dest.left))
             put(.routing, .uint32(UInt32(pair.right - 32)), scope: .output, element: UInt32(dest.right))
         }
+        // The mixer numbers in a recall follow the capture table this same
+        // preset writes, rather than the table that was active before recall.
+        let presetRoutes: [ThunderboltInputMeterMap.Route] = inputRoutes.enumerated().map {
+            (destination: SymphonyIORoutingAddress.p2pBase + UInt8($0.offset), source: $0.element)
+        }
+        let presetMixerInputs = ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: presetRoutes)
         // og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:1750-1754.
         for (index, mixer) in mixers.enumerated() {
             let base = UInt32(index + 1) << 16
@@ -308,7 +314,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                 put(.mixerSoftwareReturnID, .uint32(mixer.source), element: base)
             }
             for (channel, s) in (mixer.channels + [mixer.softwareReturn]).enumerated() {
-                let id = channel == mixer.channels.count ? 1000 : layout.mixerChannels[channel].hardwareIndex
+                let id = channel == mixer.channels.count ? 1000 : (presetMixerInputs[channel] ?? -1)
+                if id < 0 { continue }
                 let element = base | UInt32(id)
                 put(.mixerChannelLevel, .float64(s.level), element: element)
                 // Software Return has no pan: a preset's saved one is not applied.
