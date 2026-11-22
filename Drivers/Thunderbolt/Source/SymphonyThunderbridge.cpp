@@ -9033,12 +9033,32 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                         // as on is never dropped. Louder and unmute are put back.
                         // Target and value are consumed together here. No delayed block
                         // re-resolves a physical destination after selection changes.
+                        // Diagnostics: one line per handled change, for reports
+                        // of keys that "do nothing". The first 64 lines of a
+                        // driver session, then one in 16, so key repeat cannot
+                        // flood the log. No behaviour depends on it.
+                        static uint32_t sKeyLogCount = 0;
+                        const char *keyOutput = converter ? "converter"
+                            : (kind == 1 ? "HP1" : (kind == 2 ? "HP2" : "speakers"));
+                        auto keyLog = [&](const char *what, const char *outcome, float shown, float wanted) {
+                            const uint32_t n = sKeyLogCount++;
+                            if (n < 64 || n % 16 == 0)
+                                STLOG("Volume keys: unit=%{public}s output=%{public}s %{public}s %.1f -> %.1f: %{public}s",
+                                      b ? "B" : "A", keyOutput, what, shown, wanted, outcome);
+                        };
+                        auto keepReason = [&](bool louder) -> const char * {
+                            if (inert) return "put back: line mode";
+                            if (unknown) return "put back: levels not known";
+                            return louder ? "put back: settling (louder)" : "put back: settling (unmute)";
+                        };
                         if (ivars->outputVolumeControl) {
                             const float db = ivars->outputVolumeControl->GetDecibelValue();
                             const float diff = db - ivars->lastVolumeDb;
                             if ((diff > 0.5f || diff < -0.5f) && (inert || unknown || (settling && diff > 0.0f))) {
+                                keyLog("level", keepReason(true), ivars->lastVolumeDb, db);
                                 ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
                             } else if ((diff > 0.5f || diff < -0.5f) && XLinkTxAdmissible(ivars)) {
+                                keyLog("level", "sent", ivars->lastVolumeDb, db);
                                 ivars->lastVolumeDb = db;
                                 uint8_t value = static_cast<uint8_t>(db > 0 ? 0 : (db < -64 ? 64 : -db));
                                 if (converter) {
@@ -9061,8 +9081,11 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                         if (ivars->outputMuteControl) {
                             const bool muted = ivars->outputMuteControl->GetControlValue();
                             if (muted != ivars->lastMuteState && (muteInert || unknown || (settling && !muted))) {
+                                keyLog("mute", muteInert ? "put back: keys set to None" : keepReason(false),
+                                       ivars->lastMuteState ? 1.0f : 0.0f, muted ? 1.0f : 0.0f);
                                 ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
                             } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
+                                keyLog("mute", "sent", ivars->lastMuteState ? 1.0f : 0.0f, muted ? 1.0f : 0.0f);
                                 ivars->lastMuteState = muted;
                                 uint8_t value = muted ? 1 : 0;
                                 if (converter) {
