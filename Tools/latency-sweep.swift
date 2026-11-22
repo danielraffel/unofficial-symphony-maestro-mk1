@@ -101,7 +101,7 @@ if args.contains("--reset") {
 }
 
 // (IO buffer, slack, floor) — 0 = the helper's default.
-let settings: [(UInt64, UInt64, UInt64)] = [
+var settings: [(UInt64, UInt64, UInt64)] = [
     (0, 0, 0),
     (256, 256, 256),
     (256, 128, 128),
@@ -109,6 +109,13 @@ let settings: [(UInt64, UInt64, UInt64)] = [
     (128, 64, 64),
     (64, 64, 64),
 ]
+// --settings 64:32:32,32:32:32 replaces the list (buffer:margin:floor).
+if let list = value("--settings") {
+    settings = list.split(separator: ",").compactMap { item in
+        let p = item.split(separator: ":").compactMap { UInt64($0) }
+        return p.count == 3 ? (p[0], p[1], p[2]) : nil
+    }
+}
 
 var loaders: [Process] = []
 if load {
@@ -127,8 +134,15 @@ for (buffer, margin, floor) in settings {
     guard tune(buffer: buffer, margin: margin, floor: floor) else { print("helper did not answer"); break }
     Thread.sleep(forTimeInterval: 1.5)          // the output is rebuilt
     let player = Process()
-    player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
-    player.arguments = ["-t", String(Int(seconds)), tone.path]
+    // --player PATH BUFFER: a DAW-like player at a small IO buffer
+    // (Tools/small-buffer-player.swift, compiled) instead of afplay.
+    if let path = value("--player"), let i = args.firstIndex(of: "--player"), i + 2 < args.count {
+        player.executableURL = URL(fileURLWithPath: path)
+        player.arguments = [args[i + 2], String(Int(seconds))]
+    } else {
+        player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+        player.arguments = ["-t", String(Int(seconds)), tone.path]
+    }
     try? player.run()
     Thread.sleep(forTimeInterval: 1.0)
     let before = stats()

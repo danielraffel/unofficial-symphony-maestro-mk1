@@ -114,17 +114,18 @@ static int sVerbose = 0;
 static uint32_t gTuneBufferFrames = 0;
 static uint32_t gTuneJitterMargin = 0;
 static uint32_t gTuneMinDelay     = 0;
-/* The defaults since 0.9.23: a 32-frame IO buffer on the USB device and 128
-   frames of slack and floor, D = 142 frames at 48 kHz (3.0 ms). 32/32/32
-   (D = 64) also held under load; it waits for a test with a DAW at a small
-   buffer, where the plug-in writes less far ahead (usb-latency plan). Measured on a Symphony I/O over USB at 48 kHz
+/* The defaults since 0.9.23: a 32-frame IO buffer on the USB device, slack 50
+   and floor 64, so D = 2*32 + 14 - 64 + 50 = 64 frames (1.3 ms at 48 kHz).
+   Measured with a DAW-like player at a 32-frame buffer and every core busy
+   (Tools/latency-sweep.swift --player, 2026-11-22): no late write, worst
+   headroom 106 frames at D = 64; with afplay's large buffer, 293. Measured on a Symphony I/O over USB at 48 kHz
    (2026-11-22, Tools/latency-sweep.swift): no late write and at least 417
    frames of headroom with every core busy; 64/64/64 also held (350). The
    reported latency of "Maestro USB" goes from 39.0 ms to 20.3 ms. Before:
    the device's own 512-frame buffer, 256 slack, 512 floor. */
 #define DEFAULT_IO_BUFFER_FRAMES 32u
-#define DEFAULT_JITTER_MARGIN    128u
-#define DEFAULT_MIN_DELAY        128u
+#define DEFAULT_JITTER_MARGIN    50u
+#define DEFAULT_MIN_DELAY        64u
 /* Worst headroom (frames the plugin had written beyond what we read) since the
    output last started or the tuning changed; negative = audio was read before
    it was written, i.e. a dropout. Written on the render thread only. */
