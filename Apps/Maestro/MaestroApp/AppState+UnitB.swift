@@ -303,7 +303,9 @@ extension AppState {
     /// Software Return pairs the Mixer offers: 8, or 32 with unit B.
     var softwareReturnPairCount: Int {
         TwoUnitMixer.softwareReturnPairCount(
-            unitBActive: unitBOnCard,
+            // The original offered every pair of the ports in use
+            // (SymphonyCard.cpp:739-753): 32 with converters on port 2 too.
+            unitBActive: unitBOnCard || cardLayout.converterLayout?.port2Counted == true,
             oneUnitPairs: TwoUnitMixer.oneUnitPairs(card: transportType == .thunderbolt, build: servingDextBuild))
     }
 
@@ -509,7 +511,10 @@ extension AppState {
         for mixer in 0..<2 {
             let key = "mixerSoftwareReturnSource_\(mixer)"
             let saved = UInt32(clamping: defaults.integer(forKey: key))
-            if TwoUnitMixer.resetsSavedSoftwareReturn(saved, unitBKnownAbsent: true) {
+            // Only beyond the pairs on offer now (16 on the card with driver
+            // 144, 32 with converters on port 2), not beyond the old 8.
+            if TwoUnitMixer.resetsSavedSoftwareReturn(saved, unitBKnownAbsent: true),
+               saved >= UInt32(softwareReturnPairCount) {
                 defaults.set(0, forKey: key)
                 print("[Maestro] Mixer \(mixer + 1) Software Return: DAW \(TwoUnitMixer.softwareReturnName(saved)) "
                       + "is unit B's; back to 1-2")

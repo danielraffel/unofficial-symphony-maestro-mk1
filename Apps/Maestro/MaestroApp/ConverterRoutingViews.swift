@@ -252,7 +252,9 @@ struct ConverterRoutingUnavailableNote: View {
                  : "A unit on the cable did not identify as an AD-16X, DA-16X, DD-16X or Rosetta, so Maestro can't lay out its channels. Device Settings › Info lists what each unit answered.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                // No fixedSize here: in the split view it made the window's
+                // minimum height thousands of points and the window drew blank,
+                // sidebar included (a tester's converter rig, 2026-11-22).
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

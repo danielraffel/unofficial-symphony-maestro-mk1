@@ -988,8 +988,11 @@ final class AppState: @unchecked Sendable {
         CardLayout(
             slot1: primaryBoardType,
             slot2: secondaryBoardType,
-            isKnown: CardLayout.readingsDescribeAUnit(
-                slot1: primaryBoardType, slot2: secondaryBoardType),
+            // Converters on port 1: no Symphony I/O cards, whatever board
+            // types an earlier session cached (they made the converter
+            // pages show 32/32 and no routing).
+            isKnown: converterSystem?.ports.first?.isEmpty == false ? false
+                : CardLayout.readingsDescribeAUnit(slot1: primaryBoardType, slot2: secondaryBoardType),
             fallbackChannelCount: device?.identifier.mode.channelCount ?? 16,
             converter: connectedUnit,
             converters: converterSystem,
@@ -1116,6 +1119,15 @@ final class AppState: @unchecked Sendable {
     var converterSystem: ConverterSystem? {
         didSet {
             if converterSystem != oldValue {
+                // Converters on port 1 replace any Symphony I/O cards an
+                // earlier session cached: the card-type reads do not answer.
+                if converterSystem?.ports.first?.isEmpty == false {
+                    let defaults = UserDefaults.standard
+                    defaults.removeObject(forKey: "cachedPrimaryBoardType")
+                    defaults.removeObject(forKey: "cachedSecondaryBoardType")
+                    if primaryBoardSource == .cached { primaryBoardType = .none }
+                    if secondaryBoardSource == .cached { secondaryBoardType = .none }
+                }
                 invalidateUnitAIdentity()
                 invalidateUnitBIdentity()
                 if converterSystem != nil {

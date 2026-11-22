@@ -10600,9 +10600,14 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             uint16_t mixerID = (uint16_t)(value >> 16);
             uint16_t element = (uint16_t)(value & 0xFFFF);
             uint8_t source = payload[0];
+            // Every software pair of the ports in use, as the original
+            // (SymphonyCard.cpp:739-753): 32 at 64 channels with a second
+            // Symphony I/O or converters on port 2.
+            const bool port2Pairs = CardMixerUnitBActive(ivars) ||
+                (ivars->port2On && __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64 &&
+                 (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters) != 0);
             const bool sourceOK = IsThunderboltSoftwareReturnSource(source) ||
-                                  (CardMixerUnitBActive(ivars) &&
-                                   IsThunderboltSoftwareReturnSource64(source));
+                                  (port2Pairs && IsThunderboltSoftwareReturnSource64(source));
             if (element == 0 && mixerID >= 1 && mixerID <= 2 && sourceOK) {
                 for (uint8_t side = 0; side < 2; side++) {
                     WriteRegister(
