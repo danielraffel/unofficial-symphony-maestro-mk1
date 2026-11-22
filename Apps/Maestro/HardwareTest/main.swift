@@ -58,6 +58,10 @@ struct HardwareTest {
             await runProxySoftwareReturnRoundTrip()
             return
         }
+        if args.contains("--usb-meter-groups") {
+            await runUSBMeterGroupProbe()
+            return
+        }
 
         if runMeterProbe {
             await runMeterProbeMode()
@@ -832,6 +836,54 @@ struct HardwareTest {
             }
         }
         return false
+    }
+}
+
+// MARK: - --usb-meter-groups mode
+
+/// Read-only: asks the unit, through the helper as the app does, for the
+/// output and mixer meter groups (vendor read 0x30) and prints every byte.
+/// A reply whose bytes 32-39 are the request's own setup packet is stack
+/// residue, not meter data (`TDMMeterPayload`); 64 zeros or changing level
+/// words mean the unit fills the reply.
+func runUSBMeterGroupProbe() async {
+    print("=== USB meter groups (0x30), read-only ===")
+    guard let (_, identifier) = CoreAudioDeviceConnection.discoverSymphonyIO() else {
+        print("FAIL: Symphony IO is not visible through CoreAudio.")
+        return
+    }
+    let connection = XPCDeviceConnection(identifier: identifier)
+    func read(_ name: String, _ scope: PropertyScope, group: UInt8, length: UInt16) async {
+        do {
+            let value = try await connection.getProperty(PropertyAddress(selector: .meterData, scope: scope))
+            guard case .data(let bytes) = value else { print("  \(name): \(value)"); return }
+            let echo = TDMMeterPayload.isSetupPacketEcho(bytes, group: group, requestLength: length)
+            print("  \(name) \(bytes.count) bytes echo=\(echo) zero=\(TDMMeterPayload.isAllZero(bytes)): "
+                + bytes.map { String(format: "%02x", $0) }.joined(separator: " "))
+        } catch {
+            print("  \(name): ERROR \(error)")
+        }
+    }
+    // Maestro, if open on another page, switches the unit's meter routing
+    // back between these reads, and the first read after a switch is zeroed.
+    // A burst gets some reads in without a switch in between.
+    var zero = 0, echo = 0, other = 0
+    for _ in 0..<80 {
+        guard case .data(let bytes)? = try? await connection.getProperty(
+            PropertyAddress(selector: .meterData, scope: .output)) else { continue }
+        if TDMMeterPayload.isAllZero(bytes) { zero += 1 }
+        else if TDMMeterPayload.isSetupPacketEcho(bytes, group: 1, requestLength: 64) { echo += 1 }
+        else {
+            other += 1
+            if other <= 6 { print("  output: " + bytes.map { String(format: "%02x", $0) }.joined(separator: " ")) }
+        }
+    }
+    print("output burst: \(zero) all-zero, \(echo) echo, \(other) other")
+    for pass in 1...4 {
+        print("input+mixer pass \(pass)")
+        await read("input ", .input, group: 0, length: 64)
+        await read("mixer ", .global, group: 2, length: 32)
+        try? await Task.sleep(for: .milliseconds(150))
     }
 }
 

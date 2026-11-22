@@ -61,6 +61,20 @@ public enum TDMMeterPayload {
         return forms.contains(found)
     }
 
+    /// The first `count` words of a reply as dBFS, word i for meter i (the
+    /// mixer group: Software Return L/R of Mixer 1, of Mixer 2, then Master
+    /// L/R of Mixer 1, of Mixer 2). No card layout is involved, unlike the
+    /// input and output groups. Level = word & 0x3FFF of 16383; at or below
+    /// 0x40 reads as silence (-60).
+    public static func mixerLevels(_ data: Data, count: Int = 8) -> [Double] {
+        (0..<count).map { i in
+            guard i * 2 + 1 < data.count else { return -60.0 }
+            let base = data.startIndex + i * 2
+            let word = (UInt16(data[base]) | (UInt16(data[base + 1]) << 8)) & 0x3FFF
+            return word <= 0x40 ? -60.0 : max(-60.0, 20.0 * log10(Double(word) / 16383.0))
+        }
+    }
+
     /// True when every byte is zero. The firmware returns a zeroed buffer on
     /// the first read after a meter-routing change (`SymphonyIOMeterManager.cpp:204-207`),
     /// which means "no fresh data", not "silence".

@@ -1828,6 +1828,13 @@ final class AppState: @unchecked Sendable {
     /// The first output-group reply of a USB connection is logged once, so a
     /// diagnostics report shows whether the unit sends real output meters.
     private var tdmOutputReplyLogged = false
+    /// Over USB the unit has answered the mixer meter group with real levels
+    /// on this connection (measured 2026-11-21 on a Symphony I/O: words 0-3
+    /// are each mixer's Software Return before its fader, words 4-7 each
+    /// mixer's Master). From then on the Mixer page's Software Return and
+    /// Master meters are the unit's, as in the original, and the helper's
+    /// playback peaks and the worked-out Master level are not laid over them.
+    private var usbUnitMixerMetersSeen = false
     /// Meter routing state requested on the previous poll (true = Output).
     /// A change means the firmware's next reply is its zeroed/phantom buffer
     /// (SymphonyIOMeterManager.cpp:159-163, :204-207) and must be discarded.
@@ -3257,6 +3264,7 @@ final class AppState: @unchecked Sendable {
         tdmOutputMeteringUnavailable = false
         tdmOutputEchoStreak = 0
         tdmOutputReplyLogged = false
+        usbUnitMixerMetersSeen = false
         lastMeterPollWantedOutput = nil
 
         // Retry discovery with delays — XMOS firmware needs time to re-enumerate
@@ -3593,6 +3601,8 @@ final class AppState: @unchecked Sendable {
                             // a power-cycle rather than trusting the old latch.
                             self.tdmOutputMeteringUnavailable = false
                             self.tdmOutputEchoStreak = 0
+                            self.usbUnitMixerMetersSeen = false
+                            self.tdmOutputReplyLogged = false
                             self.lastMeterPollWantedOutput = nil
                             if self.unitAIdentityState == .pending {
                                 Task { await self.readCardTypes() }
@@ -3712,7 +3722,24 @@ final class AppState: @unchecked Sendable {
                         // regardless of the length the firmware reports.
                         if let mixVal, case .data(let mixBytes) = mixVal,
                            !mixBytes.allSatisfy({ $0 == 0 }) {
-                            let rawMixer = self.tdmMeterLevels(from: mixBytes, count: 8)
+                            var rawMixer = TDMMeterPayload.mixerLevels(mixBytes)
+                            if !self.usbUnitMixerMetersSeen {
+                                self.usbUnitMixerMetersSeen = true
+                                print("[MeterPoll] USB: the unit reports mixer meters; Software Return and Master meters read from it. First reply: "
+                                    + mixBytes.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " "))
+                            }
+                            // The unit's Software Return words are taken
+                            // before the strip's fader and mute: with
+                            // Pre-Mute Metering off, show what the strip
+                            // passes on, as the input strips do.
+                            if rawMixer.count >= 4 {
+                                for mixer in 0..<2 {
+                                    let trim = self.softwareReturnMeterGains[mixer]
+                                    for (slot, gain) in [(mixer * 2, trim.left), (mixer * 2 + 1, trim.right)] {
+                                        rawMixer[slot] = gain <= 0 ? -60.0 : max(-60.0, rawMixer[slot] + 20.0 * log10(gain))
+                                    }
+                                }
+                            }
                             self.mixerMeterLevels = self.smoothMeterLevels(self.mixerMeterLevels, raw: rawMixer)
                         } else if self.tdmZeroReadCount > 20 {
                             let silenceMix = [Double](repeating: -60.0, count: 8)
@@ -3723,7 +3750,8 @@ final class AppState: @unchecked Sendable {
                         // TDM group 2 does NOT contain SW Return levels without
                         // FPGA meter tap configuration (which requires XLink register
                         // writes, not possible via USB EP0).
-                        if let peaks = softwareOutputPeaks, peaks.count >= 2 {
+                        // Only until the unit has shown it reports these itself.
+                        if !self.usbUnitMixerMetersSeen, let peaks = softwareOutputPeaks, peaks.count >= 2 {
                             // Each mixer can select a different USB playback pair through
                             // AEsR.  The proxy reports one peak pair per USB pair, so do
                             // not mirror channels 0/1 into both mixer strips.
