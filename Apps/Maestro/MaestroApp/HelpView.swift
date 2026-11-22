@@ -476,6 +476,16 @@ extension HelpSection {
                 .text("To hear an input without the delay of going through the Mac, route **Mixer 1** or **Mixer 2** to the output you listen on in **Output Routing**, then use that mixer's strips: an unmuted strip is heard, a muted one is not. Your Mac's audio then reaches that output through the mixer's **Software Return**. On the Mixer page, **Mix 1** and **Mix 2** choose which mixer is shown."),
                 .text("An output fed from a mixer is silent for a few seconds when Maestro connects, while the status bar shows **Restoring mixer and routing…**; over USB so is a headphone that follows it."),
             ]),
+            HelpItem(title: "How do I record while hearing myself with no delay?", blocks: [
+                .text("Monitor the input through a Symphony mixer instead of through your DAW. As in Apogee's guide:"),
+                .bullet("1. In your DAW", "turn off software monitoring (in Logic Pro: Settings › Audio › General, **Software Monitoring** off), so you do not also hear the input late through the DAW. Send the DAW's output to **Out 1-2**."),
+                .bullet("2. In Output Routing", "route **Mixer 1** to the output you listen on, for example **Line 1/2** (and **Mixer 2** to another output for a second mix)."),
+                .bullet("3. For headphones", "set the headphone's source on the **Output** page to that output, for example Line 1-2."),
+                .bullet("4. In the Mixer", "leave **Software Return** on **Out 1-2** and its fader and **Master** at 0 dB. Play the session: you hear your DAW's mix through the mixer."),
+                .bullet("5. Bring up the input", "plug into Line In 1 and raise the **Line 1** strip until it sits well with the playback, then record."),
+                .text("One mixer is enough for most sessions; use the second when a performer needs a different balance."),
+                .link("Apogee: recording with the Maestro low-latency mixer", URL(string: "https://knowledge.apogeedigital.com/symphony-i/o-instructions-to-record-with-the-maestro-low-latency-mixer")!),
+            ]),
             HelpItem(title: "What does the menu under Software Return do?", blocks: [
                 .text("It chooses what comes **into** that mixer from your Mac: which pair of your Mac's outputs the **Software Return** strip carries. It is an input choice. It does not send anything to a hardware output; where a mixer is heard is set only in **Output Routing**, by routing **Mixer 1** or **Mixer 2** to an output."),
                 .bullet("1-2", "what your Mac plays on outputs 1-2: Music, Spotify, a browser, or your DAW's main mix. This is the default, and for most uses it is the one to leave it on."),

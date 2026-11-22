@@ -101,7 +101,7 @@ struct HelpSearchTests {
     @Test("Every question has an answer, and titles are not repeated")
     func content() {
         let questions = all.flatMap(\.items).compactMap(\.title)
-        #expect(questions.count == 40)
+        #expect(questions.count == 41)
         #expect(Set(questions).count == questions.count)
         #expect(Set(all.map(\.title)).count == all.count)
         for item in all.flatMap(\.items) {
