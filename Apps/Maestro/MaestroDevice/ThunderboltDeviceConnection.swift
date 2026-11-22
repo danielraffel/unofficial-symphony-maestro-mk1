@@ -263,8 +263,15 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         try checkPresetLayout(layout)
         let servingBuild = servingDriverBuild()
         let cardInputSupported = if case .build(let build) = servingBuild { build >= 132 } else { false }
+        let currentRoutes = (0..<32).compactMap { index -> ThunderboltInputMeterMap.Route? in
+            let address = PropertyAddress(selector: .routing, scope: .input,
+                                           element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(index))
+            guard let source = try? readProperty(address).asUInt32 else { return nil }
+            return (destination: address.element <= UInt32(UInt8.max) ? UInt8(address.element) : 0,
+                    source: UInt8(clamping: source))
+        }
         return try preset.writes(layout: layout, legacy: legacy, currentUnitID: layout.slot2 == .micPre8 ? try? dextClient.readVendorCommand(command: 0xC0, value: 0, responseLength: 8) : nil,
-                                 hostChannels: channels ?? presetChannelCount(),
+                                 hostChannels: channels ?? presetChannelCount(), currentInputRoutes: currentRoutes,
                                  cardInputSupported: cardInputSupported, onSkipped: onSkipped)
     }
 
@@ -549,7 +556,9 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         var required: [Int: Set<PropertyAddress>] = [:]
         if let layouts = plan.mixerLayouts {
             for mixer in 0..<2 {
-                var needed = CardMixerReplay.requiredAddresses(mixer: mixer, layout: layouts.a, second: layouts.b)
+                let routes = plan.mixerRoutes
+                var needed = CardMixerReplay.requiredAddresses(mixer: mixer, layout: layouts.a, second: layouts.b,
+                                                               routes: routes?.a, secondRoutes: routes?.b)
                 let source = PropertyAddress(selector: .mixerSoftwareReturnID, element: UInt32(mixer + 1) << 16)
                 if cardWrites.contains(where: { if case .property(source, _) = $0 { true } else { false } }) {
                     needed.insert(source)

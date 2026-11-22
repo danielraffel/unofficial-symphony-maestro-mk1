@@ -184,8 +184,14 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
                              cardInputSupported: Bool = true,
                              onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
+        let currentRoutes = (0..<32).compactMap { index -> ThunderboltInputMeterMap.Route? in
+            let destination = UInt8(SymphonyIORoutingAddress.p2pBase) + UInt8(index)
+            guard let source = try? readProperty(PropertyAddress(selector: .routing, scope: .input, element: UInt32(destination))).asUInt32 else { return nil }
+            return (destination: destination, source: UInt8(clamping: source))
+        }
         return try saved.preset(layout: layout).writes(layout: layout, currentUnitID: layout.slot2 == .micPre8 ? try? presetRead(0xC0, 0, 8, layout: layout) : nil, hostChannels: 64,
-                                                        peripheralB: true, cardInputSupported: cardInputSupported,
+                                                        peripheralB: true, currentInputRoutes: currentRoutes,
+                                                        cardInputSupported: cardInputSupported,
                                                         onSkipped: onSkipped)
     }
 

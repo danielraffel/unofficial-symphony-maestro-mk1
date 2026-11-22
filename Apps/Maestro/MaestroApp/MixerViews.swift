@@ -860,8 +860,13 @@ struct MixerView: View {
     /// Evidence: SymphonyIOControl.cpp:1904-1942 — (nMixer << 16) | (nChannel & 0xFFFF).
     /// selectedMixer is 0-based in UI; USB protocol mixer IDs are 1-based.
     private func mixerElement(channel: Int) -> UInt32? {
-        guard channel >= 0, channel < mixerChannels.count else { return nil }
+        guard channel >= 0 else { return nil }
+        if usbDevice != nil, channel >= mixerChannels.count {
+            return (UInt32(selectedMixer + 1) << 16) | UInt32(channel)
+        }
+        guard channel < mixerChannels.count else { return nil }
         let strip = mixerChannels[channel]
+        guard strip.hardwareIndex >= 0 else { return nil }
         let id: Int?
         if usbDevice != nil {
             id = strip.hardwareIndex

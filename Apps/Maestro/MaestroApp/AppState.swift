@@ -270,6 +270,8 @@ final class AppState: @unchecked Sendable {
                 unitBIdentityAttempted = false
                 identityRecoveryRetried = false
                 identityRetryConnection = newValue as AnyObject?
+                thunderboltInputRoutingWritten = false
+                thunderboltCaptureRoutesCache.removeAll()
             }
         }
     }
@@ -679,8 +681,8 @@ final class AppState: @unchecked Sendable {
                             } else if self.usesTwoUnitReplay {
                                 self.twoUnitReplayNeeded = true
                             } else {
-                                await self.syncOutputRoutingToHardware()
                                 await self.syncInputRoutingToHardware()
+                                await self.syncOutputRoutingToHardware()
                             }
                         }
                         self.thunderboltSeenRecoveryCount = count
@@ -1819,6 +1821,8 @@ final class AppState: @unchecked Sendable {
     private var thunderboltInputMeterWords = ThunderboltInputMeterMap.Words(channels: [], digital: [])
     private var thunderboltInputMeterWordsPollStamp: Int = -1
     private var thunderboltInputMeterLayout: CardLayout?
+    @ObservationIgnored var thunderboltCaptureRoutesCache: [DeviceUnit: [ThunderboltInputMeterMap.Route]] = [:]
+    @ObservationIgnored var thunderboltInputRoutingWritten = false
     /// ThunderBridge: the meter word each analog and digital output strip
     /// reads, from the output table (`ThunderboltOutputMeterMap`); nil while
     /// the cards or the table are not known, and for converters. Re-derived
@@ -2841,12 +2845,14 @@ final class AppState: @unchecked Sendable {
             // because a driver that kept running still has the unit on the
             // routes the reset removed from this Mac.
             let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
+            thunderboltInputRoutingWritten = false
             var writes = resetPending
                 ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: thunderboltCaptureSlot1) : []
             writes += InputRoutingReplay.writes(
                 saved: cache.load() ?? [:], columns: cardLayout.inputRoutingColumns,
                 pairCount: tb.identifier.mode.channelCount / 2)
             var written = 0
+            var allSucceeded = true
             for write in writes {
                 do {
                     try await tb.setProperty(
@@ -2854,6 +2860,7 @@ final class AppState: @unchecked Sendable {
                         value: .uint32(UInt32(write.source)))
                     written += 1
                 } catch {
+                    allSucceeded = false
                     print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
                 }
             }
@@ -2865,6 +2872,9 @@ final class AppState: @unchecked Sendable {
                 }
                 if cardReset { RoutingMixerReset.clearPending(.thunderboltInputRouting) }
             }
+            thunderboltInputRoutingWritten = allSucceeded && written == writes.count
+            inputRoutingReplayNeeded = !allSucceeded || written != writes.count
+            invalidateThunderboltInputMeterMap()
         }
         await replaySymphonyCardInputs()
         await tb.logInputRoutes()
@@ -4795,6 +4805,7 @@ final class AppState: @unchecked Sendable {
     /// writes over it (only when the cards were read this session, as there).
     func invalidateThunderboltInputMeterMap() {
         thunderboltInputMeterWordsPollStamp = -1
+        thunderboltCaptureRoutesCache.removeAll()
     }
 
     /// Output Routing changed: read the output meter map again at the next poll.
@@ -4941,14 +4952,7 @@ final class AppState: @unchecked Sendable {
             thunderboltInputMeterWords = ThunderboltInputMeterMap.converterWords(system)
             return
         }
-        var replayed: [SymphonyIODefaultRouting.Route] = []
-        if RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil {
-            let cache = peripheralRoutingCache(direction: "input")
-            replayed = InputRoutingReplay.writes(
-                saved: cache.load() ?? [:], columns: layout.inputRoutingColumns,
-                pairCount: tb.identifier.mode.channelCount / 2)
-        }
-        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: thunderboltCaptureSlot1, replayed: replayed)
+        let routes = thunderboltCaptureRoutes(unit: .a)
         thunderboltInputMeterWords = ThunderboltInputMeterMap.words(layout: layout, routes: routes)
     }
 

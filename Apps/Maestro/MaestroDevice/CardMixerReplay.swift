@@ -11,10 +11,9 @@ public enum CardMixerReplay {
     public typealias InputRoute = ThunderboltInputMeterMap.Route
 
     private static func inputIDs(layout: CardLayout, routes: [InputRoute]?) -> [Int?] {
-        if let routes {
-            return ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: routes)
-        }
-        return layout.mixerChannels.map { $0.hardwareIndex }
+        let capture = routes ?? ThunderboltInputMeterMap.currentRoutes(
+            slot1: layout.isKnown ? layout.slot1 : nil, replayed: [])
+        return ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: capture)
     }
     /// Gap between two commands. Each 0xB0-0xB3 makes the driver recompute
     /// the whole mixer, 66 card register writes at 32 channels
@@ -177,15 +176,14 @@ public enum CardMixerReplay {
     public static func plan(mixers: [Int], layout: CardLayout, store: ChannelStateStore,
                             preferences: MixerPreferences? = nil,
                             complete: Bool = false,
-                            routes: [InputRoute]? = nil,
-                            secondRoutes: [InputRoute]? = nil) -> [[ThunderboltPreset.Write]] {
+                            routes: [InputRoute]? = nil) -> [[ThunderboltPreset.Write]] {
         mixers.map { mixer in
             guard complete else {
                 return savedWrites(mixer: mixer, layout: layout, store: store, preferences: preferences, routes: routes)
             }
             let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: mixer,
                                               store: store, preferences: preferences)
-            return writes(mixer: mixer, layout: layout, snapshot: snapshot, routes: routes, secondRoutes: secondRoutes).filter {
+            return writes(mixer: mixer, layout: layout, snapshot: snapshot, routes: routes).filter {
                 // A source held for unit B (8 or more at 32 channels) is not sent.
                 guard case .property(let address, _) = $0, address.selector == .mixerSoftwareReturnID
                 else { return true }
@@ -416,6 +414,15 @@ public struct CardMixerRestoreLedger: Sendable, Equatable {
     }
 
     public mutating func complete() { completed = true }
+    /// Re-arm a live complete rewrite after the unit's capture table moved.
+    /// The driver keeps the written marks for output safety while this run is
+    /// in flight, so routes fed by a mixer are never dropped.
+    public mutating func noteOwed() {
+        completed = false
+        gaveUp = false
+        attempts = 0
+        needs = [true, true]
+    }
     public mutating func giveUp() { gaveUp = true }
 
     /// A run is about to wait on this instance. False (and given up) once

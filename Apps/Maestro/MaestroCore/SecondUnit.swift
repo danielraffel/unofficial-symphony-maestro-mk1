@@ -215,6 +215,8 @@ public enum TwoUnitMixer {
             if let inputNumbers, index < inputNumbers.count,
                let number = inputNumbers[index] {
                 hardwareIndex = unitBChannelBase + number
+            } else if inputNumbers != nil {
+                hardwareIndex = -1
             } else {
                 hardwareIndex = unitBChannelBase + channel.hardwareIndex
             }

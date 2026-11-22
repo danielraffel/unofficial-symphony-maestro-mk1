@@ -2,7 +2,9 @@
 
 ## 0.9.22 (beta)
 
-This beta fixes the output meters on ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.21.
+This beta fixes the Mixer and meters on ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.21.
+
+Thanks to the tester who reported that the AES meters did not move while music played through AES 3/4.
 
 ### Changes that may affect your setup
 
@@ -11,10 +13,7 @@ This beta fixes the output meters on ThunderBridge and the Symphony 64 PCIe card
 ### Fixed
 
 - Mixer strips on ThunderBridge and PCIe now control the card input named by each strip.
-
-Thanks to the tester who reported that the AES meters did not move while music played through AES 3/4.
-
-### Fixed
+- Mixer strips also follow an Input Routing change.
 
 - **On ThunderBridge and PCIe, the digital output meters on the Output page now work:** AES, ADAT/SMUX and S/PDIF. They stayed dark whatever was playing; the audio itself was not affected.
 - **On ThunderBridge and PCIe, each Output page meter now shows the level of what Output Routing plays on that output, analog and digital.** This also covers the second Symphony I/O at 64 channels.
@@ -28,7 +27,7 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Please test
 
-- Solo each Mixer strip in turn and check the right input plays.
+- **ThunderBridge or PCIe:** solo each Mixer strip in turn and check the right input plays.
 
 - **ThunderBridge or PCIe, Output page:** play music from the Mac to each output pair in turn, analog and digital. Does that pair's meter move? Try it with Optical Format on ADAT/SMUX and on SPDIF, and with AES if your card has it.
 - **Output Routing:** route a different software pair, then Mixer 1, to an output. Does its meter follow?

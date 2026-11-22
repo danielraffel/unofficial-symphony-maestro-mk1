@@ -134,8 +134,8 @@ extension AppState {
             await restoreUSBUnit(usb, helperMixer: lastSelectedMixer)
             return
         }
-        await syncOutputRoutingToHardware()
         await syncInputRoutingToHardware()
+        await syncOutputRoutingToHardware()
         await syncDeviceSettingsToHardware()
     }
 

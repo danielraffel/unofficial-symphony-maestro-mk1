@@ -115,6 +115,7 @@ extension AppState {
         guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
         try requireSymphonyPreset()
         let (preset, legacy) = try ThunderboltPreset.loadBundle(from: url, layout: cardLayout)
+        let priorInputRoutes = thunderboltCaptureRoutes(unit: .a)
         beginRecall()
         defer { finishRecall() }
         let layout = cardLayout
@@ -212,7 +213,8 @@ extension AppState {
         }
         try channelStateStore.saveMixerPreset(preset.mixers, sourceCount: cardChannels == 64 ? 32 : 8)
         if !legacy {
-            persistPresetRoutes(preset, productID: connection.identifier.productID, recalledChannels: cardChannels)
+            persistPresetRoutes(preset, productID: connection.identifier.productID, recalledChannels: cardChannels,
+                                currentRoutes: priorInputRoutes)
             if let routes = preset.cardInputRoutes {
                 let applied = try ThunderboltPreset.cardTable(routes, channels: cardChannels)
                 symphonyCardInputEdits.merge(Dictionary(uniqueKeysWithValues: applied.enumerated().map {
@@ -225,16 +227,23 @@ extension AppState {
             let sources = try ThunderboltPreset.cardTable(preset.outputRoutes.map(Int.init), channels: 64)
             unitBOutputRoutingCache?.save(outputGrid(sources: Array(sources.dropFirst(32)).map(UInt8.init), layout: bLayout, channels: 64))
         }
+        thunderboltInputRoutingWritten = true
+        invalidateThunderboltInputMeterMap()
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
         await refreshChannelNaming()
         viewReloadToken = UUID()
     }
 
     @MainActor
-    private func persistPresetRoutes(_ preset: ThunderboltPreset, productID: UInt16, recalledChannels: Int) {
+    private func persistPresetRoutes(_ preset: ThunderboltPreset, productID: UInt16, recalledChannels: Int,
+                                     currentRoutes: [ThunderboltInputMeterMap.Route] = []) {
         var input: [Int: Int] = [:]
         for pair in 0..<16 {
-            if let column = cardLayout.inputRoutingColumns.firstIndex(where: { $0.routingByte == preset.inputRoutes[pair * 2] }) {
+            let index = pair * 2
+            let source = if let mask = preset.inputRouteMask, (index >= mask.count || !mask[index]) {
+                currentRoutes.first(where: { $0.destination == UInt8(SymphonyIORoutingAddress.p2pBase + UInt8(index)) })?.source
+            } else { index < preset.inputRoutes.count ? preset.inputRoutes[index] : nil }
+            if let source, let column = cardLayout.inputRoutingColumns.firstIndex(where: { $0.routingByte == source }) {
                 input[pair] = column
             }
         }

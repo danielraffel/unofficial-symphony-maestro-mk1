@@ -207,8 +207,9 @@ struct InputRoutingView: View {
                             persistChosenRows()
                             Task {
                                 for (row, col) in preset.sorted(by: { $0.key < $1.key }) {
-                                    await writeRoute(row: row, col: col)
+                                    await writeRoute(row: row, col: col, notifyMixer: false)
                                 }
+                                if appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
                             }
                         }
                     },
@@ -393,7 +394,7 @@ struct InputRoutingView: View {
     ///
     /// Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIORouting.h`
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
-    private func writeRoute(row: Int, col: Int) async {
+    private func writeRoute(row: Int, col: Int, notifyMixer: Bool = true) async {
         guard !isLoadingRoutes, canWrite, let device else { return }
         let board1 = self.board1
         let board2 = self.board2
@@ -421,7 +422,7 @@ struct InputRoutingView: View {
             errorMessage = nil
             userChosenRows.insert(row)
             persistChosenRows()
-            if appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
+            if notifyMixer, appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
             print("[Maestro] InputRouting: wrote row \(row) → col \(col) (dest \(destLeft), src \(srcLeft))")
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"

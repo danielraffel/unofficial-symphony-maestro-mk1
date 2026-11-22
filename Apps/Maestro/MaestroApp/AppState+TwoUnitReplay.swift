@@ -95,6 +95,7 @@ extension AppState {
             }.value
             guard device === tb, unitBDevice === b else { return }
             finishTwoUnitReplay(plan, tb: tb, epoch: epoch, owed: owed, routeEdits: routeEdits)
+            thunderboltInputRoutingWritten = true
             if let mode = tb.settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32 {
                 speakerOutputMode = mode
             }
@@ -137,6 +138,9 @@ extension AppState {
         var plan = TwoUnitReplay()
         plan.unitBBoards = [layoutB.slot1.rawValue, layoutB.slot2.rawValue]
         plan.mixerLayouts = (cardLayout, layoutB)
+        let routesA = savedThunderboltCaptureRoutes(unit: .a)
+        let routesB = savedThunderboltCaptureRoutes(unit: .b)
+        plan.mixerRoutes = (routesA, routesB)
         let cacheA = peripheralRoutingCache(direction: "input")
         _ = ThunderboltInputRoutingMigration.run(routingKey: cacheA.key)
         // After the routing and mixer reset the default tables go first (a
@@ -216,8 +220,8 @@ extension AppState {
             // before mute and solo).
             plan.card += CardMixerReplay.writes(mixer: mixer, layout: cardLayout, snapshot: a,
                                                 second: (layoutB, b),
-                                                routes: thunderboltCaptureRoutes(unit: .a),
-                                                secondRoutes: thunderboltCaptureRoutes(unit: .b)).map { .card($0) }
+                                                routes: routesA,
+                                                secondRoutes: routesB).map { .card($0) }
         }
         // The connection orders these when it runs the plan: every route
         // first with one fed by a mixer it has not seen written disabled,

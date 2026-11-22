@@ -29,11 +29,6 @@ public enum UnitBMeterMap {
             digital: words.digital.map { $0.map { $0 + inputWordBase } })
     }
 
-    public static func mixerInputs(layout: CardLayout,
-                                   routes: [ThunderboltInputMeterMap.Route]) -> [Int?] {
-        ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: routes)
-    }
-
     /// The meter word of unit B's output channel `channel` (0-based, as
     /// playback 33 + channel reaches it by default).
     public static func playbackWord(channel: Int) -> Int { playbackWordBase + channel }

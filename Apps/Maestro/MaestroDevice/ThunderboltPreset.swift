@@ -127,6 +127,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     /// mapper would otherwise truncate. Old app-only presets have no routes,
     /// mixer, or extra monitor fields; absence means leave that setting alone.
     public func writes(layout: CardLayout, legacy: Bool = false, currentUnitID: Data? = nil, hostChannels: Int = 32, peripheralB: Bool = false,
+                       currentInputRoutes: [ThunderboltInputMeterMap.Route]? = nil,
                        cardInputSupported: Bool = true, onSkipped: ((String) -> Void)? = nil) throws -> [Write] {
         func require(_ condition: Bool, _ reason: String) throws {
             if !condition { throw RecallError.unsupported(reason) }
@@ -224,6 +225,13 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         } else if cardInputRoutes != nil {
             onSkipped?("card input routing not restored: serving driver does not support it")
         }
+        let effectiveInputRoutes: [UInt8] = inputRoutes.enumerated().map { index, source in
+            if let mask = inputRouteMask, (index >= mask.count || !mask[index]),
+               let current = currentInputRoutes?.first(where: { $0.destination == SymphonyIORoutingAddress.p2pBase + UInt8(index) }) {
+                return current.source
+            }
+            return source
+        }
         for (index, source) in inputRoutes.enumerated() {
             if let mask = inputRouteMask, (index >= mask.count || !mask[index]) { continue }
             try require((32...63).contains(source) || source == SymphonyIORoutingAddress.none,
@@ -302,7 +310,7 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         }
         // The mixer numbers in a recall follow the capture table this same
         // preset writes, rather than the table that was active before recall.
-        let presetRoutes: [ThunderboltInputMeterMap.Route] = inputRoutes.enumerated().map {
+        let presetRoutes: [ThunderboltInputMeterMap.Route] = effectiveInputRoutes.enumerated().map {
             (destination: SymphonyIORoutingAddress.p2pBase + UInt8($0.offset), source: $0.element)
         }
         let presetMixerInputs = ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: presetRoutes)
@@ -313,15 +321,21 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             if mixer.source < (hostChannels == 64 ? 32 : 8) {
                 put(.mixerSoftwareReturnID, .uint32(mixer.source), element: base)
             }
+            var mappedInputs = Set<Int>()
             for (channel, s) in (mixer.channels + [mixer.softwareReturn]).enumerated() {
                 let id = channel == mixer.channels.count ? 1000 : (presetMixerInputs[channel] ?? -1)
                 if id < 0 { continue }
+                if id < 32 { mappedInputs.insert(id) }
                 let element = base | UInt32(id)
                 put(.mixerChannelLevel, .float64(s.level), element: element)
                 // Software Return has no pan: a preset's saved one is not applied.
                 put(.mixerChannelPan, .float64(id == 1000 ? 0 : s.pan), element: element)
                 put(.mixerChannelMute, .bool(s.isMuted), element: element)
                 put(.mixerChannelSolo, .bool(s.isSoloed), element: element)
+            }
+            for id in 0..<32 where !mappedInputs.contains(id) {
+                put(.mixerChannelMute, .bool(true), element: base | UInt32(id))
+                put(.mixerChannelSolo, .bool(false), element: base | UInt32(id))
             }
             put(.mixerChannelLevel, .float64(mixer.master), element: base | 2000)
         }

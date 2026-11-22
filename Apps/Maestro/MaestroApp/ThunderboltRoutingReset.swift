@@ -15,7 +15,8 @@ extension AppState {
             throw DeviceConnectionError.notConnected
         }
         beginRecall()
-        defer { finishRecall() }
+        var recallFinished = false
+        defer { if !recallFinished { finishRecall() } }
         let aLayout = cardLayout
         let inputStore = symphonyCardInputStore
         // Older serving drivers still reset the peripheral input tables.
@@ -80,5 +81,8 @@ extension AppState {
         }
         symphonyCardInputNamingRevision += 1
         viewReloadToken = UUID()
+        finishRecall()
+        recallFinished = true
+        if input { thunderboltInputRoutingDidChange() }
     }
 }

@@ -23,6 +23,7 @@ public struct TwoUnitReplay: Sendable {
     /// channels, so the connection can tell when a mixer of this plan has
     /// been written in full.
     public var mixerLayouts: (a: CardLayout, b: CardLayout)?
+    public var mixerRoutes: (a: [ThunderboltInputMeterMap.Route], b: [ThunderboltInputMeterMap.Route])?
     public init() {}
 
     public var writes: [Write] { tables + card + settings + [.headphones(.a), .headphones(.b)] }

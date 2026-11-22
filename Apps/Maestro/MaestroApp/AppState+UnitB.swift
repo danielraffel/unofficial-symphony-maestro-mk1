@@ -264,12 +264,25 @@ extension AppState {
     }
 
     func thunderboltCaptureRoutes(unit: DeviceUnit = .a) -> [ThunderboltInputMeterMap.Route] {
+        if let cached = thunderboltCaptureRoutesCache[unit] { return cached }
         let layout = unit == .a ? cardLayout : unitBLayout
         guard let layout else { return [] }
         let slot1 = unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1
         let cache = unit == .a ? peripheralRoutingCache(direction: "input") : unitBInputRoutingCache
-        let replayed = InputRoutingReplay.writes(
-            saved: cache?.load() ?? [:], columns: layout.inputRoutingColumns, pairCount: 16)
+        let replayed = thunderboltInputRoutingWritten ? InputRoutingReplay.writes(
+            saved: cache?.load() ?? [:], columns: layout.inputRoutingColumns, pairCount: 16) : []
+        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: replayed)
+        thunderboltCaptureRoutesCache[unit] = routes
+        return routes
+    }
+
+    func savedThunderboltCaptureRoutes(unit: DeviceUnit) -> [ThunderboltInputMeterMap.Route] {
+        let layout = unit == .a ? cardLayout : unitBLayout
+        guard let layout else { return [] }
+        let slot1 = unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1
+        let cache = unit == .a ? peripheralRoutingCache(direction: "input") : unitBInputRoutingCache
+        let replayed = InputRoutingReplay.writes(saved: cache?.load() ?? [:],
+                                                 columns: layout.inputRoutingColumns, pairCount: 16)
         return ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: replayed)
     }
 

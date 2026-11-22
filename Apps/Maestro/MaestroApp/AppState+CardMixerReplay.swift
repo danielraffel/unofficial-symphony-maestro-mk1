@@ -9,8 +9,15 @@ extension AppState {
     /// until this replay runs, which only a driver change could eliminate.
     @MainActor
     func thunderboltInputRoutingDidChange() {
+        thunderboltInputRoutingWritten = true
         invalidateThunderboltInputMeterMap()
+        if usesTwoUnitReplay {
+            twoUnitReplayNeeded = true
+            Task { await replayUnitBSettings() }
+            return
+        }
         guard device is ThunderboltDeviceConnection else { return }
+        cardMixerLedger.noteOwed()
         cardMixerLedger.restoresHeldMixers = true
         syncCardMixerToHardware()
     }
@@ -33,7 +40,8 @@ extension AppState {
         // Once after the routing and mixer reset: both mixers are written in
         // full even if the driver holds app state, because that state is what
         // the reset removed from this Mac (the driver kept running).
-        cardMixerLedger.restoresHeldMixers = RoutingMixerReset.isPending(.thunderboltCardMixer)
+        cardMixerLedger.restoresHeldMixers = cardMixerLedger.restoresHeldMixers
+            || RoutingMixerReset.isPending(.thunderboltCardMixer)
         cardMixerRestoreRequested = true
         if let run = cardMixerRestoreRun, run.connection === tb { return }
         cancelCardMixerRestore()
@@ -155,8 +163,7 @@ extension AppState {
                 return CardMixerReplay.plan(mixers: mixers, layout: layout, store: self.channelStateStore,
                                             preferences: self.mixerPreferences,
                                             complete: self.cardMixerLedger.restoresHeldMixers,
-                                            routes: self.thunderboltCaptureRoutes(unit: .a),
-                                            secondRoutes: self.unitBOnCard ? self.thunderboltCaptureRoutes(unit: .b) : nil)
+                                            routes: self.thunderboltCaptureRoutes(unit: .a))
             },
             replay: { plan, recovery, epoch, generation, progress in
                 let started = Date()

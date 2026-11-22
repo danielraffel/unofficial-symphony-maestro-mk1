@@ -306,10 +306,13 @@ public enum CardWriteLogChecker {
     }
 
     /// The controls a complete write of each mixer of this layout reaches.
-    public static func required(layout: CardLayout, second: CardLayout? = nil) -> [Int: Set<Control>] {
+    public static func required(layout: CardLayout, second: CardLayout? = nil,
+                                routes: [CardMixerReplay.InputRoute]? = nil,
+                                secondRoutes: [CardMixerReplay.InputRoute]? = nil) -> [Int: Set<Control>] {
         var result: [Int: Set<Control>] = [:]
         for mixer in 0..<2 {
-            result[mixer] = Set(CardMixerReplay.requiredAddresses(mixer: mixer, layout: layout, second: second).map {
+            result[mixer] = Set(CardMixerReplay.requiredAddresses(mixer: mixer, layout: layout, second: second,
+                                                                      routes: routes, secondRoutes: secondRoutes).map {
                 let command: UInt8 = switch $0.selector {
                 case .mixerChannelLevel: 0xB0
                 case .mixerChannelPan: 0xB1
