@@ -660,9 +660,14 @@ extension HelpSection {
     }
 
     private static var about: HelpSection {
-        HelpSection(id: .about, title: "Supported Macs", items: [
+        HelpSection(id: .about, title: "Supported hardware", items: [
             HelpItem(blocks: [
-                .text("Maestro runs on Apple Silicon Macs. Intel Macs are not supported."),
+                .bullet("Macs", "Apple Silicon Macs with macOS 26 (Tahoe) or later. Intel Macs are not supported."),
+                .bullet("Interface", "Apogee Symphony I/O MK I, one unit or two. The Symphony I/O MK II is not supported."),
+                .bullet("Connections", "Apogee ThunderBridge, the Symphony 64 PCIe card, and USB."),
+                .bullet("I/O modules", "8x8 AES/OPT, 8x8 AES, 8x8 OPT, 16x16 Analog In/Out, 16 Analog In / 16 Digital Out, 16 Digital In / 16 Analog Out, 2x6 and 8MicPre."),
+                .bullet("Converters", "AD-16X, DA-16X, DD-16X, Rosetta 800 and Rosetta 200, on a ThunderBridge or Symphony 64 PCIe card."),
+                .text("**Connection types**, **I/O modules** and **Two units & converters** have the details."),
             ]),
         ])
     }
