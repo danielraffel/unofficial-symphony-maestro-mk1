@@ -45,6 +45,16 @@ extension AppState {
         }
     }
 
+    /// The GitHub bug form with this Mac's Maestro version, model and macOS
+    /// version, and the connection in use, filled in (`BugReportLink`).
+    var reportBugURL: URL {
+        let info = softwareInfoReport
+        return BugReportLink.url(
+            version: info.versionLine,
+            macAndOS: BugReportLink.macAndOS(model: BugReportLink.modelIdentifier, osVersion: info.osVersion),
+            connection: connectionMode == .hardware ? connectionShortName : nil)
+    }
+
     /// Everything the Software Info panel shows, assembled from what the process can see
     /// about itself plus the dext properties `sysextd` handed back.
     var softwareInfoReport: SoftwareInfoReport {

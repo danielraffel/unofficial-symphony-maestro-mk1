@@ -163,7 +163,7 @@ struct HelpView: View {
 
     private var footer: some View {
         HStack {
-            Link("Report a Bug", destination: FeedbackLinks.reportBug)
+            Link("Report a Bug", destination: appState.reportBugURL)
                 .font(.callout)
             Spacer()
             // Return closes Help, except while a search is typed.
