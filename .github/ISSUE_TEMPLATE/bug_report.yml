@@ -1,0 +1,76 @@
+name: Report a bug
+description: Something in Unofficial Symphony Maestro isn't working.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please send diagnostics with every bug.** They show what Maestro and the driver were doing, so we can investigate instead of guessing.
+
+        1. Submit this issue and copy its link.
+        2. In Maestro, turn on **Diagnostics** in App Settings › Diagnostics & Feedback, then make the problem happen.
+        3. Press **Stop Diagnostics**, paste the issue's link under **Existing GitHub issue**, and press **Agree and Send**.
+
+        The report goes privately to the developer, so there is no need to attach it here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What isn't working?
+      description: What you did, what happened, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: working
+    attributes:
+      label: What is working?
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Maestro version
+      description: App Settings › About.
+      placeholder: "0.9.21"
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - USB
+        - ThunderBridge
+        - Symphony 64 PCIe
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac and macOS version
+      placeholder: "Mac Studio M2, macOS 15.5"
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: The I/O modules in your Symphony, and any second unit or external converters.
+    validations:
+      required: false
+  - type: input
+    id: doing
+    attributes:
+      label: DAW and sample rate
+    validations:
+      required: false
+  - type: dropdown
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Without diagnostics we usually can't find the cause.
+      options:
+        - I will send diagnostics with this issue's link
+        - I already sent diagnostics
+        - I can't record diagnostics (please say why above)
+    validations:
+      required: true

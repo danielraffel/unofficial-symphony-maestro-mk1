@@ -47,6 +47,7 @@ struct HelpView: View {
             HStack(spacing: 0) {
                 sectionList(sections)
                 Divider()
+                GeometryReader { viewport in
                 ScrollViewReader { proxy in
                     ScrollView {
                         // Each section carries its own space above, so jumping to
@@ -68,6 +69,9 @@ struct HelpView: View {
                                             value: [section.id: geometry.frame(in: .named("helpScroll")).minY])
                                     })
                             }
+                            // Room below the last section, so it too can scroll
+                            // to the top and be the one marked in the list.
+                            Color.clear.frame(height: max(0, viewport.size.height - 96))
                         }
                         .padding([.horizontal, .bottom], 24)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -84,6 +88,7 @@ struct HelpView: View {
                         proxy.scrollTo(section, anchor: .top)
                         jump = nil
                     }
+                }
                 }
             }
             // Opened from a pop-up's "See Help for more.": start at its section.

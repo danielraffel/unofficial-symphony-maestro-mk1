@@ -132,7 +132,7 @@ If you have a Symphony I/O MK I and an Apple Silicon Mac, I’d appreciate heari
 
 **Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and experiments (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **App Settings › Updates** at any time.
 
-If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">file an issue</a> and include:
+If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new?template=bug_report.yml">file an issue</a> and include:
 
 * The Maestro version (**Maestro › About**) and macOS version
 * Whether you’re using USB or ThunderBridge
