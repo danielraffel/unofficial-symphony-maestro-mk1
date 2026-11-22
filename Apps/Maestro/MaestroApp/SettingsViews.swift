@@ -545,7 +545,7 @@ struct DeviceSettingsView: View {
                 // device publishes it. Its port-2 detail rows are in Info.
                 if let port2 = appState.secondPortState, appState.portSelection.selection != nil {
                     let shown = PortsPresentation(model: appState.portSelection, state: port2)
-                    LabeledContent("Ports") {
+                    LabeledContent("Symphony Source") {
                         HStack(spacing: 6) {
                             if shown.isChecking {
                                 ProgressView().controlSize(.small)
@@ -570,7 +570,7 @@ struct DeviceSettingsView: View {
                             } label: {
                                 Text(shown.shownSelection.pickerLabel)
                             }
-                            .accessibilityLabel("Ports")
+                            .accessibilityLabel("Symphony Source")
                             .fixedSize()
                             .maestroHelp("Choose 32 channels or 64 channels from two Symphony I/Os.")
                             .disabled(!appState.portSelection.canChoose)
@@ -615,7 +615,7 @@ struct DeviceSettingsView: View {
                     .foregroundStyle(.secondary)
                 }
 
-                // Same action as the View > Rescan menu item; one concept,
+                // Same action as the File > Rescan menu item; one concept,
                 // one name. This copy is gated on connectionMode == .hardware
                 // so it is only ever visible once a device is ALREADY found,
                 // which is why the menu item exists as well.
@@ -623,7 +623,7 @@ struct DeviceSettingsView: View {
                     Task { await appState.reconnectHardware() }
                 }
                 .maestroHelp("Re-establish the link to Symphony and rebuild the audio "
-                      + "path. Same as View > Rescan (⌘R).")
+                      + "path. Same as File > Rescan (⌘R).")
             } else if appState.connectionMode == .simulated, let unit = appState.connectedUnit {
                 // Converter simulation: the same rows a real converter gets.
                 LabeledContent("Device Name", value: unit.modelName ?? "Unknown unit")

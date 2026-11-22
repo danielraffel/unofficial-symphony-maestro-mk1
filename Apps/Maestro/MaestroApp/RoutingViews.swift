@@ -109,7 +109,9 @@ struct InputRoutingView: View {
     /// there writes a real routing byte into an empty XLink region. Each column
     /// carries its own routing byte (`CardLayout.RoutingColumn`), so the grid the
     /// user clicks and the byte the click writes cannot drift apart.
-    private var columns: [CardLayout.RoutingColumn] { layout.inputRoutingColumns }
+    private var columns: [CardLayout.RoutingColumn] {
+        appState.inputNamingLayout(for: unit).inputRoutingColumns
+    }
 
     private var columnLabels: [(type: String, channels: String)] {
         columns.map { (type: unit == .b ? "\(prefix) \($0.type)" : $0.type, channels: $0.channels) }

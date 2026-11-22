@@ -19,6 +19,7 @@ import MaestroDevice
 
 @main
 struct MaestroApp: App {
+    @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(MaestroAppDelegate.self) private var appDelegate
     @StateObject private var updates = UpdateController()
     @State private var appState = MaestroApp.makeAppState()
@@ -153,29 +154,6 @@ struct MaestroApp: App {
                 .keyboardShortcut("k", modifiers: [.command])
                 .disabled(appState.hardwareWritesSuspended)
                 .maestroHelp("Clear all peak hold and over indicators (Cmd+K).")
-
-                Divider()
-
-                // Rescan — the original Maestro's Window-menu item, described in
-                // the User's Guide p.73 as re-initialising "the link between
-                // Maestro and Apogee hardware connected to the Mac, in the case
-                // where the hardware is correctly connected and powered on but
-                // not detected by Maestro".
-                //
-                // The underlying capability already existed as
-                // `reconnectHardware()`, but both places it was exposed are
-                // unreachable in precisely that situation: the Settings button
-                // sits inside `if let device`, so it only appears once a device
-                // is ALREADY connected, and the status-bar button only appears
-                // when `hasConnectionIssue` is set. A user whose unit is powered
-                // on but undetected had nothing to press. This is always
-                // available.
-                Button("Rescan") {
-                    Task { await appState.reconnectHardware() }
-                }
-                .keyboardShortcut("r", modifiers: [.command])
-                .maestroHelp("Re-establish the link to Symphony. Use this when the unit "
-                      + "is connected and powered on but Maestro has not found it.")
             }
 
             // File menu — preset save / load (P3F-31, P3F-53)
@@ -214,6 +192,28 @@ struct MaestroApp: App {
                 }
                 .keyboardShortcut("o")
                 .disabled(appState.hardwareWritesSuspended)
+
+                Divider()
+
+                Button("Rescan") {
+                    Task { await appState.reconnectHardware() }
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+                .maestroHelp("Re-establish the link to Symphony. Use this when the unit "
+                      + "is connected and powered on but Maestro has not found it.")
+            }
+
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appState.selectedArea = .appSettings
+                    showMainWindow()
+                }
+                .keyboardShortcut(",")
+            }
+
+            CommandGroup(after: .windowArrangement) {
+                Button("Maestro", action: showMainWindow)
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
             }
 
             // Presets menu — named preset library (P3F-32)
@@ -313,6 +313,15 @@ struct MaestroApp: App {
             CommandGroup(replacing: .newItem) { }
         }
 
+    }
+
+    private func showMainWindow() {
+        if let window = WindowDocumentBridge.currentWindow, window.isVisible || window.isMiniaturized {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "main")
+        }
     }
 
     /// Open a file from the app bundle (deployed builds) or repo (dev builds).

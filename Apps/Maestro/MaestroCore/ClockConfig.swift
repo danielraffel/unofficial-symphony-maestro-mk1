@@ -148,7 +148,7 @@ public enum ClockSourceMenu {
     /// clock bit, never as a Symphony I/O ClockMode.
     public static let converters: [ClockSourceChoice] = [
         ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
-        ClockSourceChoice(id: wordClock, name: "External (Word Clock)", source: 2, boardInput: nil),
+        ClockSourceChoice(id: wordClock, name: "External", source: 2, boardInput: nil),
     ]
 
     /// Over USB: Internal only (see `DeviceSettingsView.clockSourceChoices`).

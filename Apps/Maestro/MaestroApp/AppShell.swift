@@ -568,9 +568,39 @@ struct DetailView: View {
         }
     }
 
+    /// A failed slot probe leaves its layout unknown. Only live, empty reads
+    /// count as an empty Symphony I/O, and converters do not have these slots.
+    static func showsNoIOCards(mode: ConnectionMode, hasConverter: Bool,
+                               slot1: BoardTypeReading, slot2: BoardTypeReading) -> Bool {
+        mode == .hardware && !hasConverter
+            && slot1.source.isTrustworthy && slot1.card == .none
+            && slot2.source.isTrustworthy && slot2.card == .none
+    }
+
+    private func hasNoIOCards(on unit: DeviceUnit) -> Bool {
+        let slot1: BoardTypeReading
+        let slot2: BoardTypeReading
+        if unit == .b, let second = appState.unitB {
+            slot1 = BoardTypeReading(card: second.slot1, source: appState.unitBBoardSource(slot: 0))
+            slot2 = BoardTypeReading(card: second.slot2, source: appState.unitBBoardSource(slot: 1))
+        } else {
+            slot1 = appState.primaryBoardReading
+            slot2 = appState.secondaryBoardReading
+        }
+        return Self.showsNoIOCards(mode: appState.connectionMode,
+                                   hasConverter: unit == .a && appState.converterRoutingSurface,
+                                   slot1: slot1, slot2: slot2)
+    }
+
     @ViewBuilder
     private var page: some View {
         switch area {
+        case .input where hasNoIOCards(on: appState.activeUnit),
+             .output where hasNoIOCards(on: appState.activeUnit),
+             .mixer where hasNoIOCards(on: .a) && (!appState.unitBOnCard || hasNoIOCards(on: .b)):
+            Text("No I/O cards detected.")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .input:          InputControlsView(appState: appState)
             .id(appState.preferenceViewScope(for: appState.activeUnit))
         case .output:         OutputControlsView(appState: appState)

@@ -7,6 +7,46 @@ import MaestroCore
 import MaestroDevice
 
 
+enum InputRowCaption: String, CaseIterable {
+    case analogLevel = "Analog Level"
+    case digitalRef = "Digital Ref"
+    case softLimit = "Soft Limit"
+    case levelTrim = "Level Trim"
+
+    static func visible(levels: [AnalogInputLevel], showTrims: Bool) -> [Self] {
+        guard !levels.isEmpty else { return [] }
+        return allCases.filter { row in
+            switch row {
+            case .analogLevel, .softLimit: return true
+            case .digitalRef: return levels.contains { InputChannelLogic.digitalRefVisibility(for: $0) != .hidden }
+            case .levelTrim: return showTrims || levels.contains(where: InputChannelLogic.usesGainKnob)
+            }
+        }
+    }
+}
+
+private enum InputRowAnchors: PreferenceKey {
+    static var defaultValue: [InputRowCaption: Anchor<CGRect>] { [:] }
+
+    static func reduce(value: inout [InputRowCaption: Anchor<CGRect>],
+                       nextValue: () -> [InputRowCaption: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { first, _ in first })
+    }
+}
+
+private extension View {
+    func inputCaptionAnchor(_ row: InputRowCaption, enabled: Bool) -> some View {
+        anchorPreference(key: InputRowAnchors.self, value: .bounds) { enabled ? [row: $0] : [:] }
+    }
+}
+
+private func rowCaption(_ text: String) -> some View {
+    Text(text)
+        .font(.system(size: 8, weight: .semibold))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+}
+
 /// Input Controls view — horizontal channel strips matching legacy Maestro 2 layout.
 /// Ref level and soft limit displayed as stacked labels above the meter (like original).
 /// Toolbar provides Show/Hide Trims and Reset Trims buttons.
@@ -157,15 +197,23 @@ struct InputControlsView: View {
     /// Numbering is continuous across the whole device, not per-card.
     /// Evidence: `SymphonyIOBoard_MicPre8ch.cpp:914-961`, `SymphonyIO_Stream.cpp:653-655`.
     private var inputChannelLabels: [String] {
-        (1...max(analogInputStripCount, 1)).map { number in
-            // Converters: the unit channel this host input carries, "A Line 1".
-            if let name = layout.converterChannelName(host: number - 1, isInput: true) { return name }
-            // A pair the S/PDIF coax replaces carries the coax, and is named so.
-            if let coax = layout.coaxNameForAnalogInputStrip(number - 1) { return coax }
-            let raw = number - 1 < channels.count ? channels[number - 1].inputType : 1
-            return InputChannelLogic.channelLabel(number: number, rawLevel: raw)
+        let named = appState.inputNamingLayout(for: appState.activeUnit, channels: channels)
+        return (0..<analogInputStripCount).map { index in
+            if let name = named.converterChannelName(host: index, isInput: true) { return name }
+            let board = index < named.slot1.analogInputChannels ? 0 : 1
+            let local = board == 0 ? index : index - named.slot1.analogInputChannels
+            return named.analogChannelName(board: board, channelOnCard: local, isInput: true)
         }
     }
+
+    private var visibleRowCaptions: [InputRowCaption] {
+        let levels = channels.prefix(analogInputStripCount).map {
+            AnalogInputLevel(rawValue: $0.inputType) ?? .plus4dBu
+        }
+        return InputRowCaption.visible(levels: levels, showTrims: appState.showInputTrims)
+    }
+
+    private let rowCaptionWidth: CGFloat = 68
 
     /// Board-aware digital input stereo pairs (AES / ADAT meter strips).
     private var digitalInputPairs: [CardLayout.DigitalPair] { layout.digitalInputPairs }
@@ -257,7 +305,11 @@ struct InputControlsView: View {
             GeometryReader { viewport in
             ScrollViewReader { scrollProxy in
             ScrollView(.horizontal) {
+                let captions = visibleRowCaptions
                 HStack(alignment: .top, spacing: 0) {
+                    if !captions.isEmpty {
+                        Color.clear.frame(width: rowCaptionWidth, height: 0)
+                    }
                     ForEach(Array(0..<min(channels.count, analogInputStripCount)), id: \.self) { i in
                         if i > 0 {
                             Divider()
@@ -270,6 +322,7 @@ struct InputControlsView: View {
                             appState: appState,
                             meterIndex: i,
                             showTrims: appState.showInputTrims,
+                            providesCaptionAnchors: i == 0,
                             onPhantomChange: { enabled in
                                 let target = appState.unitWriteTarget
                                 channels[i].recordPhantomRequest(enabled, identity: nil,
@@ -416,6 +469,20 @@ struct InputControlsView: View {
                             )
                         }
                     }
+                }
+                .overlayPreferenceValue(InputRowAnchors.self) { anchors in
+                    GeometryReader { geometry in
+                        ForEach(captions, id: \.self) { caption in
+                            if let anchor = anchors[caption] {
+                                let bounds = geometry[anchor]
+                                rowCaption(caption.rawValue)
+                                    .frame(width: rowCaptionWidth - 6, alignment: .trailing)
+                                    .position(x: rowCaptionWidth / 2,
+                                              y: caption == .levelTrim ? bounds.minY + 8 : bounds.midY)
+                            }
+                        }
+                    }
+                    .allowsHitTesting(false)
                 }
                 .fixedSize(horizontal: false, vertical: true) // dividers match strip height, not page height
                 .frame(minHeight: max(0, viewport.size.height - 16), alignment: .top)
@@ -1318,6 +1385,7 @@ struct InputChannelStripView: View {
     var meterLevel: Double = -60
     var meterPeakHold: Double = -60
     var showTrims: Bool = false
+    var providesCaptionAnchors = false
     let onPhantomChange: (Bool) -> Void
     let onPhaseChange: (Bool) -> Void
     let onHPFChange: (Bool) -> Void
@@ -1463,13 +1531,12 @@ struct InputChannelStripView: View {
                             (name, { channel.inputType = val; onInputTypeChange(val) })
                         }
                     )
+                    .inputCaptionAnchor(.analogLevel, enabled: providesCaptionAnchors)
                 }
 
-                // Digital reference level — conditional on the analog level:
-                //   Variable        → hidden (daemon reports the property not implemented)
-                //   Mic/Instrument  → shown but disabled (legacy greys it, never hides it)
-                //   +4 dBu/-10 dBV  → shown and enabled
-                // Evidence: AnalogIn_SymphonyIO_Stream.cpp:768-787, APAnalogInputController.m:854
+                // Digital Ref is available at fixed line levels. The other
+                // levels reserve the lane so the rows stay aligned.
+                // Evidence: APAnalogInputController.m:349-354.
                 let digitalRefState = InputChannelLogic.digitalRefVisibility(for: level)
                 if digitalRefState != .hidden {
                     PillMenu(
@@ -1486,10 +1553,12 @@ struct InputChannelStripView: View {
                     )
                     .disabled(digitalRefState == .disabled)
                     .opacity(digitalRefState == .disabled ? 0.45 : 1)
+                    .inputCaptionAnchor(.digitalRef, enabled: providesCaptionAnchors)
                 } else {
                     // Keep the row height stable so neighbouring strips (and the
                     // ADAT columns that match their height) stay aligned.
                     Color.clear.frame(height: 18)
+                        .inputCaptionAnchor(.digitalRef, enabled: providesCaptionAnchors)
                 }
 
                 // Soft limiter
@@ -1503,6 +1572,7 @@ struct InputChannelStripView: View {
                             (name, { channel.softLimit = val; onSoftLimitChange(val) })
                         }
                     )
+                    .inputCaptionAnchor(.softLimit, enabled: providesCaptionAnchors)
                 }
             }
             // Analog Ref, Digital Ref and Soft Limit are Symphony I/O settings.
@@ -1590,6 +1660,7 @@ struct InputChannelStripView: View {
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .offset(x: hasSideControl ? 0 : -8) // center the group visually within the strip
+            .inputCaptionAnchor(.levelTrim, enabled: providesCaptionAnchors)
             .animation(.easeInOut(duration: 0.15), value: showTrims)
 
             // Trim readout + Meter Level readout — a LINE-strip row (User's Guide
@@ -1669,14 +1740,6 @@ struct InputChannelStripView: View {
     private static let captionRowHeight: CGFloat = 16
     private static let pillRowHeight: CGFloat = 18
     private static let buttonRowHeight: CGFloat = 16
-
-    /// Small row caption, standing in for the original's left-edge row labels.
-    private func rowCaption(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-    }
 
     /// **Group** — caption above, value below, exactly as the manual's strip has
     /// it. Grouped channels move by a shared RELATIVE offset; their existing gain

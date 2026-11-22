@@ -153,6 +153,7 @@ struct MixerView: View {
     private var channelCount: Int { mixerChannels.count }
 
     var body: some View {
+        let labels = mixerStripLabels
         VStack(spacing: 0) {
             // Toolbar row — Mixer selector + channel visibility (matches Input/Output toolbar style)
             HStack {
@@ -180,7 +181,7 @@ struct MixerView: View {
                     ForEach(0..<channelCount, id: \.self) { i in
                         let vis = channelVisibility
                         Toggle(
-                            channelLabel(for: i),
+                            labels[i],
                             isOn: Binding(
                                 get: { i < vis.count ? vis[i] : true },
                                 set: { newValue in
@@ -247,7 +248,7 @@ struct MixerView: View {
                         if isChannelVisible(i) {
                             MixerChannelStripView(
                                 channel: $editor.channels[i],
-                                label: channelLabel(for: i),
+                                label: labels[i],
                                 appState: appState,
                                 inputMeterIndex: i,
                                 preMuteMetering: preMuteMetering,
@@ -662,9 +663,10 @@ struct MixerView: View {
     private func batchApplyPanDelta(delta: Double) {
         for (i, startPan) in batchDragStartPans {
             let newPan = min(max(startPan + delta, -1.0), 1.0)
+            let steppedPan = (newPan / MixerValueConversion.panStep).rounded() * MixerValueConversion.panStep
             guard i >= 0, i < editor.channels.count else { continue }
-            editor.channels[i].pan = newPan
-            panThrottle.submit(i, newPan) { value in await writePan(channel: i, pan: value) }
+            editor.channels[i].pan = steppedPan
+            panThrottle.submit(i, steppedPan) { value in await writePan(channel: i, pan: value) }
         }
         saveMixerState()
     }
@@ -713,11 +715,13 @@ struct MixerView: View {
         return local < names.count ? names[local] : ""
     }
 
-    private func channelLabel(for index: Int) -> String {
-        // Board-aware default: analog channels get "Line N", digital get the
-        // card's own label, both numbered by what the cards actually contribute.
-        let layoutChannels = mixerChannels
-        return index < layoutChannels.count ? layoutChannels[index].label : "Ch \(index + 1)"
+    private var mixerStripLabels: [String] {
+        let a = appState.inputNamingLayout(for: .a, labels: decodeNames(channelNamesJSON))
+            .mixerChannels.map(\.label)
+        guard appState.unitBOnCard else { return a }
+        let b = appState.inputNamingLayout(for: .b, labels: decodeNames(unitBChannelNamesJSON))
+            .mixerChannels.map { TwoUnitMixer.unitChannelName($0.label, prefix: appState.unitBPeripheralPrefix) }
+        return a + b
     }
 
     private func setCustomChannelLabel(_ value: String, for index: Int) {
@@ -1402,12 +1406,7 @@ struct MixerChannelStripView: View {
         return (meterLevel, meterLevelR)
     }
 
-    /// Format pan as "0" at center, "+N"/"-N" otherwise.
-    private var panText: String {
-        let intPan = Int(round(channel.pan * 100))
-        if intPan == 0 { return "0" }
-        return String(format: "%+d", intPan)
-    }
+    private var panText: String { MixerValueConversion.panReadout(channel.pan) }
 
     var body: some View {
         let resolvedMeters = resolvedMeterLevels
@@ -1443,7 +1442,7 @@ struct MixerChannelStripView: View {
                 RotaryKnobView(
                     value: $channel.pan,
                     range: -1...1,
-                    step: 0.05,
+                    step: MixerValueConversion.panStep,
                     label: "",
                     unit: "",
                     size: 36,
@@ -1460,7 +1459,7 @@ struct MixerChannelStripView: View {
                     onPanChange?(newPan)
                 }
 
-                // Pan value — pill readout ("0" at center, not "+0")
+                // Pan value — pill readout
                 Text(panText)
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundStyle(.secondary)
