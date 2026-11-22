@@ -80,6 +80,7 @@ struct MixerView: View {
     // nothing while a fader kept moving and only the value it stopped on, so
     // a drag was heard late and in one step.
     @State private var levelThrottle = ControlWriteThrottle()
+    @State private var swReturnThrottle = ControlWriteThrottle()
     @State private var panThrottle = ControlWriteThrottle()
     @State private var masterThrottle = ControlWriteThrottle()
 
@@ -334,7 +335,7 @@ struct MixerView: View {
                             FaderView(
                                 value: $editor.masterLeftLevel,
                                 range: -48...6,
-                                step: 0.5,
+                                step: 1,
                                 defaultValue: 0,
                                 height: 200,
                                 showScale: false,
@@ -346,7 +347,7 @@ struct MixerView: View {
                             FaderView(
                                 value: $editor.masterRightLevel,
                                 range: -48...6,
-                                step: 0.5,
+                                step: 1,
                                 defaultValue: 0,
                                 height: 200,
                                 showScale: false,
@@ -629,14 +630,14 @@ struct MixerView: View {
     /// Apply a delta to all target channel levels (clamped, preserves relative positions).
     private func batchApplyLevelDelta(delta: Double) {
         for (i, startLevel) in batchDragStartLevels {
-            let newLevel = min(max(startLevel + delta, -48), 0)
+            let newLevel = MixerFaderLevel.played(min(max(MixerFaderLevel.played(startLevel) + delta.rounded(), -48), 0))
             if i == -1 {
                 // SW Return (sentinel key)
                 editor.swReturnChannel.level = newLevel
                 // One stereo fader: both handles follow.
                 editor.swReturnLeftLevel = newLevel
                 editor.swReturnRightLevel = newLevel
-                Task { await writeSWReturnLevel(newLevel) }
+                swReturnThrottle.submit(-1, newLevel) { value in await writeSWReturnLevel(value) }
             } else {
                 guard i < editor.channels.count else { continue }
                 editor.channels[i].level = newLevel
@@ -892,7 +893,7 @@ struct MixerView: View {
         editor.swReturnLeftLevel = level
         editor.swReturnRightLevel = level
         editor.swReturnChannel.level = level
-        Task { await writeSWReturnLevel(level) }
+        swReturnThrottle.submit(-1, level) { value in await writeSWReturnLevel(value) }
         saveMixerState()
     }
 
@@ -907,11 +908,12 @@ struct MixerView: View {
     private var swReturnStrip: some View {
     MixerChannelStripView(
         channel: $editor.swReturnChannel,
-        label: "SW Return",
+        label: "Software Return",
         appState: appState,
         mixerMeterBaseIndex: selectedMixer * 2,
         onLevelChange: { level in
-            Task { await writeSWReturnLevel(level); saveMixerState() }
+            swReturnThrottle.submit(-1, level) { value in await writeSWReturnLevel(value) }
+            saveMixerState()
         },
         onMuteChange: { muted, isOption in
             if isOption {
@@ -965,16 +967,45 @@ struct MixerView: View {
             // that while keeping the readout display-only until double-clicked.
             EditableLevelReadout(
                 value: Binding(
-                    get: { editor.masterLevel },
+                    get: { MixerFaderLevel.played(editor.masterLevel) },
                     set: { newLevel in masterSideChanged(newLevel) }),
                 range: -48...6,
-                step: 0.5,
+                step: 1,
                 entry: readoutEntry(.master))
             .maestroHelp("Master fader level: click to edit")
+
+            // The two rows other strips have below the value, so Master's
+            // rows line up with them: a blank box where Mute and Solo sit,
+            // and the output this mixer feeds where Software Return has its
+            // menu. Neither is a control (the original's was a text label).
+            RoundedRectangle(cornerRadius: 3)
+                .fill(Color.gray.opacity(0.2))
+                .frame(maxWidth: .infinity)
+                .frame(height: mixerControlRowHeight)
+                .accessibilityHidden(true)
+            Text(masterOutputLabel)
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 22)
+                .padding(.horizontal, 4)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color(.controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
+                .maestroHelp("The output this mixer is routed to in Output Routing")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
         .offset(y: -2)
+    }
+
+    /// "Line 1/2" when this mixer is routed there in Output Routing, "None"
+    /// when it feeds no output. Read from the saved routing, never from the
+    /// unit; the page is rebuilt on return from Output Routing.
+    private var masterOutputLabel: String {
+        _ = appState.viewReloadToken
+        return appState.converterRoutingSurface ? "" : appState.masterOutputLabel(mixer: selectedMixer)
     }
 
     /// The USB connection, or nil on ThunderBridge and in simulation.
@@ -1451,7 +1482,7 @@ struct MixerChannelStripView: View {
                 FaderView(
                     value: stereoLeftLevel ?? $channel.level,
                     range: -48...6,
-                    step: 0.5,
+                    step: 1,
                     defaultValue: 0,
                     height: faderHeight,
                     showScale: false,
@@ -1467,7 +1498,7 @@ struct MixerChannelStripView: View {
                     FaderView(
                         value: stereoRightLevel ?? $channel.level,
                         range: -48...6,
-                        step: 0.5,
+                        step: 1,
                         defaultValue: 0,
                         height: faderHeight,
                         showScale: false,
@@ -1537,16 +1568,16 @@ struct MixerChannelStripView: View {
                 // controls the stereo fader.
                 EditableLevelReadout(
                     value: Binding(
-                        get: { stereoLeftLevel?.wrappedValue ?? channel.level },
+                        get: { MixerFaderLevel.played(stereoLeftLevel?.wrappedValue ?? channel.level) },
                         set: { newValue in onStereoLevelChange?(newValue) }),
                     range: -48...6,
-                    step: 0.5,
+                    step: 1,
                     entry: readoutEntry)
                 .maestroHelp("Software Return fader level: click to edit")
             } else {
                 // dB readout (level) — single readout, no duplicate
-                EditableLevelReadout(value: $channel.level, range: -48...6, step: 0.5, entry: readoutEntry)
-                    .maestroHelp("Fader Level: \(String(format: "%.1f", channel.level)) dB — click to edit")
+                EditableLevelReadout(value: Binding(get: { MixerFaderLevel.played(channel.level) }, set: { channel.level = MixerFaderLevel.played($0) }), range: -48...6, step: 1, entry: readoutEntry)
+                    .maestroHelp("Fader Level: \(String(format: "%.0f", MixerFaderLevel.played(channel.level))) dB — click to edit")
             }
 
             // Mute / Solo buttons — at the very bottom
@@ -1589,12 +1620,12 @@ struct MixerChannelStripView: View {
             if let sourceBinding = softwareReturnSource {
                 PillMenu(
                     text: sourceBinding.wrappedValue < UInt32(softwareReturnPairCount)
-                        ? TwoUnitMixer.softwareReturnName(sourceBinding.wrappedValue) : "1-2",
+                        ? TwoUnitMixer.softwareReturnMenuName(sourceBinding.wrappedValue) : TwoUnitMixer.softwareReturnMenuName(0),
                     fontSize: 9,
                     pillHeight: 22,
                     toolTip: "Software Return source — selects the DAW stereo pair feeding this mixer",
                     options: (0..<UInt32(softwareReturnPairCount)).map { source in
-                        (TwoUnitMixer.softwareReturnName(source), {
+                        (TwoUnitMixer.softwareReturnMenuName(source), {
                             sourceBinding.wrappedValue = source
                             onSoftwareReturnSourceChange?(source)
                         })

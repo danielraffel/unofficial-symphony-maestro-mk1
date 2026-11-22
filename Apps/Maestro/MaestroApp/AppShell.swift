@@ -85,6 +85,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme  // P3F-44
     @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .auto
     @AppStorage("maestro.thunderbridge.bannerDismissedToken") private var dismissedThunderBridgeBanner = ""
+    @AppStorage("MaestroSelectedArea") private var storedSelectedArea = "Input"
     @Environment(DiagnosticsRecorder.self) private var diagnostics
 
     private var thunderBridgeReport: SoftwareInfoReport { appState.softwareInfoReport }
@@ -158,6 +159,14 @@ struct ContentView: View {
             .toolbarBackground(Color(.windowBackgroundColor), for: .windowToolbar)
             .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             .background(UnborderedToolbarApplicator())
+        }
+        .onAppear {
+            if UserDefaults.standard.string(forKey: "MaestroInitialArea") == nil {
+                appState.selectedArea = NavigationArea.named(storedSelectedArea) ?? .input
+            }
+        }
+        .onChange(of: appState.selectedArea) { _, area in
+            storedSelectedArea = area.rawValue
         }
         .sheet(isPresented: $state.showAbout) {
             AboutView()

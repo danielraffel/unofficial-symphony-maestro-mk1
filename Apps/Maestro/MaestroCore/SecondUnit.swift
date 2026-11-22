@@ -293,6 +293,10 @@ public enum TwoUnitMixer {
     public static func softwareReturnName(_ source: UInt32) -> String {
         "\(source * 2 + 1)-\(source * 2 + 2)"
     }
+
+    public static func softwareReturnMenuName(_ source: UInt32) -> String {
+        "Out \(source * 2 + 1)-\(source * 2 + 2)"
+    }
 }
 
 /// Output Routing while 64 channels run with unit B. Rows are the 32 DAW

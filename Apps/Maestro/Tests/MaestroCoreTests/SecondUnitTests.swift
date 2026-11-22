@@ -208,3 +208,9 @@ struct SecondUnitTests {
         #expect(TwoUnitOutputRouting.defaultRow(unitBChannel: 30) == 31)
     }
 }
+
+@Test("Software Return menu names include Out")
+func softwareReturnMenuNames() {
+    #expect(TwoUnitMixer.softwareReturnMenuName(0) == "Out 1-2")
+    #expect(TwoUnitMixer.softwareReturnMenuName(31) == "Out 63-64")
+}

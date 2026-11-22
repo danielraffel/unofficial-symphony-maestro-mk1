@@ -319,7 +319,7 @@ extension HelpSection {
     private static var controls: HelpSection {
         HelpSection(id: .controls, title: "What Maestro controls", items: [
             HelpItem(blocks: [
-                .text("Volume, mute, clock source, sample rate, optical format (ADAT/S-PDIF), Input Routing and Output Routing, the two **low-latency mixers** (input strips with level, pan, mute and solo; SW Return with level, mute and solo; Master), and **hardware metering**."),
+                .text("Volume, mute, clock source, sample rate, optical format (ADAT/S-PDIF), Input Routing and Output Routing, the two **low-latency mixers** (input strips with level, pan, mute and solo; Software Return with level, mute and solo; Master), and **hardware metering**."),
                 .text("**Output Routing** sends any software output pair or mixer to any hardware output. The page shows what Maestro last set."),
             ]),
         ])
@@ -472,20 +472,20 @@ extension HelpSection {
             HelpItem(title: "When do I hear an input directly through the Symphony?", blocks: [
                 .text("**Only when its strip is unmuted in a mixer that feeds an output in Output Routing.** That is the whole rule, and there is no other setting for it."),
                 .text("**By default no mixer feeds an output.** Every hardware output plays the matching software output directly (**1-2 → Line 1/2** and so on), so you hear your Mac's audio directly and you hear your inputs only through your DAW."),
-                .text("To hear an input without the delay of going through the Mac, route **Mixer 1** or **Mixer 2** to the output you listen on in **Output Routing**, then use that mixer's strips: an unmuted strip is heard, a muted one is not. Your Mac's audio then reaches that output through the mixer's **SW Return**. On the Mixer page, **Mix 1** and **Mix 2** choose which mixer is shown."),
+                .text("To hear an input without the delay of going through the Mac, route **Mixer 1** or **Mixer 2** to the output you listen on in **Output Routing**, then use that mixer's strips: an unmuted strip is heard, a muted one is not. Your Mac's audio then reaches that output through the mixer's **Software Return**. On the Mixer page, **Mix 1** and **Mix 2** choose which mixer is shown."),
                 .text("An output fed from a mixer is silent for a few seconds when Maestro connects, while the status bar shows **Restoring mixer and routing…**; over USB so is a headphone that follows it."),
             ]),
-            HelpItem(title: "What does the menu under SW Return do?", blocks: [
-                .text("It chooses what comes **into** that mixer from your Mac: which pair of your Mac's outputs the **SW Return** strip carries. It is an input choice. It does not send anything to a hardware output; where a mixer is heard is set only in **Output Routing**, by routing **Mixer 1** or **Mixer 2** to an output."),
+            HelpItem(title: "What does the menu under Software Return do?", blocks: [
+                .text("It chooses what comes **into** that mixer from your Mac: which pair of your Mac's outputs the **Software Return** strip carries. It is an input choice. It does not send anything to a hardware output; where a mixer is heard is set only in **Output Routing**, by routing **Mixer 1** or **Mixer 2** to an output."),
                 .bullet("1-2", "what your Mac plays on outputs 1-2: Music, Spotify, a browser, or your DAW's main mix. This is the default, and for most uses it is the one to leave it on."),
                 .bullet("3-4 and up", "what an application plays on that pair. Only an application that lets you choose its output, such as a DAW, can play there. Use it when the DAW sends a separate mix on that pair, for example a headphone mix for a performer: the mixer blends that mix with the live inputs, while your speakers go on playing the main mix on 1-2."),
-                .text("Each mixer has its own choice, so Mixer 1 and Mixer 2 can carry two different mixes from the DAW. The SW Return meter shows the pair you chose: with a pair nothing is playing on, it stays dark and the mixer adds nothing from your Mac."),
+                .text("Each mixer has its own choice, so Mixer 1 and Mixer 2 can carry two different mixes from the DAW. The Software Return meter shows the pair you chose: with a pair nothing is playing on, it stays dark and the mixer adds nothing from your Mac."),
             ]),
-            HelpItem(title: "Why doesn't the SW Return fader or mute, or Master, change what I hear?", blocks: [
-                .text("**By default nothing is fed from a mixer,** so the **Mixer** page does nothing until you route **Mixer 1** or **Mixer 2** to an output in **Output Routing**. An output fed straight from a software output pair (for example **1-2 → Line 1/2**, the default) plays your Mac's audio directly, and SW Return, Master and the input strips do not touch it."),
-                .text("Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **SW Return**, together with the hardware inputs that are unmuted, and **Master** sets the level."),
+            HelpItem(title: "Why doesn't the Software Return fader or mute, or Master, change what I hear?", blocks: [
+                .text("**By default nothing is fed from a mixer,** so the **Mixer** page does nothing until you route **Mixer 1** or **Mixer 2** to an output in **Output Routing**. An output fed straight from a software output pair (for example **1-2 → Line 1/2**, the default) plays your Mac's audio directly, and Software Return, Master and the input strips do not touch it."),
+                .text("Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **Software Return**, together with the hardware inputs that are unmuted, and **Master** sets the level."),
                 .text("**Mixer 1 and Mixer 2 are separate.** A control on Mixer 2 changes only the outputs fed from Mixer 2. If no output is fed from Mixer 2 in Output Routing, nothing on Mixer 2 can be heard, and the same goes for Mixer 1."),
-                .text("**Over USB,** see **The Mixer over USB** further down for how SW Return mute behaves with the two Symphony audio devices."),
+                .text("**Over USB,** see **The Mixer over USB** further down for how Software Return mute behaves with the two Symphony audio devices."),
             ]),
         ])
     }
@@ -508,16 +508,16 @@ extension HelpSection {
     private static var mixerUSB: HelpSection {
         HelpSection(id: .mixerUSB, title: "The Mixer over USB", items: [
             HelpItem(blocks: [
-                .text("Over USB, as over ThunderBridge, **nothing passes through a mixer until you route Mixer 1 or Mixer 2 to an output** in Output Routing. By default every output plays the matching channels of your Mac's playback directly. Once a mixer feeds an output, your Mac's audio reaches it through that mixer's **SW Return** (the pair chosen in its source menu, **1-2** unless you change it). If the status bar asks you to reinstall Maestro with USB support, the mixers are not set until you do."),
+                .text("Over USB, as over ThunderBridge, **nothing passes through a mixer until you route Mixer 1 or Mixer 2 to an output** in Output Routing. By default every output plays the matching channels of your Mac's playback directly. Once a mixer feeds an output, your Mac's audio reaches it through that mixer's **Software Return** (the pair chosen in its source menu, **Out 1-2** unless you change it). If the status bar asks you to reinstall Maestro with USB support, the mixers are not set until you do."),
                 .bullet("An input is heard only through a mixer", "its strip must be unmuted in a mixer that feeds an output in Output Routing. With no mixer routed, you hear inputs only through your DAW."),
-                .bullet("SW Return mute and solo belong to each mixer", "muting or soloing SW Return on **Mixer 1** leaves **Mixer 2** as it was, and the reverse, as in Apogee's Maestro."),
-                .bullet("SW Return mute with Maestro USB", "Maestro mutes SW Return in that Symphony mixer. While a mixer that uses the **1-2** pair feeds an output, and SW Return is muted on every such mixer, it also silences channels 1-2 of what you play through **Symphony I/O : Maestro USB**, wherever they go. Unmuting on either of those mixers clears that. With no mixer routed to an output, SW Return mute never touches an output that plays your Mac's audio directly."),
-                .bullet("SW Return mute with USB Audio", "only the Symphony's mixer is muted, so it silences channels 1-2 only on outputs fed from that mixer in Output Routing."),
-                .bullet("SW Return solo and the SW Return and Master faders", "are done by the Symphony's own mixer alone, with either device. Soloing SW Return silences the other strips in that mixer; there is no software solo."),
+                .bullet("Software Return mute and solo belong to each mixer", "muting or soloing Software Return on **Mixer 1** leaves **Mixer 2** as it was, and the reverse, as in Apogee's Maestro."),
+                .bullet("Software Return mute with Maestro USB", "Maestro mutes Software Return in that Symphony mixer. While a mixer that uses the **Out 1-2** pair feeds an output, and Software Return is muted on every such mixer, it also silences channels 1-2 of what you play through **Symphony I/O : Maestro USB**, wherever they go. Unmuting on either of those mixers clears that. With no mixer routed to an output, Software Return mute never touches an output that plays your Mac's audio directly."),
+                .bullet("Software Return mute with USB Audio", "only the Symphony's mixer is muted, so it silences channels 1-2 only on outputs fed from that mixer in Output Routing."),
+                .bullet("Software Return solo and the Software Return and Master faders", "are done by the Symphony's own mixer alone, with either device. Soloing Software Return silences the other strips in that mixer; there is no software solo."),
                 .bullet("They change only outputs that are fed from that mixer", "set this in Output Routing. An output fed from somewhere else, such as a headphone output on its own source, does not change (except the Maestro USB mute above, which silences channels 1-2 of your playback wherever they go)."),
-                .bullet("SW Return and Master are each one stereo fader", "it is drawn with a left and a right handle, and the two always move together, as in Apogee's Maestro. SW Return has a fader, mute and solo, and no pan. This is the same over ThunderBridge."),
-                .bullet("SW Return meter", "it shows the signal before the fader. With **Maestro USB** and the default 1-2 source it drops to silence while Maestro is silencing channels 1-2 (see the mute above)."),
-                .bullet("Master meter", "it follows that mixer's SW Return fader and mute and its Master fader."),
+                .bullet("Software Return and Master are each one stereo fader", "it is drawn with a left and a right handle, and the two always move together, as in Apogee's Maestro. Software Return has a fader, mute and solo, and no pan. This is the same over ThunderBridge."),
+                .bullet("Software Return meter", "it shows the signal before the fader. With **Maestro USB** and the default 1-2 source it drops to silence while Maestro is silencing channels 1-2 (see the mute above)."),
+                .bullet("Master meter", "it follows that mixer's Software Return fader and mute and its Master fader."),
                 .bullet("The headphone knobs control their own outputs", "independently of the mixer."),
                 .bullet("Hardware input faders affect the live inputs being monitored", "not your Mac's playback."),
             ]),

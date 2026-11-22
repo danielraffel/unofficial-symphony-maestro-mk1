@@ -65,6 +65,10 @@ struct InputControlsView: View {
                     level: AnalogInputLevel(rawValue: channels[strip].inputType) ?? .plus4dBu,
                     showTrims: appState.showInputTrims,
                     convertersOnly: appState.converterRoutingSurface)
+                // A Mic or Instrument strip's typed gain takes part too.
+                || InputChannelLogic.hasEditableGainReadout(
+                    level: AnalogInputLevel(rawValue: channels[strip].inputType) ?? .plus4dBu,
+                    convertersOnly: appState.converterRoutingSurface)
             }
         }
     }
@@ -1530,14 +1534,14 @@ struct InputChannelStripView: View {
                         // in the readout row below the meter: there it would sit
                         // unlabelled next to the meter-level number, and nothing
                         // would say which was which.
-                        Text(String(format: "%.0f", channel.gain))
-                            .font(.system(size: 9, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 2)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                            .maestroHelp("Level Trim — gain of the mic pre, currently \(String(format: "%.0f", channel.gain)) dB (\(level == .instrument ? "0–65 dB at Instrument" : "0–85 dB at Mic")).")
+                        EditableLevelReadout(
+                            value: Binding(
+                                get: { InputChannelLogic.clampGain(channel.gain, level: level) },
+                                set: { onGainChange?(InputChannelLogic.clampGain($0, level: level)) }),
+                            range: InputChannelLogic.gainRange(for: level) ?? 0...85,
+                            step: 1,
+                            entry: trimEntry)
+                            .maestroHelp("Gain — type the mic pre gain in dB")
                         Spacer(minLength: 0)
                     }
                     .frame(width: 46, height: 200, alignment: .top)

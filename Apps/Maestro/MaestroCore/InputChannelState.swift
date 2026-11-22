@@ -451,6 +451,10 @@ public enum InputChannelLogic {
         showTrims && !convertersOnly && !usesGainKnob(level: level)
     }
 
+    public static func hasEditableGainReadout(level: AnalogInputLevel, convertersOnly: Bool) -> Bool {
+        !convertersOnly && usesGainKnob(level: level)
+    }
+
     /// The selected stage has its own wire command and stored gain.
     /// Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
     public static func gainSelector(for level: AnalogInputLevel) -> AudioPropertySelector {

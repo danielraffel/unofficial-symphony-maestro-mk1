@@ -177,7 +177,7 @@ struct StatusBarView: View {
     /// the Core Audio rate comparison.
     private var shownClockLocked: Bool {
         if appState.clockLockSuppressed { return true }
-        return appState.reportedClockLocked ?? clockLocked
+        return ClockStatusRule.shownLocked(isUSB: appState.transportType == .usb, reported: appState.reportedClockLocked ?? clockLocked)
     }
 
     /// The source the unit reports (`AppState.reportedClockSource`, from the
@@ -265,10 +265,7 @@ struct StatusBarView: View {
 
     private func formatSampleRate(_ rate: Double?) -> String {
         guard let rate, rate.isFinite, rate > 0 else { return "—" }
-        if rate >= 1000 {
-            return "\(String(format: "%.1f", rate / 1000)) kHz"
-        }
-        return "\(Int(rate)) Hz"
+        return SampleRateText.format(rate)
     }
 }
 
@@ -538,13 +535,11 @@ struct MonitorToolbarView: View {
         }
         do {
             if !inLine, let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
-                appState.speakerMuted = mute
-                if mute {
-                    print("[Maestro] Hardware muted on startup — sending auto-unmute")
-                    appState.speakerMuted = false
-                    try await appState.device?.setProperty(
-                        PropertyAddress(selector: .outputMute), value: .bool(false))
-                }
+                // A muted speaker stays muted, as with the original; only the
+                // Mac's own mute control is brought into line.
+                let decision = SpeakerMuteAdoption.decide(unitMuted: mute)
+                appState.speakerMuted = decision.showMuted
+                if decision.tellMac { appState.writeASPMute(true) }
             }
         } catch {
             print("[Maestro] ERROR: loadMonitorState outputMute failed: \(error)")

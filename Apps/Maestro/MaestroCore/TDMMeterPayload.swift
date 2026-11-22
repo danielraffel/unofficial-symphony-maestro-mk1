@@ -48,17 +48,17 @@ public enum TDMMeterPayload {
                                          requestLength: UInt16) -> Bool {
         let base = data.startIndex + setupPacketOffset
         guard data.count >= setupPacketOffset + 8 else { return false }
-        let expected: [UInt8] = [
-            vendorReadRequestType,
-            meterRequest,
-            group, 0x00,                                   // wValue, little-endian
-            0x00, 0x00,                                    // wIndex
-            UInt8(requestLength & 0xFF), UInt8(requestLength >> 8)  // wLength
+        // The group went in wValue when this was measured; it goes in wIndex
+        // now, as the original sent it (`SymphonyIORequestBuilder.getMeterData`).
+        // Either request's own setup packet in the reply is residue.
+        let length: [UInt8] = [UInt8(requestLength & 0xFF), UInt8(requestLength >> 8)]
+        let head: [UInt8] = [vendorReadRequestType, meterRequest]
+        let forms: [[UInt8]] = [
+            head + [group, 0x00, 0x00, 0x00] + length,   // wValue = group, wIndex = 0
+            head + [0x00, 0x00, group, 0x00] + length,   // wValue = 0, wIndex = group
         ]
-        for (i, byte) in expected.enumerated() where data[base + i] != byte {
-            return false
-        }
-        return true
+        let found = Array(data[base..<(base + 8)])
+        return forms.contains(found)
     }
 
     /// True when every byte is zero. The firmware returns a zeroed buffer on

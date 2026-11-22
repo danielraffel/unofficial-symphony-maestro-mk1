@@ -212,7 +212,8 @@ struct DeviceSettingsView: View {
     /// As the status bar's: the unit's own lock state where it reports one.
     private var shownClockLocked: Bool {
         if appState.clockLockSuppressed { return true }
-        return appState.reportedClockLocked ?? clockLocked
+        return ClockStatusRule.shownLocked(isUSB: appState.transportType == .usb,
+                                           reported: appState.reportedClockLocked ?? clockLocked)
     }
 
     private var clockSourceChoices: [ClockSourceChoice] {
@@ -2067,12 +2068,7 @@ struct DeviceSettingsView: View {
         }
     }
 
-    private func formatSampleRate(_ rate: Double) -> String {
-        if rate >= 1000 {
-            return "\(String(format: "%.1f", rate / 1000)) kHz"
-        }
-        return "\(Int(rate)) Hz"
-    }
+    private func formatSampleRate(_ rate: Double) -> String { SampleRateText.format(rate) }
 }
 
 /// Device Info rows for the older converters: one per unit, by port, with

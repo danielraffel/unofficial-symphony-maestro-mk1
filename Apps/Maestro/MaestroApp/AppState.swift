@@ -1825,6 +1825,9 @@ final class AppState: @unchecked Sendable {
     /// Measured on hardware 2026-09-10; see MaestroCore.TDMMeterPayload.
     private(set) var tdmOutputMeteringUnavailable: Bool = false
     private var tdmOutputEchoStreak: Int = 0
+    /// The first output-group reply of a USB connection is logged once, so a
+    /// diagnostics report shows whether the unit sends real output meters.
+    private var tdmOutputReplyLogged = false
     /// Meter routing state requested on the previous poll (true = Output).
     /// A change means the firmware's next reply is its zeroed/phantom buffer
     /// (SymphonyIOMeterManager.cpp:159-163, :204-207) and must be discarded.
@@ -3253,6 +3256,7 @@ final class AppState: @unchecked Sendable {
         // output meter data over USB.
         tdmOutputMeteringUnavailable = false
         tdmOutputEchoStreak = 0
+        tdmOutputReplyLogged = false
         lastMeterPollWantedOutput = nil
 
         // Retry discovery with delays — XMOS firmware needs time to re-enumerate
@@ -3537,6 +3541,11 @@ final class AppState: @unchecked Sendable {
                                 outVal = try await xpcDev.getProperty(
                                     PropertyAddress(selector: .meterData, scope: .output))
                                 // Residue check before anything else looks at the bytes.
+                                if case .data(let reply)? = outVal, !self.tdmOutputReplyLogged, !routingSwitched {
+                                    self.tdmOutputReplyLogged = true
+                                    print("[MeterPoll] USB output meter reply (first of this connection, \(reply.count) bytes): "
+                                        + reply.map { String(format: "%02x", $0) }.joined(separator: " "))
+                                }
                                 if case .data(let outBytes)? = outVal,
                                    TDMMeterPayload.isSetupPacketEcho(outBytes, group: 1, requestLength: 64) {
                                     outVal = nil
@@ -5310,11 +5319,19 @@ final class AppState: @unchecked Sendable {
     ///           kmAEstroPropertyRecallPreferenceFile = 'AERP' (mAEstro.h:1199)
     ///           ONEv2DeviceController.cpp:3239–3331 — daemon recall implementation
     @MainActor
-    func loadPresetBundle(from url: URL) async throws {
+    @discardableResult
+    func loadPresetBundle(from url: URL) async throws -> String? {
         guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
+        // A setup file from Apogee's Maestro 2 holds nothing this app can
+        // apply, on any connection: say so instead of failing oddly or silently.
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: url.path),
+           PresetPackageKind.classify(fileNames: names) == .maestro2 {
+            throw PresetOpenError.maestro2
+        }
+        var notice: String?
         if let connection = device as? ThunderboltDeviceConnection {
             try await loadThunderboltPresetBundle(from: url, connection: connection)
-            return
+            return nil
         }
         if FileManager.default.fileExists(atPath: url.appendingPathComponent(ThunderboltPreset.fileName).path) {
             throw ThunderboltPreset.RecallError.unsupported("this hardware preset requires a ThunderBridge connection.")
@@ -5344,6 +5361,7 @@ final class AppState: @unchecked Sendable {
 
             // Read app-level metadata (channel names)
             let metaURL = url.appendingPathComponent("MaestroApp.plist")
+            var namesRestored = false
             if FileManager.default.fileExists(atPath: metaURL.path),
                let data = try? Data(contentsOf: metaURL),
                let meta = try? PropertyListDecoder().decode(MaestroPreset.self, from: data) {
@@ -5351,7 +5369,12 @@ final class AppState: @unchecked Sendable {
                    let encoded = try? JSONEncoder().encode(meta.channelNames),
                    let str = String(data: encoded, encoding: .utf8) {
                     UserDefaults.standard.set(str, forKey: mixerNamesKey())
+                    namesRestored = true
                 }
+            }
+            // Over USB a package holds nothing else that is applied.
+            if device is XPCDeviceConnection {
+                notice = namesRestored ? PresetOpenError.usbNamesOnlyNotice : PresetOpenError.usbNothingNotice
             }
             print("[Maestro] loadPresetBundle: bundle loaded from \(url.lastPathComponent)")
         } else {
@@ -5361,6 +5384,7 @@ final class AppState: @unchecked Sendable {
             print("[Maestro] loadPresetBundle: flat preset loaded from \(url.lastPathComponent)")
         }
         viewReloadToken = UUID()
+        return notice
     }
 
     /// Re-read hardware-tracked state into AppState after a daemon preset recall.

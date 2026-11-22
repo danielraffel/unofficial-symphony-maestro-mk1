@@ -70,7 +70,7 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 
 Both connections can stay plugged in. The Symphony's front-panel mode decides which one Maestro uses: in **Symphony** mode audio and control go through ThunderBridge, and in a **USB** mode they go through USB. Switching modes on the front panel is followed automatically.
 
-Over USB the Mac sees two devices. **Symphony I/O : Maestro USB** is the one to use: it carries the hardware volume-key control that the class-compliant **Symphony I/O : USB Audio** device cannot. USB carries 16 channels each way; ThunderBridge carries 32.
+Over USB the Mac sees two devices. Use **Symphony I/O : Maestro USB** for the Mac’s sound output and volume keys. It has no inputs. For recording, or a DAW that wants one device for inputs and outputs, choose **Symphony I/O : USB Audio**. USB carries 16 channels each way; ThunderBridge carries 32.
 
 Some older AD16 option-board FPGA revisions report a valid 192 kHz clock but may deliver corrupt samples on the secondary 16-channel path. 192 kHz remains available so the behavior can be diagnosed and so systems that do not exhibit the issue are not unnecessarily restricted. If your unit shows full-scale or otherwise corrupt secondary inputs at 192 kHz, use a lower rate while reporting the exact module and FPGA revision in an issue.
 

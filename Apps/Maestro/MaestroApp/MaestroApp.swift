@@ -224,8 +224,14 @@ struct MaestroApp: App {
                             // Supports both bundle format (daemon recall via 'AERP')
                             // and legacy flat format (our old single-file format)
                             // Evidence: APMaestroFullViewWindow.m:497 — recallMaestroPreferenceFile
-                            try await appState.loadPresetBundle(from: url)
+                            let notice = try await appState.loadPresetBundle(from: url)
                             print("[Maestro] Preset loaded from \(url.lastPathComponent)")
+                            if let notice {
+                                let alert = NSAlert()
+                                alert.alertStyle = .informational
+                                alert.messageText = notice
+                                alert.runModal()
+                            }
                         } catch {
                             print("[Maestro] ERROR: Open preset failed: \(error)")
                             NSAlert(error: error).runModal()
@@ -331,6 +337,7 @@ struct MaestroApp: App {
                     openBundledOrRepoFile("Acknowledgements", extension: "html", repoSubpath: "Apps/Maestro/MaestroApp/Resources")
                 }
             }
+            CommandGroup(replacing: .newItem) { }
         }
 
     }

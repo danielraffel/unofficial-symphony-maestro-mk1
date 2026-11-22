@@ -24,6 +24,15 @@ struct TDMMeterPayloadTests {
         return Data(b)
     }
 
+    @Test("The echo is recognised with the group in wIndex, as the request is sent now")
+    func echoWithGroupInIndex() {
+        var b = [UInt8](repeating: 0, count: 64)
+        let setup: [UInt8] = [0xC0, 0x30, 0x00, 0x00, 0x01, 0x00, 0x40, 0x00]
+        for (i, v) in setup.enumerated() { b[32 + i] = v }
+        #expect(TDMMeterPayload.isSetupPacketEcho(Data(b), group: 1, requestLength: 64))
+        #expect(!TDMMeterPayload.isSetupPacketEcho(Data(b), group: 2, requestLength: 64))
+    }
+
     @Test("Captured dev-unit output reply is recognised as an echoed request")
     func capturedReplyIsEcho() {
         let d = Self.capturedGroup1Reply()
