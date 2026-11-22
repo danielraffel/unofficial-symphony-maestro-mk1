@@ -85,8 +85,18 @@ struct LoopSyncControls: View {
             master = state.settings.master
             source = state.sourceKey(.b)
         }
-        LabeledContent("Configured Role", value: appState.loopSyncState?.role(appState.activeUnit) ?? "Not read")
-        LabeledContent("Clock Status", value: appState.loopSyncState?.lockText(appState.activeUnit) ?? "Not read")
+        LabeledContent {
+            Text(appState.loopSyncState?.role(appState.activeUnit) ?? "Not read")
+        } label: {
+            InfoLabel(title: "Configured Role", paragraphs: SettingsInfoText.configuredRole,
+                      helpSection: .clock, appState: appState)
+        }
+        LabeledContent {
+            Text(appState.loopSyncState?.lockText(appState.activeUnit) ?? "Not read")
+        } label: {
+            InfoLabel(title: "Clock Status", paragraphs: SettingsInfoText.clockStatus,
+                      helpSection: .clock, appState: appState)
+        }
         if let error = appState.loopSyncError {
             Text(error).font(.caption).foregroundStyle(.secondary)
         }

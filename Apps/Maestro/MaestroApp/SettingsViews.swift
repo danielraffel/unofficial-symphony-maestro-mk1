@@ -754,7 +754,7 @@ struct DeviceSettingsView: View {
                 .maestroHelp("Which Symphony I/O the Mac's volume and mute keys control.")
             }
             if appState.keyboardVolumeOutputAvailable {
-                Picker("Audio Output", selection: Binding(
+                Picker(selection: Binding(
                     get: { appState.keyboardVolumeOutput(for: unit) },
                     set: { output in
                         guard output != appState.keyboardVolumeOutput(for: unit) else { return }
@@ -765,6 +765,9 @@ struct DeviceSettingsView: View {
                     ForEach(appState.keyboardVolumeEntries(for: unit), id: \.self) { entry in
                         Text(entry.label(speakerMode: speakerMode)).tag(entry)
                     }
+                } label: {
+                    InfoLabel(title: "Audio Output", paragraphs: SettingsInfoText.audioOutput,
+                              helpSection: .volumeKeys, appState: appState)
                 }
                 .pickerStyle(.menu)
                 .maestroHelp(appState.converterVolumeKeys
