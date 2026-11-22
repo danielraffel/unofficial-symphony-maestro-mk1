@@ -108,12 +108,20 @@ public struct CardLayout: Sendable, Equatable {
         /// replaced; `SymphonyIOVendorSpecific.h:940-951`).
         public var spdifReplace: [UInt32]
 
+        /// App analog input settings, indexed by the unit's analog strip order.
+        public var analogInputLevels: [AnalogInputLevel]
+        public var analogInputLabels: [String]
+
         public init(sampleRate: Double? = nil,
                     opticalIsSPDIF: [Bool?] = [nil, nil],
-                    spdifReplace: [UInt32] = [0, 0]) {
+                    spdifReplace: [UInt32] = [0, 0],
+                    analogInputLevels: [AnalogInputLevel] = [],
+                    analogInputLabels: [String] = []) {
             self.sampleRate = sampleRate
             self.opticalIsSPDIF = opticalIsSPDIF
             self.spdifReplace = spdifReplace
+            self.analogInputLevels = analogInputLevels
+            self.analogInputLabels = analogInputLabels
         }
 
         func isSPDIF(slot: Int) -> Bool { slot < opticalIsSPDIF.count && opticalIsSPDIF[slot] == true }
@@ -189,15 +197,34 @@ public struct CardLayout: Sendable, Equatable {
         return "ADAT \(preceding + number)"
     }
 
-    /// The name of an analog channel: "Line n", or "SPDIF Cx n" when the coax
-    /// replaces it (`SymphonyIO_Stream.cpp:636-660`).
+    /// The name of an analog channel, including the MicPre's input type and
+    /// the user's label when supplied by the app.
     public func analogChannelName(board: Int, channelOnCard channel: Int, isInput: Bool) -> String {
+        let preceding = board == 1
+            ? (isInput ? slot1.analogInputChannels : slot1.analogOutputChannels) : 0
+        let index = preceding + channel
+        if isInput, naming.analogInputLabels.indices.contains(index),
+           !naming.analogInputLabels[index].isEmpty {
+            return naming.analogInputLabels[index]
+        }
         if let coax = coaxReplaceName(board: board, boardChannel: channel, isInput: isInput) {
             return coax
         }
-        let preceding = board == 1
-            ? (isInput ? slot1.analogInputChannels : slot1.analogOutputChannels) : 0
-        return "Line \(preceding + channel + 1)"
+        if isInput, InputChannelLogic.micPreIsUsable(primary: slot1, secondary: slot2),
+           InputChannelLogic.isMicPreBacked(number: index + 1, micPreInstalled: true),
+           naming.analogInputLevels.indices.contains(index) {
+            return InputChannelLogic.channelLabel(number: index + 1, level: naming.analogInputLevels[index])
+        }
+        return "Line \(index + 1)"
+    }
+
+    public func namingAnalogInputs(levels: [AnalogInputLevel], labels: [String]) -> Self {
+        var names = naming
+        names.analogInputLevels = levels
+        names.analogInputLabels = labels
+        return Self(slot1: slot1, slot2: slot2, isKnown: isKnown,
+                    fallbackChannelCount: fallbackChannelCount, converter: converter,
+                    converters: converters, naming: names)
     }
 
     /// "SPDIF Cx n" for an input channel the board's coax replaces. The
@@ -224,7 +251,7 @@ public struct CardLayout: Sendable, Equatable {
             return (String(name[..<space]), String(name[name.index(after: space)...]))
         }
         let l = split(left), r = split(right)
-        if l.function == r.function { return "\(l.function) \(l.number)/\(r.number)" }
+        if !l.function.isEmpty && l.function == r.function { return "\(l.function) \(l.number)/\(r.number)" }
         return "\(left)/\(right)"
     }
 
@@ -392,8 +419,7 @@ public struct CardLayout: Sendable, Equatable {
         let board = index < slot1.analogInputChannels ? 0 : 1
         let channel = board == 0 ? index : index - slot1.analogInputChannels
         guard channel < card(atSlot: board).analogInputChannels else { return nil }
-        let name = analogChannelName(board: board, channelOnCard: channel, isInput: true)
-        return name.hasPrefix("SPDIF Cx") ? name : nil
+        return coaxReplaceName(board: board, boardChannel: channel, isInput: true)
     }
 
     /// The card that owns a 0-based analog output strip.

@@ -23,6 +23,22 @@ struct SoftwareReturnMeterGainTests {
         #expect(SoftwareReturnMeterGain.panByte(2) == 128)
     }
 
+    @Test("Maestro pan readout uses signed directions and 64 positions on each side")
+    func panReadouts() {
+        #expect(MixerValueConversion.panReadout(-1) == "<64")
+        #expect(MixerValueConversion.panReadout(-63.0 / 64) == "<63")
+        #expect(MixerValueConversion.panReadout(0) == "<0>")
+        #expect(MixerValueConversion.panReadout(1.0 / 64) == "1>")
+        #expect(MixerValueConversion.panReadout(1) == "64>")
+    }
+
+    @Test("all 129 pan positions round trip through their hardware bytes", arguments: 0...128)
+    func panRoundTrip(byte: Int) {
+        let position = Double(byte - 64) * MixerValueConversion.panStep
+        #expect(SoftwareReturnMeterGain.panByte(position) == byte)
+        #expect(MixerValueConversion.scaledToPan(SoftwareReturnMeterGain.panByte(position)) == position)
+    }
+
     @Test("centre pan at unity leaves both meters untouched")
     func centreUnity() {
         let g = SoftwareReturnMeterGain.gains(leftLevelDB: 0, rightLevelDB: 0, pan: 0, isMuted: false)

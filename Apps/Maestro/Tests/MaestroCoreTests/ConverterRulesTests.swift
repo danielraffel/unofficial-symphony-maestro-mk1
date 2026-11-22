@@ -392,7 +392,7 @@ struct ConverterSystemTests {
 
     @Test("clock picker: Internal and External for converters, the board inputs for a Symphony I/O")
     func clockChoices() {
-        #expect(ClockSourceMenu.converters.map(\.name) == ["Internal", "External (Word Clock)"])
+        #expect(ClockSourceMenu.converters.map(\.name) == ["Internal", "External"])
         #expect(ClockSourceMenu.converters.map(\.id) == [ClockSourceMenu.internalClock, ClockSourceMenu.wordClock])
         let symphony = ClockSourceMenu.thunderbolt(slot1: .analogADDA16, slot2: .none)
         #expect(symphony.count > ClockSourceMenu.converters.count)

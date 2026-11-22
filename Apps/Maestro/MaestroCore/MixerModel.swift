@@ -277,6 +277,16 @@ public enum MixerValueConversion: Sendable {
         Int(pan * 64.0) + MixerConstants.scaledPanZeroOffset
     }
 
+    /// Pan readout and knob steps in the original Maestro's -64...64 units.
+    public static let panStep = 1.0 / 64.0
+
+    public static func panReadout(_ pan: Double) -> String {
+        let position = SoftwareReturnMeterGain.panByte(pan) - MixerConstants.scaledPanZeroOffset
+        if position < 0 { return "<\(-position)" }
+        if position > 0 { return "\(position)>" }
+        return "<0>"
+    }
+
     /// Convert a hardware scaled pan integer to normalized value.
     /// Hardware: 0 to 128 → Domain: -1.0 to +1.0.
     public static func scaledToPan(_ scaled: Int) -> Float64 {

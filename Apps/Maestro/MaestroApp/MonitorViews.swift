@@ -307,6 +307,8 @@ struct MonitorToolbarView: View {
                     guard !appState.hardwareWritesSuspended else { return }
                     appState.speakerMuted.toggle()
                     let muted = appState.speakerMuted
+                    appState.markSetupEdited(.monitorControls)
+                    appState.showLevelOverlay(source: .speaker, level: appState.speakerLevel, muted: muted)
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
@@ -350,6 +352,8 @@ struct MonitorToolbarView: View {
                         }
                         um?.setActionName("Speaker Level")
                         undoSpeakerLevel = level
+                        appState.markSetupEdited(.monitorControls)
+                        appState.showLevelOverlay(source: .speaker, level: level, muted: appState.speakerMuted)
                         Task { await writeProperty(.outputLevel, value: .uint32(UInt32(max(0, -level)))) }
                         appState.writeASPVolume(level)
                     }
@@ -371,6 +375,8 @@ struct MonitorToolbarView: View {
                     guard !appState.hardwareWritesSuspended else { return }
                     appState.hp1Muted.toggle()
                     let muted = appState.hp1Muted
+                    appState.markSetupEdited(.monitorControls)
+                    appState.showLevelOverlay(source: .headphone1, level: appState.hp1Level, muted: muted)
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
@@ -411,6 +417,8 @@ struct MonitorToolbarView: View {
                         }
                         um?.setActionName("Headphone 1 Level")
                         undoHP1Level = level
+                        appState.markSetupEdited(.monitorControls)
+                        appState.showLevelOverlay(source: .headphone1, level: level, muted: appState.hp1Muted)
                         Task { await writeProperty(.headphone1Level, value: .uint32(UInt32(max(0, -level)))) }
                         appState.writeASPVolume(level, output: .headphone1)
                     }
@@ -430,6 +438,8 @@ struct MonitorToolbarView: View {
                     guard !appState.hardwareWritesSuspended else { return }
                     appState.hp2Muted.toggle()
                     let muted = appState.hp2Muted
+                    appState.markSetupEdited(.monitorControls)
+                    appState.showLevelOverlay(source: .headphone2, level: appState.hp2Level, muted: muted)
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
@@ -470,6 +480,8 @@ struct MonitorToolbarView: View {
                         }
                         um?.setActionName("Headphone 2 Level")
                         undoHP2Level = level
+                        appState.markSetupEdited(.monitorControls)
+                        appState.showLevelOverlay(source: .headphone2, level: level, muted: appState.hp2Muted)
                         Task { await writeProperty(.headphone2Level, value: .uint32(UInt32(max(0, -level)))) }
                         appState.writeASPVolume(level, output: .headphone2)
                     }

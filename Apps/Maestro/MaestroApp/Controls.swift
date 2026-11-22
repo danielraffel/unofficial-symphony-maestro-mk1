@@ -679,8 +679,8 @@ struct FaderView: View {
                                 let deltaY = (dragStartY - gesture.location.y) * sensitivity
                                 let span = range.upperBound - range.lowerBound
                                 let newValue = dragStartValue + (deltaY / Double(usableHeight)) * span
-                                value = (newValue / step).rounded() * step
-                                value = min(max(value, range.lowerBound), range.upperBound)
+                                let steppedValue = (newValue / step).rounded() * step
+                                value = min(max(steppedValue, range.lowerBound), range.upperBound)
                                 onUserChange?(value)
                                 // Option+Drag: forward delta to batch handler
                                 if NSEvent.modifierFlags.contains(.option), let batch = onBatchDrag {

@@ -32,7 +32,11 @@ struct SymphonyCardInputRoutingView: View {
                 .controlSize(.small)
                 .routingResetPrompt($resetPrompt) {
                     Task {
-                        do { try await appState.resetTwoUnitRouting(input: true); errorMessage = nil }
+                        do {
+                            try await appState.resetTwoUnitRouting(input: true)
+                            appState.markSetupEdited(.routing)
+                            errorMessage = nil
+                        }
                         catch { errorMessage = error.localizedDescription }
                     }
                 }
@@ -85,6 +89,7 @@ struct SymphonyCardInputRoutingView: View {
                         Task {
                             let edits = clear ? selectedEdits.mapValues { _ in -1 } : selectedEdits
                             let ok = await appState.applySymphonyCardInputs(edits)
+                            if ok { appState.markSetupEdited(.routing) }
                             errorMessage = ok ? nil : "The card refused the input route."
                             writing = false
                         }

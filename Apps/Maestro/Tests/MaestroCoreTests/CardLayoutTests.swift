@@ -617,6 +617,28 @@ struct ChannelNamingTests {
                    naming: .init(sampleRate: rate, opticalIsSPDIF: spdif, spdifReplace: replace))
     }
 
+    @Test func micPreNamesFollowInputLevelsAndCustomLabels() {
+        let base = layout(.optical, .micPre8)
+        for (level, name): (AnalogInputLevel, String) in [
+            (.mic, "Mic 1"), (.instrument, "Inst 1"), (.variable, "Line 1"),
+            (.plus4dBu, "Line 1"), (.minus10dBV, "Line 1"),
+        ] {
+            let named = base.namingAnalogInputs(levels: [level, level], labels: [])
+            #expect(named.analogChannelName(board: 0, channelOnCard: 0, isInput: true) == name)
+            #expect(named.mixerChannels.first?.label == name)
+            #expect(named.inputRoutingColumns.first?.stereoName == name + "/2")
+
+            let custom = base.namingAnalogInputs(levels: [level, level], labels: ["Vocal"])
+            #expect(custom.analogChannelName(board: 0, channelOnCard: 0, isInput: true) == "Vocal")
+            #expect(custom.mixerChannels.first?.label == "Vocal")
+            #expect(custom.inputRoutingColumns.first?.stereoName.hasPrefix("Vocal/") == true)
+            #expect(custom.inputRoutingColumns.map(\.routingByte) == base.inputRoutingColumns.map(\.routingByte))
+            #expect(custom.outputRoutingColumns == base.outputRoutingColumns)
+        }
+        let noMicPre = layout(.optical).namingAnalogInputs(levels: [.mic], labels: [])
+        #expect(noMicPre.mixerChannels.first?.label == "Line 1")
+    }
+
     @Test func eightByEightOpticalByRate() {
         #expect(layout(.optical, rate: 48000).digitalInputPairs.map(\.label)
                 == ["ADAT 1/2", "ADAT 3/4", "ADAT 5/6", "ADAT 7/8"])
