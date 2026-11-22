@@ -33,8 +33,10 @@ struct HelpView: View {
     @State private var jump: HelpSectionID?
     /// The section at the top of the page, marked in the list as you scroll.
     @State private var current: HelpSectionID?
-    /// An Up (-1) or Down (+1) arrow press waiting to move to the next section.
+    /// The last arrow press: Up (-1) or Down (+1), and a count that changes
+    /// with every press so that two presses the same way are both seen.
     @State private var arrowStep = 0
+    @State private var arrowPresses = 0
     @State private var arrowMonitor: Any?
 
     /// What is shown: everything, or what the search field matches.
@@ -100,21 +102,32 @@ struct HelpView: View {
                 appState.helpSection = nil
                 // Up and Down move through the sections wherever the focus is
                 // (the search field has it when Help opens).
+                // Only in Help's own sheet, so an Open or Save panel, the
+                // updater and input-method candidate lists keep their arrows.
+                if let arrowMonitor { NSEvent.removeMonitor(arrowMonitor) }
                 arrowMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                     let plain = event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty
-                    guard plain, event.keyCode == 125 || event.keyCode == 126 else { return event }
+                    guard plain, event.keyCode == 125 || event.keyCode == 126,
+                          let window = event.window, window.isSheet,
+                          (window.firstResponder as? NSTextView)?.hasMarkedText() != true
+                    else { return event }
                     arrowStep = event.keyCode == 125 ? 1 : -1
+                    arrowPresses &+= 1
                     return nil
                 }
+            }
+            // "How to Report a Bug" or a "See Help for more." while Help is open.
+            .onChange(of: appState.helpSection) { _, section in
+                guard let section else { return }
+                jump = section
+                appState.helpSection = nil
             }
             .onDisappear {
                 if let arrowMonitor { NSEvent.removeMonitor(arrowMonitor) }
                 arrowMonitor = nil
             }
-            .onChange(of: arrowStep) { _, step in
-                guard step != 0 else { return }
-                arrowStep = 0
-                if let next = HelpSearch.neighbour(of: current, in: sections.map(\.id), step: step) {
+            .onChange(of: arrowPresses) { _, _ in
+                if let next = HelpSearch.neighbour(of: current, in: sections.map(\.id), step: arrowStep) {
                     jump = next
                 }
             }

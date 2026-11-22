@@ -47,7 +47,7 @@ body:
     id: mac
     attributes:
       label: Mac and macOS version
-      placeholder: "Mac Studio M2, macOS 15.5"
+      placeholder: "Mac Studio M2, macOS 26.1"
     validations:
       required: true
   - type: textarea
