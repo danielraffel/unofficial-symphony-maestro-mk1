@@ -1812,6 +1812,13 @@ final class AppState: @unchecked Sendable {
     private var thunderboltInputMeterWords = ThunderboltInputMeterMap.Words(channels: [], digital: [])
     private var thunderboltInputMeterWordsPollStamp: Int = -1
     private var thunderboltInputMeterLayout: CardLayout?
+    /// ThunderBridge: the meter word each analog and digital output strip
+    /// reads, from the output table (`ThunderboltOutputMeterMap`); nil while
+    /// the cards or the table are not known, and for converters. Re-derived
+    /// every ~2 s, and at once when Output Routing is saved.
+    private var thunderboltOutputMeterWords: ThunderboltOutputMeterMap.Words?
+    private var thunderboltOutputMeterWordsPollStamp: Int = -1
+    private var thunderboltOutputMeterLayout: CardLayout?
     /// Count of consecutive all-zero TDM reads. Used to detect when signal stops
     /// and begin decaying held meter values (firmware returns zeros when idle too).
     private var tdmZeroReadCount: Int = 0
@@ -3742,9 +3749,24 @@ final class AppState: @unchecked Sendable {
                         let convertersMetered = self.thunderboltInputMeterLayout?.converterLayout != nil
                         var hostInputs = (0..<(convertersMetered ? ThunderboltInputMeterMap.converterWordCount
                                                 : ThunderboltInputMeterMap.hostInputCount)).map { dbW($0) }
-                        var outp = self.outputMeterLevels
-                        for i in 0..<outp.count { outp[i] = dbW(64 + i) }     // host playback 64-95
-                        newOutput = outp
+                        // Each output strip, analog or digital, reads the word
+                        // of what Output Routing plays on it: a software output
+                        // (64 + n) or a card mixer (128-131).
+                        self.refreshThunderboltOutputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                        let outputWords = self.thunderboltOutputMeterWords
+                        if let outputWords {
+                            newOutput = ThunderboltOutputMeterMap.levels(
+                                outputWords.analog, count: self.outputMeterLevels.count, level: dbW)
+                            self.digitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.digitalOutputMeterLevels,
+                                raw: ThunderboltOutputMeterMap.levels(outputWords.digital, level: dbW))
+                        } else {
+                            // Cards or table not known yet, or converters:
+                            // strip i is software output i.
+                            var outp = self.outputMeterLevels
+                            for i in 0..<outp.count { outp[i] = dbW(64 + i) }
+                            newOutput = outp
+                        }
 
                         // If the FPGA input snapshot is unavailable or silent,
                         // use the active Core Audio capture stream. This keeps
@@ -3811,7 +3833,18 @@ final class AppState: @unchecked Sendable {
                             let mixer1Peaks = softwareReturnDBFS(mixer: 1)
                             // Prefer the software source when the FPGA snapshot
                             // is all silence. Keep real FPGA values when present.
-                            if newOutput.max() ?? -60.0 <= -60.0 {
+                            if let outputWords {
+                                // Only when the snapshot carries no playback at
+                                // all; otherwise a silent strip is a true reading.
+                                if (64..<132).allSatisfy({ dbW($0) <= -60.0 }) {
+                                    let software = self.softwarePlaybackWordLevel(softwarePeaks)
+                                    newOutput = ThunderboltOutputMeterMap.levels(
+                                        outputWords.analog, count: self.outputMeterLevels.count, level: software)
+                                    self.digitalOutputMeterLevels = self.smoothMeterLevels(
+                                        self.digitalOutputMeterLevels,
+                                        raw: ThunderboltOutputMeterMap.levels(outputWords.digital, level: software))
+                                }
+                            } else if newOutput.max() ?? -60.0 <= -60.0 {
                                 newOutput = self.linearMeterLevels(
                                     from: softwarePeaks, count: self.outputMeterLevels.count)
                             }
@@ -3903,6 +3936,7 @@ final class AppState: @unchecked Sendable {
                             print("[MeterPoll] TB raw nonzero peaks: \(nz.isEmpty ? "(silence)" : nz)")
                         }
                     } else {
+                        var softwareDigitalOut: [Double]?
                         // FPGA meter DMA may be unavailable on this card revision.
                         // Preserve useful host-playback meters through the Core
                         // Audio IOProc while the device is actively streaming.
@@ -3931,8 +3965,16 @@ final class AppState: @unchecked Sendable {
                             } else {
                                 newInput = [Double](repeating: -60.0, count: self.inputMeterLevels.count)
                             }
-                            newOutput = self.linearMeterLevels(
-                                from: softwarePeaks, count: self.outputMeterLevels.count)
+                            self.refreshThunderboltOutputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                            if let outputWords = self.thunderboltOutputMeterWords {
+                                let software = self.softwarePlaybackWordLevel(softwarePeaks)
+                                newOutput = ThunderboltOutputMeterMap.levels(
+                                    outputWords.analog, count: self.outputMeterLevels.count, level: software)
+                                softwareDigitalOut = ThunderboltOutputMeterMap.levels(outputWords.digital, level: software)
+                            } else {
+                                newOutput = self.linearMeterLevels(
+                                    from: softwarePeaks, count: self.outputMeterLevels.count)
+                            }
                             let sources = [0, 1].map { mixer in
                                 let pair = max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))) * 2
                                 guard pair + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
@@ -3961,7 +4003,8 @@ final class AppState: @unchecked Sendable {
                         self.inputPeakHold = [Double](repeating: -60.0, count: self.inputPeakHold.count)
                         self.outputPeakHold = [Double](repeating: -60.0, count: self.outputPeakHold.count)
                         self.digitalInputMeterLevels = [Double](repeating: -60.0, count: self.digitalInputMeterLevels.count)
-                        self.digitalOutputMeterLevels = [Double](repeating: -60.0, count: self.digitalOutputMeterLevels.count)
+                        self.digitalOutputMeterLevels = softwareDigitalOut
+                            ?? [Double](repeating: -60.0, count: self.digitalOutputMeterLevels.count)
                         self.digitalInputPeakHold = [Double](repeating: -60.0, count: self.digitalInputPeakHold.count)
                         self.digitalOutputPeakHold = [Double](repeating: -60.0, count: self.digitalOutputPeakHold.count)
                     }
@@ -4699,6 +4742,40 @@ final class AppState: @unchecked Sendable {
     /// writes over it (only when the cards were read this session, as there).
     func invalidateThunderboltInputMeterMap() {
         thunderboltInputMeterWordsPollStamp = -1
+    }
+
+    /// Output Routing changed: read the output meter map again at the next poll.
+    func invalidateThunderboltOutputMeterMap() {
+        thunderboltOutputMeterWordsPollStamp = -1
+    }
+
+    @MainActor
+    private func refreshThunderboltOutputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
+        let layout = cardLayout
+        guard thunderboltOutputMeterWordsPollStamp < 0
+                || pollCount - thunderboltOutputMeterWordsPollStamp >= 40
+                || thunderboltOutputMeterLayout != layout else { return }
+        thunderboltOutputMeterWordsPollStamp = pollCount
+        thunderboltOutputMeterLayout = layout
+        // Converters keep host channel n on strip n; unit A's table needs its
+        // cards and identity read (as the restore does).
+        guard layout.converterLayout == nil, cardTableUnreadableReason() == nil else {
+            thunderboltOutputMeterWords = nil
+            return
+        }
+        thunderboltOutputMeterWords = ThunderboltOutputMeterMap.words(
+            layout: layout, table: thunderboltOutputTable(for: tb, quiet: true), unitBActive: unitBOnCard)
+    }
+
+    /// A level per meter word from Core Audio's playback peaks, for when the
+    /// card's snapshot has none: word 64 + n is software output n. The card
+    /// mixers' outputs cannot be measured this way and read as silence.
+    private func softwarePlaybackWordLevel(_ peaks: [Float]) -> (Int) -> Double {
+        { word in
+            let channel = word - Int(ThunderboltCardRouting.pciOutBase)
+            guard channel >= 0, channel < peaks.count else { return -60.0 }
+            return SoftwareOutputMeterMap.dBFS(linearPeak: peaks[channel])
+        }
     }
 
     private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {

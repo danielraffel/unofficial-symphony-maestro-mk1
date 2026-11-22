@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.22 (beta)
+
+This beta fixes the output meters on ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.21.
+
+Thanks to the tester who reported that the AES meters did not move while music played through AES 3/4.
+
+### Fixed
+
+- **On ThunderBridge and PCIe, the digital output meters on the Output page now work:** AES, ADAT/SMUX and S/PDIF. They stayed dark whatever was playing; the audio itself was not affected.
+- **On ThunderBridge and PCIe, each output meter now shows what Output Routing plays on that output:** the software output or the mixer you routed there, and nothing for an output that is off. Before, output meter 1 always showed software output 1, meter 2 software output 2, and so on, whatever the routing.
+- **With an 8x8 card in slot 1 and a 16-channel analog card in slot 2, the second card's output meters show its own outputs.** They showed the first card's digital outputs.
+
+### Release notes
+
+- The ThunderBridge and PCIe driver is unchanged from 0.9.21 (0.11.17, build 143), so there is no need to reconnect anything after updating.
+- Over USB nothing changes.
+
+### Please test
+
+- **ThunderBridge or PCIe, Output page:** play music from the Mac to each output pair in turn, analog and digital. Does that pair's meter move, and no other? Try it with Optical Format on ADAT/SMUX and on SPDIF, and with AES if your card has it.
+- **Output Routing:** route a different software pair, then Mixer 1, to an output. Does its meter follow?
+
 ## 0.9.21 (beta)
 
 This beta removes Input Monitoring and puts Output Routing, Input Routing and the mixer back to how Apogee's software worked. It lets you choose which output the Mac's volume and mute keys control, adds VBus, Apogee's virtual channels for sending audio from one application to another, and updates the ThunderBridge and PCIe driver. It contains everything in 0.9.18.
