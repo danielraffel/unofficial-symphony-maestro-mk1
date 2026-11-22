@@ -248,10 +248,11 @@ struct InputRoutingView: View {
                         hoverRow: $hoverRow,
                         hoverCol: $hoverCol,
                         onCellTap: { row, col in
-                            guard !isLoadingRoutes, canWrite else { return }
+                            guard !isLoadingRoutes, canWrite, routes[row] != col else { return }
                             routes[row] = col
                             userChosenRows.insert(row)
                             persistChosenRows()
+                            appState.markSetupEdited(.routing)
                             Task { await writeRoute(row: row, col: col) }
                         }
                     )
@@ -479,6 +480,7 @@ struct InputRoutingView: View {
         if appState.unitBOnCard {
             do {
                 try await appState.resetTwoUnitRouting(input: true)
+                appState.markSetupEdited(.routing)
                 errorMessage = nil
             } catch { errorMessage = error.localizedDescription }
             return
@@ -552,6 +554,7 @@ struct InputRoutingView: View {
             userChosenRows.removeAll()
         }
         persistChosenRows()
+        appState.markSetupEdited(.routing)
         if appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] InputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")
@@ -776,6 +779,7 @@ struct OutputRoutingView: View {
                             }
                             userChosenRows.insert(row)
                             persistChosenRows()
+                            appState.markSetupEdited(.routing)
                             Task { await writeRoute(row: row, col: col, clear: removing) }
                         }
                     )
@@ -1018,6 +1022,7 @@ struct OutputRoutingView: View {
         let complete = (0..<TwoUnitOutputRouting.rowCount).allSatisfy(unitBChosenRows.contains)
         appState.unitBOutputRoutingCache?.save(complete ? TwoUnitOutputRouting.completeTable(chosen) : chosen)
         appState.outputRoutingSaved()
+        appState.markSetupEdited(.routing)
         let destLeft = unitBColumns[col].routingByte
         Task {
             do {
@@ -1276,6 +1281,7 @@ struct OutputRoutingView: View {
         if appState.unitBOnCard {
             do {
                 try await appState.resetTwoUnitRouting(input: false)
+                appState.markSetupEdited(.routing)
                 errorMessage = nil
             } catch { errorMessage = error.localizedDescription }
             return
@@ -1328,6 +1334,7 @@ struct OutputRoutingView: View {
         // (On ThunderBridge Maestro writes the default table on every connect.)
         userChosenRows.removeAll()
         persistChosenRows()
+        appState.markSetupEdited(.routing)
         appState.syncUSBHelperSoftwareReturn()
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] OutputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")

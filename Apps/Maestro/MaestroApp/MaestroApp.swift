@@ -77,6 +77,9 @@ struct MaestroApp: App {
                 .environmentObject(updates)
                 .onReceive(updates.$effectiveChannel) { appState.updateChannel = $0 }
                 .environment(diagnostics)
+                .onChange(of: appState.initialSetupRestoreFinished) { _, ready in
+                    if ready { appDelegate.openPendingSetup() }
+                }
                 .onAppear {
                     appDelegate.appState = appState
                     diagnostics.appState = appState
@@ -189,54 +192,25 @@ struct MaestroApp: App {
 
                 Divider()
 
-                Button("Save Preset...") {
-                    Task { @MainActor in
-                        let panel = NSSavePanel()
-                        panel.title = "Save Maestro Preset"
-                        // .mst2 bundles are macOS packages (directories with .mst2 extension)
-                        panel.allowedContentTypes = [.init(filenameExtension: "mst2")!]
-                        panel.nameFieldStringValue = "Untitled.mst2"
-                        guard panel.runModal() == .OK, let url = panel.url else { return }
-                        do {
-                            // Bundle format: daemon writes full hardware state via 'AESP'
-                            // Evidence: APMaestroFullViewWindow.m:445 — storeMaestroPreferenceFile
-                            try await appState.savePresetBundle(to: url)
-                            print("[Maestro] Preset bundle saved to \(url.lastPathComponent)")
-                        } catch {
-                            print("[Maestro] ERROR: Save preset failed: \(error)")
-                            NSAlert(error: error).runModal()
-                        }
-                    }
+                Button("Save") {
+                    Task { await appState.saveCurrentSetup() }
                 }
                 .keyboardShortcut("s")
 
+                Button("Save As...") {
+                    Task { await appState.saveCurrentSetup(showPanel: true) }
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+
                 Button("Open Preset...") {
-                    Task { @MainActor in
-                        let panel = NSOpenPanel()
-                        panel.title = "Open Maestro Preset"
-                        // Allow both bundles (directories) and legacy flat files
-                        panel.allowedContentTypes = [.init(filenameExtension: "mst2")!]
-                        panel.allowsMultipleSelection = false
-                        panel.canChooseFiles = true
-                        panel.canChooseDirectories = true  // .mst2 bundles are directories
-                        guard panel.runModal() == .OK, let url = panel.urls.first else { return }
-                        do {
-                            // Supports both bundle format (daemon recall via 'AERP')
-                            // and legacy flat format (our old single-file format)
-                            // Evidence: APMaestroFullViewWindow.m:497 — recallMaestroPreferenceFile
-                            let notice = try await appState.loadPresetBundle(from: url)
-                            print("[Maestro] Preset loaded from \(url.lastPathComponent)")
-                            if let notice {
-                                let alert = NSAlert()
-                                alert.alertStyle = .informational
-                                alert.messageText = notice
-                                alert.runModal()
-                            }
-                        } catch {
-                            print("[Maestro] ERROR: Open preset failed: \(error)")
-                            NSAlert(error: error).runModal()
-                        }
-                    }
+                    let panel = NSOpenPanel()
+                    panel.title = "Open Maestro Preset"
+                    panel.allowedContentTypes = [.maestroSetup]
+                    panel.allowsMultipleSelection = false
+                    panel.canChooseFiles = true
+                    panel.canChooseDirectories = true  // .mst2 bundles are directories
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    Task { await appState.openSetupFromUser(url) }
                 }
                 .keyboardShortcut("o")
                 .disabled(appState.hardwareWritesSuspended)
@@ -261,7 +235,7 @@ struct MaestroApp: App {
                         guard !name.isEmpty else { return }
                         do {
                             // Save full hardware state via daemon bundle format (same as Save Preset...)
-                            try await appState.savePresetBundle(to: presetLibrary.url(for: name))
+                            try await appState.savePresetBundle(to: presetLibrary.url(for: name), associateWithDocument: false)
                             presetLibrary.refresh()
                         } catch {
                             let err = NSAlert()
@@ -271,7 +245,6 @@ struct MaestroApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
 
                 Divider()
 
@@ -283,7 +256,7 @@ struct MaestroApp: App {
                             Task { @MainActor in
                                 do {
                                     // Supports both bundle format (daemon AERP) and legacy flat format
-                                    try await appState.loadPresetBundle(from: presetLibrary.url(for: name))
+                                    try await appState.loadPresetBundle(from: presetLibrary.url(for: name), associateWithDocument: false)
                                 } catch {
                                     print("[Maestro] Load preset '\(name)' failed: \(error)")
                                     NSAlert(error: error).runModal()

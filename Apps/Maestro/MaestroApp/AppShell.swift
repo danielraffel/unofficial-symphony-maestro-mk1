@@ -159,11 +159,18 @@ struct ContentView: View {
             .toolbarBackground(Color(.windowBackgroundColor), for: .windowToolbar)
             .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             .background(UnborderedToolbarApplicator())
+            .background(WindowDocumentBridge())
+            .navigationTitle(appState.setupDocumentTitle)
         }
         .onAppear {
+            WindowDocumentBridge.currentAppState = appState
+            WindowDocumentBridge.updateEditedState()
             if UserDefaults.standard.string(forKey: "MaestroInitialArea") == nil {
                 appState.selectedArea = NavigationArea.named(storedSelectedArea) ?? .input
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            _ = appState.existingSetupURL()
         }
         .onChange(of: appState.selectedArea) { _, area in
             storedSelectedArea = area.rawValue
@@ -203,7 +210,13 @@ struct ContentView: View {
                 await appState.syncSavedStateToHardware()
                 // And the names that follow them (prefix, optical format, Replaces).
                 await appState.refreshChannelNaming()
+                if appState.transportType == .thunderbolt {
+                    appState.syncCardMixerToHardware()
+                    await appState.cardMixerRestoreRun?.task.value
+                }
+                await appState.recallMostRecentSetupIfEnabled()
             }
+            appState.initialSetupRestoreFinished = true
             // Follow the unit's front panel encoder (USB). Idles without a unit.
             appState.startFrontPanelSync()
             // Start meter polling immediately so Input/Output tab meter bars
@@ -216,9 +229,6 @@ struct ContentView: View {
             // when launch correctly classified the endpoint as disconnected.
             if appState.transportType == .thunderbolt {
                 appState.startThunderboltHealthCheck()
-                // D5: restore the card mixer on a fresh driver even when the
-                // Mixer page is never opened. A stored task: launch goes on.
-                if appState.connectionMode == .hardware { appState.syncCardMixerToHardware() }
             }
             // Connected over USB with a ThunderBridge also present: keep probing
             // it so a dext that comes back (same Core Audio ID, no device-list

@@ -737,6 +737,7 @@ struct OutputControlsView: View {
                         arcColor: speakerMuted ? .red.opacity(0.4) : speakerDim ? .orange.opacity(0.6) : Color(red: 0.52, green: 0.69, blue: 0.98),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
+                            appState.showLevelOverlay(source: .speaker, level: level, muted: speakerMuted)
                             Task { await writeMonitorProperty(.outputLevel, value: .uint32(UInt32(max(0, -level)))) }
                             if monitorTarget.unit == .a { appState.writeASPVolume(level) }
                         }
@@ -758,6 +759,7 @@ struct OutputControlsView: View {
                                  tooltip: appState.converterVolumeKeys ? ConverterMonitorText.mute
                                      : "Mute — silences the speaker output.",
                                  enabled: speakerControlsEnabled) {
+                        appState.showLevelOverlay(source: .speaker, level: speakerLevel, muted: speakerMuted)
                         Task { await writeMonitorProperty(.outputMute, value: .bool(speakerMuted)) }
                         if monitorTarget.unit == .a { appState.writeASPMute(speakerMuted) }
                     }
@@ -869,6 +871,7 @@ struct OutputControlsView: View {
                         arcColor: hp1Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
+                            appState.showLevelOverlay(source: .headphone1, level: level, muted: hp1Muted)
                             Task { await writeMonitorProperty(.headphone1Level, value: .uint32(UInt32(max(0, -level)))) }
                             if monitorTarget.unit == .a { appState.writeASPVolume(level, output: .headphone1) }
                         }
@@ -879,6 +882,7 @@ struct OutputControlsView: View {
 
                     outputToggle("M", isOn: hp1MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 1.") {
+                        appState.showLevelOverlay(source: .headphone1, level: hp1Level, muted: hp1Muted)
                         Task { await writeMonitorProperty(.headphone1Mute, value: .bool(hp1Muted)) }
                         if monitorTarget.unit == .a { appState.writeASPMute(hp1Muted, output: .headphone1) }
                     }
@@ -930,6 +934,7 @@ struct OutputControlsView: View {
                         arcColor: hp2Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
+                            appState.showLevelOverlay(source: .headphone2, level: level, muted: hp2Muted)
                             Task { await writeMonitorProperty(.headphone2Level, value: .uint32(UInt32(max(0, -level)))) }
                             if monitorTarget.unit == .a { appState.writeASPVolume(level, output: .headphone2) }
                         }
@@ -940,6 +945,7 @@ struct OutputControlsView: View {
 
                     outputToggle("M", isOn: hp2MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 2.") {
+                        appState.showLevelOverlay(source: .headphone2, level: hp2Level, muted: hp2Muted)
                         Task { await writeMonitorProperty(.headphone2Mute, value: .bool(hp2Muted)) }
                         if monitorTarget.unit == .a { appState.writeASPMute(hp2Muted, output: .headphone2) }
                     }
@@ -1034,6 +1040,7 @@ struct OutputControlsView: View {
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output),
                                     value: .uint32(optVal)
                                 )
+                                appState.markSetupEdited(.outputChannelSettings)
                                 appState.saveDigitalSetting(.spdifMirrorID, slot: 0, value: optVal, for: target)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 1-2 write failed: \(error)")
@@ -1073,6 +1080,7 @@ struct OutputControlsView: View {
                                     PropertyAddress(selector: .spdifMirrorID, scope: .output, element: 1),
                                     value: .uint32(optVal)
                                 )
+                                appState.markSetupEdited(.outputChannelSettings)
                                 appState.saveDigitalSetting(.spdifMirrorID, slot: 1, value: optVal, for: target)
                             } catch {
                                 print("[Maestro] SPDIF Mirror 3-4 write failed: \(error)")
@@ -1190,6 +1198,7 @@ struct OutputControlsView: View {
         // take it, so neither save nor show it.
         guard !appState.hardwareWritesSuspended else { return initializeOutputChannels() }
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.outputKey)
+        appState.markSetupEdited(.outputChannelSettings)
     }
 
     private func loadSPDIFMirrors() async {
@@ -1441,6 +1450,7 @@ struct OutputControlsView: View {
         do {
             guard appState.isCurrent(monitorTarget), let device = monitorTarget.device else { return }
             try await device.setProperty(PropertyAddress(selector: selector), value: value)
+            appState.markSetupEdited(.monitorControls)
         } catch {
             print("[Maestro] ERROR: writeMonitorProperty \(selector) failed: \(error)")
         }

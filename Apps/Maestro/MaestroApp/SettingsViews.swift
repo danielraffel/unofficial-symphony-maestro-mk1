@@ -735,7 +735,11 @@ struct DeviceSettingsView: View {
             if hasTwoMonitorDevices {
                 Picker("Peripheral", selection: Binding(
                     get: { appState.monitorDevice },
-                    set: { appState.chooseMonitorDevice($0) }
+                    set: { unit in
+                        guard unit != appState.monitorDevice else { return }
+                        appState.chooseMonitorDevice(unit)
+                        appState.markSetupEdited(.deviceSettings)
+                    }
                 )) {
                     Text(KeyboardVolumeOutput.peripheralName(prefix: appState.peripheralPrefix, name: "Symphony I/O"))
                         .tag(DeviceUnit.a)
@@ -748,7 +752,11 @@ struct DeviceSettingsView: View {
             if appState.keyboardVolumeOutputAvailable {
                 Picker("Audio Output", selection: Binding(
                     get: { appState.keyboardVolumeOutput(for: unit) },
-                    set: { appState.chooseKeyboardVolumeOutput($0, unit: unit) }
+                    set: { output in
+                        guard output != appState.keyboardVolumeOutput(for: unit) else { return }
+                        appState.chooseKeyboardVolumeOutput(output, unit: unit)
+                        appState.markSetupEdited(.deviceSettings)
+                    }
                 )) {
                     ForEach(appState.keyboardVolumeEntries(for: unit), id: \.self) { entry in
                         Text(entry.label(speakerMode: speakerMode)).tag(entry)
@@ -807,14 +815,7 @@ struct DeviceSettingsView: View {
             .onChange(of: meterBank1Source) { _, newValue in
                 guard !isLoading else { return }
                 Task {
-                    do {
-                        try await appState.unitDevice?.setProperty(
-                            PropertyAddress(selector: .metersShowInput, element: 1),
-                            value: .uint32(newValue)
-                        )
-                    } catch {
-                        print("[Maestro] ERROR: meterBank1Source setProperty failed: \(error)")
-                    }
+                    await writeProperty(.metersShowInput, element: 1, value: .uint32(newValue))
                 }
             }
 
@@ -827,14 +828,7 @@ struct DeviceSettingsView: View {
             .onChange(of: meterBank2Source) { _, newValue in
                 guard !isLoading else { return }
                 Task {
-                    do {
-                        try await appState.unitDevice?.setProperty(
-                            PropertyAddress(selector: .metersShowInput, element: 2),
-                            value: .uint32(newValue)
-                        )
-                    } catch {
-                        print("[Maestro] ERROR: meterBank2Source setProperty failed: \(error)")
-                    }
+                    await writeProperty(.metersShowInput, element: 2, value: .uint32(newValue))
                 }
             }
 
@@ -847,14 +841,7 @@ struct DeviceSettingsView: View {
             .onChange(of: peakHoldMode) { _, newValue in
                 guard !isLoading else { return }
                 Task {
-                    do {
-                        try await appState.unitDevice?.setProperty(
-                            PropertyAddress(selector: .peakHoldMode),
-                            value: .uint32(newValue)
-                        )
-                    } catch {
-                        print("[Maestro] ERROR: peakHoldMode setProperty failed: \(error)")
-                    }
+                    await writeProperty(.peakHoldMode, value: .uint32(newValue))
                 }
             }
 
@@ -867,14 +854,7 @@ struct DeviceSettingsView: View {
             .onChange(of: overHoldMode) { _, newValue in
                 guard !isLoading else { return }
                 Task {
-                    do {
-                        try await appState.unitDevice?.setProperty(
-                            PropertyAddress(selector: .oversHoldMode),
-                            value: .uint32(newValue)
-                        )
-                    } catch {
-                        print("[Maestro] ERROR: oversHoldMode setProperty failed: \(error)")
-                    }
+                    await writeProperty(.oversHoldMode, value: .uint32(newValue))
                 }
             }
         }
@@ -1299,8 +1279,10 @@ struct DeviceSettingsView: View {
                 throw DeviceConnectionError.transportError("Optical format readback was unavailable")
             }
             guard settingsLoadID == loadID else { return }
+            let previous = card == 0 ? opticalFormatCard1 : opticalFormatCard2
             setOpticalReadback(actual, card: card)
             appState.rememberUnitDigitalSetting(address.selector, slot: Int(card), value: actual)
+            if actual != previous { appState.markSetupEdited(.deviceSettings) }
             errorMessage = actual == format ? nil : "Card \(card + 1) did not confirm the requested optical format."
         } catch {
             guard settingsLoadID == loadID else { return }
@@ -1453,9 +1435,10 @@ struct DeviceSettingsView: View {
     }
 
     private func saveInsertLabels(_ labels: InsertLabels) {
-        guard let data = try? JSONEncoder().encode(labels.storage),
+        guard labels.storage != insertLabels.storage, let data = try? JSONEncoder().encode(labels.storage),
               let json = String(data: data, encoding: .utf8) else { return }
         insertLabelsJSON = json
+        appState.markSetupEdited(.deviceSettings)
     }
 
     /// One insert's name field. Binding writes through `InsertLabels`, which
@@ -1485,13 +1468,14 @@ struct DeviceSettingsView: View {
         }
     }
 
-    private func writeProperty(_ selector: AudioPropertySelector, value: PropertyValue) async {
+    private func writeProperty(_ selector: AudioPropertySelector, element: UInt32 = 0, value: PropertyValue) async {
         guard let device = appState.unitDevice else { return }
         do {
             try await device.setProperty(
-                PropertyAddress(selector: selector),
+                PropertyAddress(selector: selector, element: element),
                 value: value
             )
+            appState.markSetupEdited(.deviceSettings)
             errorMessage = nil
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"
@@ -2128,6 +2112,8 @@ struct AppSettingsView: View {
     @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
     @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
     @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
+    @AppStorage("openMostRecentSetupAtLaunch") private var openMostRecentSetupAtLaunch = false
+    @AppStorage("showLevelOverlay") private var showLevelOverlay = true
     /// Separate from Device Settings › Info's Copy so the two buttons never flash
     /// each other's checkmark.
     @State private var showSoftwareCopied: Bool = false
@@ -2153,6 +2139,12 @@ struct AppSettingsView: View {
 
                 Toggle("Remember Input, Output, and Mixer scroll positions", isOn: $rememberControlTabScrollPositions)
                     .maestroHelp("Keep each wide control tab at its current horizontal position until Maestro quits")
+
+                Toggle("Open the most recent setup file at launch", isOn: $openMostRecentSetupAtLaunch)
+                    .maestroHelp("Recall the setup file remembered by Save Preset or Open Preset after the unit finishes restoring")
+
+                Toggle("Show level overlay", isOn: $showLevelOverlay)
+                    .maestroHelp("Show a temporary level display when a monitor level, mute or preamp gain changes")
             }
 
             Section("When a Device Connects") {

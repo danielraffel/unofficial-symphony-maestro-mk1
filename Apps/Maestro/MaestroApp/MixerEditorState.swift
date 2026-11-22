@@ -84,5 +84,6 @@ struct MixerEditorState {
             forKey: sourceKey)
         // Keep the Software Return and USB Master meters in step with the faders and mute.
         appState.refreshSoftwareReturnMeterGains()
+        appState.markSetupEdited(.mixer)
     }
 }

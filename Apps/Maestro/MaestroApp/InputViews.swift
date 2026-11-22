@@ -589,6 +589,7 @@ struct InputControlsView: View {
         // take it, so neither save nor show it.
         guard !appState.hardwareWritesSuspended else { return restoreSavedChannels() }
         appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
+        appState.markSetupEdited(.inputChannelSettings)
     }
 
     /// Put the strips back to the saved state (a binding has already changed
@@ -814,6 +815,10 @@ struct InputControlsView: View {
             Task { await writeChannelProperty(i, InputChannelLogic.gainSelector(for: level), value: .uint32(value), on: device) }
         }
         saveChannelStates()
+        if result.changed.contains(index) {
+            appState.showLevelOverlay(source: .micPre(channel: index, state: channels[index]),
+                                      level: channels[index].gain)
+        }
     }
 
     /// Group assignment. Joining a group does NOT equalise gains — members keep
@@ -1027,6 +1032,7 @@ struct InputControlsView: View {
                                 // and mixer labels, as the daemon renamed it.
                                 if element < 2 {
                                     appState.setSPDIFReplaceNaming(slot: Int(element), value: optVal, for: target)
+                                    appState.markSetupEdited(.inputChannelSettings)
                                     appState.saveDigitalSetting(.spdifReplaceID, slot: Int(element),
                                                                 value: optVal, for: target)
                                 }
