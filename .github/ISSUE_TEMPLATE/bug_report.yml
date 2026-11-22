@@ -9,7 +9,12 @@ body:
 
         1. Submit this issue and copy its link.
         2. In Maestro, turn on **Diagnostics** in App Settings › Diagnostics & Feedback, then make the problem happen.
+
+           <img src="https://raw.githubusercontent.com/danielraffel/unofficial-symphony-maestro-mk1/main/.github/images/diagnostics-turn-on.png" width="600" alt="App Settings with Diagnostics turned on and the Stop Diagnostics button">
+
         3. Press **Stop Diagnostics**, paste the issue's link under **Existing GitHub issue**, and press **Agree and Send**.
+
+           <img src="https://raw.githubusercontent.com/danielraffel/unofficial-symphony-maestro-mk1/main/.github/images/diagnostics-issue-link.png" width="600" alt="The diagnostics window, with the Existing GitHub issue field for the issue's link">
 
         The report goes privately to the developer, so there is no need to attach it here.
   - type: textarea
