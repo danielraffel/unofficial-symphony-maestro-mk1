@@ -114,6 +114,15 @@ static int sVerbose = 0;
 static uint32_t gTuneBufferFrames = 0;
 static uint32_t gTuneJitterMargin = 0;
 static uint32_t gTuneMinDelay     = 0;
+/* The defaults since 0.9.23: a 128-frame IO buffer on the USB device and 128
+   frames of slack and floor. Measured on a Symphony I/O over USB at 48 kHz
+   (2026-11-22, Tools/latency-sweep.swift): no late write and at least 417
+   frames of headroom with every core busy; 64/64/64 also held (350). The
+   reported latency of "Maestro USB" goes from 39.0 ms to 20.3 ms. Before:
+   the device's own 512-frame buffer, 256 slack, 512 floor. */
+#define DEFAULT_IO_BUFFER_FRAMES 128u
+#define DEFAULT_JITTER_MARGIN    128u
+#define DEFAULT_MIN_DELAY        128u
 /* Worst headroom (frames the plugin had written beyond what we read) since the
    output last started or the tuning changed; negative = audio was read before
    it was written, i.e. a dropout. Written on the render thread only. */
@@ -1228,14 +1237,14 @@ static void start_audio_output(MaestroAudioShm* shm)
            kept per process, so other apps playing to the device keep theirs.
            A smaller buffer is what lets D (the latency this bridge adds) be
            smaller, since D must cover two of our buffers. */
-        if (gTuneBufferFrames) {
+        {
             AudioValueRange range = { 0, 0 };
             AudioObjectPropertyAddress r = {
                 kAudioDevicePropertyBufferFrameSizeRange,
                 kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
             };
             UInt32 rsz = (UInt32)sizeof(range);
-            UInt32 want = gTuneBufferFrames;
+            UInt32 want = gTuneBufferFrames ? gTuneBufferFrames : DEFAULT_IO_BUFFER_FRAMES;
             if (AudioObjectGetPropertyData(devID, &r, 0, NULL, &rsz, &range) == noErr && range.mMaximum > 0) {
                 if (want < (UInt32)range.mMinimum) want = (UInt32)range.mMinimum;
                 if (want > (UInt32)range.mMaximum) want = (UInt32)range.mMaximum;
@@ -1253,7 +1262,9 @@ static void start_audio_output(MaestroAudioShm* shm)
         if (AudioObjectGetPropertyData(devID, &a, 0, NULL, &sz, &safety) != noErr)
             safety = 0;
 
-        uint32_t D = maestro_shm_compute_delay_tuned(bufFrames, safety, gTuneJitterMargin, gTuneMinDelay);
+        uint32_t D = maestro_shm_compute_delay_tuned(bufFrames, safety,
+            gTuneJitterMargin ? gTuneJitterMargin : DEFAULT_JITTER_MARGIN,
+            gTuneMinDelay ? gTuneMinDelay : DEFAULT_MIN_DELAY);
         if (D >= MAESTRO_SHM_RING_FRAMES / 2)
             LOG_ERR("D clamped at %u — device buffer %u is too large for the ring", D, bufFrames);
         if (shm) {
