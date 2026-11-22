@@ -39,7 +39,7 @@
 // FPGA register map
 #include "Sym64Registers.h"
 #include "SymphonyTimingProfile.h"
-#include "SymphonyMixerPan.h"
+#include "SymphonyMixerCoef.h"
 #include "SymphonyChannelNames.h"
 #include "SymphonyCardMixerRouting.h"
 #include "SymphonyOptionBoard.h"
@@ -10311,41 +10311,6 @@ kern_return_t IMPL(SymphonyThunderbridge, NewUserClient)
     return kIOReturnSuccess;
 }
 
-// Card-mixer gain table: index = app fader byte (dB+48, 0..48 → -48..0 dB) →
-// card coefficient (top-16 gain, /4 for 12 dB headroom). index 48 = 0 dB = unity
-// (0x20000000); index 0 = -48 dB. Precomputed (dext has no pow()): matches
-// ConvertMixerGaindB(dB) = ((int)(pow(10,dB/20)/4 * 0x8000) & 0xFFFF) << 16.
-static const uint32_t kMixerGainTable[49] = {
-    0x00210000, 0x00250000, 0x00290000, 0x002e0000, 0x00340000, 0x003a0000,
-    0x00410000, 0x00490000, 0x00520000, 0x005c0000, 0x00670000, 0x00740000,
-    0x00820000, 0x00920000, 0x00a30000, 0x00b70000, 0x00ce0000, 0x00e70000,
-    0x01030000, 0x01230000, 0x01460000, 0x016e0000, 0x019b0000, 0x01cd0000,
-    0x02050000, 0x02440000, 0x028b0000, 0x02da0000, 0x03330000, 0x03970000,
-    0x04070000, 0x04850000, 0x05120000, 0x05b10000, 0x06630000, 0x072a0000,
-    0x080a0000, 0x09050000, 0x0a1f0000, 0x0b5b0000, 0x0cbd0000, 0x0e4b0000,
-    0x100a0000, 0x11ff0000, 0x14310000, 0x16a70000, 0x196b0000, 0x1c850000,
-    0x20000000,
-};
-
-
-
-// Write one card-mixer stereo coefficient pair (L/R) for a level+pan+play state.
-// lvl is a dB+48 byte (0..48); pan (pan+1)*64; play=false → muted (coeff 0).
-// A gain-table index after the converter volume-key trim (dB below the
-// clamped fader index). At or above 0 it is the table entry itself, so a zero
-// trim writes exactly what the faders alone write. Below the table's -48 dB
-// floor each 6 dB is one right shift of the entry 6 steps up (6.02 dB per
-// shift, within 0.1 dB per step), kept to the top 16 bits the card uses, so the
-// lowest key steps stay distinct instead of clamping together.
-static uint32_t TrimmedMixerCoef(int index)
-{
-    if (index >= 0) return kMixerGainTable[index > 48 ? 48 : index];
-    const int shift = (-index + 5) / 6;
-    if (shift >= 16) return kMixerMuteCoeff;
-    const uint32_t v = (kMixerGainTable[index + 6 * shift] >> shift) & 0xFFFF0000u;
-    return v ? v : kMixerMuteCoeff;
-}
-
 // Unit B contributes the second 32 hardware-input strips only while the card
 // is actually running 64 channels and the port-2 probe identified a Symphony
 // I/O (Port2UnitIsSymphony: its DEVICE_TYPE answer). Converters keep their existing
@@ -10365,20 +10330,31 @@ static bool CardMixerUnitBActive(const SymphonyThunderbridge_IVars *iv)
            Port2UnitIsSymphony(iv->port2Unit[0]);
 }
 
+// A fader byte as the original read a fader: dB + 48, at or below -48 dB
+// (byte 0) off, the range up to +6 dB (byte 54) (SymphonyPCIeCardMixer.cpp:
+// 241-244, 691-692). Returns false for off.
+static bool MixerFaderDb(uint8_t byte, int &db)
+{
+    if (byte == 0) return false;
+    db = (int)(byte > 54 ? 54 : byte) - 48;
+    return true;
+}
+
+// One input strip's left and right coefficients, as the original computed
+// them (SymphonyPCIeCardMixer.cpp:1364-1430): fader + equal-power pan term +
+// that side's Master, then the converter volume-key trim. Off when muted,
+// soloed out, or the fader or that side's Master is at the bottom.
 static void WriteMixerCoefPair(IOPCIDevice *dev, uint8_t mi,
                                uint64_t offL, uint64_t offR,
-                               int lvl, uint8_t pan, bool play, int trim = 0)
+                               uint8_t fader, uint8_t pan, uint8_t masterL, uint8_t masterR,
+                               bool play, int trim = 0)
 {
-    uint32_t cL, cR;
-    if (!play) {
-        cL = cR = kMixerMuteCoeff;
-    } else {
-        int lB = lvl + SymphonyMixerPanAttenuation(static_cast<uint8_t>(128 - pan));
-        int rB = lvl + SymphonyMixerPanAttenuation(pan);
-        if (lB < 0) lB = 0; else if (lB > 48) lB = 48;
-        if (rB < 0) rB = 0; else if (rB > 48) rB = 48;
-        cL = TrimmedMixerCoef(lB - trim);
-        cR = TrimmedMixerCoef(rB - trim);
+    uint32_t cL = kMixerMuteCoeff, cR = kMixerMuteCoeff;
+    int f = 0, mL = 0, mR = 0;
+    if (play && MixerFaderDb(fader, f)) {
+        const unsigned p = pan > 128 ? 128 : pan;
+        if (MixerFaderDb(masterL, mL)) cL = SymphonyMixerCoef(f + mL - trim, 128 - p);
+        if (MixerFaderDb(masterR, mR)) cR = SymphonyMixerCoef(f + mR - trim, p);
     }
     WriteRegister(dev, mi, offL, cL);
     WriteRegister(dev, mi, offR, cR);
@@ -10409,38 +10385,30 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv,
                          __atomic_load_n(&iv->converterVolumeKeys, __ATOMIC_ACQUIRE);
     const int trim = keyTrim ? (int)iv->converterTrimAtten : 0;
     const bool trimMuted = keyTrim && iv->converterTrimMuted;
+    // Master mute is ours (the original had none): it silences the whole
+    // mixer, inputs as well as the Software Return.
     bool rplay = !state.swReturnMuted && !state.masterMuted && !trimMuted &&
                  (!anySolo || state.swReturnSoloed);
-    // Return = SW-Return + Master (dB add), with independent stereo levels.
-    // SW Return is a stereo route with separate left/right faders. Apply the
-    // same unity-at-center balance law as the hardware input strips so the
-    // pan control changes the return without introducing the old 5 dB center
-    // drop. The side faders remain independent before the balance law.
-    int swLeft = (int)state.swReturnLeftByte;
-    int swRight = (int)state.swReturnRightByte;
-    int returnLeft = swLeft + (int)state.masterLeftByte - 48
-                   + SymphonyMixerPanAttenuation(
-                         static_cast<uint8_t>(128 - state.swReturnPanByte));
-    int returnRight = swRight + (int)state.masterRightByte - 48
-                    + SymphonyMixerPanAttenuation(state.swReturnPanByte);
+    // Software Return: its fader + Master per side, no pan
+    // (SymphonyPCIeCardMixer.cpp:1289-1318).
     uint32_t returnCoefL = kMixerMuteCoeff;
     uint32_t returnCoefR = kMixerMuteCoeff;
-    if (rplay) {
-        if (returnLeft < 0) returnLeft = 0; else if (returnLeft > 48) returnLeft = 48;
-        if (returnRight < 0) returnRight = 0; else if (returnRight > 48) returnRight = 48;
-        returnCoefL = TrimmedMixerCoef(returnLeft - trim);
-        returnCoefR = TrimmedMixerCoef(returnRight - trim);
-    }
+    int rL = 0, rR = 0, mL = 0, mR = 0;
+    if (rplay && MixerFaderDb(state.swReturnLeftByte, rL) && MixerFaderDb(state.masterLeftByte, mL))
+        returnCoefL = SymphonyMixerCoef(rL + mL - trim, 128);
+    if (rplay && MixerFaderDb(state.swReturnRightByte, rR) && MixerFaderDb(state.masterRightByte, mR))
+        returnCoefR = SymphonyMixerCoef(rR + mR - trim, 128);
     WriteRegister(dev, mi, MixerCoefOffset(physicalBase, 128), returnCoefL);
     WriteRegister(dev, mi, MixerCoefOffset(physicalBase + 1, 129), returnCoefR);
 
     // Fixed hardware inputs 0..31, plus unit B's XLink RX 32..63 at 64ch.
     for (int c = 0; c < inputCount; c++) {
-        bool play = !state.inputMuted[c] && !trimMuted &&
+        bool play = !state.inputMuted[c] && !trimMuted && !state.masterMuted &&
                     (!anySolo || state.inputSoloed[c]);
         WriteMixerCoefPair(dev, mi, MixerCoefOffset(physicalBase, c),
                            MixerCoefOffset(physicalBase + 1, c),
-                           (int)state.inputByte[c], state.inputPanByte[c], play, trim);
+                           state.inputByte[c], state.inputPanByte[c],
+                           state.masterLeftByte, state.masterRightByte, play, trim);
     }
 }
 
@@ -10458,7 +10426,7 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars)
     const bool on = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
     const uint32_t coef = (on && ivars->converterTrimMuted)
         ? kMixerMuteCoeff
-        : TrimmedMixerCoef(48 - (on ? (int)ivars->converterTrimAtten : 0));
+        : SymphonyMixerCoef(-(on ? (int)ivars->converterTrimAtten : 0), 128);
     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(0, 128), coef);
     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(1, 129), coef);
 }
@@ -10775,8 +10743,8 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 uint8_t p0 = payload[0];
                 if (ch == kMixerChSwReturn) {
                     if      (command == kSIOCmd_MixerFaderLevel) {
-                        state.swReturnLeftByte = (p0 > 48) ? 48 : p0;
-                        state.swReturnRightByte = (p0 > 48) ? 48 : p0;
+                        state.swReturnLeftByte = (p0 > 54) ? 54 : p0;
+                        state.swReturnRightByte = (p0 > 54) ? 54 : p0;
                     }
                     else if (command == kSIOCmd_MixerInputPan)
                         state.swReturnPanByte = (p0 > 128) ? 128 : p0;
@@ -10784,25 +10752,25 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                     else                                         state.swReturnMuted   = (p0 != 0);
                 } else if (ch == kMixerChMaster) {
                     if      (command == kSIOCmd_MixerFaderLevel) {
-                        state.masterLeftByte = (p0 > 48) ? 48 : p0;
-                        state.masterRightByte = (p0 > 48) ? 48 : p0;
+                        state.masterLeftByte = (p0 > 54) ? 54 : p0;
+                        state.masterRightByte = (p0 > 54) ? 54 : p0;
                     }
                     else if (command == kSIOCmd_MixerInputMute)  state.masterMuted = (p0 != 0);
                     // Master pan/solo not applicable.
                 } else if (ch == kMixerChSwReturnLeft || ch == kMixerChSwReturnRight) {
                     if (command == kSIOCmd_MixerFaderLevel) {
-                        uint8_t level = (p0 > 48) ? 48 : p0;
+                        uint8_t level = (p0 > 54) ? 54 : p0;
                         if (ch == kMixerChSwReturnLeft) state.swReturnLeftByte = level;
                         else state.swReturnRightByte = level;
                     }
                 } else if (ch == kMixerChMasterLeft || ch == kMixerChMasterRight) {
                     if (command == kSIOCmd_MixerFaderLevel) {
-                        uint8_t level = (p0 > 48) ? 48 : p0;
+                        uint8_t level = (p0 > 54) ? 54 : p0;
                         if (ch == kMixerChMasterLeft) state.masterLeftByte = level;
                         else state.masterRightByte = level;
                     }
                 } else { // hardware-input strip 0..31
-                    if      (command == kSIOCmd_MixerFaderLevel) state.inputByte[ch]    = (p0 > 48) ? 48 : p0;
+                    if      (command == kSIOCmd_MixerFaderLevel) state.inputByte[ch]    = (p0 > 54) ? 54 : p0;
                     else if (command == kSIOCmd_MixerInputPan)   state.inputPanByte[ch] = (p0 > 128) ? 128 : p0;
                     else if (command == kSIOCmd_MixerInputSolo)  state.inputSoloed[ch]  = (p0 != 0);
                     else                                         state.inputMuted[ch]   = (p0 != 0);

@@ -20,6 +20,7 @@
 #include "HostDriverKit.h"
 #include "SymphonyThunderbridge.h"
 #include "Sym64Registers.h"
+#include "SymphonyMixerCoef.h"
 #include "SymphonyCardMixerRouting.h"
 #include "SymphonyThunderbridgeShared.h"
 #ifdef TRACE_HAVE_CONVERTER_PARITY
@@ -1307,11 +1308,11 @@ static void RunVolumeKeyChecks()
             last = c;
         }
         PressVolume(r, -31.0f);
-        CHECK(Mixer1Return(r) == 0x00e70000, "%s: -31 dB gives 0x%08x", o.name, Mixer1Return(r));
+        CHECK(Mixer1Return(r) == SymphonyMixerCoef(-31, 128) /* 0x00e60000: the original's truncation; the old table rounded to 0x00e7 */, "%s: -31 dB gives 0x%08x", o.name, Mixer1Return(r));
         PressMute(r, true);
         CHECK(Mixer1Return(r) == kMixerMuteCoeff, "%s: mute gives 0x%08x", o.name, Mixer1Return(r));
         PressMute(r, false);
-        CHECK(Mixer1Return(r) == 0x00e70000, "%s: unmute gives 0x%08x", o.name, Mixer1Return(r));
+        CHECK(Mixer1Return(r) == SymphonyMixerCoef(-31, 128) /* 0x00e60000: the original's truncation; the old table rounded to 0x00e7 */, "%s: unmute gives 0x%08x", o.name, Mixer1Return(r));
         CHECK(StoredVendor(r, 0x26) == 0xFF, "%s: a converter was sent SpeakerVolume", o.name);
 
         // 3. A card reset keeps the trim.
@@ -1321,7 +1322,7 @@ static void RunVolumeKeyChecks()
         r.drv->SetPowerState(kIOServicePowerCapabilityOn);
         r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
         r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
-        CHECK(Mixer1Return(r) == 0x00e70000, "%s: after a card reset 0x%08x", o.name, Mixer1Return(r));
+        CHECK(Mixer1Return(r) == SymphonyMixerCoef(-31, 128) /* 0x00e60000: the original's truncation; the old table rounded to 0x00e7 */, "%s: after a card reset 0x%08x", o.name, Mixer1Return(r));
 
         // 4. The converters are replaced by a Symphony I/O: the trim goes and
         //    the keys reach the Symphony again.
@@ -1760,7 +1761,7 @@ static void RunMonitorOutputChecks()
         CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputSpeakers) == kIOReturnSuccess, "%s: level refused", o.name);
         CHECK(Mixer1Return(r) == kMixerUnityCoeff && ShownDb() == 0.0f, "%s: choosing the level changed it", o.name);
         PressVolume(r, -31.0f);
-        CHECK(Mixer1Return(r) == 0x00e70000, "%s: -31 dB gives 0x%08x", o.name, Mixer1Return(r));
+        CHECK(Mixer1Return(r) == SymphonyMixerCoef(-31, 128) /* 0x00e60000: the original's truncation; the old table rounded to 0x00e7 */, "%s: -31 dB gives 0x%08x", o.name, Mixer1Return(r));
         Finish(o, r);
     }
 #ifdef TRACE_HAVE_PORT2_AUDIO
@@ -5501,6 +5502,50 @@ static void RunLineSpeakerLevel()
     CHECK(StoredVendor(r, 0x26) == 35, "D5: the speakers' level after Line is %u (want 35)", StoredVendor(r, 0x26));
 }
 
+// B2-B5: the card mixer's gain as the original computed it.
+static void RunMixerMaths()
+{
+    // The app's channel ids (SymphonyThunderbridge.cpp kMixerChSwReturn / kMixerChMaster).
+    const uint16_t kMixerChSwReturn = 1000, kMixerChMaster = 2000;
+    Options o; o.name = "mixer maths"; o.shortFlow = true;
+    Run r;
+    RunScenario(o, r);
+    auto send = [&](uint8_t cmd, uint16_t ch, uint8_t v) {
+        r.drv->SendVendorCommand(cmd, (1u << 16) | ch, &v, 1);
+    };
+    auto L = [&](int c) { return r.card.reg[MixerCoefOffset(0, c)]; };
+    auto R = [&](int c) { return r.card.reg[MixerCoefOffset(1, c)]; };
+    const uint32_t retL = MixerCoefOffset(0, 128), retR = MixerCoefOffset(1, 129);
+    send(0xB3, 0, 0);                 // strip 1 unmuted
+    send(0xB1, 0, 64);                // centred
+    send(0xB0, 0, 48);                // 0 dB
+    send(0xB0, kMixerChMaster, 48);   // Master 0 dB
+    send(0xB0, kMixerChSwReturn, 48); // Software Return 0 dB
+    CHECK(L(0) == 0x16A00000u && R(0) == 0x16A00000u, "B4: centred strip -3.01 dB per side (0x%08x 0x%08x)", L(0), R(0));
+    CHECK(r.card.reg[retL] == 0x20000000u, "return at unity (0x%08x)", r.card.reg[retL]);
+    send(0xB1, 0, 0);                 // hard left
+    CHECK(L(0) == 0x20000000u && R(0) == 0, "B4: hard left: 0 dB left, right off (0x%08x 0x%08x)", L(0), R(0));
+    send(0xB1, 0, 64);
+    send(0xB0, kMixerChMaster, 36);   // Master -12 dB
+    CHECK(L(0) == SymphonyMixerCoef(-12, 64), "B2: Master turns the inputs down (0x%08x)", L(0));
+    CHECK(r.card.reg[retL] == SymphonyMixerCoef(-12, 128), "B2: and the return (0x%08x)", r.card.reg[retL]);
+    send(0xB0, kMixerChMaster, 54);   // Master +6
+    send(0xB0, 0, 54);                // strip +6
+    CHECK(L(0) == SymphonyMixerCoef(12, 64) && L(0) != SymphonyMixerCoef(0, 64),
+          "B3: +6 on strip and Master plays +12 (0x%08x)", L(0));
+    send(0xB0, 0, 0);                 // fader at the bottom
+    CHECK(L(0) == 0 && R(0) == 0, "B5: a fader at the bottom is off (0x%08x)", L(0));
+    send(0xB0, 0, 48);
+    send(0xB0, kMixerChMaster, 0);    // Master at the bottom
+    CHECK(L(0) == 0 && r.card.reg[retL] == 0 && r.card.reg[retR] == 0, "B5: Master at the bottom silences inputs and return");
+    send(0xB0, kMixerChMaster, 48);
+    send(0xB3, kMixerChMaster, 1);    // Master mute (ours)
+    CHECK(L(0) == 0 && R(0) == 0 && r.card.reg[retL] == 0, "Q7: Master mute silences inputs too");
+    send(0xB3, kMixerChMaster, 0);
+    send(0xB1, kMixerChSwReturn, 0);  // a return pan byte changes nothing
+    CHECK(r.card.reg[retL] == 0x20000000u && r.card.reg[retR] == 0x20000000u, "the return has no pan");
+}
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -5513,6 +5558,7 @@ int main(int argc, char **argv)
 
     RunReplyMatching();
     RunLineSpeakerLevel();
+    RunMixerMaths();
     RunSymphonyCardInputRoutes();
     RunPreampHostRoutes();
 #ifdef TRACE_HAVE_MIC_PRE_DAW
@@ -5810,7 +5856,9 @@ int main(int argc, char **argv)
                   "%s: unit-B mixer channel 63 rejected at 64", o.name);
             uint8_t unmute = 0;
             r.drv->SendVendorCommand(0xB3, (1u << 16) | 63, &unmute, 1);
-            CHECK(r.card.reg[MixerCoefOffset(0, 63)] == kMixerUnityCoeff,
+            // A centred strip at 0 dB: -3.01 dB per side, the original's
+            // equal-power pan law (SymphonyPCIeCardMixer.cpp:1364-1430).
+            CHECK(r.card.reg[MixerCoefOffset(0, 63)] == SymphonyMixerCoef(0, 64),
                   "%s: unit-B mixer channel 63 coefficient 0x%08x", o.name,
                   r.card.reg[MixerCoefOffset(0, 63)]);
             uint8_t source = 31;

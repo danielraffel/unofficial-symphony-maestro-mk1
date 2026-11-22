@@ -104,7 +104,7 @@ HOST_TESTS=(
     test-optical-format.sh
     test-micpre-slot.sh
     test-mixer-route.sh
-    test-mixer-pan.sh
+    test-mixer-coef.sh
     test-timing-profile.sh
     test-thunderbolt-lifecycle.sh
     test-channel-names.sh
