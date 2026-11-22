@@ -493,6 +493,9 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  lastWatchClockReg;       // watch-local: last kRegXLinkClocking sample
     uint64_t  linkWatchTicks;          // watch-local
     bool      linkNeedsRevalidation;   // atomic; set by SetPowerState(On), consumed by the watch
+    // A3: the card mixers were silenced for sleep and are put back at wake
+    // (xlinkQueue only).
+    bool      mixersSilencedForSleep;
     bool      wakeFoundEndpointAbsent; // atomic; SetPowerState(On) saw no endpoint (tunnel lost)
     // dext 115: shadow of the card output routing table the app wrote through
     // kThunderboltCardOutputRouteCommand, replayed by ReprogramCardAfterReset.
@@ -2023,6 +2026,9 @@ static void ApplyOneUnitLoopSyncByte(const SymphonyThunderbridge_IVars *ivars, u
     if (ivars->unitBConfigured || ivars->convPort1 || bytes[0] == 3 || bytes[1] != 1) return;
     bytes[2] = ivars->oneUnitLoopSync ? 1 : 0;
 }
+
+static void SilenceCardMixersForSleep(SymphonyThunderbridge_IVars *ivars);   // below
+static void RestoreCardMixersAfterSleep(SymphonyThunderbridge_IVars *ivars); // below
 
 struct SymphonyLinkInitResult {
     bool    lineMonitor;
@@ -5282,6 +5288,7 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
             WriteRegister(dev, mi, MixerCoefOffset(bank + 1, 129), kMixerUnityCoeff);
         }
     }
+    ivars->mixersSilencedForSleep = false;   // rewritten above
     STLOG("Card re-init: mixer 1 %{public}s, mixer 2 %{public}s (SW Return sources %u/%u)",
           ivars->mixerStateValid[0] ? "replayed from app state" : "unity defaults",
           ivars->mixerStateValid[1] ? "replayed from app state" : "unity defaults",
@@ -5864,6 +5871,10 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
             break;
         }
         __atomic_store_n(&ivars->linkState, kLinkStateUp, __ATOMIC_RELEASE);
+        // A3: a clean wake keeps the card's state, so the mixers silenced for
+        // sleep are put back here (a re-lock rewrites them in the card re-init).
+        if (ivars->mixersSilencedForSleep && ivars->xlinkQueue)
+            ivars->xlinkQueue->DispatchAsync(^{ RestoreCardMixersAfterSleep(ivars); });
         next = wrapsFlowing ? kLinkWatchStreamNs : kLinkWatchIdleNs;
         // dext 131: converters are checked about once a second (never a
         // Symphony I/O). A unit added, changed or gone re-runs the bus init.
@@ -10282,6 +10293,12 @@ kern_return_t IMPL(SymphonyThunderbridge, SetPowerState)
     STLOG("SetPowerState: flags=0x%08x → %{public}s", powerFlags, on ? "ON" : "OFF/LOW");
     if (ivars) {
         if (!on) {
+            // A3: silence the card mixers while the card can still be reached.
+            if (!__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) && ivars->xlinkQueue &&
+                HardwareReachable(ivars)) {
+                ivars->xlinkQueue->DispatchSync(^{ SilenceCardMixersForSleep(ivars); });
+                STLOG("SetPowerState: card mixers silenced for sleep");
+            }
             // SEQ_CST pairs with the Dekker re-check in HardwareReachable().
             __atomic_store_n(&ivars->linkState, kLinkStateRecovering, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->providerPowerOff, true, __ATOMIC_SEQ_CST);
@@ -10479,6 +10496,38 @@ static void ApplyConverterTrim(SymphonyThunderbridge_IVars *ivars)
         : SymphonyMixerCoef(-(on ? (int)ivars->converterTrimAtten : 0), 128);
     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(0, 128), coef);
     WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(1, 129), coef);
+}
+
+// A3: before the Mac sleeps, every card-mixer coefficient goes to minus
+// infinity, as the original did on sleep, shutdown and restart
+// (SymphonyCard.cpp:1047-1076), so no mixer output makes a sound as the link
+// goes away. On xlinkQueue, with the card reachable.
+static void SilenceCardMixersForSleep(SymphonyThunderbridge_IVars *ivars)
+{
+    if (!ivars->pciDevice) return;
+    for (uint64_t off = 0; off < 0x1000; off += 4)
+        WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegMixerCoeff + off, 0);
+    ivars->mixersSilencedForSleep = true;
+}
+
+// A3, at wake: each mixer back to the app's state, or to Start()'s unity
+// defaults if the app never set it (the same choice as the card re-init).
+static void RestoreCardMixersAfterSleep(SymphonyThunderbridge_IVars *ivars)
+{
+    if (!ivars->mixersSilencedForSleep || !ivars->pciDevice) return;
+    ivars->mixersSilencedForSleep = false;
+    for (uint16_t mixerID = 1; mixerID <= 2; mixerID++) {
+        if (ivars->mixerStateValid[mixerID - 1]) {
+            RecomputeCardMixer(ivars, ivars->pciDevice, ivars->barMemoryIndex, mixerID);
+        } else if (mixerID == 1 && __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE)) {
+            ApplyConverterTrim(ivars);
+        } else {
+            const uint32_t bank = (mixerID == 1) ? 0 : 2;
+            WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(bank,     128), kMixerUnityCoeff);
+            WriteRegister(ivars->pciDevice, ivars->barMemoryIndex, MixerCoefOffset(bank + 1, 129), kMixerUnityCoeff);
+        }
+    }
+    STLOG("Wake: card mixers restored after sleep");
 }
 
 // ── SendVendorCommand ───────────────────────────────────────────────────────
