@@ -348,6 +348,7 @@ extension HelpSection {
     /// are `ClockSourceMenu.usb`, `.thunderbolt` and `.converters`.
     private static var clock: HelpSection {
         HelpSection(id: .clock, title: "Clock", items: [
+            HelpItem(title: "What is Use Loop Sync?", blocks: LoopSyncInfo.paragraphs.map { .text($0) }),
             HelpItem(title: "How do I set the sample rate and the clock source?", blocks: [
                 .text("Both are in **Device Settings › Clock**. **Sample Rate** sets the rate of the Symphony's audio device, and the Symphony changes to it when it is set, from here, from Audio MIDI Setup or from an audio application."),
                 .text("**Clock Source** is where the Symphony takes its clock from. Over USB it is **Internal** only. Over ThunderBridge and PCIe it is **Internal**, **Word Clock**, or a digital input of a card that has one (S/PDIF coax, AES or optical). With converters only it is **Internal** or **External (Word Clock)**."),

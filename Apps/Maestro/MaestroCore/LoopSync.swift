@@ -45,6 +45,16 @@ public struct LoopSyncSettings: Equatable, Sendable {
     }
 }
 
+/// The info button next to "Use Loop Sync", after Apogee's manual
+/// (System Setup, item 6).
+public enum LoopSyncInfo {
+    public static let paragraphs = [
+        "With two Symphony I/Os, the units lock to each other through their **Loop Sync** connection. Turn it off to clock each unit separately (\"star-clocking\", for example from a word clock). Apogee recommends Loop Sync.",
+        "With one Symphony I/O, Loop Sync sends the unit's clock out of its **Loop Out** connector and terminates **Loop In**. Nothing else changes, so you can leave it on unless you use those connectors for something else.",
+        "As in Apogee's software it is on by default, and Maestro remembers your choice.",
+    ]
+}
+
 /// Configuration is never evidence of lock. Selector 13 reports each separately.
 public struct LoopSyncState: Equatable, Sendable {
     public let settings: LoopSyncSettings

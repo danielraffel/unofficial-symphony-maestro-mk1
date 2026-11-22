@@ -11,6 +11,7 @@ struct LoopSyncControls: View {
     @State private var enabled = true
     @State private var master = DeviceUnit.a
     @State private var source: UInt32 = 1
+    @State private var showInfo = false
 
     private var choices: [ClockSourceChoice] {
         ClockSourceMenu.unitAChoices(ClockSourceMenu.thunderbolt(
@@ -21,8 +22,32 @@ struct LoopSyncControls: View {
 
     var body: some View {
         Group {
-            Toggle("Use Loop Sync", isOn: $enabled)
-                .maestroHelp("Keep two Symphony I/Os locked to the same clock over their Loop Sync connection.")
+            Toggle(isOn: $enabled) {
+                HStack(spacing: 4) {
+                    Text("Use Loop Sync")
+                    Button { showInfo.toggle() } label: {
+                        Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("About Loop Sync")
+                    .maestroHelp("Explain Loop Sync.")
+                    .popover(isPresented: $showInfo, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(LoopSyncInfo.paragraphs, id: \.self) { paragraph in
+                                Text(LocalizedStringKey(paragraph))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            SeeHelpLink(section: .clock, appState: appState, popover: $showInfo)
+                        }
+                        .font(.callout)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 340, alignment: .leading)
+                        .padding(14)
+                    }
+                }
+            }
+                .maestroHelp("Lock Symphony I/Os to the same clock over their Loop Sync connection.")
                 .onChange(of: enabled) { _, value in
                     guard let state = appState.loopSyncState, value != state.settings.enabled else { return }
                     Task { await appState.setLoopSync(.init(enabled: value, master: state.settings.master)) }
