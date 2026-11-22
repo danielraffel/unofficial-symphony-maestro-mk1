@@ -35,27 +35,42 @@ extension AppState {
         loopSyncBusy = true
         defer { loopSyncBusy = false }
         let owner = unitBDevice
+        // Read and apply are separate: a refused apply must not hide what the
+        // unit reports, and each failure says what it was.
+        var state: LoopSyncState
         do {
-            var state = try await tb.loopSync()
-            guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
-            // With one unit the driver starts each session with the output
-            // off; the saved choice, or the original's default (on), is
-            // applied once it has connected.
-            let wanted = LoopSyncSettings.saved(in: .standard) ?? (loopSyncOneUnit ? LoopSyncSettings() : nil)
-            if (restoring || loopSyncNeedsRestore || loopSyncOneUnit), let wanted,
-               wanted.enabled != state.settings.enabled || (!loopSyncOneUnit && wanted != state.settings) {
-                state = try await tb.loopSync(wanted)
-            }
-            guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
-            loopSyncState = state
-            loopSyncNeedsRestore = false
-            loopSyncError = nil
-            refreshUnitB()
+            state = try await tb.loopSync()
         } catch {
             guard device === tb, unitBDevice === owner else { return }
+            print("[Maestro] Loop Sync: read failed: \(error)")
             loopSyncState = nil
-            loopSyncError = "Loop Sync settings could not be read. They require the driver from this version of Maestro."
+            loopSyncError = SymphonyExtendedSelectors.supported(by: servingDextBuild)
+                ? "Loop Sync settings could not be read from the driver. Try again, or reconnect the ThunderBridge."
+                : "Loop Sync settings could not be read. They require the driver from this version of Maestro."
+            return
         }
+        guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
+        loopSyncState = state
+        loopSyncError = nil
+        // With one unit the driver starts each session with the output off;
+        // the saved choice, or the original's default (on), is applied once
+        // it has connected.
+        let wanted = LoopSyncSettings.saved(in: .standard) ?? (loopSyncOneUnit ? LoopSyncSettings() : nil)
+        if (restoring || loopSyncNeedsRestore || loopSyncOneUnit), let wanted,
+           wanted.enabled != state.settings.enabled || (!loopSyncOneUnit && wanted != state.settings) {
+            do {
+                state = try await tb.loopSync(wanted)
+                guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
+                loopSyncState = state
+            } catch {
+                guard device === tb, unitBDevice === owner else { return }
+                print("[Maestro] Loop Sync: applying \(wanted) failed: \(error)")
+                loopSyncError = "Maestro could not set Loop Sync just now; it tries again when it reconnects."
+                return
+            }
+        }
+        loopSyncNeedsRestore = false
+        refreshUnitB()
     }
 
     @MainActor

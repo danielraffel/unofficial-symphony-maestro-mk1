@@ -381,8 +381,7 @@ struct DeviceSettingsView: View {
                 LabeledContent("Sample Rate", value: formatSampleRate(sampleRate))
             } else {
                 Group {
-                    if appState.loopSyncVisible { LoopSyncControls(appState: appState) }
-                    // Sample Rate
+                    // Sample Rate first, then Clock Source, then Loop Sync.
                     Picker("Sample Rate", selection: $sampleRate) {
                         if availableRates.isEmpty {
                             // Keep the initial 0-valued selection valid while the
@@ -470,6 +469,7 @@ struct DeviceSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if appState.loopSyncVisible { LoopSyncControls(appState: appState) }
 
                     if isProToolsMode {
                         Text("Clock settings are controlled by Pro Tools")

@@ -58,6 +58,16 @@ struct HardwareTest {
             await runProxySoftwareReturnRoundTrip()
             return
         }
+        if args.contains("--usb-input-routes") {
+            guard let (_, identifier) = CoreAudioDeviceConnection.discoverSymphonyIO() else { print("no Symphony"); return }
+            let c = XPCDeviceConnection(identifier: identifier)
+            for d in 0..<16 {
+                let dest = UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(d)
+                let v = try? await c.getProperty(PropertyAddress(selector: .routing, scope: .input, element: dest))
+                print("USB in \(d + 1) (dest \(dest)): source \(v.map { "\($0)" } ?? "unreadable")")
+            }
+            return
+        }
         if args.contains("--usb-meter-groups") {
             await runUSBMeterGroupProbe()
             return

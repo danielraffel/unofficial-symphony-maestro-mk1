@@ -6048,6 +6048,9 @@ kern_return_t SymphonyThunderbridge::LoopSyncConfig(uint32_t operation, uint32_t
             result = kIOReturnSuccess;
             return;
         }
+        if (!ivars->unitBConfigured)
+            STLOG("Loop Sync: refused with one unit (converters on port 1 %u, link configured %u, admissible %u)",
+                  ivars->convPort1 ? 1 : 0, ivars->symphonyLinkConfigured ? 1 : 0, XLinkTxAdmissible(ivars) ? 1 : 0);
         if (!XLinkTxAdmissible(ivars) || !ivars->unitBConfigured || !ivars->port2On ||
             __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) != 64 || ivars->convPort1 ||
             (__atomic_load_n(&ivars->convFlags, __ATOMIC_ACQUIRE) & kSymphonyConvPort2Converters)) return;
