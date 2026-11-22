@@ -570,7 +570,7 @@ extension HelpSection {
             HelpItem(title: "When I'm recording, how should I set my input and output?", blocks: [
                 .bullet("Input", "**Symphony I/O : USB Audio**; it is the only one with inputs."),
                 .bullet("Output, if you want the volume keys", "**Symphony I/O : Maestro USB**. Passing your audio on adds about **1.3 ms** at 48 kHz, and Maestro USB reports it, so your DAW keeps recordings in time."),
-                .bullet("Output, if you don't need them", "**Symphony I/O : USB Audio**, for the slightly lower latency."),
+                .bullet("Output, if you don't need the volume keys", "**Symphony I/O : USB Audio**, for the slightly lower latency."),
                 .text("Most DAWs let you choose a different device for input and for output. Your DAW's buffer size matters far more than either choice. To hear yourself with no delay at all, monitor through the Symphony's Mixer (see **How do I record while hearing myself with no delay?** under **Mixer**). Apogee's guide explains buffer size and latency:"),
                 .link("Apogee: Symphony I/O, understanding latency", URL(string: "https://knowledge.apogeedigital.com/symphony-i/o-understanding-latency")!),
             ]),
