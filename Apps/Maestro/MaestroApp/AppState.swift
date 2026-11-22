@@ -3954,8 +3954,10 @@ final class AppState: @unchecked Sendable {
                             self.digitalInputMeterLevels,
                             raw: ThunderboltInputMeterMap.digitalLevels(host: hostInputs, words: meterWords))
                         // Keep the clip flag on the same routed word as the Mixer strip.
-                        over[.input] = Self.cardMixerInputOvers(
-                            meterWords, count: self.inputMeterLevels.count, isOver: isOver)
+                        if overSources.mixer {
+                            over[.input] = Self.cardMixerInputOvers(
+                                meterWords, count: self.inputMeterLevels.count, isOver: isOver)
+                        }
                         // Unit B (64 channels, a second Symphony I/O): its own
                         // strips read words 32-63 and 96-127.
                         over[.unitBInput] = self.updateUnitBMeters(

@@ -23,12 +23,18 @@ public struct MeterReading: Equatable, Sendable {
 /// The hardware clip sources available to the display at the current transport
 /// and serving build. USB output and mixer taps may fall back to software.
 public enum MeterOverSources {
+    /// Set once hardware check H-M4 shows the card words' clip bit is real.
+    public static let cardOverBitConfirmed = false
+
     public static func available(card: Bool, build: ServingDextBuild? = nil,
                                  unitOutputsFresh: Bool = false,
                                  usbOutputs: Bool = true, usbMixer: Bool = true)
         -> (input: Bool, output: Bool, mixer: Bool) {
         if card {
-            return (false, UnitOutputMeters.driverSupports(build) && unitOutputsFresh, true)
+            // The card's own meter words: that bit 1 is the original's clip
+            // flag is read from source, not yet seen on hardware (plan check
+            // H-M4). Until then no Over light comes from them.
+            return (false, UnitOutputMeters.driverSupports(build) && unitOutputsFresh, cardOverBitConfirmed)
         }
         return (true, usbOutputs, usbMixer)
     }

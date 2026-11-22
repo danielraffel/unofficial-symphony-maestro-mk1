@@ -9,8 +9,10 @@ public enum MonitorOutputToggle {
 
     public static func targets(for control: Control, clicked: SymphonyIORequestBuilder.MonitorOutput,
                                option: Bool, speakerMode: UInt32) -> [SymphonyIORequestBuilder.MonitorOutput] {
-        let outputs = option ? SymphonyIORequestBuilder.MonitorOutput.allCases : [clicked]
-        return outputs.filter {
+        // A plain click always acts on the output clicked, as today. With
+        // Option the others follow, except the speakers' Dim and Sum in Line.
+        guard option else { return [clicked] }
+        return SymphonyIORequestBuilder.MonitorOutput.allCases.filter {
             $0 != .speaker || speakerMode != SpeakerOutputLogic.line || control == .mute
         }
     }

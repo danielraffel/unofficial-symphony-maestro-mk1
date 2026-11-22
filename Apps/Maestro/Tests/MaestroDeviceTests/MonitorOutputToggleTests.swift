@@ -15,7 +15,7 @@ struct MonitorOutputToggleTests {
         #expect(Set(MonitorOutputToggle.targets(for: control, clicked: clicked, option: true, speakerMode: line))
                 == lineTargets)
         #expect(MonitorOutputToggle.targets(for: control, clicked: clicked, option: false, speakerMode: line)
-                == (lineTargets.contains(clicked) ? [clicked] : []))
+                == [clicked])
     }
 
     @Test(arguments: SymphonyIORequestBuilder.MonitorOutput.allCases, [-64.0, -63.0, 0.0])

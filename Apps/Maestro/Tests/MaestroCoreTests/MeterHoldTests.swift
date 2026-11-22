@@ -77,12 +77,12 @@ struct MeterHoldTests {
         #expect(snapshot(MeterOverSources.available(card: false)) == [true, true, true])
         #expect(snapshot(MeterOverSources.available(card: false, usbOutputs: false, usbMixer: false))
                 == [true, false, false])
-        #expect(snapshot(MeterOverSources.available(card: true)) == [false, false, true])
+        #expect(snapshot(MeterOverSources.available(card: true)) == [false, false, MeterOverSources.cardOverBitConfirmed])
         #expect(snapshot(MeterOverSources.available(card: true, build: .build(143), unitOutputsFresh: true))
-                == [false, false, true])
+                == [false, false, MeterOverSources.cardOverBitConfirmed])
         #expect(snapshot(MeterOverSources.available(card: true, build: .build(144)))
-                == [false, false, true])
+                == [false, false, MeterOverSources.cardOverBitConfirmed])
         #expect(snapshot(MeterOverSources.available(card: true, build: .build(144), unitOutputsFresh: true))
-                == [false, true, true])
+                == [false, true, MeterOverSources.cardOverBitConfirmed])
     }
 }
