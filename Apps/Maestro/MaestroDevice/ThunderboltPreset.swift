@@ -25,6 +25,10 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public var unitID: Data?
     /// Version 2 adds the second peripheral; absent in single-unit bundles.
     public var unitB: Peripheral?
+    /// Saved by a version whose faders above 0 dB play above 0 (0.9.23, driver
+    /// 144). Absent in older files: their faders above 0 played at 0, and are
+    /// loaded at 0 (`headroomClamped`).
+    public var fadersAboveZeroPlay: Bool?
 
     public struct Peripheral: Codable, Sendable, Equatable {
         public var boards: [UInt8]
@@ -88,6 +92,25 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public init(layout: CardLayout, metadata: MaestroPreset) {
         boards = [layout.slot1.rawValue, layout.slot2.rawValue]
         self.metadata = metadata
+        fadersAboveZeroPlay = true
+    }
+
+    /// A file saved before 0.9.23 with its mixer faders above 0 dB set to 0,
+    /// what they played when it was saved (`MixerHeadroomMigration`).
+    public func headroomClamped() -> ThunderboltPreset {
+        guard fadersAboveZeroPlay != true else { return self }
+        func clamp(_ m: [Mixer]) -> [Mixer] {
+            m.map { var x = $0
+                x.channels = x.channels.map { var c = $0; c.level = min(c.level, 0); return c }
+                x.softwareReturn.level = min(x.softwareReturn.level, 0)
+                x.master = min(x.master, 0)
+                return x }
+        }
+        var value = self
+        value.mixers = clamp(mixers)
+        if var b = unitB { b.mixers = clamp(b.mixers); value.unitB = b }
+        value.fadersAboveZeroPlay = true
+        return value
     }
 
     public enum RecallError: LocalizedError {
@@ -456,6 +479,7 @@ public extension ThunderboltPreset {
                     throw RecallError.unsupported("the bundle contains additional hardware settings.")
                 }
                 preset = try PropertyListDecoder().decode(ThunderboltPreset.self, from: Data(contentsOf: hardwareURL))
+                    .headroomClamped()
                 legacy = false
             } else {
                 // Old app-only bundles carry the same payload as a flat preset.
