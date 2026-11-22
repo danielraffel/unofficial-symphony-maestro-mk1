@@ -283,7 +283,7 @@ extension HelpSection {
     static let feedbackEmail = "thegenerouscorp@gmail.com"
 
     private static var whatItDoes: HelpSection {
-        HelpSection(id: .whatItDoes, title: "What Maestro does", items: [
+        HelpSection(id: .whatItDoes, title: "About Maestro", items: [
             HelpItem(blocks: [
                 .text("A modern native control app for the Apogee Symphony I/O MK I — volume, mute, clock source, sample rate, optical format, routing, and metering. Built for macOS 26 (Tahoe) on Apple Silicon."),
             ]),
@@ -294,10 +294,11 @@ extension HelpSection {
     }
 
     private static var connecting: HelpSection {
-        HelpSection(id: .connecting, title: "Two ways to connect", items: [
+        HelpSection(id: .connecting, title: "Connection types", items: [
             HelpItem(blocks: [
-                .bullet("Thunderbolt", "If you have the ThunderBridge card, Maestro uses it automatically for 32-channel I/O at the lowest latency, at any of the six sample rates from 44.1 up to 192 kHz. The driver loads only when the card is present."),
-                .bullet("USB", "Works on any supported Mac. Shows up as an audio device you can select from the volume menu or Audio MIDI Setup. Over USB, Maestro gives you 16 channels at 44.1, 48, 88.2 or 96 kHz. For 176.4 or 192 kHz, use the Thunderbolt card."),
+                .bullet("ThunderBridge", "Maestro's own driver gives 32 channels, or 64 with two Symphony I/Os, at the lowest latency and at any of the six sample rates from 44.1 up to 192 kHz. The driver loads only when the card is present."),
+                .bullet("Symphony 64 PCIe", "The PCIe card, in a Mac with PCIe slots or a Thunderbolt expansion chassis, works the same way as ThunderBridge: the same driver, channels and sample rates."),
+                .bullet("USB", "Works on any supported Mac. Shows up as an audio device you can select from the volume menu or Audio MIDI Setup. Over USB, Maestro gives you 16 channels at 44.1, 48, 88.2 or 96 kHz. For 176.4 or 192 kHz, use ThunderBridge or PCIe."),
             ]),
         ])
     }
@@ -314,8 +315,8 @@ extension HelpSection {
     private static var settings: HelpSection {
         HelpSection(id: .settings, title: "Settings & updates", items: [
             HelpItem(title: "Where do I find a setting?", blocks: [
-                .text("Settings are on two pages. **Device Settings** is about the Symphony I/O: **Clock** (Sample Rate, Clock Source and Clock Status; with two Symphony I/Os at 64 channels, **Use Loop Sync** and **Loop Sync Master**), **Connection** (Device Name and Connection, **Rescan**, and on ThunderBridge and PCIe the 32 or 64 channel **Ports** choice), **VBus** (on ThunderBridge and PCIe: the number of VBus channels, and which device channels they are), **Volume Keys** (**Audio Output**, the output the Mac's volume and mute keys control, and with two units **Peripheral**, the unit they control), **Front Panel** (Bank 1 Source and Bank 2 Source for the front-panel meters, Peak Hold and Over Hold), **Cards** (the optical format of **Card 1** and **Card 2**, and the insert labels with an 8MicPre), **Naming** (the Peripheral Prefix) and **Info** (Audio Interface Mode, firmware, cards and the ThunderBridge driver extension)."),
-                .text("**App Settings** is about Maestro itself: **General** (Appearance, Show tooltips, Meter Zone Coloring, scroll positions), **When a Device Connects** (opening Maestro and switching the Mac's output to the Symphony when a unit is plugged in, and **Preferred USB output**), **Updates** (automatic checks, **Check for Updates…** and the Stable or Beta channel), **Diagnostics & Feedback** and **About** (the Maestro and macOS versions)."),
+                .text("Settings are on two pages. **Device Settings** is about the Symphony I/O: its clock, connection, VBus, volume keys, front panel, cards and naming."),
+                .text("**App Settings** is about Maestro itself: appearance, what happens when a device connects, updates, and diagnostics and feedback."),
                 .text("Per-channel settings are on the **Input** and **Output** pages, monitoring mixes on **Mixer**, and signal paths on **Input Routing** and **Output Routing**."),
                 .text("⌘1 to ⌘7 open the pages in the sidebar's order: Input, Output, Mixer, Input Routing, Output Routing, Device Settings and App Settings. They are also in the **Navigate** menu."),
             ]),
