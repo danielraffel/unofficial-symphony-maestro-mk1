@@ -235,25 +235,7 @@ public:
         // the provisional value forever -- a constant, systematic A/V error, the
         // very bug this work exists to remove. Never from this thread:
         // SetLatencyAsync triggers a configuration change.
-        if (shm) {
-            const uint32_t d = __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED);
-            if (d != adoptedDelay_ && d > 0 && d < MAESTRO_SHM_RING_FRAMES) {
-                adoptedDelay_ = d;
-                auto* self = this;
-                dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-                    // +14 is the USB device's own latency, measured in frames at
-                    // 48 kHz. If it is really a fixed time rather than a fixed
-                    // frame count it is understated at higher rates -- by at most
-                    // 42 frames at 192 kHz, which is 0.2 ms and a fifth of one
-                    // buffer. Reading kAudioDevicePropertyLatency from the real
-                    // device would settle it, but only the proxy can see that
-                    // device, so it would have to come across the shared memory.
-                    self->SetLatencyAsync(d + 14);
-                    os_log_info(sLog, "ApogeeSymIO: adopted D=%u frames — reporting %u latency",
-                                d, d + 14);
-                });
-            }
-        }
+        if (shm) AdoptDelay(shm);
 
         if (outcome != lastOutcome_) {
             switch (outcome) {
@@ -392,6 +374,28 @@ public:
 
     /// Safe from any queue EXCEPT the IO thread: the request it makes takes
     /// libASPL's write mutex.
+    /// The latency this device reports is the proxy's ring delay D plus the
+    /// USB device's own. Adopted whenever D changes -- from the IO thread and,
+    /// with nothing playing, from the follow timer and when the shared memory
+    /// is mapped, so a DAW that reads the latency before it starts gets the
+    /// real figure, not the provisional one. SetLatencyAsync triggers a
+    /// configuration change, so it is never called on the IO thread itself.
+    void AdoptDelay(MaestroAudioShm* shm)
+    {
+        const uint32_t d = __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED);
+        uint32_t seen = adoptedDelay_.load(std::memory_order_relaxed);
+        if (d == seen || d == 0 || d >= MAESTRO_SHM_RING_FRAMES) return;
+        if (!adoptedDelay_.compare_exchange_strong(seen, d)) return;
+        auto* self = this;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            // +14 is the USB device's own latency, measured in frames at
+            // 48 kHz (kAudioDevicePropertyLatency of "Symphony I/O : USB
+            // Audio").
+            self->SetLatencyAsync(d + 14);
+            os_log_info(sLog, "ApogeeSymIO: adopted D=%u frames — reporting %u latency", d, d + 14);
+        });
+    }
+
     void FollowHardwareRateNow()
     {
         MaestroAudioShm* shm = sSharedShm.load(std::memory_order_acquire);
@@ -602,7 +606,7 @@ private:
     MaestroClockSlave   clock_{};
     MaestroClockOutcome lastOutcome_ = kMaestroClockFlywheel;
     bool                rateMismatchLogged_ = false;
-    uint32_t            adoptedDelay_ = 0;
+    std::atomic<uint32_t> adoptedDelay_{0};
     /// The rate we last asked to follow, so one mismatch does not queue a
     /// configuration change on every IO cycle while the first one lands. Written
     /// from the IO thread, from the HAL's configuration-change thread, and from
@@ -710,6 +714,7 @@ static void connectToProxy()
                                 // -- and right after boot, or after the proxy was
                                 // relaunched, that is exactly the situation.
                                 if (sDeviceRaw) sDeviceRaw->FollowHardwareRateNow();
+                                if (sDeviceRaw) sDeviceRaw->AdoptDelay(shm);
                                 // Reconcile the virtual controls with the
                                 // proxy's persisted hardware state before
                                 // restating it. Without this handshake, a
@@ -1344,6 +1349,8 @@ static std::shared_ptr<aspl::Driver> CreateDriver()
             if (!sDeviceRaw) return;
             sDeviceRaw->FollowHardwareRateNow();
             sDeviceRaw->UpdatePresence();
+            if (MaestroAudioShm* shm = sSharedShm.load(std::memory_order_acquire))
+                sDeviceRaw->AdoptDelay(shm);
         });
         dispatch_resume(sFollowTimer);
     } else {
