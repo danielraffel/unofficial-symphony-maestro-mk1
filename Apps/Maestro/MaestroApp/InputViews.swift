@@ -394,11 +394,7 @@ struct InputControlsView: View {
                         Divider()
                             .opacity(0.4)
 
-                        // Digital stereo pair meters — board-aware count and labels.
-                        // The meter arrays are fixed at 24 entries (4 metered
-                        // pairs per board); a DA16 pair supplies 8 digital input
-                        // pairs per board, so the index MUST be checked or the
-                        // page traps on open.
+                        // Digital input pair meters in board order.
                         let digPairs = digitalInputPairs
                         ForEach(Array(digPairs.enumerated()), id: \.offset) { index, digPair in
                             if index > 0 {
@@ -412,7 +408,10 @@ struct InputControlsView: View {
                                 leftPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex),
                                 rightPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex, offset: 1),
                                 matchHeight: analogStripHeight > 0 ? analogStripHeight : nil,
-                                showZoneColoring: appState.showMeterZoneColoring
+                                showZoneColoring: appState.showMeterZoneColoring,
+                                leftOver: appState.inputMeterIsOver(digPair.meterIndex, digital: true),
+                                rightOver: appState.inputMeterIsOver(digPair.meterIndex, digital: true, offset: 1),
+                                onClear: appState.clearMeters
                             )
                         }
                     }
@@ -977,7 +976,7 @@ struct InputControlsView: View {
     // MARK: - SPDIF Replace Helpers
 
     /// Meter level at `index + offset`, or silence when the payload has no word
-    /// for that pair. The digital meter arrays are fixed at 24 entries.
+    /// for that pair.
     private static func meterLevel(_ levels: [Double], _ index: Int?, offset: Int = 0) -> Double {
         guard let index, index + offset < levels.count else { return -60 }
         return levels[index + offset]
@@ -1077,6 +1076,10 @@ struct ADATStereoPairView: View {
     var matchHeight: CGFloat? = nil
     var showZoneColoring: Bool = false
 
+    var leftOver = false
+    var rightOver = false
+    var onClear: (() -> Void)?
+
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -1112,7 +1115,9 @@ struct ADATStereoPairView: View {
                     height: 200,
                     width: 10,
                     rangeDB: 48,
-                    showZoneColoring: showZoneColoring
+                    showZoneColoring: showZoneColoring,
+                    isOver: leftOver,
+                    onClear: onClear
                 )
                 // Center scale between meters — labels centered for readability
                 adatCenterScale
@@ -1124,7 +1129,9 @@ struct ADATStereoPairView: View {
                     height: 200,
                     width: 10,
                     rangeDB: 48,
-                    showZoneColoring: showZoneColoring
+                    showZoneColoring: showZoneColoring,
+                    isOver: rightOver,
+                    onClear: onClear
                 )
             }
         }
@@ -1156,7 +1163,8 @@ struct ADATStereoPairView: View {
     private var adatCenterScale: some View {
         let meterHeight: CGFloat = 200
         let scale = MeterScale(rangeDB: 48)
-        let segmentHeight = (meterHeight - 23) / 24
+        let indicatorSpace = LEDMeterView.indicatorSpace(shown: onClear != nil)
+        let segmentHeight = (meterHeight - indicatorSpace - 23) / 24
         let majorMarks: [Int] = [0, 6, 12, 18, 24, 30, 36, 42, 48]
         let minorMarks: [Int] = [3, 9]  // perceptual density near 0 dB
         // Extra height for top/bottom labels (half text height above 0 dB, below -48 dB)
@@ -1164,7 +1172,7 @@ struct ADATStereoPairView: View {
 
         Canvas { context, size in
             // Scale positions inset by labelPad so extreme labels aren't clipped
-            let topY: CGFloat = labelPad + segmentHeight / 2
+            let topY: CGFloat = labelPad + indicatorSpace + segmentHeight / 2
             let bottomY: CGFloat = size.height - labelPad - segmentHeight / 2
 
             // Major marks — labeled with ticks on both sides (perceptual spacing)
@@ -1579,7 +1587,9 @@ struct InputChannelStripView: View {
                     showScale: true,
                     scaleOnLeft: true,
                     rangeDB: 48,
-                    showZoneColoring: showZoneColoring
+                    showZoneColoring: showZoneColoring,
+                    isOver: appState?.inputMeterIsOver(meterIndex) == true,
+                    onClear: appState.map { state in { state.clearMeters() } }
                 )
             }
             .frame(maxWidth: .infinity, alignment: .center)

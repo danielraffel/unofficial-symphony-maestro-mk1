@@ -293,17 +293,12 @@ struct OutputTabParityTests {
         #expect(devUnit.slot2.analogOutputChannels == 0)   // AD16 has no D/A
     }
 
-    @Test func devUnitDigitalOutputPairsAreUnchanged() {
+    @Test func devUnitKeepsDigitalPairLabelsAndMetersEveryPair() {
         let pairs = devUnit.digitalOutputPairs
         #expect(pairs.count == 12)                          // 4 optical + 8 AD16
         #expect(pairs.first?.label == "ADAT 1/2")
         #expect(pairs.last?.label == "ADAT 23/24")
-        // Only the first four pairs of each board are metered: module 1
-        // contributes pairs 0-3, module 2 pairs 4-11, of which only 4-7 have a
-        // word in the meter payload.
-        #expect(pairs[3].meterIndex == 6)
-        #expect(pairs[4].meterIndex == 8)
-        #expect(pairs[8].meterIndex == nil)
+        #expect(pairs.map(\.meterIndex) == [0, 2, 4, 6, 16, 18, 20, 22, 24, 26, 28, 30])
     }
 
     @Test func devUnitMirrorListsAreTheLegacyOnes() {

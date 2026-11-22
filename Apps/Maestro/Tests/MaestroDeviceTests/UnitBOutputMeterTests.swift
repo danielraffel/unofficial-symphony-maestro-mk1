@@ -42,7 +42,7 @@ struct UnitBOutputMeterTests {
         #expect(w.analog[0] == 96 && w.analog[7] == 103)       // slot 1 Line 1-8: software 33-40
         #expect(w.analog[8] == 112 && w.analog[23] == 127)     // slot 2 Line 1-16: software 49-64
         #expect(w.digital[0] == 104 && w.digital[7] == 111)    // slot 1 digital 1-8: software 41-48
-        #expect(Array(w.digital[8..<16]) == [Int?](repeating: nil, count: 8))   // 16x16: no digital
+        #expect(w.digital[8...].allSatisfy { $0 == nil })   // 16x16: no digital
     }
 
     @Test("one output changed: it follows the change, the rest stay on their default")

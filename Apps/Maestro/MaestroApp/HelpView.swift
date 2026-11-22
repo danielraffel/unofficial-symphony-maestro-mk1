@@ -371,9 +371,10 @@ extension HelpSection {
             ]),
             HelpItem(title: "What does the Over indicator actually mean?", blocks: [
                 .text("It lights when **three or more consecutive full-scale samples** occur. Three samples on their own are very unlikely to be audible — treat it as an early warning that the level should come down rather than as proof of damage."),
+                .text("On USB, Over lights use the unit’s Input, Output and Mixer meter data where available. On ThunderBridge and PCIe, the Mixer uses the card’s clip flags, and Output lights need fresh unit meters from driver build 144 or later. Card Input meters and software fallback meters do not supply clip flags."),
             ]),
             HelpItem(title: "How long are Peaks and Overs held?", blocks: [
-                .text("Both are set in **Device Settings › Front Panel**, independently: **Peak Hold** to Off, 2 Seconds or Infinite, and **Over Hold** to Off, 2 Seconds, Infinite or Auto Clear. Infinite holds until you clear it. Clear held peaks and overs with **Clear Meters**, or by clicking the front-panel left-hand encoder — the unit shows \"Meters Cleared\" on its display."),
+                .text("Set **Peak Hold** and **Over Hold** in **Device Settings › Front Panel**. Peak Hold Off hides the peak mark. With 2 Seconds it holds, then falls. Over Hold Off lights for a tenth of a second, and 2 Seconds or Auto Clear lights for two seconds on screen. Infinite holds until you click an Over light, choose **Clear Meters**, or clear meters with the front-panel encoder."),
             ]),
             HelpItem(title: "Why do the outputs still say \"Line\" when I've set up speakers?", blocks: [
                 .text("Output channels keep their **Line 1, Line 2 …** names in every mode. The menu under the **Speaker** knob on the Output page (Analog Out Format) changes what the outputs *do* — whether the level knob, Mute, Dim and Sum to Mono apply to them — but it does not rename them. Apogee labels the first pair **Monitor Out** on the rear panel; that is a label on the hardware, not a name that changes on screen."),

@@ -29,7 +29,7 @@ struct ThunderboltInputMeterMapTests {
         #expect(Array(w.channels[24..<32]) == (8..<16).map { Optional($0) })
         // Input-tab digital strips: board 0's eight, board 1 has none.
         #expect(Array(w.digital[0..<8]) == (8..<16).map { Optional($0) })
-        #expect(w.digital[8..<24].allSatisfy { $0 == nil })
+        #expect(w.digital[8...].allSatisfy { $0 == nil })
     }
 
     @Test("Before the fix A16 Line 1 read host input 9: the levels now come from 17")
@@ -53,8 +53,8 @@ struct ThunderboltInputMeterMapTests {
         #expect(Array(w.channels[2..<18]) == (12..<28).map { Optional($0) })
         // The 2x6's digital inputs are board channels 2-11 = host inputs 3-12.
         #expect(Array(w.channels[18..<28]) == (2..<12).map { Optional($0) })
-        // Metered digital: the first eight of the 2x6's ten.
-        #expect(Array(w.digital[0..<8]) == (2..<10).map { Optional($0) })
+        // All ten digital inputs are metered.
+        #expect(Array(w.digital[0..<10]) == (2..<12).map { Optional($0) })
     }
 
     @Test("Slot 1 not read this session: the driver's fixed 16 + 16")

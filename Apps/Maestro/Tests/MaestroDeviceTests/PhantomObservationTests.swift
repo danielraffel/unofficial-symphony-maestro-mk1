@@ -4,6 +4,24 @@ import Testing
 @testable import MaestroDevice
 
 @Suite struct PhantomObservationTests {
+    @Test(arguments: [
+        (UInt64(12), true, UInt64(11), ServingDextBuild.build(144), Optional(true)),
+        (UInt64(12), false, UInt64(11), ServingDextBuild.build(144), Optional(false)),
+        (UInt64(12), true, UInt64(12), ServingDextBuild.build(144), nil),
+        (UInt64(11), false, UInt64(12), ServingDextBuild.build(144), nil),
+        (UInt64(0), false, UInt64(0), ServingDextBuild.build(144), nil),
+        (UInt64(12), true, UInt64(11), ServingDextBuild.build(143), nil),
+        (UInt64(12), false, UInt64(11), ServingDextBuild.build(143), Optional(false)),
+    ])
+    func onAndOffReceiptsRespectGenerationAndServingBuild(
+        generation: UInt64, isOn: Bool, seen: UInt64, build: ServingDextBuild, expected: Bool?
+    ) {
+        #expect(PhantomObservation.observedState(generation: generation, isOn: isOn,
+                                                lastSeenGeneration: seen, servingBuild: build) == expected)
+        #expect(PhantomObservation.observedState(generation: generation, isOn: true,
+                                                lastSeenGeneration: seen, servingBuild: nil) == nil)
+    }
+
     @Test func offClearsOnlyTargetAndDoesNotRevokeLaterExplicitOn() throws {
         let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
         let layout = CardLayout(slot1: .analogADDA16, slot2: .micPre8)

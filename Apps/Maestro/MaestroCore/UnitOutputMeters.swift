@@ -29,21 +29,20 @@ public enum UnitOutputMeters {
         unit == activeUnit && layout == activeLayout && connection == activeConnection
     }
     public static let payloadLength = 64
-    public static let wordsPerBoard = 16
-    /// Board b's digital output k at `b * 8 + k`, as
-    /// ``CardLayout/DigitalPair/meterIndex`` reads it.
-    public static let digitalSlots = 24
+    public static let wordsPerBoard = IOCardType.busChannelsPerBoard
+    public static let digitalSlots = CardLayout.digitalMeterSlots
 
     public struct Levels: Sendable, Equatable {
-        /// Slot 1's analog outputs, then slot 2's (dBFS, -60 = silence).
-        public let analog: [Double]
-        public let digital: [Double]
+        /// Slot 1's analog outputs, then slot 2's.
+        public let analogReadings: [MeterReading]
+        public let digitalReadings: [MeterReading]
+
+        public var analog: [Double] { analogReadings.map(\.level) }
+        public var digital: [Double] { digitalReadings.map(\.level) }
     }
 
     public static func level(word: UInt16) -> Double {
-        let value = word & 0x3FFF
-        guard value > 0x40 else { return -60.0 }
-        return max(-60.0, 20.0 * log10(Double(value) / 16383.0))
+        MeterReading.unit(word: word).level
     }
 
     /// Nil for a reply that is short or all zero (the unit sends its buffer
@@ -51,24 +50,12 @@ public enum UnitOutputMeters {
     public static func levels(payload: Data, layout: CardLayout) -> Levels? {
         guard layout.isKnown, payload.count >= payloadLength,
               payload.prefix(payloadLength).contains(where: { $0 != 0 }) else { return nil }
-        let bytes = [UInt8](payload.prefix(payloadLength))
-        func level(_ word: Int) -> Double {
-            guard word >= 0, word * 2 + 1 < bytes.count else { return -60.0 }
-            return Self.level(word: UInt16(bytes[word * 2]) | UInt16(bytes[word * 2 + 1]) << 8)
-        }
-        var analog: [Double] = []
-        var digital = [Double](repeating: -60.0, count: digitalSlots)
-        let meteredPerBoard = CardLayout.meteredDigitalPairsPerBoard * 2
-        for (board, card) in layout.slots.enumerated() {
-            let base = board * wordsPerBoard
-            for channel in 0..<min(card.analogOutputChannels, wordsPerBoard) {
-                analog.append(level(base + channel))
-            }
-            let room = wordsPerBoard - card.analogOutputChannels
-            for k in 0..<min(meteredPerBoard, card.digitalOutputChannels, max(0, room)) {
-                digital[board * meteredPerBoard + k] = level(base + card.analogOutputChannels + k)
+        let analog = layout.slots.enumerated().flatMap { board, card in
+            (0..<min(card.analogOutputChannels, wordsPerBoard)).map { channel in
+                TDMMeterPayload.reading(payload, word: board * wordsPerBoard + channel)
             }
         }
-        return Levels(analog: analog, digital: digital)
+        return Levels(analogReadings: analog,
+                      digitalReadings: TDMMeterPayload.digitalReadings(payload, layout: layout, isInput: false))
     }
 }

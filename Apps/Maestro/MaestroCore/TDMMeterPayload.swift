@@ -67,11 +67,22 @@ public enum TDMMeterPayload {
     /// input and output groups. Level = word & 0x3FFF of 16383; at or below
     /// 0x40 reads as silence (-60).
     public static func mixerLevels(_ data: Data, count: Int = 8) -> [Double] {
-        (0..<count).map { i in
-            guard i * 2 + 1 < data.count else { return -60.0 }
-            let base = data.startIndex + i * 2
-            let word = (UInt16(data[base]) | (UInt16(data[base + 1]) << 8)) & 0x3FFF
-            return word <= 0x40 ? -60.0 : max(-60.0, 20.0 * log10(Double(word) / 16383.0))
+        mixerReadings(data, count: count).map(\.level)
+    }
+
+    public static func reading(_ data: Data, word: Int) -> MeterReading {
+        guard word >= 0, word < data.count / 2 else { return .silence }
+        let base = data.startIndex + word * 2
+        return .unit(word: UInt16(data[base]) | UInt16(data[base + 1]) << 8)
+    }
+
+    public static func mixerReadings(_ data: Data, count: Int = 8) -> [MeterReading] {
+        (0..<count).map { reading(data, word: $0) }
+    }
+
+    public static func digitalReadings(_ data: Data, layout: CardLayout, isInput: Bool) -> [MeterReading] {
+        MeterSlotMap.digitalWords(layout: layout, isInput: isInput).map { word in
+            word.map { reading(data, word: $0) } ?? .silence
         }
     }
 

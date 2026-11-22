@@ -296,6 +296,20 @@ struct ThunderboltPresetTests {
         #expect(preset.metadata.channelNames == ["Old name"])
     }
 
+    @Test func switchedOutputTrimUsesExistingPresetWireEncoding() throws {
+        var preset = try fixture()
+        let address = PropertyAddress(selector: .analogIOType, scope: .output, element: 0)
+        let plus4 = preset.metadata.outputChannelStates[0]
+        let minus10 = plus4.switchingTrimReference(to: 2)
+        preset.metadata.outputChannelStates[0] = minus10
+        let minus10Writes = try preset.writes(layout: layout)
+        #expect(minus10Writes.contains(.property(address, .uint32(0x0002))))
+
+        preset.metadata.outputChannelStates[0] = minus10.switchingTrimReference(to: 1)
+        let plus4Writes = try preset.writes(layout: layout)
+        #expect(plus4Writes.contains(.property(address, .uint32(0xFB01))))
+    }
+
     @Test func coaxMirrorZeroIsAValidHardwareValue() throws {
         // A unit can report 0 (Off); capture must not fail on it. The original's
         // Mirrors menu has no Off (OutputChannelLogic.swift:224), so it is not written.

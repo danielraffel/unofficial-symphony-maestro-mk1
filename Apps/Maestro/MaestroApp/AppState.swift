@@ -1561,12 +1561,12 @@ final class AppState: @unchecked Sendable {
     /// mixer order), digital input strips, and outputs (words 96-127).
     var unitBInputMeterLevels: [Double] = []
     var unitBInputPeakHold: [Double] = []
-    var unitBDigitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: 24)
-    var unitBDigitalInputPeakHold: [Double] = Array(repeating: -60.0, count: 24)
+    var unitBDigitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    var unitBDigitalInputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     var unitBOutputMeterLevels: [Double] = []
     var unitBOutputPeakHold: [Double] = []
-    var unitBDigitalOutputMeterLevels: [Double] = Array(repeating: -60.0, count: 24)
-    var unitBDigitalOutputPeakHold: [Double] = Array(repeating: -60.0, count: 24)
+    var unitBDigitalOutputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    var unitBDigitalOutputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     /// Debug only: `-MaestroSimulateSecondUnit` (see `SecondUnitSimulation`).
     @ObservationIgnored var simulatedUnitB: SecondUnitInfo?
     /// The unit A connection unit B's connection was made from.
@@ -1798,25 +1798,27 @@ final class AppState: @unchecked Sendable {
     var inputMeterLevels: [Double] = []
     /// Real-time meter levels for output channels (dBFS, -60..0).
     var outputMeterLevels: [Double] = []
-    /// Peak hold values for input meters — rises instantly, decays at ~8 dB/sec.
+    /// Displayed input peak marks.
     var inputPeakHold: [Double] = []
-    /// Peak hold values for output meters — rises instantly, decays at ~8 dB/sec.
+    /// Displayed output peak marks.
     var outputPeakHold: [Double] = []
-    /// Digital input meter levels (ADAT/Optical) — 24 values for up to 12 stereo pairs.
-    /// TDM provides 8 per board (words 8-15, 24-31); remaining slots stay at -60 dB.
-    var digitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: 24)
+    /// Digital input levels in board order.
+    var digitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     /// Peak hold for digital input meters.
-    var digitalInputPeakHold: [Double] = Array(repeating: -60.0, count: 24)
-    /// Digital output meter levels (ADAT/Optical) — 24 values for up to 12 stereo pairs.
-    /// TDM provides 8 per board (words 8-15, 24-31); remaining slots stay at -60 dB.
-    var digitalOutputMeterLevels: [Double] = Array(repeating: -60.0, count: 24)
+    var digitalInputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    /// Digital output levels in board order.
+    var digitalOutputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     /// Peak hold for digital output meters.
-    var digitalOutputPeakHold: [Double] = Array(repeating: -60.0, count: 24)
+    var digitalOutputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     /// Mixer TDM meter levels — 8 values from hardware (TDM group 2):
     ///   [0..1] = Mixer 0 SW Return L/R, [2..3] = Mixer 1 SW Return L/R,
     ///   [4..5] = Mixer 0 Master L/R,    [6..7] = Mixer 1 Master L/R.
     /// Evidence: SymphonyIO.cpp:7029-7052, SymphonyIOMixer.h:18-20.
     var mixerMeterLevels: [Double] = Array(repeating: -60.0, count: 8)
+    var mixerPeakHold: [Double] = Array(repeating: -60, count: 8)
+    var meterOvers: [DisplayMeterBank: Set<Int>] = [:]
+    @ObservationIgnored var meterHolds: [DisplayMeterBank: [MeterHold]] = [:]
+
     /// Meter polling task handle.
     var meterPollingTask: Task<Void, Never>?
     /// Whether TDM hardware metering via XPC is available (set false on first failure).
@@ -3477,6 +3479,7 @@ final class AppState: @unchecked Sendable {
             }
 
             var pollCount = 0
+            var displayedUnitOutputStamp = Date.distantPast
             // The poll count starts again here, so the maps stamped with the
             // last task's count are read again at once.
             if let self {
@@ -3493,6 +3496,7 @@ final class AppState: @unchecked Sendable {
                 // Hardware TDM metering via XPC (command 0x30) — reads directly from
                 // FPGA meter taps. Provides both input AND output levels. More accurate
                 // than software metering and shows output from all audio clients.
+                var over: [DisplayMeterBank: Set<Int>] = [:]
                 var newInput: [Double]
                 var newOutput: [Double]
                 if self.tdmMeteringAvailable, let xpcDev = device as? XPCDeviceConnection {
@@ -3666,10 +3670,15 @@ final class AppState: @unchecked Sendable {
                         let inHasData: Bool
                         if let inVal, case .data(let inBytes) = inVal,
                            !inBytes.allSatisfy({ $0 == 0 }) {
-                            newInput = self.tdmMeterLevels(from: inBytes, count: self.inputMeterLevels.count)
-                            // Extract digital (ADAT/Optical) meter levels: words 8-15 (Board 1), 24-31 (Board 2)
-                            let rawDigital = self.tdmDigitalMeterLevels(from: inBytes)
-                            self.digitalInputMeterLevels = self.smoothMeterLevels(self.digitalInputMeterLevels, raw: rawDigital)
+                            let analog = self.tdmMeterReadings(from: inBytes, count: self.inputMeterLevels.count,
+                                                               isInput: true)
+                            newInput = analog.map(\.level)
+                            let digital = TDMMeterPayload.digitalReadings(inBytes, layout: self.cardLayout,
+                                                                         isInput: true)
+                            self.digitalInputMeterLevels = self.smoothMeterLevels(
+                                self.digitalInputMeterLevels, raw: digital.map(\.level))
+                            over[.input] = Self.overChannels(analog)
+                            over[.digitalInput] = Self.overChannels(digital)
                             inHasData = true
                         } else {
                             newInput = self.inputMeterLevels
@@ -3678,10 +3687,15 @@ final class AppState: @unchecked Sendable {
                         let outHasData: Bool
                         if let outVal, case .data(let outBytes) = outVal,
                            !outBytes.allSatisfy({ $0 == 0 }) {
-                            newOutput = self.tdmMeterLevels(from: outBytes, count: self.outputMeterLevels.count)
-                            // Extract digital output (ADAT/Optical) meter levels: words 8-15, 24-31
-                            let rawDigitalOut = self.tdmDigitalMeterLevels(from: outBytes)
-                            self.digitalOutputMeterLevels = self.smoothMeterLevels(self.digitalOutputMeterLevels, raw: rawDigitalOut)
+                            let analog = self.tdmMeterReadings(from: outBytes, count: self.outputMeterLevels.count,
+                                                               isInput: false)
+                            newOutput = analog.map(\.level)
+                            let digital = TDMMeterPayload.digitalReadings(outBytes, layout: self.cardLayout,
+                                                                         isInput: false)
+                            self.digitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.digitalOutputMeterLevels, raw: digital.map(\.level))
+                            over[.output] = Self.overChannels(analog)
+                            over[.digitalOutput] = Self.overChannels(digital)
                             outHasData = true
                         } else {
                             newOutput = self.outputMeterLevels
@@ -3726,7 +3740,9 @@ final class AppState: @unchecked Sendable {
                         // regardless of the length the firmware reports.
                         if let mixVal, case .data(let mixBytes) = mixVal,
                            !mixBytes.allSatisfy({ $0 == 0 }) {
-                            var rawMixer = TDMMeterPayload.mixerLevels(mixBytes)
+                            let readings = TDMMeterPayload.mixerReadings(mixBytes)
+                            var rawMixer = readings.map(\.level)
+                            over[.mixer] = Self.overChannels(readings)
                             if !self.usbUnitMixerMetersSeen {
                                 self.usbUnitMixerMetersSeen = true
                                 print("[MeterPoll] USB: the unit reports mixer meters; Software Return and Master meters read from it. First reply: "
@@ -3847,11 +3863,12 @@ final class AppState: @unchecked Sendable {
                         // Thunderbolt: real hardware meters from the card FPGA meter DMA.
                         // Word peak = bits[31:24] → dB = 20*log10(peak/256). Layout (legacy):
                         // 0-31 = hardware inputs, 64-95 = host playback, 128-131 = mixer0/1 out.
-                        func dbW(_ i: Int) -> Double {
-                            guard i < words.count else { return -60 }
-                            let peak = Double((words[i] >> 24) & 0xFF)
-                            return peak <= 0 ? -60 : max(-60, 20 * log10(peak / 256.0))
+                        let cardReadings = words.map(MeterReading.card(word:))
+                        func reading(_ i: Int) -> MeterReading {
+                            cardReadings.indices.contains(i) ? cardReadings[i] : .silence
                         }
+                        func dbW(_ i: Int) -> Double { reading(i).level }
+                        func isOver(_ i: Int) -> Bool { reading(i).isOver }
                         // Words 0-31 meter host inputs 1-32: what the unit's
                         // capture table sends over XLink, not the device-wide
                         // input order the strips use. Each strip reads the word
@@ -3870,6 +3887,14 @@ final class AppState: @unchecked Sendable {
                         self.refreshThunderboltOutputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
                         let outputWords = self.thunderboltOutputMeterWords
                         let unitOutputs = self.freshUnitOutputMeterLevels()
+                        let overSources = MeterOverSources.available(
+                            card: true, build: self.servingDextBuild, unitOutputsFresh: unitOutputs != nil)
+                        if overSources.output, let unitOutputs, self.unitOutputMeterStamp != displayedUnitOutputStamp {
+                            displayedUnitOutputStamp = self.unitOutputMeterStamp
+                            let isB = self.activeUnit == .b
+                            over[isB ? .unitBOutput : .output] = Self.overChannels(unitOutputs.analogReadings)
+                            over[isB ? .unitBDigitalOutput : .digitalOutput] = Self.overChannels(unitOutputs.digitalReadings)
+                        }
                         if self.activeUnit == .b, let unitOutputs {
                             self.unitBOutputMeterLevels = self.smoothMeterLevels(
                                 self.unitBOutputMeterLevels, raw: unitOutputs.analog)
@@ -3928,10 +3953,14 @@ final class AppState: @unchecked Sendable {
                         self.digitalInputMeterLevels = self.smoothMeterLevels(
                             self.digitalInputMeterLevels,
                             raw: ThunderboltInputMeterMap.digitalLevels(host: hostInputs, words: meterWords))
+                        // Keep the clip flag on the same routed word as the Mixer strip.
+                        over[.input] = Self.cardMixerInputOvers(
+                            meterWords, count: self.inputMeterLevels.count, isOver: isOver)
                         // Unit B (64 channels, a second Symphony I/O): its own
                         // strips read words 32-63 and 96-127.
-                        self.updateUnitBMeters(dB: dbW, pollCount: pollCount,
-                                               preferUnitRead: self.activeUnit == .b && unitOutputs != nil)
+                        over[.unitBInput] = self.updateUnitBMeters(
+                            dB: dbW, isOver: isOver, pollCount: pollCount,
+                            preferUnitRead: self.activeUnit == .b && unitOutputs != nil)
 
                         // The FPGA meter DMA is not available on every
                         // ThunderBridge FPGA revision and may be temporarily
@@ -4016,17 +4045,24 @@ final class AppState: @unchecked Sendable {
                             func trimmed(_ dB: Double, _ gain: Double) -> Double {
                                 gain <= 0 ? -60.0 : max(-60.0, dB + 20.0 * log10(gain))
                             }
+                            var mixerOvers: Set<Int> = []
                             for mixer in 0..<2 {
                                 let trim = self.softwareReturnMeterGains[mixer]
                                 let word = SoftwareReturnMeterGain.playbackWord(
                                     source: self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))
                                 rawMixer[mixer * 2] = trimmed(dbW(word), trim.left)
                                 rawMixer[mixer * 2 + 1] = trimmed(dbW(word + 1), trim.right)
+                                if isOver(word) { mixerOvers.insert(mixer * 2) }
+                                if isOver(word + 1) { mixerOvers.insert(mixer * 2 + 1) }
                             }
                             rawMixer[4] = dbW(128); rawMixer[5] = dbW(129)
                             if self.mixerMeterLevels.count >= 8 {
                                 rawMixer[6] = dbW(130); rawMixer[7] = dbW(131)
                             }
+                            for index in 4..<rawMixer.count where isOver(128 + index - 4) {
+                                mixerOvers.insert(index)
+                            }
+                            if overSources.mixer { over[.mixer] = mixerOvers }
                             self.mixerMeterLevels = self.smoothMeterLevels(
                                 self.mixerMeterLevels, raw: rawMixer)
                         }
@@ -4180,10 +4216,7 @@ final class AppState: @unchecked Sendable {
                 // firmware refresh cycles.
                 self.inputMeterLevels = self.smoothMeterLevels(self.inputMeterLevels, raw: newInput)
                 self.outputMeterLevels = self.smoothMeterLevels(self.outputMeterLevels, raw: newOutput)
-                self.inputPeakHold = self.advancePeakHold(self.inputPeakHold, levels: self.inputMeterLevels)
-                self.outputPeakHold = self.advancePeakHold(self.outputPeakHold, levels: self.outputMeterLevels)
-                self.digitalInputPeakHold = self.advancePeakHold(self.digitalInputPeakHold, levels: self.digitalInputMeterLevels)
-                self.digitalOutputPeakHold = self.advancePeakHold(self.digitalOutputPeakHold, levels: self.digitalOutputMeterLevels)
+                self.updateMeterHolds(over: over)
                 // 20 fps while the hardware answers; 1 Hz once it stops.
                 //
                 // Every cycle in the failed state is a round trip that can only
@@ -4218,13 +4251,17 @@ final class AppState: @unchecked Sendable {
         return result
     }
 
-    /// Advance peak hold values: snap up to new peaks, decay at 0.4 dB/frame when level drops.
-    func advancePeakHold(_ hold: [Double], levels: [Double]) -> [Double] {
-        var result = hold
-        for i in 0..<min(hold.count, levels.count) {
-            result[i] = levels[i] > hold[i] ? levels[i] : max(hold[i] - 0.4, levels[i])
-        }
-        return result
+    static func overChannels(_ readings: [MeterReading]) -> Set<Int> {
+        Set(readings.indices.filter { readings[$0].isOver })
+    }
+
+    static func cardMixerInputOvers(_ words: ThunderboltInputMeterMap.Words, count: Int,
+                                   isOver: (Int) -> Bool) -> Set<Int> {
+        Set((0..<count).filter { index in
+            if words.channels.isEmpty { return isOver(index) }
+            guard words.channels.indices.contains(index), let word = words.channels[index] else { return false }
+            return isOver(word)
+        })
     }
 
     /// Stop meter polling.
@@ -4232,6 +4269,7 @@ final class AppState: @unchecked Sendable {
     func stopMeterPolling() {
         meterPollingTask?.cancel()
         meterPollingTask = nil
+        clearDisplayedMeterHolds()
     }
 
     // MARK: - Front Panel Sync
@@ -4418,11 +4456,7 @@ final class AppState: @unchecked Sendable {
                     PropertyAddress(selector: .outputMute), value: .bool(muted)) }
             }
         case .metersCleared:
-            // The unit's held peaks are gone; drop Maestro's copies too.
-            inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
-            outputPeakHold = Array(repeating: -60.0, count: outputPeakHold.count)
-            digitalInputPeakHold = Array(repeating: -60.0, count: digitalInputPeakHold.count)
-            digitalOutputPeakHold = Array(repeating: -60.0, count: digitalOutputPeakHold.count)
+            clearDisplayedMeterHolds()
         }
     }
 
@@ -4824,50 +4858,23 @@ final class AppState: @unchecked Sendable {
     ///
     /// Evidence: `SymphonyIO.cpp` line 7010 — `SetBoardMeterData(true, rawTDMMeterData+16*nBrdIdx, 16)`
     /// Evidence: `SymphonyIOBoard_AnalogOptical.cpp` — 8 analog + 8 optical streams per board
-    private func tdmMeterLevels(from data: Data, count: Int) -> [Double] {
-        var result = [Double](repeating: -60.0, count: count)
-        let wordsAvailable = data.count / 2
-
-        // Slot layout, from SymphonyIO.cpp:6931-6944 and :7041-7100:
-        //
-        //   words  0-15 -> card slot 0      words 16-31 -> card slot 1
-        //
-        // That outer split is rigid and card-INDEPENDENT: each physical slot
-        // always gets exactly 16 words whether the card fills 0, 8 or 16 of
-        // them. Within a board the order is N analog first, then digital.
-        //
-        // N is per-card and we previously hardcoded it to 8, which is right only
-        // for the 8x8 cards. A 16x16 or AD16/DA16 contributes 16 analog and no
-        // digital, and a MicPre8 contributes NOTHING -- it has no converters of
-        // its own and delegates onto the primary card's analog inputs. Hardcoding
-        // 8 sends channels 9-16 of a 16-channel card into slot 1's region, which
-        // on a 16x16 + MicPre8 unit is empty.
-        let hasTwoBoards = data.count >= 64 && count > 8
-        let board0Analog = self.primaryBoardType.analogInputChannels
-        // Fall back to the old assumption only when detection has told us
-        // nothing; a wrong guess is better placed at 8 than at 0.
-        let analogOnBoard0 = board0Analog > 0 ? board0Analog : 8
-
-        for i in 0..<count {
-            // Mapping lives in MaestroCore.MeterSlotMap so it can be proven
-            // against card configurations we do not physically own.
-            let wordIndex = MeterSlotMap.analogWordIndex(
-                channel: i, analogOnBoard0: analogOnBoard0, twoBoards: hasTwoBoards)
-
-            guard wordIndex < wordsAvailable else { continue }
-
-            let lo = UInt16(data[wordIndex * 2])
-            let hi = UInt16(data[wordIndex * 2 + 1])
-            let rawWord = lo | (hi << 8)
-            let meterVal = rawWord & 0x3FFF  // mask off over bit
-            if meterVal <= 0x40 {
-                result[i] = -60.0  // silence threshold
-            } else {
-                let dBFS = 20.0 * log10(Double(meterVal) / 16383.0)
-                result[i] = max(dBFS, -60.0)
+    private func tdmMeterReadings(from data: Data, count: Int, isInput: Bool) -> [MeterReading] {
+        let layout = cardLayout
+        if layout.isKnown {
+            let words = layout.slots.enumerated().flatMap { board, card in
+                let channels = isInput ? card.analogInputChannels : card.analogOutputChannels
+                return (0..<channels).map { board * IOCardType.busChannelsPerBoard + $0 }
+            }
+            return (0..<count).map { index in
+                guard words.indices.contains(index) else { return .silence }
+                return TDMMeterPayload.reading(data, word: words[index])
             }
         }
-        return result
+        return (0..<count).map { index in
+            let word = MeterSlotMap.analogWordIndex(channel: index, analogOnBoard0: 8,
+                                                    twoBoards: data.count >= 64 && count > 8)
+            return TDMMeterPayload.reading(data, word: word)
+        }
     }
 
     // MARK: Software output meters (hardware output group proven absent)
@@ -5098,73 +5105,15 @@ final class AppState: @unchecked Sendable {
         return result
     }
 
-    /// Digital output levels (same 24-slot layout as `tdmDigitalMeterLevels`).
+    /// Digital output levels follow the routed sources, in board order.
     private func softwareDigitalOutputLevels(peaks: [Float]) -> [Double] {
-        var result = [Double](repeating: -60.0, count: 24)
         let mixerSources = cachedMixerSoftwareReturnSources()
-        let board0Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.primaryBoardType.analogOutputChannels, boardIndex: 0)
-        let board1Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.secondaryBoardType.analogOutputChannels, boardIndex: 1)
-        for (i, word) in board0Words.enumerated() where i < 8 {
+        return MeterSlotMap.digitalWords(layout: cardLayout, isInput: false).map { word in
+            guard let word else { return -60 }
             let source = SoftwareOutputMeterMap.source(forWord: word, routes: softwareOutputRoutes)
-            result[i] = SoftwareOutputMeterMap.level(
-                for: source, usbPeaks: peaks,
-                mixerSoftwareReturnSources: mixerSources)
+            return SoftwareOutputMeterMap.level(for: source, usbPeaks: peaks,
+                                                mixerSoftwareReturnSources: mixerSources)
         }
-        for (i, word) in board1Words.enumerated() where i < 8 {
-            let source = SoftwareOutputMeterMap.source(forWord: word, routes: softwareOutputRoutes)
-            result[8 + i] = SoftwareOutputMeterMap.level(
-                for: source, usbPeaks: peaks,
-                mixerSoftwareReturnSources: mixerSources)
-        }
-        return result
-    }
-
-    /// Extract digital (ADAT/Optical) meter levels from TDM input data.
-    /// Board 1 digital = words 8-15, Board 2 digital = words 24-31.
-    /// Returns 24 values: [Board1_dig0..dig7, Board2_dig0..dig7, 8×-60].
-    /// The last 8 are placeholders for ADAT ports 3 (channels 17-24).
-    ///
-    /// Evidence: `SymphonyIOBoard_AnalogOptical.cpp` — 8 analog + 8 digital per board
-    private func tdmDigitalMeterLevels(from data: Data) -> [Double] {
-        var result = [Double](repeating: -60.0, count: 24)
-        let wordsAvailable = data.count / 2
-
-        // Digital channels sit AFTER that board's analog channels within its own
-        // 16-word region (SymphonyIO.cpp:7041-7100). The offset is therefore
-        // per-card, not a fixed 8: a 16x16 or AD16/DA16 uses all 16 words for
-        // analog and contributes NO digital region at all. Reading words 8-15
-        // unconditionally showed such a card's analog channels 9-16 as though
-        // they were ADAT meters.
-        let board0Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.primaryBoardType.analogInputChannels, boardIndex: 0)
-        let board1Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.secondaryBoardType.analogInputChannels, boardIndex: 1)
-
-        // Board 0 digital
-        for (i, wordIndex) in board0Words.enumerated() {
-            guard wordIndex < wordsAvailable else { continue }
-            let lo = UInt16(data[wordIndex * 2])
-            let hi = UInt16(data[wordIndex * 2 + 1])
-            let rawWord = lo | (hi << 8)
-            let meterVal = rawWord & 0x3FFF
-            if meterVal > 0x40 {
-                result[i] = max(20.0 * log10(Double(meterVal) / 16383.0), -60.0)
-            }
-        }
-        // Board 1 digital
-        for (i, wordIndex) in board1Words.enumerated() {
-            guard wordIndex < wordsAvailable else { continue }
-            let lo = UInt16(data[wordIndex * 2])
-            let hi = UInt16(data[wordIndex * 2 + 1])
-            let rawWord = lo | (hi << 8)
-            let meterVal = rawWord & 0x3FFF
-            if meterVal > 0x40 {
-                result[8 + i] = max(20.0 * log10(Double(meterVal) / 16383.0), -60.0)
-            }
-        }
-        return result
     }
 
     /// Build a fresh [Double] dBFS array from Float32 mAEstroStreamMeter peaks.

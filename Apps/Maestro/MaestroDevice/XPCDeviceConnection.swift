@@ -645,6 +645,12 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         lock.lock(); cachedClockSource = source; lock.unlock()
     }
 
+    /// Display settings from the existing read/write cache, with no USB request.
+    public func cachedMeterHoldModes() -> (peak: UInt32, over: UInt32) {
+        lock.lock(); defer { lock.unlock() }
+        return (cachedPeakHoldMode, cachedOversHoldMode)
+    }
+
     /// Return cached value for a write-only property.
     private func getCachedWriteOnly(_ address: PropertyAddress) -> PropertyValue {
         lock.lock(); defer { lock.unlock() }

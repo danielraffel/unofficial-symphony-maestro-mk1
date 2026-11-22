@@ -193,30 +193,21 @@ struct CardLayoutTests {
 
     // MARK: - Meter indices (the page-open crash)
 
-    /// `digital*MeterLevels` is a fixed 24 entries. `analogDA16 + analogDA16`
-    /// reaches 16 digital input pairs and `analogAD16 + analogAD16` 16 digital
-    /// output pairs; `pair * 2 + 1` on those ran off the end of the array.
-    @Test func digitalMeterIndicesNeverEscapeTheArray() {
-        let meterArrayCount = 24
+    @Test func digitalMeterIndicesNeverEscapeTheArray() throws {
+        let meterArrayCount = CardLayout.digitalMeterSlots
         for (slot1, slot2) in Self.allPairs {
             let layout = CardLayout(slot1: slot1, slot2: slot2)
             for pair in layout.digitalInputPairs + layout.digitalOutputPairs {
-                guard let index = pair.meterIndex else { continue }
+                let index = try #require(pair.meterIndex)
                 #expect(index + 1 < meterArrayCount,
                         "\(slot1) + \(slot2) \(pair.label) index \(index)")
             }
         }
     }
 
-    @Test func dualDA16ExposesSixteenInputPairsAndMetersTheFirstFourPerBoard() {
+    @Test func dualDA16MetersAllSixteenInputPairs() {
         let layout = CardLayout(slot1: .analogDA16, slot2: .analogDA16)
-        #expect(layout.digitalInputPairs.count == 16)
-        let metered = layout.digitalInputPairs.filter { $0.meterIndex != nil }
-        #expect(metered.count == 8)   // 4 per board
-        #expect(layout.digitalInputPairs[0].meterIndex == 0)
-        #expect(layout.digitalInputPairs[3].meterIndex == 6)
-        #expect(layout.digitalInputPairs[4].meterIndex == nil)   // board 0 pair 5
-        #expect(layout.digitalInputPairs[8].meterIndex == 8)     // board 1 pair 1
+        #expect(layout.digitalInputPairs.map(\.meterIndex) == (0..<16).map { Optional(2 * $0) })
     }
 
     // MARK: - Empty and unknown slots

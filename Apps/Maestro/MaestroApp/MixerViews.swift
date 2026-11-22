@@ -1295,10 +1295,13 @@ private struct MixerMasterMetersView: View {
         let levels = appState.mixerMeterLevels
         let left = baseIndex < levels.count ? levels[baseIndex] : -60.0
         let right = baseIndex + 1 < levels.count ? levels[baseIndex + 1] : -60.0
+        let peaks = appState.mixerPeakHold
+        let leftPeak = peaks.indices.contains(baseIndex) ? peaks[baseIndex] : -60
+        let rightPeak = peaks.indices.contains(baseIndex + 1) ? peaks[baseIndex + 1] : -60
         HStack(alignment: .top, spacing: 4) {
             LEDMeterView(
                 level: left,
-                peak: left,
+                peak: leftPeak,
                 label: "L",
                 height: 200,
                 width: 8,
@@ -1307,16 +1310,20 @@ private struct MixerMasterMetersView: View {
                 rangeDB: 48,
                 showZoneColoring: appState.showMeterZoneColoring,
                 labelOffsetX: 8,
-                labelOffsetY: -10
+                labelOffsetY: -10,
+                isOver: appState.meterIsOver(.mixer, baseIndex),
+                onClear: appState.clearMeters
             )
             LEDMeterView(
                 level: right,
-                peak: right,
+                peak: rightPeak,
                 label: "R",
                 height: 200,
                 width: 8,
                 rangeDB: 48,
-                showZoneColoring: appState.showMeterZoneColoring
+                showZoneColoring: appState.showMeterZoneColoring,
+                isOver: appState.meterIsOver(.mixer, baseIndex, offset: 1),
+                onClear: appState.clearMeters
             )
         }
     }
@@ -1374,32 +1381,30 @@ struct MixerChannelStripView: View {
     /// Height for the fader+meter area (matches Input/Output strip meter height).
     private let faderHeight: CGFloat = 200
 
-    private var resolvedMeterLevels: (left: Double, right: Double?) {
+    private var resolvedMeterLevels: (left: Double, right: Double?, leftPeak: Double,
+                                      rightPeak: Double, leftOver: Bool, rightOver: Bool) {
         if let appState, let index = inputMeterIndex {
-            let rawInput = appState.mixerInputMeterLevel(strip: index)
-            let level: Double
-            // Pre-Mute Metering on (the default, and what Apogee's mixer did):
-            // the meter shows the signal arriving at the strip, whatever its
-            // fader and mute. Off: it follows the fader and goes dark on mute.
-            if preMuteMetering {
-                level = max(rawInput, -60.0)
-            } else if channel.isMuted {
-                level = -60.0
-            } else {
-                level = max(rawInput + channel.level, -60.0)
+            let input = appState.mixerInputMeterPresentation(strip: index)
+            // Match the strip's existing pre-/post-mute setting for the peak mark.
+            func displayed(_ value: Double) -> Double {
+                if preMuteMetering { return max(value, -60) }
+                guard !channel.isMuted, value > -60 else { return -60 }
+                return max(value + channel.level, -60)
             }
-            return (level, nil)
+            let level = preMuteMetering ? max(input.level, -60)
+                : (channel.isMuted ? -60 : max(input.level + channel.level, -60))
+            return (level, nil, displayed(input.peak), -60, input.over, false)
         }
         if let appState, let baseIndex = mixerMeterBaseIndex {
-            guard baseIndex + 1 < appState.mixerMeterLevels.count else {
-                return (-60.0, -60.0)
-            }
-            return (
-                appState.mixerMeterLevels[baseIndex],
-                appState.mixerMeterLevels[baseIndex + 1]
-            )
+            let levels = appState.mixerMeterLevels
+            let peaks = appState.mixerPeakHold
+            guard levels.indices.contains(baseIndex + 1) else { return (-60, -60, -60, -60, false, false) }
+            return (levels[baseIndex], levels[baseIndex + 1],
+                    peaks[baseIndex], peaks[baseIndex + 1],
+                    appState.meterIsOver(.mixer, baseIndex),
+                    appState.meterIsOver(.mixer, baseIndex, offset: 1))
         }
-        return (meterLevel, meterLevelR)
+        return (meterLevel, meterLevelR, -60, -60, false, false)
     }
 
     /// Format pan as "0" at center, "+N"/"-N" otherwise.
@@ -1518,7 +1523,7 @@ struct MixerChannelStripView: View {
                     // Stereo: L meter with scale, R meter without
                     LEDMeterView(
                         level: resolvedMeters.left,
-                        peak: resolvedMeters.left,
+                        peak: resolvedMeters.leftPeak,
                         label: "L",
                         height: faderHeight,
                         width: 8,
@@ -1527,29 +1532,35 @@ struct MixerChannelStripView: View {
                         rangeDB: 48,
                         showZoneColoring: showZoneColoring,
                         labelOffsetX: 8,
-                        labelOffsetY: -10
+                        labelOffsetY: -10,
+                        isOver: resolvedMeters.leftOver,
+                        onClear: appState.map { state in { state.clearMeters() } }
                     )
                     LEDMeterView(
                         level: rightLevel,
-                        peak: rightLevel,
+                        peak: resolvedMeters.rightPeak,
                         label: "R",
                         height: faderHeight,
                         width: 8,
                         rangeDB: 48,
-                        showZoneColoring: showZoneColoring
+                        showZoneColoring: showZoneColoring,
+                        isOver: resolvedMeters.rightOver,
+                        onClear: appState.map { state in { state.clearMeters() } }
                     )
                 } else {
                     // Mono: single meter
                     LEDMeterView(
                         level: resolvedMeters.left,
-                        peak: resolvedMeters.left,
+                        peak: resolvedMeters.leftPeak,
                         label: "",
                         height: faderHeight,
                         width: 10,
                         showScale: true,
                         scaleOnLeft: true,
                         rangeDB: 48,
-                        showZoneColoring: showZoneColoring
+                        showZoneColoring: showZoneColoring,
+                        isOver: resolvedMeters.leftOver,
+                        onClear: appState.map { state in { state.clearMeters() } }
                     )
                 }
             }

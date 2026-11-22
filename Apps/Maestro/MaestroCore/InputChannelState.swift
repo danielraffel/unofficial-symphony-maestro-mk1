@@ -47,6 +47,11 @@ public struct InputChannelState: Codable, Sendable, Equatable {
     /// Sent as part of the analog ref level USB command (byte[1]).
     /// Evidence: `SymphonyIOVendorSpecific.h` — DO_NOT_SET_TRIM_VALUE = 127
     public var trim: Double = 0
+    /// Stored calibration for each analog reference. The existing live callers
+    /// still own `trim`; `switchingTrimReference` binds it to these values.
+    public var trimPlus4: Double = 0
+    public var trimMinus10: Double = 0
+    public var trimVariable: Double = 0
     /// Digital reference level ID. Maps to 'AEdr' (digitalRefLevel).
     /// 0=-20dBfs, 1=-18dBfs, 2=-16dBfs, 3=-14dBfs, 4=-12dBfs, 5=-10dBfs.
     /// Only shown in line-level modes (+4 dBu, -10 dBV).
@@ -98,6 +103,9 @@ public struct InputChannelState: Codable, Sendable, Equatable {
         self.softLimit = softLimit
         self.inputType = inputType
         self.trim = trim
+        self.trimPlus4 = inputType == AnalogInputLevel.plus4dBu.rawValue ? trim : 0
+        self.trimMinus10 = inputType == AnalogInputLevel.minus10dBV.rawValue ? trim : 0
+        self.trimVariable = inputType == AnalogInputLevel.variable.rawValue ? trim : 0
         self.digitalRefLevel = digitalRefLevel
         self.group = group
         self.insert = insert
@@ -125,6 +133,12 @@ public struct InputChannelState: Codable, Sendable, Equatable {
         instrumentGain = try c.decodeIfPresent(Double.self, forKey: .instrumentGain)
             ?? (inputType == AnalogInputLevel.instrument.rawValue ? min(gain, 65) : 0)
         trim            = try c.decodeIfPresent(Double.self, forKey: .trim) ?? d.trim
+        trimPlus4 = try c.decodeIfPresent(Double.self, forKey: .trimPlus4)
+            ?? (inputType == AnalogInputLevel.plus4dBu.rawValue ? trim : 0)
+        trimMinus10 = try c.decodeIfPresent(Double.self, forKey: .trimMinus10)
+            ?? (inputType == AnalogInputLevel.minus10dBV.rawValue ? trim : 0)
+        trimVariable = try c.decodeIfPresent(Double.self, forKey: .trimVariable)
+            ?? (inputType == AnalogInputLevel.variable.rawValue ? trim : 0)
         digitalRefLevel = try c.decodeIfPresent(UInt32.self, forKey: .digitalRefLevel) ?? d.digitalRefLevel
         group           = try c.decodeIfPresent(UInt32.self, forKey: .group) ?? d.group
         insert          = try c.decodeIfPresent(UInt32.self, forKey: .insert) ?? d.insert

@@ -418,10 +418,7 @@ struct OutputControlsView: View {
 
                         Divider().opacity(0.4)
 
-                        // Digital output pair meters — board-aware count and
-                        // labels. The meter arrays hold 4 metered pairs per board;
-                        // an AD16 pair supplies 8 digital output pairs per board,
-                        // so the index MUST be checked or the page traps on open.
+                        // Digital output pair meters in board order.
                         let digOutPairs = digitalOutputPairs
                         ForEach(Array(digOutPairs.enumerated()), id: \.offset) { index, digPair in
                             if index > 0 {
@@ -434,7 +431,10 @@ struct OutputControlsView: View {
                                 leftPeak: Self.meterLevel(appState.unitDigitalOutputPeakHold, digPair.meterIndex),
                                 rightPeak: Self.meterLevel(appState.unitDigitalOutputPeakHold, digPair.meterIndex, offset: 1),
                                 matchHeight: analogStripHeight > 0 ? analogStripHeight : nil,
-                                showZoneColoring: appState.showMeterZoneColoring
+                                showZoneColoring: appState.showMeterZoneColoring,
+                                leftOver: appState.outputMeterIsOver(digPair.meterIndex, digital: true),
+                                rightOver: appState.outputMeterIsOver(digPair.meterIndex, digital: true, offset: 1),
+                                onClear: appState.clearMeters
                             )
                         }
                     }
@@ -981,7 +981,7 @@ struct OutputControlsView: View {
     }
 
     /// Meter level at `index + offset`, or silence when the payload has no word
-    /// for that pair. The digital meter arrays are fixed at 24 entries.
+    /// for that pair.
     private static func meterLevel(_ levels: [Double], _ index: Int?, offset: Int = 0) -> Double {
         guard let index, index + offset < levels.count else { return -60 }
         return levels[index + offset]
@@ -1725,7 +1725,9 @@ struct OutputChannelStripView: View {
                     showScale: true,
                     scaleOnLeft: true,
                     rangeDB: 48,
-                    showZoneColoring: showZoneColoring
+                    showZoneColoring: showZoneColoring,
+                    isOver: appState?.outputMeterIsOver(meterIndex) == true,
+                    onClear: appState.map { state in { state.clearMeters() } }
                 )
                 .maestroHelp("D/A Meter — the level of this output BEFORE D/A conversion, "
                       + "-48 to 0 dBfs. It does not show the analog output level.")

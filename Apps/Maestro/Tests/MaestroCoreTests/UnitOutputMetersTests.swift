@@ -33,9 +33,9 @@ struct UnitOutputMetersTests {
             layout: CardLayout(slot1: .analogADDA16, slot2: .optical)))
         #expect(levels.analog.count == 24)
         #expect(levels.analog[0] > -60 && levels.analog[16] > -60 && levels.analog[1] == -60)
-        #expect(levels.digital[8 + 2] == 0)
-        #expect(abs(levels.digital[8 + 3] - (-6.02)) < 0.01)
-        #expect(levels.digital[8 + 1] == -60 && levels.digital[0] == -60)
+        #expect(levels.digital[16 + 2] == 0)
+        #expect(abs(levels.digital[16 + 3] - (-6.02)) < 0.01)
+        #expect(levels.digital[16 + 1] == -60 && levels.digital[0] == -60)
     }
 
     @Test("8x8 + 16x16: slot 2's analog outputs start at word 16, slot 1's digital at word 8")
@@ -55,16 +55,16 @@ struct UnitOutputMetersTests {
             payload: payload([16: 0x3FFF, 23: 0x3FFF, 24: 0x3FFF]),
             layout: CardLayout(slot1: .optical, slot2: .analogAD16)))
         #expect(levels.analog.count == 8)
-        #expect(levels.digital[8] == 0 && levels.digital[15] == 0)
+        #expect(levels.digital[16] == 0 && levels.digital[23] == 0 && levels.digital[24] == 0)
     }
 
     @Test("2x6: six analog outputs, then AES and optical")
     func twoBySix() throws {
         let levels = try #require(UnitOutputMeters.levels(
-            payload: payload([5: 0x3FFF, 6: 0x3FFF, 13: 0x3FFF]),
+            payload: payload([5: 0x3FFF, 6: 0x3FFF, 13: 0x3FFF, 15: 0x3FFF]),
             layout: CardLayout(slot1: .twoBySix, slot2: .none)))
         #expect(levels.analog.count == 6 && levels.analog[5] == 0)
-        #expect(levels.digital[0] == 0 && levels.digital[7] == 0)
+        #expect(levels.digital[0] == 0 && levels.digital[7] == 0 && levels.digital[9] == 0)
     }
 
     @Test("no reading from an all-zero or short reply, or an unknown layout")

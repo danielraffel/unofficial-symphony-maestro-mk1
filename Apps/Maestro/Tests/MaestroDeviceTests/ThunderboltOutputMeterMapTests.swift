@@ -27,11 +27,11 @@ struct ThunderboltOutputMeterMapTests {
         #expect(w.analog.count == 24)
         #expect(w.analog[0] == 64 && w.analog[15] == 79)
         #expect(w.analog[16] == 80 && w.analog[23] == 87)       // slot 2 Line 1-8
-        #expect(Array(w.digital[0..<8]) == [Int?](repeating: nil, count: 8))   // 16x16: no digital
-        #expect(w.digital[8] == 88 && w.digital[15] == 95)
-        #expect(w.digital[10] == 90 && w.digital[11] == 91)     // digital 3/4 = software 27/28
+        #expect(w.digital[0..<16].allSatisfy { $0 == nil })   // 16x16: no digital
+        #expect(w.digital[16] == 88 && w.digital[23] == 95)
+        #expect(w.digital[18] == 90 && w.digital[19] == 91)     // digital 3/4 = software 27/28
         let levels = ThunderboltOutputMeterMap.levels(w.digital) { $0 == 90 || $0 == 91 ? -6 : -60 }
-        #expect(levels[10] == -6 && levels[11] == -6 && levels[9] == -60 && levels[12] == -60)
+        #expect(levels[18] == -6 && levels[19] == -6 && levels[17] == -60 && levels[20] == -60)
     }
 
     @Test("8x8 + 16x16: slot 2's analog strips do not read slot 1's digital outputs")
@@ -47,7 +47,7 @@ struct ThunderboltOutputMeterMapTests {
     func digitalOnlyCard() throws {
         let w = try #require(words(.optical, .analogAD16, table(.optical, .analogAD16)))
         #expect(w.analog.count == 8)
-        #expect(w.digital[8] == 80 && w.digital[15] == 87)       // slot 2 digital 1-8
+        #expect(w.digital[16] == 80 && w.digital[23] == 87 && w.digital[31] == 95)
     }
 
     @Test("an output follows Output Routing: another software pair, a mixer, or disabled")
@@ -98,11 +98,11 @@ struct ThunderboltOutputMeterMapTests {
         #expect(unitAPlayback.analog[0] == 104)
     }
 
-    @Test("2x6: ten digital outputs, the first eight metered; strips past the map are silent")
+    @Test("2x6: all ten digital outputs metered; strips past the map are silent")
     func twoBySix() throws {
         let w = try #require(words(.twoBySix, .none, table(.twoBySix, .none)))
         #expect(w.analog.count == 6)
-        #expect(w.digital[0] == 70 && w.digital[7] == 77)
+        #expect(w.digital[0] == 70 && w.digital[7] == 77 && w.digital[9] == 79)
         #expect(ThunderboltOutputMeterMap.levels(w.analog, count: 8) { _ in -3 } == [-3, -3, -3, -3, -3, -3, -60, -60])
     }
 

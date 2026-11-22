@@ -2,11 +2,23 @@ import Foundation
 import MaestroCore
 
 /// OFF receipts are already resolved to a physical port and MicPre channel by
-/// the driver. ON is deliberately absent: observation never authorizes replay.
+/// the driver. Observed ON is display state and does not authorize replay.
 /// Original daemon path: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp
 /// SetProperty:670-721 updates m_afPhantomPower for HAL and Maestro alike;
 /// 2099-2107 saves it, and ApplySettingsToHardware:2259-2298 restores it.
 public enum PhantomObservation {
+    /// Resolve a driver receipt for display. The caller supplies the last
+    /// generation seen for this channel in the same driver epoch.
+    public static func observedState(generation: UInt64, isOn: Bool,
+                                     lastSeenGeneration: UInt64,
+                                     servingBuild: ServingDextBuild?) -> Bool? {
+        guard generation > lastSeenGeneration else { return nil }
+        if isOn {
+            guard case .build(let build) = servingBuild, build >= 144 else { return nil }
+        }
+        return isOn
+    }
+
     public static func apply(_ receipts: [UInt64], to store: ChannelStateStore) -> Bool {
         guard receipts.count == 16, store.identity != nil, !store.isSimulating else { return false }
         let key = "halPhantomOffReceipts"

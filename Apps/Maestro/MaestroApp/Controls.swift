@@ -830,8 +830,15 @@ struct LEDMeterView: View {
     /// Vertical offset for the label text.
     var labelOffsetY: CGFloat = 0
 
+    var isOver: Bool = false
+    var onClear: (() -> Void)?
+
+    private static let overHeight: CGFloat = 6
+    private static let segmentGap: CGFloat = 1
+    static func indicatorSpace(shown: Bool) -> CGFloat { shown ? overHeight + segmentGap : 0 }
+    private var indicatorSpace: CGFloat { Self.indicatorSpace(shown: onClear != nil) }
+
     private let segmentCount = 24
-    private let segmentGap: CGFloat = 1
     private var scale: MeterScale { MeterScale(rangeDB: rangeDB, segmentCount: segmentCount) }
 
     /// Major dB marks (labeled) for the scale, computed from rangeDB.
@@ -862,8 +869,19 @@ struct LEDMeterView: View {
 
                 // LED segments
                 if width > 0 {
-                    let peakSegment = scale.peakSegment(forDB: peak)
-                    VStack(spacing: segmentGap) {
+                    let peakSegment = peak > -60 ? scale.peakSegment(forDB: peak) : nil
+                    VStack(spacing: Self.segmentGap) {
+                        if let onClear {
+                            Button(action: onClear) {
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(isOver ? .red : Color(.separatorColor).opacity(0.5))
+                                    .frame(width: width, height: Self.overHeight)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Clear Meters")
+                            .accessibilityValue(isOver ? "Over" : "No over")
+                            .maestroHelp("Over — click to clear meters")
+                        }
                         ForEach((0..<segmentCount).reversed(), id: \.self) { i in
                             let segmentDB = dBForSegment(i)
                             let isLit = level >= segmentDB
@@ -907,7 +925,7 @@ struct LEDMeterView: View {
         Canvas { context, size in
             let h = size.height
             // Inset by scalePad so labels at 0 dB (top) and -rangeDB (bottom) aren't clipped
-            let topY: CGFloat = scalePad + segmentHeight / 2
+            let topY: CGFloat = scalePad + indicatorSpace + segmentHeight / 2
             let bottomY: CGFloat = h - scalePad - segmentHeight / 2
 
             // Major marks — labeled
@@ -968,7 +986,7 @@ struct LEDMeterView: View {
     }
 
     private var segmentHeight: CGFloat {
-        (height - CGFloat(segmentCount - 1) * segmentGap) / CGFloat(segmentCount)
+        return (height - indicatorSpace - CGFloat(segmentCount - 1) * Self.segmentGap) / CGFloat(segmentCount)
     }
 
     private func dBForSegment(_ index: Int) -> Double {

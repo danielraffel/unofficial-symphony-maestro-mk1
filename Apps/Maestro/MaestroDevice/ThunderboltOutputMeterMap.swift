@@ -15,10 +15,8 @@ import MaestroCore
 /// outputs before slot 2's analog ones, and it never set the digital output
 /// meters (AES, ADAT/SMUX, S/PDIF) at all on ThunderBridge and PCIe.
 public enum ThunderboltOutputMeterMap {
-    /// The layout of `AppState.digitalOutputMeterLevels`: board b's digital
-    /// output k at `b * 8 + k`, k < 8, as `CardLayout.DigitalPair.meterIndex`
-    /// reads it.
-    public static let digitalSlots = 24
+    /// The layout of `AppState.digitalOutputMeterLevels`: both boards’ digital channels in slot order.
+    public static let digitalSlots = CardLayout.digitalMeterSlots
 
     public struct Words: Sendable, Equatable {
         /// One entry per analog output strip: slot 1's analog outputs, then
@@ -60,7 +58,7 @@ public enum ThunderboltOutputMeterMap {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         var analog: [Int?] = []
         var digital = [Int?](repeating: nil, count: digitalSlots)
-        let meteredPerBoard = CardLayout.meteredDigitalPairsPerBoard * 2
+        let meteredPerBoard = CardLayout.digitalMeterChannelsPerBoard
         for (board, card) in layout.slots.enumerated() {
             for channel in 0..<card.analogOutputChannels {
                 analog.append(word(channel: board * perBoard + channel, table: table, unitBActive: unitBActive, unitB: unitB))

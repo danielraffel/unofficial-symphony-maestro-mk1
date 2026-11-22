@@ -303,17 +303,6 @@ extension AppState {
     /// Software Return pairs the Mixer offers: 8, or 32 with unit B.
     var softwareReturnPairCount: Int { TwoUnitMixer.softwareReturnPairCount(unitBActive: unitBOnCard) }
 
-    /// The input meter of Mixer strip `strip`: unit A's strips read unit A's
-    /// meters, unit B's (after them) read unit B's.
-    func mixerInputMeterLevel(strip: Int) -> Double {
-        let aCount = unitBOnCard ? cardLayout.mixerChannels.count : Int.max
-        if strip < aCount {
-            return strip < inputMeterLevels.count ? inputMeterLevels[strip] : -60.0
-        }
-        let b = strip - aCount
-        return b < unitBInputMeterLevels.count ? unitBInputMeterLevels[b] : -60.0
-    }
-
     /// Mixer strip states for `mixer`: unit A's saved strips (`unitA`), then
     /// unit B's from unit B's own store.
     func mixerStripStates(unitA: [MixerChannelState], mixer: Int) -> [MixerChannelState] {
@@ -528,8 +517,9 @@ extension AppState {
 
     /// Unit B's meters from the card's meter words (called from the
     /// ThunderBridge meter poll with its word → dB function).
-    func updateUnitBMeters(dB: (Int) -> Double, pollCount: Int = 0, preferUnitRead: Bool = false) {
-        guard unitBOnCard, let layout = unitBLayout else { return }
+    func updateUnitBMeters(dB: (Int) -> Double, isOver: (Int) -> Bool,
+                           pollCount: Int, preferUnitRead: Bool) -> Set<Int> {
+        guard unitBOnCard, let layout = unitBLayout else { return [] }
         let host = (0..<UnitBMeterMap.inputWordCount).map(dB)
         let words = UnitBMeterMap.inputWords(layout: layout,
                                              routes: thunderboltCaptureRoutes(unit: .b))
@@ -554,10 +544,7 @@ extension AppState {
             unitBDigitalOutputMeterLevels = smoothMeterLevels(
                 unitBDigitalOutputMeterLevels, raw: unitBDigitalOutputLevels(dB: dB, layout: layout))
         }
-        unitBInputPeakHold = advancePeakHold(unitBInputPeakHold, levels: unitBInputMeterLevels)
-        unitBDigitalInputPeakHold = advancePeakHold(unitBDigitalInputPeakHold, levels: unitBDigitalInputMeterLevels)
-        unitBOutputPeakHold = advancePeakHold(unitBOutputPeakHold, levels: unitBOutputMeterLevels)
-        unitBDigitalOutputPeakHold = advancePeakHold(unitBDigitalOutputPeakHold, levels: unitBDigitalOutputMeterLevels)
+        return Self.cardMixerInputOvers(words, count: count, isOver: isOver)
     }
 
     private func unitBOutputTable(layout: CardLayout) -> [UInt8: UInt8]? {
@@ -593,7 +580,7 @@ extension AppState {
     }
 
     private func unitBDigitalOutputLevels(dB: (Int) -> Double, layout: CardLayout) -> [Double] {
-        guard let words = unitBOutputWords(layout: layout) else { return Array(repeating: -60, count: 24) }
+        guard let words = unitBOutputWords(layout: layout) else { return Array(repeating: -60, count: CardLayout.digitalMeterSlots) }
         return ThunderboltOutputMeterMap.levels(words.digital, level: dB)
     }
 
@@ -676,8 +663,8 @@ extension AppState {
             selectedUnit = .a
             unitBInputMeterLevels = []
             unitBOutputMeterLevels = []
-            unitBDigitalOutputMeterLevels = Array(repeating: -60, count: 24)
-            unitBDigitalOutputPeakHold = Array(repeating: -60, count: 24)
+            unitBDigitalOutputMeterLevels = Array(repeating: -60, count: CardLayout.digitalMeterSlots)
+            unitBDigitalOutputPeakHold = Array(repeating: -60, count: CardLayout.digitalMeterSlots)
             unitBOutputMeterWords = nil
             unitBOutputMeterLayout = nil
             unitBOutputMeterWordsPollStamp = -1
@@ -732,14 +719,7 @@ extension AppState {
     /// og_source/maestrolink/Software/SymphonyController.cpp:316-331.
     @MainActor
     func clearMeters() {
-        inputPeakHold = Array(repeating: -60, count: inputPeakHold.count)
-        outputPeakHold = Array(repeating: -60, count: outputPeakHold.count)
-        digitalInputPeakHold = Array(repeating: -60, count: 24)
-        digitalOutputPeakHold = Array(repeating: -60, count: 24)
-        unitBInputPeakHold = Array(repeating: -60, count: unitBInputPeakHold.count)
-        unitBOutputPeakHold = Array(repeating: -60, count: unitBOutputPeakHold.count)
-        unitBDigitalInputPeakHold = Array(repeating: -60, count: 24)
-        unitBDigitalOutputPeakHold = Array(repeating: -60, count: 24)
+        clearDisplayedMeterHolds()
         let devices = [device, unitBDevice].compactMap { $0 }
         Task {
             for device in devices {

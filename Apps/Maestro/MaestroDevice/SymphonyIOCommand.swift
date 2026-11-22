@@ -2143,9 +2143,7 @@ public enum ThunderboltInputMeterMap {
         /// 2, so the Input tab's analog strips are the first entries), then
         /// AES, then optical. Empty for an unknown layout.
         public let channels: [Int?]
-        /// The layout of `AppState.digitalInputMeterLevels` (24 entries):
-        /// board b's digital channel k at `b * 8 + k`, k < 8, as
-        /// ``CardLayout/DigitalPair/meterIndex`` reads it.
+        /// The layout of `AppState.digitalInputMeterLevels`, in board order.
         public let digital: [Int?]
 
         public init(channels: [Int?], digital: [Int?]) {
@@ -2154,7 +2152,7 @@ public enum ThunderboltInputMeterMap {
         }
     }
 
-    public static let digitalSlots = 24
+    public static let digitalSlots = CardLayout.digitalMeterSlots
 
     public static func words(layout: CardLayout, routes: [Route]) -> Words {
         guard layout.isKnown else {
@@ -2165,7 +2163,7 @@ public enum ThunderboltInputMeterMap {
                 .flatMap { word(forSource: $0, routes: routes) }
         }
         var digital = [Int?](repeating: nil, count: digitalSlots)
-        let perBoard = CardLayout.meteredDigitalPairsPerBoard * 2
+        let perBoard = CardLayout.digitalMeterChannelsPerBoard
         for (board, card) in layout.slots.enumerated() {
             for k in 0..<min(perBoard, card.digitalInputChannels) {
                 digital[board * perBoard + k] =
@@ -2209,7 +2207,7 @@ public enum ThunderboltInputMeterMap {
         }
     }
 
-    /// Digital strip levels (24 entries) from host-input levels.
+    /// Digital strip levels from host-input levels.
     public static func digitalLevels(host: [Double], words: Words) -> [Double] {
         (0..<digitalSlots).map { i in
             guard i < words.digital.count, let n = words.digital[i], n < host.count else { return -60.0 }

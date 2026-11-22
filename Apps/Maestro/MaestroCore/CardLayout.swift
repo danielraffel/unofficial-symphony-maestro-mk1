@@ -420,24 +420,17 @@ public struct CardLayout: Sendable, Equatable {
             self.pairOnBoard = pairOnBoard
         }
 
-        /// Index of this pair's LEFT channel in the app's digital meter arrays,
-        /// or `nil` when the meter payload carries no word for it.
-        ///
-        /// The arrays are `[board 0 digital 0-7][board 1 digital 0-7][spare]`,
-        /// i.e. only the first four digital pairs of each board are metered —
-        /// `MeterSlotMap.digitalWordIndices` returns at most 8 words per board.
-        /// A card with eight digital pairs (AD16/DA16) therefore has pairs 5-8
-        /// unmetered; returning `nil` is what keeps the view from reading the
-        /// other board's meters — or running off the end of a 24-entry array.
+        /// Left channel in the board-major digital meter arrays.
         public var meterIndex: Int? {
-            guard pairOnBoard < CardLayout.meteredDigitalPairsPerBoard else { return nil }
-            return boardIndex * (CardLayout.meteredDigitalPairsPerBoard * 2) + pairOnBoard * 2
+            guard (0..<CardLayout.meteredDigitalPairsPerBoard).contains(pairOnBoard),
+                  (0..<2).contains(boardIndex) else { return nil }
+            return boardIndex * CardLayout.digitalMeterChannelsPerBoard + pairOnBoard * 2
         }
     }
 
-    /// Digital pairs the meter payload can actually carry, per board.
-    /// Evidence: `MeterSlotMap.digitalWordIndices` caps at 8 words per board.
-    public static let meteredDigitalPairsPerBoard = 4
+    public static let meteredDigitalPairsPerBoard = IOCardType.busPairsPerBoard
+    public static let digitalMeterChannelsPerBoard = meteredDigitalPairsPerBoard * 2
+    public static let digitalMeterSlots = digitalMeterChannelsPerBoard * 2
 
     /// Digital INPUT stereo pairs across both boards, board 1 first.
     public var digitalInputPairs: [DigitalPair] { digitalPairs(isInput: true) }
