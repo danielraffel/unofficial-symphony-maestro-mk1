@@ -65,6 +65,14 @@ enum HelpSearch {
         return result
     }
 
+    /// The section an Up (`step` -1) or Down (+1) arrow moves to; nil at
+    /// either end of the list.
+    static func neighbour(of current: HelpSectionID?, in order: [HelpSectionID], step: Int) -> HelpSectionID? {
+        guard let current, let index = order.firstIndex(of: current) else { return order.first }
+        let next = index + step
+        return order.indices.contains(next) ? order[next] : nil
+    }
+
     /// What Help draws for an answer: runs of paragraphs and bullets joined
     /// into one text each, and the other blocks one by one.
     enum Run {

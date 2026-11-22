@@ -33,6 +33,9 @@ struct HelpView: View {
     @State private var jump: HelpSectionID?
     /// The section at the top of the page, marked in the list as you scroll.
     @State private var current: HelpSectionID?
+    /// An Up (-1) or Down (+1) arrow press waiting to move to the next section.
+    @State private var arrowStep = 0
+    @State private var arrowMonitor: Any?
 
     /// What is shown: everything, or what the search field matches.
     private var sections: [HelpSection] {
@@ -95,6 +98,25 @@ struct HelpView: View {
             .onAppear {
                 jump = appState.helpSection
                 appState.helpSection = nil
+                // Up and Down move through the sections wherever the focus is
+                // (the search field has it when Help opens).
+                arrowMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    let plain = event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty
+                    guard plain, event.keyCode == 125 || event.keyCode == 126 else { return event }
+                    arrowStep = event.keyCode == 125 ? 1 : -1
+                    return nil
+                }
+            }
+            .onDisappear {
+                if let arrowMonitor { NSEvent.removeMonitor(arrowMonitor) }
+                arrowMonitor = nil
+            }
+            .onChange(of: arrowStep) { _, step in
+                guard step != 0 else { return }
+                arrowStep = 0
+                if let next = HelpSearch.neighbour(of: current, in: sections.map(\.id), step: step) {
+                    jump = next
+                }
             }
             Divider()
             footer
@@ -141,6 +163,7 @@ struct HelpView: View {
 
     /// The section titles, each jumping to its section.
     private func sectionList(_ sections: [HelpSection]) -> some View {
+        ScrollViewReader { list in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(sections) { section in
@@ -159,11 +182,17 @@ struct HelpView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(current == section.id ? .isSelected : [])
+                    .id(section.id)
                 }
             }
             .font(.callout)
             .padding(.horizontal, 8)
             .padding(.vertical, 16)
+        }
+        // Keep the marked section in view when the list is longer than the window.
+        .onChange(of: current) { _, section in
+            if let section { list.scrollTo(section) }
+        }
         }
         .frame(width: 190)
     }

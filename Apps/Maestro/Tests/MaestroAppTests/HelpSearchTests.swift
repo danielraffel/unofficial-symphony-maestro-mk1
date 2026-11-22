@@ -241,4 +241,14 @@ struct HelpSearchTests {
         #expect(HelpSearch.currentSection(tops: [:], order: order) == .whatItDoes)
         #expect(HelpSearch.currentSection(tops: [:], order: []) == nil)
     }
+
+    @Test("Up and Down move to the neighbouring section and stop at the ends")
+    func neighbour() {
+        let order: [HelpSectionID] = [.whatItDoes, .clock, .vbus]
+        #expect(HelpSearch.neighbour(of: .clock, in: order, step: 1) == .vbus)
+        #expect(HelpSearch.neighbour(of: .clock, in: order, step: -1) == .whatItDoes)
+        #expect(HelpSearch.neighbour(of: .vbus, in: order, step: 1) == nil)
+        #expect(HelpSearch.neighbour(of: .whatItDoes, in: order, step: -1) == nil)
+        #expect(HelpSearch.neighbour(of: nil, in: order, step: 1) == .whatItDoes)
+    }
 }
