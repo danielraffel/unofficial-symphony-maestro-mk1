@@ -532,6 +532,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     public struct KeyboardVolumeState: Sendable, Equatable {
         public let attenuation: UInt32
         public let muted: Bool
+        public init(attenuation: UInt32, muted: Bool) {
+            self.attenuation = attenuation
+            self.muted = muted
+        }
     }
 
     /// The output the helper's volume and mute move now, nil when unknown.
@@ -559,8 +563,13 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// first, so that what it keeps (and puts back after a reconnect) belongs
     /// to that output and not to the one chosen before. Nothing is sent when
     /// they cannot be read. Returns what was read, nil when nothing changed.
-    public func setKeyboardVolumeOutput(_ output: KeyboardVolumeOutput) async -> KeyboardVolumeState? {
-        guard let value = output.helperValue, let state = await keyboardVolumeState(of: output),
+    /// `known` stands in for the read where the unit cannot be asked (the
+    /// speakers in Line answer 0).
+    public func setKeyboardVolumeOutput(_ output: KeyboardVolumeOutput,
+                                        known: KeyboardVolumeState? = nil) async -> KeyboardVolumeState? {
+        var state = known
+        if state == nil { state = await keyboardVolumeState(of: output) }
+        guard let value = output.helperValue, let state,
               await transport.setMonitorOutput(value, attenuation: UInt64(state.attenuation), muted: state.muted)
         else { return nil }
         return state

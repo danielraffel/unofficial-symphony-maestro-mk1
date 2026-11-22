@@ -83,8 +83,10 @@ public enum PresetPackageKind: Equatable, Sendable {
         let names = Set(fileNames.map { URL(fileURLWithPath: $0).lastPathComponent })
         let ours = names.contains("ThunderBridge.plist") || names.contains("MaestroApp.plist")
         let old = names.contains("symphonyAIMDeviceList.plist") || names.contains("SymphonyPreference.plist")
-        let daemon = names.contains { $0.hasPrefix("USBAudio_Symphony I_O_") && $0.hasSuffix(".plist") }
-        if old && !ours { return .maestro2 }
+        // Maestro 2 named each unit's file "<mode>_Symphony I_O_<id>.plist"
+        // and wrote the device list only with a Symphony card present.
+        let daemon = names.contains { $0.contains("_Symphony I_O_") && $0.hasSuffix(".plist") }
+        if (old || daemon) && !ours { return .maestro2 }
         if ours && daemon { return .oursWithDaemon }
         if ours { return .ours }
         return .unknown

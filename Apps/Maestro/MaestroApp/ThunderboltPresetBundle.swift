@@ -231,6 +231,9 @@ extension AppState {
         invalidateThunderboltInputMeterMap()
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
         await refreshChannelNaming()
+        // The preset's clock source replaces a card input remembered for
+        // this unit, as a choice made in Device Settings does.
+        if let key = preset.globals[AudioPropertySelector.clockSource.rawValue] { rememberClockSourceChoice(key) }
         viewReloadToken = UUID()
     }
 

@@ -90,13 +90,35 @@ extension AppState {
     /// keeps the real level to itself, putting it back when Line ends
     /// (SymphonyIOStateData.cpp:1129-1131, SymphonyIOState.cpp:162-219); a 0
     /// taken for the speakers' level would show full level, and the next
-    /// knob or key step would send it. A mode that cannot be read counts as
-    /// Line: nothing is adopted.
-    static func speakersInLine(_ device: (any DeviceConnection)?) async -> Bool {
+    /// knob or key step would send it. Where the mode cannot be read from
+    /// the unit (ThunderBridge answers it only from what this Mac has saved,
+    /// and nothing is saved until the format has been set here), `known`,
+    /// the mode Maestro is showing, decides; Stereo when that is unknown too,
+    /// so the level is read as it always was.
+    static func speakersInLine(_ device: (any DeviceConnection)?, known: UInt32?) async -> Bool {
         guard let device else { return true }
-        guard let mode = (try? await device.getProperty(PropertyAddress(selector: .speakerOutputMode)))?.asUInt32
-        else { return true }
-        return mode == 0
+        if let mode = (try? await device.getProperty(PropertyAddress(selector: .speakerOutputMode)))?.asUInt32 {
+            return mode == 0
+        }
+        return known == 0
+    }
+
+    /// USB, after Analog Out Format has left Line with Speaker as the volume
+    /// keys' output: the helper and the Mac's volume control still hold what
+    /// they had in Line, where the speakers' level cannot be read. Give them
+    /// the speakers' real level and mute, read from the unit now.
+    @MainActor
+    func refreshUSBSpeakerVolumeAfterLine() async {
+        guard let xpc = device as? XPCDeviceConnection, connectedUnit == nil,
+              keyboardVolumeOutput(for: .a) == .speakers,
+              !(await Self.speakersInLine(xpc, known: speakerOutputMode)), device === xpc,
+              let state = await xpc.setKeyboardVolumeOutput(.speakers), device === xpc else { return }
+        let dB = -Double(state.attenuation)
+        setKeyboardVolumeLevel(dB, of: .speakers)
+        setKeyboardVolumeMute(state.muted, of: .speakers)
+        writeASPVolume(dB, output: .speakers)
+        writeASPMute(state.muted, output: .speakers)
+        print("[Maestro] Volume keys: speakers out of Line, level \(Int(dB)) dB, muted \(state.muted) given to the helper")
     }
 
     /// The user changed a unit's Analog Out Format on the Output page. As in
@@ -412,15 +434,19 @@ extension AppState {
         if await xpc.keyboardVolumeOutputInHelper() == output {
             // Speaker in Line mode: the keys move nothing, and the Mac's
             // control may have drifted while Maestro was closed. It is put
-            // back to the speaker's own level and mute, read from the unit.
+            // back to the speaker's own level and mute.
+            // In Line the unit answers a speaker level read with 0, so the
+            // level Maestro last knew is shown, never one read now.
             guard device === xpc, output.keysDoNothing(speakerMode: speakerOutputMode) else { return true }
-            guard let state = await xpc.keyboardVolumeState(of: .speakers), device === xpc else { return false }
-            setKeyboardVolumeLevel(-Double(state.attenuation), of: .speakers)
-            setKeyboardVolumeMute(state.muted, of: .speakers)
             showSpeakerLevelOnMacVolume()
             return true
         }
-        guard device === xpc, let state = await xpc.setKeyboardVolumeOutput(output), device === xpc else {
+        // Speaker chosen while the unit is in Line: the helper is given the
+        // level and mute Maestro last knew, not the 0 the unit answers there.
+        let inLine = output == .speakers ? await Self.speakersInLine(xpc, known: speakerOutputMode) : false
+        let known = inLine ? XPCDeviceConnection.KeyboardVolumeState(
+            attenuation: UInt32(max(0, min(64, (-speakerLevel).rounded()))), muted: speakerMuted) : nil
+        guard device === xpc, let state = await xpc.setKeyboardVolumeOutput(output, known: known), device === xpc else {
             print("[Maestro] Volume keys: the USB helper did not take \(output); trying again")
             return false
         }

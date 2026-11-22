@@ -502,7 +502,11 @@ struct KeyboardVolumeOutputAppTests {
         #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .headphone1)])
     }
 
-    @Test("USB, Speaker in Line mode: the speaker's own level is read from the unit and nothing is sent to the helper")
+    // In Line the unit answers a speaker level read with 0 (measured on
+    // hardware, 2026-11-21), so the level is never read there: a 0 taken for
+    // the level would put the Mac's volume at full and the next key press
+    // would send it.
+    @Test("USB, Speaker in Line mode: the speaker level is not read from the unit and nothing is sent to the helper")
     func usbLineMode() async throws {
         let helper = KeysHelper()
         let (state, connection) = try usb(helper)
@@ -513,8 +517,8 @@ struct KeyboardVolumeOutputAppTests {
         await state.serviceKeyboardVolumeOutput()
         #expect(state.keyboardVolumeKeysDoNothing)
         #expect(helper.monitorOutputs.isEmpty)
-        #expect(helper.reads == [0x26, 0x27])
-        #expect(state.speakerLevel == -12 && !state.speakerMuted)
+        #expect(!helper.reads.contains(0x26) && !helper.reads.contains(0x27))
+        #expect(state.speakerLevel == -3)
         #expect(helper.writes.isEmpty)
     }
 }

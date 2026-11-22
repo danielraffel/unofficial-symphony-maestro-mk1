@@ -662,7 +662,12 @@ struct FaderView: View {
                             .onChanged { gesture in
                                 if !isDragging {
                                     isDragging = true
-                                    dragStartValue = value
+                                    // A whole-step fader holding a fraction
+                                    // (a level saved before it stepped in
+                                    // whole dB) starts from the step below,
+                                    // the level that is playing, so a click
+                                    // without movement changes nothing heard.
+                                    dragStartValue = step >= 1 ? (value / step).rounded(.down) * step : value
                                     previousValue = value
                                     dragStartY = gesture.startLocation.y
                                     // Snapshot batch start levels if Option held

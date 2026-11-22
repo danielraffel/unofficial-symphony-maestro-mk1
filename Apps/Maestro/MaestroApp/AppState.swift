@@ -680,6 +680,10 @@ final class AppState: @unchecked Sendable {
                             // from the driver's table, not the saved one.
                             self.thunderboltInputRoutingWritten = false
                             self.invalidateThunderboltInputMeterMap()
+                            // The strips have just been renumbered: the
+                            // mixers are owed a complete write whether or
+                            // not the input replay below succeeds.
+                            tb.cardMixers.noteOwed()
                             // The driver lays its capture table out from the
                             // cards it read during the recovery (a Symphony off
                             // at Start, or a card swapped while off): read them
@@ -5423,7 +5427,7 @@ final class AppState: @unchecked Sendable {
     @MainActor
     func refreshAfterRecall() async {
         guard let dev = device else { return }
-        let inLine = await Self.speakersInLine(dev)
+        let inLine = await Self.speakersInLine(dev, known: speakerOutputMode)
         if !inLine, let att = (try? await dev.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
             speakerLevel = -Double(att)
         }

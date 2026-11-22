@@ -23,8 +23,9 @@ struct ParityRulesTests {
         // A saved column the cards no longer have is not named.
         #expect(MasterOutputLabel.text(unitA: ([16: [7]], 16, names)) == "None")
         // Two units: unit A first, then unit B.
-        #expect(MasterOutputLabel.text(unitA: ([:], 32, names), unitB: ([32: [1]], 32, ["B Line 1/2", "B Line 3/4"])) == "B Line 3/4")
-        #expect(MasterOutputLabel.text(unitA: ([32: [0]], 32, names), unitB: ([32: [1]], 32, ["B Line 1/2", "B Line 3/4"])) == "Line 1/2")
+        #expect(MasterOutputLabel.text(unitA: ([:], 16, names), unitB: ([32: [1]], 32, ["B Line 1/2", "B Line 3/4"])) == "B Line 3/4")
+        #expect(PresetPackageKind.classify(fileNames: ["USBAudio_Symphony I_O_77.plist"]) == .maestro2)
+        #expect(MasterOutputLabel.text(unitA: ([16: [0]], 16, names), unitB: ([32: [1]], 32, ["B Line 1/2", "B Line 3/4"])) == "Line 1/2")
     }
 
     @Test("a muted speaker is shown muted, the unit is not written")

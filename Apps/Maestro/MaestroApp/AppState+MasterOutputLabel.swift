@@ -22,7 +22,9 @@ extension AppState {
     func masterOutputLabel(mixer: Int) -> String {
         let twoUnits = unitBOnCard
         let softwarePairs = (device?.identifier.mode.channelCount ?? 16) / 2
-        let mixerRowA = (twoUnits ? TwoUnitOutputRouting.rowCount - 2 : softwarePairs) + mixer
+        // Unit A's saved table keeps its mixer rows after its own software
+        // pairs in both modes; only unit B's table has them at 32 and 33.
+        let mixerRowA = softwarePairs + mixer
         let unitA = (rows: peripheralRoutingCache(direction: "output").loadMulti() ?? [:],
                      mixerRow: mixerRowA,
                      names: cardLayout.outputRoutingColumns.map(\.stereoName))

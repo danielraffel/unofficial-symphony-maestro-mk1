@@ -819,7 +819,7 @@ struct OutputControlsView: View {
                                         // level they had before. Show that level, read from
                                         // the unit once it has changed mode.
                                         try? await Task.sleep(for: .milliseconds(300))
-                                        if !(await AppState.speakersInLine(monitorTarget.device)),
+                                        if !(await AppState.speakersInLine(monitorTarget.device, known: val)),
                                            let attenuation = (try? await monitorTarget.device?.getProperty(
                                                PropertyAddress(selector: .outputLevel)))?.asUInt32 {
                                             speakerLevel = -Double(attenuation)
@@ -835,6 +835,9 @@ struct OutputControlsView: View {
                                     // unit was still in Line is not the speakers' level
                                     // (the keys then had nothing to move).
                                     appState.speakerModeChangedByUser(from: oldMode, to: val, unit: changedUnit)
+                                    if oldMode == 0, val != 0, changedUnit == .a {
+                                        await appState.refreshUSBSpeakerVolumeAfterLine()
+                                    }
                                 }
                             })
                         }
@@ -1224,7 +1227,9 @@ struct OutputControlsView: View {
         // (full level, unmuted) whatever the speakers are set to: that is not
         // their level and must never be shown or stepped from. The original
         // never read them there (SymphonyIO.cpp:6660, 3144-3150).
-        let inLine = await AppState.speakersInLine(monitorTarget.device)
+        let inLine = await AppState.speakersInLine(
+            monitorTarget.device,
+            known: monitorTarget.unit == .a ? appState.speakerOutputMode : appState.unitBSpeakerOutputMode)
         do {
             if !inLine, let attenuation = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
                 speakerLevel = -Double(attenuation)

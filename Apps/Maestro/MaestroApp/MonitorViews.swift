@@ -523,7 +523,7 @@ struct MonitorToolbarView: View {
         }
         // Not in Line mode: the unit's reading there is 0, not the speakers'
         // level (see `AppState.speakersInLine`).
-        let inLine = await AppState.speakersInLine(appState.device)
+        let inLine = await AppState.speakersInLine(appState.device, known: appState.speakerOutputMode)
         do {
             if !inLine, let attenuation = (try await appState.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
                 let level = -Double(attenuation)

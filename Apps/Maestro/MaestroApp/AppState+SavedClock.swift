@@ -29,6 +29,9 @@ extension AppState {
         guard saved != nil else { return }
         let control = await Task.detached(priority: .utility) { tb.clockControlValue() }.value
         guard device === tb, unitAIdentity == identity else { return }
+        // The optical row's key depends on the card's optical format.
+        await refreshChannelNaming()
+        guard device === tb, unitAIdentity == identity else { return }
         let offered = clockSourceChoices(sampleRate: channelNaming.sampleRate).map(\.id)
         switch SavedBoardClock.decide(saved: saved, controlNow: control, offered: offered) {
         case .send(let key):
