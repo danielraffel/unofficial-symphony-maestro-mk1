@@ -545,7 +545,7 @@ struct DeviceSettingsView: View {
                 // device publishes it. Its port-2 detail rows are in Info.
                 if let port2 = appState.secondPortState, appState.portSelection.selection != nil {
                     let shown = PortsPresentation(model: appState.portSelection, state: port2)
-                    LabeledContent("Ports") {
+                    LabeledContent {
                         HStack(spacing: 6) {
                             if shown.isChecking {
                                 ProgressView().controlSize(.small)
@@ -574,27 +574,31 @@ struct DeviceSettingsView: View {
                             .fixedSize()
                             .maestroHelp("Choose 32 channels or 64 channels from two Symphony I/Os.")
                             .disabled(!appState.portSelection.canChoose)
-                            Button { showPortsInfo.toggle() } label: {
-                                Image(systemName: "info.circle")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("About Ports")
-                            .maestroHelp("Explain the available channel counts.")
-                            // Same look as the Audio Interface Mode popover:
-                            // left-aligned (the row's trailing alignment
-                            // would otherwise carry into the popover).
-                            .popover(isPresented: $showPortsInfo, arrowEdge: .bottom) {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(PortSelection.infoText)
-                                    SeeHelpLink(section: .twoUnits, appState: appState, popover: $showPortsInfo)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("Ports")
+                                Button { showPortsInfo.toggle() } label: {
+                                    Image(systemName: "info.circle")
+                                        .foregroundStyle(.secondary)
                                 }
-                                .font(.callout)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(width: 340, alignment: .leading)
-                                .padding(14)
-                            }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("About Ports")
+                                .maestroHelp("Explain the available channel counts.")
+                                // Same look as the Audio Interface Mode popover:
+                                // left-aligned (the row's trailing alignment
+                                // would otherwise carry into the popover).
+                                .popover(isPresented: $showPortsInfo, arrowEdge: .bottom) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(PortSelection.infoText)
+                                        SeeHelpLink(section: .twoUnits, appState: appState, popover: $showPortsInfo)
+                                    }
+                                    .font(.callout)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(width: 340, alignment: .leading)
+                                    .padding(14)
+                                }
                         }
                     }
                     VStack(alignment: .leading, spacing: 2) {
@@ -974,14 +978,18 @@ struct DeviceSettingsView: View {
     @ViewBuilder private var infoSection: some View {
         Section {
             // P3F-20: Audio Interface Mode (read-only; set on the unit)
-            LabeledContent("Audio Interface Mode") {
-                HStack(spacing: 5) {
-                    Text(deviceModeNames[deviceMode] ?? "Unknown")
+            LabeledContent {
+                Text(deviceModeNames[deviceMode] ?? "Unknown")
+                    .foregroundStyle(.secondary)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Audio Interface Mode")
                     // The mode is read-only here -- it can only be changed on the
                     // unit itself -- so the how-to is one tap away rather than a
                     // permanent caption line under a row nobody can act on.
                     Button { showAIMInfo.toggle() } label: {
                         Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
                     .maestroHelp(Self.aimExplainer)
@@ -1001,7 +1009,6 @@ struct DeviceSettingsView: View {
                         .padding(14)
                     }
                 }
-                .foregroundStyle(.secondary)
             }
 
             if appState.connectionMode == .hardware {

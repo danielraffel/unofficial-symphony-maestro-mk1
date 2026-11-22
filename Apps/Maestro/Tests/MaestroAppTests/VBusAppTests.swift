@@ -267,7 +267,8 @@ struct VBusAppTests {
         let end = try #require(settings.range(of: "@ViewBuilder private var volumeKeysSection"))
         // Ports and Rescan stay in Connection; nothing of VBus is left there.
         let connectionBody = settings[connection.upperBound..<vbus.lowerBound]
-        #expect(connectionBody.contains("LabeledContent(\"Ports\")") && connectionBody.contains("Button(\"Rescan\")"))
+        // The Ports label carries its info button (Text("Ports") in a label: closure).
+        #expect(connectionBody.contains("Text(\"Ports\")") && connectionBody.contains("Button(\"Rescan\")"))
         #expect(!connectionBody.contains("appState.vbus") && !connectionBody.contains("VBusChannels"))
         let body = settings[vbus.upperBound..<end.lowerBound]
         for piece in ["if appState.vbusShown", "Section(\"VBus\")", ".accessibilityLabel(VBusChannels.infoTitle)",
