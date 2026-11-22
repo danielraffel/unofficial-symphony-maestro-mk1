@@ -394,7 +394,7 @@ struct DeviceSettingsView: View {
                         }
                     }
                     .disabled(isLoading || isProToolsMode || rateSettling || appState.hardwareWritesSuspended)
-                    .maestroHelp("Set the sample rate used by the Symphony audio device.")
+                    .maestroHelp("Set the Symphony's sample rate. An audio application with a session open, such as a DAW, may set its own rate instead.")
                     .onChange(of: sampleRate) { _, newRate in
                         // Our own assignment, not the user's. This is checked BEFORE
                         // the loading guard and the marker is always consumed: the
@@ -431,7 +431,7 @@ struct DeviceSettingsView: View {
                             }
                         }
                         .disabled(isProToolsMode)
-                        .maestroHelp("Choose the clock source that keeps the Symphony audio timing in step.")
+                        .maestroHelp("Where the Symphony takes its clock from: Internal (its own crystal), Word Clock (the rear-panel BNC input), or a card's digital input.")
                         .onChange(of: clockSource) { _, newSource in
                             guard !isLoading else { return }
                             // A readback, not a selection: do not send the device the
@@ -843,7 +843,7 @@ struct DeviceSettingsView: View {
                     Text(name).tag(val)
                 }
             }
-            .maestroHelp("Choose how long the highest meter level stays visible.")
+            .maestroHelp("How long peak indications are held, on Maestro's meters and the Symphony's front panel.")
             .onChange(of: peakHoldMode) { _, newValue in
                 guard !isLoading else { return }
                 Task {
@@ -863,7 +863,7 @@ struct DeviceSettingsView: View {
                     Text(name).tag(val)
                 }
             }
-            .maestroHelp("Choose how long an over-level indicator stays visible.")
+            .maestroHelp("How long over indications are held, on Maestro's meters and the Symphony's front panel.")
             .onChange(of: overHoldMode) { _, newValue in
                 guard !isLoading else { return }
                 Task {
