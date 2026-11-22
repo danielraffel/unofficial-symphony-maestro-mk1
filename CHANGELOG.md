@@ -13,6 +13,7 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Fixed
 
+- **Mixer faders and pan now change the sound while you move them.** A fader, pan knob or Master only took effect once you stopped moving it, so a drag was heard late and as one jump. The level now follows the control as it moves, as in Apogee's software.
 - **Output Routing shows a mixer route again when you come back to the page.** An output you had routed to Mixer 1 or Mixer 2 was drawn back on its default software pair after you left the page and returned, while the Symphony went on playing the mixer. The routing itself was kept; only the grid was wrong.
 - **A Mixer strip's meter no longer jumps when you mute it.** With Pre-Mute Metering on (the default) the meter shows the signal arriving at the strip, whatever the fader and mute are set to; before, it followed the fader until you muted the strip and showed the full signal afterwards. With Pre-Mute Metering off it follows the fader and goes dark on mute, as before.
 - Mixer strips on ThunderBridge and PCIe now control the card input named by each strip.

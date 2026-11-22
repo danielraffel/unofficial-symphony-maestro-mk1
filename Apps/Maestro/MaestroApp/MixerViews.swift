@@ -73,12 +73,15 @@ struct MixerView: View {
     /// Snapshot of pan values at batch drag start.
     @State private var batchDragStartPans: [Int: Double] = [:]
 
-    // Debounce timers for mixer writes — prevents audio clicks from rapid fader movement.
-    // Original Maestro rate-limited at 50 Hz (20ms). We use 25ms debounce per channel.
-    // Evidence: ApogeeDispatchQueue.cpp:18 — MAX_PROPERTY_CHANGES_PER_SECOND = 50.
-    @State private var levelDebounce: [Int: Task<Void, Never>] = [:]
-    @State private var panDebounce: [Int: Task<Void, Never>] = [:]
-    @State private var masterDebounce: Task<Void, Never>?
+    // Mixer writes are rate-limited as the original's were: at most 50 a
+    // second for each control (ApogeeDispatchQueue.cpp:18,
+    // MAX_PROPERTY_CHANGES_PER_SECOND = 50), the newest value each time and
+    // always the last one. Until 0.9.21 this was a debounce, which sent
+    // nothing while a fader kept moving and only the value it stopped on, so
+    // a drag was heard late and in one step.
+    @State private var levelThrottle = ControlWriteThrottle()
+    @State private var panThrottle = ControlWriteThrottle()
+    @State private var masterThrottle = ControlWriteThrottle()
 
     // P3F-15: Channel naming — stored in UserDefaults
     private var channelNamesJSON: String {
@@ -248,20 +251,14 @@ struct MixerView: View {
                                 inputMeterIndex: i,
                                 preMuteMetering: preMuteMetering,
                                 onLevelChange: { level in
-                                    levelDebounce[i]?.cancel()
-                                    levelDebounce[i] = Task { @MainActor in
-                                        try? await Task.sleep(for: .milliseconds(25))
-                                        guard !Task.isCancelled else { return }
-                                        await writeLevel(channel: i, level: level)
+                                    levelThrottle.submit(i, level) { value in
+                                        await writeLevel(channel: i, level: value)
                                         saveMixerState()
                                     }
                                 },
                                 onPanChange: { pan in
-                                    panDebounce[i]?.cancel()
-                                    panDebounce[i] = Task { @MainActor in
-                                        try? await Task.sleep(for: .milliseconds(25))
-                                        guard !Task.isCancelled else { return }
-                                        await writePan(channel: i, pan: pan)
+                                    panThrottle.submit(i, pan) { value in
+                                        await writePan(channel: i, pan: value)
                                         saveMixerState()
                                     }
                                 },
@@ -642,12 +639,7 @@ struct MixerView: View {
             } else {
                 guard i < editor.channels.count else { continue }
                 editor.channels[i].level = newLevel
-                levelDebounce[i]?.cancel()
-                levelDebounce[i] = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(25))
-                    guard !Task.isCancelled else { return }
-                    await writeLevel(channel: i, level: newLevel)
-                }
+                levelThrottle.submit(i, newLevel) { value in await writeLevel(channel: i, level: value) }
             }
         }
         saveMixerState()
@@ -668,12 +660,7 @@ struct MixerView: View {
             let newPan = min(max(startPan + delta, -1.0), 1.0)
             guard i >= 0, i < editor.channels.count else { continue }
             editor.channels[i].pan = newPan
-            panDebounce[i]?.cancel()
-            panDebounce[i] = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(25))
-                guard !Task.isCancelled else { return }
-                await writePan(channel: i, pan: newPan)
-            }
+            panThrottle.submit(i, newPan) { value in await writePan(channel: i, pan: value) }
         }
         saveMixerState()
     }
@@ -1082,11 +1069,8 @@ struct MixerView: View {
     }
 
     private func scheduleMasterWrite(level: Double) {
-        masterDebounce?.cancel()
-        masterDebounce = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(25))
-            guard !Task.isCancelled else { return }
-            await writeMasterLevel(level)
+        masterThrottle.submit(0, level) { value in
+            await writeMasterLevel(value)
             saveMixerState()
         }
     }
@@ -1657,6 +1641,32 @@ struct MixerChannelStripView: View {
             Rectangle()
                 .fill(Color.primary.opacity(0.4))
                 .frame(width: 1)
+        }
+    }
+}
+
+
+/// Rate-limits a control's writes while it moves: the newest value is sent at
+/// once, then at most one every `interval` while newer values keep arriving,
+/// and the last value is always sent. One sender per key (a strip), so a
+/// write is never overtaken by an older one.
+@MainActor
+final class ControlWriteThrottle {
+    private var pending: [Int: Double] = [:]
+    private var running: Set<Int> = []
+    private let interval: Duration
+
+    init(interval: Duration = .milliseconds(20)) { self.interval = interval }
+
+    func submit(_ key: Int, _ value: Double, write: @escaping @MainActor (Double) async -> Void) {
+        pending[key] = value
+        guard running.insert(key).inserted else { return }
+        Task { @MainActor in
+            while let next = pending.removeValue(forKey: key) {
+                await write(next)
+                try? await Task.sleep(for: interval)
+            }
+            running.remove(key)
         }
     }
 }
