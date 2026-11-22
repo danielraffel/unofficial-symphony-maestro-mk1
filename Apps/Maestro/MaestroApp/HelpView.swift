@@ -558,18 +558,24 @@ extension HelpSection {
     private static var usbOutput: HelpSection {
         HelpSection(id: .usbOutput, title: "Choosing your USB output", items: [
             HelpItem(blocks: [
-                .text("Over USB your Mac lists two Symphony devices. They play through the same USB connection; they differ in what they offer."),
-                .bullet("Symphony I/O : USB Audio", "the Symphony's own USB device, run by macOS's standard USB audio driver: 16 inputs and 16 outputs. The Symphony offers macOS no volume control over USB, so the Mac's volume keys and the volume slider in the menu bar cannot change its level."),
-                .bullet("Symphony I/O : Maestro USB", "added by Maestro: 16 outputs and no inputs. It has the volume control USB Audio lacks: Maestro turns the volume keys and the slider into the Symphony's own speaker or headphone level (see **Volume keys**), and hands your audio on to USB Audio."),
-                .text("For everyday listening, choose **Maestro USB** as your Mac's output. When an application records from the Symphony, use **USB Audio** for its inputs; most DAWs let you choose different input and output devices, so the output can stay on Maestro USB."),
+                .text("Over USB your Mac lists two Symphony devices: **Symphony I/O : USB Audio** and **Symphony I/O : Maestro USB**. Both play through the same USB connection."),
             ]),
-            HelpItem(title: "Which one does Maestro choose when I plug in?", blocks: [
-                .text("With **Automatically switch to Symphony when connected** turned on in **App Settings › When a Device Connects**, Maestro makes the Symphony your Mac's output when you plug it in. **Preferred USB output** chooses which of the two: **Maestro USB** (the default, with the volume keys) or **USB Audio**. With the setting off, choose in the Sound menu or System Settings › Sound."),
+            HelpItem(title: "Why don't the volume keys work with Symphony I/O : USB Audio?", blocks: [
+                .text("**USB Audio** is the Symphony's own USB device, run by macOS's standard USB audio driver. The Mac's volume keys and the volume slider only work on a device that offers macOS a volume control, and over USB the Symphony does not offer one."),
+                .text("Apogee's software added one through an add-on to Apple's USB driver, which current macOS no longer loads. The only other way would be to change the Symphony's firmware, which Maestro does not do."),
             ]),
-            HelpItem(title: "Does Maestro USB add latency?", blocks: [
-                .text("A little: handing your audio on to USB Audio adds about **1.3 ms** at 48 kHz (64 samples). Maestro USB reports it, so your DAW keeps recordings in time. For the very lowest output latency, choose **USB Audio** as the output in your DAW; the volume keys then do not control it."),
-                .text("Your DAW's buffer size matters far more: each halving of it saves more than the hand-over costs. To hear inputs with no delay at all, monitor them through the Symphony's Mixer rather than through your DAW (route **Mixer 1** to your speakers in **Output Routing**). Apogee's guide explains buffer size and this way of monitoring:"),
+            HelpItem(title: "What is Symphony I/O : Maestro USB?", blocks: [
+                .text("Maestro's answer to that: an output device that does have a volume control. Maestro turns the volume keys and the slider into the Symphony's own speaker or headphone level (see **Volume keys**), and passes your audio on to USB Audio. It has 16 outputs and no inputs."),
+            ]),
+            HelpItem(title: "When I'm recording, how should I set my input and output?", blocks: [
+                .bullet("Input", "**Symphony I/O : USB Audio**; it is the only one with inputs."),
+                .bullet("Output, if you want the volume keys", "**Symphony I/O : Maestro USB**. Passing your audio on adds about **1.3 ms** at 48 kHz, and Maestro USB reports it, so your DAW keeps recordings in time."),
+                .bullet("Output, if you don't need them", "**Symphony I/O : USB Audio**, for the slightly lower latency."),
+                .text("Most DAWs let you choose a different device for input and for output. Your DAW's buffer size matters far more than either choice. To hear yourself with no delay at all, monitor through the Symphony's Mixer (see **How do I record while hearing myself with no delay?** under **Mixer**). Apogee's guide explains buffer size and latency:"),
                 .link("Apogee: Symphony I/O, understanding latency", URL(string: "https://knowledge.apogeedigital.com/symphony-i/o-understanding-latency")!),
+            ]),
+            HelpItem(title: "Can Maestro select my preferred one when I plug in?", blocks: [
+                .text("Yes. Turn on **Automatically switch to Symphony when connected** in **App Settings › When a Device Connects**, then choose **Preferred USB output**: **Maestro USB** (the default, with the volume keys) or **USB Audio**. Maestro then makes it your Mac's output when you plug the Symphony in."),
             ]),
         ])
     }
