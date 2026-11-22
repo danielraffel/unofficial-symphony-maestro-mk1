@@ -339,8 +339,29 @@ static void check_monitor_output(void)
     CHECK(MAESTRO_HELPER_VERSION >= 3, "the version Maestro asks for has setMonitorOutput");
 }
 
+static void test_startup_volume_window(void)
+{
+    gVolumeWaitUntilNs = gMuteWaitUntilNs = 0;
+    gCachedAttenuation = 30;
+    arm_startup_volume_window(1000);
+    CHECK(gVolumeWaitUntilNs == 1000 + STARTUP_WAIT_NS && gMuteWaitUntilNs == 1000 + STARTUP_WAIT_NS,
+          "start-up arms both windows for five seconds");
+    CHECK(!slider_set_admitted(2000, &gVolumeWaitUntilNs, 10, gCachedAttenuation),
+          "inside the window a louder restored volume is refused");
+    CHECK(slider_set_admitted(2000, &gVolumeWaitUntilNs, 40, gCachedAttenuation),
+          "turning down is taken");
+    CHECK(!slider_set_admitted(2000, &gMuteWaitUntilNs, 0, 1), "an unmute is refused");
+    CHECK(slider_set_admitted(1000 + STARTUP_WAIT_NS, &gVolumeWaitUntilNs, 10, gCachedAttenuation),
+          "after the window a louder set is taken");
+    gVolumeWaitUntilNs = 9000000000ull;
+    arm_startup_volume_window(1000);
+    CHECK(gVolumeWaitUntilNs == 9000000000ull, "a longer wait already armed is not shortened");
+    gVolumeWaitUntilNs = gMuteWaitUntilNs = 0;
+}
+
 int main(void)
 {
+    test_startup_volume_window();
     check_monitor_output();
     check_direct_route_table();
     check_mixer_param_payload();

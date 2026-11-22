@@ -350,6 +350,20 @@ static bool slider_set_admitted(uint64_t nowNs, uint64_t *waitUntil, unsigned va
     return value > expected;
 }
 
+/* After the helper puts its kept level on the unit (start-up, a replug, a
+   recovery) and when the audio plug-in connects, coreaudiod may set the
+   Mac's volume control from a value it saved earlier, possibly louder. The
+   original dropped the first volume set after start-up in USB mode
+   (SymphonyIO.cpp:1160-1163, :2310-2339). For a few seconds only a change
+   towards quiet is taken, as the card driver does in its settle window. */
+#define STARTUP_WAIT_NS (5ull * NSEC_PER_SEC)
+static void arm_startup_volume_window(uint64_t nowNs)
+{
+    const uint64_t until = nowNs + STARTUP_WAIT_NS;
+    if (gVolumeWaitUntilNs < until) gVolumeWaitUntilNs = until;
+    if (gMuteWaitUntilNs < until)   gMuteWaitUntilNs = until;
+}
+
 /* The cached level belongs to the speakers while they are the chosen output. */
 static void note_target_level(void)
 {
@@ -2241,6 +2255,7 @@ static int configure_fpga_routing(void)
    so hardware matches what the ASP expects — prevents loud volume jumps. */
 static void restore_cached_volume(void)
 {
+    arm_startup_volume_window(clock_gettime_nsec_np(CLOCK_MONOTONIC));
     /* Only the speakers: a headphone's level is the unit's own, read at
        configure and never written back from a kept copy. */
     if (gHasReceivedVolume && gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
@@ -2449,6 +2464,7 @@ static void register_device_listener(void)
    Must be called on gQueue (serial) so gAudioRing is set atomically. */
 static void setup_audio_shmem(xpc_connection_t peer)
 {
+    dispatch_async(gQueue, ^{ arm_startup_volume_window(clock_gettime_nsec_np(CLOCK_MONOTONIC)); });
     LOG("setup_audio_shmem: called (gAudioRing=%p, gOutputUnit=%p)",
         (void*)gAudioRing, (void*)gOutputUnit);
 
