@@ -1,13 +1,19 @@
 # Changelog
 
-## 0.9.22 (beta)
+## 0.9.23 (beta)
 
-This beta fixes the Mixer and meters on ThunderBridge and the Symphony 64 PCIe card. It contains everything in 0.9.21.
+This beta makes the Mixer on ThunderBridge and the Symphony 64 PCIe card sound as it did in Apogee's software, fixes the meters, cuts Maestro USB's latency from about 39 ms to about 13 ms, and adds Use Loop Sync with one Symphony I/O. It contains everything in 0.9.21; 0.9.22 was never released, and its changes are listed here.
 
-Thanks to the tester who reported that the AES meters did not move while music played through AES 3/4.
+Thanks to the testers who reported that the AES meters did not move while music played through AES 3/4, and that the routing pages went blank with converters on both ports.
 
 ### Changes that may affect your setup
 
+- **The update replaces the ThunderBridge driver (0.11.18).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
+- **Mixer levels on ThunderBridge and PCIe now follow Apogee's arithmetic, so some mixes will sound different.** Master now turns down the inputs as well as Software Return, as it did in Apogee's software (before, it only changed Software Return). Pan uses Apogee's law: a centred strip is about 3 dB quieter on each side than before, and a hard-panned strip is silent on the other side. A fader or Master at the bottom is off. Master mute silences the inputs too.
+- **Faders and Master now go up to +6 dB on ThunderBridge and PCIe.** Before, anything above 0 dB played at 0 dB. So that your mix does not get louder by itself, Maestro sets any saved fader above 0 dB to 0 dB once, the first time it restores the mixers with this driver (it keeps the old values). Setup files saved with an earlier version load the same way; files saved now load as written.
+- **Use Loop Sync is offered with one Symphony I/O** on ThunderBridge and PCIe, and is on unless you turn it off, as in Apogee's software. It sends the unit's clock out of Loop Sync Out for other gear.
+- **The Mixer goes silent while the Mac sleeps** on ThunderBridge and PCIe, and comes back when it wakes, as in Apogee's software. Over USB, Maestro mutes the Symphony before the Mac sleeps, shuts down or restarts and unmutes it after waking; if a shutdown or restart does not happen, it unmutes after a minute.
+- **Maestro USB plays about 26 ms sooner** (it reports 13.6 ms at a 512 buffer, was 39 ms). Its own hand-over is now 64 frames, 1.3 ms at 48 kHz, and it reports its real latency to your DAW before anything plays. If you line up recordings by hand, check them again.
 - **Over USB, a muted speaker stays muted.** Maestro used to unmute the speakers whenever it opened, reconnected, woke with the Mac or recalled a preset. That was our addition; Apogee's software left the mute as it was. If you leave the speakers muted, they are still muted next time, and a preset saved with the speakers muted recalls muted.
 - **Mixer faders move in whole dB.** The Symphony's mixer only takes whole-dB levels, as in Apogee's software, so a strip that read -0.5 was really playing -1. Faders, Software Return and Master now step and read in whole dB, and a level you had at a half shows the level it was already playing. Nothing sounds different.
 - **A digital input chosen as clock source is remembered.** On ThunderBridge and PCIe, if you set Clock Source to an AES, SPDIF or ADAT/SMUX input, Maestro now sets it again when it connects after a restart, as Apogee's software did. Before, the Symphony came back on Internal or Word Clock. If that input has no signal when Maestro connects, Clock Status reads "Clock Mismatch" until it does.
@@ -16,6 +22,13 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Fixed
 
+- **With converters on both ports of the card at 64 channels, the routing pages no longer go blank,** show 32 inputs and 48 outputs, and Software Return offers all 32 pairs.
+- **With one Symphony I/O on the card, Software Return offers all 16 pairs** of the port, as in Apogee's software (it offered 8).
+- **After switching from USB to ThunderBridge, Maestro connects** instead of staying Disconnected until it was reopened.
+- **In Line, the speaker level and mute are left alone.** The Symphony reports them as 0 there and ignores changes, so Maestro no longer reads them, sends them, or lets the volume keys change them.
+- **ThunderBridge driver: replies are matched to the read they answer,** so a late reply can no longer be taken for another setting, and longer replies are accepted.
+- **Double-clicking the title bar** zooms or minimizes the window, as set in System Settings.
+- **Tests no longer touch a connected Symphony I/O or the Mac's volume** (for people building Maestro).
 - **After Line, the Speaker knob shows the speakers' real level.** While Analog Out Format is Line the Symphony reports its speaker level as 0 dB, whatever it is. Maestro took that for the level, so after you left Line the knob read 0 dB and the next turn or key press could send a level far louder than the speakers were on. Maestro no longer reads the speaker level or mute in Line, and reads them from the Symphony again when you leave it.
 - **Mixer faders and pan now change the sound while you move them.** A fader, pan knob or Master only took effect once you stopped moving it, so a drag was heard late and as one jump. The level now follows the control as it moves, as in Apogee's software.
 - **Output Routing shows a mixer route again when you come back to the page.** An output you had routed to Mixer 1 or Mixer 2 was drawn back on its default software pair after you left the page and returned, while the Symphony went on playing the mixer. The routing itself was kept; only the grid was wrong.
@@ -36,6 +49,13 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### What's new
 
+- **Setup files work like documents:** the window title shows the open file and whether it has changes, File › Save and Save As write it, Maestro asks before closing unsaved changes, and .mst2 files open from Finder. App Settings can reopen the last file at launch.
+- **A level overlay** shows speaker, headphone and 8MicPre gain changes on screen, including ones made on the front panel (App Settings, on by default).
+- **Meters show Over lights, Peak Hold and Over Hold** as set in Device Settings › Front Panel, and every digital output pair is metered.
+- **Pan reads <64 … <0> … 64>,** as in Apogee's software; inputs are named Mic N and Inst N in Input Routing and the Mixer.
+- **Menus:** Settings… (⌘,), File › Rescan, Window › Maestro (⇧⌘O).
+- **Info buttons** on Use Loop Sync, Configured Role, Clock Status, Audio Output, Symphony Source and Audio Interface Mode, and new Help questions on Maestro USB, recording with no monitoring delay, and Loop Sync.
+- **Help › Report a Bug… opens the bug form on GitHub.** Maestro no longer offers a feedback email address.
 - **The Master strip names the output its mixer is routed to,** under the fader, or "None" when the mixer is not routed to an output in Output Routing. It is a label, as in Apogee's software.
 - **Mic and instrument gain on an 8MicPre can be typed:** click the number under the gain knob. Tab moves to the next channel.
 - **Software Return's pairs are named "Out 1-2", "Out 3-4"…,** the strip is headed "Software Return", and sample rates read "48 kHz" rather than "48.0 kHz", as in Apogee's software.
@@ -43,10 +63,15 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Release notes
 
-- The driver is unchanged from 0.9.21 (0.11.17, build 143). Over USB nothing changes. As before, the Output page meters the first four digital pairs of each card.
+- ThunderBridge driver 0.11.18 (build 146), from 0.11.17 (build 143).
+- Over USB, Pro Tools HD mode is not handled yet: Apogee's Maestro set levels, formats and headphone routing in that mode, and this one does not.
 
 ### Please test
 
+- **ThunderBridge or PCIe Mixer:** do levels, pan and Master sound as they did in Apogee's software? Does a fader above 0 dB get louder?
+- **Use Loop Sync with one unit:** does gear clocked from Loop Sync Out lock, and does turning it off stop it?
+- **USB:** play through Maestro USB from a DAW at a small buffer. Any clicks? Do the volume keys work?
+- **Sleep and wake:** is the Symphony silent while the Mac sleeps, and does sound come back after waking?
 - **ThunderBridge or PCIe:** solo each Mixer strip in turn and check the right input plays.
 
 - **ThunderBridge or PCIe, Output page:** play music from the Mac to each output pair in turn, analog and digital. Does that pair's meter move? Try it with Optical Format on ADAT/SMUX and on SPDIF, and with AES if your card has it.
