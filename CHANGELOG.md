@@ -9,18 +9,23 @@ Thanks to the tester who reported that the AES meters did not move while music p
 ### Fixed
 
 - **On ThunderBridge and PCIe, the digital output meters on the Output page now work:** AES, ADAT/SMUX and S/PDIF. They stayed dark whatever was playing; the audio itself was not affected.
-- **On ThunderBridge and PCIe, each output meter now shows what Output Routing plays on that output:** the software output or the mixer you routed there, and nothing for an output that is off. Before, output meter 1 always showed software output 1, meter 2 software output 2, and so on, whatever the routing.
-- **With an 8x8 card in slot 1 and a 16-channel analog card in slot 2, the second card's output meters show its own outputs.** They showed the first card's digital outputs.
+- **On ThunderBridge and PCIe, the Output page's meters are now read from the Symphony I/O itself, as in Apogee's software.** Each meter shows what is playing at that output: the software output or the mixer routed there in Output Routing, and nothing for an output that is off. Before, output meter 1 always showed software output 1, meter 2 software output 2, and so on, whatever the routing.
+- **With an 8x8 or 2x6 card in slot 1 and a card with analog outputs in slot 2, the second card's output meters show its own outputs.** They showed the first card's digital outputs.
+- **Input and output meters follow a routing change within a couple of seconds, however long Maestro has been open.** After opening the Mixer page they could keep showing the old routing for a long time.
 
 ### Release notes
 
 - The ThunderBridge and PCIe driver is unchanged from 0.9.21 (0.11.17, build 143), so there is no need to reconnect anything after updating.
 - Over USB nothing changes.
+- Maestro asks the Symphony for its output meters only while the Output page is open. If the Symphony does not answer, the meters show the level of what is routed to each output instead.
+- As before, the Output page meters the first four digital pairs of each card.
+- With two Symphony I/Os at 64 channels, this applies to unit A. Unit B's output meters are unchanged.
 
 ### Please test
 
-- **ThunderBridge or PCIe, Output page:** play music from the Mac to each output pair in turn, analog and digital. Does that pair's meter move, and no other? Try it with Optical Format on ADAT/SMUX and on SPDIF, and with AES if your card has it.
+- **ThunderBridge or PCIe, Output page:** play music from the Mac to each output pair in turn, analog and digital. Does that pair's meter move? Try it with Optical Format on ADAT/SMUX and on SPDIF, and with AES if your card has it.
 - **Output Routing:** route a different software pair, then Mixer 1, to an output. Does its meter follow?
+- **With the Output page open:** do the knobs, Mute, Dim and the Mac's volume keys still respond as quickly as before?
 
 ## 0.9.21 (beta)
 

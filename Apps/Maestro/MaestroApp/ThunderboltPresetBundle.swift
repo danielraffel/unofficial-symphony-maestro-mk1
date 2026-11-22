@@ -240,6 +240,7 @@ extension AppState {
         }
         peripheralRoutingCache(direction: "input").save(input)
         let channels = unitBOnCard ? 64 : 32
+        invalidateThunderboltOutputMeterMap()
         peripheralRoutingCache(direction: "output").save(
             outputGrid(sources: preset.outputRoutes.prefix(32).map { Int($0) >= recalledChannels && $0 < 64 ? SymphonyIORoutingAddress.none : $0 }, layout: cardLayout, channels: channels, unitA: true))
     }

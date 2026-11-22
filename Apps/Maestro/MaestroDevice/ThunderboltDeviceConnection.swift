@@ -1073,6 +1073,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         dextClient.readMeters()
     }
 
+    /// The unit's own output meters (`UnitOutputMeters`): one vendor read of
+    /// `0x30`, group Output, as Apogee's software polled it on the card
+    /// (`SymphonyIO.cpp:6921-6946`). Blocks for the transaction (a few ms; up
+    /// to 200 ms if the unit does not answer), so call it off the main thread.
+    public func readUnitOutputMeters() throws -> Data {
+        try dextClient.readVendorCommand(
+            command: SymphonyIOCommand.tdmMeterData.rawValue,
+            value: UInt32(SymphonyIOMeterGroup.output.rawValue),
+            responseLength: UnitOutputMeters.payloadLength)
+    }
+
     /// Read the dext's timing/register snapshot through the same signed
     /// user-client connection Maestro uses for vendor controls. This keeps
     /// latency validation inside the production entitlement boundary; a

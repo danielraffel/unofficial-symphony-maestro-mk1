@@ -69,6 +69,24 @@ struct ThunderboltOutputMeterMapTests {
         #expect(ThunderboltOutputMeterMap.levels(w.analog, count: 8) { _ in -3 }[4] == -60)
     }
 
+    @Test("two units at 64 channels: unit A's output can play software 33-64 (words 96-127)")
+    func secondUnitPlayback() {
+        var t = table(.optical, .none)
+        t[SymphonyIORoutingAddress.ioBoard0Base] = 40
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        #expect(ThunderboltOutputMeterMap.words(layout: layout, table: t, unitBActive: true)?.analog[0] == 104)
+        // Without the second unit that source cannot play: the output is silent.
+        #expect(ThunderboltOutputMeterMap.words(layout: layout, table: t, unitBActive: false)?.analog[0] == nil)
+    }
+
+    @Test("2x6: ten digital outputs, the first eight metered; strips past the map are silent")
+    func twoBySix() throws {
+        let w = try #require(words(.twoBySix, .none, table(.twoBySix, .none)))
+        #expect(w.analog.count == 6)
+        #expect(w.digital[0] == 70 && w.digital[7] == 77)
+        #expect(ThunderboltOutputMeterMap.levels(w.analog, count: 8) { _ in -3 } == [-3, -3, -3, -3, -3, -3, -60, -60])
+    }
+
     @Test("no map for an unknown layout or an empty table")
     func noMap() {
         #expect(ThunderboltOutputMeterMap.words(

@@ -1817,6 +1817,14 @@ final class AppState: @unchecked Sendable {
     /// the cards or the table are not known, and for converters. Re-derived
     /// every ~2 s, and at once when Output Routing is saved.
     private var thunderboltOutputMeterWords: ThunderboltOutputMeterMap.Words?
+    /// ThunderBridge: the Symphony's own output meters, read from the unit
+    /// while the Output page shows (`UnitOutputMeters`), and when they were
+    /// read. The card's snapshot through the routing map is the fallback.
+    private var symphonyOutputMeterLevels: UnitOutputMeters.Levels?
+    private var unitOutputMeterStamp = Date.distantPast
+    private var unitOutputMeterReadInFlight = false
+    private var unitOutputMeterFailures = 0
+    private var unitOutputMeterRetryAfter = Date.distantPast
     private var thunderboltOutputMeterWordsPollStamp: Int = -1
     private var thunderboltOutputMeterLayout: CardLayout?
     /// Count of consecutive all-zero TDM reads. Used to detect when signal stops
@@ -3396,6 +3404,13 @@ final class AppState: @unchecked Sendable {
             }
 
             var pollCount = 0
+            // The poll count starts again here, so the maps stamped with the
+            // last task's count are read again at once.
+            if let self {
+                self.softwareOutputRoutesPollStamp = -1
+                self.thunderboltInputMeterWordsPollStamp = -1
+                self.thunderboltOutputMeterWordsPollStamp = -1
+            }
             while !Task.isCancelled {
                 guard let self, let device = self.device, self.isHardwareInitialized else {
                     try? await Task.sleep(for: .milliseconds(100))
@@ -3754,7 +3769,16 @@ final class AppState: @unchecked Sendable {
                         // (64 + n) or a card mixer (128-131).
                         self.refreshThunderboltOutputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
                         let outputWords = self.thunderboltOutputMeterWords
-                        if let outputWords {
+                        self.pollUnitOutputMetersIfNeeded(pollCount: pollCount, device: tbDev)
+                        let unitOutputs = self.freshUnitOutputMeterLevels()
+                        if let unitOutputs {
+                            // The Symphony's own meters, taken at each output.
+                            newOutput = (0..<self.outputMeterLevels.count).map {
+                                $0 < unitOutputs.analog.count ? unitOutputs.analog[$0] : -60.0
+                            }
+                            self.digitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.digitalOutputMeterLevels, raw: unitOutputs.digital)
+                        } else if let outputWords {
                             newOutput = ThunderboltOutputMeterMap.levels(
                                 outputWords.analog, count: self.outputMeterLevels.count, level: dbW)
                             self.digitalOutputMeterLevels = self.smoothMeterLevels(
@@ -3833,16 +3857,19 @@ final class AppState: @unchecked Sendable {
                             let mixer1Peaks = softwareReturnDBFS(mixer: 1)
                             // Prefer the software source when the FPGA snapshot
                             // is all silence. Keep real FPGA values when present.
-                            if let outputWords {
+                            if unitOutputs != nil {
+                                // The unit's reading stands.
+                            } else if let outputWords {
                                 // Only when the snapshot carries no playback at
                                 // all; otherwise a silent strip is a true reading.
-                                if (64..<132).allSatisfy({ dbW($0) <= -60.0 }) {
+                                if (64..<128).allSatisfy({ dbW($0) <= -60.0 }) {
                                     let software = self.softwarePlaybackWordLevel(softwarePeaks)
                                     newOutput = ThunderboltOutputMeterMap.levels(
                                         outputWords.analog, count: self.outputMeterLevels.count, level: software)
-                                    self.digitalOutputMeterLevels = self.smoothMeterLevels(
-                                        self.digitalOutputMeterLevels,
-                                        raw: ThunderboltOutputMeterMap.levels(outputWords.digital, level: software))
+                                    // Assigned, not smoothed again: this poll's
+                                    // smoothing above started from the same levels.
+                                    let digital = ThunderboltOutputMeterMap.levels(outputWords.digital, level: software)
+                                    self.digitalOutputMeterLevels = zip(self.digitalOutputMeterLevels, digital).map(max)
                                 }
                             } else if newOutput.max() ?? -60.0 <= -60.0 {
                                 newOutput = self.linearMeterLevels(
@@ -4003,8 +4030,9 @@ final class AppState: @unchecked Sendable {
                         self.inputPeakHold = [Double](repeating: -60.0, count: self.inputPeakHold.count)
                         self.outputPeakHold = [Double](repeating: -60.0, count: self.outputPeakHold.count)
                         self.digitalInputMeterLevels = [Double](repeating: -60.0, count: self.digitalInputMeterLevels.count)
-                        self.digitalOutputMeterLevels = softwareDigitalOut
-                            ?? [Double](repeating: -60.0, count: self.digitalOutputMeterLevels.count)
+                        self.digitalOutputMeterLevels = softwareDigitalOut.map {
+                            self.smoothMeterLevels(self.digitalOutputMeterLevels, raw: $0)
+                        } ?? [Double](repeating: -60.0, count: self.digitalOutputMeterLevels.count)
                         self.digitalInputPeakHold = [Double](repeating: -60.0, count: self.digitalInputPeakHold.count)
                         self.digitalOutputPeakHold = [Double](repeating: -60.0, count: self.digitalOutputPeakHold.count)
                     }
@@ -4771,11 +4799,68 @@ final class AppState: @unchecked Sendable {
     /// card's snapshot has none: word 64 + n is software output n. The card
     /// mixers' outputs cannot be measured this way and read as silence.
     private func softwarePlaybackWordLevel(_ peaks: [Float]) -> (Int) -> Double {
-        { word in
-            let channel = word - Int(ThunderboltCardRouting.pciOutBase)
+        let mixerBase = Int(ThunderboltCardRouting.mixerOutBase)
+        // A card mixer's output cannot be measured this way: show its
+        // Software Return source, as the Mixer page's fallback does.
+        let returns = [0, 1].map { max(0, min(7, mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\($0)"))) * 2 }
+        return { word in
+            var channel = word - Int(ThunderboltCardRouting.pciOutBase)
+            if word >= mixerBase, word < mixerBase + 4 {
+                channel = returns[(word - mixerBase) / 2] + (word - mixerBase) % 2
+            }
             guard channel >= 0, channel < peaks.count else { return -60.0 }
             return SoftwareOutputMeterMap.dBFS(linearPeak: peaks[channel])
         }
+    }
+
+    /// While the Output page shows unit A on ThunderBridge or PCIe, read the
+    /// Symphony's own output meters about ten times a second, off the main
+    /// thread and one read at a time. A read that fails (the link is busy,
+    /// asleep or changing rate, or an older driver) backs off, 2 s then
+    /// doubling to 30 s, so a unit that does not answer is not asked again
+    /// and again; the card's snapshot shows the meters meanwhile.
+    @MainActor
+    private func pollUnitOutputMetersIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
+        guard selectedArea == .output, activeUnit != .b,
+              cardLayout.isKnown, cardLayout.converterLayout == nil,
+              thunderboltHardwareResponsive,
+              pollCount % 3 == 0, !unitOutputMeterReadInFlight,
+              Date() >= unitOutputMeterRetryAfter else { return }
+        unitOutputMeterReadInFlight = true
+        let layout = cardLayout
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let payload = try? tb.readUnitOutputMeters()
+            await MainActor.run {
+                guard let self else { return }
+                self.unitOutputMeterReadInFlight = false
+                guard let payload else {
+                    self.unitOutputMeterFailures += 1
+                    let pause = min(30.0, 2.0 * pow(2.0, Double(self.unitOutputMeterFailures - 1)))
+                    self.unitOutputMeterRetryAfter = Date().addingTimeInterval(pause)
+                    if self.unitOutputMeterFailures == 1 {
+                        print("[MeterPoll] unit output meters not read; using the card's meters")
+                    }
+                    return
+                }
+                if self.unitOutputMeterFailures > 0 { print("[MeterPoll] unit output meters read again") }
+                self.unitOutputMeterFailures = 0
+                // An all-zero reply decodes to nil: nothing fresh, the card's
+                // meters show.
+                if let levels = UnitOutputMeters.levels(payload: payload, layout: layout), layout == self.cardLayout {
+                    self.symphonyOutputMeterLevels = levels
+                    self.unitOutputMeterStamp = Date()
+                }
+            }
+        }
+    }
+
+    /// The unit's reading while it is fresh: Apogee's software dropped a
+    /// reading 500 ms old (`SymphonyIO_Stream.cpp:525-535`).
+    @MainActor
+    private func freshUnitOutputMeterLevels() -> UnitOutputMeters.Levels? {
+        guard selectedArea == .output, activeUnit != .b,
+              Date().timeIntervalSince(unitOutputMeterStamp) < 0.5 else { return nil }
+        return symphonyOutputMeterLevels
     }
 
     private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {

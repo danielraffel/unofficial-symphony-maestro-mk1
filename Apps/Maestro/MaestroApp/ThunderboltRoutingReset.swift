@@ -76,6 +76,7 @@ extension AppState {
             }
             aOutputCache.save(grid(aLayout, base: 0))
             bOutputCache?.save(grid(bLayout, base: 32))
+            invalidateThunderboltOutputMeterMap()
         }
         symphonyCardInputNamingRevision += 1
         viewReloadToken = UUID()
