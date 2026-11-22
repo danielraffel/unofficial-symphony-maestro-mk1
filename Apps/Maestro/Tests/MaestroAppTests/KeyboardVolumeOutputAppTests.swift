@@ -229,7 +229,7 @@ struct KeyboardVolumeOutputAppTests {
         #expect(driver.monitorOutputCalls == [.init(unit: .a, output: .speakers)])
     }
 
-    @Test("choosing Line on the Output page makes Headphone 1 the Audio Output, saved and sent; leaving Line keeps it; Speaker (0ch) can be chosen by hand")
+    @Test("choosing Line on the Output page makes Headphone 1 the Audio Output, saved and sent; leaving Line puts back the one it displaced; Speaker (0ch) can be chosen by hand")
     func lineMode() async {
         let (state, tb, driver) = thunderbolt()
         await state.serviceKeyboardVolumeOutput()
@@ -242,11 +242,13 @@ struct KeyboardVolumeOutputAppTests {
         #expect(tb.settingsStore.value(for: AppState.keyboardVolumeAddress)?.asUInt32 == 2)
         #expect(driver.monitorOutputCalls.last == .init(unit: .a, output: .headphone1))
         #expect(!state.keyboardVolumeKeysDoNothing)
-        // Back to Stereo: still Headphone 1, as in the original.
+        // Back to Stereo: Speaker again, the choice Line displaced (our own
+        // change; the original left Headphone 1).
         state.speakerOutputMode = 2
         state.speakerModeChangedByUser(from: 0, to: 2, unit: .a)
         await state.serviceKeyboardVolumeOutput()
-        #expect(state.keyboardVolumeOutput(for: .a) == .headphone1)
+        #expect(state.keyboardVolumeOutput(for: .a) == .speakers)
+        #expect(driver.monitorOutputCalls.last == .init(unit: .a, output: .speakers))
         // Headphone 2 chosen, then Line again: Headphone 1 again.
         state.chooseKeyboardVolumeOutput(.headphone2, unit: .a)
         state.speakerOutputMode = 0

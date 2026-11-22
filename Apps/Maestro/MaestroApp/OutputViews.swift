@@ -814,6 +814,17 @@ struct OutputControlsView: View {
                                     await writeMonitorProperty(.outputDim, value: .bool(false))
                                     await writeMonitorProperty(.outputSumToMono, value: .bool(false))
                                     await writeMonitorProperty(.speakerOutputMode, value: .uint32(val))
+                                    if oldMode == 0, val != 0 {
+                                        // Out of Line: the unit puts its speakers back on the
+                                        // level they had before. Show that level, read from
+                                        // the unit once it has changed mode.
+                                        try? await Task.sleep(for: .milliseconds(300))
+                                        if !(await AppState.speakersInLine(monitorTarget.device)),
+                                           let attenuation = (try? await monitorTarget.device?.getProperty(
+                                               PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+                                            speakerLevel = -Double(attenuation)
+                                        }
+                                    }
                                     // Volume Keys names unit B's Speaker entry after its mode.
                                     if monitorTarget.unit == .b { appState.unitBSpeakerOutputMode = val }
                                     // Line makes Headphone 1 the volume keys' output, as in
@@ -1209,13 +1220,18 @@ struct OutputControlsView: View {
             if Date() > deadline { return }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        // In Line mode the unit answers a speaker level or mute read with 0
+        // (full level, unmuted) whatever the speakers are set to: that is not
+        // their level and must never be shown or stepped from. The original
+        // never read them there (SymphonyIO.cpp:6660, 3144-3150).
+        let inLine = await AppState.speakersInLine(monitorTarget.device)
         do {
-            if let attenuation = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+            if !inLine, let attenuation = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
                 speakerLevel = -Double(attenuation)
             }
         } catch { print("[Maestro] ERROR: output loadMonitorState outputLevel: \(error)") }
         do {
-            if let mute = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
+            if !inLine, let mute = (try await monitorTarget.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
                 speakerMuted = mute
             }
         } catch { print("[Maestro] ERROR: output loadMonitorState outputMute: \(error)") }

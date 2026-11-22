@@ -524,8 +524,11 @@ struct MonitorToolbarView: View {
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        // Not in Line mode: the unit's reading there is 0, not the speakers'
+        // level (see `AppState.speakersInLine`).
+        let inLine = await AppState.speakersInLine(appState.device)
         do {
-            if let attenuation = (try await appState.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+            if !inLine, let attenuation = (try await appState.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
                 let level = -Double(attenuation)
                 appState.speakerLevel = level
                 undoSpeakerLevel = level
@@ -534,7 +537,7 @@ struct MonitorToolbarView: View {
             print("[Maestro] ERROR: loadMonitorState outputLevel failed: \(error)")
         }
         do {
-            if let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
+            if !inLine, let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
                 appState.speakerMuted = mute
                 if mute {
                     print("[Maestro] Hardware muted on startup — sending auto-unmute")

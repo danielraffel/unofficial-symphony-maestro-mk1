@@ -13,6 +13,7 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Fixed
 
+- **After Line, the Speaker knob shows the speakers' real level.** While Analog Out Format is Line the Symphony reports its speaker level as 0 dB, whatever it is. Maestro took that for the level, so after you left Line the knob read 0 dB and the next turn or key press could send a level far louder than the speakers were on. Maestro no longer reads the speaker level or mute in Line, and reads them from the Symphony again when you leave it.
 - **Mixer faders and pan now change the sound while you move them.** A fader, pan knob or Master only took effect once you stopped moving it, so a drag was heard late and as one jump. The level now follows the control as it moves, as in Apogee's software.
 - **Output Routing shows a mixer route again when you come back to the page.** An output you had routed to Mixer 1 or Mixer 2 was drawn back on its default software pair after you left the page and returned, while the Symphony went on playing the mixer. The routing itself was kept; only the grid was wrong.
 - **A Mixer strip's meter no longer jumps when you mute it.** With Pre-Mute Metering on (the default) the meter shows the signal arriving at the strip, whatever the fader and mute are set to; before, it followed the fader until you muted the strip and showed the full signal afterwards. With Pre-Mute Metering off it follows the fader and goes dark on mute, as before.

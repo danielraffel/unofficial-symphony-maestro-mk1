@@ -5344,10 +5344,11 @@ final class AppState: @unchecked Sendable {
     @MainActor
     func refreshAfterRecall() async {
         guard let dev = device else { return }
-        if let att = (try? await dev.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+        let inLine = await Self.speakersInLine(dev)
+        if !inLine, let att = (try? await dev.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
             speakerLevel = -Double(att)
         }
-        if let muted = (try? await dev.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
+        if !inLine, let muted = (try? await dev.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
             speakerMuted = muted
         }
         if let level = (try? await dev.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 { hp1Level = -Double(level) }

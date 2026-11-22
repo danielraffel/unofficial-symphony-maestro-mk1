@@ -85,6 +85,20 @@ extension AppState {
             speakerMode: unit == .a ? speakerOutputMode : unitBSpeakerOutputMode)
     }
 
+    /// Whether the unit's Analog Out Format is Line, read from the unit. In
+    /// Line the firmware answers a speaker level or mute read with 0 and
+    /// keeps the real level to itself, putting it back when Line ends
+    /// (SymphonyIOStateData.cpp:1129-1131, SymphonyIOState.cpp:162-219); a 0
+    /// taken for the speakers' level would show full level, and the next
+    /// knob or key step would send it. A mode that cannot be read counts as
+    /// Line: nothing is adopted.
+    static func speakersInLine(_ device: (any DeviceConnection)?) async -> Bool {
+        guard let device else { return true }
+        guard let mode = (try? await device.getProperty(PropertyAddress(selector: .speakerOutputMode)))?.asUInt32
+        else { return true }
+        return mode == 0
+    }
+
     /// The user changed a unit's Analog Out Format on the Output page. As in
     /// the original, setting it to Line makes Headphone 1 the Audio Output
     /// (`KeyboardVolumeOutput.afterUserChange`); the result is saved either
