@@ -625,6 +625,8 @@ public final class CoreAudioDeviceConnection: DeviceConnection, @unchecked Senda
     /// Find all Apogee Symphony IO devices via CoreAudio enumeration.
     /// Returns Thunderbolt devices first (preferred), then USB.
     public static func discoverAllSymphonyIO() -> [DiscoveredSymphonyIO] {
+        // Tests never see the Mac's real devices.
+        if TestEnvironment.isRunningTests { return [] }
         guard let deviceIDs = enumerateAudioDevices() else {
             print("[Maestro] discoverAllSymphonyIO: enumerateAudioDevices returned nil")
             return []

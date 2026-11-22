@@ -46,6 +46,8 @@ public final class DextUserClient: @unchecked Sendable {
     /// Uses IOServiceNameMatching (Apple's recommended pattern from the
     /// "Communicating between a DriverKit extension and a client app" sample).
     public func connect(audioDeviceID: AudioDeviceID) {
+        // Tests never open the real ThunderBridge driver.
+        if TestEnvironment.isRunningTests { return }
         lock.lock()
         defer { lock.unlock() }
 

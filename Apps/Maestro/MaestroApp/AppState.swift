@@ -4656,6 +4656,8 @@ final class AppState: @unchecked Sendable {
     /// keys, the ASP handles them. This listener syncs those changes back to the
     /// Maestro app UI so the volume knob reflects the current hardware state.
     func startASPVolumeSync() {
+        // Tests never listen to or set a real device's volume.
+        guard !TestEnvironment.isRunningTests else { return }
         if transportType == .thunderbolt {
             // Thunderbolt: aspDeviceID was set to the ThunderBridge device in init().
             // Media keys change this device's volume directly — listen to VolumeDecibels.

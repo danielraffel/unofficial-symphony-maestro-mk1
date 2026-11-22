@@ -143,8 +143,9 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
                 hardwareWriteGate: HardwareWriteGate = HardwareWriteGate()) {
         self.hardwareWriteGate = hardwareWriteGate
         self.queue = DispatchQueue(label: "com.danielraffel.Maestro.xpc-transport")
+        // Tests never reach the real USB helper (and through it the unit).
         self.connection = xpc_connection_create_mach_service(
-            serviceName, queue, 0)
+            TestEnvironment.isRunningTests ? serviceName + ".unavailable-in-tests" : serviceName, queue, 0)
 
         xpc_connection_set_event_handler(connection) { [weak self] event in
             guard xpc_get_type(event) == XPC_TYPE_ERROR else { return }
