@@ -42,7 +42,7 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 <td width="50%"><a href="docs/screenshots/maestro-help.png"><img src="docs/screenshots/maestro-help.png" alt="Maestro Help"></a><br><sub><b>Built-in Help</b> — contextual explanations are available throughout Maestro.</sub></td>
 </tr>
 <tr>
-<td width="50%"><a href="docs/screenshots/diagnostics-toggle.png"><img src="docs/screenshots/diagnostics-toggle.png" alt="Update channel and Diagnostics settings"></a><br><sub><b>Update channel and Diagnostics</b> — choose Stable or Beta updates; on Beta, turn on Diagnostics to record what Maestro and the driver do while you reproduce a problem.</sub></td>
+<td width="50%"><a href="docs/screenshots/diagnostics-toggle.png"><img src="docs/screenshots/diagnostics-toggle.png" alt="Update channel and Diagnostics settings"></a><br><sub><b>Update channel and Diagnostics</b> — choose Stable or Beta updates; turn on Diagnostics to record what Maestro and the driver do while you reproduce a problem.</sub></td>
 <td width="50%"><a href="docs/screenshots/diagnostics-confirm.png"><img src="docs/screenshots/diagnostics-confirm.png" alt="Turn on diagnostics"></a><br><sub><b>You stay in control</b> — Maestro asks first, saves the report to your Desktop, and sends nothing unless you agree.</sub></td>
 </tr>
 <tr>
@@ -128,7 +128,7 @@ The project source is available under the [MIT license](license.md), without war
 
 If you have a Symphony I/O MK I and an Apple Silicon Mac, I’d appreciate hearing how it goes.
 
-**The best way to report a problem is Diagnostics** (Beta channel). Turn it on in **App Settings › Diagnostics & Feedback**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
+**The best way to report a problem is Diagnostics.** Turn it on in **App Settings › Diagnostics & Feedback**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
 
 **Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and experiments (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **App Settings › Updates** at any time.
 
@@ -169,7 +169,7 @@ Updates are downloaded from this repository; the updater collects no telemetry.
 
 ### Beta versions
 
-From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in App Settings › Updates; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page. Bug fixes and new hardware support land on Beta first and move to Stable once they have been tested; Beta also adds Diagnostics, for sending the developer a private report (see Feedback).
+From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in App Settings › Updates; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page. Bug fixes and new hardware support land on Beta first and move to Stable once they have been tested.
 
 <table>
 <tr>

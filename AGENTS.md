@@ -178,17 +178,9 @@ next promotion" below with the maintainer, and clear the list afterwards.
 
 ### Decisions for the next promotion
 
-- **Diagnostics on Stable?** Decided 2026-11-18: Beta only for now; ask again
-  at the promotion (the maintainer leans towards showing it on Stable then).
-  To show it: set `DiagnosticsAvailability.showOnStable = true`
-  (`Apps/Maestro/MaestroApp/DiagnosticsViews.swift`; it has a test), then drop
-  the "Beta" wording in: Help "When and how should I use diagnostics?" step 2
-  (`HelpView.swift`); `Resources/Privacy.html` ("shown to testers on the Beta
-  update channel"); README Screenshots caption "Update channel and
-  Diagnostics", Feedback "(Beta channel)" and the Beta versions paragraph;
-  website `index.html` tips "(on the Beta channel)" and `gallery.js` caption
-  "Update channel and Diagnostics (Beta channel)". Keep "Beta first" for
-  fixes and experiments: that stays true.
+- None open. (Diagnostics on Stable: decided 2026-11-21, shown on Stable and
+  Beta from 0.9.21; `DiagnosticsAvailability.showOnStable` and the copy were
+  updated together. Keep "Beta first" for fixes and new hardware support.)
 - `Tools/verify-sparkle-feed.sh <version> <feed> stable|beta`.
 - `Tools/test-feed-tools.sh` and `Tools/test-installer-tools.sh` test the tools.
 

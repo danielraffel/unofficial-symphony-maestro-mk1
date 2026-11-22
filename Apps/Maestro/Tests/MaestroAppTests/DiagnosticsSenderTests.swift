@@ -131,11 +131,11 @@ struct DiagnosticsSenderTests {
 
 @Suite("Diagnostics availability")
 struct DiagnosticsAvailabilityTests {
-    @Test("Beta only for now; always shown while recording")
-    func betaOnly() {
-        #expect(DiagnosticsAvailability.showOnStable == false)
+    @Test("Shown on Stable and Beta, and while recording")
+    func stableAndBeta() {
+        #expect(DiagnosticsAvailability.showOnStable)
         #expect(DiagnosticsAvailability.showsSwitch(betaChannel: true, recording: false))
-        #expect(!DiagnosticsAvailability.showsSwitch(betaChannel: false, recording: false))
+        #expect(DiagnosticsAvailability.showsSwitch(betaChannel: false, recording: false))
         #expect(DiagnosticsAvailability.showsSwitch(betaChannel: false, recording: true))
     }
 }

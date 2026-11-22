@@ -2191,7 +2191,7 @@ struct AppSettingsView: View {
             }
 
             Section("Diagnostics & Feedback") {
-                // Diagnostics is offered on the Beta channel for now
+                // Diagnostics is offered on Stable and Beta
                 // (DiagnosticsAvailability.showOnStable).
                 if DiagnosticsAvailability.showsSwitch(betaChannel: updates.effectiveChannel == .beta,
                                                        recording: diagnostics.isRecording) {
@@ -2202,9 +2202,12 @@ struct AppSettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Link("Report a Bug ↗", destination: FeedbackLinks.reportBug)
                         .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
-                    Text("Please send diagnostics first, so we can investigate. Help › How to report a bug has the steps.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Text("Then send diagnostics with the issue link, so we can investigate.")
+                            .foregroundStyle(.secondary)
+                        SeeHelpLink(section: .feedback, appState: appState, popover: .constant(false))
+                    }
+                    .font(.caption)
                 }
                 .unredacted()
                 VStack(alignment: .leading, spacing: 4) {

@@ -128,7 +128,7 @@ struct HelpSearchTests {
         #expect(settings.contains("SeeHelpLink(section: .interfaceMode, appState: appState, popover: $showAIMInfo)"))
         #expect(monitor.contains("SeeHelpLink(section: .troubleshooting, appState: appState, popover: $showPortMessageInfo)"))
         #expect(settings.contains("SeeHelpLink(section: .clock, appState: appState, popover: $showClockStatusInfo)"))
-        #expect(settings.components(separatedBy: "SeeHelpLink(").count == 5)
+        #expect(settings.components(separatedBy: "SeeHelpLink(").count == 6)
         #expect(SeeHelpLink.title == "See Help for more.")
         // The status bar's pop-up is closed when its message goes, by the bar
         // (the button that owns the pop-up is gone by then).
@@ -170,7 +170,7 @@ struct HelpSearchTests {
             }
             found += targets
         }
-        #expect(Set(found) == ["twoUnits", "vbus", "interfaceMode", "troubleshooting", "clock"])
+        #expect(Set(found) == ["twoUnits", "vbus", "interfaceMode", "troubleshooting", "clock", "feedback"])
         // The check itself: a name Help does not have is not in the set.
         #expect(Self.linkTargets(in: "SeeHelpLink(section: .nowhere, appState: a, popover: $p)") == ["nowhere"])
         #expect(!shown.contains("nowhere") && !shown.contains("micPreStrip"))

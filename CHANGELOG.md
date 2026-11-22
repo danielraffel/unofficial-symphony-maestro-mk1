@@ -47,6 +47,8 @@ This beta removes Input Monitoring and puts Output Routing, Input Routing and th
 - **Help and the user guide are rewritten for all of this.** Help has three new questions: "When do I hear an input directly through the Symphony?", "What do the Mac's volume and mute keys control?" and "What is VBus, and how do I send audio from one application to another?". "Why doesn't the SW Return fader or mute, or Master, change what I hear?" and "The Mixer over USB" now describe the default routing, and the user guide describes Volume Keys and VBus.
 - **Help has a list of sections and a search field.** The info buttons for Clock Status, Ports, VBus, Audio Interface Mode and the status bar message end with "See Help for more.", which opens Help at that section.
 - **Help was checked against this version and corrected.**
+- **Diagnostics is now on the Stable channel too.** Turn it on in App Settings › Diagnostics & Feedback; you no longer need to switch to Beta first.
+- **Help has a new section, "How to report a bug":** open an issue on GitHub, record diagnostics while the problem happens, then send them with the issue's link so the two can be matched. Help › How to Report a Bug opens it.
 
 ### Please test
 

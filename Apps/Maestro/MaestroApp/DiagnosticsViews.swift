@@ -3,12 +3,11 @@ import SwiftUI
 
 /// Where the Diagnostics switch appears in App Settings › Diagnostics & Feedback.
 ///
-/// Decision (2026-11-18): Beta only for now. Revisit when the next beta is
-/// promoted to Stable: AGENTS.md › Release channels › "Decisions for the next
-/// promotion" lists this switch and every piece of copy that says "Beta" with it.
+/// Decision (2026-11-21): shown on Stable and Beta, so every bug report can
+/// come with diagnostics. (It was Beta only from 2026-11-18 until 0.9.21.)
 enum DiagnosticsAvailability {
-    /// Flip to `true` to show the switch on the Stable channel too.
-    static let showOnStable = false
+    /// `false` would hide the switch on the Stable channel.
+    static let showOnStable = true
 
     /// Always shown while a recording is running, so it can be stopped.
     static func showsSwitch(betaChannel: Bool, recording: Bool) -> Bool {
