@@ -54,6 +54,30 @@ struct SleepWakeTests {
         #expect(!state.hardwareWritesSuspended)
     }
 
+    /// 2026-11-22: a USB device that went away while a reconnect was running
+    /// asked for another reconnect, which was dropped, and Maestro stayed on
+    /// the old USB connection, "Disconnected", until relaunched.
+    @Test func reconnectRequestedDuringReconnectIsNotDropped() async {
+        let state = state(WakeConnection(failSupportedRead: false))
+        var runs = 0
+        var release: CheckedContinuation<Void, Never>?
+        state.reconnectOperation = {
+            runs += 1
+            if runs == 1 { await withCheckedContinuation { release = $0 } }
+        }
+        let first = Task { @MainActor in await state.reconnectHardware() }
+        while release == nil { await Task.yield() }
+        await state.reconnectHardware()          // the device-list change meanwhile
+        await state.reconnectHardware()          // and another: coalesced
+        #expect(runs == 1)
+        release?.resume()
+        await first.value
+        for _ in 0..<50 where runs < 2 { await Task.yield() }
+        #expect(runs == 2)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(runs == 2)
+    }
+
     @Test func failedWakeReadExhaustsAndReconnectsWithDisconnectBookkeeping() async {
         let connection = WakeConnection(failSupportedRead: true)
         let state = state(connection)

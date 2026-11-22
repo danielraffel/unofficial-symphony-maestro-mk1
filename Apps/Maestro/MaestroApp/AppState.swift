@@ -3173,6 +3173,11 @@ final class AppState: @unchecked Sendable {
     /// and two interleaved reconnects would double-install the ASP volume listener and orphan the
     /// software-metering IOProc. The check+set below is atomic (no await between them) on the MainActor.
     var isReconnecting = false
+    /// A reconnect was asked for while one was running (a device appeared or
+    /// went away meanwhile). It is not dropped: one more runs when the current
+    /// one ends. Dropping it once left Maestro "Disconnected" on the old USB
+    /// connection after a switch from USB to ThunderBridge (2026-11-22).
+    @ObservationIgnored var reconnectRequestedWhileReconnecting = false
 
     struct PreferredDevice: Sendable {
         let device: CoreAudioDeviceConnection.DiscoveredSymphonyIO
@@ -3221,14 +3226,18 @@ final class AppState: @unchecked Sendable {
             print("[Maestro] CARD SIMULATION: reconnect ignored — session pinned to the simulated unit")
             return
         }
-        if isReconnecting { return }
+        if isReconnecting { reconnectRequestedWhileReconnecting = true; return }
         isReconnecting = true
         let reconnectGeneration = wakeValidationGeneration
         defer {
             isReconnecting = false
             if reconnectGeneration != wakeValidationGeneration {
+                reconnectRequestedWhileReconnecting = false
                 reconnectRequestedWhileSuspended = true
                 replaySuspendedReconnectIfNeeded()
+            } else if reconnectRequestedWhileReconnecting {
+                reconnectRequestedWhileReconnecting = false
+                Task { @MainActor [weak self] in await self?.reconnectHardware() }
             }
         }
         stopThunderboltHealthCheck()
