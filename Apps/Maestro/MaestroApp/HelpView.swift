@@ -638,7 +638,7 @@ extension HelpSection {
                 .text("**Please send a diagnostics report with every bug.** It records what Maestro and the driver were doing when it went wrong. With it we can investigate; without it we are usually guessing."),
                 .bullet("1. Report it", "[open an issue on GitHub](\(FeedbackLinks.reportBug.absoluteString)) that says what happened, and copy its link."),
                 .bullet("2. Record it", "switch on **Diagnostics** in **App Settings › Diagnostics & Feedback**, then do what causes the problem and wait until it goes wrong. A minute or two is usually enough."),
-                .bullet("3. Send it", "press **Stop Diagnostics** in the red bar at the top of the window, paste the issue's link under **Existing GitHub issue**, and press **Agree and Send**. The report goes privately to the developer; nothing is posted publicly, so please don't attach the file to the issue."),
+                .bullet("3. Send it", "press **Stop Diagnostics** in the red bar at the top of the window, answer the questions, paste the issue's link under **Existing GitHub issue**, and press **Agree and Send**. The report goes privately to the developer, so there is no need to attach it to the issue."),
                 .text("Community support is available on [Gearspace](\(FeedbackLinks.discussion.absoluteString)) from fellow Apogee users. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail))."),
                 .text("**Troubleshooting** has more on diagnostics under \"When and how should I use diagnostics?\". This is a community project, so please don't contact Apogee for support with it."),
             ]),
