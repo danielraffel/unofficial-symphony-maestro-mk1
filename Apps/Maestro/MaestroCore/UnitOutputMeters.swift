@@ -19,6 +19,15 @@ public enum UnitOutputMeters {
         guard case .build(let build) = servingBuild else { return false }
         return build >= requiredDriverBuild
     }
+
+    /// Whether a reply still belongs to the unit, layout, and connection that
+    /// initiated its read.
+    public static func replyBelongs(unit: DeviceUnit, layout: CardLayout,
+                                    connection: ObjectIdentifier,
+                                    activeUnit: DeviceUnit, activeLayout: CardLayout?,
+                                    activeConnection: ObjectIdentifier?) -> Bool {
+        unit == activeUnit && layout == activeLayout && connection == activeConnection
+    }
     public static let payloadLength = 64
     public static let wordsPerBoard = 16
     /// Board b's digital output k at `b * 8 + k`, as

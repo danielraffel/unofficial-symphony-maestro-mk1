@@ -563,6 +563,13 @@ public final class DextUserClient: @unchecked Sendable {
     public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8 = 0) throws -> Data {
         guard (1...64).contains(responseLength) else { throw DextUserClientError.payloadTooLarge(responseLength) }
         lock.lock()
+        if command == SymphonyIOCommand.tdmMeterData.rawValue {
+            let build = cachedDriverBuild.map { ServingDextBuild.build($0) }
+            guard UnitOutputMeters.driverSupports(build) else {
+                lock.unlock()
+                throw DextUserClientError.unsupported
+            }
+        }
         let conn = connection
         lock.unlock()
         guard conn != IO_OBJECT_NULL else { throw DextUserClientError.notConnected }
@@ -943,6 +950,7 @@ public struct TimingHealth: Sendable, Equatable {
 
 public enum DextUserClientError: Error, LocalizedError {
     case notConnected
+    case unsupported
     case payloadTooLarge(Int)
     case ipcFailed(kern_return_t)
     case dextError(UInt32)
@@ -951,6 +959,8 @@ public enum DextUserClientError: Error, LocalizedError {
         switch self {
         case .notConnected:
             return "Not connected to dext IOUserClient"
+        case .unsupported:
+            return "The serving driver does not support this vendor read"
         case .payloadTooLarge(let size):
             return "Payload too large: \(size) bytes (max 64)"
         case .ipcFailed(let kr):

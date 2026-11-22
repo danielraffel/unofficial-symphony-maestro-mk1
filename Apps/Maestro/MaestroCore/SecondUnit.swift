@@ -341,6 +341,54 @@ public enum TwoUnitOutputRouting {
 
     /// DAW channel (0-based) unit B's first output plays by default.
     public static let unitBChannelBaseDAW = SymphonyRoutingModel.Port.two.cardBase
+
+    /// The row played by each unit B output column. An incomplete or empty
+    /// saved table inherits the card's default route for unclaimed outputs.
+    /// A complete table leaves unclaimed outputs disabled. An invalid saved row
+    /// claims its columns but has no route, matching the replay's fail-closed
+    /// handling of rows outside the valid source range.
+    public static func resolvedRows(saved: [Int: Set<Int>], columns: [CardLayout.RoutingColumn]) -> [Int?] {
+        let complete = (0..<rowCount).allSatisfy { saved[$0] != nil }
+        return columns.enumerated().map { index, column -> Int? in
+            if let owner = saved.keys.sorted().last(where: { saved[$0]?.contains(index) == true }) {
+                return (0..<rowCount).contains(owner) ? owner : nil
+            }
+            // A unit's outputs are destination bytes 32-63: board 0, then board 1.
+            let channel = Int(column.routingByte) - outputDestinationBase
+            guard !complete, (0..<SymphonyRoutingModel.channelsPerPort).contains(channel) else { return nil }
+            return defaultRow(unitBChannel: channel)
+        }
+    }
+
+    /// Routing bytes as the device layer names them (`SymphonyIORoutingAddress`:
+    /// `ioBoard0Base`, `mixer0Base`, `mixer1Base`, `none`); a test checks they agree.
+    public static let outputDestinationBase = 32
+    public static let mixer0SourceBase: UInt8 = 64
+    public static let mixer1SourceBase: UInt8 = 96
+    public static let noSource: UInt8 = 236
+
+    /// The destination-to-source table used by replay and the unit B meter map.
+    public static func table(saved: [Int: Set<Int>], columns: [CardLayout.RoutingColumn]) -> [UInt8: UInt8] {
+        var table: [UInt8: UInt8] = [:]
+        let rows = resolvedRows(saved: saved, columns: columns)
+        for (index, column) in columns.enumerated() {
+            let destination = column.routingByte
+            guard let row = rows[index] else {
+                table[destination] = noSource
+                table[destination &+ 1] = noSource
+                continue
+            }
+            let source: (Int) -> UInt8? = { side in
+                if row < dawPairCount { return UInt8(row * 2 + side) }
+                if row == mixer1Row { return mixer0SourceBase &+ UInt8(side) }
+                if row == mixer2Row { return mixer1SourceBase &+ UInt8(side) }
+                return nil
+            }
+            table[destination] = source(0) ?? noSource
+            table[destination &+ 1] = source(1) ?? noSource
+        }
+        return table
+    }
 }
 
 /// Debug only: the second-unit simulation's launch argument.

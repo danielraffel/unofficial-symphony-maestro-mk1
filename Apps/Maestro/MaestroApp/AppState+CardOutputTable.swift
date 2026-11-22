@@ -84,6 +84,9 @@ extension AppState {
     @MainActor
     func outputRoutingSaved() {
         invalidateThunderboltOutputMeterMap()
+        unitBOutputMeterWords = nil
+        unitBOutputMeterLayout = nil
+        unitBOutputMeterWordsPollStamp = -1
         outputRouteEdits &+= 1
         guard outputRouteDeferredSinceSave || cardOutputRestoreRunning || usbRestoreTask != nil else { return }
         outputRouteDeferredSinceSave = false

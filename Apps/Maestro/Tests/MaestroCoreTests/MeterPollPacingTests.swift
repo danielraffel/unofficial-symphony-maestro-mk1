@@ -7,11 +7,14 @@ struct MeterPollPacingTests {
     func gate() {
         #expect(!UnitOutputMeters.driverSupports(.build(143)))
         #expect(!UnitOutputMeters.driverSupports(nil))
+        #expect(!UnitOutputMeters.driverSupports(.olderThanBuildReporting))
+        #expect(!UnitOutputMeters.driverSupports(.build(0)))
         #expect(UnitOutputMeters.driverSupports(.build(144)))
     }
 
     @Test("next read uses the later timing bound")
     func pacing() {
+        #expect(abs(MeterPollPacing.nextStart(now: 10, previousStart: 9.95, previousEnd: 9.96, backoffUntil: 0) - 10.05) < 0.000001)
         #expect(abs(MeterPollPacing.nextStart(now: 10, previousStart: 9.95, previousEnd: 10, backoffUntil: 0) - 10.2) < 0.000001)
         #expect(MeterPollPacing.nextStart(now: 10, previousStart: 9.95, previousEnd: 10.01, backoffUntil: 11) == 11)
         #expect(MeterPollPacing.backoff(consecutiveFailures: 1) == 0)

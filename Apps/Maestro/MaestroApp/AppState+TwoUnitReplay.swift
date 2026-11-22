@@ -196,12 +196,11 @@ extension AppState {
         }
         do {
             let rows = unitBOutputRoutingCache?.loadMulti() ?? [:]
-            let completeB = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { rows[$0] != nil }
+            let resolved = TwoUnitOutputRouting.resolvedRows(saved: rows, columns: layoutB.outputRoutingColumns)
             for (index, column) in layoutB.outputRoutingColumns.enumerated() {
-                let row = rows.keys.sorted().last { rows[$0]?.contains(index) == true }
-                    ?? (completeB ? nil : ThunderboltCardRouting.channel(forDestination: column.routingByte).map {
-                        TwoUnitOutputRouting.defaultRow(unitBChannel: Int($0))
-                    })
+                if let owner = rows.keys.sorted().last(where: { rows[$0]?.contains(index) == true }),
+                   !(0..<TwoUnitOutputRouting.rowCount).contains(owner) { continue }
+                let row = resolved[index]
                 if let routes = Self.unitBRoutePair(destLeft: column.routingByte, gridRow: row) {
                     plan.card += routes.map { .card(.output($0)) }
                 }

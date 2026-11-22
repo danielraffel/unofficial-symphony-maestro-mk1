@@ -15,9 +15,7 @@ Thanks to the tester who reported that the AES meters did not move while music p
 
 ### Release notes
 
-- Over USB nothing changes.
 - The driver is unchanged from 0.9.21 (0.11.17, build 143). Over USB nothing changes. As before, the Output page meters the first four digital pairs of each card.
-- As before, the Output page meters the first four digital pairs of each card.
 
 ### Please test
 

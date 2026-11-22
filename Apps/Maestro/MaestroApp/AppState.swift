@@ -1819,17 +1819,21 @@ final class AppState: @unchecked Sendable {
     /// the cards or the table are not known, and for converters. Re-derived
     /// every ~2 s, and at once when Output Routing is saved.
     private var thunderboltOutputMeterWords: ThunderboltOutputMeterMap.Words?
+    @ObservationIgnored var unitBOutputMeterWords: ThunderboltOutputMeterMap.Words?
+    @ObservationIgnored var unitBOutputMeterLayout: CardLayout?
+    @ObservationIgnored var unitBOutputMeterWordsPollStamp: Int = -1
     /// ThunderBridge: the Symphony's own output meters, read from the unit
     /// while the Output page shows (`UnitOutputMeters`), and when they were
     /// read. The card's snapshot through the routing map is the fallback.
     private var symphonyOutputMeterLevels: UnitOutputMeters.Levels?
     private var unitOutputMeterStamp = Date.distantPast
     private var unitOutputMeterReadInFlight = false
-    private var unitOutputMeterFailures = 0
-    private var unitOutputMeterRetryAfter = Date.distantPast
-    private var unitOutputMeterLastStart: Date?
-    private var unitOutputMeterLastEnd: Date?
+    private var unitOutputMeterFailures: [DeviceUnit: Int] = [.a: 0, .b: 0]
+    private var unitOutputMeterRetryAfter: [DeviceUnit: Date] = [.a: .distantPast, .b: .distantPast]
+    private var unitOutputMeterLastStart: [DeviceUnit: Date] = [:]
+    private var unitOutputMeterLastEnd: [DeviceUnit: Date] = [:]
     private var unitOutputMeterContext: (DeviceUnit, CardLayout, ObjectIdentifier)?
+    private var unitOutputMeterLevelsByUnit: [DeviceUnit: UnitOutputMeters.Levels] = [:]
     private var unitOutputMeterWindowStart = Date()
     private var unitOutputMeterWindowDurations: [TimeInterval] = []
     private var unitOutputMeterReadCount = 0
@@ -3779,7 +3783,13 @@ final class AppState: @unchecked Sendable {
                         self.refreshThunderboltOutputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
                         let outputWords = self.thunderboltOutputMeterWords
                         let unitOutputs = self.freshUnitOutputMeterLevels()
-                        if let unitOutputs {
+                        if self.activeUnit == .b, let unitOutputs {
+                            self.unitBOutputMeterLevels = self.smoothMeterLevels(
+                                self.unitBOutputMeterLevels, raw: unitOutputs.analog)
+                            self.unitBDigitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.unitBDigitalOutputMeterLevels, raw: unitOutputs.digital)
+                        }
+                        if self.activeUnit == .a, let unitOutputs {
                             // The Symphony's own meters, taken at each output.
                             newOutput = (0..<self.outputMeterLevels.count).map {
                                 $0 < unitOutputs.analog.count ? unitOutputs.analog[$0] : -60.0
@@ -3833,7 +3843,8 @@ final class AppState: @unchecked Sendable {
                             raw: ThunderboltInputMeterMap.digitalLevels(host: hostInputs, words: meterWords))
                         // Unit B (64 channels, a second Symphony I/O): its own
                         // strips read words 32-63 and 96-127.
-                        self.updateUnitBMeters(dB: dbW)
+                        self.updateUnitBMeters(dB: dbW, pollCount: pollCount,
+                                               preferUnitRead: self.activeUnit == .b && unitOutputs != nil)
 
                         // The FPGA meter DMA is not available on every
                         // ThunderBridge FPGA revision and may be temporarily
@@ -4833,19 +4844,19 @@ final class AppState: @unchecked Sendable {
         let unit = activeUnit
         let layout = unit == .b ? unitBLayout : cardLayout
         guard let layout, layout.isKnown, layout.converterLayout == nil,
-              Date() >= unitOutputMeterRetryAfter else { return }
+              Date() >= (unitOutputMeterRetryAfter[unit] ?? .distantPast) else { return }
         let bConnection = unit == .b ? unitBDevice as? ThunderboltUnitBConnection : nil
         guard unit == .a || bConnection != nil else { return }
         let contextID: ObjectIdentifier = unit == .a ? ObjectIdentifier(tb) : ObjectIdentifier(bConnection!)
         let now = Date()
         let next = MeterPollPacing.nextStart(
             now: now.timeIntervalSinceReferenceDate,
-            previousStart: unitOutputMeterLastStart?.timeIntervalSinceReferenceDate,
-            previousEnd: unitOutputMeterLastEnd?.timeIntervalSinceReferenceDate,
-            backoffUntil: unitOutputMeterRetryAfter.timeIntervalSinceReferenceDate)
+            previousStart: unitOutputMeterLastStart[unit]?.timeIntervalSinceReferenceDate,
+            previousEnd: unitOutputMeterLastEnd[unit]?.timeIntervalSinceReferenceDate,
+            backoffUntil: (unitOutputMeterRetryAfter[unit] ?? .distantPast).timeIntervalSinceReferenceDate)
         guard now.timeIntervalSinceReferenceDate >= next else { return }
         unitOutputMeterReadInFlight = true
-        unitOutputMeterLastStart = now
+        unitOutputMeterLastStart[unit] = now
         let context = (unit, layout, contextID)
         Task.detached(priority: .userInitiated) { [weak self] in
             let payload: Data?
@@ -4858,8 +4869,9 @@ final class AppState: @unchecked Sendable {
             await MainActor.run {
                 guard let self else { return }
                 self.unitOutputMeterReadInFlight = false
-                self.unitOutputMeterLastEnd = end
+                self.unitOutputMeterLastEnd[unit] = end
                 self.unitOutputMeterReadCount += 1
+                if self.unitOutputMeterWindowDurations.isEmpty { self.unitOutputMeterWindowStart = now }
                 self.unitOutputMeterWindowDurations.append(end.timeIntervalSince(now))
                 if end.timeIntervalSince(self.unitOutputMeterWindowStart) >= 30 {
                     let sorted = self.unitOutputMeterWindowDurations.sorted()
@@ -4867,21 +4879,25 @@ final class AppState: @unchecked Sendable {
                     let worst = sorted.max() ?? 0
                     let medianText = String(format: "%.3f", median)
                     let worstText = String(format: "%.3f", worst)
-                    print("[MeterPoll] reads=\(self.unitOutputMeterReadCount) median=\(medianText)s worst=\(worstText)s")
+                    print("[MeterPoll] reads=\(self.unitOutputMeterWindowDurations.count) median=\(medianText)s worst=\(worstText)s")
                     self.unitOutputMeterWindowStart = end
                     self.unitOutputMeterWindowDurations.removeAll(keepingCapacity: true)
                 }
                 guard let payload else {
-                    self.unitOutputMeterFailures += 1
-                    self.unitOutputMeterRetryAfter = end.addingTimeInterval(MeterPollPacing.backoff(consecutiveFailures: self.unitOutputMeterFailures))
+                    let failures = (self.unitOutputMeterFailures[unit] ?? 0) + 1
+                    self.unitOutputMeterFailures[unit] = failures
+                    self.unitOutputMeterRetryAfter[unit] = end.addingTimeInterval(MeterPollPacing.backoff(consecutiveFailures: failures))
                     return
                 }
-                self.unitOutputMeterFailures = 0
+                self.unitOutputMeterFailures[unit] = 0
+                let activeLayout = context.0 == .b ? self.unitBLayout : self.cardLayout
+                let activeConnection = (context.0 == .b ? self.unitBDevice : self.device).map { ObjectIdentifier($0) }
                 guard self.selectedArea == .output, !self.hardwareWritesSuspended,
-                      self.activeUnit == context.0,
-                      (context.0 == .b ? self.unitBLayout : self.cardLayout) == context.1,
-                      ObjectIdentifier((context.0 == .b ? self.unitBDevice : self.device) as AnyObject) == context.2 else { return }
+                      UnitOutputMeters.replyBelongs(unit: context.0, layout: context.1,
+                                                    connection: context.2, activeUnit: self.activeUnit,
+                                                    activeLayout: activeLayout, activeConnection: activeConnection) else { return }
                 if let levels = UnitOutputMeters.levels(payload: payload, layout: layout) {
+                    self.unitOutputMeterLevelsByUnit[unit] = levels
                     self.symphonyOutputMeterLevels = levels
                     self.unitOutputMeterStamp = Date()
                     self.unitOutputMeterContext = context
@@ -4890,19 +4906,20 @@ final class AppState: @unchecked Sendable {
         }
     }
 
-    /// Keep our last reading for 500 ms when a read fails. Apogee cleared a
-    /// stream's meters after 500 ms without a read, rather than aging it.
+    /// Keep our last reading for 500 ms when a read fails. The 500 ms fallback
+    /// is Maestro's rule. Apogee cleared a stream's meters after that interval.
     @MainActor
     private func freshUnitOutputMeterLevels() -> UnitOutputMeters.Levels? {
         guard selectedArea == .output, Date().timeIntervalSince(unitOutputMeterStamp) < 0.5,
-              unitOutputMeterContext?.0 == activeUnit,
-              unitOutputMeterContext?.1 == (activeUnit == .b ? unitBLayout : cardLayout),
-              let contextID = unitOutputMeterContext?.2 else { return nil }
+              let context = unitOutputMeterContext else { return nil }
         let currentID = activeUnit == .b
             ? unitBDevice.map { ObjectIdentifier($0) }
             : device.map { ObjectIdentifier($0) }
-        guard currentID == contextID else { return nil }
-        return symphonyOutputMeterLevels
+        guard UnitOutputMeters.replyBelongs(unit: context.0, layout: context.1,
+                                            connection: context.2, activeUnit: activeUnit,
+                                            activeLayout: activeUnit == .b ? unitBLayout : cardLayout,
+                                            activeConnection: currentID) else { return nil }
+        return unitOutputMeterLevelsByUnit[activeUnit] ?? symphonyOutputMeterLevels
     }
 
     private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {

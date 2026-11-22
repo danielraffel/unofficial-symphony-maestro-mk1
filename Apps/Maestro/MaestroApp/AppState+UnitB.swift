@@ -485,7 +485,7 @@ extension AppState {
 
     /// Unit B's meters from the card's meter words (called from the
     /// ThunderBridge meter poll with its word → dB function).
-    func updateUnitBMeters(dB: (Int) -> Double) {
+    func updateUnitBMeters(dB: (Int) -> Double, pollCount: Int = 0, preferUnitRead: Bool = false) {
         guard unitBOnCard, let layout = unitBLayout else { return }
         let host = (0..<UnitBMeterMap.inputWordCount).map(dB)
         let words = UnitBMeterMap.inputWords(layout: layout)
@@ -503,10 +503,13 @@ extension AppState {
             unitBInputMeterLevels, raw: ThunderboltInputMeterMap.stripLevels(host: host, words: words, count: count))
         unitBDigitalInputMeterLevels = smoothMeterLevels(
             unitBDigitalInputMeterLevels, raw: ThunderboltInputMeterMap.digitalLevels(host: host, words: words))
-        unitBOutputMeterLevels = smoothMeterLevels(
-            unitBOutputMeterLevels, raw: unitBOutputLevels(dB: dB, layout: layout))
-        unitBDigitalOutputMeterLevels = smoothMeterLevels(
-            unitBDigitalOutputMeterLevels, raw: unitBDigitalOutputLevels(dB: dB, layout: layout))
+        if !preferUnitRead {
+            refreshUnitBOutputMeterWords(layout: layout, pollCount: pollCount)
+            unitBOutputMeterLevels = smoothMeterLevels(
+                unitBOutputMeterLevels, raw: unitBOutputLevels(dB: dB, layout: layout))
+            unitBDigitalOutputMeterLevels = smoothMeterLevels(
+                unitBDigitalOutputMeterLevels, raw: unitBDigitalOutputLevels(dB: dB, layout: layout))
+        }
         unitBInputPeakHold = advancePeakHold(unitBInputPeakHold, levels: unitBInputMeterLevels)
         unitBDigitalInputPeakHold = advancePeakHold(unitBDigitalInputPeakHold, levels: unitBDigitalInputMeterLevels)
         unitBOutputPeakHold = advancePeakHold(unitBOutputPeakHold, levels: unitBOutputMeterLevels)
@@ -514,30 +517,30 @@ extension AppState {
     }
 
     private func unitBOutputTable(layout: CardLayout) -> [UInt8: UInt8]? {
-        guard let rows = unitBOutputRoutingCache?.loadMulti(), !rows.isEmpty else { return nil }
-        var table: [UInt8: UInt8] = [:]
-        for (index, column) in layout.outputRoutingColumns.enumerated() {
-            let owner = rows.keys.sorted().last { rows[$0]?.contains(index) == true }
-            let destination = column.routingByte
-            if let owner {
-                let source: (Int) -> UInt8 = { side in
-                    if owner < TwoUnitOutputRouting.dawPairCount { return UInt8(owner * 2 + side) }
-                    if owner == TwoUnitOutputRouting.mixer1Row { return SymphonyIORoutingAddress.mixer0Base &+ UInt8(side) }
-                    return SymphonyIORoutingAddress.mixer1Base &+ UInt8(side)
-                }
-                table[destination] = source(0)
-                table[destination &+ 1] = source(1)
-            } else {
-                table[destination] = SymphonyIORoutingAddress.none
-                table[destination &+ 1] = SymphonyIORoutingAddress.none
-            }
-        }
-        return table
+        guard layout.isKnown else { return nil }
+        return TwoUnitOutputRouting.table(
+            saved: unitBOutputRoutingCache?.loadMulti() ?? [:],
+            columns: layout.outputRoutingColumns)
+    }
+
+    private func refreshUnitBOutputMeterWords(layout: CardLayout, pollCount: Int = 0) {
+        guard unitBOutputMeterWordsPollStamp < 0
+                || pollCount < unitBOutputMeterWordsPollStamp
+                || pollCount - unitBOutputMeterWordsPollStamp >= 40
+                || unitBOutputMeterLayout != layout else { return }
+        unitBOutputMeterWordsPollStamp = pollCount
+        unitBOutputMeterLayout = layout
+        unitBOutputMeterWords = unitBOutputTable(layout: layout).map {
+            ThunderboltOutputMeterMap.words(layout: layout, table: $0, unitBActive: true, unitB: true)
+        } ?? nil
     }
 
     private func unitBOutputWords(layout: CardLayout) -> ThunderboltOutputMeterMap.Words? {
-        guard let table = unitBOutputTable(layout: layout) else { return nil }
-        return ThunderboltOutputMeterMap.words(layout: layout, table: table, unitBActive: true, unitB: true)
+        guard [0, 1].allSatisfy({ source in
+            let value = unitBBoardSource(slot: source)
+            return value == .detected || value == .simulated
+        }) else { return nil }
+        return unitBOutputMeterWords
     }
 
     private func unitBOutputLevels(dB: (Int) -> Double, layout: CardLayout) -> [Double] {
@@ -631,6 +634,9 @@ extension AppState {
             unitBOutputMeterLevels = []
             unitBDigitalOutputMeterLevels = Array(repeating: -60, count: 24)
             unitBDigitalOutputPeakHold = Array(repeating: -60, count: 24)
+            unitBOutputMeterWords = nil
+            unitBOutputMeterLayout = nil
+            unitBOutputMeterWordsPollStamp = -1
             return
         }
         if newConnection || unitBDevice == nil {
@@ -643,6 +649,9 @@ extension AppState {
             (oldDevice as? ThunderboltUnitBConnection)?.invalidate()
             Task { await oldDevice?.disconnect() }
             unitBDevice = connection
+            unitBOutputMeterWords = nil
+            unitBOutputMeterLayout = nil
+            unitBOutputMeterWordsPollStamp = -1
             unitBDeviceInfo = SymphonyDeviceInfo()
             nonisolated(unsafe) let infoOwner = self
             Task { @MainActor in
