@@ -11,6 +11,7 @@ Thanks to the tester who reported that the AES meters did not move while music p
 - **On ThunderBridge and PCIe, the digital output meters on the Output page now work:** AES, ADAT/SMUX and S/PDIF. They stayed dark whatever was playing; the audio itself was not affected.
 - **On ThunderBridge and PCIe, each Output page meter now shows the level of what Output Routing plays on that output, analog and digital.** This also covers the second Symphony I/O at 64 channels.
 - **With an 8x8 or 2x6 card in slot 1 and a card with analog outputs in slot 2, the second card's output meters show its own outputs.** They showed the first card's digital outputs.
+- **Over USB, the Master meter no longer shows Software Return while an input strip is soloed.** The solo itself was right: Software Return was silent, but the Master meter went on showing it. Thanks to the tester who reported it.
 - **Input and output meters follow a routing change within a couple of seconds, however long Maestro has been open.** After opening the Mixer page they could keep showing the old routing for a long time.
 
 ### Release notes

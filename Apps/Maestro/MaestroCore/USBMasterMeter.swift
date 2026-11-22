@@ -19,10 +19,19 @@ public enum USBMasterMeter {
     }
 
     /// Linear gain from host playback to the mixer's output for its Software
-    /// Return: zero when the return is muted or either fader is at the bottom.
+    /// Return: zero when the return is muted, when another strip's solo
+    /// silences it, or when either fader is at the bottom.
     public static func gain(softwareReturnLevelDB: Double, softwareReturnMuted: Bool,
-                            masterLevelDB: Double) -> Double {
-        softwareReturnMuted ? 0 : linear(softwareReturnLevelDB) * linear(masterLevelDB)
+                            silencedBySolo: Bool = false, masterLevelDB: Double) -> Double {
+        softwareReturnMuted || silencedBySolo ? 0 : linear(softwareReturnLevelDB) * linear(masterLevelDB)
+    }
+
+    /// Whether a solo elsewhere in the mixer silences its Software Return: a
+    /// soloed strip leaves only the soloed strips playing, the return among
+    /// them only if it is soloed too
+    /// (og_source/maestrolink/Software/SymphonyIOMixer.cpp:287-452).
+    public static func softwareReturnSilencedBySolo(returnSoloed: Bool, anyInputSoloed: Bool) -> Bool {
+        anyInputSoloed && !returnSoloed
     }
 
     /// The Master meter reading (dBFS, floored at -60): the louder of what the

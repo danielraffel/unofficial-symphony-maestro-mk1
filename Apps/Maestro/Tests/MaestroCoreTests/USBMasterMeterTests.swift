@@ -47,4 +47,18 @@ struct USBMasterMeterTests {
         #expect(USBMasterMeter.level(unitMaster: -60, softwareReturnPeak: -1, gain: 1) == -60)
         #expect(USBMasterMeter.level(unitMaster: -60, softwareReturnPeak: 1, gain: -3) == -60)
     }
+
+    @Test("a soloed input strip takes the Software Return out of the Master meter, unless the return is soloed too")
+    func soloSilencesTheReturn() {
+        #expect(USBMasterMeter.softwareReturnSilencedBySolo(returnSoloed: false, anyInputSoloed: true))
+        #expect(!USBMasterMeter.softwareReturnSilencedBySolo(returnSoloed: true, anyInputSoloed: true))
+        #expect(!USBMasterMeter.softwareReturnSilencedBySolo(returnSoloed: false, anyInputSoloed: false))
+        #expect(!USBMasterMeter.softwareReturnSilencedBySolo(returnSoloed: true, anyInputSoloed: false))
+        #expect(USBMasterMeter.gain(softwareReturnLevelDB: 0, softwareReturnMuted: false,
+                                    silencedBySolo: true, masterLevelDB: 0) == 0)
+        #expect(USBMasterMeter.gain(softwareReturnLevelDB: 0, softwareReturnMuted: false,
+                                    silencedBySolo: false, masterLevelDB: 0) == 1)
+        // A silenced return leaves the unit's own Master reading (the soloed input).
+        #expect(USBMasterMeter.level(unitMaster: -20, softwareReturnPeak: 1, gain: 0) == -20)
+    }
 }

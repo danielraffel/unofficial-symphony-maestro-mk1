@@ -520,18 +520,23 @@ final class AppState: @unchecked Sendable {
         let defaults = mixerPreferences
         // Each mixer has its own mute; the stereo fader's level is stored per
         // mixer (both sides hold the same value). Software Return has no pan.
-        let returns = (0..<2).map { mixer -> (level: Double, muted: Bool) in
+        let returns = (0..<2).map { mixer -> (level: Double, muted: Bool, soloed: Bool) in
             let saved = MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: defaults)
             return (defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? saved.level,
-                    saved.isMuted)
+                    saved.isMuted, saved.isSoloed)
         }
         softwareReturnMeterGains = returns.map {
             SoftwareReturnMeterGain.gains(
                 leftLevelDB: $0.level, rightLevelDB: $0.level, pan: 0, isMuted: $0.muted)
         }
         usbMasterMeterGains = returns.enumerated().map { mixer, own in
-            USBMasterMeter.gain(
+            // A soloed input strip silences the return in the unit's mixer,
+            // so it adds nothing to the Master meter either.
+            let inputs: [MixerChannelState] = channelStateStore.load(ChannelStateStore.mixerKey(mixer)) ?? []
+            return USBMasterMeter.gain(
                 softwareReturnLevelDB: own.level, softwareReturnMuted: own.muted,
+                silencedBySolo: USBMasterMeter.softwareReturnSilencedBySolo(
+                    returnSoloed: own.soloed, anyInputSoloed: inputs.contains(where: \.isSoloed)),
                 masterLevelDB: MixerStateSnapshot.savedMasterLevel(mixer: mixer, preferences: defaults))
         }
     }
