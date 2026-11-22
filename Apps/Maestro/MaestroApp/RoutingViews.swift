@@ -1056,22 +1056,7 @@ struct OutputRoutingView: View {
                 $0.filter { columns.indices.contains($0) }
             }
         }
-        var routes = base
-        for (row, cols) in routingCache?.loadMulti() ?? [:] where
-            TwoUnitOutputRouting.playbackPair(unitARow: row, unitAPairs: swOutputPairCount,
-                                              unitBActive: appState.unitBOnCard) != nil {
-            let live = cols.filter { $0 >= 0 && $0 < columns.count }
-            guard !live.isEmpty else { continue }
-            // A hardware output carries one source, so claiming it for this row
-            // releases it from whichever default row held it.
-            for (other, others) in routes where other != row {
-                let remaining = others.subtracting(live)
-                if remaining.isEmpty { routes.removeValue(forKey: other) }
-                else { routes[other] = remaining }
-            }
-            routes[row] = live
-        }
-        return routes
+        return SavedOutputRoutes.overlay(saved: saved, onto: base, rowCount: rowCount, columnCount: columns.count)
     }
 
     /// The legacy default output table for the given cards on this transport.

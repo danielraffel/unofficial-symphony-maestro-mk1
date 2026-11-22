@@ -1360,10 +1360,13 @@ struct MixerChannelStripView: View {
         if let appState, let index = inputMeterIndex {
             let rawInput = appState.mixerInputMeterLevel(strip: index)
             let level: Double
-            if channel.isMuted && !preMuteMetering {
-                level = -60.0
-            } else if channel.isMuted {
+            // Pre-Mute Metering on (the default, and what Apogee's mixer did):
+            // the meter shows the signal arriving at the strip, whatever its
+            // fader and mute. Off: it follows the fader and goes dark on mute.
+            if preMuteMetering {
                 level = max(rawInput, -60.0)
+            } else if channel.isMuted {
+                level = -60.0
             } else {
                 level = max(rawInput + channel.level, -60.0)
             }

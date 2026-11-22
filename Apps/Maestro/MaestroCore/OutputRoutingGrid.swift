@@ -98,3 +98,29 @@ public struct OutputRoutingGrid: Sendable, Equatable {
         return nil
     }
 }
+
+
+/// The Output Routing grid as it is drawn from what was saved.
+public enum SavedOutputRoutes {
+    /// The saved rows laid over the default grid `base`: a saved row claims
+    /// its columns, and each of those is released from whichever row held it,
+    /// because a hardware output carries one source. Every row of the grid
+    /// counts, the two mixer rows included: from 0.9.10 to 0.9.21 a saved
+    /// mixer row was left out here, so an output routed to Mixer 1 or Mixer 2
+    /// was drawn back on its default software pair when the page was opened
+    /// again, while the card went on playing the mixer.
+    public static func overlay(saved: [Int: Set<Int>], onto base: [Int: Set<Int>],
+                               rowCount: Int, columnCount: Int) -> [Int: Set<Int>] {
+        var routes = base
+        for row in saved.keys.sorted() where (0..<rowCount).contains(row) {
+            let live = (saved[row] ?? []).filter { $0 >= 0 && $0 < columnCount }
+            guard !live.isEmpty else { continue }
+            for (other, others) in routes where other != row {
+                let remaining = others.subtracting(live)
+                if remaining.isEmpty { routes.removeValue(forKey: other) } else { routes[other] = remaining }
+            }
+            routes[row] = live
+        }
+        return routes
+    }
+}

@@ -2845,6 +2845,7 @@ final class AppState: @unchecked Sendable {
             // because a driver that kept running still has the unit on the
             // routes the reset removed from this Mac.
             let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
+            let wasWritten = thunderboltInputRoutingWritten
             thunderboltInputRoutingWritten = false
             var writes = resetPending
                 ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: thunderboltCaptureSlot1) : []
@@ -2878,8 +2879,13 @@ final class AppState: @unchecked Sendable {
             // write) not known to be: the strips' card inputs may have moved,
             // so the mixers are owed a complete write with the new numbers. At
             // connect the restore that follows covers it; after a retry here
-            // it runs at once.
-            thunderboltCaptureTableDidChange()
+            // it runs at once. Not when a replay that had failed fails again:
+            // nothing changed, and the health loop retries it every cycle.
+            if thunderboltInputRoutingWritten || wasWritten {
+                thunderboltCaptureTableDidChange()
+            } else {
+                invalidateThunderboltInputMeterMap()
+            }
         }
         await replaySymphonyCardInputs()
         await tb.logInputRoutes()
