@@ -57,7 +57,7 @@ public enum LoopSyncInfo {
     /// For Help: when the option is not there, as Apogee's support note
     /// "No loop sync option in Maestro" lists.
     public static let availability =
-        "**Use Loop Sync** appears only on ThunderBridge and the Symphony 64 PCIe card. As in Apogee's software, it is not shown over USB, or when an AD-16X, DA-16X or Rosetta (with the X-Symphony card) is connected to the card's other port.
+        "**Use Loop Sync** appears only on ThunderBridge and the Symphony 64 PCIe card. As in Apogee's software, it is not shown over USB, or when an AD-16X, DA-16X or Rosetta (with the X-Symphony card) is connected to the card's other port."
 }
 
 /// Configuration is never evidence of lock. Selector 13 reports each separately.
