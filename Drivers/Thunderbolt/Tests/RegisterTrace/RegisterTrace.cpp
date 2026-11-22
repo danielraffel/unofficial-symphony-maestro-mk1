@@ -167,6 +167,10 @@ struct Port {
     struct StaleReply { uint8_t cmd; uint32_t nValue; uint16_t len; };
     std::vector<StaleReply> staleReplies;
     bool noEcho = false;              // replies do not echo the request's command and nValue
+    // As the firmware does in Line (speaker mode 0): a speaker level or mute
+    // read answers 0, a speaker level written is ignored, and the level kept
+    // aside comes back when Line ends.
+    bool lineFirmware = false;
     uint8_t  symphonyInquire = 0;     // Symphony: INQUIRE reply byte (0 = none)
     bool     symphonyProbeAnswered = false;
     // A Symphony I/O as an XLink unit (port 2, "unit B"), from field report
@@ -272,6 +276,13 @@ struct Port {
     std::vector<uint8_t> vendorValue(uint8_t cmd, uint32_t nValue, uint16_t len) {
         auto it = stored.find(((uint64_t)cmd << 32) | nValue);
         std::vector<uint8_t> v;
+        if (lineFirmware && (cmd == 0x26 || cmd == 0x27)) {
+            auto m = stored.find((uint64_t)0x25 << 32);
+            if (m != stored.end() && !m->second.empty() && m->second[0] == 0) {
+                v.assign(len, 0);
+                return v;
+            }
+        }
         if (it != stored.end()) v = it->second;
         else switch (cmd) {
         case 0x25: v = { 2 }; break;                       // SpeakerMode: stereo
@@ -308,6 +319,10 @@ struct Port {
         const uint16_t len = (uint16_t)(c[6] | (c[7] << 8));
         if (c[0] == 0x40) {
             vendorWrites.push_back(cmd);
+            if (lineFirmware && (cmd == 0x26 || cmd == 0x27)) {
+                auto m = stored.find((uint64_t)0x25 << 32);
+                if (m != stored.end() && !m->second.empty() && m->second[0] == 0) return;
+            }
             if (cmd == 0x50 && len >= 1) clockModes.push_back(c[8]);
             stored[((uint64_t)cmd << 32) | nValue] = std::vector<uint8_t>(c + 8, c + 8 + len);
             return;
@@ -5457,6 +5472,35 @@ static void RunReplyMatching()
     unit.noEcho = false;
 }
 
+// D5 (A1, driver part): a speaker level read in Line is never taken or sent.
+static void RunLineSpeakerLevel()
+{
+    Options o; o.name = "Line speaker level"; o.shortFlow = true;
+    Run r;
+    RunScenario(o, r);
+    auto &unit = r.card.port[0];
+    unit.lineFirmware = true;
+    unit.stored[(uint64_t)0x26 << 32] = {35};   // the speakers' own level: -35 dB
+    unit.stored[(uint64_t)0x27 << 32] = {0};
+    uint8_t line = 0, stereo = 2;
+    CHECK(r.drv->SendVendorCommand(0x25, 0, &line, 1) == kIOReturnSuccess, "D5: Line");
+    // A link recovery in Line sends no speaker level or mute.
+    const size_t writes = unit.vendorWrites.size();
+    Port saved = unit;
+    r.card.port[0] = Port();
+    r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+    r.card.port[0] = saved;
+    r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
+    bool speakerSent = false;
+    for (size_t i = writes; i < r.card.port[0].vendorWrites.size(); i++)
+        if (r.card.port[0].vendorWrites[i] == 0x26 || r.card.port[0].vendorWrites[i] == 0x27) speakerSent = true;
+    CHECK(!speakerSent, "D5: a link recovery in Line sent a speaker level or mute");
+    // Leaving Line: the speakers' level is the unit's own, not the 0 read in Line.
+    CHECK(r.drv->SendVendorCommand(0x25, 0, &stereo, 1) == kIOReturnSuccess, "D5: Stereo");
+    HostPump();
+    CHECK(StoredVendor(r, 0x26) == 35, "D5: the speakers' level after Line is %u (want 35)", StoredVendor(r, 0x26));
+}
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -5468,6 +5512,7 @@ int main(int argc, char **argv)
     if (outDir.empty()) { fprintf(stderr, "--out <dir> is required\n"); return 2; }
 
     RunReplyMatching();
+    RunLineSpeakerLevel();
     RunSymphonyCardInputRoutes();
     RunPreampHostRoutes();
 #ifdef TRACE_HAVE_MIC_PRE_DAW

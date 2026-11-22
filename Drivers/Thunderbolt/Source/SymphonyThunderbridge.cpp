@@ -248,6 +248,11 @@ struct SymphonyThunderbridge_IVars {
     // unit, or set, in this driver instance. False after a Start() that found
     // no Symphony I/O: they are then fallbacks, never sent or shown as levels.
     bool      monitorLevelsKnown;
+    // Unit A's speaker level and mute are known: read outside Line, or set in
+    // this driver instance. In Line the unit answers a speaker read with 0
+    // (firmware: the level is kept aside until Line ends) and ignores a level
+    // written there, so a reading taken in Line is never the speakers' level.
+    bool      speakerLevelKnown;
     // Per-monitor state behind the single Core Audio volume/mute control.
     uint8_t   speakerAttenuation;
     bool      speakerMute;
@@ -2018,6 +2023,7 @@ struct SymphonyLinkInitResult {
     bool    hp2Mute;
     // As read from the unit (the fields above fold "64 dB" into the mute).
     bool    levelsRead;          // a Symphony vendor read answered in this set-up
+    bool    speakerLevelRead;    // speakerAttenuation/Mute are the speakers' own (not a Line reading)
     bool    speakerMuteRaw;
     bool    hp1MuteRaw;
     bool    hp2MuteRaw;
@@ -2063,8 +2069,11 @@ static bool ClassifyVolumeTarget(SymphonyThunderbridge_IVars *ivars, bool vendor
         // HAL control followed the trim. Take the Symphony's own stored values
         // (just read back) so link recovery's replay and the next key press do
         // not send it the trim level (0 dB attenuation would be full volume).
-        __atomic_store_n(&ivars->speakerAttenuation, symphony->speakerAttenuation, __ATOMIC_RELEASE);
-        __atomic_store_n(&ivars->speakerMute, symphony->speakerMute, __ATOMIC_RELEASE);
+        if (symphony->speakerLevelRead) {
+            __atomic_store_n(&ivars->speakerAttenuation, symphony->speakerAttenuation, __ATOMIC_RELEASE);
+            __atomic_store_n(&ivars->speakerMute, symphony->speakerMute, __ATOMIC_RELEASE);
+        }
+        ivars->speakerLevelKnown = symphony->speakerLevelRead;
         __atomic_store_n(&ivars->hp1Attenuation, symphony->hp1Attenuation, __ATOMIC_RELEASE);
         __atomic_store_n(&ivars->hp1Mute, symphony->hp1Mute, __ATOMIC_RELEASE);
         ivars->hp2Attenuation = symphony->hp2Attenuation;
@@ -2635,6 +2644,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         uint8_t startupMode = 2;       // Stereo fallback
         uint8_t startupVolume = 20;    // 20 dB attenuation fallback
         uint8_t startupMute = 0;       // unmuted fallback
+        bool    speakerVolumeRead = false, speakerMuteRead = false;
         uint8_t startupActiveSet = 1;  // speaker set A fallback
         uint8_t startupHP1Volume = 20; // 20 dB attenuation fallback
         uint8_t startupHP1Mute = 0;    // unmuted fallback
@@ -2811,6 +2821,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         ivars->isLegacyPCIe2100)) {
             vendorAnswered = true;
             startupVolume = (readback > 64) ? 64 : readback;
+            speakerVolumeRead = true;
         }
         if (!knownChain && ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_SpeakerMute, 0,
@@ -2818,6 +2829,20 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         ivars->isLegacyPCIe2100)) {
             vendorAnswered = true;
             startupMute = readback ? 1 : 0;
+            speakerMuteRead = true;
+        }
+        // In Line the readings above are the unit's 0, not the speakers'
+        // level: keep what this driver instance already knew, else nothing.
+        bool speakerLevelRead = speakerVolumeRead && speakerMuteRead;
+        if (startupMode == 0) {
+            speakerLevelRead = ivars->speakerLevelKnown;
+            if (ivars->speakerLevelKnown) {
+                startupVolume = __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);
+                startupMute = __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE) ? 1 : 0;
+            } else {
+                startupVolume = 20;
+                startupMute = 0;
+            }
         }
         if (!knownChain && ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                               symphonyAddr, kSIOCmd_ActiveSpeakerSet, 0,
@@ -2929,6 +2954,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         out->hp2Attenuation = startupHP2Volume;
         out->hp2Mute = (startupHP2Mute != 0 || startupHP2Volume >= 64);
         out->levelsRead = vendorAnswered;
+        out->speakerLevelRead = speakerLevelRead;
         out->speakerMuteRaw = startupMute != 0;
         out->hp1MuteRaw = startupHP1Mute != 0;
         out->hp2MuteRaw = startupHP2Mute != 0;
@@ -2990,19 +3016,27 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             if (ok) __atomic_store_n(&ivars->lineMode, mode == 0, __ATOMIC_RELEASE);
             IOSleep(10);
 
-            uint8_t vol = startupVolume;
-            ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                    symphonyAddr, kSIOCmd_SpeakerVolume,
-                                    0, &vol, 1, txSeq);
-            STLOG("SymphonyIO: SpeakerVolume(atten=%u dB): %{public}s", vol, ok ? "OK" : "FAILED");
-            IOSleep(10);
+            // No speaker level is sent in Line: the unit ignores it there,
+            // and the value would be the unit's 0. Outside Line the bring-up
+            // sends what it read, or its fallback when nothing answered, as
+            // before.
+            if (startupMode != 0) {
+                uint8_t vol = startupVolume;
+                ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                        symphonyAddr, kSIOCmd_SpeakerVolume,
+                                        0, &vol, 1, txSeq);
+                STLOG("SymphonyIO: SpeakerVolume(atten=%u dB): %{public}s", vol, ok ? "OK" : "FAILED");
+                IOSleep(10);
 
-            uint8_t mute = startupMute;
-            ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                    symphonyAddr, kSIOCmd_SpeakerMute,
-                                    0, &mute, 1, txSeq);
-            STLOG("SymphonyIO: SpeakerMute(unmuted): %{public}s", ok ? "OK" : "FAILED");
-            IOSleep(10);
+                uint8_t mute = startupMute;
+                ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                        symphonyAddr, kSIOCmd_SpeakerMute,
+                                        0, &mute, 1, txSeq);
+                STLOG("SymphonyIO: SpeakerMute(unmuted): %{public}s", ok ? "OK" : "FAILED");
+                IOSleep(10);
+            } else {
+                STLOG("SymphonyIO: speaker level not sent (Line)");
+            }
 
             // Legacy ApplySettingsToHardware replays the active speaker-set
             // mask after the output mode.  The default is set A; omitting
@@ -5364,23 +5398,29 @@ static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyT
             // Headphone 2 is always taken from the unit: nothing replays it.
             if (restored.levelsRead) {
                 if (!ivars->monitorLevelsKnown) {
-                    __atomic_store_n(&ivars->speakerAttenuation, restored.speakerAttenuation, __ATOMIC_RELEASE);
-                    __atomic_store_n(&ivars->speakerMute, restored.speakerMuteRaw, __ATOMIC_RELEASE);
+                    if (restored.speakerLevelRead) {
+                        __atomic_store_n(&ivars->speakerAttenuation, restored.speakerAttenuation, __ATOMIC_RELEASE);
+                        __atomic_store_n(&ivars->speakerMute, restored.speakerMuteRaw, __ATOMIC_RELEASE);
+                    }
                     __atomic_store_n(&ivars->hp1Attenuation, restored.hp1Attenuation, __ATOMIC_RELEASE);
                     __atomic_store_n(&ivars->hp1Mute, restored.hp1MuteRaw, __ATOMIC_RELEASE);
                 }
                 ivars->hp2Attenuation = restored.hp2Attenuation;
                 ivars->hp2Mute = restored.hp2MuteRaw;
                 ivars->monitorLevelsKnown = true;
+                if (restored.speakerLevelRead) ivars->speakerLevelKnown = true;
             }
             uint8_t spkAtten = __atomic_load_n(&ivars->speakerAttenuation, __ATOMIC_ACQUIRE);
             uint8_t spkMute  = __atomic_load_n(&ivars->speakerMute, __ATOMIC_ACQUIRE) ? 1 : 0;
             uint8_t hpAtten  = __atomic_load_n(&ivars->hp1Attenuation, __ATOMIC_ACQUIRE);
             uint8_t hpMute   = __atomic_load_n(&ivars->hp1Mute, __ATOMIC_ACQUIRE) ? 1 : 0;
-            SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                              kSIOCmd_SpeakerVolume, 0, &spkAtten, 1, ivars->runtimeTxSeq);
-            SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                              kSIOCmd_SpeakerMute, 0, &spkMute, 1, ivars->runtimeTxSeq);
+            // The speakers only outside Line and when their level is known.
+            if (!restored.lineMonitor && ivars->speakerLevelKnown) {
+                SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                                  kSIOCmd_SpeakerVolume, 0, &spkAtten, 1, ivars->runtimeTxSeq);
+                SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                                  kSIOCmd_SpeakerMute, 0, &spkMute, 1, ivars->runtimeTxSeq);
+            }
             SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
                               kSIOCmd_HeadphoneVolume, 0, &hpAtten, 1, ivars->runtimeTxSeq);
             SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
@@ -6836,6 +6876,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     uint8_t initialHP2Attenuation = 20;
     bool initialHP2Mute = false;
     bool initialLevelsRead = false;
+    bool initialSpeakerLevelRead = false;
 
     STLOG("Start() — Apogee ThunderBridge DriverKit driver");
 
@@ -7119,6 +7160,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         initialMonitorAttenuation = linkInit.monitorAttenuation;
         initialMonitorMute        = linkInit.monitorMute;
         initialSpeakerAttenuation = linkInit.speakerAttenuation;
+        initialSpeakerLevelRead   = linkInit.speakerLevelRead;
         initialSpeakerMute        = linkInit.speakerMute;
         initialHP1Attenuation     = linkInit.hp1Attenuation;
         initialHP1Mute            = linkInit.hp1Mute;
@@ -8187,6 +8229,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
                 ivars->monitorOutputTarget = kSymphonyMonitorOutputSpeakers;
             ivars->unitBMonitorOutputTarget = kSymphonyMonitorOutputSpeakers;
             ivars->monitorLevelsKnown = initialLevelsRead;
+            ivars->speakerLevelKnown = initialSpeakerLevelRead;
             ivars->lineMode = initialLineMonitor;
             ivars->speakerAttenuation = initialSpeakerAttenuation;
             ivars->speakerMute = initialSpeakerMute;
@@ -8982,7 +9025,8 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                         const bool settling = MicPreSettling(ivars) ||
                             arms != __atomic_load_n(&ivars->monitorPolledArm, __ATOMIC_ACQUIRE);
                         // No level of the unit's is known: nothing at all is sent.
-                        const bool unknown = !converter && !b && !ivars->monitorLevelsKnown;
+                        const bool unknown = !converter && !b && (!ivars->monitorLevelsKnown ||
+                            (SelectedMonitorKind(ivars, false) == 0 && !ivars->speakerLevelKnown));
                         // While settling, only a change towards quiet is honoured: a
                         // level below the output's, and mute on. Those cannot make
                         // anything louder than the unit was, and a mute the user sees
@@ -10911,6 +10955,8 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
                 const unsigned kind = speaker ? 0 : value + 1;
                 if (command == kSIOCmd_SpeakerVolume || command == kSIOCmd_HeadphoneVolume)
                     MonitorAttenuation(ivars, b, kind) = payload[0];
+                    if (!b && kind == 0 && !__atomic_load_n(&ivars->lineMode, __ATOMIC_ACQUIRE))
+                        ivars->speakerLevelKnown = true;
                 else
                     MonitorMute(ivars, b, kind) = payload[0] != 0;
                 if (b == ivars->monitorDeviceB && SelectedMonitorKind(ivars, b) == kind) PublishSelectedMonitor(ivars);
@@ -10979,7 +11025,18 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             if (port == 1) {
                 __atomic_store_n(&ivars->unitBLineMode, line, __ATOMIC_RELEASE);
             } else {
+                const bool wasLine = __atomic_load_n(&ivars->lineMode, __ATOMIC_ACQUIRE);
                 __atomic_store_n(&ivars->lineMode, line, __ATOMIC_RELEASE);
+                // Out of Line with the speakers' level not known (Maestro
+                // started in Line): read it once now. The unit puts the level
+                // it kept aside back when it leaves Line; give it the time it
+                // takes (about 300 ms, measured from the app on 2026-11-21).
+                if (wasLine && !line && !ivars->speakerLevelKnown) {
+                    IOSleep(300);
+                    if (ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputSpeakers))
+                        STLOG("Monitor: unit=A speaker level read after leaving Line: atten=%u mute=%u",
+                              ivars->speakerAttenuation, ivars->speakerMute ? 1 : 0);
+                }
             }
             // Until the app has chosen the output (monitorOutputChosen), it
             // follows the mode, as builds up to 141 did.
@@ -11002,6 +11059,8 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
 static bool ReadUnitAMonitorLevel(SymphonyThunderbridge_IVars *ivars, uint32_t output)
 {
     const unsigned kind = output == kSymphonyMonitorOutputHP1 ? 1 : (output == kSymphonyMonitorOutputHP2 ? 2 : 0);
+    // The speakers in Line: the unit answers 0. Nothing is read or changed.
+    if (kind == 0 && __atomic_load_n(&ivars->lineMode, __ATOMIC_ACQUIRE)) return true;
     uint8_t level = 0, mute = 0;
     if (!ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
                            kind ? kSIOCmd_HeadphoneVolume : kSIOCmd_SpeakerVolume, kind ? kind - 1 : 0,
@@ -11012,6 +11071,7 @@ static bool ReadUnitAMonitorLevel(SymphonyThunderbridge_IVars *ivars, uint32_t o
         return false;
     MonitorAttenuation(ivars, false, kind) = level > 64 ? 64 : level;
     MonitorMute(ivars, false, kind) = mute != 0;
+    if (kind == 0) ivars->speakerLevelKnown = true;
     return true;
 }
 
@@ -11198,7 +11258,11 @@ kern_return_t SymphonyThunderbridge::ReadVendorCommand(
                     const unsigned selected = SelectedMonitorKind(ivars, port != 0);
                     if (response[10] || ivars->monitorKnobChanging[port]) {
                         if (response[8] == 2) {
-                            (port ? ivars->unitBSpeakerAttenuation : ivars->speakerAttenuation) = response[9];
+                            // Not unit A's speakers in Line: that reading is the unit's 0.
+                            if (port || !__atomic_load_n(&ivars->lineMode, __ATOMIC_ACQUIRE)) {
+                                (port ? ivars->unitBSpeakerAttenuation : ivars->speakerAttenuation) = response[9];
+                                if (!port) ivars->speakerLevelKnown = true;
+                            }
                             publish = selected == 0;
                         } else if (response[8] <= 1) {
                             const unsigned kind = response[8] + 1u;
