@@ -409,6 +409,7 @@ extension AppState {
     /// The captured connections never follow a later unit-picker change.
     @MainActor
     func applyUnitBOutputRouting(_ rows: [Int: Set<Int>], target: UnitWriteTarget) async throws {
+        invalidateThunderboltOutputMeterMap()
         guard target.unit == .b, isCurrent(target) else { throw DeviceConnectionError.notConnected }
         guard unitBOnCard, let layout = unitBLayout, unitBOutputRoutingWritable else {
             throw DeviceConnectionError.notConnected

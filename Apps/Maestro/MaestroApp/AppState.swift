@@ -1836,7 +1836,6 @@ final class AppState: @unchecked Sendable {
     private var unitOutputMeterLevelsByUnit: [DeviceUnit: UnitOutputMeters.Levels] = [:]
     private var unitOutputMeterWindowStart = Date()
     private var unitOutputMeterWindowDurations: [TimeInterval] = []
-    private var unitOutputMeterReadCount = 0
     private var thunderboltOutputMeterWordsPollStamp: Int = -1
     private var thunderboltOutputMeterLayout: CardLayout?
     /// Count of consecutive all-zero TDM reads. Used to detect when signal stops
@@ -3422,6 +3421,7 @@ final class AppState: @unchecked Sendable {
                 self.softwareOutputRoutesPollStamp = -1
                 self.thunderboltInputMeterWordsPollStamp = -1
                 self.thunderboltOutputMeterWordsPollStamp = -1
+                self.unitBOutputMeterWordsPollStamp = -1
             }
             while !Task.isCancelled {
                 guard let self, let device = self.device, self.isHardwareInitialized else {
@@ -4795,6 +4795,7 @@ final class AppState: @unchecked Sendable {
     /// Output Routing changed: read the output meter map again at the next poll.
     func invalidateThunderboltOutputMeterMap() {
         thunderboltOutputMeterWordsPollStamp = -1
+        unitBOutputMeterWordsPollStamp = -1
     }
 
     @MainActor
@@ -4870,7 +4871,6 @@ final class AppState: @unchecked Sendable {
                 guard let self else { return }
                 self.unitOutputMeterReadInFlight = false
                 self.unitOutputMeterLastEnd[unit] = end
-                self.unitOutputMeterReadCount += 1
                 if self.unitOutputMeterWindowDurations.isEmpty { self.unitOutputMeterWindowStart = now }
                 self.unitOutputMeterWindowDurations.append(end.timeIntervalSince(now))
                 if end.timeIntervalSince(self.unitOutputMeterWindowStart) >= 30 {
@@ -4919,7 +4919,7 @@ final class AppState: @unchecked Sendable {
                                             connection: context.2, activeUnit: activeUnit,
                                             activeLayout: activeUnit == .b ? unitBLayout : cardLayout,
                                             activeConnection: currentID) else { return nil }
-        return unitOutputMeterLevelsByUnit[activeUnit] ?? symphonyOutputMeterLevels
+        return unitOutputMeterLevelsByUnit[activeUnit]
     }
 
     private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {

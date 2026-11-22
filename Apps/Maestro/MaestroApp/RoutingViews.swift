@@ -971,10 +971,23 @@ struct OutputRoutingView: View {
             unitBChosenRows = []
             return
         }
-        let saved = appState.unitBOutputRoutingCache?.loadMulti() ?? [:]
         var grid: [Int: Set<Int>] = [:]
-        for (column, row) in TwoUnitOutputRouting.resolvedRows(saved: saved, columns: unitBColumns).enumerated() {
-            if let row { grid[row, default: []].insert(column) }
+        for (col, column) in unitBColumns.enumerated() {
+            guard let channel = ThunderboltCardRouting.channel(forDestination: column.routingByte) else { continue }
+            grid[TwoUnitOutputRouting.defaultRow(unitBChannel: Int(channel)), default: []].insert(col)
+        }
+        let saved = appState.unitBOutputRoutingCache?.loadMulti() ?? [:]
+        // Bundle recall saves every row, including empty rows: this is a full
+        // table, so an unclaimed output must stay disconnected.
+        if (0..<TwoUnitOutputRouting.rowCount).allSatisfy({ saved[$0] != nil }) { grid = [:] }
+        for (row, cols) in saved where row >= 0 && row < TwoUnitOutputRouting.rowCount {
+            let live = cols.filter { $0 >= 0 && $0 < unitBColumns.count }
+            guard !live.isEmpty else { continue }
+            for (other, others) in grid where other != row {
+                let remaining = others.subtracting(live)
+                if remaining.isEmpty { grid.removeValue(forKey: other) } else { grid[other] = remaining }
+            }
+            grid[row] = live
         }
         unitBRoutes = grid
         unitBChosenRows = Set(saved.keys)
