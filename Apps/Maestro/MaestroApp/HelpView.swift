@@ -555,6 +555,12 @@ extension HelpSection {
                 .text("That is intentional. **Symphony I/O : USB Audio** is the full 16-input/16-output device and is the one to choose when an audio application needs to record from the Symphony. **Symphony I/O : Maestro USB** is a separate 0-input/16-output output device used by Maestro's volume-control proxy, so the Mac's keyboard volume keys can adjust the Symphony's hardware output level."),
                 .text("Choose **Maestro USB** as the macOS output for keyboard volume control, or choose **USB Audio** when you need inputs. The Symphony's inputs are on **USB Audio**."),
             ]),
+            HelpItem(title: "Does Maestro USB add latency?", blocks: [
+                .text("A little. Apogee's software sent audio straight to the Symphony's own USB device, which has no volume control the Mac's keys can reach. **Maestro USB** passes your audio on to that device so the volume keys work, and that hand-over adds about **1.3 ms** at 48 kHz (64 samples). Maestro USB reports it, so your DAW keeps recordings in time."),
+                .text("For the very lowest output latency, choose **Symphony I/O : USB Audio** as the output in your DAW; the volume keys then do not control it. Either way, your DAW's buffer size matters far more: each halving of it saves more than the hand-over costs."),
+                .text("To hear inputs with no delay at all, monitor them through the Symphony's Mixer instead of through your DAW (route **Mixer 1** to your speakers in **Output Routing**). Apogee's guide explains buffer size and this way of monitoring:"),
+                .link("Apogee: Symphony I/O, understanding latency", URL(string: "https://knowledge.apogeedigital.com/symphony-i/o-understanding-latency")!),
+            ]),
         ])
     }
 
