@@ -103,15 +103,14 @@
 /// coreaudiod helper competing for CPU, so this is not ceremonial.
 #define MAESTRO_SHM_JITTER_MARGIN     256u
 
-/// Compute D from the real device's geometry. Rounded up to a multiple of 64
-/// purely so the logged value is easy to eyeball.
+/// Compute D from the real device's geometry. Not rounded: every frame of D is
+/// latency the user hears.
 static inline uint32_t maestro_shm_compute_delay(uint32_t proxyBufferFrames,
                                                  uint32_t usbSafetyOffset)
 {
     int64_t need = 2 * (int64_t)proxyBufferFrames + (int64_t)usbSafetyOffset
                  - (int64_t)MAESTRO_SHM_PLUGIN_SAFETY + (int64_t)MAESTRO_SHM_JITTER_MARGIN;
     if (need < (int64_t)MAESTRO_SHM_MIN_DELAY_FRAMES) need = MAESTRO_SHM_MIN_DELAY_FRAMES;
-    need = (need + 63) & ~(int64_t)63;
     /* Never let D approach the ring size, or writes lap the read point. Half the
        ring still leaves room for the largest write-ahead the HAL can ask for. */
     if (need > (int64_t)(MAESTRO_SHM_RING_FRAMES / 2)) need = MAESTRO_SHM_RING_FRAMES / 2;
