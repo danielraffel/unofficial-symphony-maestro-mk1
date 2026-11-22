@@ -13,11 +13,20 @@ import MaestroDevice
 extension AppState {
 
     var loopSyncVisible: Bool {
-        SymphonyExtendedSelectors.supported(by: servingDextBuild) && LoopSyncSettings.available(in: SymphonyRoutingModel(
+        loopSyncOneUnit || SymphonyExtendedSelectors.supported(by: servingDextBuild) && LoopSyncSettings.available(in: SymphonyRoutingModel(
             topology: converterSystem == nil && connectedUnit == nil && transportType == .thunderbolt
                 ? .symphonyOnly : .unknown,
             hostChannels: portSelection.selection?.channelCount ?? 0,
             unitBConfigured: unitPickerVisible && unitB?.setupComplete == true))
+    }
+
+    /// One Symphony I/O on the card with driver 144: "Use Loop Sync" sets its
+    /// Loop Sync output (B7).
+    var loopSyncOneUnit: Bool {
+        LoopSyncSettings.availableWithOneUnit(
+            symphonyOnCard: converterSystem == nil && connectedUnit == nil && transportType == .thunderbolt,
+            unitBConfigured: unitPickerVisible && unitB?.setupComplete == true,
+            build: servingDextBuild)
     }
 
     @MainActor
@@ -29,8 +38,13 @@ extension AppState {
         do {
             var state = try await tb.loopSync()
             guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
-            if (restoring || loopSyncNeedsRestore), let saved = LoopSyncSettings.saved(in: .standard), saved != state.settings {
-                state = try await tb.loopSync(saved)
+            // With one unit the driver starts each session with the output
+            // off; the saved choice, or the original's default (on), is
+            // applied once it has connected.
+            let wanted = LoopSyncSettings.saved(in: .standard) ?? (loopSyncOneUnit ? LoopSyncSettings() : nil)
+            if (restoring || loopSyncNeedsRestore || loopSyncOneUnit), let wanted,
+               wanted.enabled != state.settings.enabled || (!loopSyncOneUnit && wanted != state.settings) {
+                state = try await tb.loopSync(wanted)
             }
             guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
             loopSyncState = state

@@ -27,7 +27,7 @@ struct LoopSyncControls: View {
                     guard let state = appState.loopSyncState, value != state.settings.enabled else { return }
                     Task { await appState.setLoopSync(.init(enabled: value, master: state.settings.master)) }
                 }
-            if enabled {
+            if enabled && !appState.loopSyncOneUnit {
                 Picker("Loop Sync Master", selection: $master) {
                     Text("Unit A").tag(DeviceUnit.a)
                     Text("Unit B").tag(DeviceUnit.b)

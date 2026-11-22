@@ -227,3 +227,16 @@ struct OneUnitSoftwareReturnPairsTests {
         #expect(TwoUnitMixer.softwareReturnPairCount(unitBActive: true, oneUnitPairs: 16) == 32)
     }
 }
+
+@Suite("Loop Sync with one unit (B7)")
+struct OneUnitLoopSyncTests {
+    @Test("shown for one Symphony I/O on the card with driver 144")
+    func availability() {
+        #expect(LoopSyncSettings.availableWithOneUnit(symphonyOnCard: true, unitBConfigured: false, build: .build(144)))
+        #expect(!LoopSyncSettings.availableWithOneUnit(symphonyOnCard: true, unitBConfigured: false, build: .build(143)))
+        #expect(!LoopSyncSettings.availableWithOneUnit(symphonyOnCard: false, unitBConfigured: false, build: .build(144)))
+        #expect(!LoopSyncSettings.availableWithOneUnit(symphonyOnCard: true, unitBConfigured: true, build: .build(144)))
+        #expect(!LoopSyncSettings.availableWithOneUnit(symphonyOnCard: true, unitBConfigured: false, build: nil))
+        #expect(LoopSyncSettings().enabled)   // the original's default
+    }
+}

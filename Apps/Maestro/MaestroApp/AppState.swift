@@ -3086,6 +3086,12 @@ final class AppState: @unchecked Sendable {
             replay = await tb.reapplyStoredSettings()
             await replaySavedBoardClock(tb)
             guard self.device === tb else { return }
+            // B7: one unit's Loop Sync output, which the driver starts off
+            // each session.
+            if loopSyncOneUnit {
+                await refreshLoopSync()
+                guard self.device === tb else { return }
+            }
             // The monitor mode is shown outside the Output tab too; start from
             // the saved one rather than the built-in default.
             if let mode = tb.settingsStore.value(

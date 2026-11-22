@@ -26,6 +26,16 @@ public struct LoopSyncSettings: Equatable, Sendable {
         if unit == effectiveMaster { return enabled ? "Loop Sync master" : "Master (Loop Sync off)" }
         return enabled ? "Loop Sync (follows \(effectiveMaster.name))" : "Word Clock"
     }
+    /// B7: with one Symphony I/O on the card the box is shown too, as the
+    /// original showed it whenever every peripheral supported it
+    /// (SymphonyController.cpp:1032-1043); there it sets unit A's Loop Sync
+    /// output only. Needs driver build 144.
+    public static func availableWithOneUnit(symphonyOnCard: Bool, unitBConfigured: Bool,
+                                            build: ServingDextBuild?) -> Bool {
+        guard symphonyOnCard, !unitBConfigured, case .build(let n)? = build else { return false }
+        return n >= 144
+    }
+
     public static func available(in routing: SymphonyRoutingModel) -> Bool {
         guard routing.hostChannels == 64, routing.unitBConfigured else { return false }
         return DeviceUnit.allCases.allSatisfy {
