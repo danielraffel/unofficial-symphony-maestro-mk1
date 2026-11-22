@@ -1,5 +1,7 @@
 import AppKit
+import CoreServices
 import MaestroCore
+import MaestroDevice
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -27,9 +29,33 @@ enum SetupEditKind: String, CaseIterable {
     }
 }
 
+enum SetupQuitReason: CaseIterable {
+    case appMenu, signal, systemSession, external
+
+    init(fromMenu: Bool, fromSignal: Bool, appleEventReason: OSType?) {
+        if fromSignal {
+            self = .signal
+            return
+        }
+        switch appleEventReason {
+        case kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAERestart, kAEShowShutdownDialog, kAEShutDown:
+            self = .systemSession
+        case nil:
+            self = fromMenu ? .appMenu : .external
+        default:
+            self = .external
+        }
+    }
+}
+
 enum SetupDocumentDecision: Equatable {
     case askToSave
     case proceed
+
+    static func forQuit(reason: SetupQuitReason, edited: Bool, hasCurrentFile: Bool) -> Self {
+        guard reason == .appMenu else { return .proceed }
+        return forClose(edited: edited, hasCurrentFile: hasCurrentFile)
+    }
 
     static func forClose(edited: Bool, hasCurrentFile: Bool) -> Self {
         edited && hasCurrentFile ? .askToSave : .proceed
@@ -59,13 +85,11 @@ enum LevelOverlayChangeSource {
     case maestroControl
     case macVolume
     case maestroUSBVolume
-    case restore
-    case launch
 
     var showsOverlay: Bool {
         switch self {
         case .frontPanel, .maestroControl, .macVolume: return true
-        case .maestroUSBVolume, .restore, .launch: return false
+        case .maestroUSBVolume: return false
         }
     }
 }
@@ -134,18 +158,31 @@ struct LevelOverlayContent: View {
 final class LevelOverlayController {
     static let shared = LevelOverlayController()
     private var panel: NSPanel?
+    private var host: NSHostingView<LevelOverlayContent>?
     private var hideTask: Task<Void, Never>?
+    private var generation = 0
 
     func show(source: LevelOverlaySource, level: Double, muted: Bool) {
         guard UserDefaults.standard.object(forKey: "showLevelOverlay") as? Bool ?? true else { return }
+        hideTask?.cancel()
+        generation &+= 1
+        let shownGeneration = generation
+        let content = LevelOverlayContent(source: source, level: level, muted: muted)
         let panel = self.panel ?? makePanel()
         self.panel = panel
-        let host = NSHostingView(rootView: LevelOverlayContent(source: source, level: level, muted: muted))
-        panel.contentView = host
-        panel.alphaValue = 1
+        if let host {
+            host.rootView = content
+        } else {
+            let host = NSHostingView(rootView: content)
+            self.host = host
+            panel.contentView = host
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            panel.animator().alphaValue = 1
+        }
         position(panel)
         panel.orderFrontRegardless()
-        hideTask?.cancel()
         hideTask = Task { @MainActor [weak self, weak panel] in
             try? await Task.sleep(for: .milliseconds(1500))
             guard !Task.isCancelled, let self, let panel else { return }
@@ -153,7 +190,7 @@ final class LevelOverlayController {
                 context.duration = 1
                 panel.animator().alphaValue = 0
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.generation == shownGeneration else { return }
             panel.orderOut(nil)
             self.hideTask = nil
         }
@@ -204,7 +241,8 @@ final class WindowDocumentBridge: NSObject, NSViewRepresentable {
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
-            guard let state = WindowDocumentBridge.currentAppState,
+            guard sender === WindowDocumentBridge.currentWindow,
+                  let state = WindowDocumentBridge.currentAppState,
                   let url = state.existingSetupURL(),
                   SetupDocumentDecision.forClose(edited: state.setupDocumentEdited, hasCurrentFile: true) == .askToSave else {
                 return previousDelegate?.windowShouldClose?(sender) ?? true
@@ -235,16 +273,15 @@ final class WindowDocumentBridge: NSObject, NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async {
-            Self.currentWindow = view.window
-            context.coordinator.attach(to: view.window)
-            Self.updateEditedState()
+            self.updateNSView(view, context: context)
         }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        Self.currentWindow = nsView.window
-        context.coordinator.attach(to: nsView.window)
+        guard let window = nsView.window else { return }
+        Self.currentWindow = window
+        context.coordinator.attach(to: window)
         Self.updateEditedState()
     }
 
@@ -302,20 +339,77 @@ extension AppState {
         } catch { NSAlert(error: error).runModal() }
     }
 
-    func recallMostRecentSetupIfEnabled() async {
+    func scheduleRecentSetupRecall() {
         guard !recentSetupRecallHandled, connectionMode == .hardware,
-              isHardwareInitialized, !hardwareWritesSuspended else { return }
+              isHardwareInitialized, let connection = device else { return }
         guard UserDefaults.standard.bool(forKey: "openMostRecentSetupAtLaunch"),
               let url = existingSetupURL() else {
             recentSetupRecallHandled = true
             return
         }
-        if transportType == .thunderbolt, portSelection.selection == .ports1And2 {
-            // The health loop discovers Unit B and completes the joint restore.
-            guard unitBInputRoutingAllowed, !twoUnitReplayNeeded, !twoUnitReplayRunning else { return }
+        if recentSetupRecallConnection === connection, recentSetupRecallTask != nil { return }
+        recentSetupRecallTask?.cancel()
+        recentSetupRecallConnection = connection
+        recentSetupRecallTask = Task { [weak self] in
+            guard let self else { return }
+            await self.recallMostRecentSetup(from: url, on: connection)
+            if !Task.isCancelled { self.recentSetupRecallTask = nil }
         }
-        recentSetupRecallHandled = true
-        do { _ = try await loadPresetBundle(from: url) }
-        catch { print("[Maestro] recent setup recall failed: \(error)") }
+    }
+
+    private func recallMostRecentSetup(from url: URL, on connection: any DeviceConnection) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(30)
+        while !Task.isCancelled, !recentSetupRecallHandled, device === connection,
+              connectionMode == .hardware, currentSetupURL == url {
+            guard clock.now < deadline else {
+                recentSetupRecallHandled = true
+                print("[Maestro] recent setup recall skipped: hardware restore did not finish within 30 seconds")
+                return
+            }
+            if isHardwareInitialized, !hardwareWritesSuspended, recentSetupRestoreIsReady {
+                recentSetupRecallHandled = true
+                do { _ = try await loadPresetBundle(from: url) }
+                catch { print("[Maestro] recent setup recall failed: \(error)") }
+                return
+            }
+            try? await clock.sleep(for: .milliseconds(100))
+        }
+    }
+
+    private var recentSetupRestoreIsReady: Bool {
+        if let thunderbolt = device as? ThunderboltDeviceConnection {
+            if portSelection.selection == .ports1And2 {
+                return unitBInputRoutingAllowed && !twoUnitReplayNeeded && !twoUnitReplayRunning
+            }
+            guard !thunderbolt.cardMixers.needsRestore, cardMixerRestoreRun == nil else { return false }
+            if cardMixerLedger.completed { return true }
+            return !cardMixerRestoreAwaitingIdentity
+                && !cardMixerLedger.needs.contains(true)
+        }
+        if device is XPCDeviceConnection {
+            return usbRestoredGeneration == unitAGeneration && usbRestoreTask == nil
+        }
+        return true
+    }
+}
+
+enum SetupPackage {
+    static func replace(at destination: URL, with staged: URL, preserveUnwrittenItems: Bool) throws {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        if fm.fileExists(atPath: destination.path, isDirectory: &isDirectory) {
+            if preserveUnwrittenItems, isDirectory.boolValue {
+                for existing in try fm.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil) {
+                    let target = staged.appendingPathComponent(existing.lastPathComponent)
+                    if !fm.fileExists(atPath: target.path) {
+                        try fm.copyItem(at: existing, to: target)
+                    }
+                }
+            }
+            _ = try fm.replaceItemAt(destination, withItemAt: staged)
+        } else {
+            try fm.moveItem(at: staged, to: destination)
+        }
     }
 }

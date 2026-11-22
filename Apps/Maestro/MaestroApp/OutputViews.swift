@@ -1609,6 +1609,14 @@ struct OutputChannelStripView: View {
     var onAnalogRefChange: ((UInt32) -> Void)?
     var onDigitalRefChange: ((UInt32) -> Void)?
     var onTrimChange: ((Double) -> Void)?
+
+    private var trimBinding: Binding<Double> {
+        Binding(get: { channel.trim }, set: { trim in
+            guard channel.trim != trim else { return }
+            channel.trim = trim
+            onTrimChange?(trim)
+        })
+    }
     /// Ties this strip's trim readout into the page's one-at-a-time editing
     /// and Tab order.
     let trimEntry: LevelReadoutEntry<Int>
@@ -1704,7 +1712,7 @@ struct OutputChannelStripView: View {
             HStack(alignment: .top, spacing: 1) {
                 if showTrims {
                     FaderView(
-                        value: $channel.trim,
+                        value: trimBinding,
                         range: trimSpec.range,
                         step: trimSpec.step,
                         defaultValue: 0,
@@ -1720,9 +1728,6 @@ struct OutputChannelStripView: View {
                           + "signal BEFORE conversion, so calibrate against an external "
                           + "voltmeter on the analog output, not against the meter.")
                     .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
-                    .onChange(of: channel.trim) { _, newTrim in
-                        onTrimChange?(newTrim)
-                    }
                 }
 
                 // Scale always on left side of meter
@@ -1747,12 +1752,9 @@ struct OutputChannelStripView: View {
             // Pill-styled readouts below meter — only when trims visible
             if showTrims {
                 HStack(spacing: 3) {
-                    // Typed values go through the same binding as the fader,
-                    // with the fader's own range and step, so they are written
-                    // and saved by the fader's onChange above. Disabled exactly
-                    // when the fader is.
+                    // The readout and fader use the same edit binding and trim range.
                     EditableLevelReadout(
-                        value: $channel.trim,
+                        value: trimBinding,
                         range: trimSpec.range,
                         step: trimSpec.step,
                         entry: trimEntry,

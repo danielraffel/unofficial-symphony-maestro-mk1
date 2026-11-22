@@ -72,7 +72,7 @@ struct MaestroApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(id: "main") {
+        Window("Maestro", id: "main") {
             ContentView()
                 .environment(appState)
                 .environmentObject(updates)
@@ -82,6 +82,7 @@ struct MaestroApp: App {
                     if ready { appDelegate.openPendingSetup() }
                 }
                 .onAppear {
+                    appDelegate.showMainWindow = showMainWindow
                     appDelegate.appState = appState
                     diagnostics.appState = appState
                     // Testing only: `-MaestroDiagnosticsSelfTest 20` turns
@@ -115,8 +116,14 @@ struct MaestroApp: App {
                 }
                 .frame(minWidth: 800, minHeight: 500)
         }
+        .handlesExternalEvents(matching: [])
         .defaultSize(width: 1440, height: 700)
         .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Maestro", action: appDelegate.quitFromMenu)
+                    .keyboardShortcut("q", modifiers: .command)
+            }
+
             // About box
             CommandGroup(replacing: .appInfo) {
                 Button("About Maestro") {
@@ -310,7 +317,6 @@ struct MaestroApp: App {
                     openBundledOrRepoFile("Acknowledgements", extension: "html", repoSubpath: "Apps/Maestro/MaestroApp/Resources")
                 }
             }
-            CommandGroup(replacing: .newItem) { }
         }
 
     }

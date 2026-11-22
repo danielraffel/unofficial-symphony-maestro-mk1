@@ -1,5 +1,7 @@
+import CoreServices
 import Foundation
 import MaestroCore
+import MaestroDevice
 import Testing
 @testable import MaestroApp
 
@@ -27,6 +29,68 @@ struct SetupDocumentAndOverlayTests {
         #expect(SetupDocumentDecision.forClose(edited: false, hasCurrentFile: false) == .proceed)
     }
 
+    @Test("Quit asks only for the app menu with an edited document and a file",
+          arguments: SetupQuitReason.allCases)
+    func quitDecision(reason: SetupQuitReason) {
+        for edited in [false, true] {
+            for hasFile in [false, true] {
+                let expected: SetupDocumentDecision = reason == .appMenu && edited && hasFile ? .askToSave : .proceed
+                #expect(SetupDocumentDecision.forQuit(reason: reason, edited: edited, hasCurrentFile: hasFile) == expected)
+            }
+        }
+    }
+
+    @Test("Session Apple Events override an app-menu quit",
+          arguments: [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAERestart, kAEShowShutdownDialog, kAEShutDown])
+    func systemQuitReason(code: OSType) {
+        #expect(SetupQuitReason(fromMenu: true, fromSignal: false, appleEventReason: code) == .systemSession)
+    }
+
+    @Test("Only the app menu initiates an interactive quit")
+    func quitSource() {
+        #expect(SetupQuitReason(fromMenu: true, fromSignal: false, appleEventReason: nil) == .appMenu)
+        #expect(SetupQuitReason(fromMenu: false, fromSignal: false, appleEventReason: nil) == .external)
+        #expect(SetupQuitReason(fromMenu: true, fromSignal: true, appleEventReason: nil) == .signal)
+    }
+
+    @MainActor
+    @Test("A disconnected save replaces metadata and preserves the rest of an existing package",
+          arguments: [false, true])
+    func appOnlySave(retainedThunderBridge: Bool) async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: root) }
+
+        let package = root.appendingPathComponent("Studio.mst2", isDirectory: true)
+        let extra = package.appendingPathComponent("Extra", isDirectory: true)
+        try fm.createDirectory(at: extra, withIntermediateDirectories: true)
+        let hardware = package.appendingPathComponent(ThunderboltPreset.fileName)
+        let hidden = package.appendingPathComponent(".metadata")
+        let nested = extra.appendingPathComponent("data")
+        let metadata = package.appendingPathComponent("MaestroApp.plist")
+        let original = Data("original".utf8)
+        for url in [hardware, hidden, nested, metadata] { try original.write(to: url) }
+
+        let state = AppState()
+        if retainedThunderBridge {
+            state.device = ThunderboltDeviceConnection(
+                identifier: SimulatedDevice.symphonyIO32ch().identifier, audioDeviceID: 0)
+            state.transportType = .thunderbolt
+        } else {
+            state.device = nil
+        }
+        state.connectionMode = .disconnected
+        state.speakerLevel = -32
+        try await state.savePresetBundle(to: package, associateWithDocument: false)
+
+        for url in [hardware, hidden, nested] {
+            #expect(try Data(contentsOf: url) == original)
+        }
+        let saved = try PropertyListDecoder().decode(MaestroPreset.self, from: Data(contentsOf: metadata))
+        #expect(saved.outputLevel == -32)
+    }
+
     @Test("Overlay bars are clamped to sixteen")
     func bars() {
         #expect(LevelOverlayMath.filledBars(level: -64, range: -64...0) == 0)
@@ -37,14 +101,12 @@ struct SetupDocumentAndOverlayTests {
         #expect(LevelOverlayMath.filledBars(level: .nan, range: 0...65) == 0)
     }
 
-    @Test("Front-panel changes show the overlay, while Mac volume adoption is excluded")
+    @Test("ThunderBridge Mac volume and Maestro controls show an overlay")
     func sources() {
         #expect(LevelOverlayChangeSource.frontPanel.showsOverlay)
         #expect(LevelOverlayChangeSource.maestroControl.showsOverlay)
         #expect(LevelOverlayChangeSource.macVolume.showsOverlay)
         #expect(!LevelOverlayChangeSource.maestroUSBVolume.showsOverlay)
-        #expect(!LevelOverlayChangeSource.launch.showsOverlay)
-        #expect(!LevelOverlayChangeSource.restore.showsOverlay)
     }
 
     @Test("8MicPre overlay uses the input strip's group and input type")

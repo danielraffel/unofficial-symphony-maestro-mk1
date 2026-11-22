@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 
 @MainActor
 final class MaestroAppDelegate: NSObject, NSApplicationDelegate {
@@ -8,21 +9,28 @@ final class MaestroAppDelegate: NSObject, NSApplicationDelegate {
             openPendingSetup()
         }
     }
+    var showMainWindow: (@MainActor () -> Void)?
     private var pendingOpenURL: URL?
-    /// SIGTERM (the installer's `pkill`, a logout, `kill`) runs the normal quit,
+    private var quitFromMenuRequested = false
+    private var terminatingFromSignal = false
+
+    /// SIGTERM (the installer's `pkill` or `kill`) runs the normal quit,
     /// so Identify OFF and the other quit-time cleanup still happen.
     private var terminationSignal: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        source.setEventHandler { NSApp.terminate(nil) }
+        source.setEventHandler { [weak self] in
+            self?.terminatingFromSignal = true
+            NSApp.terminate(nil)
+        }
         source.resume()
         terminationSignal = source
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
+        guard let url = urls.last else { return }
         pendingOpenURL = url
         appState?.recentSetupRecallHandled = true
         openPendingSetup()
@@ -32,12 +40,32 @@ final class MaestroAppDelegate: NSObject, NSApplicationDelegate {
         guard let state = appState, state.initialSetupRestoreFinished,
               let url = pendingOpenURL else { return }
         pendingOpenURL = nil
+        showMainWindow?()
         Task { await state.openSetupFromUser(url) }
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // The level overlay and front-panel sync keep running with the window closed.
+        false
+    }
+
+    func quitFromMenu() {
+        quitFromMenuRequested = true
+        defer { quitFromMenuRequested = false }
+        NSApp.terminate(nil)
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if let state = appState, let url = state.existingSetupURL(),
-           SetupDocumentDecision.forClose(edited: state.setupDocumentEdited, hasCurrentFile: true) == .askToSave {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let reason = SetupQuitReason(
+            fromMenu: quitFromMenuRequested,
+            fromSignal: terminatingFromSignal,
+            appleEventReason: event?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue
+        )
+        if let state = appState,
+           SetupDocumentDecision.forQuit(reason: reason, edited: state.setupDocumentEdited,
+                                         hasCurrentFile: state.currentSetupURL != nil) == .askToSave,
+           let url = state.existingSetupURL() {
             switch state.unsavedSetupAlert().runModal() {
             case .alertFirstButtonReturn:
                 Task {

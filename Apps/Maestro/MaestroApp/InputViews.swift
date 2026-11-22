@@ -624,11 +624,12 @@ struct InputControlsView: View {
                 channels = saved + (saved.count..<n).map { _ in InputChannelState() }
             }
             // One-time migration: old default was inputType=0 (Variable); new default is 1 (+4 dBu).
-            if !UserDefaults.standard.bool(forKey: "inputTypeDefaultMigrated") {
+            if !appState.hardwareWritesSuspended,
+               !UserDefaults.standard.bool(forKey: "inputTypeDefaultMigrated") {
                 for i in channels.indices where channels[i].inputType == 0 {
                     channels[i].inputType = 1  // +4 dBu
                 }
-                saveChannelStates()
+                appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
                 UserDefaults.standard.set(true, forKey: "inputTypeDefaultMigrated")
                 print("[Maestro] initializeChannels: migrated inputType defaults from Variable to +4 dBu")
             }
@@ -690,7 +691,7 @@ struct InputControlsView: View {
         // the hardware (the firmware groups itself, SymphonyIOBoard_MicPre8ch.cpp:293-299).
         InputChannelLogic.applyGainChange(&channels, channel: index, to: update.gain)
         syncAppliedGains()
-        saveChannelStates()
+        // AppState already persisted the observation and marked real gain changes as edits.
         lastFrontPanelGainRevision = update.revision
     }
 
@@ -1397,6 +1398,14 @@ struct InputChannelStripView: View {
     var onInputTypeChange: ((UInt32) -> Void)?
     var onDigitalRefChange: ((UInt32) -> Void)?
     var onTrimChange: ((Double) -> Void)?
+
+    private var trimBinding: Binding<Double> {
+        Binding(get: { channel.trim }, set: { trim in
+            guard channel.trim != trim else { return }
+            channel.trim = trim
+            onTrimChange?(trim)
+        })
+    }
     /// Ties this strip's trim readout into the page's one-at-a-time editing
     /// and Tab order.
     let trimEntry: LevelReadoutEntry<Int>
@@ -1627,7 +1636,7 @@ struct InputChannelStripView: View {
                     .transition(.opacity)
                 } else if showTrims {
                     FaderView(
-                        value: $channel.trim,
+                        value: trimBinding,
                         range: trimSpec.range,
                         step: trimSpec.step,
                         defaultValue: 0,  // 0.0 dB is the default at every level
@@ -1640,9 +1649,6 @@ struct InputChannelStripView: View {
                     .maestroHelp("Trim — precisely trims the A/D conversion level once the reference levels have been chosen.")
                     .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
                     .transition(.opacity)
-                    .onChange(of: channel.trim) { _, newTrim in
-                        onTrimChange?(newTrim)
-                    }
                 }
 
                 // A/D converter meter: -48 to 0 dBFS — scale always on left
@@ -1671,12 +1677,9 @@ struct InputChannelStripView: View {
             // the whole rack.
             if hasSideControl && !usesGainKnob {
                 HStack(spacing: 3) {
-                    // Typed values go through the same binding as the fader,
-                    // with the fader's own range and step, so they are written
-                    // and saved by the fader's onChange above. Disabled exactly
-                    // when the fader is.
+                    // The readout and fader use the same edit binding and trim range.
                     EditableLevelReadout(
-                        value: $channel.trim,
+                        value: trimBinding,
                         range: trimSpec.range,
                         step: trimSpec.step,
                         entry: trimEntry,

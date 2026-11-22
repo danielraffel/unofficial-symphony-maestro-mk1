@@ -252,6 +252,8 @@ final class AppState: @unchecked Sendable {
     var device: (any DeviceConnection)? {
         willSet {
             if device !== newValue {
+                lastMacMonitorWrite = nil
+                suppressMacVolumeOverlay()
                 if hardwareWritesSuspended {
                     newValue?.hardwareWriteGate?.holdForValidation()
                     reconnectRequestedWhileSuspended = true
@@ -374,8 +376,12 @@ final class AppState: @unchecked Sendable {
     }
     /// Whether a stored setup value changed since the last save or recall.
     var setupDocumentEdited = false
-    var initialSetupRestoreFinished = false
+    var initialSetupRestoreFinished = false {
+        didSet { if initialSetupRestoreFinished && !oldValue { suppressMacVolumeOverlay() } }
+    }
     @ObservationIgnored var recentSetupRecallHandled = false
+    @ObservationIgnored var recentSetupRecallTask: Task<Void, Never>?
+    @ObservationIgnored weak var recentSetupRecallConnection: (any DeviceConnection)?
     @ObservationIgnored var setupRecallDepth = 0
     @ObservationIgnored var setupRecallRevision = 0
     @ObservationIgnored private var setupEditRevision = 0
@@ -768,9 +774,6 @@ final class AppState: @unchecked Sendable {
                     // channels start, and forgotten when port 2 stops.
                     await self.refreshUnitBOffMain(tb)
                     await self.replayUnitBSettings()
-                    if self.initialSetupRestoreFinished, self.usesTwoUnitReplay {
-                        await self.recallMostRecentSetupIfEnabled()
-                    }
                     // D5: a restore still pending on this driver instance.
                     self.rearmCardMixerRestoreIfPending()
                     if failures > 0 {
@@ -1481,7 +1484,10 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored var twoUnitReplayNeeded = false
     @ObservationIgnored var twoUnitReplayRunning = false
     enum HardwareSleepState { case awake, sleeping, validating }
-    var hardwareSleepState: HardwareSleepState = .awake
+    var hardwareSleepState: HardwareSleepState = .awake {
+        // The wake generation advances before sleep, which can last well past the overlay delay.
+        didSet { if hardwareSleepState == .validating && oldValue != .validating { suppressMacVolumeOverlay() } }
+    }
     var hardwareWritesSuspended: Bool { hardwareSleepState != .awake }
     /// Why hardware edits are unavailable right now, or nil when they are. The
     /// status bar and the note over the device pages show the same words.
@@ -1509,7 +1515,9 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored var launchDiscoveryOperation: (@MainActor () async -> [CoreAudioDeviceConnection.DiscoveredSymphonyIO])?
     @ObservationIgnored var reconnectOperation: (@MainActor () async -> Void)?
     @ObservationIgnored var wakeLinkProbe: (@Sendable (ThunderboltDeviceConnection) async -> LinkState?)?
-    @ObservationIgnored var wakeValidationGeneration = 0
+    @ObservationIgnored var wakeValidationGeneration = 0 {
+        didSet { if wakeValidationGeneration != oldValue { suppressMacVolumeOverlay() } }
+    }
     @ObservationIgnored var wakeBaselineWatchTicks: UInt32?
     @ObservationIgnored var wakeBaselineRecoveryCount: UInt32?
     @ObservationIgnored var wakeStableRecoveryCount: UInt32?
@@ -1931,7 +1939,15 @@ final class AppState: @unchecked Sendable {
 
     /// AudioDeviceID of the ASP "Symphony I/O : Maestro USB" virtual device.
     /// Used to listen for volume/mute changes from media keys.
-    private var aspDeviceID: AudioDeviceID = kAudioObjectUnknown
+    private var aspDeviceID: AudioDeviceID = kAudioObjectUnknown {
+        didSet { if aspDeviceID != oldValue { lastMacMonitorWrite = nil } }
+    }
+    private var lastMacMonitorWrite: ObservedMonitorLevel?
+    private var macVolumeOverlayAfter = ContinuousClock.now + .seconds(3)
+
+    private func suppressMacVolumeOverlay() {
+        macVolumeOverlayAfter = ContinuousClock.now + .seconds(3)
+    }
     private var micPreDAWListenerAddresses: [AudioObjectPropertyAddress] = []
     private var micPreDAWRefreshTask: Task<Void, Never>?
     private var micPreDAWRefreshGate = MicPreDAWRefreshGate()
@@ -3414,6 +3430,7 @@ final class AppState: @unchecked Sendable {
                 if Self.softwareMeteringOptedIn { meterCA.startSoftwareMetering() }
                 self.meterDevice = meterCA
 
+                suppressMacVolumeOverlay()
                 startASPVolumeSync()
 
                 // Own the polling lifecycle here rather than relying on the view's
@@ -3425,9 +3442,7 @@ final class AppState: @unchecked Sendable {
                     startThunderboltHealthCheck()
                     // D5: a stored task; this pipeline does not wait for it.
                     syncCardMixerToHardware()
-                    if !recentSetupRecallHandled { await cardMixerRestoreRun?.task.value }
                 }
-                if initialSetupRestoreFinished { await recallMostRecentSetupIfEnabled() }
 
                 // Every value the panels are showing was read over the connection we
                 // just tore down, so force them to re-read. Device Info is the visible
@@ -3436,6 +3451,7 @@ final class AppState: @unchecked Sendable {
                 // session)" even after `readCardTypes()` above had just read both
                 // slots back off the hardware.
                 viewReloadToken = UUID()
+                if initialSetupRestoreFinished { scheduleRecentSetupRecall() }
                 return
             }
 
@@ -4460,6 +4476,7 @@ final class AppState: @unchecked Sendable {
                     await tb.publishObservedMicGains(gains, port: unit.portByte)
                 }
             }
+        // Physical monitor changes edit the level and mute stored in the setup file.
         case .level(.speaker, let dB, _):
             if speakerLevel != dB {
                 speakerLevel = dB
@@ -4725,7 +4742,6 @@ final class AppState: @unchecked Sendable {
         // triggers the listener which re-reads the same value.
         if Date().timeIntervalSince(aspWriteTimestamp) < 0.2 { return }
 
-
         if transportType == .thunderbolt {
             // Thunderbolt: read VolumeDecibels directly (-64..0 dB range)
             var addr = AudioObjectPropertyAddress(
@@ -4799,6 +4815,26 @@ final class AppState: @unchecked Sendable {
         let output: LevelOverlaySource
         let level: Double
         let muted: Bool
+
+        func matches(_ other: Self) -> Bool {
+            output == other.output && abs(level - other.level) <= 0.5 && muted == other.muted
+        }
+
+        static func source(for output: KeyboardVolumeOutput) -> LevelOverlaySource? {
+            switch output {
+            case .speakers, .mixer1Level: .speaker
+            case .headphone1: .headphone1
+            case .headphone2: .headphone2
+            case .none: nil
+            }
+        }
+    }
+
+    private func rememberMacMonitorWrite(for output: KeyboardVolumeOutput, level: Double? = nil, muted: Bool? = nil) {
+        guard let source = ObservedMonitorLevel.source(for: output),
+              let current = keyboardVolumeLevel(of: output) else { return }
+        lastMacMonitorWrite = .init(output: source, level: level ?? current.dB,
+                                   muted: muted ?? current.muted)
     }
 
     private func observedMonitorLevels() -> [ObservedMonitorLevel] {
@@ -4816,9 +4852,13 @@ final class AppState: @unchecked Sendable {
         guard initialSetupRestoreFinished, connectionMode == .hardware, isHardwareInitialized,
               !hardwareWritesSuspended, setupRecallDepth == 0, usbRestoreTask == nil else { return }
         for (before, after) in zip(previous, observedMonitorLevels()) where before != after {
+            if let lastMacMonitorWrite, after.matches(lastMacMonitorWrite) { continue }
+            // Like front-panel changes, Mac volume changes edit levels stored in the setup file.
             markSetupEdited(.monitorControls)
-            showLevelOverlay(source: after.output, level: after.level, muted: after.muted,
-                             change: transportType == .usb ? .maestroUSBVolume : .macVolume)
+            if ContinuousClock.now >= macVolumeOverlayAfter {
+                showLevelOverlay(source: after.output, level: after.level, muted: after.muted,
+                                 change: transportType == .usb ? .maestroUSBVolume : .macVolume)
+            }
         }
     }
 
@@ -4849,7 +4889,10 @@ final class AppState: @unchecked Sendable {
     func writeASPVolume(_ dB: Double, output: KeyboardVolumeOutput = .speakers) {
         if transportType == .thunderbolt {
             // ThunderboltDeviceConnection.setProperty already wrote VolumeDecibels
-            // to this same device. No need to double-write.
+            // to this same device. Remember the value for its HAL notification.
+            if ObservedMonitorLevel.source(for: keyboardVolumeOutput(for: .a)) == ObservedMonitorLevel.source(for: output) {
+                rememberMacMonitorWrite(for: output, level: dB)
+            }
             return
         }
         guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
@@ -4869,14 +4912,22 @@ final class AppState: @unchecked Sendable {
             mElement: kAudioObjectPropertyElementMain
         )
         var value = scalar
-        AudioObjectSetPropertyData(targetID, &addr, 0, nil,
-                                   UInt32(MemoryLayout<Float32>.size), &value)
+        if AudioObjectSetPropertyData(targetID, &addr, 0, nil,
+                                      UInt32(MemoryLayout<Float32>.size), &value) == noErr {
+            let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
+            rememberMacMonitorWrite(for: output, level: Double(scalar) * 64 - 64)
+        }
     }
 
     /// Write mute state to the synced audio device.
     /// For Thunderbolt: no-op (same reason as writeASPVolume).
     func writeASPMute(_ muted: Bool, output: KeyboardVolumeOutput = .speakers) {
-        if transportType == .thunderbolt { return }
+        if transportType == .thunderbolt {
+            if ObservedMonitorLevel.source(for: keyboardVolumeOutput(for: .a)) == ObservedMonitorLevel.source(for: output) {
+                rememberMacMonitorWrite(for: output, muted: muted)
+            }
+            return
+        }
         guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
         writeMacMute(muted)
     }
@@ -4892,8 +4943,11 @@ final class AppState: @unchecked Sendable {
             mElement: kAudioObjectPropertyElementMain
         )
         var value: UInt32 = muted ? 1 : 0
-        AudioObjectSetPropertyData(targetID, &addr, 0, nil,
-                                   UInt32(MemoryLayout<UInt32>.size), &value)
+        if AudioObjectSetPropertyData(targetID, &addr, 0, nil,
+                                      UInt32(MemoryLayout<UInt32>.size), &value) == noErr {
+            let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
+            rememberMacMonitorWrite(for: output, muted: muted)
+        }
     }
 
     /// Remove volume/mute listeners from the synced audio device.
@@ -5315,14 +5369,14 @@ final class AppState: @unchecked Sendable {
     ///
     /// Evidence: `og_source/maestro2/App/APDocument.m` — storeMaestroPreferenceFile:
     @MainActor
-    func makePreset() async -> MaestroPreset {
+    private func makePreset(reading captureDevice: (any DeviceConnection)?) async -> MaestroPreset {
         var preset = MaestroPreset()
 
         // Output level + mute: kept in sync by volume key handler + loadMonitorState
         preset.outputLevel = speakerLevel
         preset.outputMuted = speakerMuted
 
-        if let dev = device {
+        if let dev = captureDevice {
             // Output dim + sum-to-mono
             if let dim = (try? await dev.getProperty(PropertyAddress(selector: .outputDim)))?.asBool {
                 preset.outputDimmed = dim
@@ -5421,7 +5475,9 @@ final class AppState: @unchecked Sendable {
     @MainActor
     func savePresetBundle(to url: URL, associateWithDocument: Bool = true) async throws {
         let editRevision = setupEditRevision
-        if let connection = device as? ThunderboltDeviceConnection {
+        // Core Audio can keep the ThunderBridge device around while the Symphony is off.
+        let captureDevice = connectionMode == .disconnected ? nil : device
+        if let connection = captureDevice as? ThunderboltDeviceConnection {
             try await saveThunderboltPresetBundle(to: url, connection: connection)
             if associateWithDocument {
                 currentSetupURL = url
@@ -5442,15 +5498,18 @@ final class AppState: @unchecked Sendable {
         //    which converts the CFString path to a C string and forwards to the daemon.
         //    Non-fatal: if the daemon can't write (HAL plugin missing, permission issue),
         //    we still save our own MaestroApp.plist so presets aren't empty.
-        if let conn = device as? CoreAudioDeviceConnection {
+        var wroteHardware = false
+        if let conn = captureDevice as? CoreAudioDeviceConnection {
             let fileName = conn.getPreferenceFileName()
                 ?? "USBAudio_Symphony_IO.plist"  // fallback if HAL plugin absent
-            let plistPath = temporary.appendingPathComponent(fileName).path
+            let plistURL = temporary.appendingPathComponent(fileName)
             do {
-                try conn.storePreferenceFile(at: plistPath)
-                print("[Maestro] savePresetBundle: daemon plist written to \(fileName)")
+                try conn.storePreferenceFile(at: plistURL.path)
+                wroteHardware = fm.fileExists(atPath: plistURL.path)
+                if wroteHardware { print("[Maestro] savePresetBundle: daemon plist written to \(fileName)") }
             } catch {
-                print("[Maestro] savePresetBundle: daemon AESP failed (\(error)) — saving app-only preset")
+                if fm.fileExists(atPath: plistURL.path) { try fm.removeItem(at: plistURL) }
+                print("[Maestro] savePresetBundle: daemon AESP failed (\(error)) — saving app metadata")
             }
         } else {
             print("[Maestro] savePresetBundle: no CoreAudioDeviceConnection — daemon plist skipped")
@@ -5459,16 +5518,12 @@ final class AppState: @unchecked Sendable {
         // 2. Save app-level metadata alongside the daemon plist.
         //    This always runs regardless of daemon AESP success, ensuring the preset
         //    bundle is never empty. Contains all device state our app can read/write.
-        let appMeta = await makePreset()
+        let appMeta = await makePreset(reading: captureDevice)
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .xml
         let metaData = try encoder.encode(appMeta)
         try metaData.write(to: temporary.appendingPathComponent("MaestroApp.plist"))
-        if fm.fileExists(atPath: url.path) {
-            _ = try fm.replaceItemAt(url, withItemAt: temporary)
-        } else {
-            try fm.moveItem(at: temporary, to: url)
-        }
+        try SetupPackage.replace(at: url, with: temporary, preserveUnwrittenItems: !wroteHardware)
         print("[Maestro] savePresetBundle: bundle saved to \(url.lastPathComponent)")
         if associateWithDocument {
             currentSetupURL = url
@@ -5507,6 +5562,7 @@ final class AppState: @unchecked Sendable {
         defer {
             setupRecallDepth -= 1
             setupRecallRevision &+= 1
+            suppressMacVolumeOverlay()
         }
         var notice: String?
         if let connection = device as? ThunderboltDeviceConnection {
