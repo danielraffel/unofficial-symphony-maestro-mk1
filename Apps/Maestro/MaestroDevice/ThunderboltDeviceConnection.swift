@@ -1547,6 +1547,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return UInt32(reportedSource)
     }
 
+    /// The driver's clock control as it reads now (Internal, Word Clock…);
+    /// nil when it cannot be read. A card input chosen as the source does not
+    /// show here: it is sent beside the control.
+    public func clockControlValue() -> UInt32? { try? readClockSource() }
+
     /// Read the clock source back from the same 'clck' control `writeClockSource` drives.
     /// Throws for anything outside the legacy enum range rather than hand the
     /// caller an ID its picker has no row for.

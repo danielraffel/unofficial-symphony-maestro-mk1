@@ -16,6 +16,25 @@ import Foundation
 
 public enum SoftwareReturnMeterGain {
 
+    /// The Mixer page's "Pre-Mute Metering" setting (on unless turned off).
+    public static let preMuteMeteringKey = "mixerPreMuteMetering"
+
+    /// The card meter word of the left side of a Software Return pair: host
+    /// playback is words 64...127, two per pair. An out-of-range choice reads
+    /// pair 1-2, as the menu shows it.
+    public static func playbackWord(source: Int) -> Int {
+        64 + ((0..<32).contains(source) ? source : 0) * 2
+    }
+
+    /// The meter's gains for a Software Return strip: unity with Pre-Mute
+    /// Metering on (what arrives at the strip), the strip's fader and mute
+    /// with it off (what the strip passes on), the same rule as input strips.
+    public static func meterGains(preMuteMetering: Bool, levelDB: Double,
+                                  isMuted: Bool) -> (left: Double, right: Double) {
+        preMuteMetering ? (1.0, 1.0)
+            : gains(leftLevelDB: levelDB, rightLevelDB: levelDB, pan: 0, isMuted: isMuted)
+    }
+
     /// `side` is the 0...128 attenuation-table index for one output side.
     public static func panAttenuationDB(side: Int) -> Int {
         let s = max(0, min(128, side))

@@ -510,6 +510,9 @@ final class AppState: @unchecked Sendable {
     /// same as USB, where the proxy meters after its own trims. Refreshed from
     /// the persisted mixer state whenever the mixer saves and when polling starts.
     var softwareReturnMeterGains: [(left: Double, right: Double)] = [(1.0, 1.0), (1.0, 1.0)]
+    /// The same strips' fader and mute whatever Pre-Mute Metering says: what
+    /// the Software Return passes on to its mixer's Master.
+    var softwareReturnPostFaderGains: [(left: Double, right: Double)] = [(1.0, 1.0), (1.0, 1.0)]
 
     /// Per mixer, the gain from host playback to the mixer's output over USB
     /// (`USBMasterMeter.gain`): what its Software Return adds to the Master meter.
@@ -527,9 +530,14 @@ final class AppState: @unchecked Sendable {
             return (defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? saved.level,
                     saved.isMuted, saved.isSoloed)
         }
+        // With Pre-Mute Metering on (the default) the meter shows what arrives
+        // at the strip, as the input strips do; off, what the strip passes on.
+        let preMute = UserDefaults.standard.object(forKey: SoftwareReturnMeterGain.preMuteMeteringKey) as? Bool ?? true
         softwareReturnMeterGains = returns.map {
-            SoftwareReturnMeterGain.gains(
-                leftLevelDB: $0.level, rightLevelDB: $0.level, pan: 0, isMuted: $0.muted)
+            SoftwareReturnMeterGain.meterGains(preMuteMetering: preMute, levelDB: $0.level, isMuted: $0.muted)
+        }
+        softwareReturnPostFaderGains = returns.map {
+            SoftwareReturnMeterGain.meterGains(preMuteMetering: false, levelDB: $0.level, isMuted: $0.muted)
         }
         usbMasterMeterGains = returns.enumerated().map { mixer, own in
             // A soloed input strip silences the return in the unit's mixer,
@@ -665,6 +673,13 @@ final class AppState: @unchecked Sendable {
                             print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying output table, mixers and input routing")
                             // D5 never runs across an in-place recovery.
                             self.cancelCardMixerRestore()
+                            // The recovery itself put the driver's table on
+                            // the unit, whether or not the replay below can
+                            // run (cards unread, identity unknown): until a
+                            // replay lands, strips and meters are numbered
+                            // from the driver's table, not the saved one.
+                            self.thunderboltInputRoutingWritten = false
+                            self.invalidateThunderboltInputMeterMap()
                             // The driver lays its capture table out from the
                             // cards it read during the recovery (a Symphony off
                             // at Start, or a card swapped while off): read them
@@ -3041,6 +3056,8 @@ final class AppState: @unchecked Sendable {
                 applyPhantomObservations(link)
             }
             replay = await tb.reapplyStoredSettings()
+            await replaySavedBoardClock(tb)
+            guard self.device === tb else { return }
             // The monitor mode is shown outside the Output tab too; start from
             // the saved one rather than the built-in default.
             if let mode = tb.settingsStore.value(
@@ -3884,7 +3901,7 @@ final class AppState: @unchecked Sendable {
                         // strip represents host playback before the card mixer.
                         if let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2 {
-                            func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
+                            func softwareReturnDBFS(mixer: Int, post: Bool = false) -> (Double, Double) {
                                 let source = self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")
                                 let left = source * 2
                                 guard left >= 0, left + 1 < softwarePeaks.count else {
@@ -3895,7 +3912,7 @@ final class AppState: @unchecked Sendable {
                                 // apply the same trims to the host-playback peaks
                                 // here (SoftwareReturnMeterGain) rather than
                                 // showing the pre-mixer signal.
-                                let trim = self.softwareReturnMeterGains[min(max(0, mixer), 1)]
+                                let trim = (post ? self.softwareReturnPostFaderGains : self.softwareReturnMeterGains)[min(max(0, mixer), 1)]
                                 return (
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left] * Float(trim.left)),
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left + 1] * Float(trim.right))
@@ -3930,10 +3947,12 @@ final class AppState: @unchecked Sendable {
                                 rawMixer[2] = max(rawMixer[2], mixer1Peaks.0)
                                 rawMixer[3] = max(rawMixer[3], mixer1Peaks.1)
                                 if self.mixerMeterLevels.count >= 8 {
-                                    rawMixer[4] = max(rawMixer[4], mixer0Peaks.0)
-                                    rawMixer[5] = max(rawMixer[5], mixer0Peaks.1)
-                                    rawMixer[6] = max(rawMixer[6], mixer1Peaks.0)
-                                    rawMixer[7] = max(rawMixer[7], mixer1Peaks.1)
+                                    let post0 = softwareReturnDBFS(mixer: 0, post: true)
+                                    let post1 = softwareReturnDBFS(mixer: 1, post: true)
+                                    rawMixer[4] = max(rawMixer[4], post0.0)
+                                    rawMixer[5] = max(rawMixer[5], post0.1)
+                                    rawMixer[6] = max(rawMixer[6], post1.0)
+                                    rawMixer[7] = max(rawMixer[7], post1.1)
                                 }
                                 self.mixerMeterLevels = self.smoothMeterLevels(
                                     self.mixerMeterLevels, raw: rawMixer)
@@ -3951,12 +3970,18 @@ final class AppState: @unchecked Sendable {
                             // Playback words 64/65 are the host signal before the
                             // card mixer's level/pan/mute; apply the strip's trims
                             // so the SW Return meters read as they do on USB.
-                            let trim = self.softwareReturnMeterGains[0]
+                            // Each mixer's Software Return meters the pair
+                            // chosen in its menu, not always playback 1-2.
                             func trimmed(_ dB: Double, _ gain: Double) -> Double {
                                 gain <= 0 ? -60.0 : max(-60.0, dB + 20.0 * log10(gain))
                             }
-                            rawMixer[0] = trimmed(dbW(64), trim.left)
-                            rawMixer[1] = trimmed(dbW(65), trim.right)
+                            for mixer in 0..<2 {
+                                let trim = self.softwareReturnMeterGains[mixer]
+                                let word = SoftwareReturnMeterGain.playbackWord(
+                                    source: self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))
+                                rawMixer[mixer * 2] = trimmed(dbW(word), trim.left)
+                                rawMixer[mixer * 2 + 1] = trimmed(dbW(word + 1), trim.right)
+                            }
                             rawMixer[4] = dbW(128); rawMixer[5] = dbW(129)
                             if self.mixerMeterLevels.count >= 8 {
                                 rawMixer[6] = dbW(130); rawMixer[7] = dbW(131)
@@ -3970,7 +3995,7 @@ final class AppState: @unchecked Sendable {
                         if let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2,
                            self.mixerMeterLevels.count >= 4 {
-                            func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
+                            func softwareReturnDBFS(mixer: Int, post: Bool = false) -> (Double, Double) {
                                 let source = max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")))
                                 let left = source * 2
                                 guard left + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
@@ -3979,7 +4004,7 @@ final class AppState: @unchecked Sendable {
                                 // apply the same trims to the host-playback peaks
                                 // here (SoftwareReturnMeterGain) rather than
                                 // showing the pre-mixer signal.
-                                let trim = self.softwareReturnMeterGains[min(max(0, mixer), 1)]
+                                let trim = (post ? self.softwareReturnPostFaderGains : self.softwareReturnMeterGains)[min(max(0, mixer), 1)]
                                 return (
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left] * Float(trim.left)),
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left + 1] * Float(trim.right))
@@ -3993,10 +4018,12 @@ final class AppState: @unchecked Sendable {
                             rawMixer[2] = max(rawMixer[2], mix1.0)
                             rawMixer[3] = max(rawMixer[3], mix1.1)
                             if rawMixer.count >= 8 {
-                                rawMixer[4] = max(rawMixer[4], mix0.0)
-                                rawMixer[5] = max(rawMixer[5], mix0.1)
-                                rawMixer[6] = max(rawMixer[6], mix1.0)
-                                rawMixer[7] = max(rawMixer[7], mix1.1)
+                                let post0 = softwareReturnDBFS(mixer: 0, post: true)
+                                let post1 = softwareReturnDBFS(mixer: 1, post: true)
+                                rawMixer[4] = max(rawMixer[4], post0.0)
+                                rawMixer[5] = max(rawMixer[5], post0.1)
+                                rawMixer[6] = max(rawMixer[6], post1.0)
+                                rawMixer[7] = max(rawMixer[7], post1.1)
                             }
                             self.mixerMeterLevels = self.smoothMeterLevels(
                                 self.mixerMeterLevels, raw: rawMixer)

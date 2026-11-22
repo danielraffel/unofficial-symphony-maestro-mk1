@@ -72,7 +72,7 @@ struct MixerScopeReloadTests {
         let outputs: [OutputChannelState]? = state.unitChannelStateStore.load(ChannelStateStore.outputKey)
         #expect(inputs?.first?.gain == 17)
         #expect(outputs?.first?.trim == -2)
-        #expect(state.softwareReturnMeterGains[mixer].left < 0.1)
+        #expect(state.softwareReturnPostFaderGains[mixer].left < 0.1)
 
         restored.channels[0].isMuted = true
         // Ordinary refreshes must not recreate the editor during a user edit.

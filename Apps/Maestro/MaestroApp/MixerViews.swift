@@ -217,6 +217,7 @@ struct MixerView: View {
                     .maestroHelp("Reset this mixer's faders, pans, mute/solo states, and software return to factory defaults")
                     Divider()
                     Toggle("Pre-Mute Metering", isOn: $preMuteMetering)
+                        .onChange(of: preMuteMetering) { _, _ in appState.refreshSoftwareReturnMeterGains() }
                         .maestroHelp("When on, mixer meters show input signal even when a channel is muted — useful for seeing signal before unmuting. When off, meters drop to silence on mute (legacy behavior).")
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease")

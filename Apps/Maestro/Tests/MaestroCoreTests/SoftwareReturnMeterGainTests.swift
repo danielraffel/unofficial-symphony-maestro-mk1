@@ -65,3 +65,26 @@ struct SoftwareReturnMeterGainTests {
         #expect(SoftwareReturnMeterGain.gains(leftLevelDB: 6, rightLevelDB: 6, pan: 0, isMuted: false) == (1.0, 1.0))
     }
 }
+
+@Suite("Software Return meter: chosen pair and Pre-Mute Metering")
+struct SoftwareReturnMeterSourceTests {
+    @Test("each pair reads its own playback words")
+    func words() {
+        #expect(SoftwareReturnMeterGain.playbackWord(source: 0) == 64)
+        #expect(SoftwareReturnMeterGain.playbackWord(source: 1) == 66)
+        #expect(SoftwareReturnMeterGain.playbackWord(source: 7) == 78)
+        #expect(SoftwareReturnMeterGain.playbackWord(source: 31) == 126)
+        #expect(SoftwareReturnMeterGain.playbackWord(source: 32) == 64)
+        #expect(SoftwareReturnMeterGain.playbackWord(source: -1) == 64)
+    }
+
+    @Test("Pre-Mute Metering on: what arrives; off: after fader and mute")
+    func preMute() {
+        let on = SoftwareReturnMeterGain.meterGains(preMuteMetering: true, levelDB: -20, isMuted: true)
+        #expect(on.left == 1.0 && on.right == 1.0)
+        let muted = SoftwareReturnMeterGain.meterGains(preMuteMetering: false, levelDB: 0, isMuted: true)
+        #expect(muted.left == 0.0 && muted.right == 0.0)
+        let faded = SoftwareReturnMeterGain.meterGains(preMuteMetering: false, levelDB: -20, isMuted: false)
+        #expect(abs(faded.left - 0.1) < 1e-9 && abs(faded.right - 0.1) < 1e-9)
+    }
+}
