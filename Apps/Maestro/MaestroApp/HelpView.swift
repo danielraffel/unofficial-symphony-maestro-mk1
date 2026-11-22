@@ -663,10 +663,10 @@ extension HelpSection {
         HelpSection(id: .about, title: "Supported hardware", items: [
             HelpItem(blocks: [
                 .bullet("Macs", "Apple Silicon Macs with macOS 26 (Tahoe) or later. Intel Macs are not supported."),
-                .bullet("Interface", "Apogee Symphony I/O MK I, one unit or two. The Symphony I/O MK II is not supported."),
-                .bullet("Connections", "Apogee ThunderBridge, the Symphony 64 PCIe card, and USB."),
-                .bullet("I/O modules", "8x8 AES/OPT, 8x8 AES, 8x8 OPT, 16x16 Analog In/Out, 16 Analog In / 16 Digital Out, 16 Digital In / 16 Analog Out, 2x6 and 8MicPre."),
-                .bullet("Converters", "AD-16X, DA-16X, DD-16X, Rosetta 800 and Rosetta 200, on a ThunderBridge or Symphony 64 PCIe card."),
+                .bullet("Interface", "[Apogee Symphony I/O MK I](https://knowledge.apogeedigital.com/symphony64-pcie-thundebridge-users-guide-documentation-and-downloads-0), one unit or two."),
+                .bullet("Connections", "Apogee [ThunderBridge and the Symphony 64 PCIe card](https://knowledge.apogeedigital.com/symphony64-pcie-thundebridge-users-guide-documentation-and-downloads), and USB."),
+                .bullet("I/O modules", "8x8 AES/OPT, 8x8 AES, 8x8 OPT, 16x16 Analog In/Out, 16 Analog In / 16 Digital Out, 16 Digital In / 16 Analog Out, 2x6 and 8MicPre ([Apogee's list](https://knowledge.apogeedigital.com/can-mkii-i/o-modules-be-used-in-the-older-symphony-i/o))."),
+                .bullet("Converters", "[AD-16X](https://www.apogeedigital.com/pdf/ad16x_usersguide.pdf), [DA-16X](https://apogeedigital.com/pdf/da16x_usersguide.pdf) and [Rosetta 800](https://apogeedigital.com/pdf/rosetta800_usersguide.pdf), on a ThunderBridge or Symphony 64 PCIe card."),
                 .text("**Connection types**, **I/O modules** and **Two units & converters** have the details."),
             ]),
         ])
