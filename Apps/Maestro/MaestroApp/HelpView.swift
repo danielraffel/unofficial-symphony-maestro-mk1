@@ -116,7 +116,7 @@ struct HelpView: View {
                     return nil
                 }
             }
-            // "How to Report a Bug" or a "See Help for more." while Help is open.
+            // a "See Help for more." while Help is open.
             .onChange(of: appState.helpSection) { _, section in
                 guard let section else { return }
                 jump = section
@@ -163,7 +163,7 @@ struct HelpView: View {
 
     private var footer: some View {
         HStack {
-            Link("Send feedback", destination: URL(string: "mailto:\(HelpSection.feedbackEmail)")!)
+            Link("Report a Bug", destination: FeedbackLinks.reportBug)
                 .font(.callout)
             Spacer()
             // Return closes Help, except while a search is typed.
@@ -293,7 +293,6 @@ extension HelpSection {
 
     private static let uninstallCommand =
         "sudo /Applications/Maestro.app/Contents/Resources/uninstall.sh"
-    static let feedbackEmail = "thegenerouscorp@gmail.com"
 
     private static var whatItDoes: HelpSection {
         HelpSection(id: .whatItDoes, title: "About Maestro", items: [
@@ -722,7 +721,7 @@ extension HelpSection {
                 .bullet("1. Report it", "[open an issue on GitHub](\(FeedbackLinks.reportBug.absoluteString)) that says what happened, and copy its link."),
                 .bullet("2. Record it", "switch on **Diagnostics** in **App Settings › Diagnostics & Feedback**, then do what causes the problem and wait until it goes wrong. A minute or two is usually enough."),
                 .bullet("3. Send it", "press **Stop Diagnostics** in the red bar at the top of the window, answer the questions, paste the issue's link under **Existing GitHub issue**, and press **Agree and Send**. The report goes privately to the developer, so there is no need to attach it to the issue."),
-                .text("Community support is available on [Gearspace](\(FeedbackLinks.discussion.absoluteString)) from fellow Apogee users. You can also email [\(feedbackEmail)](mailto:\(feedbackEmail))."),
+                .text("Community support is available on [Gearspace](\(FeedbackLinks.discussion.absoluteString)) from fellow Apogee users."),
                 .text("**Troubleshooting** has more on diagnostics under \"When and how should I use diagnostics?\". This is a community project, so please don't contact Apogee for support with it."),
             ]),
         ])
