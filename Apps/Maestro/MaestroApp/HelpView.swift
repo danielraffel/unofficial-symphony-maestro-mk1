@@ -287,7 +287,7 @@ extension HelpSection {
     static func all(micPreInstalled: Bool) -> [HelpSection] {
         [whatItDoes, connecting, controls, settings, clock, inputOutput, modules]
             + (micPreInstalled ? [micPreStrip, micPreQuestions] : [])
-            + [routing, mixer, mixerUSB, volumeKeys, vbus, usbOutput, interfaceMode, twoUnits,
+            + [routing, mixer, mixerUSB, volumeKeys, usbOutput, vbus, interfaceMode, twoUnits,
                troubleshooting, apogeeDrivers, uninstalling, about, feedback, donate]
     }
 
@@ -531,7 +531,7 @@ extension HelpSection {
                 .text("The output chosen under **Device Settings › Volume Keys › Audio Output**: **Speaker**, **Headphone 1** or **Headphone 2**, as in Apogee's software. Speaker is the default, or Headphone 1 if the outputs are set to Line. The choice is kept for each Symphony I/O. On ThunderBridge and PCIe Maestro puts it in place when it opens: after the Mac restarts, until Maestro is open, the keys control the speaker, or Headphone 1 if the outputs are set to Line. A unit without an analog output card offers the two headphones only."),
                 .text("The Speaker entry shows how many channels the format chosen under the **Speaker** knob on the Output page (Analog Out Format) uses, for example **Speaker (2ch)** or **Speaker (6ch)**. When you set the format to **Line**, Audio Output changes to **Headphone 1** by itself, as in Apogee's software, because line outputs have no level control. When you leave Line it goes back to the output it was on before, unless you chose another Audio Output yourself in the meantime. In Line mode the Speaker entry reads **Speaker (0ch)**: if you choose it, the volume keys do not change a level, and the mute key still mutes the speaker output."),
                 .text("With two Symphony I/Os at 64 channels, **Peripheral** chooses which unit the keys control, and **Audio Output** then lists that unit's outputs."),
-                .text("Over USB the keys work when **Symphony I/O : Maestro USB** is the Mac's output device. There, turning up and unmuting wait up to three seconds after you change **Audio Output**. On ThunderBridge and PCIe, turning up and unmuting wait about five seconds after the Mac starts or wakes, the Symphony reconnects, the Ports setting changes between 32 and 64 channels, the VBus size changes, or macOS restarts its audio, so that a louder volume macOS saved earlier is not sent to the Symphony. On every connection, turning down and muting work at once."),
+                .text("Over USB the keys work when **Symphony I/O : Maestro USB** is the Mac's output device (see **Choosing your USB output** for why there are two USB devices). There, turning up and unmuting wait up to three seconds after you change **Audio Output**. On ThunderBridge and PCIe, turning up and unmuting wait about five seconds after the Mac starts or wakes, the Symphony reconnects, the Ports setting changes between 32 and 64 channels, the VBus size changes, or macOS restarts its audio, so that a louder volume macOS saved earlier is not sent to the Symphony. On every connection, turning down and muting work at once."),
                 .text("With converters only (AD-16X, DA-16X, DD-16X or Rosetta) there is no speaker or headphone. There, **Audio Output** offers **Mixer 1 level**, where the keys turn Mixer 1 down and up and mute it (heard only on outputs you feed from Mixer 1 in Output Routing), and **None**, where the keys do nothing and Mixer 1 is left at full level. This level control for converters is our own addition; Apogee's software had no volume control for them."),
             ]),
         ])
@@ -548,17 +548,17 @@ extension HelpSection {
     private static var usbOutput: HelpSection {
         HelpSection(id: .usbOutput, title: "Choosing your USB output", items: [
             HelpItem(blocks: [
-                .text("Audio MIDI Setup shows two separate USB devices. **Symphony I/O : USB Audio** is the full 16-input/16-output device for recording and playback. **Symphony I/O : Maestro USB** is an output-only 0-input/16-output device: it exists so the keyboard volume keys can control Symphony's hardware volume through Maestro."),
-                .text("Use **USB Audio** when you need the Symphony's inputs in an audio application. Use **Maestro USB** as the macOS output when you want keyboard volume control. Maestro can switch to Maestro USB automatically when you plug in. Turn on **Automatically switch to Symphony when connected** in **App Settings › When a Device Connects**, then choose **Preferred USB output**."),
+                .text("Over USB your Mac lists two Symphony devices. They play through the same USB connection; they differ in what they offer."),
+                .bullet("Symphony I/O : USB Audio", "the Symphony's own USB device, run by macOS's standard USB audio driver: 16 inputs and 16 outputs. The Symphony offers macOS no volume control over USB, so the Mac's volume keys and the volume slider in the menu bar cannot change its level."),
+                .bullet("Symphony I/O : Maestro USB", "added by Maestro: 16 outputs and no inputs. It has the volume control USB Audio lacks: Maestro turns the volume keys and the slider into the Symphony's own speaker or headphone level (see **Volume keys**), and hands your audio on to USB Audio."),
+                .text("For everyday listening, choose **Maestro USB** as your Mac's output. When an application records from the Symphony, use **USB Audio** for its inputs; most DAWs let you choose different input and output devices, so the output can stay on Maestro USB."),
             ]),
-            HelpItem(title: "Why does Audio MIDI Setup show Maestro USB with 0 inputs and 16 outputs?", blocks: [
-                .text("That is intentional. **Symphony I/O : USB Audio** is the full 16-input/16-output device and is the one to choose when an audio application needs to record from the Symphony. **Symphony I/O : Maestro USB** is a separate 0-input/16-output output device used by Maestro's volume-control proxy, so the Mac's keyboard volume keys can adjust the Symphony's hardware output level."),
-                .text("Choose **Maestro USB** as the macOS output for keyboard volume control, or choose **USB Audio** when you need inputs. The Symphony's inputs are on **USB Audio**."),
+            HelpItem(title: "Which one does Maestro choose when I plug in?", blocks: [
+                .text("With **Automatically switch to Symphony when connected** turned on in **App Settings › When a Device Connects**, Maestro makes the Symphony your Mac's output when you plug it in. **Preferred USB output** chooses which of the two: **Maestro USB** (the default, with the volume keys) or **USB Audio**. With the setting off, choose in the Sound menu or System Settings › Sound."),
             ]),
             HelpItem(title: "Does Maestro USB add latency?", blocks: [
-                .text("A little. Apogee's software sent audio straight to the Symphony's own USB device, which has no volume control the Mac's keys can reach. **Maestro USB** passes your audio on to that device so the volume keys work, and that hand-over adds about **1.3 ms** at 48 kHz (64 samples). Maestro USB reports it, so your DAW keeps recordings in time."),
-                .text("For the very lowest output latency, choose **Symphony I/O : USB Audio** as the output in your DAW; the volume keys then do not control it. Either way, your DAW's buffer size matters far more: each halving of it saves more than the hand-over costs."),
-                .text("To hear inputs with no delay at all, monitor them through the Symphony's Mixer instead of through your DAW (route **Mixer 1** to your speakers in **Output Routing**). Apogee's guide explains buffer size and this way of monitoring:"),
+                .text("A little: handing your audio on to USB Audio adds about **1.3 ms** at 48 kHz (64 samples). Maestro USB reports it, so your DAW keeps recordings in time. For the very lowest output latency, choose **USB Audio** as the output in your DAW; the volume keys then do not control it."),
+                .text("Your DAW's buffer size matters far more: each halving of it saves more than the hand-over costs. To hear inputs with no delay at all, monitor them through the Symphony's Mixer rather than through your DAW (route **Mixer 1** to your speakers in **Output Routing**). Apogee's guide explains buffer size and this way of monitoring:"),
                 .link("Apogee: Symphony I/O, understanding latency", URL(string: "https://knowledge.apogeedigital.com/symphony-i/o-understanding-latency")!),
             ]),
         ])
