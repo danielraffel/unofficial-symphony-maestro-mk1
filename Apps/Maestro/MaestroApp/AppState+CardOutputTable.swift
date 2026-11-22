@@ -248,6 +248,16 @@ extension AppState {
             ledger.clear()
         }
         cardRestoreOwner = (ObjectIdentifier(tb), owner)
+        // Driver 144 plays faders above 0 dB; they were played at 0 before.
+        // Lower the saved ones to 0 once, before anything is written, so the
+        // update makes nothing louder (MixerHeadroomMigration).
+        if MixerHeadroomMigration.applies(to: servingDextBuild) {
+            let lowered = MixerHeadroomMigration.run(store: channelStateStore, preferences: mixerPreferences)
+            if lowered > 0 {
+                print("[Maestro] Mixer: \(lowered) fader(s) saved above 0 dB set to 0 dB for driver 144 (old values kept in \(MixerHeadroomMigration.backupKey))")
+                viewReloadToken = UUID()
+            }
+        }
         func isCurrent() -> Bool {
             device === tb && !hardwareWritesSuspended && cardLayout == layout && connectedUnit == nil
                 && !usesTwoUnitReplay && mixerPreferences.storageKey == storageKey
