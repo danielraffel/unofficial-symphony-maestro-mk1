@@ -926,10 +926,13 @@ struct LEDMeterView: View {
 
             // Label
             if !label.isEmpty {
+                // Centred under the LED column, not under column + scale: the
+                // 30 pt scale beside the meter would otherwise pull it over.
+                let scaleShift: CGFloat = showScale ? (scaleOnLeft ? 15 : -15) : 0
                 Text(label)
                     .font(.system(size: 8))
                     .foregroundStyle(.tertiary)
-                    .offset(x: labelOffsetX, y: labelOffsetY)
+                    .offset(x: labelOffsetX + scaleShift, y: labelOffsetY)
             }
         }
     }

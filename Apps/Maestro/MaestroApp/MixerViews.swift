@@ -8,12 +8,12 @@ import MaestroDevice
 
 /// Shared logical height for the link/Unity/output control rows.
 private let mixerControlRowHeight: CGFloat = 22
-private let mixerReadoutGapHeight: CGFloat = 14
+private let mixerReadoutGapHeight: CGFloat = 8
 
 /// Every strip must reserve the same vertical fader/meter row. Stereo meters
 /// include their L/R label baseline, so without this shared frame their
 /// subsequent controls start lower than the mono strips.
-private let mixerFaderMeterRowHeight: CGFloat = 220
+private let mixerFaderMeterRowHeight: CGFloat = 212
 
 extension Notification.Name {
     static let mixerSelectAll = Notification.Name("MaestroMixerSelectAll")
@@ -1167,6 +1167,9 @@ struct MixerView: View {
                 mixerIndex: selectedMixer
             )
         }
+        // The same fixed row as every other strip, so readouts line up.
+        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(height: mixerFaderMeterRowHeight, alignment: .top)
 
         // Master needs a small final optical adjustment to align
         // its readout with the other strips.
