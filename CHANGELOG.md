@@ -51,6 +51,9 @@ Thanks to the testers who reported that the AES meters did not move while music 
 - **With an 8x8 or 2x6 card in slot 1 and a card with analog outputs in slot 2, the second card's output meters show its own outputs.** They showed the first card's digital outputs.
 - **Over USB, the Master meter no longer shows Software Return while an input strip is soloed.** The solo itself was right: Software Return was silent, but the Master meter went on showing it. Thanks to the tester who reported it.
 - **Input and output meters follow a routing change within a couple of seconds, however long Maestro has been open.** After opening the Mixer page they could keep showing the old routing for a long time.
+- **Over USB, a louder volume macOS tries to restore in the first seconds after start-up is refused and the Mac's volume control shows the Symphony's real level,** so the next key press does not jump up.
+- **On ThunderBridge and PCIe, inputs that are not routed to the card no longer show as Mixer strips,** as in Apogee's software. An input that loses its route is muted and unsoloed on the card at once, so a hidden solo can never silence the mixer.
+- **When the update lowers saved faders above 0 dB to 0 dB, the Mixer page says so once.**
 - **Show Trims and insert labels are remembered separately for each Symphony I/O.**
 - **Inputs removed from Input Routing no longer appear as live Mixer strips.** Their saved settings return when the route is restored.
 - **Over Hold now offers Off, 2 Seconds and Infinite, as in Apogee's software.** Older Auto Clear values are shown as 2 Seconds, the behavior this app used for them.

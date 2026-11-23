@@ -21,6 +21,7 @@
  *
  * XPC protocol (proxy → ASP reply):
  *   { "command": "audioShmem", "shmem": <xpc_shmem> }
+ *   { "command": "volumeState", "attenuation": <uint64>, "muted": <bool> }
  *
  * Audio shared memory (MaestroAudioShm — see Drivers/Shared/MaestroAudioShm.h):
  *   A clock anchor we publish from the render callback, plus a buffer INDEXED BY
@@ -358,6 +359,11 @@ static bool     gHasSpeakerLevel    = false;
 #define SLIDER_WAIT_NS (3ull * NSEC_PER_SEC)
 static uint64_t gVolumeWaitUntilNs = 0;
 static uint64_t gMuteWaitUntilNs   = 0;
+/* The start-up guard is separate from the three-second output handoff wait.
+   Apogee's first-set protection (SymphonyIO.cpp:1160-1163, :2310-2339)
+   expires on its timer and must not be closed by the plug-in's echo. */
+static uint64_t gStartupVolumeWaitUntilNs = 0;
+static uint64_t gStartupMuteWaitUntilNs   = 0;
 
 /* Whether a volume (or mute) set is taken. `value` and `expected` are an
    attenuation (more is quieter) or a mute (1 is muted). `waitUntil` is 0 when
@@ -373,6 +379,41 @@ static bool slider_set_admitted(uint64_t nowNs, uint64_t *waitUntil, unsigned va
     return value > expected;
 }
 
+/* A refused louder start-up restore must put the ASP's virtual control back
+   on the helper's kept level. */
+static bool startup_volume_refusal_should_report(uint64_t nowNs, unsigned value)
+{
+    /* The start-up guard ends only when its timer expires. In particular, the
+       plug-in's volumeState echo must not close it before a second restore. */
+    if (gStartupVolumeWaitUntilNs == 0) return false;
+    if (nowNs >= gStartupVolumeWaitUntilNs) {
+        gStartupVolumeWaitUntilNs = 0;
+        return false;
+    }
+    return value < gCachedAttenuation;
+}
+
+static bool startup_mute_refusal_should_report(uint64_t nowNs, bool muted)
+{
+    if (gStartupMuteWaitUntilNs == 0) return false;
+    if (nowNs >= gStartupMuteWaitUntilNs) {
+        gStartupMuteWaitUntilNs = 0;
+        return false;
+    }
+    return !muted && gCachedMuted;
+}
+
+static void report_kept_volume(xpc_connection_t peer)
+{
+    xpc_object_t state = xpc_dictionary_create(NULL, NULL, 0);
+    if (!state) return;
+    xpc_dictionary_set_string(state, "command", "volumeState");
+    xpc_dictionary_set_uint64(state, "attenuation", gCachedAttenuation);
+    xpc_dictionary_set_bool(state, "muted", gCachedMuted);
+    xpc_connection_send_message(peer, state);
+    xpc_release(state);
+}
+
 /* After the helper puts its kept level on the unit (start-up, a replug, a
    recovery) and when the audio plug-in connects, coreaudiod may set the
    Mac's volume control from a value it saved earlier, possibly louder. The
@@ -383,8 +424,8 @@ static bool slider_set_admitted(uint64_t nowNs, uint64_t *waitUntil, unsigned va
 static void arm_startup_volume_window(uint64_t nowNs)
 {
     const uint64_t until = nowNs + STARTUP_WAIT_NS;
-    if (gVolumeWaitUntilNs < until) gVolumeWaitUntilNs = until;
-    if (gMuteWaitUntilNs < until)   gMuteWaitUntilNs = until;
+    if (gStartupVolumeWaitUntilNs < until) gStartupVolumeWaitUntilNs = until;
+    if (gStartupMuteWaitUntilNs < until)   gStartupMuteWaitUntilNs = until;
 }
 
 /* The cached level belongs to the speakers while they are the chosen output. */
@@ -2859,19 +2900,25 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
                 /* Speakers chosen in Line mode: the set is ignored, as the
                    original did (SymphonyIO.cpp:2345-2351). Nothing is kept
                    either, so the speaker level is what it was. */
-                if (!slider_set_admitted(clock_gettime_nsec_np(CLOCK_MONOTONIC), &gVolumeWaitUntilNs,
-                                         att, gCachedAttenuation)) {
+                uint64_t nowNs = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+                if (startup_volume_refusal_should_report(nowNs, att) ||
+                    (gVolumeWaitUntilNs != 0 &&
+                     !slider_set_admitted(nowNs, &gVolumeWaitUntilNs, att, gCachedAttenuation))) {
                     LOG("setAttenuation %u ignored: the Mac's volume has not been given output %u's level yet",
                         att, gMonitorOutput);
+                    report_kept_volume(peer);
+                    xpc_release(peer);
                     return;
                 }
                 MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, false);
                 if (!w.send) {
                     LOG("setAttenuation %u ignored: Speaker is the output and the speaker mode is Line", att);
+                    xpc_release(peer);
                     return;
                 }
                 /* Cache before writing — used by restore_cached_volume() after recovery */
@@ -2886,6 +2933,7 @@ static void handle_peer(xpc_connection_t peer) {
                     daemon_set_uint32(&gDaemon, PROP_OUTPUT_LEVEL, 0, 0, att);
                     LOG("setAttenuation %u → daemon (fallback)", att);
                 }
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "setMute") == 0) {
@@ -2899,16 +2947,22 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
-                if (!slider_set_admitted(clock_gettime_nsec_np(CLOCK_MONOTONIC), &gMuteWaitUntilNs,
-                                         muted ? 1u : 0u, gCachedMuted ? 1u : 0u)) {
+                uint64_t nowNs = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+                if (startup_mute_refusal_should_report(nowNs, muted) ||
+                    (gMuteWaitUntilNs != 0 &&
+                     !slider_set_admitted(nowNs, &gMuteWaitUntilNs,
+                                          muted ? 1u : 0u, gCachedMuted ? 1u : 0u))) {
                     LOG("setMute %d ignored: the Mac's mute has not been given output %u's yet",
                         (int)muted, gMonitorOutput);
+                    xpc_release(peer);
                     return;
                 }
                 MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, true);
                 if (!w.send) {
                     LOG("setMute %d ignored: Speaker is the output and the speaker mode is Line", (int)muted);
+                    xpc_release(peer);
                     return;
                 }
                 /* Cache before writing — used by restore_cached_volume() after recovery */
@@ -2921,6 +2975,7 @@ static void handle_peer(xpc_connection_t peer) {
                     daemon_set_uint32(&gDaemon, PROP_OUTPUT_MUTE, 0, 0, muted ? 1 : 0);
                     LOG("setMute %d → daemon (fallback)", (int)muted);
                 }
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "setMonitorOutput") == 0) {
@@ -2937,6 +2992,7 @@ static void handle_peer(xpc_connection_t peer) {
                             xpc_dictionary_get_value(msg, "muted") != NULL &&
                             monitor_output_valid((uint32_t)output) && att <= 64;
             xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
                 if (complete) {
                     gMonitorOutput = (uint32_t)output;
@@ -2956,6 +3012,7 @@ static void handle_peer(xpc_connection_t peer) {
                     xpc_connection_send_message(peer, reply);
                     xpc_release(reply);
                 }
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "setProperty") == 0) {
@@ -2983,6 +3040,7 @@ static void handle_peer(xpc_connection_t peer) {
                (matching the request-reply model getProperty already uses). */
             xpc_object_t setReply = xpc_dictionary_create_reply(msg);
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
                 if (!gUSBDev) {
                     LOG_ERR("setProperty: USB device not open");
@@ -2992,6 +3050,7 @@ static void handle_peer(xpc_connection_t peer) {
                         xpc_release(setReply);
                     }
                     free(dataCopy);
+                    xpc_release(peer);
                     return;
                 }
                 /* NOTHING takes the preference load lock on a per-command basis.
@@ -3088,6 +3147,7 @@ static void handle_peer(xpc_connection_t peer) {
                     xpc_release(setReply);
                 }
                 free(dataCopy);
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "getProperty") == 0) {
@@ -3107,12 +3167,14 @@ static void handle_peer(xpc_connection_t peer) {
                 return;
             }
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
                 if (!gUSBDev) {
                     xpc_dictionary_set_int64(replyMsg, "status", -1);
                     xpc_connection_send_message(peer, replyMsg);
                     xpc_release(replyMsg);
                     note_getproperty_denied();
+                    xpc_release(peer);
                     return;
                 }
                 note_getproperty_succeeded();
@@ -3125,6 +3187,7 @@ static void handle_peer(xpc_connection_t peer) {
                     xpc_dictionary_set_int64(replyMsg, "status", -1);
                     xpc_connection_send_message(peer, replyMsg);
                     xpc_release(replyMsg);
+                    xpc_release(peer);
                     return;
                 }
 
@@ -3192,6 +3255,7 @@ static void handle_peer(xpc_connection_t peer) {
 
                 xpc_connection_send_message(peer, replyMsg);
                 xpc_release(replyMsg);
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "getSoftwareMeterLevels") == 0) {
