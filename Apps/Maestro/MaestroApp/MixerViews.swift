@@ -1285,9 +1285,9 @@ struct MixerView: View {
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
                 .maestroHelp("The output Mixer \(selectedMixer + 1) is routed to in Output Routing. None: Mixer \(selectedMixer + 1) is not routed to an output.")
         }
-        // SwiftUI points map to physical pixels on Retina;
-        // two points is the observed four-pixel correction.
-        .offset(y: -2)
+        // No optical offset: Master's fader row now has the same fixed
+        // height as every strip, so its readout already lines up (the old
+        // -2 pt nudge left it 2 pt high; owner screenshot 2026-11-23).
     }
 
     /// "Line 1/2" when this mixer is routed there in Output Routing, "None"
