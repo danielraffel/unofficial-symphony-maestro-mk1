@@ -15,10 +15,12 @@ enum InputRowCaption: String, CaseIterable {
 
     static func visible(levels: [AnalogInputLevel], showTrims: Bool) -> [Self] {
         guard !levels.isEmpty else { return [] }
+        // Analog Level, Digital Ref and Soft Limit carry no caption: their
+        // pills say what they hold and their tooltips name them (owner,
+        // 2026-11-22: the caption column looked cluttered).
         return allCases.filter { row in
             switch row {
-            case .analogLevel, .softLimit: return true
-            case .digitalRef: return levels.contains { InputChannelLogic.digitalRefVisibility(for: $0) != .hidden }
+            case .analogLevel, .softLimit, .digitalRef: return false
             case .levelTrim: return showTrims || levels.contains(where: InputChannelLogic.usesGainKnob)
             }
         }
@@ -1541,7 +1543,7 @@ struct InputChannelStripView: View {
                 if let onInputTypeChange {
                     PillMenu(
                         text: inputTypeName(channel.inputType),
-                        toolTip: "Analog Ref — Sets the analog reference level (+4 dBu for pro gear, -10 dBV for consumer)",
+                        toolTip: "Analog Level — Sets the analog reference level (+4 dBu for pro gear, -10 dBV for consumer)",
                         options: inputTypeLabels.map { val, name in
                             // The parent runs the full transition (clamp gain/trim,
                             // clear phantom when leaving Mic, push to hardware).
