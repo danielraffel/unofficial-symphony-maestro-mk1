@@ -139,23 +139,31 @@ loaded_apogee_pcie_kexts() {
 }
 # <<< apogee-kext-check
 
-# The USB postinstall must restart Core Audio only when its plug-in changed.
+# The USB postinstall may skip both restarts only when all USB components are
+# unchanged. The helper and its plug-in must stay paired (see 00c5ac0).
 # Capture the old bundle before Installer replaces it. This is deliberately a
 # content fingerprint rather than a bundle version, because a rebuilt plug-in
 # can keep its version while changing its executable.
 USB_PLUGIN_PATH="/Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
-USB_PLUGIN_FINGERPRINT="/private/tmp/maestro-installer-plugin-cdhash"
+USB_PLUGIN_FINGERPRINT="/var/run/maestro-installer-usb-fingerprint"
+USB_PROXY_PATH="/usr/local/bin/MaestroVolumeProxy"
+USB_PROXY_PLIST="/Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist"
 
-usb_plugin_fingerprint() {
-    [ -d "$1" ] || return 1
-    /usr/bin/find "$1" -type f -exec /usr/bin/shasum -a 256 {} \; 2>/dev/null \
-        | /usr/bin/sort | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+usb_component_fingerprint() {
+    local path
+    for path in "$USB_PLUGIN_PATH" "$USB_PROXY_PATH" "$USB_PROXY_PLIST"; do
+        if [ -d "$path" ]; then
+            /usr/bin/find "$path" -type f -exec /usr/bin/shasum -a 256 {} \; 2>/dev/null
+        elif [ -f "$path" ]; then
+            /usr/bin/shasum -a 256 "$path"
+        fi
+    done | /usr/bin/sort | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
 }
 
 capture_usb_plugin_fingerprint() {
     local fingerprint tmp
-    tmp="${USB_PLUGIN_FINGERPRINT}.new.$$"
-    if fingerprint="$(usb_plugin_fingerprint "$USB_PLUGIN_PATH")" && [ -n "$fingerprint" ]; then
+    tmp="$(/usr/bin/mktemp "${USB_PLUGIN_FINGERPRINT}.XXXXXX")"
+    if fingerprint="$(usb_component_fingerprint)" && [ -n "$fingerprint" ]; then
         printf '%s\n' "$fingerprint" > "$tmp"
         /bin/mv -f "$tmp" "$USB_PLUGIN_FINGERPRINT"
     else

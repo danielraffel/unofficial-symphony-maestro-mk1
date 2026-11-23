@@ -631,6 +631,7 @@ private:
 
 static ApogeeDevice* sDeviceRaw = nullptr;  // for the IO thread; owned by sDriver
 static void reconcileControlsFromProxy(xpc_object_t event);
+static bool sApplyingProxyState = false;
 
 // ── XPC helpers ──────────────────────────────────────────────────────────── //
 
@@ -948,7 +949,7 @@ protected:
             uint32_t atten = static_cast<uint32_t>(std::max(0, 64 - (int)value));
             os_log_info(sLog, "Volume raw=%d scalar=%.3f → attenuation=%u",
                 (int)value, GetScalarValue(), atten);
-            sendAttenuationXPC(atten);
+            if (!sApplyingProxyState) sendAttenuationXPC(atten);
         }
         return r;
     }
@@ -968,7 +969,7 @@ protected:
         OSStatus r = aspl::MuteControl::SetIsMutedImpl(isMuted);
         if (r == kAudioHardwareNoError) {
             os_log_info(sLog, "Mute=%d → proxy", (int)isMuted);
-            sendMuteXPC(isMuted);
+            if (!sApplyingProxyState) sendMuteXPC(isMuted);
         }
         return r;
     }
@@ -981,6 +982,7 @@ static ApogeeMuteControl*   sMuteCtrlRaw = nullptr;
 
 static void reconcileControlsFromProxy(xpc_object_t event)
 {
+    sApplyingProxyState = true;
     if (sVolCtrlRaw && xpc_dictionary_get_value(event, "attenuation")) {
         const uint64_t attenuation = std::min<uint64_t>(
             64, xpc_dictionary_get_uint64(event, "attenuation"));
@@ -991,6 +993,7 @@ static void reconcileControlsFromProxy(xpc_object_t event)
     if (sMuteCtrlRaw && xpc_dictionary_get_value(event, "muted")) {
         sMuteCtrlRaw->SetIsMuted(xpc_dictionary_get_bool(event, "muted"));
     }
+    sApplyingProxyState = false;
 }
 
 /// Push the controls' current values at the proxy.

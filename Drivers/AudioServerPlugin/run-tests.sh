@@ -3,6 +3,11 @@
 set -euo pipefail
 ASP_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASP_BUILD_DIR="$ASP_DIR/build"
+grep -q 'if (!sApplyingProxyState) sendAttenuationXPC(atten);' "$ASP_DIR/ApogeeDriver.cpp" \
+    || { echo "FAIL: proxy reconciliation would echo volumeState back to the helper" >&2; exit 1; }
+grep -q 'if (!sApplyingProxyState) sendMuteXPC(isMuted);' "$ASP_DIR/ApogeeDriver.cpp" \
+    || { echo "FAIL: proxy reconciliation would echo mute state back to the helper" >&2; exit 1; }
+echo "PASS: proxy state reconciliation does not echo controls back"
 if [[ ! -f "$ASP_BUILD_DIR/_deps/libaspl-build/libASPL.a" ]]; then
     echo "Build the AudioServerPlugin first with $ASP_DIR/Scripts/build.sh" >&2
     exit 1

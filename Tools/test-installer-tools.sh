@@ -98,33 +98,46 @@ bash -n "$CORE" && bash -n "$USB" || fail "syntax"
 ok "USB postinstall holds the marker around the coreaudiod restart"
 
 # ── USB plug-in fingerprint ────────────────────────────────────────────────
-# A first install has no old fingerprint, an identical bundle does not restart
-# Core Audio, and any changed file does.
+# A first install has no old fingerprint. Both restarts are skipped only when
+# the plug-in, helper binary, and helper plist are all unchanged.
 (
     # shellcheck source=/dev/null
     . "$USB"
     PLUGIN_PATH="$WORK/plugin"
     PLUGIN_FINGERPRINT="$WORK/plugin-fingerprint"
+    PROXY_PATH="$WORK/helper"
+    PROXY_PLIST="$WORK/helper.plist"
     mkdir -p "$PLUGIN_PATH/Contents"
+    printf 'helper one\n' > "$PROXY_PATH"
+    printf 'plist one\n' > "$PROXY_PLIST"
     printf 'version one\n' > "$PLUGIN_PATH/Contents/Info.plist"
-    [ "$(usb_plugin_changed; echo $?)" = 0 ] || fail "a first USB plug-in install did not count as changed"
-    usb_plugin_fingerprint "$PLUGIN_PATH" > "$PLUGIN_FINGERPRINT"
-    if usb_plugin_changed; then fail "an unchanged USB plug-in was treated as changed"; fi
+    [ ! -e "$PLUGIN_FINGERPRINT" ]
+    usb_components_changed || fail "a first USB install without a fingerprint was not treated as changed"
+    usb_component_fingerprint > "$PLUGIN_FINGERPRINT"
+    if usb_components_changed; then fail "unchanged USB components were treated as changed"; fi
     printf 'version two\n' > "$PLUGIN_PATH/Contents/Info.plist"
-    usb_plugin_changed || fail "a changed USB plug-in was treated as unchanged"
+    usb_components_changed || fail "a changed USB plug-in was treated as unchanged"
+    usb_component_fingerprint > "$PLUGIN_FINGERPRINT"
+    printf 'helper two\n' > "$PROXY_PATH"
+    usb_components_changed || fail "a changed USB helper was treated as unchanged"
+    usb_component_fingerprint > "$PLUGIN_FINGERPRINT"
+    printf 'plist two\n' > "$PROXY_PLIST"
+    usb_components_changed || fail "a changed USB plist was treated as unchanged"
 )
-ok "USB postinstall restarts Core Audio only for a new or changed plug-in"
+ok "USB postinstall keeps helper and Core Audio restart decisions together"
 
 (
     # shellcheck source=/dev/null
     . "$REPO_ROOT/Installer/scripts-core/preinstall"
     USB_PLUGIN_PATH="$WORK/plugin"
+    USB_PROXY_PATH="$WORK/helper"
+    USB_PROXY_PLIST="$WORK/helper.plist"
     USB_PLUGIN_FINGERPRINT="$WORK/preinstall-plugin-fingerprint"
     capture_usb_plugin_fingerprint
-    [ "$(cat "$USB_PLUGIN_FINGERPRINT")" = "$(usb_plugin_fingerprint "$USB_PLUGIN_PATH")" ] \
-        || fail "preinstall did not capture the old USB plug-in fingerprint"
+    [ "$(cat "$USB_PLUGIN_FINGERPRINT")" = "$(usb_component_fingerprint)" ] \
+        || fail "preinstall did not capture the old USB component fingerprint"
 )
-ok "preinstall captures the USB plug-in before replacement"
+ok "preinstall captures all USB components before replacement"
 
 UNINSTALL="$REPO_ROOT/Installer/uninstall.sh"
 grep -q '^killall coreaudiod' "$UNINSTALL" || fail "uninstall no longer restarts Core Audio after removing the plug-in"

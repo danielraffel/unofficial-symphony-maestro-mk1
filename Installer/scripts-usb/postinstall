@@ -11,17 +11,24 @@
 set -euo pipefail
 LOG="/tmp/maestro-installer.log"
 PLUGIN_PATH="/Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
-PLUGIN_FINGERPRINT="/private/tmp/maestro-installer-plugin-cdhash"
+PLUGIN_FINGERPRINT="/var/run/maestro-installer-usb-fingerprint"
+PROXY_PATH="/usr/local/bin/MaestroVolumeProxy"
+PROXY_PLIST="/Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist"
 
-usb_plugin_fingerprint() {
-    [ -d "$1" ] || return 1
-    /usr/bin/find "$1" -type f -exec /usr/bin/shasum -a 256 {} \; 2>/dev/null \
-        | /usr/bin/sort | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+usb_component_fingerprint() {
+    local path
+    for path in "$PLUGIN_PATH" "$PROXY_PATH" "$PROXY_PLIST"; do
+        if [ -d "$path" ]; then
+            /usr/bin/find "$path" -type f -exec /usr/bin/shasum -a 256 {} \; 2>/dev/null
+        elif [ -f "$path" ]; then
+            /usr/bin/shasum -a 256 "$path"
+        fi
+    done | /usr/bin/sort | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
 }
 
-usb_plugin_changed() {
+usb_components_changed() {
     local current previous
-    current="$(usb_plugin_fingerprint "$PLUGIN_PATH" 2>/dev/null || true)"
+    current="$(usb_component_fingerprint 2>/dev/null || true)"
     previous="$(/bin/cat "$PLUGIN_FINGERPRINT" 2>/dev/null || true)"
     [ -n "$current" ] && [ "$current" != "$previous" ]
 }
@@ -44,17 +51,10 @@ chmod 644 /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist 2>/d
 
 PROXY_LABEL="com.danielraffel.Maestro.volumeproxy"
 PROXY_PLIST="/Library/LaunchDaemons/${PROXY_LABEL}.plist"
-launchctl bootout "system/$PROXY_LABEL" 2>/dev/null || true
-sleep 1
-launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || {
-    sleep 2
-    launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || true
-}
-echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
 
-# Restart Core Audio when the AudioServerPlugin is new or changed, so it attaches
-# to the helper that was just restarted above. The old fingerprint was captured
-# by preinstall before Installer replaced the bundle.
+# Restart both the helper and Core Audio when any USB component is new or
+# changed, so the paired processes attach to the same generation. The old
+# fingerprint was captured by preinstall before Installer replaced the payload.
 #
 # 0.8.36 skipped this when the plug-in's code was unchanged, to avoid a long
 # audio stall seen once with a ThunderBridge attached. That left the running
@@ -62,12 +62,19 @@ echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
 # afterwards every block sent to "Maestro USB" was dropped as late: no sound
 # through the virtual device until coreaudiod was restarted (2026-11-13). The
 # stall is the lesser problem when the plug-in really changed.
-if usb_plugin_changed; then
+if usb_components_changed; then
+    launchctl bootout "system/$PROXY_LABEL" 2>/dev/null || true
+    sleep 1
+    launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || {
+        sleep 2
+        launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || true
+    }
+    echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
     killall coreaudiod 2>/dev/null || true
     sleep 3
-    echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') coreaudiod restarted (plug-in changed)" >> "$LOG"
+    echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') helper and coreaudiod restarted (USB component changed)" >> "$LOG"
 else
-    echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') coreaudiod restart skipped (plug-in unchanged)" >> "$LOG"
+    echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') helper and coreaudiod restart skipped (USB components unchanged)" >> "$LOG"
 fi
 /bin/rm -f "$PLUGIN_FINGERPRINT"
 /bin/rm -f "$USB_MARKER"

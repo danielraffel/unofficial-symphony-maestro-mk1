@@ -342,17 +342,27 @@ static void check_monitor_output(void)
 static void test_startup_volume_window(void)
 {
     gVolumeWaitUntilNs = gMuteWaitUntilNs = 0;
+    gStartupVolumeWaitUntilNs = gStartupMuteWaitUntilNs = 0;
     gCachedAttenuation = 30;
     arm_startup_volume_window(1000);
-    CHECK(gVolumeWaitUntilNs == 1000 + STARTUP_WAIT_NS && gMuteWaitUntilNs == 1000 + STARTUP_WAIT_NS,
+    CHECK(gStartupVolumeWaitUntilNs == 1000 + STARTUP_WAIT_NS &&
+          gStartupMuteWaitUntilNs == 1000 + STARTUP_WAIT_NS,
           "start-up arms both windows for five seconds");
+    gVolumeWaitUntilNs = 1000 + STARTUP_WAIT_NS;
     CHECK(!slider_set_admitted(2000, &gVolumeWaitUntilNs, 10, gCachedAttenuation),
           "inside the window a louder restored volume is refused");
-    gVolumeWaitUntilNs = 1000 + STARTUP_WAIT_NS;
     CHECK(startup_volume_refusal_should_report(2000, 10),
           "a refused louder restore is reported back to the plug-in");
+    CHECK(startup_volume_refusal_should_report(3000, 5),
+          "a second louder restore is still refused during the start-up window");
+    CHECK(gStartupVolumeWaitUntilNs == 1000 + STARTUP_WAIT_NS,
+          "reporting the kept volume does not end the start-up window");
+    CHECK(!startup_volume_refusal_should_report(1000 + STARTUP_WAIT_NS, 5) &&
+          gStartupVolumeWaitUntilNs == 0,
+          "the start-up window ends when its timer expires");
     CHECK(slider_set_admitted(2000, &gVolumeWaitUntilNs, 40, gCachedAttenuation),
           "turning down is taken");
+    gMuteWaitUntilNs = 1000 + STARTUP_WAIT_NS;
     CHECK(!slider_set_admitted(2000, &gMuteWaitUntilNs, 0, 1), "an unmute is refused");
     CHECK(slider_set_admitted(1000 + STARTUP_WAIT_NS, &gVolumeWaitUntilNs, 10, gCachedAttenuation),
           "after the window a louder set is taken");
@@ -360,6 +370,7 @@ static void test_startup_volume_window(void)
     arm_startup_volume_window(1000);
     CHECK(gVolumeWaitUntilNs == 9000000000ull, "a longer wait already armed is not shortened");
     gVolumeWaitUntilNs = gMuteWaitUntilNs = 0;
+    gStartupVolumeWaitUntilNs = gStartupMuteWaitUntilNs = 0;
 }
 
 static void test_power_actions(void)
