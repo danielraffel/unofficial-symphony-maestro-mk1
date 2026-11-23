@@ -368,6 +368,8 @@ struct MixerView: View {
                                 onLevelTyped: { typedLevel(i, $0) },
                                 onPanTyped: { typedPan(i, $0) }
                             )
+                            .simultaneousGesture(DragGesture(minimumDistance: 0)
+                                .onEnded { stripClicked(i, value: $0) })
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: MixerStripFramePreferenceKey.self,
                                     value: [i: proxy.frame(in: .named("mixerContent"))])
@@ -380,6 +382,8 @@ struct MixerView: View {
                     // to the card below, so it cannot stretch to the scroll
                     // viewport's full height.
                     swReturnStrip
+                        .simultaneousGesture(DragGesture(minimumDistance: 0)
+                            .onEnded { stripClicked(MixerSelection.softwareReturn, value: $0) })
                         .background(GeometryReader { proxy in
                             Color.clear.preference(key: MixerStripFramePreferenceKey.self,
                                 value: [MixerSelection.softwareReturn: proxy.frame(in: .named("mixerContent"))])
@@ -831,6 +835,26 @@ struct MixerView: View {
     }
 
     /// Handle channel selection with modifier keys (Cmd, Shift, plain click).
+    /// A click anywhere on a strip, not only on its name (owner, 2026-11-23):
+    /// - no modifier key, on a strip outside the selection: clears the
+    ///   selection, as in Logic and Finder; on a selected strip it keeps it,
+    ///   so the group can be moved;
+    /// - Shift, Shift-Command or Shift-Command-Option: the same as on the
+    ///   name. Only for a click: Shift-drag is fine adjustment of a control.
+    /// Applying a name click twice gives the same selection, so a click on
+    /// the name (which also selects) is harmless.
+    private func stripClicked(_ id: Int, value: DragGesture.Value) {
+        guard hypot(value.translation.width, value.translation.height) < 3 else { return }
+        let keys = NSEvent.modifierFlags.intersection([.shift, .command, .option, .control])
+        if keys.contains(.shift) {
+            selectChannel(id, modifiers: keys)
+            return
+        }
+        guard keys.isEmpty, !selectedChannels.isEmpty, !selectedChannels.contains(id) else { return }
+        selectedChannels.removeAll()
+        lastSelectedChannel = nil
+    }
+
     private func selectChannel(_ index: Int, modifiers: NSEvent.ModifierFlags) {
         let visible = Array((0..<min(editor.channels.count, channelCount)).filter(isChannelVisible))
             + [MixerSelection.softwareReturn, MixerSelection.master]

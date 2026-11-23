@@ -40,4 +40,18 @@ struct MixerSelectionTests {
         #expect(MixerGroupMath.applyingDelta(10, to: [-2, 1, 4], in: -48...6) == [0, 3, 6])
         #expect(MixerGroupMath.applyingDelta(-10, to: [-50, -1, 4], in: -48...6) == [-48, -1, 4])
     }
+
+    /// A modified click on a strip's name is seen twice (by the name and by
+    /// the strip), so applying the same click again must not change the
+    /// selection (2026-11-23).
+    @Test func applyingTheSameClickTwiceIsHarmless() {
+        let visible = [0, 1, 2, 3, 4]
+        for mods in [MixerSelectionModifiers(shift: true),
+                     MixerSelectionModifiers(shift: true, command: true),
+                     MixerSelectionModifiers(shift: true, command: true, option: true)] {
+            let once = MixerSelection.applyingClick(index: 3, modifiers: mods, visible: visible, selected: [0, 1, 2, 3], last: 1)
+            let twice = MixerSelection.applyingClick(index: 3, modifiers: mods, visible: visible, selected: once, last: 3)
+            #expect(once == twice)
+        }
+    }
 }
