@@ -21,7 +21,7 @@ extension Notification.Name {
 }
 
 private struct MixerStripFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [Int: CGRect] = [:]
+    static let defaultValue: [Int: CGRect] = [:]
     static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { $1 })
     }
@@ -361,65 +361,7 @@ struct MixerView: View {
 
                     // Master fader strip — pill aligned with SW Return pill,
                     // fader+meter+dB aligned with channel strips, no M/S at bottom.
-                    VStack(spacing: 3) {
-                        Text("Master")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 2)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(selectedChannels.contains(MixerSelection.master)
-                                          ? Color.accentColor.opacity(0.7) : Color.orange.opacity(0.15))
-                            )
-                            .foregroundStyle(selectedChannels.contains(MixerSelection.master) ? .white : .primary)
-
-                        // Spacer matching pan knob(36) + 3 + panPill(~22) + 3 + breathingRoom(14) + alignment(9)
-                        Spacer().frame(height: 87)
-
-                        HStack(alignment: .top, spacing: 4) {
-                            FaderView(
-                                value: $editor.masterLeftLevel,
-                                range: -48...6,
-                                step: 1,
-                                defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
-                                height: 200,
-                                showScale: false,
-                                externalReadout: true,
-                                onUserChange: { newLevel in masterSideChanged(newLevel) },
-                                onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
-                                onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
-                                thumbWidth: 22
-                            )
-
-                            FaderView(
-                                value: $editor.masterRightLevel,
-                                range: -48...6,
-                                step: 1,
-                                defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
-                                height: 200,
-                                showScale: false,
-                                externalReadout: true,
-                                onUserChange: { newLevel in masterSideChanged(newLevel) },
-                                onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
-                                onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
-                                thumbWidth: 22
-                            )
-
-                            // Keep meter observation inside this child view so
-                            // 20 Hz meter updates do not rebuild every strip.
-                            MixerMasterMetersView(
-                                appState: appState,
-                                mixerIndex: selectedMixer
-                            )
-                        }
-
-                        // Master needs a small final optical adjustment to align
-                        // its readout with the other strips.
-                        masterReadoutRow
-
-                    }
+                    masterStripBody
                     .contentShape(Rectangle())
                     .onTapGesture { selectChannel(MixerSelection.master, modifiers: NSEvent.modifierFlags) }
                     .background(GeometryReader { proxy in
@@ -1097,6 +1039,70 @@ struct MixerView: View {
         editor.masterRightLevel = newLevel
         editor.masterLevel = newLevel
         scheduleMasterWrite(level: newLevel)
+    }
+
+    /// The Master strip (split out so the compiler can type-check the page body).
+    @ViewBuilder
+    private var masterStripBody: some View {
+    VStack(spacing: 3) {
+        Text("Master")
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(selectedChannels.contains(MixerSelection.master)
+                          ? Color.accentColor.opacity(0.7) : Color.orange.opacity(0.15))
+            )
+            .foregroundStyle(selectedChannels.contains(MixerSelection.master) ? .white : .primary)
+
+        // Spacer matching pan knob(36) + 3 + panPill(~22) + 3 + breathingRoom(14) + alignment(9)
+        Spacer().frame(height: 87)
+
+        HStack(alignment: .top, spacing: 4) {
+            FaderView(
+                value: $editor.masterLeftLevel,
+                range: -48...6,
+                step: 1,
+                defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
+                height: 200,
+                showScale: false,
+                externalReadout: true,
+                onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
+                onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
+                onUserChange: { newLevel in masterSideChanged(newLevel) },
+                thumbWidth: 22
+            )
+
+            FaderView(
+                value: $editor.masterRightLevel,
+                range: -48...6,
+                step: 1,
+                defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
+                height: 200,
+                showScale: false,
+                externalReadout: true,
+                onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
+                onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
+                onUserChange: { newLevel in masterSideChanged(newLevel) },
+                thumbWidth: 22
+            )
+
+            // Keep meter observation inside this child view so
+            // 20 Hz meter updates do not rebuild every strip.
+            MixerMasterMetersView(
+                appState: appState,
+                mixerIndex: selectedMixer
+            )
+        }
+
+        // Master needs a small final optical adjustment to align
+        // its readout with the other strips.
+        masterReadoutRow
+
+    }
     }
 
     private var swReturnStrip: some View {
