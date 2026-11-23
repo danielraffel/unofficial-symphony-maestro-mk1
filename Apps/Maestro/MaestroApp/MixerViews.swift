@@ -1001,7 +1001,7 @@ struct MixerView: View {
                 .padding(.horizontal, 4)
                 // Plain text, as in Apogee's software: a box made it look like
                 // a menu that would not open (owner, 2026-11-22).
-                .maestroHelp("The output this mixer is routed to. Change it in Output Routing; None means this mixer is not routed to an output.")
+                .maestroHelp("The output Mixer \(selectedMixer + 1) is routed to in Output Routing. None: Mixer \(selectedMixer + 1) is not routed to an output.")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
