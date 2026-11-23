@@ -698,9 +698,18 @@ struct FaderView: View {
                                     batch(value - dragStartValue)
                                 }
                             }
-                            .onEnded { _ in
+                            .onEnded { gesture in
                                 isDragging = false
                                 onBatchDragEnd?()
+                                // A double-click that did not move: reset, read
+                                // from the mouse event itself (the drag above
+                                // starts at distance 0 and can swallow taps).
+                                if abs(gesture.translation.height) < 2,
+                                   (NSApp.currentEvent?.clickCount ?? 0) >= 2 {
+                                    let oldValue = value
+                                    value = defaultValue
+                                    reportUserChange(oldValue: oldValue, newValue: value)
+                                }
                             }
                     )
                     // Apogee's APFaderCell reset value is zero by default
