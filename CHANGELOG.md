@@ -8,6 +8,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Changes that may affect your setup
 
+- **On ThunderBridge and PCIe, speakers you muted stay muted after a replug, a power cycle or a dropped link.** The Symphony forgets its mute when the link goes, and Maestro now mutes it again as soon as it reconnects (it only ever mutes, never unmutes).
 - **When the ThunderBridge driver starts (Mac start-up, a replug, a driver update; also on PCIe), the card's outputs stay silent until macOS restores the saved mute and volume, or three seconds pass.** This prevents a short burst of audio when the speaker was muted before a replug.
 - **The uninstaller removes the ThunderBridge driver after you confirm in macOS.** It keeps your Maestro settings so reinstalling restores your setup.
 
