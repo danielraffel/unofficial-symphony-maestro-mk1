@@ -183,6 +183,7 @@ echo "  - The Symphony ThunderBridge driver extension (if activated)"
 echo "  - /Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
 echo "  - /usr/local/bin/MaestroVolumeProxy"
 echo "  - /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist"
+echo "  - /Library/Application Support/Maestro (the USB helper's saved level and digital settings)"
 echo ""
 echo "And restore the original Apogee HAL plugin (if it was disabled)."
 echo ""
@@ -229,6 +230,10 @@ rm -f /usr/local/bin/MaestroVolumeProxy
 # ── 4. Remove LaunchDaemon plist ─────────────────────────────────────────────
 echo "[4/8] Removing LaunchDaemon plist..."
 rm -f /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist
+# The helper's saved state (kept volume, digital settings). Named files and
+# the folder only, so nothing else that might be put there is removed.
+rm -f "/Library/Application Support/Maestro/volume-state" "/Library/Application Support/Maestro/digital-settings"
+rmdir "/Library/Application Support/Maestro" 2>/dev/null || true
 
 # ── 5. Remove AudioServerPlugin ─────────────────────────────────────────────
 echo "[5/8] Removing AudioServerPlugin..."
