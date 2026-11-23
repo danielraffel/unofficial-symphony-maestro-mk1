@@ -65,3 +65,12 @@ public enum MixerLevelReadout: Hashable, Sendable {
         visibleInputs.map(MixerLevelReadout.input) + [.softwareReturn, .master]
     }
 }
+
+/// The Mixer pan readouts, in the order Tab walks visible input strips.
+public enum MixerPanReadout: Hashable, Sendable {
+    case input(Int)
+
+    public static func order(visibleInputs: [Int]) -> [MixerPanReadout] {
+        visibleInputs.map(MixerPanReadout.input)
+    }
+}

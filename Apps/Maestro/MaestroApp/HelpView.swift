@@ -318,7 +318,7 @@ extension HelpSection {
     private static var controls: HelpSection {
         HelpSection(id: .controls, title: "What Maestro controls", items: [
             HelpItem(blocks: [
-                .text("Volume, mute, clock source, sample rate, optical format (ADAT/S-PDIF), Input Routing and Output Routing, the two **low-latency mixers** (input strips with level, pan, mute and solo; Software Return with level, mute and solo; Master), and **hardware metering**."),
+                .text("Volume, mute, clock source, sample rate, optical format (ADAT/S-PDIF), Input Routing and Output Routing, the two **low-latency mixers** (input strips with level, pan, mute and solo; Software Return with level, mute and solo; Master), and **hardware metering**. On Mixer, click a pan value to type 0, -13, +20, L13, R20 or C. Double-click a fader to reset it to 0 dB."),
                 .text("**Output Routing** sends any software output pair or mixer to any hardware output. The page shows what Maestro last set."),
             ]),
         ])

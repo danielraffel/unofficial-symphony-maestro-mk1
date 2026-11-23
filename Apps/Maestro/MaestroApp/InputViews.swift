@@ -460,6 +460,7 @@ struct InputControlsView: View {
                                 leftPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex),
                                 rightPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex, offset: 1),
                                 matchHeight: analogStripHeight > 0 ? analogStripHeight : nil,
+                                alignInputMeter: true,
                                 showZoneColoring: appState.showMeterZoneColoring,
                                 leftOver: appState.inputMeterIsOver(digPair.meterIndex, digital: true),
                                 rightOver: appState.inputMeterIsOver(digPair.meterIndex, digital: true, offset: 1),
@@ -483,6 +484,7 @@ struct InputControlsView: View {
                     .allowsHitTesting(false)
                 }
                 .fixedSize(horizontal: false, vertical: true) // dividers match strip height, not page height
+                .frame(maxHeight: .infinity, alignment: .top) // keep digital columns anchored like Output
                 .frame(minHeight: max(0, viewport.size.height - 16), alignment: .top)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 8)
@@ -1147,6 +1149,10 @@ struct ADATStereoPairView: View {
     var rightPeak: Double = -60
     /// When set, the strip matches this total height — Spacer fills gap between label and meters.
     var matchHeight: CGFloat? = nil
+    /// Input analog strips have three fixed setting rows and a 16-point
+    /// breathing row before their meter. Reuse that top lane so digital
+    /// meters share both meter edges with the analog columns.
+    var alignInputMeter: Bool = false
     var showZoneColoring: Bool = false
 
     var leftOver = false
@@ -1176,7 +1182,11 @@ struct ADATStereoPairView: View {
 
             // Spacer fills the gap where analog strips have pills — pushes meters to bottom
             if matchHeight != nil {
-                Spacer(minLength: 0)
+                if alignInputMeter {
+                    Spacer().frame(height: 79)
+                } else {
+                    Spacer(minLength: 0)
+                }
             }
 
             HStack(alignment: .top, spacing: 1) {

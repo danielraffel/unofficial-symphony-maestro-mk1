@@ -537,10 +537,6 @@ struct FaderView: View {
     @State private var editText = ""
     @State private var dragStartValue: Double = 0
     @State private var dragStartY: CGFloat = 0
-    /// The value on the other side of the last completed fader move. A
-    /// double-click on the fader swaps to it, so a second double-click can
-    /// toggle back without introducing a separate undo control.
-    @State private var previousValue: Double?
 
     private let trackWidth: CGFloat = 5
     var thumbHeight: CGFloat = 24
@@ -668,7 +664,6 @@ struct FaderView: View {
                                     // the level that is playing, so a click
                                     // without movement changes nothing heard.
                                     dragStartValue = step >= 1 ? (value / step).rounded(.down) * step : value
-                                    previousValue = value
                                     dragStartY = gesture.startLocation.y
                                     // Snapshot batch start levels if Option held
                                     if NSEvent.modifierFlags.contains(.option) {
@@ -689,18 +684,16 @@ struct FaderView: View {
                             }
                             .onEnded { _ in isDragging = false }
                     )
+                    // Apogee's APFaderCell reset value is zero by default
+                    // (og_source/maestro2/App/Views/APFaderCell.m:35-36, 180-184).
                     .onTapGesture(count: 2) {
-                        guard let previousValue else { return }
-                        let currentValue = value
-                        value = previousValue
-                        self.previousValue = currentValue
+                        value = defaultValue
                         onUserChange?(value)
                     }
                     .simultaneousGesture(
                         TapGesture()
                             .modifiers(.option)
                             .onEnded { _ in
-                                previousValue = value
                                 value = defaultValue
                                 onUserChange?(defaultValue)
                             }
@@ -1050,6 +1043,9 @@ struct EditableLevelReadout<ID: Hashable>: View {
     let range: ClosedRange<Double>
     let step: Double
     let entry: LevelReadoutEntry<ID>
+    /// Optional domain parser and formatter for readouts whose text is not a plain number.
+    var parseTypedValue: ((String) -> Double?)? = nil
+    var displayText: ((Double) -> String)? = nil
     /// Fixed height of the pill, or nil to hug the text with a little padding.
     var height: CGFloat? = 22
     @State private var editText = ""
@@ -1060,7 +1056,7 @@ struct EditableLevelReadout<ID: Hashable>: View {
     /// Apply the typed text (unless cancelled or not a number), then either
     /// hand editing to `next` or stop editing altogether.
     private func finishEditing(commit: Bool, movingTo next: ID? = nil) {
-        if commit, let typed = LevelEntry.value(typed: editText, range: range, step: step),
+        if commit, let typed = (parseTypedValue?(editText) ?? LevelEntry.value(typed: editText, range: range, step: step)),
            typed != value {
             value = typed
         }
@@ -1090,7 +1086,7 @@ struct EditableLevelReadout<ID: Hashable>: View {
                 return .handled
             }
             .onAppear {
-                editText = LevelEntry.text(for: value, step: step)
+                editText = displayText?(value) ?? LevelEntry.text(for: value, step: step)
                 DispatchQueue.main.async {
                     entry.focus.wrappedValue = entry.id
                     // Wait for AppKit to install the field editor before
@@ -1106,7 +1102,7 @@ struct EditableLevelReadout<ID: Hashable>: View {
     var body: some View {
         // The value text stays in the layout while editing, so the pill keeps
         // its size and the strip does not move when the field appears.
-        Text(LevelEntry.text(for: value, step: step))
+        Text(displayText?(value) ?? LevelEntry.text(for: value, step: step))
             .font(.system(size: 9, weight: .medium, design: .monospaced))
             .foregroundStyle(.secondary)
             .lineLimit(1)

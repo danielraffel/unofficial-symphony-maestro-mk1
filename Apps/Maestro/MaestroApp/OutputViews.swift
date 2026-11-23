@@ -6,6 +6,15 @@ import CoreGraphics
 import MaestroCore
 import MaestroDevice
 
+private func monitorRingColor(muted: Bool, dimmed: Bool, summed: Bool) -> Color {
+    switch MonitorKnobRing.forState(muted: muted, dimmed: dimmed, summed: summed) {
+    case .mute: return .red.opacity(0.4)
+    case .dim: return .orange.opacity(0.6)
+    case .sum: return .purple
+    case .normal: return Color(red: 0.52, green: 0.69, blue: 0.98)
+    }
+}
+
 
 /// Output Controls view — per-channel output strips with analog/digital ref levels,
 /// optional trim faders, Speaker/HP inline controls, and DIGITAL section with ADAT meters.
@@ -735,7 +744,7 @@ struct OutputControlsView: View {
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
-                        arcColor: speakerMuted ? .red.opacity(0.4) : speakerDim ? .orange.opacity(0.6) : Color(red: 0.52, green: 0.69, blue: 0.98),
+                        arcColor: monitorRingColor(muted: speakerMuted, dimmed: speakerDim, summed: speakerSumEnabled),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             appState.showLevelOverlay(source: .speaker, level: level, muted: speakerMuted)
@@ -871,7 +880,7 @@ struct OutputControlsView: View {
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
-                        arcColor: hp1Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
+                        arcColor: monitorRingColor(muted: hp1Muted, dimmed: hp1Dim, summed: hp1Mono),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             appState.showLevelOverlay(source: .headphone1, level: level, muted: hp1Muted)
@@ -933,7 +942,7 @@ struct OutputControlsView: View {
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
-                        arcColor: hp2Muted ? .red.opacity(0.4) : Color(red: 0.52, green: 0.69, blue: 0.98),
+                        arcColor: monitorRingColor(muted: hp2Muted, dimmed: hp2Dim, summed: hp2Mono),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             appState.showLevelOverlay(source: .headphone2, level: level, muted: hp2Muted)

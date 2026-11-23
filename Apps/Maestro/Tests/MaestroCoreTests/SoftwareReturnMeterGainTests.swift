@@ -25,11 +25,38 @@ struct SoftwareReturnMeterGainTests {
 
     @Test("Maestro pan readout uses signed directions and 64 positions on each side")
     func panReadouts() {
-        #expect(MixerValueConversion.panReadout(-1) == "<64")
-        #expect(MixerValueConversion.panReadout(-63.0 / 64) == "<63")
-        #expect(MixerValueConversion.panReadout(0) == "<0>")
-        #expect(MixerValueConversion.panReadout(1.0 / 64) == "1>")
-        #expect(MixerValueConversion.panReadout(1) == "64>")
+        #expect(MixerValueConversion.panReadout(-1) == "-64")
+        #expect(MixerValueConversion.panReadout(-63.0 / 64) == "-63")
+        #expect(MixerValueConversion.panReadout(0) == "0")
+        #expect(MixerValueConversion.panReadout(1.0 / 64) == "+1")
+        #expect(MixerValueConversion.panReadout(1) == "+64")
+    }
+
+    @Test("typed pan accepts signed, directional and centre forms")
+    func typedPan() {
+        #expect(MixerValueConversion.panValue(typed: "0") == 0)
+        #expect(MixerValueConversion.panValue(typed: "-13") == -13.0 / 64)
+        #expect(MixerValueConversion.panValue(typed: "+20") == 20.0 / 64)
+        #expect(MixerValueConversion.panValue(typed: "13") == 13.0 / 64)
+        #expect(MixerValueConversion.panValue(typed: "L13") == -13.0 / 64)
+        #expect(MixerValueConversion.panValue(typed: "R20") == 20.0 / 64)
+        #expect(MixerValueConversion.panValue(typed: "C") == 0)
+        #expect(MixerValueConversion.panValue(typed: "R100") == 1)
+        #expect(MixerValueConversion.panValue(typed: "L100") == -1)
+        #expect(MixerValueConversion.panValue(typed: "garbage") == nil)
+    }
+
+    @Test("Mixer fader double-click resets to zero dB")
+    func faderDoubleClickReset() {
+        #expect(MixerValueConversion.faderDoubleClickResetValue() == 0)
+    }
+
+    @Test("monitor ring colour prioritizes mute, then dim, then sum")
+    func monitorRingPriority() {
+        #expect(MonitorKnobRing.forState(muted: false, dimmed: false, summed: false) == .normal)
+        #expect(MonitorKnobRing.forState(muted: false, dimmed: false, summed: true) == .sum)
+        #expect(MonitorKnobRing.forState(muted: false, dimmed: true, summed: true) == .dim)
+        #expect(MonitorKnobRing.forState(muted: true, dimmed: true, summed: true) == .mute)
     }
 
     @Test("all 129 pan positions round trip through their hardware bytes", arguments: 0...128)

@@ -8,6 +8,7 @@ import MaestroDevice
 
 /// Shared logical height for the link/Unity/output control rows.
 private let mixerControlRowHeight: CGFloat = 22
+private let mixerReadoutGapHeight: CGFloat = 14
 
 /// Every strip must reserve the same vertical fader/meter row. Stereo meters
 /// include their L/R label baseline, so without this shared frame their
@@ -43,6 +44,9 @@ struct MixerView: View {
     @State private var editingReadout: MixerLevelReadout?
     /// Keyboard focus among the fader level readouts; Tab moves it along the strips.
     @FocusState private var focusedReadout: MixerLevelReadout?
+    /// Keyboard focus among the editable pan readouts.
+    @State private var editingPanReadout: MixerPanReadout?
+    @FocusState private var focusedPanReadout: MixerPanReadout?
 
     /// What a strip's level readout needs to take part in Tab order: inputs
     /// that are showing, then Software Return, then Master.
@@ -50,6 +54,14 @@ struct MixerView: View {
         LevelReadoutEntry(id: id, editing: $editingReadout, focus: $focusedReadout) { current, forward in
             let inputs = (0..<min(editor.channels.count, channelCount)).filter { isChannelVisible($0) }
             return LevelEntry.neighbour(of: current, in: MixerLevelReadout.order(visibleInputs: inputs),
+                                        forward: forward) { _ in true }
+        }
+    }
+
+    private func panReadoutEntry(_ id: MixerPanReadout) -> LevelReadoutEntry<MixerPanReadout> {
+        LevelReadoutEntry(id: id, editing: $editingPanReadout, focus: $focusedPanReadout) { current, forward in
+            let inputs = (0..<min(editor.channels.count, channelCount)).filter { isChannelVisible($0) }
+            return LevelEntry.neighbour(of: current, in: MixerPanReadout.order(visibleInputs: inputs),
                                         forward: forward) { _ in true }
         }
     }
@@ -315,7 +327,8 @@ struct MixerView: View {
                                     setCustomChannelLabel(value, for: i)
                                 },
                                 showZoneColoring: appState.showMeterZoneColoring,
-                                readoutEntry: readoutEntry(.input(i))
+                                readoutEntry: readoutEntry(.input(i)),
+                                panReadoutEntry: panReadoutEntry(.input(i))
                             )
                             .id(MixerLevelReadout.input(i))
                         }
@@ -349,7 +362,7 @@ struct MixerView: View {
                                 value: $editor.masterLeftLevel,
                                 range: -48...6,
                                 step: 1,
-                                defaultValue: 0,
+                                defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
                                 height: 200,
                                 showScale: false,
                                 externalReadout: true,
@@ -361,7 +374,7 @@ struct MixerView: View {
                                 value: $editor.masterRightLevel,
                                 range: -48...6,
                                 step: 1,
-                                defaultValue: 0,
+                                defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
                                 height: 200,
                                 showScale: false,
                                 externalReadout: true,
@@ -1018,7 +1031,7 @@ struct MixerView: View {
             // Unity, Mute, Solo and Output share one baseline.
             Color.clear
                 .frame(maxWidth: .infinity)
-                .frame(height: mixerControlRowHeight)
+                .frame(height: mixerReadoutGapHeight)
 
             // The original Master value field edits the stereo fader. Preserve
             // that while keeping the readout display-only until double-clicked.
@@ -1366,7 +1379,6 @@ private struct MixerMasterMetersView: View {
                 scaleOnLeft: true,
                 rangeDB: 48,
                 showZoneColoring: appState.showMeterZoneColoring,
-                labelOffsetX: 8,
                 labelOffsetY: -10,
                 isOver: appState.meterIsOver(.mixer, baseIndex),
                 onClear: appState.clearMeters
@@ -1433,6 +1445,7 @@ struct MixerChannelStripView: View {
     /// Ties this strip's level readout into the page's one-at-a-time editing
     /// and Tab order.
     let readoutEntry: LevelReadoutEntry<MixerLevelReadout>
+    var panReadoutEntry: LevelReadoutEntry<MixerPanReadout>? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     /// Height for the fader+meter area (matches Input/Output strip meter height).
@@ -1518,13 +1531,16 @@ struct MixerChannelStripView: View {
                 }
 
                 // Pan value — pill readout
-                Text(panText)
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+                if let panReadoutEntry {
+                    EditableLevelReadout(
+                        value: $channel.pan,
+                        range: -1...1,
+                        step: MixerValueConversion.panStep,
+                        entry: panReadoutEntry,
+                        parseTypedValue: { MixerValueConversion.panValue(typed: $0) },
+                        displayText: MixerValueConversion.panReadout)
+                    .maestroHelp("Pan value: type 0, -13, +20, L13, R20 or C; Tab moves to the next visible strip")
+                }
 
                 // Breathing room between pan pill and fader (enough for thumb overtravel)
                 Spacer().frame(height: 14)
@@ -1542,7 +1558,7 @@ struct MixerChannelStripView: View {
                     value: stereoLeftLevel ?? $channel.level,
                     range: -48...6,
                     step: 1,
-                    defaultValue: 0,
+                    defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
                     height: faderHeight,
                     showScale: false,
                         externalReadout: true,
@@ -1558,7 +1574,7 @@ struct MixerChannelStripView: View {
                         value: stereoRightLevel ?? $channel.level,
                         range: -48...6,
                         step: 1,
-                        defaultValue: 0,
+                        defaultValue: MixerValueConversion.faderDoubleClickResetValue(),
                         height: faderHeight,
                         showScale: false,
                         externalReadout: true,
@@ -1583,7 +1599,6 @@ struct MixerChannelStripView: View {
                         scaleOnLeft: true,
                         rangeDB: 48,
                         showZoneColoring: showZoneColoring,
-                        labelOffsetX: 8,
                         labelOffsetY: -10,
                         isOver: resolvedMeters.leftOver,
                         onClear: appState.map { state in { state.clearMeters() } }
@@ -1626,7 +1641,7 @@ struct MixerChannelStripView: View {
             // Unity, Mute, Solo and Output share one horizontal baseline.
             Color.clear
                 .frame(maxWidth: .infinity)
-                .frame(height: mixerControlRowHeight)
+                .frame(height: mixerReadoutGapHeight)
 
             if stereoLeftLevel != nil, stereoRightLevel != nil {
                 // The legacy Software Return value field is editable and

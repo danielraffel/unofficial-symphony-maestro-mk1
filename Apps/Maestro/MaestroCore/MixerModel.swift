@@ -282,14 +282,52 @@ public enum MixerValueConversion: Sendable {
 
     public static func panReadout(_ pan: Double) -> String {
         let position = SoftwareReturnMeterGain.panByte(pan) - MixerConstants.scaledPanZeroOffset
-        if position < 0 { return "<\(-position)" }
-        if position > 0 { return "\(position)>" }
-        return "<0>"
+        if position < 0 { return "-\(-position)" }
+        if position > 0 { return "+\(position)" }
+        return "0"
     }
+
+    /// Parse the Logic-style pan entry used by Mixer strips.
+    /// Plain numbers are signed steps, while L/R prefixes make the direction explicit.
+    public static func panValue(typed text: String) -> Double? {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !normalized.isEmpty else { return nil }
+        if normalized == "C" { return 0 }
+        let sign: Double?
+        let numberText: String
+        if normalized.first == "L" || normalized.first == "R" {
+            sign = normalized.first == "L" ? -1 : 1
+            numberText = String(normalized.dropFirst())
+        } else {
+            sign = nil
+            numberText = normalized
+        }
+        guard let number = Double(numberText), number.isFinite else { return nil }
+        let steps = min(max(sign == nil ? number : abs(number), -64), 64)
+        return (sign ?? 1) * steps / 64
+    }
+
+    /// The original APFaderCell reset value is 0 dB.
+    public static func faderDoubleClickResetValue() -> Double { 0 }
 
     /// Convert a hardware scaled pan integer to normalized value.
     /// Hardware: 0 to 128 → Domain: -1.0 to +1.0.
     public static func scaledToPan(_ scaled: Int) -> Float64 {
         Float64(scaled - MixerConstants.scaledPanZeroOffset) / 64.0
+    }
+}
+
+/// Priority for monitor knob ring colours when multiple monitor modes are active.
+public enum MonitorKnobRing: Equatable, Sendable {
+    case normal
+    case sum
+    case dim
+    case mute
+
+    public static func forState(muted: Bool, dimmed: Bool, summed: Bool) -> Self {
+        if muted { return .mute }
+        if dimmed { return .dim }
+        if summed { return .sum }
+        return .normal
     }
 }
