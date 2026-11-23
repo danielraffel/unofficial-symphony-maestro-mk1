@@ -4432,7 +4432,8 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
     // ModifyRegister reads the BAR: never with the endpoint gone (asleep,
     // powered off, link down). Stay held; a later tick retries, and every
     // reprogram after recovery or wake goes through ClkCtrlUnmuteBits.
-    if (!XLinkTxAdmissible(ivars) ||
+    if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) ||
+        !XLinkTxAdmissible(ivars) ||
         __atomic_load_n(&ivars->hwSuspended, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&ivars->providerPowerOff, __ATOMIC_ACQUIRE))
         return;
@@ -5772,14 +5773,7 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
     if (!ivars) return;
     if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE)) return;
-    const bool startupGateWasHeld = ivars->startupOutputMuteHeld;
     MaybeReleaseStartupOutputMute(ivars, false);
-    if (startupGateWasHeld && !ivars->startupOutputMuteHeld) {
-        // The timeout tick only releases the output gate. Leave link probing
-        // to the next ordinary watch tick so the timeout adds no bus traffic.
-        ArmLinkWatch(ivars, kLinkWatchIdleNs);
-        return;
-    }
     ivars->linkWatchTicks++;
     uint64_t next = kLinkWatchFastNs;
     do {
