@@ -303,7 +303,7 @@ struct USBDeviceConnectionAddressingTests {
 struct USBMixerRestoreTests {
 
     private func defaults(_ name: String) -> UserDefaults {
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
         return d
     }
@@ -490,7 +490,7 @@ struct MixerPairLinkTests {
     @Test("migration: a pair saved unlinked becomes a linked pair at its quieter side")
     func migratesUnlinked() {
         let name = "MixerPairLinkTests.migrate"
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
         d.set(false, forKey: "mixerMasterFadersLinked")
         d.set(false, forKey: "mixerSWReturnFadersLinked")
@@ -516,7 +516,7 @@ struct MixerPairLinkTests {
     @Test("migration: linked or never-saved pairs are left exactly as they were")
     func migrationLeavesLinkedAlone() {
         let name = "MixerPairLinkTests.migrateNoop"
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
         d.set(true, forKey: "mixerMasterFadersLinked")
         d.set(-5.0, forKey: "mixerMasterLevel_0")
@@ -532,7 +532,7 @@ struct MixerPairLinkTests {
     @Test("reading the saved state never changes the saved flags or values")
     func savedStateUntouched() {
         let name = "MixerPairLinkTests.untouched"
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
         d.set(false, forKey: "mixerMasterFadersLinked")
         d.set(false, forKey: "mixerSWReturnFadersLinked")
@@ -570,7 +570,7 @@ struct USBSoftwareReturnMuteTests {
     }
 
     private func defaults(_ name: String) -> UserDefaults {
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
         return d
     }

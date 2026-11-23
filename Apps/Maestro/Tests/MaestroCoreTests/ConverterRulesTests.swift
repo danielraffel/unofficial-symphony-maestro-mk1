@@ -286,7 +286,7 @@ struct ConverterSystemTests {
         var internalClock = config; internalClock.clockExternal = false
         #expect(internalClock.word(currentClockExternal: true) & 1 == 0)
         // Stored and read back through UserDefaults.
-        let defaults = try #require(UserDefaults(suiteName: "ConverterSystemTests.deviceType"))
+        let defaults = try #require(ScratchUserDefaults(suiteName: "ConverterSystemTests.deviceType"))
         defaults.removePersistentDomain(forName: "ConverterSystemTests.deviceType")
         let unit = asAD.ports[0][0]
         ConverterConfig.saveDeviceType(.ddAsDA, unit: unit, simulated: false, defaults: defaults)
@@ -300,7 +300,7 @@ struct ConverterSystemTests {
     @Test("Device Types are kept per unit, the clock per port-1 chain, simulation apart")
     func configScopes() throws {
         let suite = "ConverterSystemTests.scopes"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = try #require(ScratchUserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let dd = try #require(ConverterSystem(simulationName: "dd16x"))

@@ -23,7 +23,7 @@ import Testing
     }
 
     @Test func offClearsOnlyTargetAndDoesNotRevokeLaterExplicitOn() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = try #require(ScratchUserDefaults(suiteName: UUID().uuidString))
         let layout = CardLayout(slot1: .analogADDA16, slot2: .micPre8)
         let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         let b = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, unit: .b, identity: 43)
@@ -66,7 +66,7 @@ import Testing
     }
 
     @Test func onAndUnmappedCannotGrantAuthority() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = try #require(ScratchUserDefaults(suiteName: UUID().uuidString))
         let store = ChannelStateStore(defaults: defaults, layout: CardLayout(slot1: .analogADDA16, slot2: .micPre8), isSimulatingCards: false, identity: 42)
         store.save([InputChannelState(inputType: 3)], for: ChannelStateStore.inputKey)
         let on = PhantomObservation.apply(Array(repeating: 0, count: 16), to: store)
@@ -79,7 +79,7 @@ import Testing
     }
 
     @Test func receiptIsAcknowledgedBeforeALaterMaestroOn() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = try #require(ScratchUserDefaults(suiteName: UUID().uuidString))
         let store = ChannelStateStore(defaults: defaults,
             layout: CardLayout(slot1: .analogADDA16, slot2: .micPre8),
             isSimulatingCards: false, identity: 42)

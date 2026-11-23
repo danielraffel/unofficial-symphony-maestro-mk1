@@ -140,7 +140,7 @@ struct UnitBAppTests {
 
     @Test("Digital settings are saved under the key they were taken with")
     func digitalSettingsKeyPerUnit() throws {
-        let defaults = try #require(UserDefaults(suiteName: "UnitBAppTests.digital"))
+        let defaults = try #require(ScratchUserDefaults(suiteName: "UnitBAppTests.digital"))
         defaults.removePersistentDomain(forName: "UnitBAppTests.digital")
         SlotDigitalSettings.remember(.spdifReplaceID, slot: 0, value: 3,
                                      key: "slotDigitalSettings.unitB.x", defaults: defaults)

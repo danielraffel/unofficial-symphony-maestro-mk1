@@ -10,7 +10,7 @@ import MaestroCore
 struct UpdateChannelDelegateTests {
     private func makeStore() -> (ChannelStore, UserDefaults, String) {
         let name = "UpdateChannelDelegateTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         return (ChannelStore(defaults: defaults), defaults, name)
     }
 
@@ -73,7 +73,7 @@ struct UpdateChannelDelegateTests {
 @Suite("Update channel delegate selectors")
 struct UpdateChannelDelegateSelectorTests {
     @Test func respondsToSparkleSelectors() {
-        let delegate = UpdateChannelDelegate(store: ChannelStore(defaults: UserDefaults(suiteName: "UpdateChannelDelegateSelectorTests")!), installedVersion: "0.8.40")
+        let delegate = UpdateChannelDelegate(store: ChannelStore(defaults: ScratchUserDefaults(suiteName: "UpdateChannelDelegateSelectorTests")!), installedVersion: "0.8.40")
         #expect(delegate.responds(to: NSSelectorFromString("allowedChannelsForUpdater:")))
         #expect(delegate.responds(to: NSSelectorFromString("updater:didFinishLoadingAppcast:")))
         #expect(delegate.responds(to: NSSelectorFromString("updater:didFinishUpdateCycleForUpdateCheck:error:")))

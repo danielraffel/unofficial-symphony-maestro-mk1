@@ -85,7 +85,7 @@ struct MicPreConnectTests {
             #expect(!phantom.isEmpty)
             #expect(phantom.allSatisfy { $0 == .bool(false) })
         }
-        let defaults = UserDefaults(suiteName: "C2.\(UUID())")!
+        let defaults = ScratchUserDefaults(suiteName: "C2.\(UUID())")!
         let old = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
         old.save([mic()], for: ChannelStateStore.inputKey)
         let current = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)

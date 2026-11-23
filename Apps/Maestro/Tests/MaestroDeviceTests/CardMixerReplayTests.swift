@@ -15,7 +15,7 @@ struct CardMixerReplayTests {
     @Test("16x16 plus 8x8 restores both mixers with the documented command count")
     func commandCountAndRightReturnID() throws {
         let name = "d5-count-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 9)
@@ -34,7 +34,7 @@ struct CardMixerReplayTests {
     @Test("Each mixer restores its own saved software-return fader")
     func separateReturnFaders() throws {
         let name = "d45-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let shared = MixerChannelState(level: -3, pan: 0.25, isMuted: true, isSoloed: true)
         defaults.set(try JSONEncoder().encode(shared), forKey: "mixerState_swReturn")
@@ -60,7 +60,7 @@ struct CardMixerReplayTests {
     @Test("A strip is muted only when it was saved muted: nothing is forced, whatever routingMode says")
     func noForcedMute() throws {
         let name = "d5-nomute-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
@@ -83,7 +83,7 @@ struct CardMixerReplayTests {
     @Test("An unrouted saved strip is written muted and unsoloed")
     func unroutedStripCannotKeepSilencingTheMixer() throws {
         let name = "d5-unrouted-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
@@ -116,7 +116,7 @@ extension CardMixerReplayTests {
     @Test("Removal, rediscovery, card swap and 64-32-64 preserve the saved mixer")
     func lifecyclePlans() throws {
         let name = "d45-lifecycle-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let a = CardLayout(slot1: .optical, slot2: .analogAD16)
         let b = CardLayout(slot1: .analogADDA16, slot2: .micPre8)
@@ -173,7 +173,7 @@ extension CardMixerReplayTests {
     @Test("An unconfigured mixer gets only its strips unmuted and the return centred")
     func noSavedState() {
         let name = "d45-empty-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
@@ -207,7 +207,7 @@ extension CardMixerReplayTests {
     @Test("Every failed mixer step ends with unlock")
     func faultEveryStep() throws {
         let name = "d45-fault-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .twoBySix, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)

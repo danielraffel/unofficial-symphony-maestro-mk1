@@ -9,7 +9,7 @@ struct MixerPreferencesTests {
 
     @Test func unidentifiedUsesReceiptForReadsAndWrites() throws {
         let name = "IdentityFallback.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set(-12.0, forKey: "mixerMasterLevel_0")
         let known = ChannelStateStore(defaults: defaults, layout: layout,
@@ -27,7 +27,7 @@ struct MixerPreferencesTests {
 
     @Test func unidentifiedBeforeMigrationUsesLegacy() throws {
         let name = "IdentityLegacy.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set(-19.0, forKey: "mixerMasterLevel_0")
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
@@ -39,7 +39,7 @@ struct MixerPreferencesTests {
 
     @Test func upgradePreservesEveryLegacyValueAndFreezesTheSource() throws {
         let name = "MixerPreferencesTests.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let strip = MixerChannelState(level: -13, pan: 0.25, isMuted: true, isSoloed: true)
         for key in MixerPreferences.legacyKeys { defaults.set(-7.0, forKey: key) }
@@ -70,7 +70,7 @@ struct MixerPreferencesTests {
 
     @Test func unitBReplacementLayoutSimulationAndPendingStaySeparate() throws {
         let name = "MixerPreferencesTests.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set(-12.0, forKey: "mixerMasterLevel_0")
         let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
@@ -103,7 +103,7 @@ struct MixerPreferencesTests {
 
     @Test func missingLegacyFieldsNeverAppearLaterAndReceiptResumes() throws {
         let name = "MixerPreferencesTests.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         let first = store.mixerPreferences

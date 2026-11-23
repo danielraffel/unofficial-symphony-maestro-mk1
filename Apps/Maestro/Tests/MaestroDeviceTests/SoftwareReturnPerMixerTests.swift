@@ -10,7 +10,7 @@ import MaestroCore
 struct SoftwareReturnPerMixerTests {
     private func prefs() -> (UserDefaults, MixerPreferences, () -> Void) {
         let name = "maestro.tests.swReturnPerMixer.\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         return (d, MixerPreferences(legacyDefaults: d), { d.removePersistentDomain(forName: name) })
     }
     private func strip(pan: Double = 0, muted: Bool, solo: Bool = false) -> MixerChannelState {

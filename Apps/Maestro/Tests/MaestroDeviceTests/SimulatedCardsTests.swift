@@ -174,9 +174,9 @@ struct SimulatedCardsTests {
     // MARK: - Activation is opt-in and inert by default
 
     private func scratchDefaults(_ name: String) -> UserDefaults {
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
-        return UserDefaults(suiteName: name)!
+        return ScratchUserDefaults(suiteName: name)!
     }
 
     @Test func inertWhenNoKeysArePresent() throws {

@@ -36,6 +36,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 - **ThunderBridge driver: replies are matched to the read they answer,** so a late reply can no longer be taken for another setting, and longer replies are accepted.
 - **Double-clicking the title bar** zooms or minimizes the window, as set in System Settings.
 - **Tests no longer touch a connected Symphony I/O or the Mac's volume** (for people building Maestro).
+- **Tests clean up their temporary preferences files** after each test.
 - **After Line, the Speaker knob shows the speakers' real level.** While Analog Out Format is Line the Symphony reports its speaker level as 0 dB, whatever it is. Maestro took that for the level, so after you left Line the knob read 0 dB and the next turn or key press could send a level far louder than the speakers were on. Maestro no longer reads the speaker level or mute in Line, and reads them from the Symphony again when you leave it.
 - **Mixer faders and pan now change the sound while you move them.** A fader, pan knob or Master only took effect once you stopped moving it, so a drag was heard late and as one jump. The level now follows the control as it moves, as in Apogee's software.
 - **Output Routing shows a mixer route again when you come back to the page.** An output you had routed to Mixer 1 or Mixer 2 was drawn back on its default software pair after you left the page and returned, while the Symphony went on playing the mixer. The routing itself was kept; only the grid was wrong.

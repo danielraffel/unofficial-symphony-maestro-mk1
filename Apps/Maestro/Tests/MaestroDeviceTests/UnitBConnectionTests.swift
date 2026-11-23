@@ -397,7 +397,7 @@ struct UnitBPersistenceTests {
     @Test("Unit B's channel state never shares unit A's key, even with the same cards")
     func channelStateKeys() throws {
         let suite = "unitB-tests-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = try #require(ScratchUserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .none, isKnown: true)
         let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
@@ -424,7 +424,7 @@ struct UnitBPersistenceTests {
         #expect(DeviceSettingsStore.defaultsKey(productID: 0x12, unit: .a) == "deviceSettings_18_v1")
         #expect(DeviceSettingsStore.defaultsKey(productID: 0x12, unit: .b) == "deviceSettings_18_unitB_v1")
         let suite = "unitB-settings-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = try #require(ScratchUserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let a = DeviceSettingsStore(defaults: defaults, productID: 0x12)
         let b = DeviceSettingsStore(defaults: defaults, productID: 0x12, unit: .b)

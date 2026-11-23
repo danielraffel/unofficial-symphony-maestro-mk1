@@ -7,7 +7,7 @@ import MaestroDevice
 struct MixerBundleScopeTests {
     @Test func bundleCommitWritesEachPhysicalOwnerOnly() throws {
         let name = "MixerBundleScopeTests.\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .none)
         let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)

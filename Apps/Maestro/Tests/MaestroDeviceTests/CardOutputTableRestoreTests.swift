@@ -21,7 +21,7 @@ struct CardMixerChokepointTests {
 
     private func completeWrites(_ mixer: Int, muted: Bool = false) -> [ThunderboltPreset.Write] {
         let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: mixer,
-                                          store: ChannelStateStore(defaults: UserDefaults(suiteName: "chokepoint.\(UUID())")!,
+                                          store: ChannelStateStore(defaults: ScratchUserDefaults(suiteName: "chokepoint.\(UUID())")!,
                                                                    layout: layout, isSimulatingCards: false, identity: 7))
         return CardMixerReplay.writes(mixer: mixer, layout: layout, snapshot: snapshot).map {
             guard muted, case .property(let address, _) = $0, address.selector == .mixerChannelMute,
@@ -276,7 +276,7 @@ struct CardMixerChokepointTests {
             }
             plan.card.append(.card(.output(route)))
         }
-        let store = ChannelStateStore(defaults: UserDefaults(suiteName: "chokepoint.\(UUID())")!,
+        let store = ChannelStateStore(defaults: ScratchUserDefaults(suiteName: "chokepoint.\(UUID())")!,
                                       layout: layout, isSimulatingCards: false, identity: 7)
         for mixer in 0..<2 {
             let a = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: mixer, store: store)

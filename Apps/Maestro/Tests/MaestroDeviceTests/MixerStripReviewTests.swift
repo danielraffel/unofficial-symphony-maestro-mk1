@@ -48,7 +48,7 @@ struct MixerStripReviewTests {
         let rb = ThunderboltInputMeterMap.currentRoutes(slot1: b.slot1, replayed: [])
         let required = CardMixerReplay.requiredAddresses(mixer: 0, layout: a, second: b,
                                                          routes: ra, secondRoutes: rb)
-        let defaults = UserDefaults(suiteName: "review-(UUID())")!
+        let defaults = ScratchUserDefaults(suiteName: "review-(UUID())")!
         let store = ChannelStateStore(defaults: defaults, layout: a, isSimulatingCards: true)
         let second = MixerStateSnapshot(channelCount: b.mixerChannelCount, mixer: 0,
                                         store: ChannelStateStore(defaults: defaults, layout: b, isSimulatingCards: true, unit: .b))
@@ -76,7 +76,7 @@ struct MixerStripReviewTests {
             for s2 in [IOCardType.none, .analogAES, .optical, .analogAD16, .analogDA16, .analogADDA16, .twoBySix, .micPre8] {
                 let layout = CardLayout(slot1: s1, slot2: s2)
                 guard layout.isKnown else { continue }
-                let defaults = UserDefaults(suiteName: "pairs-(UUID())")!
+                let defaults = ScratchUserDefaults(suiteName: "pairs-(UUID())")!
                 let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: true)
                 let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: 0, store: store)
                 let routes = ThunderboltInputMeterMap.currentRoutes(slot1: s1, replayed: [])
@@ -92,7 +92,7 @@ struct MixerStripReviewTests {
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let p2p = SymphonyIORoutingAddress.p2pBase, source = SymphonyIORoutingAddress.ioBoard0Base
         let capture = routes(layout, [(0, Int(source)), (1, Int(source))])
-        let defaults = UserDefaults(suiteName: "duplicate-(UUID())")!
+        let defaults = ScratchUserDefaults(suiteName: "duplicate-(UUID())")!
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: true)
         let writes = CardMixerReplay.writes(mixer: 0, layout: layout,
                                             snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: 0, store: store),
@@ -127,7 +127,7 @@ struct MixerStripReviewTests {
         preset.inputRoutes[0] = SymphonyIORoutingAddress.ioBoard0Base + 8
         preset.inputRouteMask = Array(repeating: true, count: 32)
         preset.outputRoutes = Array(0..<32).map(UInt8.init)
-        let defaults = UserDefaults(suiteName: "preset-review-(UUID())")!
+        let defaults = ScratchUserDefaults(suiteName: "preset-review-(UUID())")!
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: true)
         for mixer in 0..<2 {
             store.save(Array(repeating: MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false), count: layout.mixerChannelCount),

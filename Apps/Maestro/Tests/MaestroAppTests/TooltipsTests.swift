@@ -7,7 +7,7 @@ import Testing
 struct TooltipsTests {
     @Test("tooltips are enabled by default and follow the preference")
     func preferenceControlsHelp() {
-        let defaults = UserDefaults(suiteName: "TooltipsTests-\(UUID().uuidString)")!
+        let defaults = ScratchUserDefaults(suiteName: "TooltipsTests-\(UUID().uuidString)")!
         let byDefault = MaestroHelpModifier.isEnabled(defaults: defaults)
         #expect(byDefault)
         defaults.set(false, forKey: MaestroHelpModifier.preferenceKey)

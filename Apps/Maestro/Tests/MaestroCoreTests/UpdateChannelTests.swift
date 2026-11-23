@@ -279,7 +279,7 @@ length: 1661
 
     private static func freshDefaults() -> (UserDefaults, String) {
         let name = "UpdateChannelTests.\(UUID().uuidString)"
-        return (UserDefaults(suiteName: name)!, name)
+        return (ScratchUserDefaults(suiteName: name)!, name)
     }
 
     @Test func derivedBetaIsSavedAsTheChoice() {

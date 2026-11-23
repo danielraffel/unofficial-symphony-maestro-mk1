@@ -111,7 +111,7 @@ import Testing
 
     /// N3: no saved strips: acknowledge, save nothing, so no replay resets the board.
     @Test func noSavedStripsCreatesNothing() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = try #require(ScratchUserDefaults(suiteName: UUID().uuidString))
         let store = Self.store(defaults, strips: nil)
         var records = Self.empty()
         records[0] = Self.record(9, phase: true)
@@ -139,7 +139,7 @@ import Testing
     }
 
     @Test func unitBRecordsReachOnlyUnitB() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = try #require(ScratchUserDefaults(suiteName: UUID().uuidString))
         let micStrip = InputChannelState(inputType: AnalogInputLevel.mic.rawValue)
         let a = Self.store(defaults, strips: [micStrip])
         let b = Self.store(defaults, unit: .b, identity: 43, strips: [InputChannelState(), InputChannelState()])
@@ -163,7 +163,7 @@ import Testing
     /// V2: the first DAW edit a store ever sees (just after the update, or on
     /// a new unit) is applied, not taken as a baseline.
     @Test func theFirstDAWEditAfterAnUpdateIsApplied() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = try #require(ScratchUserDefaults(suiteName: UUID().uuidString))
         let fresh = ChannelStateStore(defaults: defaults, layout: Self.layout, isSimulatingCards: false, identity: 77)
         fresh.save([InputChannelState(inputType: AnalogInputLevel.mic.rawValue)], for: ChannelStateStore.inputKey)
         #expect(fresh.load(MicPreDAWObservation.seenKey, as: [UInt64].self) == nil)
@@ -187,7 +187,7 @@ import Testing
     }
 
     @Test func clearedRecordsUnknownIdentityAndSimulationChangeNothing() throws {
-        let defaults = try #require(UserDefaults(suiteName: UUID().uuidString))
+        let defaults = try #require(ScratchUserDefaults(suiteName: UUID().uuidString))
         let store = Self.store(defaults, strips: [InputChannelState()])
         var records = Self.empty()
         records[0] = MicPreEditRecord(stamp: 3, fields: 0)     // Maestro cleared every field

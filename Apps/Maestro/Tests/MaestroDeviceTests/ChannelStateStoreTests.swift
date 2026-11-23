@@ -11,7 +11,7 @@ import MaestroCore
 struct ChannelStateStoreTests {
 
     private func freshDefaults(_ name: String) -> UserDefaults {
-        let d = UserDefaults(suiteName: name)!
+        let d = ScratchUserDefaults(suiteName: name)!
         d.removePersistentDomain(forName: name)
         return d
     }
@@ -167,7 +167,7 @@ struct ChannelStateStoreTests {
 
     @Test func convertersKeepStatePerChainAndNeverClaimTheLegacyKey() throws {
         let suite = "ChannelStateStoreTests.converters"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = try #require(ScratchUserDefaults(suiteName: suite))
         defaults.removePersistentDomain(forName: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(Data("[1]".utf8), forKey: ChannelStateStore.inputKey)   // a Symphony I/O's
