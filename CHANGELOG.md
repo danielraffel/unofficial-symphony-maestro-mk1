@@ -8,7 +8,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Changes that may affect your setup
 
-- **Speaker-set routing and front-panel Mute All now stay in sync with the unit.** Leaving 2 or 3 Speaker Sets, or resetting the Output tab, restores freed pairs to their default routes. Mute All updates the speaker and both headphones, including outputs at minimum and the speaker in Line mode.
+- **Choosing 2 or 3 Speaker Sets replaces the routes on Line 3-6 with the Line 1-2 source.** Leaving speaker sets or resetting the Output tab restores those outputs to their default DAW pairs.
 
 - **The update replaces the ThunderBridge driver (0.11.18).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
 - **Mixer levels on ThunderBridge and PCIe now follow Apogee's arithmetic, so some mixes will sound different.** Master now turns down the inputs as well as Software Return, as it did in Apogee's software (before, it only changed Software Return). Pan uses Apogee's law: a centred strip is about 3 dB quieter on each side than before, and a hard-panned strip is silent on the other side. A fader or Master at the bottom is off. Master mute silences the inputs too.
@@ -24,12 +24,12 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Fixed
 
-- **Output monitor controls now match Apogee's behavior.** Option-clicking Mute, Dim or Sum to Mono applies it to the speaker and both headphones, plain clicks stay local, speaker-set formats copy the Line 1-2 route to each active set, and Output reset restores the speaker-set and headphone routing defaults. Front-panel Mute All leaves outputs already at minimum alone.
+- **Output monitor controls now match Apogee's behavior.** Option-clicking Mute, Dim or Sum to Mono applies it to the speaker and both headphones, plain clicks stay local, speaker-set formats copy the Line 1-2 route to each active set, and Output reset restores the speaker-set and headphone routing defaults.
 
 - **With converters on both ports of the card at 64 channels, the routing pages no longer go blank,** show 32 inputs and 48 outputs, and Software Return offers all 32 pairs.
 - **With one Symphony I/O on the card, Software Return offers all 16 pairs** of the port, as in Apogee's software (it offered 8).
 - **After switching from USB to ThunderBridge, Maestro connects** instead of staying Disconnected until it was reopened.
-- **In Line, the speaker level and mute are left alone.** The Symphony reports them as 0 there and ignores changes, so Maestro no longer reads them, sends them, or lets the volume keys change them.
+- **In Line, the speaker level and mute are left alone.** The Symphony reports them as 0 there and ignores changes. Option-clicking Mute still applies to the speaker and both headphones, as in Apogee's software.
 - **ThunderBridge driver: replies are matched to the read they answer,** so a late reply can no longer be taken for another setting, and longer replies are accepted.
 - **Double-clicking the title bar** zooms or minimizes the window, as set in System Settings.
 - **Tests no longer touch a connected Symphony I/O or the Mac's volume** (for people building Maestro).
@@ -62,10 +62,10 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 - **Setup files work like documents:** the window title shows the open file and whether it has changes, File › Save and Save As write it, Maestro asks before closing unsaved changes, and .mst2 files open from Finder. App Settings can reopen the last file at launch.
 - **A level overlay**, a HUD that shows speaker, headphone and 8MicPre gain changes on screen, including ones made with the front-panel knob. Off by default: turn it on in App Settings › Show level overlay.
-- **Meters show Over lights, Peak Hold and Over Hold** as set in Device Settings › Front Panel, and every digital output pair is metered. On ThunderBridge and PCIe the Input and Mixer Over lights come on when a meter reaches full scale. As in Apogee's meters, the Over box sits above 0 in dark red and lights bright red.
+- **Meters show Over lights, Peak Hold and Over Hold** as set in Device Settings › Front Panel, and every digital output pair is metered. On ThunderBridge and PCIe the Input and Mixer Over lights come on when a meter reaches full scale. As in Apogee's meters, the Over box sits beside the 0 label in dark red and lights bright red.
 - **Pan reads <64 … <0> … 64>,** as in Apogee's software; inputs are named Mic N and Inst N in Input Routing and the Mixer.
 - **Menus:** Settings… (⌘,), File › Rescan, Window › Maestro (⇧⌘O).
-- **Info buttons** on Use Loop Sync, Configured Role, Clock Status, Audio Output, Symphony Source and Audio Interface Mode, and new Help questions on Maestro USB, recording with no monitoring delay, and Loop Sync.
+- **Info buttons** on Use Loop Sync, Configured Role, Clock Status, Audio Output, Symphony Source, Audio Interface Mode, Show level overlay, Automatically switch and Preferred USB output, and new Help questions on Maestro USB, recording with no monitoring delay, and Loop Sync.
 - **Report a Bug opens the bug form on GitHub with what Maestro knows filled in:** Maestro version, update channel and driver, Mac and macOS version, connection, the Symphony's modules, firmware and FPGA, a second unit or converters, and the sample rate (Help menu, Help and App Settings). Nothing that identifies you or the unit (no serial numbers, hardware IDs or user names). Maestro no longer offers a feedback email address.
 - **The Master strip names the output its mixer is routed to,** under the fader, or "None" when the mixer is not routed to an output in Output Routing. It is a label, as in Apogee's software.
 - **Mic and instrument gain on an 8MicPre can be typed:** click the number under the gain knob. Tab moves to the next channel.

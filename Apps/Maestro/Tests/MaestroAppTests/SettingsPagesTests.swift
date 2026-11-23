@@ -162,7 +162,7 @@ struct SettingsPagesTests {
         let app = try source("MaestroApp/MaestroApp.swift")
         // The menu opens Help's own section, which asks for diagnostics first and links to GitHub.
         // The Help menu opens the GitHub bug form directly (2026-11-22, no email).
-        #expect(app.contains("Link(\"Report a Bug…\", destination: appState.reportBugURL)"))
+        #expect(app.contains("Button(\"Report a Bug…\") { NSWorkspace.shared.open(appState.reportBugURL) }"))
         #expect(app.contains("Button(\"Discuss on Gearspace…\") { NSWorkspace.shared.open(FeedbackLinks.discussion) }"))
     }
 

@@ -92,7 +92,7 @@ struct HeadroomStripAndFlagTests {
         #expect(file.headroomClamped().mixers[0].master == 0)
     }
 
-    @Test("the launch recall leaves speaker and headphone level and mute out, the rest stays")
+    @Test("the launch recall leaves monitor controls out when level recall is disabled")
     func launchRecall() throws {
         let layout = CardLayout(slot1: .optical, slot2: .none)
         var preset = ThunderboltPreset(layout: layout, metadata: MaestroPreset())
@@ -106,7 +106,8 @@ struct HeadroomStripAndFlagTests {
             #expect(all.contains(selector))
             #expect(!launch.contains(selector))
         }
-        #expect(launch.contains(.speakerOutputMode) && launch.contains(.outputDim))
+        #expect(!launch.contains(.speakerOutputMode) && !launch.contains(.outputDim))
+        #expect(!launch.contains(.activeSpeakerSet))
     }
 }
 

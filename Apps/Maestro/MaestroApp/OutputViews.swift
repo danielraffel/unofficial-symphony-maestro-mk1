@@ -310,7 +310,8 @@ struct OutputControlsView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .maestroHelp("Restore speaker/headphone levels, mute, dim, sum and speaker mode "
-                      + "to the factory defaults. Routing is not touched.")
+                      + "to the factory defaults. Headphone sources and outputs freed from speaker sets "
+                      + "also return to their defaults.")
                 // Unit B reset/replay is a separate plan item.
                 .disabled(appState.activeUnit == .b)
                 .symphonyOnly(appState.converterRoutingSurface)
@@ -528,9 +529,9 @@ struct OutputControlsView: View {
 
     private var resetMonitorMessage: String {
         if pendingResetScope == .all {
-            return "Speaker and headphone levels return to -20 dB; mute, dim and sum turn off; speaker mode returns to Stereo; all output trims return to 0.0 dB. Routing is not changed."
+            return "Speaker and headphone levels return to -20 dB; mute, dim and sum turn off; speaker mode returns to Stereo; headphone sources return to Line 1-2; outputs freed from speaker sets return to their default routes; all output trims return to 0.0 dB."
         }
-        return "Speaker and headphone levels return to -20 dB; mute, dim and sum turn off; speaker mode returns to Stereo. Trims and routing are not changed."
+        return "Speaker and headphone levels return to -20 dB; mute, dim and sum turn off; speaker mode returns to Stereo; headphone sources return to Line 1-2; outputs freed from speaker sets return to their default routes. Trims are not changed."
     }
 
     /// Reapply the session offset after asynchronous channel and monitor state
@@ -814,9 +815,10 @@ struct OutputControlsView: View {
                                     await writeMonitorProperty(.outputMute, value: .bool(false))
                                     await writeMonitorProperty(.outputDim, value: .bool(false))
                                     await writeMonitorProperty(.outputSumToMono, value: .bool(false))
-                                    await writeMonitorProperty(.speakerOutputMode, value: .uint32(val))
-                                    await appState.applySpeakerSetRouting(from: oldMode, to: val,
-                                                                          device: monitorTarget.device)
+                                    if await writeMonitorProperty(.speakerOutputMode, value: .uint32(val)) {
+                                        await appState.applySpeakerSetRouting(from: oldMode, to: val,
+                                                                              device: monitorTarget.device)
+                                    }
                                     if oldMode == 0, val != 0 {
                                         // Out of Line: the unit puts its speakers back on the
                                         // level they had before. Show that level, read from
@@ -1445,13 +1447,16 @@ struct OutputControlsView: View {
         return (trimByte << 8) | type
     }
 
-    private func writeMonitorProperty(_ selector: AudioPropertySelector, value: PropertyValue) async {
+    @discardableResult
+    private func writeMonitorProperty(_ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
         do {
-            guard appState.isCurrent(monitorTarget), let device = monitorTarget.device else { return }
+            guard appState.isCurrent(monitorTarget), let device = monitorTarget.device else { return false }
             try await device.setProperty(PropertyAddress(selector: selector), value: value)
             appState.markSetupEdited(.monitorControls)
+            return true
         } catch {
             print("[Maestro] ERROR: writeMonitorProperty \(selector) failed: \(error)")
+            return false
         }
     }
 
@@ -1568,10 +1573,9 @@ struct OutputControlsView: View {
     /// `scope` follows `SymphonyIOResetRequestType`: trims are calibration data
     /// and survive `.allButCalibration`, which is the default the UI offers first.
     ///
-    /// **Routing is deliberately not touched here.** Legacy only resets routing
-    /// when the reset is explicitly user-initiated *and* goes through the routing
-    /// controller (`SymphonyIO.cpp:1626-1634`); on this unit that would rewrite
-    /// the ADAT output crosspoints. Reset Routing lives on the routing pages.
+    /// Resetting monitor defaults also restores headphone sources and output
+    /// pairs freed from speaker sets. Other output crosspoints remain owned by
+    /// the routing pages (`SymphonyIO.cpp:1626-1634`).
     private func resetMonitorDefaults(scope: SymphonyIOResetScope) async {
         guard canEditHardware else { return }
         // The trims below are saved after several awaits: keep them to this unit.
@@ -1644,7 +1648,7 @@ struct OutputControlsView: View {
         }
         speakerConfig = UInt32(mode.rawValue)
         speakerOutputMode = UInt32(mode.rawValue)
-        await writeMonitorProperty(.speakerOutputMode, value: .uint32(UInt32(mode.rawValue)))
+        let modeWriteSucceeded = await writeMonitorProperty(.speakerOutputMode, value: .uint32(UInt32(mode.rawValue)))
         await writeMonitorProperty(.activeSpeakerSet,
                                    value: .uint32(SpeakerOutputLogic.defaultSpeakerSetMask))
         await writeMonitorProperty(.headphone1RoutingID, value: .uint32(0))
@@ -1657,8 +1661,10 @@ struct OutputControlsView: View {
                                              cachedRoutes: appState.cachedOutputRouteMap(),
                                              transport: appState.transportType ?? .usb, state: appState)
         }
-        await appState.applySpeakerSetRouting(from: oldSpeakerMode, to: UInt32(mode.rawValue),
-                                              device: target.device)
+        if modeWriteSucceeded {
+            await appState.applySpeakerSetRouting(from: oldSpeakerMode, to: UInt32(mode.rawValue),
+                                                  device: target.device)
+        }
         appState.resetKeyboardVolumeOutput(unit: monitorTarget.unit)
 
         await writeMonitorProperty(.peakHoldMode,

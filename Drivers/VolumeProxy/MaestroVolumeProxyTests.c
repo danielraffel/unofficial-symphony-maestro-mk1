@@ -355,6 +355,11 @@ static void test_startup_volume_window(void)
           "a refused louder restore is reported back to the plug-in");
     CHECK(startup_volume_refusal_should_report(3000, 5),
           "a second louder restore is still refused during the start-up window");
+    gCachedMuted = true;
+    CHECK(startup_mute_refusal_should_report(3000, false),
+          "a refused start-up unmute is reported back to the plug-in");
+    CHECK(!startup_mute_refusal_should_report(3000, true),
+          "a start-up mute is not reported as a refusal");
     CHECK(gStartupVolumeWaitUntilNs == 1000 + STARTUP_WAIT_NS,
           "reporting the kept volume does not end the start-up window");
     CHECK(!startup_volume_refusal_should_report(1000 + STARTUP_WAIT_NS, 5) &&

@@ -2956,6 +2956,7 @@ static void handle_peer(xpc_connection_t peer) {
                                           muted ? 1u : 0u, gCachedMuted ? 1u : 0u))) {
                     LOG("setMute %d ignored: the Mac's mute has not been given output %u's yet",
                         (int)muted, gMonitorOutput);
+                    report_kept_volume(peer);
                     xpc_release(peer);
                     return;
                 }

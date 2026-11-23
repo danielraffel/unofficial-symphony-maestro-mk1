@@ -2204,7 +2204,7 @@ struct AppSettingsView: View {
                 }
                 // One row each, so the form draws a separator between them.
                 VStack(alignment: .leading, spacing: 4) {
-                    Link("Report a Bug ↗", destination: appState.reportBugURL)
+                    Button("Report a Bug ↗") { NSWorkspace.shared.open(appState.reportBugURL) }
                         .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
                     HStack(spacing: 4) {
                         Text("Then send diagnostics with the issue link, so we can investigate.")

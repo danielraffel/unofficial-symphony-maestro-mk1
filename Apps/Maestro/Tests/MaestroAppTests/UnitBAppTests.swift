@@ -42,6 +42,8 @@ struct UnitBAppTests {
         #expect(output.contains("if monitorTarget.unit == .a { appState.writeASPMute(speakerMuted) }"))
         #expect(output.contains("applyMonitorToggle(.mute, clicked: .speaker"))
         #expect(output.contains("applySpeakerSetRouting(from: oldMode, to: val"))
+        #expect(output.contains("if await writeMonitorProperty(.speakerOutputMode"))
+        #expect(output.contains("headphone sources return to Line 1-2"))
         #expect(output.contains("writeMonitorProperty(.activeSpeakerSet"))
         #expect(!output.contains("if !channels.isEmpty && appState.activeUnit == .a"))
         let units = try source("AppState+UnitB.swift")
@@ -51,6 +53,13 @@ struct UnitBAppTests {
         for file in ["MonitorViews.swift", "MaestroApp.swift"] {
             #expect(try source(file).contains("appState.clearMeters()"))
         }
+    }
+
+    @Test("Batch mixer gestures save hidden strips without writing their stale card IDs")
+    func hiddenMixerBatchWrites() throws {
+        let mixer = try source("MixerViews.swift")
+        #expect(mixer.contains("private func batchChannelIsRouted(_ channel: Int) -> Bool"))
+        #expect(mixer.components(separatedBy: "if batchChannelIsRouted(i)").count - 1 >= 4)
     }
 
     @Test("Unit B output pairs route on XLink TX 32-63")

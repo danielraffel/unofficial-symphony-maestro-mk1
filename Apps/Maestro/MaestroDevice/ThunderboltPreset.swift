@@ -137,9 +137,10 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         .headphone1Level, .headphone1Mute, .headphone1Dim, .headphone1SumToMono,
         .headphone2Level, .headphone2Mute, .headphone2Dim, .headphone2SumToMono,
     ]
-    /// Speaker and headphone level and mute.
+    /// Monitor controls that launch recall must leave alone when level recall is disabled.
     public static let monitorLevelSelectors: Set<AudioPropertySelector> = [
         .outputLevel, .outputMute, .headphone1Level, .headphone1Mute, .headphone2Level, .headphone2Mute,
+        .speakerOutputMode, .outputDim, .headphone1Dim, .headphone2Dim, .activeSpeakerSet,
     ]
     public static let booleanSelectors: Set<AudioPropertySelector> = [
         .outputMute, .outputDim, .outputSumToMono,

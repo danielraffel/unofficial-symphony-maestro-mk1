@@ -601,13 +601,19 @@ struct MixerView: View {
         return Array(0..<min(editor.channels.count, channelCount))
     }
 
+    /// Hidden strips keep their saved values, but have no live card element.
+    /// Their old card ID may now belong to a different routed input.
+    private func batchChannelIsRouted(_ channel: Int) -> Bool {
+        mixerElement(channel: channel) != nil
+    }
+
     /// Set mute to the same value for all target channels.
     private func batchToggleMute(newValue: Bool) {
         let targets = batchTargetChannels
         for i in targets {
             guard i < editor.channels.count else { continue }
             editor.channels[i].isMuted = newValue
-            Task { await writeMute(channel: i, muted: newValue) }
+            if batchChannelIsRouted(i) { Task { await writeMute(channel: i, muted: newValue) } }
         }
         // Also mute/unmute SW Return so option+click on any channel
         // includes SW Return, and option+click on SW Return itself
@@ -622,7 +628,7 @@ struct MixerView: View {
         for i in 0..<editor.channels.count {
             if editor.channels[i].isSoloed != newValue {
                 editor.channels[i].isSoloed = newValue
-                Task { await writeSolo(channel: i, solo: newValue) }
+                if batchChannelIsRouted(i) { Task { await writeSolo(channel: i, solo: newValue) } }
             }
         }
         // Also apply to SW Return solo
@@ -658,7 +664,7 @@ struct MixerView: View {
             } else {
                 guard i < editor.channels.count else { continue }
                 editor.channels[i].level = newLevel
-                levelThrottle.submit(i, newLevel) { value in await writeLevel(channel: i, level: value) }
+                if batchChannelIsRouted(i) { levelThrottle.submit(i, newLevel) { value in await writeLevel(channel: i, level: value) } }
             }
         }
         saveMixerState()
@@ -680,7 +686,7 @@ struct MixerView: View {
             let steppedPan = (newPan / MixerValueConversion.panStep).rounded() * MixerValueConversion.panStep
             guard i >= 0, i < editor.channels.count else { continue }
             editor.channels[i].pan = steppedPan
-            panThrottle.submit(i, steppedPan) { value in await writePan(channel: i, pan: value) }
+            if batchChannelIsRouted(i) { panThrottle.submit(i, steppedPan) { value in await writePan(channel: i, pan: value) } }
         }
         saveMixerState()
     }
@@ -691,7 +697,7 @@ struct MixerView: View {
         for i in batchTargetChannels {
             guard i < editor.channels.count else { continue }
             editor.channels[i].pan = 0
-            Task { await writePan(channel: i, pan: 0) }
+            if batchChannelIsRouted(i) { Task { await writePan(channel: i, pan: 0) } }
         }
         saveMixerState()
     }
