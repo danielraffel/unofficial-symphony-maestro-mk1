@@ -997,9 +997,9 @@ struct MixerView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 22)
                 .padding(.horizontal, 4)
-                .background(RoundedRectangle(cornerRadius: 4).fill(Color(.controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
-                .maestroHelp("The output this mixer is routed to in Output Routing")
+                // Plain text, as in Apogee's software: a box made it look like
+                // a menu that would not open (owner, 2026-11-22).
+                .maestroHelp("The output this mixer is routed to. Change it in Output Routing; None means this mixer is not routed to an output.")
         }
         // SwiftUI points map to physical pixels on Retina;
         // two points is the observed four-pixel correction.
