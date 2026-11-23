@@ -744,7 +744,7 @@ struct OutputControlsView: View {
                         unit: "dB",
                         size: 32,
                         defaultValue: -20,
-                        arcColor: monitorRingColor(muted: speakerMuted, dimmed: speakerDim, summed: speakerSumEnabled),
+                        arcColor: monitorRingColor(muted: speakerMuted, dimmed: speakerDim, summed: speakerMono && speakerSumEnabled),
                         onUserChange: { level in
                             guard !isMonitorLoading else { return }
                             appState.showLevelOverlay(source: .speaker, level: level, muted: speakerMuted)
