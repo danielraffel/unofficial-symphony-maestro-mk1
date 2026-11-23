@@ -847,7 +847,7 @@ struct LEDMeterView: View {
     var isOver: Bool = false
     var onClear: (() -> Void)?
 
-    private static let overHeight: CGFloat = 9   // taller than a segment, like Apogee's Over box
+    private static let overHeight: CGFloat = 7   // about one segment, so it reads as one more light
     private static let segmentGap: CGFloat = 1
     /// Clear space between the Over LED and the top meter segment, so the LED
     /// reads as its own light, as in Apogee's meters.
@@ -890,13 +890,13 @@ struct LEDMeterView: View {
                     VStack(spacing: Self.segmentGap) {
                         if let onClear {
                             Button(action: onClear) {
-                                // A separate LED above the meter, always visible:
-                                // dark red with an outline when off, bright red
-                                // when lit (Apogee's Over box).
-                                RoundedRectangle(cornerRadius: 1.5)
-                                    .fill(isOver ? Color.red : Color.red.opacity(0.18))
-                                    .overlay(RoundedRectangle(cornerRadius: 1.5)
-                                        .strokeBorder(Color.red.opacity(isOver ? 0.9 : 0.45), lineWidth: 1))
+                                // A separate light above the meter, styled like
+                                // its segments: the unlit red zone colour when
+                                // off, bright red when lit (owner, 2026-11-23).
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(isOver ? colorForSegment(segmentCount - 1)
+                                          : (showZoneColoring ? colorForSegment(segmentCount - 1).opacity(0.15)
+                                             : Color(.separatorColor).opacity(0.5)))
                                     .frame(width: width, height: Self.overHeight)
                             }
                             .padding(.bottom, Self.overGap - Self.segmentGap)
