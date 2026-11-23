@@ -55,10 +55,15 @@ enum SettingsInfoText {
         "A HUD, like the one macOS shows for its volume keys: when a speaker or headphone level, a mute or an 8MicPre gain changes, Maestro shows the new level on screen for a moment.",
         "It also shows changes made with the Symphony's front-panel knob, which macOS does not show. As in Apogee's software (its Display pop-ups). Off unless you turn it on.",
     ]
+    static let autoSwitch = [
+        "When you plug the Symphony in or turn it on, Maestro makes it your Mac's sound output, so you don't have to pick it in the Sound menu. The input is left as it is.",
+        "**ThunderBridge or PCIe**: the Symphony's device, once the unit answers. **USB**: the device chosen in **Preferred USB output** below.",
+        "If you have both connected, the one you just connected wins. Turn this off to keep choosing the output yourself.",
+    ]
     static let preferredUSBOutput = [
-        "Over USB the Symphony appears on the Mac as two output devices. This chooses which one Maestro makes your Mac's output when you plug the Symphony in.",
-        "**Maestro USB** (recommended): the Mac's volume keys and menu-bar slider work. It adds about 1.3 ms of latency, which it reports to your DAW.",
-        "**USB Audio**: the Symphony's own device, with the lowest latency, but macOS gives it no volume control, so the volume keys do nothing.",
+        "Which of the Symphony's two USB devices Maestro makes your Mac's output when it switches over USB. It applies only over USB and only while **Automatically switch to Symphony when connected** is on.",
+        "**Maestro USB** (recommended): the Mac's volume keys and menu-bar slider control the Symphony. It adds about 1.3 ms of latency, which it reports to your DAW.",
+        "**USB Audio**: the Symphony's own device, with the lowest latency, but macOS gives it no volume control, so the volume keys do nothing. For recording, set your DAW's input to **USB Audio** either way.",
     ]
     static let audioOutput = [
         "The output the Mac's volume and mute keys, and the volume slider in the menu bar, control: **Speaker**, **Headphone 1** or **Headphone 2**, as in Apogee's software. Maestro remembers it for each Symphony I/O.",

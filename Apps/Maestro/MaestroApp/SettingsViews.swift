@@ -2167,7 +2167,10 @@ struct AppSettingsView: View {
                     }
                     .maestroHelp("Install a LaunchAgent that opens Maestro when a Symphony IO is plugged in")
 
-                Toggle("Automatically switch to Symphony when connected", isOn: $autoSwitchToSymphony)
+                Toggle(isOn: $autoSwitchToSymphony) {
+                    InfoLabel(title: "Automatically switch to Symphony when connected",
+                              paragraphs: SettingsInfoText.autoSwitch, helpSection: .usbOutput, appState: appState)
+                }
                     .maestroHelp("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
 
                 if autoSwitchToSymphony {
