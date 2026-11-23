@@ -137,7 +137,10 @@ forget_maestro_receipts() {
     local receipt
     # Evidence: og_source/symphonymk1/ApogeeUninstaller/Source/MainComponent.cpp:168-170
     # The original uninstaller also forgets its package receipts.
-    for receipt in com.generouscorp.maestro.core com.generouscorp.maestro.usb; do
+    # Current packages, then the identifiers earlier builds used (0.8.x).
+    for receipt in com.generouscorp.maestro.core com.generouscorp.maestro.usb \
+                   com.danielraffel.maestro com.danielraffel.maestro.hp \
+                   com.danielraffel.maestro.thunderbridge.hp com.danielraffel.Maestro.asp-testfix; do
         if pkgutil --pkg-info "$receipt" >/dev/null 2>&1; then
             pkgutil --forget "$receipt" || echo "  Could not forget the installer receipt for $receipt." >&2
         fi
