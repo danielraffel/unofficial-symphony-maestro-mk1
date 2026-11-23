@@ -5139,11 +5139,32 @@ final class AppState: @unchecked Sendable {
         if transportType == .thunderbolt {
             if ObservedMonitorLevel.source(for: keyboardVolumeOutput(for: .a)) == ObservedMonitorLevel.source(for: output) {
                 rememberMacMonitorWrite(for: output, muted: muted)
+                // Also set the driver's Core Audio mute control, so macOS saves
+                // the mute with the device and restores it within the driver's
+                // start-up hold after a replug (it saved "unmuted" before, and
+                // the speakers played for a few seconds; 2026-11-22 21:53).
+                writeThunderboltMacMute(muted)
             }
             return
         }
         guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
         writeMacMute(muted)
+    }
+
+    private func writeThunderboltMacMute(_ muted: Bool) {
+        guard !hardwareWritesSuspended, let targetID = activeAudioDeviceID,
+              targetID != kAudioObjectUnknown else { return }
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var current: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        if AudioObjectGetPropertyData(targetID, &addr, 0, nil, &size, &current) == noErr,
+           (current != 0) == muted { return }
+        var value: UInt32 = muted ? 1 : 0
+        _ = AudioObjectSetPropertyData(targetID, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
     }
 
     private func writeMacMute(_ muted: Bool) {
