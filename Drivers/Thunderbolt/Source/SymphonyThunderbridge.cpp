@@ -11049,12 +11049,13 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             if (speaker || headphone) {
                 const bool b = port == 1;
                 const unsigned kind = speaker ? 0 : value + 1;
-                if (command == kSIOCmd_SpeakerVolume || command == kSIOCmd_HeadphoneVolume)
+                if (command == kSIOCmd_SpeakerVolume || command == kSIOCmd_HeadphoneVolume) {
                     MonitorAttenuation(ivars, b, kind) = payload[0];
                     if (!b && kind == 0 && !__atomic_load_n(&ivars->lineMode, __ATOMIC_ACQUIRE))
                         ivars->speakerLevelKnown = true;
-                else
+                } else {
                     MonitorMute(ivars, b, kind) = payload[0] != 0;
+                }
                 if (b == ivars->monitorDeviceB && SelectedMonitorKind(ivars, b) == kind) PublishSelectedMonitor(ivars);
             }
         }

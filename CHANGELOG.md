@@ -63,7 +63,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Release notes
 
-- ThunderBridge driver 0.11.18 (build 146), from 0.11.17 (build 143).
+- ThunderBridge driver 0.11.18 (build 147), from 0.11.17 (build 143).
 - Over USB, Pro Tools HD mode is not handled yet: Apogee's Maestro set levels, formats and headphone routing in that mode, and this one does not.
 
 ### Please test

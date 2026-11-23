@@ -370,10 +370,25 @@ static void test_power_actions(void)
     gUSBDev = NULL; gLockedForPower = true;
     set_power_lock(true);
     CHECK(!gLockedForPower, "with no unit on USB nothing is locked");
+    CHECK(power_lock_held_after(true, 0), "a lock that was written holds");
+    CHECK(power_lock_held_after(true, -1), "a lock that returned an error may still have landed: unlock at wake");
+    CHECK(power_lock_held_after(false, -1), "a failed unlock leaves it held, so it is retried");
+    CHECK(!power_lock_held_after(false, 0), "a written unlock releases it");
+}
+
+static void test_latency_defaults_scale_with_rate(void)
+{
+    CHECK(default_scaled_for_rate(64, 44100.0) == 64, "44.1 kHz keeps the 48 kHz frames");
+    CHECK(default_scaled_for_rate(64, 48000.0) == 64, "48 kHz as measured");
+    CHECK(default_scaled_for_rate(64, 96000.0) == 128, "96 kHz doubles the frames");
+    CHECK(default_scaled_for_rate(32, 192000.0) == 128, "192 kHz quadruples the helper buffer");
+    CHECK(default_scaled_for_rate(50, 88200.0) == 92, "88.2 kHz scales by 1.8375");
+    CHECK(default_scaled_for_rate(64, 0.0) == 64, "an unknown rate keeps the 48 kHz frames");
 }
 
 int main(void)
 {
+    test_latency_defaults_scale_with_rate();
     test_power_actions();
     test_startup_volume_window();
     check_monitor_output();

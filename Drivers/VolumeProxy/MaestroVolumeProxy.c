@@ -128,6 +128,15 @@ static uint32_t gTuneMinDelay     = 0;
 #define DEFAULT_IO_BUFFER_FRAMES 32u
 #define DEFAULT_JITTER_MARGIN    50u
 #define DEFAULT_MIN_DELAY        64u
+/* The defaults were measured at 48 kHz. Above it they are scaled with the
+   rate, so the IO cycle, the slack and the floor keep the same time (64
+   frames at 48 kHz, 128 at 96, 256 at 192: 1.3 ms at each). Values set
+   with setLatencyTuning are used as given. */
+static uint32_t default_scaled_for_rate(uint32_t frames48k, double rate)
+{
+    if (!(rate > 48000.0)) return frames48k;
+    return (uint32_t)((double)frames48k * rate / 48000.0 + 0.5);
+}
 /* Worst headroom (frames the plugin had written beyond what we read) since the
    output last started or the tuning changed; negative = audio was read before
    it was written, i.e. a dropout. Written on the render thread only. */
@@ -1249,7 +1258,7 @@ static void start_audio_output(MaestroAudioShm* shm)
                 kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
             };
             UInt32 rsz = (UInt32)sizeof(range);
-            UInt32 want = gTuneBufferFrames ? gTuneBufferFrames : DEFAULT_IO_BUFFER_FRAMES;
+            UInt32 want = gTuneBufferFrames ? gTuneBufferFrames : default_scaled_for_rate(DEFAULT_IO_BUFFER_FRAMES, gHwNominalRate);
             if (AudioObjectGetPropertyData(devID, &r, 0, NULL, &rsz, &range) == noErr && range.mMaximum > 0) {
                 if (want < (UInt32)range.mMinimum) want = (UInt32)range.mMinimum;
                 if (want > (UInt32)range.mMaximum) want = (UInt32)range.mMaximum;
@@ -1268,8 +1277,8 @@ static void start_audio_output(MaestroAudioShm* shm)
             safety = 0;
 
         uint32_t D = maestro_shm_compute_delay_tuned(bufFrames, safety,
-            gTuneJitterMargin ? gTuneJitterMargin : DEFAULT_JITTER_MARGIN,
-            gTuneMinDelay ? gTuneMinDelay : DEFAULT_MIN_DELAY);
+            gTuneJitterMargin ? gTuneJitterMargin : default_scaled_for_rate(DEFAULT_JITTER_MARGIN, gHwNominalRate),
+            gTuneMinDelay ? gTuneMinDelay : default_scaled_for_rate(DEFAULT_MIN_DELAY, gHwNominalRate));
         if (D >= MAESTRO_SHM_RING_FRAMES / 2)
             LOG_ERR("D clamped at %u — device buffer %u is too large for the ring", D, bufFrames);
         if (shm) {
@@ -3537,11 +3546,27 @@ static PowerAction power_action(natural_t message)
 }
 
 static io_connect_t gPowerRoot = MACH_PORT_NULL;
+/* True from the moment a lock is attempted until an unlock succeeds. A lock
+   that reached the unit but returned an error (USB going down) still counts,
+   so the unlock at wake is always tried. */
 static bool gLockedForPower = false;
+/* Bumped by every lock or unlock request, so a pending unlock retry from an
+   earlier wake never unlocks a later sleep's lock. */
+static unsigned gPowerLockGeneration = 0;
+
+/* Whether the unit may still be locked after a lock (lock true) or unlock
+   attempt that returned err. */
+static bool power_lock_held_after(bool lock, int err)
+{
+    return lock || err != 0;
+}
+
+static void power_unlock_retry(unsigned generation);
 
 static void set_power_lock(bool lock)
 {
-    if (!gUSBDev) { gLockedForPower = false; return; }
+    gPowerLockGeneration++;
+    if (!gUSBDev) { gLockedForPower = false; return; }   /* re-enumeration unlocks in configure_fpga_routing */
     uint8_t value = lock ? 1 : 0;
     int err = -1;
     for (int attempt = 0; attempt < 3 && err != 0; attempt++) {
@@ -3549,8 +3574,21 @@ static void set_power_lock(bool lock)
         if (err && !lock) usleep(200 * 1000);
         if (lock) break;   /* going to sleep: one try, never delay the Mac */
     }
-    gLockedForPower = lock && err == 0;
+    gLockedForPower = power_lock_held_after(lock, err);
     LOG("Power: PreferenceLoadLock(%s) %s", lock ? "true" : "false", err ? "FAILED" : "OK");
+    if (!lock && err) power_unlock_retry(gPowerLockGeneration);
+}
+
+/* An unlock that failed is tried again every five seconds until it succeeds,
+   the unit goes away, or the Mac locks it again for another sleep. */
+static void power_unlock_retry(unsigned generation)
+{
+    if (!gQueue) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), gQueue, ^{
+        if (generation != gPowerLockGeneration || !gLockedForPower) return;
+        LOG("Power: retrying the unlock after wake");
+        set_power_lock(false);
+    });
 }
 
 static void power_callback(void *refcon, io_service_t service, natural_t message, void *argument)
@@ -3566,7 +3604,7 @@ static void power_callback(void *refcon, io_service_t service, natural_t message
             if (gLockedForPower) { LOG("Power: still running a minute after shutdown/restart was announced; unlocking"); set_power_lock(false); }
         });
     }
-    else if (action == POWER_UNLOCK && gLockedForPower) set_power_lock(false);
+    else if (action == POWER_UNLOCK && gLockedForPower) set_power_lock(false);   /* always tried after an attempted lock */
     if (message == kIOMessageCanSystemSleep || message == kIOMessageSystemWillSleep)
         IOAllowPowerChange(gPowerRoot, (long)argument);
 }

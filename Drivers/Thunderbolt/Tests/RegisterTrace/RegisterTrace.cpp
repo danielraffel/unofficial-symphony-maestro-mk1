@@ -1444,6 +1444,43 @@ static void CheckMonitorOutputSelector(const char *name, Run &r)
 }
 #endif
 
+// A speaker or headphone level or mute Maestro writes through the driver is
+// kept as written and survives a link recovery (the review of 0.9.23 found a
+// dangling else that dropped the speaker mute and derived the headphone mute
+// from its level).
+static void RunAppMonitorWriteRecoveryChecks()
+{
+    {
+        Options o; o.name = "app monitor writes: speaker mute"; o.shortFlow = true;
+        Run r; RunScenario(o, r);
+        uint8_t one = 1;
+        CHECK(r.drv->SendVendorCommand(0x27, 0, &one, 1) == kIOReturnSuccess, "%s: send", o.name);
+        CHECK(gHostAudio.mute->GetControlValue(), "%s: the Mac's mute control does not show the app's speaker mute", o.name);
+        ResetCardAndRecover(r);
+        CHECK(StoredOn(r, 0, 0x27) == 1, "%s: a link recovery unmuted the speakers (0x27=%u)", o.name, StoredOn(r, 0, 0x27));
+    }
+    {
+        Options o; o.name = "app monitor writes: headphone level"; o.shortFlow = true;
+        Run r; RunScenario(o, r);
+        CHECK(r.drv->SetMonitorOutput(0, kSymphonyMonitorOutputHP1) == kIOReturnSuccess, "%s: HP1 refused", o.name);
+        uint8_t lvl = 30;
+        CHECK(r.drv->SendVendorCommand(0x23, 0, &lvl, 1) == kIOReturnSuccess, "%s: send", o.name);
+        CHECK(!gHostAudio.mute->GetControlValue(), "%s: a headphone level showed as muted", o.name);
+        ResetCardAndRecover(r);
+        CHECK(StoredOn(r, 0, 0x24, 0) == 0, "%s: a link recovery muted Headphone 1 (0x24=%u)", o.name, StoredOn(r, 0, 0x24, 0));
+    }
+    {
+        Options o; o.name = "app monitor writes: muted headphone at full level"; o.shortFlow = true;
+        Run r; RunScenario(o, r);
+        uint8_t one = 1, zero = 0;
+        CHECK(r.drv->SendVendorCommand(0x24, 0, &one, 1) == kIOReturnSuccess, "%s: mute", o.name);
+        CHECK(r.drv->SendVendorCommand(0x23, 0, &zero, 1) == kIOReturnSuccess, "%s: level", o.name);
+        ResetCardAndRecover(r);
+        CHECK(StoredOn(r, 0, 0x24, 0) == 1 && StoredOn(r, 0, 0x23, 0) == 0,
+              "%s: after recovery Headphone 1 mute=%u level=%u (want muted at 0)", o.name, StoredOn(r, 0, 0x24, 0), StoredOn(r, 0, 0x23, 0));
+    }
+}
+
 static void RunMonitorOutputChecks()
 {
     // 1. One Symphony I/O.
@@ -5691,6 +5728,7 @@ int main(int argc, char **argv)
 #endif
 #if defined(TRACE_HAVE_CONVERTER_VOLUME) && defined(kSelectorSetMonitorOutput)
     RunMonitorOutputChecks();
+    RunAppMonitorWriteRecoveryChecks();
 #endif
 #ifdef TRACE_HAVE_CONVERTER_PARITY
     RunConverterParityChecks();

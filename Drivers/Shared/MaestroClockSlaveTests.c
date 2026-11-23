@@ -429,9 +429,11 @@ int main(void)
 
     /* Smaller helper buffers and slack (setLatencyTuning): the D the tuned
        formula gives still holds for every client buffer, writer at deadline. */
-    const uint32_t proxyBufs[] = { 64, 128, 256 };
-    const uint32_t margins[]   = { 64, 128, 256 };
-    for (size_t p = 0; p < 3; p++) for (size_t m = 0; m < 3; m++) {
+    /* The shipped default (32/50/64 at 48 kHz) and its rate-scaled forms
+       (64/100/128 at 96 kHz, 128/200/256 at 192 kHz) included. */
+    const uint32_t proxyBufs[] = { 32, 64, 128, 256 };
+    const uint32_t margins[]   = { 50, 64, 100, 128, 200, 256 };
+    for (size_t p = 0; p < 4; p++) for (size_t m = 0; m < 6; m++) {
         const uint32_t Dt = maestro_shm_compute_delay_tuned(proxyBufs[p], 14, margins[m], 64);
         for (size_t i = 0; i < sizeof(clientBufs)/sizeof(clientBufs[0]); i++) {
             long h = test_ordering(proxyBufs[p], 14, clientBufs[i], MAESTRO_SHM_PLUGIN_SAFETY,
