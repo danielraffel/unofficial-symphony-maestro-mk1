@@ -1724,46 +1724,49 @@ struct MixerChannelStripView: View {
                 }
 
             if showPan {
-                // Pan knob — larger, no built-in readout
-                RotaryKnobView(
-                    value: $channel.pan,
-                    range: -1...1,
-                    step: MixerValueConversion.panStep,
-                    label: "",
-                    unit: "",
-                    size: 36,
-                    defaultValue: 0,
-                    arcColor: .orange,
-                    bipolar: true,
-                    externalReadout: true,
-                    onUserChange: { newPan in if onPanChangeWithOld == nil { onPanChange?(newPan) } },
-                    onUserChangeWithOld: { old, new in onPanChangeWithOld?(old, new) },
-                    onBatchDrag: onBatchPanChange,
-                    onBatchDragStart: onBatchPanDragStart,
-                    onBatchDragEnd: onBatchPanDragEnd,
-                    onOptionClick: onPanOptionClick
-                )
-                .maestroHelp("Pan: \(panText) — Shift-click the name to select strips, double-click to center, Option+click center all, Option+drag all")
-
-                // Pan value — pill readout
-                if let panReadoutEntry {
-                    EditableLevelReadout(
-                        value: Binding(get: { channel.pan }, set: { newPan in
-                            let oldPan = channel.pan
-                            channel.pan = newPan
-                            if let callback = onPanChangeWithOld { callback(oldPan, newPan) }
-                            else { onPanChange?(newPan) }
-                        }),
+                // Same 87 pt lane as the strips without pan, so every strip
+                // keeps one baseline (the typed pan box is taller than the old pill).
+                VStack(spacing: 3) {
+                    // Pan knob — larger, no built-in readout
+                    RotaryKnobView(
+                        value: $channel.pan,
                         range: -1...1,
                         step: MixerValueConversion.panStep,
-                        entry: panReadoutEntry,
-                        parseTypedValue: { MixerValueConversion.panValue(typed: $0) },
-                        displayText: MixerValueConversion.panReadout)
-                    .maestroHelp("Pan value: type 0, -13, +20, L13, R20 or C; Tab moves to the next visible strip")
-                }
+                        label: "",
+                        unit: "",
+                        size: 36,
+                        defaultValue: 0,
+                        arcColor: .orange,
+                        bipolar: true,
+                        externalReadout: true,
+                        onUserChange: { newPan in if onPanChangeWithOld == nil { onPanChange?(newPan) } },
+                        onUserChangeWithOld: { old, new in onPanChangeWithOld?(old, new) },
+                        onBatchDrag: onBatchPanChange,
+                        onBatchDragStart: onBatchPanDragStart,
+                        onBatchDragEnd: onBatchPanDragEnd,
+                        onOptionClick: onPanOptionClick
+                    )
+                    .maestroHelp("Pan: \(panText) — Shift-click the name to select strips, double-click to center, Option+click center all, Option+drag all")
 
-                // Breathing room between pan pill and fader (enough for thumb overtravel)
-                Spacer().frame(height: 14)
+                    // Pan value — pill readout
+                    if let panReadoutEntry {
+                        EditableLevelReadout(
+                            value: Binding(get: { channel.pan }, set: { newPan in
+                                let oldPan = channel.pan
+                                channel.pan = newPan
+                                if let callback = onPanChangeWithOld { callback(oldPan, newPan) }
+                                else { onPanChange?(newPan) }
+                            }),
+                            range: -1...1,
+                            step: MixerValueConversion.panStep,
+                            entry: panReadoutEntry,
+                            parseTypedValue: { MixerValueConversion.panValue(typed: $0) },
+                            displayText: MixerValueConversion.panReadout)
+                        .maestroHelp("Pan value: type 0, -13, +20, L13, R20 or C; Tab moves to the next visible strip")
+                    }
+
+                }
+                .frame(height: 87, alignment: .top)
             } else {
                 // SW Return has no pan control, but it occupies the same
                 // vertical pan lane so its stereo faders align with Master
