@@ -151,7 +151,7 @@ struct ConverterRoutingTests {
     @Test func routesAreKeptPerChain() throws {
         let suite = "ConverterRoutingTests.\(UUID().uuidString)"
         let defaults = try #require(ScratchUserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
 
         let one = try #require(ConverterSystem(simulationName: "ad16x+da16x"))
         let other = try #require(ConverterSystem(simulationName: "da16x+ad16x"))

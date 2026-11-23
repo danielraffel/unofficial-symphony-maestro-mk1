@@ -23,7 +23,7 @@ struct MixerHeadroomMigrationTests {
     func migration() throws {
         let name = "MixerHeadroomMigrationTests.\(UUID().uuidString)"
         let defaults = try #require(ScratchUserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 7)
         let prefs = store.mixerPreferences
@@ -57,7 +57,7 @@ struct HeadroomStripAndFlagTests {
     func strips() throws {
         let name = "HeadroomStrips.\(UUID().uuidString)"
         let defaults = try #require(ScratchUserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 9)
         let prefs = store.mixerPreferences
@@ -119,7 +119,7 @@ struct PresetHeadroomTests {
         var preset = ThunderboltPreset(layout: layout, metadata: MaestroPreset())
         let name = "PresetHeadroomTests.\(UUID().uuidString)"
         let defaults = try #require(ScratchUserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 3)
         let snapshot = MixerStateSnapshot(channelCount: 2, mixer: 0, store: store)
         var mixer = ThunderboltPreset.Mixer(snapshot: snapshot)

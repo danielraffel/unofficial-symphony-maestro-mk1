@@ -8,7 +8,7 @@ struct MixerBundleScopeTests {
     @Test func bundleCommitWritesEachPhysicalOwnerOnly() throws {
         let name = "MixerBundleScopeTests.\(UUID())"
         let defaults = try #require(ScratchUserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .none)
         let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         let b = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, unit: .b, identity: 84)

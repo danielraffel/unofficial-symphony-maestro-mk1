@@ -9,7 +9,7 @@ struct MonitorDeviceSelectionTests {
     func defaultAndPersistence() {
         let suite = "MonitorDeviceSelectionTests.\(UUID().uuidString)"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         #expect(MonitorDeviceSelectionStore.load(productID: 2200, defaults: defaults) == .a)
         MonitorDeviceSelectionStore.save(.b, productID: 2200, defaults: defaults)
         #expect(MonitorDeviceSelectionStore.load(productID: 2200, defaults: defaults) == .b)

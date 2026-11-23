@@ -13,8 +13,14 @@ struct VBusAppTests {
                              defaults: UserDefaults? = nil)
         -> (AppState, ThunderboltDeviceConnection, FakeThunderboltDriver, UserDefaults) {
         let name = "VBusAppTests.\(UUID().uuidString)"
-        let store = defaults ?? ScratchUserDefaults(suiteName: name)!
-        if defaults == nil { store.removePersistentDomain(forName: name) }
+        let store: UserDefaults
+        if let defaults {
+            store = defaults
+        } else {
+            let scratch = ScratchUserDefaults(suiteName: name)!
+            scratch.cleanup()
+            store = scratch
+        }
         let state = AppState()
         state.vbusDefaults = store
         state.connectionMode = .hardware

@@ -19,7 +19,7 @@ struct UpdateControllerRefreshTests {
     @Test func aFinishedGoBackRedrawsPreferences() async throws {
         let name = "UpdateControllerRefreshTests.\(UUID().uuidString)"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         defer { try? FileManager.default.removeItem(at: root) }
 

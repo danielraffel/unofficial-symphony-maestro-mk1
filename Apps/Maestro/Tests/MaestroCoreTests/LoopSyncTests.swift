@@ -47,7 +47,7 @@ struct LoopSyncTests {
     @Test func persistenceDoesNotTurnPreferencesIntoAReading() throws {
         let name = "LoopSyncTests.\(UUID())"
         let defaults = try #require(ScratchUserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         #expect(LoopSyncSettings.saved(in: defaults) == nil)
         let saved = LoopSyncSettings(enabled: false, master: .b)
         saved.save(in: defaults)

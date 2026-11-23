@@ -150,12 +150,12 @@ struct UnitBAppTests {
     @Test("Digital settings are saved under the key they were taken with")
     func digitalSettingsKeyPerUnit() throws {
         let defaults = try #require(ScratchUserDefaults(suiteName: "UnitBAppTests.digital"))
-        defaults.removePersistentDomain(forName: "UnitBAppTests.digital")
+        defaults.cleanup()
         SlotDigitalSettings.remember(.spdifReplaceID, slot: 0, value: 3,
                                      key: "slotDigitalSettings.unitB.x", defaults: defaults)
         #expect(SlotDigitalSettings.load(key: "slotDigitalSettings.unitB.x", defaults: defaults).spdifReplace[0] == 3)
         #expect(SlotDigitalSettings.load(key: "slotDigitalSettings.x", defaults: defaults).spdifReplace[0] == nil)
-        defaults.removePersistentDomain(forName: "UnitBAppTests.digital")
+        defaults.cleanup()
     }
 
     @Test("Unit B's output routes are kept per unit B card pair")

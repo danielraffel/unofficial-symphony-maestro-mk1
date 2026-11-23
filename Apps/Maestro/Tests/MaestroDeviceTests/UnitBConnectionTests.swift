@@ -398,7 +398,7 @@ struct UnitBPersistenceTests {
     func channelStateKeys() throws {
         let suite = "unitB-tests-\(UUID().uuidString)"
         let defaults = try #require(ScratchUserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .none, isKnown: true)
         let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
         let b = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, unit: .b)
@@ -425,7 +425,7 @@ struct UnitBPersistenceTests {
         #expect(DeviceSettingsStore.defaultsKey(productID: 0x12, unit: .b) == "deviceSettings_18_unitB_v1")
         let suite = "unitB-settings-\(UUID().uuidString)"
         let defaults = try #require(ScratchUserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let a = DeviceSettingsStore(defaults: defaults, productID: 0x12)
         let b = DeviceSettingsStore(defaults: defaults, productID: 0x12, unit: .b)
         a.record(.uint32(1), for: PropertyAddress(selector: .peakHoldMode))

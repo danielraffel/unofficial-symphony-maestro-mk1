@@ -28,7 +28,7 @@ struct CardMixerRestoreTests {
                                count: tail ? 52 : 48, nonce: nonce, flags: flags))!
     }
 
-    static func store(_ name: String, layout: CardLayout) -> (ChannelStateStore, UserDefaults, String) {
+    static func store(_ name: String, layout: CardLayout) -> (ChannelStateStore, ScratchUserDefaults, String) {
         let suite = "d5-\(name)-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
         return (ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42), defaults, suite)
@@ -262,7 +262,7 @@ struct CardMixerRestoreTests {
     func unsavedMixer() throws {
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let (store, defaults, suite) = Self.store("unsaved", layout: layout)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         store.mixerPreferences.set(try JSONEncoder().encode(MixerChannelState(level: -3, pan: 0, isMuted: false, isSoloed: false)),
                                    forKey: "mixerState_swReturn")
         store.mixerPreferences.set(-6.0, forKey: "mixerMasterLevel_0")
@@ -286,7 +286,7 @@ struct CardMixerRestoreTests {
     func savedOnly() throws {
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let (store, defaults, suite) = Self.store("partial", layout: layout)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let strip = MixerChannelState(level: -9, pan: 0.5, isMuted: false, isSoloed: true)
         store.save(Array(repeating: strip, count: 5), for: ChannelStateStore.mixerKey(1))
         store.mixerPreferences.set(-12.0, forKey: "mixerSWReturnLeftLevel_1")
@@ -319,7 +319,7 @@ struct CardMixerRestoreTests {
     func heldSource() {
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let (store, defaults, suite) = Self.store("source", layout: layout)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         store.mixerPreferences.set(3, forKey: "mixerSoftwareReturnSource_0")
         #expect(Self.value(CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store),
                            .mixerSoftwareReturnID, 0x10000)?.asUInt32 == 3)
@@ -332,7 +332,7 @@ struct CardMixerRestoreTests {
     func fullTrafficCount() throws {
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let (store, defaults, suite) = Self.store("count", layout: layout)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let strip = MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: false)
         store.mixerPreferences.set(try JSONEncoder().encode(strip), forKey: "mixerState_swReturn")
         for mixer in 0..<2 {

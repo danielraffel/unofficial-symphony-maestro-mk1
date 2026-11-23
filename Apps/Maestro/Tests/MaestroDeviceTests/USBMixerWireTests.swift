@@ -304,7 +304,7 @@ struct USBMixerRestoreTests {
 
     private func defaults(_ name: String) -> UserDefaults {
         let d = ScratchUserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         return d
     }
 
@@ -491,7 +491,7 @@ struct MixerPairLinkTests {
     func migratesUnlinked() {
         let name = "MixerPairLinkTests.migrate"
         let d = ScratchUserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         d.set(false, forKey: "mixerMasterFadersLinked")
         d.set(false, forKey: "mixerSWReturnFadersLinked")
         d.set(-1.0, forKey: "mixerMasterLevel_0")
@@ -517,7 +517,7 @@ struct MixerPairLinkTests {
     func migrationLeavesLinkedAlone() {
         let name = "MixerPairLinkTests.migrateNoop"
         let d = ScratchUserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         d.set(true, forKey: "mixerMasterFadersLinked")
         d.set(-5.0, forKey: "mixerMasterLevel_0")
         d.set(-3.0, forKey: "mixerMasterLeftLevel_0"); d.set(-9.0, forKey: "mixerMasterRightLevel_0")
@@ -533,7 +533,7 @@ struct MixerPairLinkTests {
     func savedStateUntouched() {
         let name = "MixerPairLinkTests.untouched"
         let d = ScratchUserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         d.set(false, forKey: "mixerMasterFadersLinked")
         d.set(false, forKey: "mixerSWReturnFadersLinked")
         d.set(-3.0, forKey: "mixerMasterLeftLevel_0"); d.set(-9.0, forKey: "mixerMasterRightLevel_0")
@@ -571,7 +571,7 @@ struct USBSoftwareReturnMuteTests {
 
     private func defaults(_ name: String) -> UserDefaults {
         let d = ScratchUserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         return d
     }
 

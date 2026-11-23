@@ -10,9 +10,9 @@ import MaestroCore
 @Suite("Channel state store")
 struct ChannelStateStoreTests {
 
-    private func freshDefaults(_ name: String) -> UserDefaults {
+    private func freshDefaults(_ name: String) -> ScratchUserDefaults {
         let d = ScratchUserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         return d
     }
 
@@ -161,15 +161,15 @@ struct ChannelStateStoreTests {
         #expect(presets?.count == 2)
         #expect(presets?[0]?.level == .mic)
         #expect(presets?[1]?.level == .instrument)
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         #expect(CardSimulation.analogLevelsKey == "MaestroSimulateAnalogLevels")
     }
 
     @Test func convertersKeepStatePerChainAndNeverClaimTheLegacyKey() throws {
         let suite = "ChannelStateStoreTests.converters"
         let defaults = try #require(ScratchUserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.cleanup()
+        defer { defaults.cleanup() }
         defaults.set(Data("[1]".utf8), forKey: ChannelStateStore.inputKey)   // a Symphony I/O's
         let system = try #require(ConverterSystem(simulationName: "ad16x+da16x"))
         let layout = CardLayout(isKnown: false, converters: system)

@@ -16,7 +16,7 @@ struct CardMixerReplayTests {
     func commandCountAndRightReturnID() throws {
         let name = "d5-count-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 9)
         let state = MixerChannelState(level: -6, pan: 0.1, isMuted: false, isSoloed: false)
@@ -35,7 +35,7 @@ struct CardMixerReplayTests {
     func separateReturnFaders() throws {
         let name = "d45-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let shared = MixerChannelState(level: -3, pan: 0.25, isMuted: true, isSoloed: true)
         defaults.set(try JSONEncoder().encode(shared), forKey: "mixerState_swReturn")
         let layout = CardLayout(slot1: .optical, slot2: .none)
@@ -61,7 +61,7 @@ struct CardMixerReplayTests {
     func noForcedMute() throws {
         let name = "d5-nomute-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         // The removed setting's old value for "DAW" (0), in the scoped store and globally.
@@ -84,7 +84,7 @@ struct CardMixerReplayTests {
     func unroutedStripCannotKeepSilencingTheMixer() throws {
         let name = "d5-unrouted-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         store.save(Array(repeating: MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: true),
@@ -117,7 +117,7 @@ extension CardMixerReplayTests {
     func lifecyclePlans() throws {
         let name = "d45-lifecycle-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let a = CardLayout(slot1: .optical, slot2: .analogAD16)
         let b = CardLayout(slot1: .analogADDA16, slot2: .micPre8)
         let storeA = ChannelStateStore(defaults: defaults, layout: a, isSimulatingCards: false, identity: 42)
@@ -174,7 +174,7 @@ extension CardMixerReplayTests {
     func noSavedState() {
         let name = "d45-empty-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .optical)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         // The driver starts its card mixer with the inputs muted; an untouched
@@ -208,7 +208,7 @@ extension CardMixerReplayTests {
     func faultEveryStep() throws {
         let name = "d45-fault-\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .twoBySix, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: 0, store: store, defaults: defaults)

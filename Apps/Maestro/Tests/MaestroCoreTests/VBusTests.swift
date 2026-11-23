@@ -11,7 +11,7 @@ struct VBusTests {
     private func defaults() -> UserDefaults {
         let name = "VBusTests.\(UUID().uuidString)"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
+        defaults.cleanup()
         return defaults
     }
 

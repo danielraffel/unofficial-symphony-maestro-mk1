@@ -79,7 +79,7 @@ struct UnitIdentityTests {
 
     @Test func identityScopesMigrateLayoutOnce() {
         let suite = "maestro.tests.identity.\(UUID().uuidString)"
-        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .optical, slot2: .analogAD16)
         let legacy = "inputChannelStates.\(layout.savedStateScope!)"
         defaults.set(Data("legacy".utf8), forKey: legacy)
@@ -92,7 +92,7 @@ struct UnitIdentityTests {
 
     @Test func identityScopeKeepsTheCardLayout() {
         let suite = "maestro.tests.identity.layout.\(UUID().uuidString)"
-        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.cleanup() }
         let a = CardLayout(slot1: .optical, slot2: .analogAD16)
         let b = CardLayout(slot1: .analogADDA16, slot2: .none)
         let storeA = ChannelStateStore(defaults: defaults, layout: a, isSimulatingCards: false, identity: 0xA)
@@ -108,7 +108,7 @@ struct UnitIdentityTests {
 
     @Test func settingsIdentityMigrationDoesNotFollowReplacement() {
         let suite = "maestro.tests.identity.settings.\(UUID().uuidString)"
-        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.cleanup() }
         let address = PropertyAddress(selector: .prefix)
         DeviceSettingsStore(defaults: defaults, productID: 0x12).record(.string("A"), for: address)
         let first = DeviceSettingsStore(defaults: defaults, productID: 0x12, identity: 1)
@@ -119,7 +119,7 @@ struct UnitIdentityTests {
 
     @Test func markerWithoutIdentityContinuesUsingMigratedChannelScope() {
         let suite = "maestro.tests.identity.marker.\(UUID().uuidString)"
-        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .optical, slot2: .analogAD16)
         let legacy = "inputChannelStates.\(layout.savedStateScope!)"
         let migratedScope = "unitA:v2:a:\(layout.savedStateScope!)"
@@ -135,7 +135,7 @@ struct UnitIdentityTests {
 
     @Test func settingsMarkerWithoutIdentityUsesMigratedScope() {
         let suite = "maestro.tests.identity.settings-marker.\(UUID().uuidString)"
-        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = ScratchUserDefaults(suiteName: suite)!; defer { defaults.cleanup() }
         let legacy = DeviceSettingsStore.defaultsKey(productID: 0x12)
         let migrated = DeviceSettingsStore.defaultsKey(productID: 0x12, unit: .a, identity: 0xA)
         let address = PropertyAddress(selector: .prefix)
@@ -149,7 +149,7 @@ struct UnitIdentityTests {
     @Test func claimedUnmaterializedHistoryMigrates() {
         let suite = "identity.claimed.\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogAD16)
         let base = ChannelStateStore.inputKey
         let payload = Data("claimed".utf8)
@@ -167,7 +167,7 @@ struct UnitIdentityTests {
     @Test func physicalUnitMovesBetweenPorts() {
         let suite = "identity.move.\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogAD16)
         let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         let b = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, unit: .b, identity: 42)
@@ -185,7 +185,7 @@ struct UnitIdentityTests {
     @Test func converterRejectsStaleIdentityAndLegacy() {
         let suite = "identity.converter.\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(isKnown: false, converter: ConnectedUnit(probeWord: 0x8000_0000)!)
         defaults.set(Data("symphony".utf8), forKey: ChannelStateStore.inputKey)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
@@ -210,7 +210,7 @@ struct UnitIdentityTests {
     func historicalFixturesKeepUnknownPhantomProvenance(materialized: Bool) throws {
         let suite = "identity.history.\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .micPre8)
         let base = ChannelStateStore.inputKey
         let legacyScope = layout.savedStateScope!
@@ -241,7 +241,7 @@ struct UnitIdentityTests {
     @Test func categoriesShareOwnershipAndPhysicalKeys() {
         let suite = "identity.categories.\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let first = UnitStateMigration.claim(defaults: defaults, scope: "cards", identity: 42)
         let second = UnitStateMigration.claim(defaults: defaults, scope: "cards", identity: 43)
         #expect(first)
@@ -265,7 +265,7 @@ struct UnitIdentityTests {
     @Test func captureCannotBlessMigratedPhantomButVerifiedSeedWorks() throws {
         let suite = "identity.capture.\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let layout = CardLayout(slot1: .analogADDA16, slot2: .micPre8)
         var metadata = MaestroPreset()
         metadata.inputChannelStates = Array(repeating: InputChannelState(), count: layout.analogInputStripCount)

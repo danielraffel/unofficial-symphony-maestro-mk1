@@ -39,7 +39,7 @@ struct KeyboardVolumeOutputDeviceTests {
     func savedPerUnit() throws {
         let suite = "KeyboardVolumeOutputDeviceTests.\(UUID().uuidString)"
         let defaults = try #require(ScratchUserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let first = DeviceSettingsStore(defaults: defaults, productID: 2200, unit: .a, identity: 0x1111)
         let second = DeviceSettingsStore(defaults: defaults, productID: 2200, unit: .b, identity: 0x2222)
         #expect(first.value(for: Self.address) == nil)

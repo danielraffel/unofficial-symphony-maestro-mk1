@@ -11,7 +11,12 @@ final class ScratchUserDefaults: UserDefaults {
     }
 
     deinit {
+        cleanup()
+    }
+
+    func cleanup() {
         removePersistentDomain(forName: scratchSuiteName)
+        _ = CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
         guard scratchSuiteName.hasPrefix("maestro.tests.") else { return }
         let preferences = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Preferences", isDirectory: true)

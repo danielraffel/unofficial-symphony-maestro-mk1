@@ -393,7 +393,7 @@ struct PartialPresetCaptureTests {
         seed.outputRoutes = Array(0..<32)
         let suite = "partial.capture.\(UUID())"
         let defaults = ScratchUserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { defaults.cleanup() }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         seed.mixers = (0..<2).map {
             .init(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount, mixer: $0, store: store, defaults: defaults))

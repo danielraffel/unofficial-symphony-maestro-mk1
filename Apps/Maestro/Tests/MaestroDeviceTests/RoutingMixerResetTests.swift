@@ -13,7 +13,7 @@ struct RoutingMixerResetTests {
     private func suite() -> (UserDefaults, () -> Void) {
         let name = "RoutingMixerResetTests.\(UUID().uuidString)"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        return (defaults, { defaults.removePersistentDomain(forName: name) })
+        return (defaults, { defaults.cleanup() })
     }
 
     private let strip = MixerChannelState(level: -20, pan: 0.5, isMuted: true, isSoloed: true)

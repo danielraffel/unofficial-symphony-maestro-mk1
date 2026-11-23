@@ -277,14 +277,14 @@ length: 1661
 
     // MARK: Saving Beta the first time it is derived (Daniel, 2026-11-15)
 
-    private static func freshDefaults() -> (UserDefaults, String) {
+    private static func freshDefaults() -> ScratchUserDefaults {
         let name = "UpdateChannelTests.\(UUID().uuidString)"
-        return (ScratchUserDefaults(suiteName: name)!, name)
+        return ScratchUserDefaults(suiteName: name)!
     }
 
     @Test func derivedBetaIsSavedAsTheChoice() {
-        let (defaults, name) = Self.freshDefaults()
-        defer { defaults.removePersistentDomain(forName: name) }
+        let defaults = Self.freshDefaults()
+        defer { defaults.cleanup() }
         let store = ChannelStore(defaults: defaults)
         let beta = Self.feed(Self.item("0.8.40"), Self.item("0.9.0", beta: true))
         #expect(store.record(snapshot: beta, installed: "0.9.0") == .beta)
@@ -301,8 +301,8 @@ length: 1661
     }
 
     @Test func derivedStableIsNeverSaved() {
-        let (defaults, name) = Self.freshDefaults()
-        defer { defaults.removePersistentDomain(forName: name) }
+        let defaults = Self.freshDefaults()
+        defer { defaults.cleanup() }
         let store = ChannelStore(defaults: defaults)
         let snapshot = Self.feed(Self.item("0.8.40"), Self.item("0.9.0", beta: true))
         #expect(store.record(snapshot: snapshot, installed: "0.8.40") == .stable)
@@ -314,8 +314,8 @@ length: 1661
     }
 
     @Test func explicitStableIsNotReplacedByADerivedBeta() {
-        let (defaults, name) = Self.freshDefaults()
-        defer { defaults.removePersistentDomain(forName: name) }
+        let defaults = Self.freshDefaults()
+        defer { defaults.cleanup() }
         let store = ChannelStore(defaults: defaults)
         store.preference = .stable
         let snapshot = Self.feed(Self.item("0.8.40"), Self.item("0.9.0", beta: true), Self.item("0.9.1", beta: true))

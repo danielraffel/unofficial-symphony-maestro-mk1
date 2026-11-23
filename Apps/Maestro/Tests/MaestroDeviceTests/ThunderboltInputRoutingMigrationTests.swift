@@ -10,8 +10,8 @@ struct ThunderboltInputRoutingMigrationTests {
     private func withFreshDefaults(_ body: (UserDefaults) -> Void) {
         let name = "ThunderboltInputRoutingMigrationTests.\(UUID().uuidString)"
         let defaults = ScratchUserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
-        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.cleanup()
+        defer { defaults.cleanup() }
         body(defaults)
     }
 
