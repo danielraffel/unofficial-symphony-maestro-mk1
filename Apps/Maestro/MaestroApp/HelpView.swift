@@ -477,6 +477,10 @@ extension HelpSection {
                 .text("To hear an input without the delay of going through the Mac, route **Mixer 1** or **Mixer 2** to the output you listen on in **Output Routing**, then use that mixer's strips: an unmuted strip is heard, a muted one is not. Your Mac's audio then reaches that output through the mixer's **Software Return**. On the Mixer page, **Mix 1** and **Mix 2** choose which mixer is shown."),
                 .text("An output fed from a mixer is silent for a few seconds when Maestro connects, while the status bar shows **Restoring mixer and routing…**; over USB so is a headphone that follows it."),
             ]),
+            HelpItem(title: "How do I move several strips at once?", blocks: [
+                .text("Shift-click strip names to select them. Shift-click another name to add everything between the two; Shift-Command-click removes one, and Shift-Command-Option-click removes a range. Option-drag from an empty spot draws a box around strips. Command-A selects every visible strip. Shift-D or Escape clears the selection."),
+                .text("Move or type on one selected fader or pan value to move them all while keeping their spacing. Mute and Solo apply to every selected strip. Option-drag or Option-click still applies to every strip. Double-click a fader for 0 dB or a pan knob for centre. Click a fader or pan number to type, then press Tab for the next strip."),
+            ]),
             HelpItem(title: "How do I record while hearing myself with no delay?", blocks: [
                 .text("Monitor the input through a Symphony mixer instead of through your DAW. As in Apogee's guide:"),
                 .bullet("1. In your DAW", "turn off software monitoring (in Logic Pro: Settings › Audio › General, **Software Monitoring** off), so you do not also hear the input late through the DAW. Send the DAW's output to **Out 1-2**."),

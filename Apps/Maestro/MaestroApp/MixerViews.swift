@@ -38,6 +38,7 @@ struct MixerView: View {
     /// AppKit's field editor does not resign when a SwiftUI sibling is clicked.
     /// Keep a view-scoped monitor so mixer labels behave like native controls.
     @State private var outsideClickMonitor: Any?
+    @State private var keyboardMonitor: Any?
     @State private var scrollPosition: ScrollPosition
     @AppStorage("rememberControlTabScrollPositions") private var rememberControlTabScrollPositions = true
     /// The fader level readout being typed into, if any — one at a time.
@@ -278,16 +279,10 @@ struct MixerView: View {
                                 inputMeterIndex: i,
                                 preMuteMetering: preMuteMetering,
                                 onLevelChange: { level in
-                                    levelThrottle.submit(i, level) { value in
-                                        await writeLevel(channel: i, level: value)
-                                        saveMixerState()
-                                    }
+                                    levelChanged(channel: i, value: level)
                                 },
                                 onPanChange: { pan in
-                                    panThrottle.submit(i, pan) { value in
-                                        await writePan(channel: i, pan: value)
-                                        saveMixerState()
-                                    }
+                                    panChanged(channel: i, value: pan)
                                 },
                                 onMuteChange: { muted, isOption in
                                     if isOption {
@@ -455,6 +450,8 @@ struct MixerView: View {
             }
             }
 
+            .background(Color.clear.contentShape(Rectangle()).onTapGesture { selectedChannels.removeAll() })
+
             if let error = errorMessage {
                 HStack {
                     Label(error, systemImage: "exclamationmark.triangle")
@@ -466,7 +463,7 @@ struct MixerView: View {
                 .padding(.bottom, 8)
             }
         }
-        .onAppear { installOutsideClickMonitor() }
+        .onAppear { installOutsideClickMonitor(); installKeyboardMonitor() }
         // On the page, not on the menu's toggle: an observer inside a
         // menu may not run.
         .onChange(of: preMuteMetering) { _, _ in appState.refreshSoftwareReturnMeterGains() }
@@ -479,6 +476,7 @@ struct MixerView: View {
             scrollObservationEnabled = false
             scrollRestorationPending = true
             removeOutsideClickMonitor()
+            removeKeyboardMonitor()
         }
         .onChange(of: appState.selectedArea) { _, area in
             guard area != .mixer else { return }
@@ -505,6 +503,7 @@ struct MixerView: View {
             restoreSessionScrollPosition()
         }
         .onAppear { appState.startMeterPolling() }
+        .onExitCommand { selectedChannels.removeAll() }
         // Live board detection can refine the cached layout after construction.
         // Reconcile saved state when that happens; @State initializers only seed
         // the first lifetime of this view.
@@ -580,6 +579,29 @@ struct MixerView: View {
         }
     }
 
+    private func installKeyboardMonitor() {
+        guard keyboardMonitor == nil else { return }
+        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard appState.selectedArea == .mixer,
+                  !(NSApp.keyWindow?.firstResponder is NSTextField),
+                  !(NSApp.keyWindow?.firstResponder is NSTextView) else { return event }
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if event.charactersIgnoringModifiers?.lowercased() == "a", flags.contains(.command) {
+                selectedChannels = Set((0..<min(editor.channels.count, channelCount)).filter(isChannelVisible))
+                return nil
+            }
+            if event.charactersIgnoringModifiers?.lowercased() == "d", flags.contains(.shift), !flags.contains(.command) {
+                selectedChannels.removeAll()
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeKeyboardMonitor() {
+        if let monitor = keyboardMonitor { NSEvent.removeMonitor(monitor); keyboardMonitor = nil }
+    }
+
     private func resetMixerDefaults() {
         guard editor.canEdit(appState) else { return }
         let empty = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
@@ -605,13 +627,12 @@ struct MixerView: View {
 
     // MARK: - Batch Operations
 
-    /// Channels affected by batch operations: selected channels if any, otherwise every
-    /// saved channel. Hidden unrouted strips must still be clearable on the card.
+    /// Channels affected by batch operations. Only visible strips participate.
     private var batchTargetChannels: [Int] {
         if !selectedChannels.isEmpty {
-            return selectedChannels.sorted()
+            return selectedChannels.sorted().filter(isChannelVisible)
         }
-        return Array(0..<min(editor.channels.count, channelCount))
+        return (0..<min(editor.channels.count, channelCount)).filter(isChannelVisible)
     }
 
     /// Hidden strips keep their saved values, but have no live card element.
@@ -628,26 +649,14 @@ struct MixerView: View {
             editor.channels[i].isMuted = newValue
             if batchChannelIsRouted(i) { Task { await writeMute(channel: i, muted: newValue) } }
         }
-        // Also mute/unmute SW Return so option+click on any channel
-        // includes SW Return, and option+click on SW Return itself
-        // actually sends the XPC mute command to hardware.
-        editor.swReturnChannel.isMuted = newValue
-        Task { await writeSWReturnMute(newValue) }
         saveMixerState()
     }
 
-    /// Clear all solos across all channels (no selection filter — solos are global).
+    /// Apply the clicked strip's new solo state to the target strips.
     private func batchApplySolo(newValue: Bool) {
-        for i in 0..<editor.channels.count {
-            if editor.channels[i].isSoloed != newValue {
-                editor.channels[i].isSoloed = newValue
-                if batchChannelIsRouted(i) { Task { await writeSolo(channel: i, solo: newValue) } }
-            }
-        }
-        // Also apply to SW Return solo
-        if editor.swReturnChannel.isSoloed != newValue {
-            editor.swReturnChannel.isSoloed = newValue
-            Task { await writeSWReturnSolo(newValue) }
+        for i in batchTargetChannels where i < editor.channels.count {
+            editor.channels[i].isSoloed = newValue
+            if batchChannelIsRouted(i) { Task { await writeSolo(channel: i, solo: newValue) } }
         }
         saveMixerState()
     }
@@ -659,14 +668,17 @@ struct MixerView: View {
             guard i < editor.channels.count else { continue }
             batchDragStartLevels[i] = editor.channels[i].level
         }
-        // Include SW Return in batch (sentinel key -1)
-        batchDragStartLevels[-1] = editor.swReturnChannel.level
+        // Option-drag with no selection keeps its existing all-strip meaning.
+        if selectedChannels.isEmpty { batchDragStartLevels[-1] = editor.swReturnChannel.level }
     }
 
     /// Apply a delta to all target channel levels (clamped, preserves relative positions).
     private func batchApplyLevelDelta(delta: Double) {
-        for (i, startLevel) in batchDragStartLevels {
-            let newLevel = MixerFaderLevel.played(min(max(MixerFaderLevel.played(startLevel) + delta.rounded(), -48), 0))
+        let keys = batchDragStartLevels.keys.sorted()
+        let starts = keys.compactMap { batchDragStartLevels[$0] }
+        let values = MixerGroupMath.applyingDelta(delta.rounded(), to: starts, in: -48...0)
+        for (i, newValue) in zip(keys, values) {
+            let newLevel = MixerFaderLevel.played(newValue)
             if i == -1 {
                 // SW Return (sentinel key)
                 editor.swReturnChannel.level = newLevel
@@ -694,8 +706,10 @@ struct MixerView: View {
 
     /// Apply a delta to all target channel pans (clamped, preserves relative positions).
     private func batchApplyPanDelta(delta: Double) {
-        for (i, startPan) in batchDragStartPans {
-            let newPan = min(max(startPan + delta, -1.0), 1.0)
+        let keys = batchDragStartPans.keys.sorted()
+        let starts = keys.compactMap { batchDragStartPans[$0] }
+        let values = MixerGroupMath.applyingDelta(delta, to: starts, in: -1...1)
+        for (i, newPan) in zip(keys, values) {
             let steppedPan = (newPan / MixerValueConversion.panStep).rounded() * MixerValueConversion.panStep
             guard i >= 0, i < editor.channels.count else { continue }
             editor.channels[i].pan = steppedPan
@@ -717,29 +731,39 @@ struct MixerView: View {
 
     /// Handle channel selection with modifier keys (Cmd, Shift, plain click).
     private func selectChannel(_ index: Int, modifiers: NSEvent.ModifierFlags) {
-        if modifiers.contains(.command) {
-            // Cmd+Click: toggle selection
-            if selectedChannels.contains(index) {
-                selectedChannels.remove(index)
-            } else {
-                selectedChannels.insert(index)
-            }
-        } else if modifiers.contains(.shift), let last = lastSelectedChannel {
-            // Shift+Click: range select from last to clicked
-            let lo = min(last, index)
-            let hi = max(last, index)
-            for i in lo...hi {
-                selectedChannels.insert(i)
-            }
-        } else {
-            // Plain click: select only this (or deselect if already sole selection)
-            if selectedChannels == [index] {
-                selectedChannels.removeAll()
-            } else {
-                selectedChannels = [index]
-            }
-        }
+        let visible = (0..<min(editor.channels.count, channelCount)).filter(isChannelVisible)
+        selectedChannels = MixerSelection.applyingClick(
+            index: index,
+            modifiers: MixerSelectionModifiers(
+                shift: modifiers.contains(.shift),
+                command: modifiers.contains(.command),
+                option: modifiers.contains(.option)),
+            visible: visible, selected: selectedChannels, last: lastSelectedChannel)
         lastSelectedChannel = index
+    }
+
+    private func levelChanged(channel: Int, value: Double) {
+        guard selectedChannels.count > 1, batchDragStartLevels.isEmpty else {
+            levelThrottle.submit(channel, value) { value in await writeLevel(channel: channel, level: value); saveMixerState() }
+            return
+        }
+        for i in batchTargetChannels where i < editor.channels.count {
+            editor.channels[i].level = value
+            if batchChannelIsRouted(i) { levelThrottle.submit(i, value) { value in await writeLevel(channel: i, level: value) } }
+        }
+        saveMixerState()
+    }
+
+    private func panChanged(channel: Int, value: Double) {
+        guard selectedChannels.count > 1, batchDragStartPans.isEmpty else {
+            panThrottle.submit(channel, value) { value in await writePan(channel: channel, pan: value); saveMixerState() }
+            return
+        }
+        for i in batchTargetChannels where i < editor.channels.count {
+            editor.channels[i].pan = value
+            if batchChannelIsRouted(i) { panThrottle.submit(i, value) { value in await writePan(channel: i, pan: value) } }
+        }
+        saveMixerState()
     }
 
     private func customChannelLabel(for index: Int) -> String {
@@ -1525,7 +1549,7 @@ struct MixerChannelStripView: View {
                     onBatchDragStart: onBatchPanDragStart,
                     onOptionClick: onPanOptionClick
                 )
-                .maestroHelp("Pan: \(panText) — double-click to center, Option+click center all, Option+drag all")
+                .maestroHelp("Pan: \(panText) — Shift-click the name to select strips, double-click to center, Option+click center all, Option+drag all")
                 .onChange(of: channel.pan) { _, newPan in
                     onPanChange?(newPan)
                 }
@@ -1657,7 +1681,7 @@ struct MixerChannelStripView: View {
             } else {
                 // dB readout (level) — single readout, no duplicate
                 EditableLevelReadout(value: Binding(get: { MixerFaderLevel.played(channel.level) }, set: { channel.level = MixerFaderLevel.played($0) }), range: -48...6, step: 1, entry: readoutEntry)
-                    .maestroHelp("Fader Level: \(String(format: "%.0f", MixerFaderLevel.played(channel.level))) dB — click to edit")
+                    .maestroHelp("Fader Level: \(String(format: "%.0f", MixerFaderLevel.played(channel.level))) dB — Shift-click the name to select strips, click to edit")
             }
 
             // Mute / Solo buttons — at the very bottom

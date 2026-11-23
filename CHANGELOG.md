@@ -570,6 +570,7 @@ Thanks to the testers with Symphony 64 PCIe cards whose careful reports, and who
 
 ### What's new
 
+- **Mixer strips can be selected like Logic.** Shift-click names to add a range, use Command-A to select visible strips, and move or type on one selected fader or pan to move the group while keeping its spacing. Mute and Solo apply to selected strips, and Option-drag or Option-click still applies to every strip.
 - **Diagnostics, for testers on the Beta channel.** Turn it on in App Settings › Diagnostics & Feedback, do what causes the problem, then press Stop Diagnostics. Maestro saves a file to your Desktop and offers to email it privately to the developer, with optional details about your setup and the problem. Nothing is sent until you press Agree and Send, and it is never posted publicly. Help › "When and how should I use diagnostics?" explains when it is useful.
 
 ### What's better
