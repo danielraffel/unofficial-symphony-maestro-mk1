@@ -55,4 +55,14 @@ struct ViewValueTypeTests {
         let text = try String(contentsOf: Self.appDir.appendingPathComponent("MixerViews.swift"), encoding: .utf8)
         #expect(!text.contains("guard i < editor.channels.count"))
     }
+
+    /// The Edit menu listed Select All twice, the standard one disabled
+    /// (owner, 2026-11-23). Maestro replaces the standard group with one
+    /// working Select All (⌘A) and one Deselect All (⇧⌘A).
+    @Test func editMenuHasOneSelectAll() throws {
+        let text = try String(contentsOf: Self.appDir.appendingPathComponent("MaestroApp.swift"), encoding: .utf8)
+        #expect(text.contains("CommandGroup(replacing: .pasteboard)"))
+        #expect(text.components(separatedBy: #"Button("Select All")"#).count == 2)
+        #expect(text.components(separatedBy: #"Button("Deselect All")"#).count == 2)
+    }
 }

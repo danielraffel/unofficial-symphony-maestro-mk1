@@ -135,18 +135,31 @@ struct MaestroApp: App {
                     .disabled(!updates.canCheckForUpdates)
             }
 
-            CommandGroup(after: .textEditing) {
+            // One Select All (⌘A) and one Deselect All (⇧⌘A), replacing the
+            // standard group so the menu does not list Select All twice. In a
+            // text field they act on the text as usual; on the Mixer page they
+            // select strips (owner, 2026-11-23).
+            CommandGroup(replacing: .pasteboard) {
+                Button("Cut") { NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil) }
+                    .keyboardShortcut("x", modifiers: .command)
+                Button("Copy") { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }
+                    .keyboardShortcut("c", modifiers: .command)
+                Button("Paste") { NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil) }
+                    .keyboardShortcut("v", modifiers: .command)
+                Button("Delete") { NSApp.sendAction(#selector(NSText.delete(_:)), to: nil, from: nil) }
                 Button("Select All") {
-                    guard !(NSApp.keyWindow?.firstResponder is NSTextField), !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
-                    NotificationCenter.default.post(name: .mixerSelectAll, object: nil)
+                    let responder = NSApp.keyWindow?.firstResponder
+                    if appState.selectedArea == .mixer, !(responder is NSTextField), !(responder is NSTextView) {
+                        NotificationCenter.default.post(name: .mixerSelectAll, object: nil)
+                    } else {
+                        NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: nil)
+                    }
                 }
                 .keyboardShortcut("a", modifiers: .command)
-                .disabled(appState.selectedArea != .mixer)
-
                 Button("Deselect All") {
-                    guard !(NSApp.keyWindow?.firstResponder is NSTextField), !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
                     NotificationCenter.default.post(name: .mixerDeselectAll, object: nil)
                 }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
                 .disabled(appState.selectedArea != .mixer)
             }
 

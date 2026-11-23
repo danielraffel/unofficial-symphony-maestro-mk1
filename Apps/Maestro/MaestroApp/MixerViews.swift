@@ -355,7 +355,9 @@ struct MixerView: View {
                                 },
                                 showZoneColoring: appState.showMeterZoneColoring,
                                 readoutEntry: readoutEntry(.input(i)),
-                                panReadoutEntry: panReadoutEntry(.input(i))
+                                panReadoutEntry: panReadoutEntry(.input(i)),
+                                onLevelTyped: { typedLevel(i, $0) },
+                                onPanTyped: { typedPan(i, $0) }
                             )
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: MixerStripFramePreferenceKey.self,
@@ -404,6 +406,12 @@ struct MixerView: View {
                 // viewport height (Input achieves the same total height with
                 // an explicit -16 frame plus 8pt top/bottom padding).
                 .frame(minHeight: max(0, viewport.size.height), alignment: .top)
+                // A plain click on empty space clears the selection; it has to
+                // be inside the scroll view, which takes clicks first.
+                .background(Color.clear.contentShape(Rectangle()).onTapGesture {
+                    selectedChannels.removeAll()
+                    lastSelectedChannel = nil
+                })
                 .padding(.leading, 4)
                 .background {
                     ControlTabScrollObserver(
@@ -437,38 +445,7 @@ struct MixerView: View {
                     appState.setControlTabScrollOffset(0, for: .mixer)
                 }
             }
-            if let start = rubberBandStart, let current = rubberBandCurrent {
-                let rect = CGRect(x: min(start.x, current.x), y: min(start.y, current.y),
-                                  width: abs(current.x - start.x), height: abs(current.y - start.y))
-                Rectangle()
-                    .fill(Color.accentColor.opacity(0.18))
-                    .overlay(Rectangle().stroke(Color.accentColor.opacity(0.7), lineWidth: 1))
-                    .frame(width: rect.width, height: rect.height)
-                    .position(x: rect.midX, y: rect.midY)
-                    .allowsHitTesting(false)
             }
-            }
-            .coordinateSpace(name: "mixerContent")
-            .simultaneousGesture(DragGesture(minimumDistance: 4)
-                .onChanged { value in
-                    guard NSEvent.modifierFlags.contains(.option) else { return }
-                    // A fader or pan knob Option-drag (move all/selected) marks
-                    // its start before this 4 pt gesture begins; then it is not
-                    // a rubber band. Anywhere else (meters, names, background)
-                    // draws the box. (Strip frames cover almost the whole page,
-                    // so "outside every strip" never started one.)
-                    if rubberBandStart == nil,
-                       !batchDragStartLevels.isEmpty || !batchDragStartPans.isEmpty {
-                        return
-                    }
-                    if rubberBandStart == nil { rubberBandStart = value.startLocation }
-                    rubberBandCurrent = value.location
-                    let start = rubberBandStart ?? value.startLocation
-                    let rect = CGRect(x: min(start.x, value.location.x), y: min(start.y, value.location.y),
-                                      width: abs(value.location.x - start.x), height: abs(value.location.y - start.y))
-                    selectedChannels.formUnion(MixerSelection.stripsTouching(rect, frames: mixerStripFrames))
-                }
-                .onEnded { _ in rubberBandStart = nil; rubberBandCurrent = nil })
             // Tab can move editing to a strip that is scrolled out of view;
             // bring it in by the smallest amount (no move when already visible).
             .onChange(of: editingReadout) { _, readout in
@@ -477,7 +454,6 @@ struct MixerView: View {
             }
             }
 
-            .background(Color.clear.contentShape(Rectangle()).onTapGesture { selectedChannels.removeAll() })
 
             if let error = errorMessage {
                 HStack {
@@ -490,6 +466,42 @@ struct MixerView: View {
                 .padding(.bottom, 8)
             }
         }
+        // The selection box works anywhere on the page, including above the
+        // strip names (owner, 2026-11-23); strip frames are measured in the
+        // same space. A drag that starts on a control adjusts that control.
+        .overlay(alignment: .topLeading) {
+            if let start = rubberBandStart, let current = rubberBandCurrent {
+                let rect = CGRect(x: min(start.x, current.x), y: min(start.y, current.y),
+                                  width: abs(current.x - start.x), height: abs(current.y - start.y))
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.18))
+                    .overlay(Rectangle().stroke(Color.accentColor.opacity(0.7), lineWidth: 1))
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY)
+                    .allowsHitTesting(false)
+            }
+        }
+        .coordinateSpace(name: "mixerContent")
+        .simultaneousGesture(DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                guard NSEvent.modifierFlags.contains(.option) else { return }
+                // A fader or pan knob Option-drag (move all/selected) marks
+                // its start before this 4 pt gesture begins; then it is not
+                // a rubber band. Anywhere else (meters, names, background)
+                // draws the box. (Strip frames cover almost the whole page,
+                // so "outside every strip" never started one.)
+                if rubberBandStart == nil,
+                   !batchDragStartLevels.isEmpty || !batchDragStartPans.isEmpty {
+                    return
+                }
+                if rubberBandStart == nil { rubberBandStart = value.startLocation }
+                rubberBandCurrent = value.location
+                let start = rubberBandStart ?? value.startLocation
+                let rect = CGRect(x: min(start.x, value.location.x), y: min(start.y, value.location.y),
+                                  width: abs(value.location.x - start.x), height: abs(value.location.y - start.y))
+                selectedChannels.formUnion(MixerSelection.stripsTouching(rect, frames: mixerStripFrames))
+            }
+            .onEnded { _ in rubberBandStart = nil; rubberBandCurrent = nil })
         .onAppear { installOutsideClickMonitor(); installKeyboardMonitor() }
         .onReceive(NotificationCenter.default.publisher(for: .mixerSelectAll)) { _ in
             guard appState.selectedArea == .mixer, !isEditingTextField else { return }
@@ -626,7 +638,8 @@ struct MixerView: View {
                   !(NSApp.keyWindow?.firstResponder is NSTextView) else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if event.charactersIgnoringModifiers?.lowercased() == "a", flags.contains(.command) {
-                selectedChannels = visibleMixerStripIDs
+                // ⇧⌘A is Deselect All (Edit menu); ⌘A is Select All.
+                if flags.contains(.shift) { selectedChannels.removeAll() } else { selectedChannels = visibleMixerStripIDs }
                 return nil
             }
             if event.charactersIgnoringModifiers?.lowercased() == "d", flags.contains(.shift), !flags.contains(.command) {
@@ -820,6 +833,45 @@ struct MixerView: View {
                 option: modifiers.contains(.option)),
             visible: visible, selected: selectedChannels, last: lastSelectedChannel)
         lastSelectedChannel = index
+    }
+
+    /// A value typed into a selected strip's level box sets every selected
+    /// strip to exactly that value (owner, 2026-11-23: typing 0 should put
+    /// them all at 0); dragging stays relative. Returns false when the strip
+    /// is not part of a multi-strip selection.
+    private func typedLevel(_ id: Int, _ value: Double) -> Bool {
+        guard selectedChannels.count > 1, selectedChannels.contains(id) else { return false }
+        let level = MixerFaderLevel.played(min(max(value, -48), 6))
+        for i in selectedChannels {
+            if i == MixerSelection.softwareReturn {
+                editor.swReturnChannel.level = level
+                editor.swReturnLeftLevel = level
+                editor.swReturnRightLevel = level
+                swReturnThrottle.submit(-1, level) { value in await writeSWReturnLevel(value) }
+            } else if i == MixerSelection.master {
+                editor.masterLevel = level
+                editor.masterLeftLevel = level
+                editor.masterRightLevel = level
+                scheduleMasterWrite(level: level)
+            } else if editor.channels.indices.contains(i) {
+                editor.channels[i].level = level
+                if batchChannelIsRouted(i) { levelThrottle.submit(i, level) { value in await writeLevel(channel: i, level: value) } }
+            }
+        }
+        saveMixerState()
+        return true
+    }
+
+    /// The same for a typed pan value (strips with pan only).
+    private func typedPan(_ id: Int, _ value: Double) -> Bool {
+        guard selectedChannels.count > 1, selectedChannels.contains(id) else { return false }
+        let pan = (min(max(value, -1), 1) / MixerValueConversion.panStep).rounded() * MixerValueConversion.panStep
+        for i in selectedChannels where editor.channels.indices.contains(i) {
+            editor.channels[i].pan = pan
+            if batchChannelIsRouted(i) { panThrottle.submit(i, pan) { value in await writePan(channel: i, pan: value) } }
+        }
+        saveMixerState()
+        return true
     }
 
     private func levelChanged(channel: Int, value: Double) {
@@ -1215,6 +1267,7 @@ struct MixerView: View {
                 Task { await writeSWReturnSolo(solo); saveMixerState() }
             }
         },
+        isSelected: selectedChannels.contains(MixerSelection.softwareReturn),
         onBatchLevelChange: { delta in
             batchApplyLevelDelta(delta: delta)
         },
@@ -1244,7 +1297,8 @@ struct MixerView: View {
         stereoRightLevel: $editor.swReturnRightLevel,
         onStereoLevelChange: { level in swSideChanged(level) },
         onStereoLevelChangeWithOld: { old, new in swReturnLevelChanged(oldValue: old, newValue: new) },
-        readoutEntry: readoutEntry(.softwareReturn)
+        readoutEntry: readoutEntry(.softwareReturn),
+        onLevelTyped: { typedLevel(MixerSelection.softwareReturn, $0) }
     )
     }
 
@@ -1261,7 +1315,10 @@ struct MixerView: View {
             EditableLevelReadout(
                 value: Binding(
                     get: { MixerFaderLevel.played(editor.masterLevel) },
-                    set: { newLevel in masterSideChanged(newLevel) }),
+                    set: { newLevel in
+                        if typedLevel(MixerSelection.master, newLevel) { return }
+                        masterSideChanged(newLevel)
+                    }),
                 range: -48...6,
                 step: 1,
                 entry: readoutEntry(.master))
@@ -1674,6 +1731,11 @@ struct MixerChannelStripView: View {
     /// and Tab order.
     let readoutEntry: LevelReadoutEntry<MixerLevelReadout>
     var panReadoutEntry: LevelReadoutEntry<MixerPanReadout>? = nil
+    /// A value typed into this strip's level or pan box. Returns true when it
+    /// was applied to the whole selection (an absolute value for every
+    /// selected strip); false leaves the strip's own change to apply.
+    var onLevelTyped: ((Double) -> Bool)? = nil
+    var onPanTyped: ((Double) -> Bool)? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     /// Height for the fader+meter area (matches Input/Output strip meter height).
@@ -1765,6 +1827,7 @@ struct MixerChannelStripView: View {
                     if let panReadoutEntry {
                         EditableLevelReadout(
                             value: Binding(get: { channel.pan }, set: { newPan in
+                                if onPanTyped?(newPan) == true { return }
                                 let oldPan = channel.pan
                                 channel.pan = newPan
                                 if let callback = onPanChangeWithOld { callback(oldPan, newPan) }
@@ -1893,6 +1956,7 @@ struct MixerChannelStripView: View {
                     value: Binding(
                         get: { MixerFaderLevel.played(stereoLeftLevel?.wrappedValue ?? channel.level) },
                         set: { newValue in
+                            if onLevelTyped?(newValue) == true { return }
                             let oldValue = stereoLeftLevel?.wrappedValue ?? channel.level
                             if let callback = onStereoLevelChangeWithOld { callback(oldValue, newValue) }
                             else { onStereoLevelChange?(newValue) }
@@ -1906,6 +1970,7 @@ struct MixerChannelStripView: View {
                 EditableLevelReadout(value: Binding(get: { MixerFaderLevel.played(channel.level) }, set: {
                     let oldValue = channel.level
                     let newValue = MixerFaderLevel.played($0)
+                    if onLevelTyped?(newValue) == true { return }
                     channel.level = newValue
                     if let callback = onLevelChangeWithOld { callback(oldValue, newValue) }
                     else { onLevelChange(newValue) }
