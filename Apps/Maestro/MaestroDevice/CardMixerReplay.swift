@@ -10,6 +10,21 @@ import MaestroCore
 public enum CardMixerReplay {
     public typealias InputRoute = ThunderboltInputMeterMap.Route
 
+    /// Clear card receive slots that disappeared from Input Routing. The
+    /// original mixer clears a removed strip before the routing table changes,
+    /// so a stale solo cannot keep silencing the rest of the mix.
+    /// Evidence: og_source/maestrolink/Software/SymphonyPCIeCardMixer.cpp:1479-1604.
+    public static func unroutedWrites(mixer: Int, inputIDs: some Sequence<Int>) -> [ThunderboltPreset.Write] {
+        let base = UInt32(mixer + 1) << 16
+        return inputIDs.sorted().reduce(into: [ThunderboltPreset.Write]()) { writes, id in
+            guard id >= 0 else { return }
+            writes += [
+                .property(PropertyAddress(selector: .mixerChannelMute, element: base | UInt32(id)), .bool(true)),
+                .property(PropertyAddress(selector: .mixerChannelSolo, element: base | UInt32(id)), .bool(false)),
+            ]
+        }
+    }
+
     private static func inputIDs(layout: CardLayout, routes: [InputRoute]?) -> [Int?] {
         let capture = routes ?? ThunderboltInputMeterMap.currentRoutes(
             slot1: layout.isKnown ? layout.slot1 : nil, replayed: [])
@@ -138,6 +153,12 @@ public enum CardMixerReplay {
             }
         }
         let ids = inputIDs(layout: layout, routes: routes)
+        let mapped = Set(ids.compactMap { $0 })
+        let inputCount = 32
+        for id in 0..<inputCount where !mapped.contains(id) {
+            put(.mixerChannelMute, .bool(true), id)
+            put(.mixerChannelSolo, .bool(false), id)
+        }
         for (index, _) in layout.mixerChannels.enumerated() {
             guard let id = ids[index] else { continue }
             guard index < saved.count else {

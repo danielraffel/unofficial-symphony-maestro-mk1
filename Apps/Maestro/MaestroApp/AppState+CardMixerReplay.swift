@@ -8,8 +8,27 @@ extension AppState {
     /// in-place recovery with non-default routing can still expose defaults
     /// until this replay runs, which only a driver change could eliminate.
     @MainActor
-    func thunderboltInputRoutingDidChange() {
+    func thunderboltInputRoutingDidChange(previousRoutes: [DeviceUnit: [ThunderboltInputMeterMap.Route]] = [:]) {
         thunderboltInputRoutingWritten = true
+        if let tb = device as? ThunderboltDeviceConnection {
+            let layouts: [(DeviceUnit, CardLayout?, [ThunderboltInputMeterMap.Route]?)] = [
+                (.a, cardLayout, previousRoutes[.a]),
+                (.b, unitBOnCard ? unitBLayout : nil, previousRoutes[.b]),
+            ]
+            let repairs = layouts.flatMap { unit, layout, oldRoutes -> [ThunderboltPreset.Write] in
+                guard let layout, let oldRoutes else { return [] }
+                let oldIDs = Set(ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: oldRoutes).compactMap { $0 })
+                let newIDs = Set(ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: thunderboltCaptureRoutes(unit: unit)).compactMap { $0 })
+                let offset = unit == .b ? 32 : 0
+                return CardMixerReplay.unroutedWrites(mixer: 0, inputIDs: oldIDs.subtracting(newIDs).map { $0 + offset })
+                    + CardMixerReplay.unroutedWrites(mixer: 1, inputIDs: oldIDs.subtracting(newIDs).map { $0 + offset })
+            }
+            if !repairs.isEmpty {
+                Task.detached(priority: .userInitiated) {
+                    try? await tb.writeCardMixerEdits(repairs, shouldContinue: { tb.isConnected })
+                }
+            }
+        }
         thunderboltCaptureTableDidChange()
     }
 

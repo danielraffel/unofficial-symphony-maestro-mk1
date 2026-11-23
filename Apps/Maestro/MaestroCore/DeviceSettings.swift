@@ -128,6 +128,16 @@ public struct MeterDisplaySettings: Sendable, Equatable {
         case infinite = "Infinite"
         case autoClear = "Auto Clear"
 
+        /// The original Maestro popup offered the same three choices as Peak Hold.
+        /// Keep `autoClear` decodable for old saved values, but never present it
+        /// as a new choice. Evidence: `og_source/maestro2/App/Controllers/APSystemMetersViewController.m:69-74`.
+        public static var userFacingCases: [Self] { [.off, .twoSeconds, .infinite] }
+
+        /// Older Maestro builds used Auto Clear for this setting. The original
+        /// app's saved Auto Clear state was the two-second over indication
+        /// (`og_source/maestrolink/Software/DuetController.cpp:3472-3473`).
+        public var userFacingValue: Self { self == .autoClear ? .twoSeconds : self }
+
         public var wireValue: UInt32 {
             switch self {
             case .off:        return 0

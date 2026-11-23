@@ -80,6 +80,29 @@ struct CardMixerReplayTests {
         }
     }
 
+    @Test("An unrouted saved strip is written muted and unsoloed")
+    func unroutedStripCannotKeepSilencingTheMixer() throws {
+        let name = "d5-unrouted-\(UUID())"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
+        store.save(Array(repeating: MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: true),
+                         count: layout.mixerChannelCount), for: ChannelStateStore.mixerKey(0))
+        let writes = CardMixerReplay.savedWrites(mixer: 0, layout: layout, store: store, routes: [])
+        #expect(value(writes, .mixerChannelMute, 0x10000)?.asBool == true)
+        #expect(value(writes, .mixerChannelSolo, 0x10000)?.asBool == false)
+    }
+
+    @Test("Removing a soloed route sends mute and unsolo to the card")
+    func removedRouteClearsLiveCardStrip() {
+        let before = Set([7])
+        let after = Set<Int>()
+        let writes = CardMixerReplay.unroutedWrites(mixer: 0, inputIDs: before.subtracting(after))
+        #expect(value(writes, .mixerChannelMute, 0x10000 | 7)?.asBool == true)
+        #expect(value(writes, .mixerChannelSolo, 0x10000 | 7)?.asBool == false)
+    }
+
     private func value(_ writes: [ThunderboltPreset.Write], _ selector: AudioPropertySelector,
                        _ element: UInt32) -> PropertyValue? {
         for case .property(let address, let value) in writes where address.selector == selector && address.element == element {

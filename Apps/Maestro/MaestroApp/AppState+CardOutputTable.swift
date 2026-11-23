@@ -501,6 +501,9 @@ extension AppState {
         }
         if lowered > 0 {
             print("[Maestro] Mixer: \(lowered) fader(s) saved above 0 dB set to 0 dB for driver 144 (old values kept in \(MixerHeadroomMigration.backupKey))")
+            if !TestEnvironment.isRunningTests {
+                mixerHeadroomNotice = MixerHeadroomMigration.noticeText
+            }
             viewReloadToken = UUID()
         }
     }

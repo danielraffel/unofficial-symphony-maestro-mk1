@@ -201,4 +201,26 @@ struct SettingsPagesTests {
         #expect(text.contains("Input, Output, Input Routing and Device Settings show a **Unit A / Unit B** picker"))
         #expect(!text.contains("App Settings"))
     }
+
+    @Test("Per-unit preferences publish changes and legacy Auto Clear is read without a write")
+    func preferenceAndAutoClearState() throws {
+        let appState = try source("MaestroApp/AppState.swift")
+        #expect(appState.contains("var unitPreferenceRevision = 0"))
+        #expect(appState.contains("_ = unitPreferenceRevision"))
+        #expect(appState.contains("unitPreferenceRevision &+= 1"))
+        let settings = try source("MaestroApp/SettingsViews.swift")
+        let overBlock = try #require(settings.range(of: "if let over ="))
+        let tail = settings[overBlock.lowerBound...]
+        let end = tail.range(of: "\n        } catch is CancellationError")?.lowerBound ?? tail.endIndex
+        #expect(!settings[overBlock.lowerBound..<end].contains("writeProperty(.oversHoldMode"))
+        #expect(appState.contains("userFacingValue.wireValue"))
+    }
+
+    @Test("Headroom notice is test-safe and dismissable")
+    func headroomNoticeGuard() throws {
+        let state = try source("MaestroApp/AppState+CardOutputTable.swift")
+        #expect(state.contains("!TestEnvironment.isRunningTests"))
+        let mixer = try source("MaestroApp/MixerViews.swift")
+        #expect(mixer.contains("Button(\"Dismiss\") { appState.mixerHeadroomNotice = nil }"))
+    }
 }

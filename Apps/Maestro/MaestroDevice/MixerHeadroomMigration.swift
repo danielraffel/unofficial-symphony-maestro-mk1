@@ -9,6 +9,7 @@ import MaestroCore
 /// old values are kept in a backup key; it runs once per unit (its mixer
 /// preferences are per unit).
 public enum MixerHeadroomMigration {
+    public static let noticeText = "Saved mixer faders above 0 dB were set to 0 dB because this update now plays those levels as Apogee's did. Your old values were kept."
     public static let doneKey = "mixerHeadroom144.done"
     public static let backupKey = "mixerHeadroom144.backup"
     /// The first driver build that plays faders above 0 dB.

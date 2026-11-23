@@ -2185,6 +2185,12 @@ public enum ThunderboltInputMeterMap {
         return words(layout: layout, routes: routes).channels
     }
 
+    /// Whether each physical mixer strip still has a host input route. An
+    /// unrouted strip remains in saved state but is omitted from the UI.
+    public static func routedMixerChannels(layout: CardLayout, routes: [Route]) -> [Bool] {
+        mixerInputs(layout: layout, routes: routes).map { $0 != nil }
+    }
+
     /// Meter words read for converters: both ports' bus slots (port 1 then port 2).
     public static let converterWordCount = 64
 

@@ -13,6 +13,12 @@ struct MixerHeadroomMigrationTests {
         #expect(MixerHeadroomMigration.applies(to: .build(150)))
     }
 
+    @Test("notice explains the one-time level change")
+    func notice() {
+        #expect(MixerHeadroomMigration.noticeText.contains("set to 0 dB"))
+        #expect(MixerHeadroomMigration.noticeText.contains("old values were kept"))
+    }
+
     @Test("above 0 to 0, at or below unchanged, backup written, runs once")
     func migration() throws {
         let name = "MixerHeadroomMigrationTests.\(UUID().uuidString)"

@@ -82,6 +82,8 @@ struct SymphonyCardInputRoutingView: View {
                         guard !writing else { return }
                         guard columns.indices.contains(column) else { return }
                         let source = columns[column].sourcePair * 2
+                        let previousRoutesA = appState.thunderboltCaptureRoutes(unit: .a)
+                        let previousRoutesB = appState.thunderboltCaptureRoutes(unit: .b)
                         let clear = routing.source(host: row * 2, edits: appState.symphonyCardInputEdits) == source
                             && routing.source(host: row * 2 + 1, edits: appState.symphonyCardInputEdits) == source + 1
                         writing = true
@@ -89,7 +91,10 @@ struct SymphonyCardInputRoutingView: View {
                         Task {
                             let edits = clear ? selectedEdits.mapValues { _ in -1 } : selectedEdits
                             let ok = await appState.applySymphonyCardInputs(edits)
-                            if ok { appState.markSetupEdited(.routing) }
+                            if ok {
+                                appState.markSetupEdited(.routing)
+                                appState.thunderboltInputRoutingDidChange(previousRoutes: [.a: previousRoutesA, .b: previousRoutesB])
+                            }
                             errorMessage = ok ? nil : "The card refused the input route."
                             writing = false
                         }
