@@ -53,7 +53,7 @@ enum SettingsInfoText {
     ]
     static let levelOverlay = [
         "A HUD, like the one macOS shows for its volume keys: when a speaker or headphone level, a mute or an 8MicPre gain changes, Maestro shows the new level on screen for a moment.",
-        "It also shows changes made with the Symphony's front-panel knob, which macOS does not show. As in Apogee's software (its Display pop-ups). Off unless you turn it on.",
+        "It also shows changes made with the Symphony's front-panel knob, which macOS does not show. As in Apogee's software (its Display pop-ups).",
     ]
     static let autoSwitch = [
         "When you plug the Symphony in or turn it on, Maestro makes it your Mac's sound output, so you don't have to pick it in the Sound menu. The input is left as it is.",
