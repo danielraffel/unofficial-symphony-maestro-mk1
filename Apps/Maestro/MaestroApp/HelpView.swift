@@ -629,6 +629,12 @@ extension HelpSection {
     /// rather than approximated.
     private static var troubleshooting: HelpSection {
         HelpSection(id: .troubleshooting, title: "Troubleshooting", items: [
+            HelpItem(title: "What are Maestro's processes in Activity Monitor?", blocks: [
+                .text("**Maestro** is the app itself. It runs only while it is open."),
+                .text("**com.danielraffel.maestro.thunderbridge** is Maestro's ThunderBridge driver. macOS runs it while a ThunderBridge or Symphony 64 PCIe card is in the Mac, whether or not Maestro is open: it is what carries your audio and the volume keys over the card."),
+                .text("**MaestroVolumeProxy** is the USB helper, installed with USB support. It runs in the background so that **Symphony I/O : Maestro USB** works and the Mac's volume keys reach the Symphony over USB, and it mutes the Symphony while the Mac sleeps. It uses almost nothing when no Symphony is on USB."),
+                .text("The uninstaller removes them (see **Uninstalling**). macOS may ask you to turn the driver off yourself in System Settings › General › Login Items & Extensions › Driver Extensions; the uninstaller says when."),
+            ]),
             HelpItem(title: "The status bar says \"No hardware detected\" or \"Bus error\".", blocks: [
                 .text("The ThunderBridge or PCIe card is there, but the Symphony on its port is not answering. **No hardware detected** means nothing was found on the port: no unit is connected to it, or the unit is off. **Bus error** means a unit was found and the link to it failed. With 64 channels the message names the port. The ⓘ button next to it shows the whole message."),
                 .text("Verify that the hardware is properly connected and powered on: the PC-32 cable from the Symphony's main port to the card's port, the unit's power, and **Symphony** mode on its front panel. Clicking the message in the status bar is the same as **Rescan**."),
