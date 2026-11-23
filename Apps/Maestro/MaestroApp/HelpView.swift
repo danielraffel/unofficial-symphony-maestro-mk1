@@ -371,7 +371,7 @@ extension HelpSection {
             ]),
             HelpItem(title: "What does the Over indicator actually mean?", blocks: [
                 .text("It lights when **three or more consecutive full-scale samples** occur. Three samples on their own are very unlikely to be audible — treat it as an early warning that the level should come down rather than as proof of damage."),
-                .text("On USB, Over lights use the unit’s Input, Output and Mixer meter data where available. On ThunderBridge and PCIe, Over lights on the Output pages come from the unit’s own output meters and need driver build 144 or later. The Input and Mixer pages show no Over light there: the card’s clip flags are not used until they have been checked on hardware, and level meters read by Maestro itself do not light Over."),
+                .text("On USB, Over lights use the unit’s Input, Output and Mixer meter data where available. On ThunderBridge and PCIe, Over lights on the Output page come from the unit’s own output meters (driver build 144 or later). On the Input and Mixer pages they light when the card’s meter reaches full scale (0 dBFS)."),
             ]),
             HelpItem(title: "How long are Peaks and Overs held?", blocks: [
                 .text("Set **Peak Hold** and **Over Hold** in **Device Settings › Front Panel**. Peak Hold Off hides the peak mark. With 2 Seconds it holds, then falls. Over Hold Off lights for a tenth of a second, and 2 Seconds or Auto Clear lights for two seconds on screen. Infinite holds until you click an Over light, choose **Clear Meters**, or clear meters with the front-panel encoder."),
