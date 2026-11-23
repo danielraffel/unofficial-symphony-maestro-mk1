@@ -15,15 +15,10 @@ enum InputRowCaption: String, CaseIterable {
 
     static func visible(levels: [AnalogInputLevel], showTrims: Bool) -> [Self] {
         guard !levels.isEmpty else { return [] }
-        // Analog Level, Digital Ref and Soft Limit carry no caption: their
-        // pills say what they hold and their tooltips name them (owner,
-        // 2026-11-22: the caption column looked cluttered).
-        return allCases.filter { row in
-            switch row {
-            case .analogLevel, .softLimit, .digitalRef: return false
-            case .levelTrim: return showTrims || levels.contains(where: InputChannelLogic.usesGainKnob)
-            }
-        }
+        // No row carries a caption: the pills say what they hold, and the
+        // controls' tooltips name them (owner, 2026-11-22: the caption column
+        // looked cluttered).
+        return []
     }
 }
 
