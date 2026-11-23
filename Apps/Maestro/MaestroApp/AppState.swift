@@ -3095,6 +3095,83 @@ final class AppState: @unchecked Sendable {
         return left == .deferred || right == .deferred ? .deferred : .written
     }
 
+    /// Match the legacy routing side effect of changing the Analog Out Format.
+    /// When speaker sets are added, every new pair repeats the source feeding
+    /// Line 1-2. When sets are removed, those pairs return to their direct
+    /// playback sources (`SymphonyIORoutingController.cpp:554-632`).
+    @MainActor
+    func applySpeakerSetRouting(from oldMode: UInt32, to newMode: UInt32,
+                                device: (any DeviceConnection)?) async {
+        guard !converterRoutingSurface, let device, device === self.device else { return }
+        let oldCount = SpeakerOutputLogic.speakerSetCount(mode: oldMode)
+        let newCount = SpeakerOutputLogic.speakerSetCount(mode: newMode)
+        guard oldCount != newCount, newCount > 0 else { return }
+        let analogColumns = cardLayout.outputRoutingColumns.filter { !$0.isDigital }
+        guard analogColumns.count >= max(oldCount, newCount) else { return }
+
+        let hostBase = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb)
+        let firstDestination = analogColumns[0].routingByte
+        let cached = cachedOutputRouteMap()
+        func defaultPlaybackSource(for destination: UInt8) -> UInt8 {
+            let boardBase = destination >= SymphonyIORoutingAddress.ioBoard1Base
+                ? SymphonyIORoutingAddress.ioBoard1Base : SymphonyIORoutingAddress.ioBoard0Base
+            let channel = (destination >= SymphonyIORoutingAddress.ioBoard1Base ? 16 : 0)
+                + Int(destination - boardBase)
+            return hostBase + UInt8(channel)
+        }
+        let source = cached[firstDestination] ?? defaultPlaybackSource(for: firstDestination)
+        let sourceRow: Int? = {
+            if source == SymphonyIORoutingAddress.mixer0Base { return device.identifier.mode.channelCount / 2 }
+            if source == SymphonyIORoutingAddress.mixer1Base { return device.identifier.mode.channelCount / 2 + 1 }
+            guard source >= hostBase else { return nil }
+            let offset = Int(source - hostBase)
+            guard offset.isMultiple(of: 2), offset < device.identifier.mode.channelCount else { return nil }
+            return offset / 2
+        }()
+
+        var saved = peripheralRoutingCache(direction: "output").loadMulti() ?? [:]
+        func removeColumn(_ column: Int) {
+            for row in saved.keys {
+                saved[row]?.remove(column)
+                if saved[row]?.isEmpty == true { saved.removeValue(forKey: row) }
+            }
+        }
+        func addColumn(_ column: Int, to row: Int) {
+            removeColumn(column)
+            saved[row, default: []].insert(column)
+        }
+
+        if newCount > oldCount, let sourceRow {
+            for pair in 1..<newCount {
+                let destination = analogColumns[pair].routingByte
+                guard let column = analogColumns.firstIndex(where: { $0.routingByte == destination }) else { continue }
+                do {
+                    _ = try await writeOutputRoutePair(destLeft: destination, srcLeft: source,
+                                                        device: device)
+                    addColumn(column, to: sourceRow)
+                } catch {
+                    print("[Maestro] speaker-set route (destination) failed: \(error)")
+                }
+            }
+        } else if newCount < oldCount {
+            for pair in newCount..<oldCount {
+                let destination = analogColumns[pair].routingByte
+                let defaultSource = defaultPlaybackSource(for: destination)
+                let row = Int(defaultSource - hostBase) / 2
+                guard let column = analogColumns.firstIndex(where: { $0.routingByte == destination }) else { continue }
+                do {
+                    _ = try await writeOutputRoutePair(destLeft: destination, srcLeft: defaultSource,
+                                                        device: device)
+                    addColumn(column, to: row)
+                } catch {
+                    print("[Maestro] speaker-set default route (destination) failed: \(error)")
+                }
+            }
+        }
+        peripheralRoutingCache(direction: "output").save(saved)
+        outputRoutingSaved()
+    }
+
     /// Write the settings saved on this Mac back to the unit on connect/reconnect.
     ///
     /// The original daemon did this on every connect (`ApplySettingsToHardware`),
@@ -4005,9 +4082,14 @@ final class AppState: @unchecked Sendable {
                         } else {
                             // Cards or table not known yet, or converters:
                             // strip i is software output i.
-                            var outp = self.outputMeterLevels
-                            for i in 0..<outp.count { outp[i] = dbW(64 + i) }
-                            newOutput = outp
+                            if convertersMetered {
+                                newOutput = ThunderboltOutputMeterMap.converterLevels(
+                                    count: self.outputMeterLevels.count, level: dbW)
+                            } else {
+                                var outp = self.outputMeterLevels
+                                for i in 0..<outp.count { outp[i] = dbW(64 + i) }
+                                newOutput = outp
+                            }
                         }
 
                         // If the FPGA input snapshot is unavailable or silent,
@@ -4578,10 +4660,33 @@ final class AppState: @unchecked Sendable {
             if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB, output: .headphone2) }
         case .level: break   // MicPre selections arrive as .micPreGain
         case .muteAll(let muted):
-            let changed = speakerMuted != muted || hp1Muted != muted || hp2Muted != muted
-            speakerMuted = muted
-            hp1Muted = muted
-            hp2Muted = muted
+            // The original's Mute All leaves an output at its minimum
+            // attenuation alone, and does not try to mute the speaker while
+            // Analog Out Format is Line (`MonitorOutputToggle.respondsToMuteAll`).
+            let mode = speakerOutputMode
+            let targets = SymphonyIORequestBuilder.MonitorOutput.allCases.filter { output in
+                let level: Double
+                switch output {
+                case .speaker: level = speakerLevel
+                case .headphone1: level = hp1Level
+                case .headphone2: level = hp2Level
+                }
+                return MonitorOutputToggle.respondsToMuteAll(output, levelDB: level, speakerMode: mode)
+            }
+            let changed = targets.contains { output in
+                switch output {
+                case .speaker: return speakerMuted != muted
+                case .headphone1: return hp1Muted != muted
+                case .headphone2: return hp2Muted != muted
+                }
+            }
+            for output in targets {
+                switch output {
+                case .speaker: speakerMuted = muted
+                case .headphone1: hp1Muted = muted
+                case .headphone2: hp2Muted = muted
+                }
+            }
             if isUserChange, changed {
                 switch selection {
                 case .headphone1: showLevelOverlay(source: .headphone1, level: hp1Level, muted: muted, change: .frontPanel)

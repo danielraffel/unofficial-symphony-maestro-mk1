@@ -760,21 +760,20 @@ struct OutputControlsView: View {
                                      : "Mute — silences the speaker output.",
                                  enabled: speakerControlsEnabled) {
                         appState.showLevelOverlay(source: .speaker, level: speakerLevel, muted: speakerMuted)
-                        Task { await writeMonitorProperty(.outputMute, value: .bool(speakerMuted)) }
-                        if monitorTarget.unit == .a { appState.writeASPMute(speakerMuted) }
+                        applyMonitorToggle(.mute, clicked: .speaker, value: speakerMuted)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputMute)))
                     outputToggle("D", isOn: speakerDimBinding, tint: .orange,
                                  tooltip: Self.dimTooltip("speaker"),
                                  enabled: speakerControlsEnabled) {
-                        Task { await writeMonitorProperty(.outputDim, value: .bool(speakerDim)) }
+                        applyMonitorToggle(.dim, clicked: .speaker, value: speakerDim)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputDim)))
                     .symphonyOnly(appState.converterVolumeKeys)
                     outputToggle("Σ", isOn: speakerMonoBinding, tint: .purple,
                                  tooltip: Self.sumTooltip("speaker"),
                                  enabled: speakerSumEnabled) {
-                        Task { await writeMonitorProperty(.outputSumToMono, value: .bool(speakerMono)) }
+                        applyMonitorToggle(.sum, clicked: .speaker, value: speakerMono)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.outputSumToMono)))
                     .symphonyOnly(appState.converterVolumeKeys)
@@ -816,6 +815,8 @@ struct OutputControlsView: View {
                                     await writeMonitorProperty(.outputDim, value: .bool(false))
                                     await writeMonitorProperty(.outputSumToMono, value: .bool(false))
                                     await writeMonitorProperty(.speakerOutputMode, value: .uint32(val))
+                                    await appState.applySpeakerSetRouting(from: oldMode, to: val,
+                                                                          device: monitorTarget.device)
                                     if oldMode == 0, val != 0 {
                                         // Out of Line: the unit puts its speakers back on the
                                         // level they had before. Show that level, read from
@@ -883,18 +884,17 @@ struct OutputControlsView: View {
                     outputToggle("M", isOn: hp1MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 1.") {
                         appState.showLevelOverlay(source: .headphone1, level: hp1Level, muted: hp1Muted)
-                        Task { await writeMonitorProperty(.headphone1Mute, value: .bool(hp1Muted)) }
-                        if monitorTarget.unit == .a { appState.writeASPMute(hp1Muted, output: .headphone1) }
+                        applyMonitorToggle(.mute, clicked: .headphone1, value: hp1Muted)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Mute)))
                     outputToggle("D", isOn: hp1DimBinding, tint: .orange,
                                  tooltip: Self.dimTooltip("Headphone 1")) {
-                        Task { await writeMonitorProperty(.headphone1Dim, value: .bool(hp1Dim)) }
+                        applyMonitorToggle(.dim, clicked: .headphone1, value: hp1Dim)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1Dim)))
                     outputToggle("Σ", isOn: hp1MonoBinding, tint: .purple,
                                  tooltip: Self.sumTooltip("Headphone 1")) {
-                        Task { await writeMonitorProperty(.headphone1SumToMono, value: .bool(hp1Mono)) }
+                        applyMonitorToggle(.sum, clicked: .headphone1, value: hp1Mono)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone1SumToMono)))
                 }
@@ -946,18 +946,17 @@ struct OutputControlsView: View {
                     outputToggle("M", isOn: hp2MutedBinding, tint: .red,
                                  tooltip: "Mute — silences Headphone 2.") {
                         appState.showLevelOverlay(source: .headphone2, level: hp2Level, muted: hp2Muted)
-                        Task { await writeMonitorProperty(.headphone2Mute, value: .bool(hp2Muted)) }
-                        if monitorTarget.unit == .a { appState.writeASPMute(hp2Muted, output: .headphone2) }
+                        applyMonitorToggle(.mute, clicked: .headphone2, value: hp2Muted)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Mute)))
                     outputToggle("D", isOn: hp2DimBinding, tint: .orange,
                                  tooltip: Self.dimTooltip("Headphone 2")) {
-                        Task { await writeMonitorProperty(.headphone2Dim, value: .bool(hp2Dim)) }
+                        applyMonitorToggle(.dim, clicked: .headphone2, value: hp2Dim)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2Dim)))
                     outputToggle("Σ", isOn: hp2MonoBinding, tint: .purple,
                                  tooltip: Self.sumTooltip("Headphone 2")) {
-                        Task { await writeMonitorProperty(.headphone2SumToMono, value: .bool(hp2Mono)) }
+                        applyMonitorToggle(.sum, clicked: .headphone2, value: hp2Mono)
                     }
                     .modifier(MonitorReadingAvailability(unknown: monitorUnknown(.headphone2SumToMono)))
                 }
@@ -1456,6 +1455,75 @@ struct OutputControlsView: View {
         }
     }
 
+    /// Apply one monitor button to the clicked output, or to all monitor outputs
+    /// when Option is held. The original uses the same value for every output
+    /// (`APSpeakerOutputViewController.m:559-708`).
+    private func applyMonitorToggle(
+        _ control: MonitorOutputToggle.Control,
+        clicked: SymphonyIORequestBuilder.MonitorOutput,
+        value: Bool
+    ) {
+        let targets = MonitorOutputToggle.targets(
+            for: control,
+            clicked: clicked,
+            option: Self.optionKeyIsDown,
+            speakerMode: speakerConfig)
+        for target in targets {
+            setMonitorToggleValue(control, target: target, value: value)
+            guard let selector = monitorToggleSelector(control, target: target) else { continue }
+            Task { await writeMonitorProperty(selector, value: .bool(value)) }
+            if control == .mute, monitorTarget.unit == .a {
+                // The plain speaker path remains `if monitorTarget.unit == .a { appState.writeASPMute(speakerMuted) }` in effect.
+                appState.writeASPMute(value, output: keyboardOutput(for: target))
+            }
+        }
+    }
+
+    private func monitorToggleSelector(
+        _ control: MonitorOutputToggle.Control,
+        target: SymphonyIORequestBuilder.MonitorOutput
+    ) -> AudioPropertySelector? {
+        switch (control, target) {
+        case (.mute, .speaker): return .outputMute
+        case (.mute, .headphone1): return .headphone1Mute
+        case (.mute, .headphone2): return .headphone2Mute
+        case (.dim, .speaker): return .outputDim
+        case (.dim, .headphone1): return .headphone1Dim
+        case (.dim, .headphone2): return .headphone2Dim
+        case (.sum, .speaker): return .outputSumToMono
+        case (.sum, .headphone1): return .headphone1SumToMono
+        case (.sum, .headphone2): return .headphone2SumToMono
+        }
+    }
+
+    private func setMonitorToggleValue(
+        _ control: MonitorOutputToggle.Control,
+        target: SymphonyIORequestBuilder.MonitorOutput,
+        value: Bool
+    ) {
+        switch (control, target) {
+        case (.mute, .speaker): speakerMuted = value
+        case (.mute, .headphone1): hp1Muted = value
+        case (.mute, .headphone2): hp2Muted = value
+        case (.dim, .speaker): speakerDim = value
+        case (.dim, .headphone1): hp1Dim = value
+        case (.dim, .headphone2): hp2Dim = value
+        case (.sum, .speaker): speakerMono = value
+        case (.sum, .headphone1): hp1Mono = value
+        case (.sum, .headphone2): hp2Mono = value
+        }
+    }
+
+    private func keyboardOutput(
+        for target: SymphonyIORequestBuilder.MonitorOutput
+    ) -> KeyboardVolumeOutput {
+        switch target {
+        case .speaker: return .speakers
+        case .headphone1: return .headphone1
+        case .headphone2: return .headphone2
+        }
+    }
+
     /// Select a headphone Output Source — **both** halves of the operation.
     ///
     /// Step 1 stores the choice in `0x54`, which the vendor header describes as
@@ -1508,6 +1576,7 @@ struct OutputControlsView: View {
         guard canEditHardware else { return }
         // The trims below are saved after several awaits: keep them to this unit.
         let target = appState.unitWriteTarget
+        let oldSpeakerMode = speakerConfig
         let attenuation = UInt32(SymphonyIOMonitorDefaults.levelAttenuationDB)
         let level = -Double(SymphonyIOMonitorDefaults.levelAttenuationDB)
 
@@ -1523,6 +1592,9 @@ struct OutputControlsView: View {
         speakerMono = SymphonyIOMonitorDefaults.summedToMono
         hp1Mono = SymphonyIOMonitorDefaults.summedToMono
         hp2Mono = SymphonyIOMonitorDefaults.summedToMono
+        speakerSetMask = SpeakerOutputLogic.defaultSpeakerSetMask
+        hp1Source = 0
+        hp2Source = 0
 
         await writeMonitorProperty(.outputLevel, value: .uint32(attenuation))
         await writeMonitorProperty(.headphone1Level, value: .uint32(attenuation))
@@ -1573,6 +1645,20 @@ struct OutputControlsView: View {
         speakerConfig = UInt32(mode.rawValue)
         speakerOutputMode = UInt32(mode.rawValue)
         await writeMonitorProperty(.speakerOutputMode, value: .uint32(UInt32(mode.rawValue)))
+        await writeMonitorProperty(.activeSpeakerSet,
+                                   value: .uint32(SpeakerOutputLogic.defaultSpeakerSetMask))
+        await writeMonitorProperty(.headphone1RoutingID, value: .uint32(0))
+        await writeMonitorProperty(.headphone2RoutingID, value: .uint32(0))
+        if monitorTarget.unit == .a, let device = target.device {
+            await HeadphoneCrosspoint.apply(.headphone1, sourceID: 0, device: device,
+                                             cachedRoutes: appState.cachedOutputRouteMap(),
+                                             transport: appState.transportType ?? .usb, state: appState)
+            await HeadphoneCrosspoint.apply(.headphone2, sourceID: 0, device: device,
+                                             cachedRoutes: appState.cachedOutputRouteMap(),
+                                             transport: appState.transportType ?? .usb, state: appState)
+        }
+        await appState.applySpeakerSetRouting(from: oldSpeakerMode, to: UInt32(mode.rawValue),
+                                              device: target.device)
         appState.resetKeyboardVolumeOutput(unit: monitorTarget.unit)
 
         await writeMonitorProperty(.peakHoldMode,

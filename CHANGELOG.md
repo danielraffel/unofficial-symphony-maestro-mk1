@@ -22,6 +22,8 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Fixed
 
+- **Output monitor controls now match Apogee's behavior.** Option-clicking Mute, Dim or Sum to Mono applies it to the speaker and both headphones, plain clicks stay local, speaker-set formats copy the Line 1-2 route to each active set, and Output reset restores the speaker-set and headphone routing defaults. Front-panel Mute All leaves outputs already at minimum alone.
+
 - **With converters on both ports of the card at 64 channels, the routing pages no longer go blank,** show 32 inputs and 48 outputs, and Software Return offers all 32 pairs.
 - **With one Symphony I/O on the card, Software Return offers all 16 pairs** of the port, as in Apogee's software (it offered 8).
 - **After switching from USB to ThunderBridge, Maestro connects** instead of staying Disconnected until it was reopened.
