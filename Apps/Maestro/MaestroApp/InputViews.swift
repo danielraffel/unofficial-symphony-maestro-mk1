@@ -1722,10 +1722,12 @@ struct InputChannelStripView: View {
                 .padding(.top, 4)
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.15), value: showTrims)
-            } else {
+            } else if rackHasMicPre {
                 // Reserve the readout row so every strip's Group / Insert /
                 // Ø-48-HPF rows sit at the same height across the rack, even
-                // with trims hidden on the line strips.
+                // with trims hidden on the line strips. Without an 8MicPre
+                // there are no such rows, and the strip ends under its meter,
+                // as on the Output page (owner, 2026-11-22).
                 Color.clear.frame(height: Self.readoutRowHeight)
             }
 
