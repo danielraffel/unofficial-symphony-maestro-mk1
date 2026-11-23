@@ -40,6 +40,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 - **Command-N no longer opens a second Maestro window.**
 - Mixer strips on ThunderBridge and PCIe now control the card input named by each strip.
 - Mixer strips also follow an Input Routing change.
+- Removing an input route immediately mutes and unsolos its card mixer strip, including batch mixer actions on hidden strips.
 
 - **On ThunderBridge and PCIe, the digital output meters on the Output page now work:** AES, ADAT/SMUX and S/PDIF. They stayed dark whatever was playing; the audio itself was not affected.
 - **On ThunderBridge and PCIe, each Output page meter now shows the level of what Output Routing plays on that output, analog and digital.** This also covers the second Symphony I/O at 64 channels.

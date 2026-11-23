@@ -883,22 +883,38 @@ struct MixerView: View {
     /// Encode mixer element: (mixerID << 16) | card receive-slot number.
     /// Evidence: SymphonyIOControl.cpp:1904-1942 — (nMixer << 16) | (nChannel & 0xFFFF).
     /// selectedMixer is 0-based in UI; USB protocol mixer IDs are 1-based.
-    private func mixerElement(channel: Int) -> UInt32? {
+    private func mixerElement(channel: Int, includeUnrouted: Bool = false) -> UInt32? {
         guard channel >= 0 else { return nil }
         if usbDevice != nil, channel >= mixerChannels.count {
             return (UInt32(selectedMixer + 1) << 16) | UInt32(channel)
         }
         guard channel < mixerChannels.count else { return nil }
         let strip = mixerChannels[channel]
+        let unit: DeviceUnit = isUnitBChannel(channel) ? .b : .a
+        let local = localChannelIndex(channel)
+        if includeUnrouted, strip.hardwareIndex < 0 {
+            let layoutStrips = (unit == .b ? appState.unitBLayout : appState.cardLayout)?.mixerChannels ?? []
+            if layoutStrips.indices.contains(local) {
+                let hardwareIndex = layoutStrips[local].hardwareIndex
+                return (UInt32(selectedMixer + 1) << 16)
+                    | UInt32(hardwareIndex + (unit == .b ? 32 : 0))
+            }
+        }
         guard strip.hardwareIndex >= 0 else { return nil }
         let id: Int?
         if usbDevice != nil {
             id = strip.hardwareIndex
         } else {
-            let unit: DeviceUnit = isUnitBChannel(channel) ? .b : .a
-            let local = localChannelIndex(channel)
             let numbers = appState.thunderboltMixerInputNumbers(unit: unit)
-            id = local < numbers.count ? numbers[local].map { unit == .b ? $0 + 32 : $0 } : nil
+            id = local < numbers.count
+                ? numbers[local].map { unit == .b ? $0 + 32 : $0 }
+                : nil
+            if id == nil, includeUnrouted {
+                // Batch gestures still clear saved strips after Input Routing
+                // hides them. The card mixer uses the compact strip ID here.
+                return (UInt32(selectedMixer + 1) << 16)
+                    | UInt32(strip.hardwareIndex + (unit == .b ? 32 : 0))
+            }
         }
         guard let id else { return nil }
         return (UInt32(selectedMixer + 1) << 16) | UInt32(id)
@@ -1051,7 +1067,7 @@ struct MixerView: View {
     private func writeLevel(channel: Int, level: Double) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
-        guard let element = mixerElement(channel: channel) else { return }
+        guard let element = mixerElement(channel: channel, includeUnrouted: true) else { return }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelLevel, element: element),
@@ -1065,7 +1081,7 @@ struct MixerView: View {
     private func writePan(channel: Int, pan: Double) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
-        guard let element = mixerElement(channel: channel) else { return }
+        guard let element = mixerElement(channel: channel, includeUnrouted: true) else { return }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelPan, element: element),
@@ -1079,7 +1095,7 @@ struct MixerView: View {
     private func writeMute(channel: Int, muted: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
-        guard let element = mixerElement(channel: channel) else { return }
+        guard let element = mixerElement(channel: channel, includeUnrouted: true) else { return }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelMute, element: element),
@@ -1093,7 +1109,7 @@ struct MixerView: View {
     private func writeSolo(channel: Int, solo: Bool) async {
         guard editor.canEdit(appState) else { return }
         guard let device = appState.device else { return }
-        guard let element = mixerElement(channel: channel) else { return }
+        guard let element = mixerElement(channel: channel, includeUnrouted: true) else { return }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .mixerChannelSolo, element: element),

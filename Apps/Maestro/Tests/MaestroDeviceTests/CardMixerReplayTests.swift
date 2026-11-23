@@ -94,6 +94,15 @@ struct CardMixerReplayTests {
         #expect(value(writes, .mixerChannelSolo, 0x10000)?.asBool == false)
     }
 
+    @Test("Removing a soloed route sends mute and unsolo to the card")
+    func removedRouteClearsLiveCardStrip() {
+        let before = Set([7])
+        let after = Set<Int>()
+        let writes = CardMixerReplay.unroutedWrites(mixer: 0, inputIDs: before.subtracting(after))
+        #expect(value(writes, .mixerChannelMute, 0x10000 | 7)?.asBool == true)
+        #expect(value(writes, .mixerChannelSolo, 0x10000 | 7)?.asBool == false)
+    }
+
     private func value(_ writes: [ThunderboltPreset.Write], _ selector: AudioPropertySelector,
                        _ element: UInt32) -> PropertyValue? {
         for case .property(let address, let value) in writes where address.selector == selector && address.element == element {

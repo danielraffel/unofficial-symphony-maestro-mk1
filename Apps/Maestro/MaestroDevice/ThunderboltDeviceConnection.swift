@@ -457,6 +457,31 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             pace: { try await Task.sleep(for: gap) })
     }
 
+    /// Send a small card-mixer repair through the same serialized write path
+    /// as a full mixer replay. Used when Input Routing removes a receive slot.
+    public func writeCardMixerEdits(_ writes: [ThunderboltPreset.Write],
+                                    shouldContinue: @escaping @Sendable () -> Bool,
+                                    gap: Duration = CardMixerReplay.commandGap) async throws {
+        guard !writes.isEmpty else { return }
+        try await CardMixerReplay.run([writes],
+            validateMixer: {
+                try self.withPresetLock {
+                    guard shouldContinue(), self.isConnected else { throw DeviceConnectionError.notConnected }
+                }
+            },
+            send: { write in
+                try self.withPresetLock {
+                    guard shouldContinue(), self.isConnected,
+                          case .property(let address, let value) = write,
+                          Self.mixerEditSelectors.contains(address.selector) else {
+                        throw DeviceConnectionError.notConnected
+                    }
+                    try self.writeProperty(address, value: value)
+                }
+            },
+            pace: { try await Task.sleep(for: gap) })
+    }
+
     /// One whole card mixer, paced like D5, each write under the serial owner
     /// on its own and through the chokepoint. The order (`CardMixerReplay.writes`)
     /// is Master, Software Return, then each strip's level and pan before its

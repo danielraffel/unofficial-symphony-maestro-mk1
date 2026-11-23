@@ -204,6 +204,7 @@ struct InputRoutingView: View {
                     },
                     onLoad: { name in
                         if let preset = PresetManager.loadRoutingPresets(key: presetKey)[name] {
+                            let previousRoutes = appState.thunderboltCaptureRoutes(unit: unit)
                             routes = preset
                             userChosenRows.formUnion(preset.keys)
                             persistChosenRows()
@@ -211,7 +212,9 @@ struct InputRoutingView: View {
                                 for (row, col) in preset.sorted(by: { $0.key < $1.key }) {
                                     await writeRoute(row: row, col: col, notifyMixer: false)
                                 }
-                                if appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
+                                if appState.transportType == .thunderbolt {
+                                    appState.thunderboltInputRoutingDidChange(previousRoutes: [.a: previousRoutes])
+                                }
                             }
                         }
                     },
@@ -251,11 +254,12 @@ struct InputRoutingView: View {
                         hoverCol: $hoverCol,
                         onCellTap: { row, col in
                             guard !isLoadingRoutes, canWrite, routes[row] != col else { return }
+                            let previousRoutes = appState.thunderboltCaptureRoutes(unit: unit)
                             routes[row] = col
                             userChosenRows.insert(row)
                             persistChosenRows()
                             appState.markSetupEdited(.routing)
-                            Task { await writeRoute(row: row, col: col) }
+                            Task { await writeRoute(row: row, col: col, previousRoutes: previousRoutes) }
                         }
                     )
                     .padding(.leading, 16)
@@ -397,7 +401,8 @@ struct InputRoutingView: View {
     ///
     /// Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIORouting.h`
     /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
-    private func writeRoute(row: Int, col: Int, notifyMixer: Bool = true) async {
+    private func writeRoute(row: Int, col: Int, notifyMixer: Bool = true,
+                            previousRoutes: [ThunderboltInputMeterMap.Route]? = nil) async {
         guard !isLoadingRoutes, canWrite, let device else { return }
         let board1 = self.board1
         let board2 = self.board2
@@ -425,7 +430,9 @@ struct InputRoutingView: View {
             errorMessage = nil
             userChosenRows.insert(row)
             persistChosenRows()
-            if notifyMixer, appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
+            if notifyMixer, appState.transportType == .thunderbolt {
+                appState.thunderboltInputRoutingDidChange(previousRoutes: previousRoutes.map { [.a: $0] } ?? [:])
+            }
             print("[Maestro] InputRouting: wrote row \(row) → col \(col) (dest \(destLeft), src \(srcLeft))")
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"
@@ -479,6 +486,7 @@ struct InputRoutingView: View {
     /// Only reachable through ``requestRoutingReset()``, which refuses unless both
     /// slots were genuinely detected this session.
     private func resetToDefaultRouting() async {
+        let previousRoutes = appState.thunderboltCaptureRoutes(unit: unit)
         if appState.unitBOnCard {
             do {
                 try await appState.resetTwoUnitRouting(input: true)
@@ -557,7 +565,9 @@ struct InputRoutingView: View {
         }
         persistChosenRows()
         appState.markSetupEdited(.routing)
-        if appState.transportType == .thunderbolt { appState.thunderboltInputRoutingDidChange() }
+        if appState.transportType == .thunderbolt {
+            appState.thunderboltInputRoutingDidChange(previousRoutes: [.a: previousRoutes])
+        }
         errorMessage = failures == 0 ? nil : "\(failures) of \(routeList.count) routes failed to write"
         print("[Maestro] InputRouting: reset to legacy defaults (\(routeList.count) routes, \(failures) failed)")
     }
