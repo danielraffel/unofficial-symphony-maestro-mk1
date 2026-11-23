@@ -257,12 +257,14 @@ struct RotaryKnobView: View {
     /// Use this instead of onChange(of: value) to avoid double-writes when the binding
     /// is updated externally (e.g. volume keys changing speakerLevel during a drag).
     var onUserChange: ((Double) -> Void)? = nil
+    var onUserChangeWithOld: ((Double, Double) -> Void)? = nil
     /// Reports whether the user is actively dragging this control.
     var onDragStateChange: ((Bool) -> Void)? = nil
     /// Called with delta when Option+Drag (batch pan mode). Parent applies to all targets.
     var onBatchDrag: ((Double) -> Void)? = nil
     /// Called once at drag start when Option is held (for snapshotting start pans).
     var onBatchDragStart: (() -> Void)? = nil
+    var onBatchDragEnd: (() -> Void)? = nil
     /// Called on Option+click. When set, overrides the default reset-to-defaultValue behavior.
     var onOptionClick: (() -> Void)? = nil
 
@@ -383,9 +385,11 @@ struct RotaryKnobView: View {
                         let delta = -gesture.translation.height * sensitivity
                         let span = range.upperBound - range.lowerBound
                         let newValue = dragStartValue + (delta / 150) * span
+                        let oldValue = value
                         value = (newValue / step).rounded() * step
                         value = min(max(value, range.lowerBound), range.upperBound)
                         onUserChange?(value)
+                        onUserChangeWithOld?(oldValue, value)
                         // Option+Drag: forward delta to batch handler
                         if NSEvent.modifierFlags.contains(.option), let batch = onBatchDrag {
                             batch(value - dragStartValue)
@@ -394,13 +398,16 @@ struct RotaryKnobView: View {
                     .onEnded { _ in
                         isDragging = false
                         onDragStateChange?(false)
+                        onBatchDragEnd?()
                     }
             )
             .onTapGesture(count: 2) {
                 // Double-tap knob to reset to default
                 if let def = defaultValue {
+                    let oldValue = value
                     value = def
                     onUserChange?(value)
+                    onUserChangeWithOld?(oldValue, value)
                 }
             }
             .simultaneousGesture(
@@ -524,8 +531,11 @@ struct FaderView: View {
     var onBatchDrag: ((Double) -> Void)? = nil
     /// Called once at drag start when Option is held (for snapshotting start levels).
     var onBatchDragStart: (() -> Void)? = nil
+    var onBatchDragEnd: (() -> Void)? = nil
     /// Called for user-driven changes, including Option-click reset.
     var onUserChange: ((Double) -> Void)? = nil
+    /// Called for user-driven changes with the value before the gesture.
+    var onUserChangeWithOld: ((Double, Double) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -554,6 +564,11 @@ struct FaderView: View {
     /// Extra travel beyond the normal range so the thumb center reaches
     /// the very top and bottom of the adjacent LED meter.
     private let overTravel: CGFloat = 11.5
+
+    private func reportUserChange(oldValue: Double, newValue: Double) {
+        onUserChange?(newValue)
+        onUserChangeWithOld?(oldValue, newValue)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -675,27 +690,33 @@ struct FaderView: View {
                                 let span = range.upperBound - range.lowerBound
                                 let newValue = dragStartValue + (deltaY / Double(usableHeight)) * span
                                 let steppedValue = (newValue / step).rounded() * step
+                                let oldValue = value
                                 value = min(max(steppedValue, range.lowerBound), range.upperBound)
-                                onUserChange?(value)
+                                reportUserChange(oldValue: oldValue, newValue: value)
                                 // Option+Drag: forward delta to batch handler
                                 if NSEvent.modifierFlags.contains(.option), let batch = onBatchDrag {
                                     batch(value - dragStartValue)
                                 }
                             }
-                            .onEnded { _ in isDragging = false }
+                            .onEnded { _ in
+                                isDragging = false
+                                onBatchDragEnd?()
+                            }
                     )
                     // Apogee's APFaderCell reset value is zero by default
                     // (og_source/maestro2/App/Views/APFaderCell.m:35-36, 180-184).
                     .onTapGesture(count: 2) {
+                        let oldValue = value
                         value = defaultValue
-                        onUserChange?(value)
+                        reportUserChange(oldValue: oldValue, newValue: value)
                     }
                     .simultaneousGesture(
                         TapGesture()
                             .modifiers(.option)
                             .onEnded { _ in
+                                let oldValue = value
                                 value = defaultValue
-                                onUserChange?(defaultValue)
+                                reportUserChange(oldValue: oldValue, newValue: defaultValue)
                             }
                     )
                 }

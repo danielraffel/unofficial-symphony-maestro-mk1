@@ -59,12 +59,15 @@ public enum MixerGroupMath {
     /// member reaches a bound, preserving every member's offset.
     public static func applyingDelta(_ delta: Double, to values: [Double], in bounds: ClosedRange<Double>) -> [Double] {
         guard !values.isEmpty else { return [] }
+        let clamped = values.map { min(max($0, bounds.lowerBound), bounds.upperBound) }
+        if delta > 0, values.contains(where: { $0 > bounds.upperBound }) { return clamped }
+        if delta < 0, values.contains(where: { $0 < bounds.lowerBound }) { return clamped }
         let allowed: Double
         if delta > 0 {
-            allowed = min(delta, values.map { bounds.upperBound - $0 }.min() ?? delta)
+            allowed = min(delta, clamped.map { bounds.upperBound - $0 }.min() ?? delta)
         } else {
-            allowed = max(delta, values.map { bounds.lowerBound - $0 }.max() ?? delta)
+            allowed = max(delta, clamped.map { bounds.lowerBound - $0 }.max() ?? delta)
         }
-        return values.map { min(max($0 + allowed, bounds.lowerBound), bounds.upperBound) }
+        return clamped.map { min(max($0 + allowed, bounds.lowerBound), bounds.upperBound) }
     }
 }

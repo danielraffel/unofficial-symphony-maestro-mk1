@@ -8,7 +8,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Changes that may affect your setup
 
-- **After a ThunderBridge replug, audio output stays muted until macOS restores the monitor controls, or three seconds pass.** This prevents a short burst of audio when the speaker was muted before the replug.
+- **When the ThunderBridge driver starts (Mac start-up, a replug, a driver update; also on PCIe), the card's outputs stay silent until macOS restores the saved mute and volume, or three seconds pass.** This prevents a short burst of audio when the speaker was muted before a replug.
 - **The uninstaller removes the ThunderBridge driver after you confirm in macOS.** It keeps your Maestro settings so reinstalling restores your setup.
 
 - **Choosing 2 or 3 Speaker Sets replaces the routes on Line 3-6 with the Line 1-2 source.** Leaving speaker sets or resetting the Output tab restores those outputs to their default DAW pairs.
@@ -63,6 +63,8 @@ Thanks to the testers who reported that the AES meters did not move while music 
 - **Over Hold now offers Off, 2 Seconds and Infinite, as in Apogee's software.** Older Auto Clear values are shown as 2 Seconds, the behavior this app used for them.
 
 ### What's new
+
+- **Mixer strips can be selected like Logic.** Shift-click names to add a range, Shift-Command-click to remove one, and Shift-Command-Option-click to remove a range. Command-A selects visible strips and Shift-D or Escape clears the selection. Option-drag from empty space draws a selection box. Moving or typing on one selected fader or pan moves the selection by the same amount, keeping its spacing. Software Return and Master join groups. Option with a selection applies to that selection. The monitor knob ring is purple for Sum.
 
 - **Setup files work like documents:** the window title shows the open file and whether it has changes, File › Save and Save As write it, Maestro asks before closing unsaved changes, and .mst2 files open from Finder. App Settings can reopen the last file at launch.
 - **A level overlay**, a HUD that shows speaker, headphone and 8MicPre gain changes on screen, including ones made with the front-panel knob. Off by default: turn it on in App Settings › Show level overlay.
@@ -572,7 +574,6 @@ Thanks to the testers with Symphony 64 PCIe cards whose careful reports, and who
 
 ### What's new
 
-- **Mixer strips can be selected like Logic.** Shift-click names to add a range, use Command-A to select visible strips, and move or type on one selected fader or pan to move the group while keeping its spacing. Mute and Solo apply to selected strips, and Option-drag or Option-click still applies to every strip.
 - **Diagnostics, for testers on the Beta channel.** Turn it on in App Settings › Diagnostics & Feedback, do what causes the problem, then press Stop Diagnostics. Maestro saves a file to your Desktop and offers to email it privately to the developer, with optional details about your setup and the problem. Nothing is sent until you press Agree and Send, and it is never posted publicly. Help › "When and how should I use diagnostics?" explains when it is useful.
 
 ### What's better

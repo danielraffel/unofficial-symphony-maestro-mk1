@@ -147,7 +147,6 @@ struct MaestroApp: App {
                     guard !(NSApp.keyWindow?.firstResponder is NSTextField), !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
                     NotificationCenter.default.post(name: .mixerDeselectAll, object: nil)
                 }
-                .keyboardShortcut("d", modifiers: [.shift])
                 .disabled(appState.selectedArea != .mixer)
             }
 

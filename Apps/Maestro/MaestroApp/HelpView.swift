@@ -479,7 +479,7 @@ extension HelpSection {
             ]),
             HelpItem(title: "How do I move several strips at once?", blocks: [
                 .text("Shift-click strip names to select them. Shift-click another name to add everything between the two; Shift-Command-click removes one, and Shift-Command-Option-click removes a range. Option-drag from an empty spot draws a box around strips. Command-A selects every visible strip. Shift-D or Escape clears the selection."),
-                .text("Move or type on one selected fader or pan value to move them all while keeping their spacing. Mute and Solo apply to every selected strip. Option-drag or Option-click still applies to every strip. Double-click a fader for 0 dB or a pan knob for centre. Click a fader or pan number to type, then press Tab for the next strip."),
+                .text("Move or type on one selected fader or pan value to move them all while keeping their spacing. Software Return and Master can join the selection. Mute and Solo apply to every selected strip. Option with a selection applies to that selection; with no selection it applies to every strip. Double-click a fader for 0 dB or a pan knob for centre. Click a fader or pan number to type, then press Tab for the next strip."),
             ]),
             HelpItem(title: "How do I record while hearing myself with no delay?", blocks: [
                 .text("Monitor the input through a Symphony mixer instead of through your DAW. As in Apogee's guide:"),

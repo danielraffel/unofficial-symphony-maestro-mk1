@@ -36,6 +36,8 @@ struct MixerSelectionTests {
     @Test func groupedDeltaStopsAtFirstLimit() {
         #expect(MixerGroupMath.applyingDelta(10, to: [-4, 0, 5], in: -48...6) == [-3, 1, 6])
         #expect(MixerGroupMath.applyingDelta(-10, to: [-4, 0, 5], in: -48...6) == [-14, -10, -5])
-        #expect(MixerGroupMath.applyingDelta(10, to: [-4, 0, 5], in: -1...1) == [-1, -1, 1])
+        #expect(MixerGroupMath.applyingDelta(10, to: [-4, 0, 5], in: -1...1) == [-1, 0, 1])
+        #expect(MixerGroupMath.applyingDelta(10, to: [-2, 1, 4], in: -48...6) == [0, 3, 6])
+        #expect(MixerGroupMath.applyingDelta(-10, to: [-50, -1, 4], in: -48...6) == [-48, -1, 4])
     }
 }

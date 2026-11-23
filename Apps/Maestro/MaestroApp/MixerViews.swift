@@ -191,6 +191,10 @@ struct MixerView: View {
                     let button = Button("Mix \(index + 1)") {
                         selectedMixer = index
                         appState.lastSelectedMixer = index
+                        selectedChannels.removeAll()
+                        lastSelectedChannel = nil
+                        batchDragStartLevels.removeAll()
+                        batchDragStartPans.removeAll()
                         initializeChannels()
                         Task { await syncMixerToHardware(recalling: true) }
                     }
@@ -297,8 +301,14 @@ struct MixerView: View {
                                 onLevelChange: { level in
                                     levelChanged(channel: i, value: level)
                                 },
+                                onLevelChangeWithOld: { old, new in
+                                    levelChanged(channel: i, oldValue: old, newValue: new)
+                                },
                                 onPanChange: { pan in
                                     panChanged(channel: i, value: pan)
+                                },
+                                onPanChangeWithOld: { old, new in
+                                    panChanged(channel: i, oldValue: old, newValue: new)
                                 },
                                 onMuteChange: { muted, isOption in
                                     if isOption || (selectedChannels.count > 1 && selectedChannels.contains(i)) {
@@ -321,11 +331,17 @@ struct MixerView: View {
                                 onBatchLevelDragStart: {
                                     beginBatchLevelDrag(fromChannel: i)
                                 },
+                                onBatchLevelDragEnd: {
+                                    batchDragStartLevels.removeAll()
+                                },
                                 onBatchPanChange: { delta in
                                     batchApplyPanDelta(delta: delta)
                                 },
                                 onBatchPanDragStart: {
                                     beginBatchPanDrag(fromChannel: i)
+                                },
+                                onBatchPanDragEnd: {
+                                    batchDragStartPans.removeAll()
                                 },
                                 onPanOptionClick: {
                                     batchCenterPans()
@@ -436,6 +452,10 @@ struct MixerView: View {
             .simultaneousGesture(DragGesture(minimumDistance: 4)
                 .onChanged { value in
                     guard NSEvent.modifierFlags.contains(.option) else { return }
+                    if rubberBandStart == nil,
+                       mixerStripFrames.values.contains(where: { $0.contains(value.startLocation) }) {
+                        return
+                    }
                     if rubberBandStart == nil { rubberBandStart = value.startLocation }
                     rubberBandCurrent = value.location
                     let start = rubberBandStart ?? value.startLocation
@@ -528,6 +548,10 @@ struct MixerView: View {
         .onChange(of: appState.deviceRecoveryCount) { _, _ in
             // USB recovered after power cycle/sleep — FPGA reset to defaults.
             // Reload persisted mixer state and re-sync to hardware.
+            selectedChannels.removeAll()
+            lastSelectedChannel = nil
+            batchDragStartLevels.removeAll()
+            batchDragStartPans.removeAll()
             initializeChannels()
             Task {
                 guard !appState.usesTwoUnitReplay else { return }
@@ -614,6 +638,10 @@ struct MixerView: View {
 
     private func resetMixerDefaults() {
         guard editor.canEdit(appState) else { return }
+        selectedChannels.removeAll()
+        lastSelectedChannel = nil
+        batchDragStartLevels.removeAll()
+        batchDragStartPans.removeAll()
         let empty = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
         editor.channels = Array(repeating: empty, count: editor.channels.count)
         editor.swReturnChannel = empty
@@ -712,7 +740,7 @@ struct MixerView: View {
     private func batchApplyLevelDelta(delta: Double) {
         let keys = batchDragStartLevels.keys.sorted()
         let starts = keys.compactMap { batchDragStartLevels[$0] }
-        let values = MixerGroupMath.applyingDelta(delta.rounded(), to: starts, in: -48...0)
+        let values = MixerGroupMath.applyingDelta(delta.rounded(), to: starts, in: -48...6)
         for (i, newValue) in zip(keys, values) {
             let newLevel = MixerFaderLevel.played(newValue)
             if i == MixerSelection.softwareReturn {
@@ -785,27 +813,65 @@ struct MixerView: View {
     }
 
     private func levelChanged(channel: Int, value: Double) {
-        guard selectedChannels.count > 1, batchDragStartLevels.isEmpty else {
-            levelThrottle.submit(channel, value) { value in await writeLevel(channel: channel, level: value); saveMixerState() }
+        levelChanged(channel: channel, oldValue: editor.channels.indices.contains(channel) ? editor.channels[channel].level : value, newValue: value)
+    }
+
+    private func levelChanged(channel: Int, oldValue: Double, newValue: Double) {
+        if NSEvent.modifierFlags.contains(.option), !batchDragStartLevels.isEmpty { return }
+        guard batchDragStartLevels.isEmpty,
+              selectedChannels.count > 1, selectedChannels.contains(channel) else {
+            guard channel >= 0, channel < editor.channels.count else { return }
+            levelThrottle.submit(channel, newValue) { value in await writeLevel(channel: channel, level: value); saveMixerState() }
             return
         }
-        for i in batchTargetChannels where i < editor.channels.count {
-            editor.channels[i].level = value
-            if batchChannelIsRouted(i) { levelThrottle.submit(i, value) { value in await writeLevel(channel: i, level: value) } }
-        }
-        saveMixerState()
+        beginBatchLevelDrag(fromChannel: channel)
+        batchDragStartLevels[channel] = oldValue
+        batchApplyLevelDelta(delta: newValue - oldValue)
+        batchDragStartLevels.removeAll()
     }
 
     private func panChanged(channel: Int, value: Double) {
-        guard selectedChannels.count > 1, batchDragStartPans.isEmpty else {
-            panThrottle.submit(channel, value) { value in await writePan(channel: channel, pan: value); saveMixerState() }
+        panChanged(channel: channel, oldValue: editor.channels.indices.contains(channel) ? editor.channels[channel].pan : value, newValue: value)
+    }
+
+    private func panChanged(channel: Int, oldValue: Double, newValue: Double) {
+        if NSEvent.modifierFlags.contains(.option), !batchDragStartPans.isEmpty { return }
+        guard batchDragStartPans.isEmpty,
+              selectedChannels.count > 1, selectedChannels.contains(channel) else {
+            guard channel >= 0, channel < editor.channels.count else { return }
+            panThrottle.submit(channel, newValue) { value in await writePan(channel: channel, pan: value); saveMixerState() }
             return
         }
-        for i in batchTargetChannels where i < editor.channels.count {
-            editor.channels[i].pan = value
-            if batchChannelIsRouted(i) { panThrottle.submit(i, value) { value in await writePan(channel: i, pan: value) } }
+        beginBatchPanDrag(fromChannel: channel)
+        batchDragStartPans[channel] = oldValue
+        batchApplyPanDelta(delta: newValue - oldValue)
+        batchDragStartPans.removeAll()
+    }
+
+    private func swReturnLevelChanged(oldValue: Double, newValue: Double) {
+        if NSEvent.modifierFlags.contains(.option), !batchDragStartLevels.isEmpty { return }
+        guard batchDragStartLevels.isEmpty,
+              selectedChannels.count > 1, selectedChannels.contains(MixerSelection.softwareReturn) else {
+            swSideChanged(newValue)
+            return
         }
-        saveMixerState()
+        beginBatchLevelDrag(fromChannel: MixerSelection.softwareReturn)
+        batchDragStartLevels[MixerSelection.softwareReturn] = oldValue
+        batchApplyLevelDelta(delta: newValue - oldValue)
+        batchDragStartLevels.removeAll()
+    }
+
+    private func masterLevelChanged(oldValue: Double, newValue: Double) {
+        if NSEvent.modifierFlags.contains(.option), !batchDragStartLevels.isEmpty { return }
+        guard batchDragStartLevels.isEmpty,
+              selectedChannels.count > 1, selectedChannels.contains(MixerSelection.master) else {
+            masterSideChanged(newValue)
+            return
+        }
+        beginBatchLevelDrag(fromChannel: MixerSelection.master)
+        batchDragStartLevels[MixerSelection.master] = oldValue
+        batchApplyLevelDelta(delta: newValue - oldValue)
+        batchDragStartLevels.removeAll()
     }
 
     private func customChannelLabel(for index: Int) -> String {
@@ -1072,7 +1138,9 @@ struct MixerView: View {
                 externalReadout: true,
                 onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
                 onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
-                onUserChange: { newLevel in masterSideChanged(newLevel) },
+                onBatchDragEnd: { batchDragStartLevels.removeAll() },
+                onUserChange: nil,
+                onUserChangeWithOld: { old, new in masterLevelChanged(oldValue: old, newValue: new) },
                 thumbWidth: 22
             )
 
@@ -1086,7 +1154,9 @@ struct MixerView: View {
                 externalReadout: true,
                 onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
                 onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
-                onUserChange: { newLevel in masterSideChanged(newLevel) },
+                onBatchDragEnd: { batchDragStartLevels.removeAll() },
+                onUserChange: nil,
+                onUserChangeWithOld: { old, new in masterLevelChanged(oldValue: old, newValue: new) },
                 thumbWidth: 22
             )
 
@@ -1115,6 +1185,9 @@ struct MixerView: View {
             swReturnThrottle.submit(-1, level) { value in await writeSWReturnLevel(value) }
             saveMixerState()
         },
+        onLevelChangeWithOld: { old, new in
+            swReturnLevelChanged(oldValue: old, newValue: new)
+        },
         onMuteChange: { muted, isOption in
             if isOption || (selectedChannels.count > 1 && selectedChannels.contains(MixerSelection.softwareReturn)) {
                 batchToggleMute(newValue: muted)
@@ -1135,6 +1208,9 @@ struct MixerView: View {
         onBatchLevelDragStart: {
             beginBatchLevelDrag(fromChannel: MixerSelection.softwareReturn)
         },
+        onBatchLevelDragEnd: {
+            batchDragStartLevels.removeAll()
+        },
         onSelect: { modifiers in
             selectChannel(MixerSelection.softwareReturn, modifiers: modifiers)
         },
@@ -1154,6 +1230,7 @@ struct MixerView: View {
         stereoLeftLevel: $editor.swReturnLeftLevel,
         stereoRightLevel: $editor.swReturnRightLevel,
         onStereoLevelChange: { level in swSideChanged(level) },
+        onStereoLevelChangeWithOld: { old, new in swReturnLevelChanged(oldValue: old, newValue: new) },
         readoutEntry: readoutEntry(.softwareReturn)
     )
     }
@@ -1548,14 +1625,18 @@ struct MixerChannelStripView: View {
     var meterLevel: Double = -60
     var meterLevelR: Double? = nil  // When set, renders stereo L/R meters
     let onLevelChange: (Double) -> Void
+    var onLevelChangeWithOld: ((Double, Double) -> Void)? = nil
     var onPanChange: ((Double) -> Void)? = nil
+    var onPanChangeWithOld: ((Double, Double) -> Void)? = nil
     let onMuteChange: (Bool, _ isOption: Bool) -> Void
     let onSoloChange: (Bool, _ isOption: Bool) -> Void
     var isSelected: Bool = false
     var onBatchLevelChange: ((Double) -> Void)? = nil
     var onBatchLevelDragStart: (() -> Void)? = nil
+    var onBatchLevelDragEnd: (() -> Void)? = nil
     var onBatchPanChange: ((Double) -> Void)? = nil
     var onBatchPanDragStart: (() -> Void)? = nil
+    var onBatchPanDragEnd: (() -> Void)? = nil
     var onPanOptionClick: (() -> Void)? = nil
     var onSelect: ((NSEvent.ModifierFlags) -> Void)? = nil
     var customLabel: String = ""
@@ -1575,6 +1656,7 @@ struct MixerChannelStripView: View {
     var stereoRightLevel: Binding<Double>? = nil
     /// A stereo fader handle or its readout moved: the new level for both sides.
     var onStereoLevelChange: ((Double) -> Void)? = nil
+    var onStereoLevelChangeWithOld: ((Double, Double) -> Void)? = nil
     /// Ties this strip's level readout into the page's one-at-a-time editing
     /// and Tab order.
     let readoutEntry: LevelReadoutEntry<MixerLevelReadout>
@@ -1654,19 +1736,24 @@ struct MixerChannelStripView: View {
                     arcColor: .orange,
                     bipolar: true,
                     externalReadout: true,
+                    onUserChange: { newPan in if onPanChangeWithOld == nil { onPanChange?(newPan) } },
+                    onUserChangeWithOld: { old, new in onPanChangeWithOld?(old, new) },
                     onBatchDrag: onBatchPanChange,
                     onBatchDragStart: onBatchPanDragStart,
+                    onBatchDragEnd: onBatchPanDragEnd,
                     onOptionClick: onPanOptionClick
                 )
                 .maestroHelp("Pan: \(panText) — Shift-click the name to select strips, double-click to center, Option+click center all, Option+drag all")
-                .onChange(of: channel.pan) { _, newPan in
-                    onPanChange?(newPan)
-                }
 
                 // Pan value — pill readout
                 if let panReadoutEntry {
                     EditableLevelReadout(
-                        value: $channel.pan,
+                        value: Binding(get: { channel.pan }, set: { newPan in
+                            let oldPan = channel.pan
+                            channel.pan = newPan
+                            if let callback = onPanChangeWithOld { callback(oldPan, newPan) }
+                            else { onPanChange?(newPan) }
+                        }),
                         range: -1...1,
                         step: MixerValueConversion.panStep,
                         entry: panReadoutEntry,
@@ -1697,8 +1784,14 @@ struct MixerChannelStripView: View {
                         externalReadout: true,
                         onBatchDrag: onBatchLevelChange,
                         onBatchDragStart: onBatchLevelDragStart,
+                        onBatchDragEnd: onBatchLevelDragEnd,
                         onUserChange: { newLevel in
-                            if stereoLeftLevel != nil { onStereoLevelChange?(newLevel) }
+                            if stereoLeftLevel != nil, onStereoLevelChangeWithOld == nil { onStereoLevelChange?(newLevel) }
+                            else if stereoLeftLevel == nil, onLevelChangeWithOld == nil { onLevelChange(newLevel) }
+                        },
+                        onUserChangeWithOld: { old, new in
+                            if stereoLeftLevel != nil { onStereoLevelChangeWithOld?(old, new) }
+                            else { onLevelChangeWithOld?(old, new) }
                         },
                         thumbWidth: stereoFader ? 22 : 28
                     )
@@ -1713,8 +1806,12 @@ struct MixerChannelStripView: View {
                         externalReadout: true,
                         onBatchDrag: onBatchLevelChange,
                         onBatchDragStart: onBatchLevelDragStart,
+                        onBatchDragEnd: onBatchLevelDragEnd,
                         onUserChange: { newLevel in
-                            if stereoRightLevel != nil { onStereoLevelChange?(newLevel) }
+                            if stereoRightLevel != nil, onStereoLevelChangeWithOld == nil { onStereoLevelChange?(newLevel) }
+                        },
+                        onUserChangeWithOld: { old, new in
+                            if stereoRightLevel != nil { onStereoLevelChangeWithOld?(old, new) }
                         },
                         thumbWidth: 22
                     )
@@ -1766,9 +1863,6 @@ struct MixerChannelStripView: View {
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .frame(height: mixerFaderMeterRowHeight, alignment: .top)
-            .onChange(of: channel.level) { _, newLevel in
-                onLevelChange(newLevel)
-            }
 
             // Every strip keeps one empty control row above its readout, so
             // Unity, Mute, Solo and Output share one horizontal baseline.
@@ -1782,14 +1876,24 @@ struct MixerChannelStripView: View {
                 EditableLevelReadout(
                     value: Binding(
                         get: { MixerFaderLevel.played(stereoLeftLevel?.wrappedValue ?? channel.level) },
-                        set: { newValue in onStereoLevelChange?(newValue) }),
+                        set: { newValue in
+                            let oldValue = stereoLeftLevel?.wrappedValue ?? channel.level
+                            if let callback = onStereoLevelChangeWithOld { callback(oldValue, newValue) }
+                            else { onStereoLevelChange?(newValue) }
+                        }),
                     range: -48...6,
                     step: 1,
                     entry: readoutEntry)
                 .maestroHelp("Software Return level (the Mac's audio coming into this mixer): click to type a value")
             } else {
                 // dB readout (level) — single readout, no duplicate
-                EditableLevelReadout(value: Binding(get: { MixerFaderLevel.played(channel.level) }, set: { channel.level = MixerFaderLevel.played($0) }), range: -48...6, step: 1, entry: readoutEntry)
+                EditableLevelReadout(value: Binding(get: { MixerFaderLevel.played(channel.level) }, set: {
+                    let oldValue = channel.level
+                    let newValue = MixerFaderLevel.played($0)
+                    channel.level = newValue
+                    if let callback = onLevelChangeWithOld { callback(oldValue, newValue) }
+                    else { onLevelChange(newValue) }
+                }), range: -48...6, step: 1, entry: readoutEntry)
                     .maestroHelp("Fader Level: \(String(format: "%.0f", MixerFaderLevel.played(channel.level))) dB — Shift-click the name to select strips, click to edit")
             }
 

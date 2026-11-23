@@ -62,6 +62,15 @@ struct UnitBAppTests {
         #expect(mixer.components(separatedBy: "if batchChannelIsRouted(i)").count - 1 >= 4)
     }
 
+    @Test("Mixer group changes are user-driven and leave an unselected strip local")
+    func mixerSelectionChangeBoundaries() throws {
+        let mixer = try source("MixerViews.swift")
+        #expect(mixer.contains("selectedChannels.removeAll()\n                        lastSelectedChannel = nil"))
+        #expect(mixer.contains("selectedChannels.contains(channel)"))
+        #expect(!mixer.contains(".onChange(of: channel.level)"))
+        #expect(mixer.contains("batchApplyLevelDelta(delta: newValue - oldValue)"))
+    }
+
     @Test("Unit B output pairs route on XLink TX 32-63")
     func unitBRoutePairs() throws {
         let board0 = SymphonyIORoutingAddress.ioBoard0Base
