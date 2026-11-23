@@ -264,6 +264,15 @@ struct MixerView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
+            // The empty part of this row takes clicks too, so a click clears
+            // the selection and an Option-drag can start a selection box above
+            // the strips (owner, 2026-11-23). Without a shape the Spacer is
+            // transparent to the mouse.
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedChannels.removeAll()
+                lastSelectedChannel = nil
+            }
 
             if let notice = appState.mixerHeadroomNotice {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
