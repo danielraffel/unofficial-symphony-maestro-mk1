@@ -53,7 +53,9 @@ struct MeterHoldTests {
         let clean = MeterReading.unit(word: 0x3FFF)
         #expect(clean.level == 0 && !clean.isOver)
         let card = MeterReading.card(word: 0x80000002)
-        #expect(card.level == MeterReading.card(word: 0x80000000).level && card.isOver)
+        // The card's clip bit counts only once H-M4 confirms it; full scale always does.
+        #expect(card.level == MeterReading.card(word: 0x80000000).level
+                && card.isOver == MeterOverSources.cardOverBitConfirmed)
         #expect(!MeterReading.card(word: 0x80000001).isOver)
 
         var payload = Data(repeating: 0, count: 64)
@@ -77,12 +79,19 @@ struct MeterHoldTests {
         #expect(snapshot(MeterOverSources.available(card: false)) == [true, true, true])
         #expect(snapshot(MeterOverSources.available(card: false, usbOutputs: false, usbMixer: false))
                 == [true, false, false])
-        #expect(snapshot(MeterOverSources.available(card: true)) == [false, false, MeterOverSources.cardOverBitConfirmed])
+        #expect(snapshot(MeterOverSources.available(card: true)) == [true, false, true])
         #expect(snapshot(MeterOverSources.available(card: true, build: .build(143), unitOutputsFresh: true))
-                == [false, false, MeterOverSources.cardOverBitConfirmed])
+                == [true, false, true])
         #expect(snapshot(MeterOverSources.available(card: true, build: .build(144)))
-                == [false, false, MeterOverSources.cardOverBitConfirmed])
+                == [true, false, true])
         #expect(snapshot(MeterOverSources.available(card: true, build: .build(144), unitOutputsFresh: true))
-                == [false, true, MeterOverSources.cardOverBitConfirmed])
+                == [true, true, true])
+    }
+
+    @Test func cardOverAtFullScale() {
+        #expect(MeterReading.card(word: 0xFF00_0000).isOver)
+        #expect(!MeterReading.card(word: 0xFE00_0000).isOver)
+        // The clip bit alone lights nothing until H-M4 confirms it.
+        #expect(MeterReading.card(word: 0x8000_0002).isOver == MeterOverSources.cardOverBitConfirmed)
     }
 }

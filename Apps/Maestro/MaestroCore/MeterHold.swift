@@ -13,10 +13,14 @@ public struct MeterReading: Equatable, Sendable {
         return Self(level: level, isOver: word & 0x8000 != 0)
     }
 
+    /// Over on the card: the peak at full scale (its top value, 255), or the
+    /// clip bit once hardware check H-M4 confirms it.
     public static func card(word: UInt32) -> Self {
-        let peak = Double(word >> 24)
+        let peakByte = word >> 24
+        let peak = Double(peakByte)
         let level = peak == 0 ? -60.0 : max(-60, 20 * log10(peak / 256))
-        return Self(level: level, isOver: word & 0x2 != 0)
+        let over = peakByte == 0xFF || (MeterOverSources.cardOverBitConfirmed && word & 0x2 != 0)
+        return Self(level: level, isOver: over)
     }
 }
 
@@ -31,10 +35,9 @@ public enum MeterOverSources {
                                  usbOutputs: Bool = true, usbMixer: Bool = true)
         -> (input: Bool, output: Bool, mixer: Bool) {
         if card {
-            // The card's own meter words: that bit 1 is the original's clip
-            // flag is read from source, not yet seen on hardware (plan check
-            // H-M4). Until then no Over light comes from them.
-            return (false, UnitOutputMeters.driverSupports(build) && unitOutputsFresh, cardOverBitConfirmed)
+            // The card's own meter words light Over at full scale (see
+            // MeterReading.card); their clip bit joins once H-M4 confirms it.
+            return (true, UnitOutputMeters.driverSupports(build) && unitOutputsFresh, true)
         }
         return (true, usbOutputs, usbMixer)
     }

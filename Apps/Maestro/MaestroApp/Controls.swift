@@ -833,7 +833,7 @@ struct LEDMeterView: View {
     var isOver: Bool = false
     var onClear: (() -> Void)?
 
-    private static let overHeight: CGFloat = 6
+    private static let overHeight: CGFloat = 9   // taller than a segment, like Apogee's Over box
     private static let segmentGap: CGFloat = 1
     static func indicatorSpace(shown: Bool) -> CGFloat { shown ? overHeight + segmentGap : 0 }
     private var indicatorSpace: CGFloat { Self.indicatorSpace(shown: onClear != nil) }
@@ -874,7 +874,11 @@ struct LEDMeterView: View {
                         if let onClear {
                             Button(action: onClear) {
                                 RoundedRectangle(cornerRadius: 1)
-                                    .fill(isOver ? .red : Color(.separatorColor).opacity(0.5))
+                                    // Unlit, it takes the muted red of the zone below
+                                    // it, as Apogee's dark red Over box did.
+                                    .fill(isOver ? .red
+                                          : (showZoneColoring ? colorForSegment(segmentCount - 1).opacity(0.15)
+                                             : Color(.separatorColor).opacity(0.5)))
                                     .frame(width: width, height: Self.overHeight)
                             }
                             .buttonStyle(.plain)
@@ -930,7 +934,11 @@ struct LEDMeterView: View {
 
             // Major marks — labeled
             for db in majorMarks {
-                let y = scale.perceptualY(db: Double(db), topCenter: Double(topY), bottomCenter: Double(bottomY))
+                // With an Over box, 0 sits beside it, as in Apogee's meters:
+                // Over is what lies past 0 dBFS.
+                let y = db == 0 && indicatorSpace > 0
+                    ? scalePad + Self.overHeight / 2
+                    : scale.perceptualY(db: Double(db), topCenter: Double(topY), bottomCenter: Double(bottomY))
 
                 if leftSide {
                     // Tick on right edge (near meter)
