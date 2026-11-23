@@ -89,10 +89,18 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         }
     }
 
-    public init(layout: CardLayout, metadata: MaestroPreset) {
+    /// `fadersAboveZeroPlay` says whether the serving driver plays faders
+    /// above 0 dB (build 144 or later: `fadersPlayAboveZero(serving:)`). A
+    /// file saved while 143 or an unknown build serves holds levels heard at
+    /// 0 dB, so it is not marked.
+    public init(layout: CardLayout, metadata: MaestroPreset, fadersAboveZeroPlay: Bool = true) {
         boards = [layout.slot1.rawValue, layout.slot2.rawValue]
         self.metadata = metadata
-        fadersAboveZeroPlay = true
+        self.fadersAboveZeroPlay = fadersAboveZeroPlay
+    }
+
+    public static func fadersPlayAboveZero(serving build: ServingDextBuild?) -> Bool {
+        MixerHeadroomMigration.applies(to: build)
     }
 
     /// A file saved before 0.9.23 with its mixer faders above 0 dB set to 0,
@@ -129,6 +137,10 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         .headphone1Level, .headphone1Mute, .headphone1Dim, .headphone1SumToMono,
         .headphone2Level, .headphone2Mute, .headphone2Dim, .headphone2SumToMono,
     ]
+    /// Speaker and headphone level and mute.
+    public static let monitorLevelSelectors: Set<AudioPropertySelector> = [
+        .outputLevel, .outputMute, .headphone1Level, .headphone1Mute, .headphone2Level, .headphone2Mute,
+    ]
     public static let booleanSelectors: Set<AudioPropertySelector> = [
         .outputMute, .outputDim, .outputSumToMono,
         .headphone1Mute, .headphone1Dim, .headphone1SumToMono,
@@ -152,7 +164,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     public func writes(layout: CardLayout, legacy: Bool = false, currentUnitID: Data? = nil, hostChannels: Int = 32, peripheralB: Bool = false,
                        oneUnitSoftwareReturnPairs: Int = 8,
                        currentInputRoutes: [ThunderboltInputMeterMap.Route]? = nil,
-                       cardInputSupported: Bool = true, onSkipped: ((String) -> Void)? = nil) throws -> [Write] {
+                       cardInputSupported: Bool = true, recallsMonitorLevels: Bool = true,
+                       onSkipped: ((String) -> Void)? = nil) throws -> [Write] {
         func require(_ condition: Bool, _ reason: String) throws {
             if !condition { throw RecallError.unsupported(reason) }
         }
@@ -276,6 +289,9 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         // og_source/maestrolink/Software/SymphonyIO.cpp:4660-4708.
         for selector in Self.monitorOrder {
             guard let value = globals[selector.rawValue] else { continue }
+            // The launch recall leaves speaker and headphone level and mute
+            // as they are (it must not raise a level or unmute).
+            if !recallsMonitorLevels && Self.monitorLevelSelectors.contains(selector) { continue }
             put(selector, Self.booleanSelectors.contains(selector) ? .bool(value != 0) : .uint32(value))
         }
         put(.metersShowInput, .uint32(metadata.meterBank1Source), element: 1)

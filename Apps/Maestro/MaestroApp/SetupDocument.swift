@@ -369,7 +369,7 @@ extension AppState {
             }
             if isHardwareInitialized, !hardwareWritesSuspended, recentSetupRestoreIsReady {
                 recentSetupRecallHandled = true
-                do { _ = try await loadPresetBundle(from: url) }
+                do { _ = try await loadPresetBundle(from: url, recallsMonitorLevels: false) }
                 catch { print("[Maestro] recent setup recall failed: \(error)") }
                 return
             }

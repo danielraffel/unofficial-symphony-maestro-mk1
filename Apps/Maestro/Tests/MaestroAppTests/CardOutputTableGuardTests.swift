@@ -845,5 +845,55 @@ struct CardOutputTableGuardTests {
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
         #expect(state.twoUnitReplayNeeded)
     }
+
+    @Test("two units: a saved +6 dB fader, Master and Software Return are sent as 0 dB once the driver plays above 0")
+    func twoUnitHeadroomClamp() throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, _) = makeState(identity: 0xF2B0_0006, mixer1ToLine12: true)
+        state.servingDextBuild = .build(144)
+        state.unitB = SecondUnitInfo(slot1: .analogADDA16, slot2: .none)
+        state.unitBIdentity = 0xF2B0_0007
+        let layoutB = try #require(state.unitBLayout)
+        let b = ThunderboltUnitBConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier,
+                                           transport: SilentVendorTransport(), state: { nil })
+        func loud(_ count: Int) -> [MixerChannelState] {
+            Array(repeating: MixerChannelState(level: 6, pan: 0, isMuted: false, isSoloed: false), count: count)
+        }
+        let storeA = state.channelStateStore, storeB = state.unitBChannelStateStore
+        for mixer in 0..<2 {
+            storeA.save(loud(layout.mixerChannels.count), for: ChannelStateStore.mixerKey(mixer))
+            storeB.save(loud(layoutB.mixerChannels.count), for: ChannelStateStore.mixerKey(mixer))
+        }
+        for prefs in [state.mixerPreferences, storeB.mixerPreferences] {
+            for mixer in 0..<2 {
+                prefs.set(6.0, forKey: "mixerMasterLevel_\(mixer)")
+                prefs.set(6.0, forKey: "mixerSWReturnLeftLevel_\(mixer)")
+                prefs.set(6.0, forKey: "mixerSWReturnRightLevel_\(mixer)")
+            }
+        }
+        func levels(_ plan: TwoUnitReplay) -> [Double] {
+            plan.card.compactMap {
+                if case .card(.property(let address, .float64(let value))) = $0,
+                   address.selector == .mixerChannelLevel { return value }
+                return nil
+            }
+        }
+        // Without the migration the plan carries +6.
+        #expect(levels(state.makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)).contains(6))
+        state.migrateMixerHeadroomIfNeeded()
+        let plan = state.makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
+        #expect(!levels(plan).isEmpty && levels(plan).allSatisfy { $0 <= 0 })
+        // Once per unit: a level raised afterwards stays.
+        state.mixerPreferences.set(3.0, forKey: "mixerMasterLevel_0")
+        state.migrateMixerHeadroomIfNeeded()
+        #expect(state.mixerPreferences.object(forKey: "mixerMasterLevel_0") as? Double == 3)
+        // With 143 serving nothing is touched.
+        let (old, _, _) = makeState(identity: 0xF2B0_0008)
+        old.servingDextBuild = .build(143)
+        old.mixerPreferences.set(6.0, forKey: "mixerMasterLevel_0")
+        old.migrateMixerHeadroomIfNeeded()
+        #expect(old.mixerPreferences.object(forKey: "mixerMasterLevel_0") as? Double == 6)
+    }
 }
 }

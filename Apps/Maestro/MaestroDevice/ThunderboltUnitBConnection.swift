@@ -181,7 +181,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
     }
 
     public func presetWrites(_ saved: ThunderboltPreset.Peripheral, layout: CardLayout,
-                             cardInputSupported: Bool = true,
+                             cardInputSupported: Bool = true, recallsMonitorLevels: Bool = true,
                              onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
         let currentRoutes = (0..<32).compactMap { index -> ThunderboltInputMeterMap.Route? in
@@ -192,6 +192,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         return try saved.preset(layout: layout).writes(layout: layout, currentUnitID: layout.slot2 == .micPre8 ? try? presetRead(0xC0, 0, 8, layout: layout) : nil, hostChannels: 64,
                                                         peripheralB: true, currentInputRoutes: currentRoutes,
                                                         cardInputSupported: cardInputSupported,
+                                                        recallsMonitorLevels: recallsMonitorLevels,
                                                         onSkipped: onSkipped)
     }
 

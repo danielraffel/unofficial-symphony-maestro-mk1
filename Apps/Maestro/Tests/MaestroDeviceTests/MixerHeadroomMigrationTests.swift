@@ -45,6 +45,65 @@ struct MixerHeadroomMigrationTests {
     }
 }
 
+@Suite("Headroom: Software Return strips, and the flag a new file gets")
+struct HeadroomStripAndFlagTests {
+    @Test("a Software Return level held only in the saved strips is lowered, then reads 0")
+    func strips() throws {
+        let name = "HeadroomStrips.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 9)
+        let prefs = store.mixerPreferences
+        let strip = MixerChannelState(level: 5, pan: 0, isMuted: true, isSoloed: false)
+        prefs.set(try JSONEncoder().encode(strip), forKey: MixerStateSnapshot.sharedSoftwareReturnKey)
+        prefs.set(try JSONEncoder().encode(strip), forKey: MixerStateSnapshot.softwareReturnKey(mixer: 0))
+        #expect(MixerStateSnapshot(channelCount: 2, mixer: 1, store: store).swReturnLeftLevel == 5)
+        #expect(MixerHeadroomMigration.run(store: store, preferences: prefs) == 2)
+        for mixer in 0..<2 {
+            let snapshot = MixerStateSnapshot(channelCount: 2, mixer: mixer, store: store)
+            #expect(snapshot.swReturnLeftLevel == 0 && snapshot.swReturnRightLevel == 0)
+            #expect(snapshot.swReturnChannel.isMuted)   // the rest of the strip is kept
+        }
+        let backup = try #require(prefs.object(forKey: MixerHeadroomMigration.backupKey) as? [String: Double])
+        #expect(backup[MixerStateSnapshot.sharedSoftwareReturnKey] == 5)
+    }
+
+    @Test("a new file is marked only when the serving driver plays above 0 dB")
+    func flag() {
+        #expect(ThunderboltPreset.fadersPlayAboveZero(serving: .build(144)))
+        #expect(!ThunderboltPreset.fadersPlayAboveZero(serving: .build(143)))
+        #expect(!ThunderboltPreset.fadersPlayAboveZero(serving: nil))
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        let old = ThunderboltPreset(layout: layout, metadata: MaestroPreset(), fadersAboveZeroPlay: false)
+        #expect(old.fadersAboveZeroPlay == false)
+        // Saved under 143 it loads clamped, as the levels were heard.
+        var mixer = ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(
+            channelCount: 1, mixer: 0, store: ChannelStateStore(defaults: .standard, layout: layout, isSimulatingCards: true)))
+        mixer.master = 6
+        var file = old
+        file.mixers = [mixer, mixer]
+        #expect(file.headroomClamped().mixers[0].master == 0)
+    }
+
+    @Test("the launch recall leaves speaker and headphone level and mute out, the rest stays")
+    func launchRecall() throws {
+        let layout = CardLayout(slot1: .optical, slot2: .none)
+        var preset = ThunderboltPreset(layout: layout, metadata: MaestroPreset())
+        for selector in ThunderboltPreset.monitorOrder { preset.globals[selector.rawValue] = 0 }
+        func selectors(_ writes: [ThunderboltPreset.Write]) -> Set<AudioPropertySelector> {
+            Set(writes.compactMap { if case .property(let address, _) = $0 { return address.selector }; return nil })
+        }
+        let all = selectors(try preset.writes(layout: layout, legacy: true))
+        let launch = selectors(try preset.writes(layout: layout, legacy: true, recallsMonitorLevels: false))
+        for selector in ThunderboltPreset.monitorLevelSelectors {
+            #expect(all.contains(selector))
+            #expect(!launch.contains(selector))
+        }
+        #expect(launch.contains(.speakerOutputMode) && launch.contains(.outputDim))
+    }
+}
+
 @Suite("Card presets saved before 0.9.23 load with faders above 0 at 0")
 struct PresetHeadroomTests {
     @Test("old file clamped, new file as written")

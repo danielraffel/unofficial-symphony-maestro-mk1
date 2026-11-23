@@ -33,7 +33,8 @@ extension AppState {
         if let names = UserDefaults.standard.string(forKey: mixerNamesKey()) {
             metadata.channelNames = (try? JSONDecoder().decode([String].self, from: Data(names.utf8))) ?? []
         }
-        var seed = ThunderboltPreset(layout: layout, metadata: metadata)
+        var seed = ThunderboltPreset(layout: layout, metadata: metadata,
+                                     fadersAboveZeroPlay: ThunderboltPreset.fadersPlayAboveZero(serving: servingDextBuild))
         if let identity = unitAIdentity {
             seed.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
         }
@@ -66,7 +67,8 @@ extension AppState {
                 ?? Array(repeating: InputChannelState(), count: bLayout.analogInputStripCount)
             metadata.outputChannelStates = store.load(ChannelStateStore.outputKey)
                 ?? Array(repeating: OutputChannelState(), count: bLayout.analogOutputStripCount)
-            var value = ThunderboltPreset(layout: bLayout, metadata: metadata)
+            var value = ThunderboltPreset(layout: bLayout, metadata: metadata,
+                                          fadersAboveZeroPlay: ThunderboltPreset.fadersPlayAboveZero(serving: servingDextBuild))
             if let identity = unitBIdentity {
                 value.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
             }
@@ -100,10 +102,12 @@ extension AppState {
     /// left on a card mixer, and the restore puts the saved routing and
     /// mixers back (`recoverFromFailedRecall`).
     @MainActor
-    func loadThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
+    func loadThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection,
+                                     recallsMonitorLevels: Bool = true) async throws {
         recallWritesStarted = false
         do {
-            try await recallThunderboltPresetBundle(from: url, connection: connection)
+            try await recallThunderboltPresetBundle(from: url, connection: connection,
+                                                    recallsMonitorLevels: recallsMonitorLevels)
         } catch {
             if recallWritesStarted { await recoverFromFailedRecall(connection) }
             throw error
@@ -111,7 +115,8 @@ extension AppState {
     }
 
     @MainActor
-    private func recallThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection) async throws {
+    private func recallThunderboltPresetBundle(from url: URL, connection: ThunderboltDeviceConnection,
+                                               recallsMonitorLevels: Bool) async throws {
         guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
         try requireSymphonyPreset()
         let (preset, legacy) = try ThunderboltPreset.loadBundle(from: url, layout: cardLayout)
@@ -136,10 +141,12 @@ extension AppState {
         try await Task.detached {
             try connection.withPresetLock {
                 let aWrites = try connection.presetWrites(preset, layout: layout, legacy: legacy, channels: cardChannels,
+                                                          recallsMonitorLevels: recallsMonitorLevels,
                                                           onSkipped: recallWarnings.add)
                 if recallB, let b, let bLayout, let saved = preset.unitB {
                     try b.withPresetLock {
                         let bWrites = try b.presetWrites(saved, layout: bLayout, cardInputSupported: cardInputSupported,
+                                                         recallsMonitorLevels: recallsMonitorLevels,
                                                          onSkipped: recallWarnings.add)
                         do { try connection.applyPresetWrites(aWrites, layout: layout,
                                                                recoveryCount: admissionFence.0) }

@@ -248,16 +248,7 @@ extension AppState {
             ledger.clear()
         }
         cardRestoreOwner = (ObjectIdentifier(tb), owner)
-        // Driver 144 plays faders above 0 dB; they were played at 0 before.
-        // Lower the saved ones to 0 once, before anything is written, so the
-        // update makes nothing louder (MixerHeadroomMigration).
-        if MixerHeadroomMigration.applies(to: servingDextBuild) {
-            let lowered = MixerHeadroomMigration.run(store: channelStateStore, preferences: mixerPreferences)
-            if lowered > 0 {
-                print("[Maestro] Mixer: \(lowered) fader(s) saved above 0 dB set to 0 dB for driver 144 (old values kept in \(MixerHeadroomMigration.backupKey))")
-                viewReloadToken = UUID()
-            }
-        }
+        migrateMixerHeadroomIfNeeded()
         func isCurrent() -> Bool {
             device === tb && !hardwareWritesSuspended && cardLayout == layout && connectedUnit == nil
                 && !usesTwoUnitReplay && mixerPreferences.storageKey == storageKey
@@ -493,4 +484,24 @@ extension AppState {
 struct CardRestoreOwner: Equatable {
     let storageKey: String?
     let layout: CardLayout
+}
+
+extension AppState {
+    /// Driver 144 plays faders above 0 dB; they were played at 0 before.
+    /// Lowers the saved ones to 0 once, before anything is written, so the
+    /// update makes nothing louder (`MixerHeadroomMigration`). Unit A's part is
+    /// shared by the single-unit restore and the two-unit replay (one marker);
+    /// unit B's strips are its own, with their own marker.
+    func migrateMixerHeadroomIfNeeded() {
+        guard MixerHeadroomMigration.applies(to: servingDextBuild) else { return }
+        var lowered = MixerHeadroomMigration.run(store: channelStateStore, preferences: mixerPreferences)
+        if usesTwoUnitReplay || unitB != nil {
+            let storeB = unitBChannelStateStore
+            lowered += MixerHeadroomMigration.run(store: storeB, preferences: storeB.mixerPreferences)
+        }
+        if lowered > 0 {
+            print("[Maestro] Mixer: \(lowered) fader(s) saved above 0 dB set to 0 dB for driver 144 (old values kept in \(MixerHeadroomMigration.backupKey))")
+            viewReloadToken = UUID()
+        }
+    }
 }

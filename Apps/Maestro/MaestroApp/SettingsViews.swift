@@ -2151,7 +2151,7 @@ struct AppSettingsView: View {
                     .maestroHelp("Keep each wide control tab at its current horizontal position until Maestro quits")
 
                 Toggle("Open the most recent setup file at launch", isOn: $openMostRecentSetupAtLaunch)
-                    .maestroHelp("Recall the setup file remembered by Save Preset or Open Preset after the unit finishes restoring")
+                    .maestroHelp("Recall the setup file remembered by Save Preset or Open Preset after the unit finishes restoring. Speaker and headphone level and mute are left as they are; File › Open applies them")
 
                 Toggle("Show level overlay", isOn: $showLevelOverlay)
                     .maestroHelp("Show a temporary level display when a monitor level, mute or preamp gain changes")

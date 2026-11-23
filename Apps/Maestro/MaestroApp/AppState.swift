@@ -399,6 +399,9 @@ final class AppState: @unchecked Sendable {
     @MainActor
     func markSetupEdited(_ kind: SetupEditKind) {
         guard kind.marksDocumentEdited, setupRecallDepth == 0 else { return }
+        // Over USB a setup file holds only channel names: nothing in it to
+        // save, so no edited mark and no save prompt.
+        guard transportType != .usb else { return }
         setupEditRevision &+= 1
         guard currentSetupURL != nil else { return }
         setupDocumentEdited = true
@@ -5527,7 +5530,8 @@ final class AppState: @unchecked Sendable {
     ///           ONEv2DeviceController.cpp:3239–3331 — daemon recall implementation
     @MainActor
     @discardableResult
-    func loadPresetBundle(from url: URL, associateWithDocument: Bool = true) async throws -> String? {
+    func loadPresetBundle(from url: URL, associateWithDocument: Bool = true,
+                          recallsMonitorLevels: Bool = true) async throws -> String? {
         guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
         // A setup file from Apogee's Maestro 2 holds nothing this app can
         // apply, on any connection: say so instead of failing oddly or silently.
@@ -5547,7 +5551,8 @@ final class AppState: @unchecked Sendable {
         }
         var notice: String?
         if let connection = device as? ThunderboltDeviceConnection {
-            try await loadThunderboltPresetBundle(from: url, connection: connection)
+            try await loadThunderboltPresetBundle(from: url, connection: connection,
+                                                  recallsMonitorLevels: recallsMonitorLevels)
             if associateWithDocument {
                 currentSetupURL = url
                 setupDocumentEdited = false

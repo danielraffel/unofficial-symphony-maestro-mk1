@@ -79,6 +79,7 @@ extension AppState {
         let routeEdits = outputRouteEdits
         let edits = tb.mixerEdits
         let editGeneration = edits.capture()
+        migrateMixerHeadroomIfNeeded()
         let plan = makeTwoUnitReplay(tb: tb, b: b, layoutB: layoutB)
         let progress = TwoUnitReplay.Progress(tables: plan.tables.count)
         let sendsResetDefaults = plan.consumesRoutingReset && !twoUnitResetDefaultsLanded(tb: tb, b: b)

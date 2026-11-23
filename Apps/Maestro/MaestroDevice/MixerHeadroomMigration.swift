@@ -49,6 +49,21 @@ public enum MixerHeadroomMigration {
                 }
             }
         }
+        // A Software Return level held only in a saved strip (a mixer that
+        // never had its own level key falls back to these, see
+        // MixerStateSnapshot.savedSoftwareReturn).
+        let stripKeys = mixers.map { MixerStateSnapshot.softwareReturnKey(mixer: $0) }
+            + [MixerStateSnapshot.sharedSoftwareReturnKey]
+        for key in stripKeys {
+            guard let data = preferences.data(forKey: key),
+                  var strip = try? JSONDecoder().decode(MixerChannelState.self, from: data),
+                  strip.level > 0 else { continue }
+            backup[key] = strip.level
+            strip.level = 0
+            guard let encoded = try? JSONEncoder().encode(strip) else { continue }
+            preferences.set(encoded, forKey: key)
+            lowered += 1
+        }
         if !backup.isEmpty { preferences.set(backup, forKey: backupKey) }
         preferences.set(true, forKey: doneKey)
         return lowered

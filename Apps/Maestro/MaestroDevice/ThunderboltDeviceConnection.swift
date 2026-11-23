@@ -259,7 +259,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     public func presetWrites(_ preset: ThunderboltPreset, layout: CardLayout, legacy: Bool = false,
-                             channels: Int? = nil, onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
+                             channels: Int? = nil, recallsMonitorLevels: Bool = true,
+                             onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
         let servingBuild = servingDriverBuild()
         let cardInputSupported = if case .build(let build) = servingBuild { build >= 132 } else { false }
@@ -274,7 +275,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                                  hostChannels: channels ?? presetChannelCount(),
                                  oneUnitSoftwareReturnPairs: TwoUnitMixer.oneUnitPairs(card: true, build: servingBuild),
                                  currentInputRoutes: currentRoutes,
-                                 cardInputSupported: cardInputSupported, onSkipped: onSkipped)
+                                 cardInputSupported: cardInputSupported,
+                                 recallsMonitorLevels: recallsMonitorLevels, onSkipped: onSkipped)
     }
 
     public func writePresetMixer(_ address: PropertyAddress, value: PropertyValue) throws {

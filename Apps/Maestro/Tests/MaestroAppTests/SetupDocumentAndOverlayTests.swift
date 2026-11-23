@@ -21,6 +21,20 @@ struct SetupDocumentAndOverlayTests {
             [.presetRecallOrStore, .loopSync, .clockSource, .sampleRate, .vBus, .identify, .meterClear])
     }
 
+    @MainActor
+    @Test("Over USB an edit never marks the setup file; elsewhere it does")
+    func usbNeverEdited() {
+        let state = AppState()
+        state.currentSetupURL = URL(fileURLWithPath: "/tmp/Studio.mst2")
+        defer { state.currentSetupURL = nil }
+        state.transportType = .usb
+        state.markSetupEdited(.mixer)
+        #expect(!state.setupDocumentEdited)
+        state.transportType = .thunderbolt
+        state.markSetupEdited(.mixer)
+        #expect(state.setupDocumentEdited)
+    }
+
     @Test("Close asks only for an edited document with a file")
     func closeDecision() {
         #expect(SetupDocumentDecision.forClose(edited: true, hasCurrentFile: true) == .askToSave)
