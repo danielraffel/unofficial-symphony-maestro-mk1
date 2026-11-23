@@ -97,6 +97,39 @@ grep -q "trap '/bin/rm -f \"\$USB_MARKER\"' EXIT" "$USB" || fail "USB marker is 
 bash -n "$CORE" && bash -n "$USB" || fail "syntax"
 ok "USB postinstall holds the marker around the coreaudiod restart"
 
+# ── USB plug-in fingerprint ────────────────────────────────────────────────
+# A first install has no old fingerprint, an identical bundle does not restart
+# Core Audio, and any changed file does.
+(
+    # shellcheck source=/dev/null
+    . "$USB"
+    PLUGIN_PATH="$WORK/plugin"
+    PLUGIN_FINGERPRINT="$WORK/plugin-fingerprint"
+    mkdir -p "$PLUGIN_PATH/Contents"
+    printf 'version one\n' > "$PLUGIN_PATH/Contents/Info.plist"
+    [ "$(usb_plugin_changed; echo $?)" = 0 ] || fail "a first USB plug-in install did not count as changed"
+    usb_plugin_fingerprint "$PLUGIN_PATH" > "$PLUGIN_FINGERPRINT"
+    if usb_plugin_changed; then fail "an unchanged USB plug-in was treated as changed"; fi
+    printf 'version two\n' > "$PLUGIN_PATH/Contents/Info.plist"
+    usb_plugin_changed || fail "a changed USB plug-in was treated as unchanged"
+)
+ok "USB postinstall restarts Core Audio only for a new or changed plug-in"
+
+(
+    # shellcheck source=/dev/null
+    . "$REPO_ROOT/Installer/scripts-core/preinstall"
+    USB_PLUGIN_PATH="$WORK/plugin"
+    USB_PLUGIN_FINGERPRINT="$WORK/preinstall-plugin-fingerprint"
+    capture_usb_plugin_fingerprint
+    [ "$(cat "$USB_PLUGIN_FINGERPRINT")" = "$(usb_plugin_fingerprint "$USB_PLUGIN_PATH")" ] \
+        || fail "preinstall did not capture the old USB plug-in fingerprint"
+)
+ok "preinstall captures the USB plug-in before replacement"
+
+UNINSTALL="$REPO_ROOT/Installer/uninstall.sh"
+grep -q '^killall coreaudiod' "$UNINSTALL" || fail "uninstall no longer restarts Core Audio after removing the plug-in"
+ok "uninstall still restarts Core Audio after removing the plug-in"
+
 # ── Package: an older Maestro replaces a newer one ──────────────────────────
 # shellcheck source=lib/package-checks.sh
 . "$REPO_ROOT/Tools/lib/package-checks.sh"

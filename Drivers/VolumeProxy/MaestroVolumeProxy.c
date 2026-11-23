@@ -21,6 +21,7 @@
  *
  * XPC protocol (proxy → ASP reply):
  *   { "command": "audioShmem", "shmem": <xpc_shmem> }
+ *   { "command": "volumeState", "attenuation": <uint64>, "muted": <bool> }
  *
  * Audio shared memory (MaestroAudioShm — see Drivers/Shared/MaestroAudioShm.h):
  *   A clock anchor we publish from the render callback, plus a buffer INDEXED BY
@@ -371,6 +372,25 @@ static bool slider_set_admitted(uint64_t nowNs, uint64_t *waitUntil, unsigned va
     if (*waitUntil == 0) return true;
     if (nowNs >= *waitUntil || value == expected) { *waitUntil = 0; return true; }
     return value > expected;
+}
+
+/* A refused louder start-up restore must put the ASP's virtual control back
+   on the helper's kept level. */
+static bool startup_volume_refusal_should_report(uint64_t nowNs, unsigned value)
+{
+    return gVolumeWaitUntilNs != 0 &&
+           !slider_set_admitted(nowNs, &gVolumeWaitUntilNs, value, gCachedAttenuation);
+}
+
+static void report_kept_volume(xpc_connection_t peer)
+{
+    xpc_object_t state = xpc_dictionary_create(NULL, NULL, 0);
+    if (!state) return;
+    xpc_dictionary_set_string(state, "command", "volumeState");
+    xpc_dictionary_set_uint64(state, "attenuation", gCachedAttenuation);
+    xpc_dictionary_set_bool(state, "muted", gCachedMuted);
+    xpc_connection_send_message(peer, state);
+    xpc_release(state);
 }
 
 /* After the helper puts its kept level on the unit (start-up, a replug, a
@@ -2863,10 +2883,10 @@ static void handle_peer(xpc_connection_t peer) {
                 /* Speakers chosen in Line mode: the set is ignored, as the
                    original did (SymphonyIO.cpp:2345-2351). Nothing is kept
                    either, so the speaker level is what it was. */
-                if (!slider_set_admitted(clock_gettime_nsec_np(CLOCK_MONOTONIC), &gVolumeWaitUntilNs,
-                                         att, gCachedAttenuation)) {
+                if (startup_volume_refusal_should_report(clock_gettime_nsec_np(CLOCK_MONOTONIC), att)) {
                     LOG("setAttenuation %u ignored: the Mac's volume has not been given output %u's level yet",
                         att, gMonitorOutput);
+                    report_kept_volume(peer);
                     return;
                 }
                 MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, false);

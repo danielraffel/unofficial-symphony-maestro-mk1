@@ -348,6 +348,9 @@ static void test_startup_volume_window(void)
           "start-up arms both windows for five seconds");
     CHECK(!slider_set_admitted(2000, &gVolumeWaitUntilNs, 10, gCachedAttenuation),
           "inside the window a louder restored volume is refused");
+    gVolumeWaitUntilNs = 1000 + STARTUP_WAIT_NS;
+    CHECK(startup_volume_refusal_should_report(2000, 10),
+          "a refused louder restore is reported back to the plug-in");
     CHECK(slider_set_admitted(2000, &gVolumeWaitUntilNs, 40, gCachedAttenuation),
           "turning down is taken");
     CHECK(!slider_set_admitted(2000, &gMuteWaitUntilNs, 0, 1), "an unmute is refused");

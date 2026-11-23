@@ -10,6 +10,23 @@
 # A Thunderbolt-only machine needs none of this.
 set -euo pipefail
 LOG="/tmp/maestro-installer.log"
+PLUGIN_PATH="/Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
+PLUGIN_FINGERPRINT="/private/tmp/maestro-installer-plugin-cdhash"
+
+usb_plugin_fingerprint() {
+    [ -d "$1" ] || return 1
+    /usr/bin/find "$1" -type f -exec /usr/bin/shasum -a 256 {} \; 2>/dev/null \
+        | /usr/bin/sort | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+}
+
+usb_plugin_changed() {
+    local current previous
+    current="$(usb_plugin_fingerprint "$PLUGIN_PATH" 2>/dev/null || true)"
+    previous="$(/bin/cat "$PLUGIN_FINGERPRINT" 2>/dev/null || true)"
+    [ -n "$current" ] && [ "$current" != "$previous" ]
+}
+
+main() {
 echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') start" >> "$LOG"
 
 # The core postinstall reopens Maestro once this script has finished, so that
@@ -35,19 +52,29 @@ launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || {
 }
 echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
 
-# coreaudiod is restarted on every install, so the AudioServerPlugin attaches to
-# the helper that was just restarted above.
+# Restart Core Audio when the AudioServerPlugin is new or changed, so it attaches
+# to the helper that was just restarted above. The old fingerprint was captured
+# by preinstall before Installer replaced the bundle.
 #
 # 0.8.36 skipped this when the plug-in's code was unchanged, to avoid a long
 # audio stall seen once with a ThunderBridge attached. That left the running
 # plug-in paired with a freshly restarted helper, and on the first USB session
 # afterwards every block sent to "Maestro USB" was dropped as late: no sound
 # through the virtual device until coreaudiod was restarted (2026-11-13). The
-# stall is the lesser problem, so the restart is unconditional again.
-/bin/rm -f /private/tmp/maestro-installer-plugin-cdhash
-killall coreaudiod 2>/dev/null || true
-sleep 3
-echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') coreaudiod restarted" >> "$LOG"
+# stall is the lesser problem when the plug-in really changed.
+if usb_plugin_changed; then
+    killall coreaudiod 2>/dev/null || true
+    sleep 3
+    echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') coreaudiod restarted (plug-in changed)" >> "$LOG"
+else
+    echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') coreaudiod restart skipped (plug-in unchanged)" >> "$LOG"
+fi
+/bin/rm -f "$PLUGIN_FINGERPRINT"
 /bin/rm -f "$USB_MARKER"
 echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') done" >> "$LOG"
 exit 0
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

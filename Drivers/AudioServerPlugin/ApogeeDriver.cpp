@@ -682,7 +682,13 @@ static void connectToProxy()
         } else if (xpc_get_type(event) == XPC_TYPE_DICTIONARY) {
                 // Handle replies from proxy
                 const char* cmd = xpc_dictionary_get_string(event, "command");
-                if (cmd && strcmp(cmd, "audioShmem") == 0) {
+                if (cmd && strcmp(cmd, "volumeState") == 0) {
+                    // The USB helper refuses a louder start-up restore and
+                    // reports its kept level so this control cannot drift from
+                    // the hardware. This follows the original's first-set
+                    // guard (SymphonyIO.cpp:1160-1163, :2310-2339).
+                    reconcileControlsFromProxy(event);
+                } else if (cmd && strcmp(cmd, "audioShmem") == 0) {
                     xpc_object_t shmem = xpc_dictionary_get_value(event, "shmem");
                     if (shmem) {
                         // xpc_shmem_map(obj, &ptr) → returns size, fills ptr
