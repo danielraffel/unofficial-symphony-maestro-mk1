@@ -1,7 +1,10 @@
 import Foundation
+import CoreGraphics
 
 /// Pure selection and grouped-control rules used by the Mixer page.
 public enum MixerSelection {
+    public static let softwareReturn = -1
+    public static let master = -2
     public static func applyingClick(
         index: Int,
         modifiers: MixerSelectionModifiers,
@@ -31,6 +34,11 @@ public enum MixerSelection {
         }
         let bounds = min(start, end)...max(start, end)
         return Set(visible[bounds])
+    }
+
+    /// Returns strips whose layout frames intersect the rubber-band rectangle.
+    public static func stripsTouching(_ rectangle: CGRect, frames: [Int: CGRect]) -> Set<Int> {
+        Set(frames.compactMap { id, frame in rectangle.intersects(frame) ? id : nil })
     }
 }
 

@@ -15,6 +15,18 @@ private let mixerReadoutGapHeight: CGFloat = 14
 /// subsequent controls start lower than the mono strips.
 private let mixerFaderMeterRowHeight: CGFloat = 220
 
+extension Notification.Name {
+    static let mixerSelectAll = Notification.Name("MaestroMixerSelectAll")
+    static let mixerDeselectAll = Notification.Name("MaestroMixerDeselectAll")
+}
+
+private struct MixerStripFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
 
 /// Low-Latency Mixer view — Mix 1 & Mix 2 with channel faders, pan, mute, solo, master.
 /// Includes channel naming and channel visibility. Layout matches Input/Output tabs.
@@ -85,6 +97,9 @@ struct MixerView: View {
     @State private var batchDragStartLevels: [Int: Double] = [:]
     /// Snapshot of pan values at batch drag start.
     @State private var batchDragStartPans: [Int: Double] = [:]
+    @State private var mixerStripFrames: [Int: CGRect] = [:]
+    @State private var rubberBandStart: CGPoint?
+    @State private var rubberBandCurrent: CGPoint?
 
     // Mixer writes are rate-limited as the original's were: at most 50 a
     // second for each control (ApogeeDispatchQueue.cpp:18,
@@ -266,6 +281,7 @@ struct MixerView: View {
             // indicator stays bottom-aligned while strips remain top-aligned.
             GeometryReader { viewport in
             ScrollViewReader { scrollProxy in
+            ZStack(alignment: .topLeading) {
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 0) {
                     Spacer().frame(width: 7)
@@ -285,14 +301,14 @@ struct MixerView: View {
                                     panChanged(channel: i, value: pan)
                                 },
                                 onMuteChange: { muted, isOption in
-                                    if isOption {
+                                    if isOption || (selectedChannels.count > 1 && selectedChannels.contains(i)) {
                                         batchToggleMute(newValue: muted)
                                     } else {
                                         Task { await writeMute(channel: i, muted: muted); saveMixerState() }
                                     }
                                 },
                                 onSoloChange: { solo, isOption in
-                                    if isOption {
+                                    if isOption || (selectedChannels.count > 1 && selectedChannels.contains(i)) {
                                         batchApplySolo(newValue: solo)
                                     } else {
                                         Task { await writeSolo(channel: i, solo: solo); saveMixerState() }
@@ -325,6 +341,10 @@ struct MixerView: View {
                                 readoutEntry: readoutEntry(.input(i)),
                                 panReadoutEntry: panReadoutEntry(.input(i))
                             )
+                            .background(GeometryReader { proxy in
+                                Color.clear.preference(key: MixerStripFramePreferenceKey.self,
+                                    value: [i: proxy.frame(in: .named("mixerContent"))])
+                            })
                             .id(MixerLevelReadout.input(i))
                         }
                     }
@@ -333,6 +353,10 @@ struct MixerView: View {
                     // to the card below, so it cannot stretch to the scroll
                     // viewport's full height.
                     swReturnStrip
+                        .background(GeometryReader { proxy in
+                            Color.clear.preference(key: MixerStripFramePreferenceKey.self,
+                                value: [MixerSelection.softwareReturn: proxy.frame(in: .named("mixerContent"))])
+                        })
                         .id(MixerLevelReadout.softwareReturn)
 
                     // Master fader strip — pill aligned with SW Return pill,
@@ -346,8 +370,10 @@ struct MixerView: View {
                             .padding(.vertical, 2)
                             .background(
                                 RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color.orange.opacity(0.15))
+                                    .fill(selectedChannels.contains(MixerSelection.master)
+                                          ? Color.accentColor.opacity(0.7) : Color.orange.opacity(0.15))
                             )
+                            .foregroundStyle(selectedChannels.contains(MixerSelection.master) ? .white : .primary)
 
                         // Spacer matching pan knob(36) + 3 + panPill(~22) + 3 + breathingRoom(14) + alignment(9)
                         Spacer().frame(height: 87)
@@ -362,6 +388,8 @@ struct MixerView: View {
                                 showScale: false,
                                 externalReadout: true,
                                 onUserChange: { newLevel in masterSideChanged(newLevel) },
+                                onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
+                                onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
                                 thumbWidth: 22
                             )
 
@@ -374,6 +402,8 @@ struct MixerView: View {
                                 showScale: false,
                                 externalReadout: true,
                                 onUserChange: { newLevel in masterSideChanged(newLevel) },
+                                onBatchDrag: { delta in batchApplyLevelDelta(delta: delta) },
+                                onBatchDragStart: { beginBatchLevelDrag(fromChannel: MixerSelection.master) },
                                 thumbWidth: 22
                             )
 
@@ -390,6 +420,12 @@ struct MixerView: View {
                         masterReadoutRow
 
                     }
+                    .contentShape(Rectangle())
+                    .onTapGesture { selectChannel(MixerSelection.master, modifiers: NSEvent.modifierFlags) }
+                    .background(GeometryReader { proxy in
+                        Color.clear.preference(key: MixerStripFramePreferenceKey.self,
+                            value: [MixerSelection.master: proxy.frame(in: .named("mixerContent"))])
+                    })
                     // Stereo master needs room for two faders, the scale, and
                     // both meters without painting into the next strip.
                     .frame(width: 116)
@@ -435,6 +471,7 @@ struct MixerView: View {
                 }
             }
             .scrollPosition($scrollPosition)
+            .onPreferenceChange(MixerStripFramePreferenceKey.self) { mixerStripFrames = $0 }
             .onChange(of: rememberControlTabScrollPositions) { _, enabled in
                 if !enabled {
                     scrollRestorationTarget = nil
@@ -442,6 +479,29 @@ struct MixerView: View {
                     appState.setControlTabScrollOffset(0, for: .mixer)
                 }
             }
+            if let start = rubberBandStart, let current = rubberBandCurrent {
+                let rect = CGRect(x: min(start.x, current.x), y: min(start.y, current.y),
+                                  width: abs(current.x - start.x), height: abs(current.y - start.y))
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.18))
+                    .overlay(Rectangle().stroke(Color.accentColor.opacity(0.7), lineWidth: 1))
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+                    .allowsHitTesting(false)
+            }
+            }
+            .coordinateSpace(name: "mixerContent")
+            .simultaneousGesture(DragGesture(minimumDistance: 4)
+                .onChanged { value in
+                    guard NSEvent.modifierFlags.contains(.option) else { return }
+                    if rubberBandStart == nil { rubberBandStart = value.startLocation }
+                    rubberBandCurrent = value.location
+                    let start = rubberBandStart ?? value.startLocation
+                    let rect = CGRect(x: min(start.x, value.location.x), y: min(start.y, value.location.y),
+                                      width: abs(value.location.x - start.x), height: abs(value.location.y - start.y))
+                    selectedChannels.formUnion(MixerSelection.stripsTouching(rect, frames: mixerStripFrames))
+                }
+                .onEnded { _ in rubberBandStart = nil; rubberBandCurrent = nil })
             // Tab can move editing to a strip that is scrolled out of view;
             // bring it in by the smallest amount (no move when already visible).
             .onChange(of: editingReadout) { _, readout in
@@ -464,6 +524,14 @@ struct MixerView: View {
             }
         }
         .onAppear { installOutsideClickMonitor(); installKeyboardMonitor() }
+        .onReceive(NotificationCenter.default.publisher(for: .mixerSelectAll)) { _ in
+            guard appState.selectedArea == .mixer, !isEditingTextField else { return }
+            selectedChannels = visibleMixerStripIDs
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .mixerDeselectAll)) { _ in
+            guard appState.selectedArea == .mixer, !isEditingTextField else { return }
+            selectedChannels.removeAll()
+        }
         // On the page, not on the menu's toggle: an observer inside a
         // menu may not run.
         .onChange(of: preMuteMetering) { _, _ in appState.refreshSoftwareReturnMeterGains() }
@@ -587,7 +655,7 @@ struct MixerView: View {
                   !(NSApp.keyWindow?.firstResponder is NSTextView) else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if event.charactersIgnoringModifiers?.lowercased() == "a", flags.contains(.command) {
-                selectedChannels = Set((0..<min(editor.channels.count, channelCount)).filter(isChannelVisible))
+                selectedChannels = visibleMixerStripIDs
                 return nil
             }
             if event.charactersIgnoringModifiers?.lowercased() == "d", flags.contains(.shift), !flags.contains(.command) {
@@ -630,9 +698,18 @@ struct MixerView: View {
     /// Channels affected by batch operations. Only visible strips participate.
     private var batchTargetChannels: [Int] {
         if !selectedChannels.isEmpty {
-            return selectedChannels.sorted().filter(isChannelVisible)
+            return selectedChannels.sorted().filter { $0 < 0 || isChannelVisible($0) }
         }
         return (0..<min(editor.channels.count, channelCount)).filter(isChannelVisible)
+    }
+
+    private var visibleMixerStripIDs: Set<Int> {
+        Set((0..<min(editor.channels.count, channelCount)).filter(isChannelVisible)
+            + [MixerSelection.softwareReturn, MixerSelection.master])
+    }
+
+    private var isEditingTextField: Bool {
+        NSApp.keyWindow?.firstResponder is NSTextField || NSApp.keyWindow?.firstResponder is NSTextView
     }
 
     /// Hidden strips keep their saved values, but have no live card element.
@@ -645,6 +722,11 @@ struct MixerView: View {
     private func batchToggleMute(newValue: Bool) {
         let targets = batchTargetChannels
         for i in targets {
+            if i == MixerSelection.softwareReturn {
+                editor.swReturnChannel.isMuted = newValue
+                Task { await writeSWReturnMute(newValue) }
+                continue
+            }
             guard i < editor.channels.count else { continue }
             editor.channels[i].isMuted = newValue
             if batchChannelIsRouted(i) { Task { await writeMute(channel: i, muted: newValue) } }
@@ -654,7 +736,13 @@ struct MixerView: View {
 
     /// Apply the clicked strip's new solo state to the target strips.
     private func batchApplySolo(newValue: Bool) {
-        for i in batchTargetChannels where i < editor.channels.count {
+        for i in batchTargetChannels {
+            if i == MixerSelection.softwareReturn {
+                editor.swReturnChannel.isSoloed = newValue
+                Task { await writeSWReturnSolo(newValue) }
+                continue
+            }
+            guard i < editor.channels.count else { continue }
             editor.channels[i].isSoloed = newValue
             if batchChannelIsRouted(i) { Task { await writeSolo(channel: i, solo: newValue) } }
         }
@@ -669,7 +757,13 @@ struct MixerView: View {
             batchDragStartLevels[i] = editor.channels[i].level
         }
         // Option-drag with no selection keeps its existing all-strip meaning.
-        if selectedChannels.isEmpty { batchDragStartLevels[-1] = editor.swReturnChannel.level }
+        if selectedChannels.isEmpty {
+            batchDragStartLevels[MixerSelection.softwareReturn] = editor.swReturnChannel.level
+            batchDragStartLevels[MixerSelection.master] = editor.masterLevel
+        } else {
+            if selectedChannels.contains(MixerSelection.softwareReturn) { batchDragStartLevels[MixerSelection.softwareReturn] = editor.swReturnChannel.level }
+            if selectedChannels.contains(MixerSelection.master) { batchDragStartLevels[MixerSelection.master] = editor.masterLevel }
+        }
     }
 
     /// Apply a delta to all target channel levels (clamped, preserves relative positions).
@@ -679,13 +773,18 @@ struct MixerView: View {
         let values = MixerGroupMath.applyingDelta(delta.rounded(), to: starts, in: -48...0)
         for (i, newValue) in zip(keys, values) {
             let newLevel = MixerFaderLevel.played(newValue)
-            if i == -1 {
+            if i == MixerSelection.softwareReturn {
                 // SW Return (sentinel key)
                 editor.swReturnChannel.level = newLevel
                 // One stereo fader: both handles follow.
                 editor.swReturnLeftLevel = newLevel
                 editor.swReturnRightLevel = newLevel
                 swReturnThrottle.submit(-1, newLevel) { value in await writeSWReturnLevel(value) }
+            } else if i == MixerSelection.master {
+                editor.masterLevel = newLevel
+                editor.masterLeftLevel = newLevel
+                editor.masterRightLevel = newLevel
+                scheduleMasterWrite(level: newLevel)
             } else {
                 guard i < editor.channels.count else { continue }
                 editor.channels[i].level = newLevel
@@ -731,7 +830,8 @@ struct MixerView: View {
 
     /// Handle channel selection with modifier keys (Cmd, Shift, plain click).
     private func selectChannel(_ index: Int, modifiers: NSEvent.ModifierFlags) {
-        let visible = (0..<min(editor.channels.count, channelCount)).filter(isChannelVisible)
+        let visible = Array((0..<min(editor.channels.count, channelCount)).filter(isChannelVisible))
+            + [MixerSelection.softwareReturn, MixerSelection.master]
         selectedChannels = MixerSelection.applyingClick(
             index: index,
             modifiers: MixerSelectionModifiers(
@@ -1010,14 +1110,14 @@ struct MixerView: View {
             saveMixerState()
         },
         onMuteChange: { muted, isOption in
-            if isOption {
+            if isOption || (selectedChannels.count > 1 && selectedChannels.contains(MixerSelection.softwareReturn)) {
                 batchToggleMute(newValue: muted)
             } else {
                 Task { await writeSWReturnMute(muted); saveMixerState() }
             }
         },
         onSoloChange: { solo, isOption in
-            if isOption {
+            if isOption || (selectedChannels.count > 1 && selectedChannels.contains(MixerSelection.softwareReturn)) {
                 batchApplySolo(newValue: solo)
             } else {
                 Task { await writeSWReturnSolo(solo); saveMixerState() }
@@ -1027,7 +1127,10 @@ struct MixerView: View {
             batchApplyLevelDelta(delta: delta)
         },
         onBatchLevelDragStart: {
-            beginBatchLevelDrag(fromChannel: -1)
+            beginBatchLevelDrag(fromChannel: MixerSelection.softwareReturn)
+        },
+        onSelect: { modifiers in
+            selectChannel(MixerSelection.softwareReturn, modifiers: modifiers)
         },
         softwareReturnSource: $editor.softwareReturnSource,
         softwareReturnPairCount: appState.softwareReturnPairCount,

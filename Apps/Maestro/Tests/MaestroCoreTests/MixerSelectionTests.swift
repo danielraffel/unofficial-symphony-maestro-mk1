@@ -3,6 +3,12 @@ import Testing
 
 @Suite("MixerSelection")
 struct MixerSelectionTests {
+    @Test func rubberBandSelectsIntersectingStrips() {
+        let frames = [0: CGRect(x: 0, y: 0, width: 40, height: 100),
+                      1: CGRect(x: 45, y: 0, width: 40, height: 100),
+                      MixerSelection.master: CGRect(x: 90, y: 0, width: 40, height: 100)]
+        #expect(MixerSelection.stripsTouching(CGRect(x: 35, y: 20, width: 20, height: 40)) == [0, 1])
+    }
     @Test func shiftAddsVisibleRange() {
         let result = MixerSelection.applyingClick(index: 4,
             modifiers: MixerSelectionModifiers(shift: true), visible: [0, 1, 2, 4, 6],

@@ -136,6 +136,22 @@ struct MaestroApp: App {
                     .disabled(!updates.canCheckForUpdates)
             }
 
+            CommandGroup(after: .textEditing) {
+                Button("Select All") {
+                    guard !(NSApp.keyWindow?.firstResponder is NSTextField), !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
+                    NotificationCenter.default.post(name: .mixerSelectAll, object: nil)
+                }
+                .keyboardShortcut("a", modifiers: .command)
+                .disabled(appState.selectedArea != .mixer)
+
+                Button("Deselect All") {
+                    guard !(NSApp.keyWindow?.firstResponder is NSTextField), !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
+                    NotificationCenter.default.post(name: .mixerDeselectAll, object: nil)
+                }
+                .keyboardShortcut("d", modifiers: [.shift])
+                .disabled(appState.selectedArea != .mixer)
+            }
+
             // View menu — toggle monitor panel, trims, clear meters
             CommandGroup(after: .toolbar) {
                 Button({
