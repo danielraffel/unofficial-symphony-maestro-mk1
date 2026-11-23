@@ -978,14 +978,16 @@ struct MixerView: View {
                 range: -48...6,
                 step: 1,
                 entry: readoutEntry(.master))
-            .maestroHelp("Master fader level: click to edit")
+            .maestroHelp("Master level for this mixer, applied to every input and Software Return: click to type a value")
 
             // The two rows other strips have below the value, so Master's
             // rows line up with them: a blank box where Mute and Solo sit,
             // and the output this mixer feeds where Software Return has its
             // menu. Neither is a control (the original's was a text label).
+            // Faint, so it reads as an empty slot rather than a control
+            // (owner, 2026-11-22). Apogee's Master had nothing here either.
             RoundedRectangle(cornerRadius: 3)
-                .fill(Color.gray.opacity(0.2))
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
                 .frame(maxWidth: .infinity)
                 .frame(height: mixerControlRowHeight)
                 .accessibilityHidden(true)
@@ -1585,7 +1587,7 @@ struct MixerChannelStripView: View {
                     range: -48...6,
                     step: 1,
                     entry: readoutEntry)
-                .maestroHelp("Software Return fader level: click to edit")
+                .maestroHelp("Software Return level (the Mac's audio coming into this mixer): click to type a value")
             } else {
                 // dB readout (level) — single readout, no duplicate
                 EditableLevelReadout(value: Binding(get: { MixerFaderLevel.played(channel.level) }, set: { channel.level = MixerFaderLevel.played($0) }), range: -48...6, step: 1, entry: readoutEntry)
