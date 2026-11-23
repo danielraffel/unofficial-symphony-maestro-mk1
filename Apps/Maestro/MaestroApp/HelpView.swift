@@ -635,7 +635,7 @@ extension HelpSection {
                 .text("If Rescan does not find it, check the front panel for an exclamation mark (!) — that means the unit is not talking to the Mac at all, and the cable is the place to start rather than Maestro."),
             ]),
             HelpItem(title: "Maestro says \"Waiting for macOS audio to respond\" after an update.", blocks: [
-                .text("Installing an update restarts macOS's audio system, which can be busy for a minute or two. Maestro opens straight away and connects to your Symphony as soon as macOS audio answers; you don't need to do anything. If it is still waiting after about five minutes, restart the Mac."),
+                .text("Installing an update restarts macOS's audio system, which can be busy for a minute or two. With USB support installed, its helper is started before Maestro reconnects. Maestro opens straight away and connects to your Symphony as soon as macOS audio answers; you don't need to do anything. If it is still waiting after about five minutes, restart the Mac."),
             ]),
             HelpItem(title: "I'm not getting any audio — what should I check?", blocks: [
                 .bullet("Look at the front panel", "an exclamation mark (!) there means the unit is not talking to the Mac properly. Over USB, unplug and replug the USB cable."),

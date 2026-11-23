@@ -13,7 +13,7 @@ LOG="/tmp/maestro-installer.log"
 PLUGIN_PATH="/Library/Audio/Plug-Ins/HAL/ApogeeSymIO.driver"
 PLUGIN_FINGERPRINT="/var/run/maestro-installer-usb-fingerprint"
 PROXY_PATH="/usr/local/bin/MaestroVolumeProxy"
-PROXY_PLIST="/Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist"
+PROXY_PLIST="${PROXY_PLIST:-/Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist}"
 
 usb_component_fingerprint() {
     local path
@@ -33,13 +33,26 @@ usb_components_changed() {
     [ -n "$current" ] && [ "$current" != "$previous" ]
 }
 
+ensure_proxy_running() {
+    if launchctl print "system/$PROXY_LABEL" > /dev/null 2>&1; then
+        return 0
+    fi
+
+    launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || {
+        sleep 2
+        launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || true
+    }
+    echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
+}
+
 main() {
 echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') start" >> "$LOG"
 
 # The core postinstall reopens Maestro once this script has finished, so that
 # Maestro starts after coreaudiod is back. It waits while this marker exists.
 # /var/run is root-only. Removed on every exit, including a failure.
-USB_MARKER="/var/run/maestro-usb-postinstall.running"
+USB_MARKER_DEFAULT="/var/run/maestro-usb-postinstall.running"
+USB_MARKER="${USB_MARKER:-$USB_MARKER_DEFAULT}"
 /usr/bin/touch "$USB_MARKER"
 trap '/bin/rm -f "$USB_MARKER"' EXIT
 
@@ -50,7 +63,7 @@ chown root:wheel /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.pli
 chmod 644 /Library/LaunchDaemons/com.danielraffel.Maestro.volumeproxy.plist 2>/dev/null || true
 
 PROXY_LABEL="com.danielraffel.Maestro.volumeproxy"
-PROXY_PLIST="/Library/LaunchDaemons/${PROXY_LABEL}.plist"
+PROXY_PLIST="${PROXY_PLIST:-/Library/LaunchDaemons/${PROXY_LABEL}.plist}"
 
 # Restart both the helper and Core Audio when any USB component is new or
 # changed, so the paired processes attach to the same generation. The old
@@ -65,15 +78,15 @@ PROXY_PLIST="/Library/LaunchDaemons/${PROXY_LABEL}.plist"
 if usb_components_changed; then
     launchctl bootout "system/$PROXY_LABEL" 2>/dev/null || true
     sleep 1
-    launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || {
-        sleep 2
-        launchctl bootstrap system "$PROXY_PLIST" 2>/dev/null || true
-    }
-    echo "[postinstall/usb] MaestroVolumeProxy bootstrapped" >> "$LOG"
+    ensure_proxy_running
     killall coreaudiod 2>/dev/null || true
     sleep 3
     echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') helper and coreaudiod restarted (USB component changed)" >> "$LOG"
 else
+    # Core preinstall boots the helper out before every install. Keep it running
+    # even when the payload fingerprint is unchanged, while avoiding the costly
+    # Core Audio restart that the unchanged path is meant to skip.
+    ensure_proxy_running
     echo "[postinstall/usb] $(date '+%Y-%m-%d %H:%M:%S') helper and coreaudiod restart skipped (USB components unchanged)" >> "$LOG"
 fi
 /bin/rm -f "$PLUGIN_FINGERPRINT"

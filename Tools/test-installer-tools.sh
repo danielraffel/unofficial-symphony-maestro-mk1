@@ -84,7 +84,7 @@ ok "no reopen without a person at the console"
 
 grep -v '^[[:space:]]*#' "$CORE" | grep -q 'open -n' && fail "core postinstall uses open -n"
 CORE_MARKER="$(sed -n 's/^USB_MARKER="\(.*\)"$/\1/p' "$CORE")"
-USB_MARKER_PATH="$(sed -n 's/^USB_MARKER="\(.*\)"$/\1/p' "$USB")"
+USB_MARKER_PATH="$(sed -n 's/^USB_MARKER_DEFAULT="\(.*\)"$/\1/p' "$USB")"
 [ "$CORE_MARKER" = "/var/run/maestro-usb-postinstall.running" ] || fail "core marker is not under /var/run"
 [ "$CORE_MARKER" = "$USB_MARKER_PATH" ] || fail "core and USB scripts disagree on the marker"
 TOUCH_LINE="$(grep -n 'touch "\$USB_MARKER"' "$USB" | head -1 | cut -d: -f1)"
@@ -125,6 +125,47 @@ ok "USB postinstall holds the marker around the coreaudiod restart"
     usb_components_changed || fail "a changed USB plist was treated as unchanged"
 )
 ok "USB postinstall keeps helper and Core Audio restart decisions together"
+
+# The core preinstall boots the helper out before every install. Both the
+# changed and unchanged fingerprint paths must leave it registered, while only
+# the changed path restarts Core Audio.
+run_usb_postinstall() { # $1 = launchd state, $2 = changed or unchanged
+    local state="$1" mode="$2" dir
+    dir="$WORK/usb-postinstall-$mode"
+    mkdir -p "$dir/plugin/Contents"
+    printf 'helper\n' > "$dir/helper"
+    printf 'plist\n' > "$dir/helper.plist"
+    printf 'plugin\n' > "$dir/plugin/Contents/Info.plist"
+    if [ "$mode" = unchanged ]; then
+        ( . "$USB"; PLUGIN_PATH="$dir/plugin"; PROXY_PATH="$dir/helper"; PROXY_PLIST="$dir/helper.plist"; usb_component_fingerprint > "$dir/fingerprint" )
+    else
+        printf 'old\n' > "$dir/fingerprint"
+    fi
+    mkdir -p "$dir/bin"
+    mkstub "$dir/bin/launchctl" "case \"\$1\" in
+        print) [ -e '$dir/loaded' ] ;;
+        bootout) rm -f '$dir/loaded' ;;
+        bootstrap) touch '$dir/loaded'; echo bootstrap >> '$dir/launchctl';;
+    esac"
+    mkstub "$dir/bin/killall" "echo \"\$*\" >> '$dir/killall'"
+    (
+        export PATH="$dir/bin:$PATH"
+        . "$USB"
+        PLUGIN_PATH="$dir/plugin"; PROXY_PATH="$dir/helper"; PROXY_PLIST="$dir/helper.plist"; PLUGIN_FINGERPRINT="$dir/fingerprint"
+        LOG="$dir/log"; USB_MARKER="$dir/marker"
+        if [ "$state" = loaded ]; then touch "$dir/loaded"; fi
+        main
+    )
+    [ -e "$dir/loaded" ] || fail "$mode path left MaestroVolumeProxy unloaded"
+    if [ "$mode" = unchanged ]; then
+        [ ! -e "$dir/killall" ] || fail "unchanged path restarted Core Audio"
+    else
+        [ -s "$dir/killall" ] || fail "changed path did not restart Core Audio"
+    fi
+}
+run_usb_postinstall unloaded unchanged
+run_usb_postinstall loaded changed
+ok "USB postinstall keeps the helper running on unchanged and changed paths"
 
 (
     # shellcheck source=/dev/null
