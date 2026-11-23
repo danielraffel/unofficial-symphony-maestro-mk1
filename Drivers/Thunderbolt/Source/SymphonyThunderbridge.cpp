@@ -5952,7 +5952,10 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
     if (ivars->startupOutputMuteHeld) {
         const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
         if (now < ivars->startupOutputMuteDeadlineNs)
-            next = std::min(next, ivars->startupOutputMuteDeadlineNs - now);
+        {
+            const uint64_t untilRelease = ivars->startupOutputMuteDeadlineNs - now;
+            if (untilRelease < next) next = untilRelease;
+        }
     }
     ArmLinkWatch(ivars, next);
 }
