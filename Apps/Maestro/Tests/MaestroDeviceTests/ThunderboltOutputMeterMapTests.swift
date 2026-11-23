@@ -113,14 +113,4 @@ struct ThunderboltOutputMeterMapTests {
         #expect(words(.optical, .none, [:]) == nil)
     }
 
-    @Test("converter outputs include host channels 33-48")
-    func converterOutputs33Through48() {
-        let levels = ThunderboltOutputMeterMap.converterLevels(count: 48) { word in
-            Double(word)
-        }
-        #expect(levels.count == 48)
-        #expect(levels[0] == 64)
-        #expect(levels[32] == 96)
-        #expect(levels[47] == 111)
-    }
 }

@@ -80,10 +80,4 @@ public enum ThunderboltOutputMeterMap {
         }
     }
 
-    /// Converter outputs stay on the host playback TDM slots. At 64 channels
-    /// the first converter output is host playback 1 (meter word 64), and
-    /// outputs 33-48 therefore read words 96-111, as the original did.
-    public static func converterLevels(count: Int, level: (Int) -> Double) -> [Double] {
-        (0..<max(0, count)).map { level(Int(ThunderboltCardRouting.pciOutBase) + $0) }
-    }
 }

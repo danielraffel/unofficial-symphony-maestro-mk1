@@ -3097,15 +3097,16 @@ final class AppState: @unchecked Sendable {
 
     /// Match the legacy routing side effect of changing the Analog Out Format.
     /// When speaker sets are added, every new pair repeats the source feeding
-    /// Line 1-2. When sets are removed, those pairs return to their direct
-    /// playback sources (`SymphonyIORoutingController.cpp:554-632`).
+    /// Line 1-2. When sets are removed, those pairs return to the defaults the
+    /// original routing controller uses (`SymphonyPCIeRoutingController.cpp:2056-2093`,
+    /// `SymphonyIORoutingController.cpp:612-664`).
     @MainActor
     func applySpeakerSetRouting(from oldMode: UInt32, to newMode: UInt32,
                                 device: (any DeviceConnection)?) async {
         guard !converterRoutingSurface, let device, device === self.device else { return }
-        let oldCount = SpeakerOutputLogic.speakerSetCount(mode: oldMode)
-        let newCount = SpeakerOutputLogic.speakerSetCount(mode: newMode)
-        guard oldCount != newCount, newCount > 0 else { return }
+        let oldCount = SpeakerOutputLogic.routingSpeakerSetCount(mode: oldMode)
+        let newCount = SpeakerOutputLogic.routingSpeakerSetCount(mode: newMode)
+        guard oldCount != newCount else { return }
         let analogColumns = cardLayout.outputRoutingColumns.filter { !$0.isDigital }
         guard analogColumns.count >= max(oldCount, newCount) else { return }
 
@@ -4082,14 +4083,9 @@ final class AppState: @unchecked Sendable {
                         } else {
                             // Cards or table not known yet, or converters:
                             // strip i is software output i.
-                            if convertersMetered {
-                                newOutput = ThunderboltOutputMeterMap.converterLevels(
-                                    count: self.outputMeterLevels.count, level: dbW)
-                            } else {
-                                var outp = self.outputMeterLevels
-                                for i in 0..<outp.count { outp[i] = dbW(64 + i) }
-                                newOutput = outp
-                            }
+                            var outp = self.outputMeterLevels
+                            for i in 0..<outp.count { outp[i] = dbW(64 + i) }
+                            newOutput = outp
                         }
 
                         // If the FPGA input snapshot is unavailable or silent,
@@ -4660,19 +4656,12 @@ final class AppState: @unchecked Sendable {
             if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB, output: .headphone2) }
         case .level: break   // MicPre selections arrive as .micPreGain
         case .muteAll(let muted):
-            // The original's Mute All leaves an output at its minimum
-            // attenuation alone, and does not try to mute the speaker while
-            // Analog Out Format is Line (`MonitorOutputToggle.respondsToMuteAll`).
-            let mode = speakerOutputMode
-            let targets = SymphonyIORequestBuilder.MonitorOutput.allCases.filter { output in
-                let level: Double
-                switch output {
-                case .speaker: level = speakerLevel
-                case .headphone1: level = hp1Level
-                case .headphone2: level = hp2Level
-                }
-                return MonitorOutputToggle.respondsToMuteAll(output, levelDB: level, speakerMode: mode)
-            }
+            // The front-panel firmware updates all three output mute states
+            // together, including outputs at minimum and the speaker in Line
+            // mode (`SymphonyIOFrontPanel.cpp:773-783`). Keep the app's own
+            // MonitorOutputToggle rule for direct clicks, but mirror this
+            // hardware event in every output's copy.
+            let targets = SymphonyIORequestBuilder.MonitorOutput.allCases
             let changed = targets.contains { output in
                 switch output {
                 case .speaker: return speakerMuted != muted

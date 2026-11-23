@@ -8,6 +8,8 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Changes that may affect your setup
 
+- **Speaker-set routing and front-panel Mute All now stay in sync with the unit.** Leaving 2 or 3 Speaker Sets, or resetting the Output tab, restores freed pairs to their default routes. Mute All updates the speaker and both headphones, including outputs at minimum and the speaker in Line mode.
+
 - **The update replaces the ThunderBridge driver (0.11.18).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
 - **Mixer levels on ThunderBridge and PCIe now follow Apogee's arithmetic, so some mixes will sound different.** Master now turns down the inputs as well as Software Return, as it did in Apogee's software (before, it only changed Software Return). Pan uses Apogee's law: a centred strip is about 3 dB quieter on each side than before, and a hard-panned strip is silent on the other side. A fader or Master at the bottom is off. Master mute silences the inputs too.
 - **Faders and Master now go up to +6 dB on ThunderBridge and PCIe.** Before, anything above 0 dB played at 0 dB. So that your mix does not get louder by itself, Maestro sets any saved fader above 0 dB to 0 dB once, the first time it restores the mixers with this driver (it keeps the old values). Setup files saved with an earlier version load the same way; files saved now load as written.
