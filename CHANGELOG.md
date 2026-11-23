@@ -55,7 +55,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 - **Pan reads <64 … <0> … 64>,** as in Apogee's software; inputs are named Mic N and Inst N in Input Routing and the Mixer.
 - **Menus:** Settings… (⌘,), File › Rescan, Window › Maestro (⇧⌘O).
 - **Info buttons** on Use Loop Sync, Configured Role, Clock Status, Audio Output, Symphony Source and Audio Interface Mode, and new Help questions on Maestro USB, recording with no monitoring delay, and Loop Sync.
-- **Report a Bug opens the bug form on GitHub with your Maestro version, Mac and macOS version, and connection filled in** (Help menu, Help and App Settings). Maestro no longer offers a feedback email address.
+- **Report a Bug opens the bug form on GitHub with what Maestro knows filled in:** Maestro version, update channel and driver, Mac and macOS version, connection, the Symphony's modules, firmware and FPGA, a second unit or converters, and the sample rate (Help menu, Help and App Settings). Nothing that identifies you or the unit (no serial numbers, hardware IDs or user names). Maestro no longer offers a feedback email address.
 - **The Master strip names the output its mixer is routed to,** under the fader, or "None" when the mixer is not routed to an output in Output Routing. It is a label, as in Apogee's software.
 - **Mic and instrument gain on an 8MicPre can be typed:** click the number under the gain knob. Tab moves to the next channel.
 - **Software Return's pairs are named "Out 1-2", "Out 3-4"…,** the strip is headed "Software Return", and sample rates read "48 kHz" rather than "48.0 kHz", as in Apogee's software.

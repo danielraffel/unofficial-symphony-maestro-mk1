@@ -29,4 +29,13 @@ struct ViewValueTypeTests {
         }
         #expect(offenders.isEmpty, "a class used as a SwiftUI view crashes the app: \(offenders)")
     }
+
+    /// Device Settings is redacted while it loads, and a popover opened from
+    /// a row label kept that look: the explanations were grey bars (1114).
+    @Test func infoPopoversAreNeverRedacted() throws {
+        for name in ["InfoLabel.swift", "LoopSyncControls.swift"] {
+            let text = try String(contentsOf: Self.appDir.appendingPathComponent(name), encoding: .utf8)
+            #expect(text.contains(".unredacted()"), "\(name): its popover must be .unredacted()")
+        }
+    }
 }

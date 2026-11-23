@@ -31,6 +31,9 @@ struct InfoLabel: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(width: 340, alignment: .leading)
                 .padding(14)
+                // The settings page is redacted while it loads; an explanation
+                // never is (it was drawn as grey bars).
+                .unredacted()
             }
         }
     }

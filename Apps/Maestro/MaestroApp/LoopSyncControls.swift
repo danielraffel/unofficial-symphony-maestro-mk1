@@ -42,8 +42,11 @@ struct LoopSyncControls: View {
                         .font(.callout)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: 340, alignment: .leading)
+                .frame(width: 340, alignment: .leading)
                         .padding(14)
+                        // The settings page is redacted while it loads; an explanation
+                        // never is (it was drawn as grey bars).
+                        .unredacted()
                     }
                 }
             }

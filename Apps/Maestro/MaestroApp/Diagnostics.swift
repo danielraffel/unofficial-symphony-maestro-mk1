@@ -49,10 +49,36 @@ extension AppState {
     /// version, and the connection in use, filled in (`BugReportLink`).
     var reportBugURL: URL {
         let info = softwareInfoReport
+        var version = info.versionLine
+        if let channel = info.updateChannel { version += channel == .beta ? ", Beta" : ", Stable" }
+        if let dext = info.installedDextVersion { version += ", ThunderBridge driver \(dext)" }
+        let rate = connectionMode == .hardware ? channelNaming.sampleRate : nil
         return BugReportLink.url(
-            version: info.versionLine,
+            version: version,
             macAndOS: BugReportLink.macAndOS(model: BugReportLink.modelIdentifier, osVersion: info.osVersion),
-            connection: connectionMode == .hardware ? connectionShortName : nil)
+            connection: connectionMode == .hardware ? connectionShortName : nil,
+            hardware: bugReportHardware,
+            doing: rate.map { "Sample rate \(BugReportLink.rateText($0)). DAW: " })
+    }
+
+    /// The I/O modules of each Symphony I/O, a second unit and any converters,
+    /// as detected, for the bug form's Hardware field.
+    var bugReportHardware: String? {
+        guard connectionMode == .hardware else { return nil }
+        // Converter rows carry each unit's firmware; no serial numbers,
+        // hardware IDs or paths go into the form.
+        let ports = converterSystem?.ports.map { $0.map(\.rowValue) } ?? []
+        let symphonyOnPort1 = ports.first?.isEmpty ?? true
+        let unitA: (slot1: String, slot2: String)? =
+            symphonyOnPort1 && (primaryBoardType != .none || secondaryBoardType != .none)
+            ? (primaryBoardType.productName, secondaryBoardType.productName) : nil
+        let b: (slot1: String, slot2: String)? = unitB.map {
+            ($0.slotValid[0] ? $0.slot1.productName : "not read", $0.slotValid[1] ? $0.slot2.productName : "not read")
+        }
+        let device = deviceInfoReportForDiagnostics
+        return BugReportLink.hardwareText(unitA: unitA, unitB: b, converterPorts: ports,
+                                          firmware: unitA == nil ? nil : device?.firmwareVersion,
+                                          fpga: unitA == nil ? nil : device?.fpgaVersion)
     }
 
     /// Everything the Software Info panel shows, assembled from what the process can see

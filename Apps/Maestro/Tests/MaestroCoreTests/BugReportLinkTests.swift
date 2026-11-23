@@ -34,6 +34,26 @@ struct BugReportLinkTests {
         #expect(BugReportLink.macAndOS(model: nil, osVersion: "27.2.1") == "macOS 27.2.1")
     }
 
+    @Test func hardwareLines() {
+        #expect(BugReportLink.hardwareText(unitA: ("8x8 AES/OPT", "16x16 Analog In"), unitB: nil, converterPorts: [[], []])
+                == "Symphony I/O: slot 1 8x8 AES/OPT, slot 2 16x16 Analog In")
+        #expect(BugReportLink.hardwareText(unitA: ("8MicPre", "None"), unitB: ("8x8 AES", "None"), converterPorts: [])
+                == "Symphony I/O (unit A, port 1): slot 1 8MicPre, slot 2 None\nSecond Symphony I/O (unit B, port 2): slot 1 8x8 AES, slot 2 None")
+        #expect(BugReportLink.hardwareText(unitA: nil, unitB: nil,
+                                           converterPorts: [["AD-16X (16 inputs)", "DA-16X (16 outputs)"], []])
+                == "Converters on port 1: AD-16X (16 inputs); DA-16X (16 outputs)")
+        #expect(BugReportLink.hardwareText(unitA: ("8x8 AES", "None"), unitB: nil, converterPorts: [],
+                                           firmware: "1.6.48", fpga: "v73")
+                == "Symphony I/O: slot 1 8x8 AES, slot 2 None\nSymphony I/O firmware 1.6.48, FPGA v73")
+        #expect(BugReportLink.rateText(48000) == "48 kHz")
+        #expect(BugReportLink.rateText(44100) == "44.1 kHz")
+        #expect(items(BugReportLink.url(version: nil, macAndOS: nil, connection: nil, doing: "Sample rate 48 kHz. DAW: "))["doing"]
+                == "Sample rate 48 kHz. DAW: ")
+        #expect(BugReportLink.hardwareText(unitA: nil, unitB: nil, converterPorts: [[], []]) == nil)
+        let q = items(BugReportLink.url(version: nil, macAndOS: nil, connection: nil, hardware: "a\nb"))
+        #expect(q["hardware"] == "a\nb")
+    }
+
     @Test func formFieldIdsMatchTheTemplate() throws {
         // The ids above must exist in the bug form, or GitHub ignores them.
         var dir = URL(fileURLWithPath: #filePath)
@@ -41,7 +61,7 @@ struct BugReportLinkTests {
             dir.deleteLastPathComponent()
         }
         let template = try String(contentsOf: dir.appendingPathComponent(".github/ISSUE_TEMPLATE/bug_report.yml"), encoding: .utf8)
-        for id in ["version", "mac", "connection"] {
+        for id in ["version", "mac", "connection", "hardware", "doing"] {
             #expect(template.contains("id: \(id)\n"))
         }
         // GitHub fills text fields from the link, not dropdowns.

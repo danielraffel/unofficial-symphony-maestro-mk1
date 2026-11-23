@@ -34,7 +34,7 @@ body:
     id: version
     attributes:
       label: Maestro version
-      description: App Settings › About.
+      description: App Settings › About. Maestro's Report a Bug fills this in, with the update channel and driver.
       placeholder: "0.9.23"
     validations:
       required: true
@@ -57,13 +57,14 @@ body:
     id: hardware
     attributes:
       label: Hardware
-      description: The I/O modules in your Symphony, and any second unit or external converters.
+      description: The I/O modules in your Symphony, and any second unit or external converters. When you come from Maestro's Report a Bug, what Maestro detected is filled in (modules, firmware, converters); add anything it missed.
     validations:
       required: false
   - type: input
     id: doing
     attributes:
       label: DAW and sample rate
+      description: Maestro fills in the sample rate; add your DAW and its buffer size.
     validations:
       required: false
   - type: dropdown
