@@ -902,8 +902,15 @@ run_receipt_cleanup() (
     forget_maestro_receipts
 )
 EXPECTED_RECEIPTS="$(sed -n 's/.*--identifier "\(com\.generouscorp\.maestro\.[^"]*\)".*/\1/p' "$REPO_ROOT/Installer/build-installer.sh")"
-[ -n "$EXPECTED_RECEIPTS" ] && [ "$(run_receipt_cleanup)" = "$EXPECTED_RECEIPTS" ] \
-    || fail "uninstall: did not forget both component receipts"
+# Every identifier the current build writes is forgotten (older builds' ids
+# may follow; they are forgotten too).
+FORGOTTEN="$(run_receipt_cleanup)"
+[ -n "$EXPECTED_RECEIPTS" ] || fail "uninstall: no package identifiers found in build-installer.sh"
+for id in $EXPECTED_RECEIPTS; do
+    printf '%s\n' "$FORGOTTEN" | grep -qx "$id" || fail "uninstall: did not forget the receipt $id"
+done
+printf '%s\n' "$FORGOTTEN" | grep -qx "com.danielraffel.maestro" \
+    || fail "uninstall: did not forget the 0.8.x receipt com.danielraffel.maestro"
 while IFS= read -r RECEIPT; do
     grep -qF "<pkg-ref id=\"$RECEIPT\"" "$REPO_ROOT/Installer/distribution.xml" \
         || fail "uninstall: receipt $RECEIPT is missing from the distribution"
