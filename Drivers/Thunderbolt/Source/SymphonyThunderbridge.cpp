@@ -4429,6 +4429,13 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
     if (!ivars || !ivars->startupOutputMuteHeld) return;
     const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
     if (!controlSet && now < ivars->startupOutputMuteDeadlineNs) return;
+    // ModifyRegister reads the BAR: never with the endpoint gone (asleep,
+    // powered off, link down). Stay held; a later tick retries, and every
+    // reprogram after recovery or wake goes through ClkCtrlUnmuteBits.
+    if (!XLinkTxAdmissible(ivars) ||
+        __atomic_load_n(&ivars->hwSuspended, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&ivars->providerPowerOff, __ATOMIC_ACQUIRE))
+        return;
 
     // Release the card's whole output path. A restored mute is applied to
     // the unit's own speaker/headphone mute by the control handler (queued on
