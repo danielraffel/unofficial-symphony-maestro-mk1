@@ -49,7 +49,7 @@ struct HelpSearchTests {
         let shown = HelpSearch.filter(all, query: "troubleshooting")
         let section = try #require(shown.first { $0.id == .troubleshooting })
         #expect(section.items.count == all.first { $0.id == .troubleshooting }?.items.count)
-        #expect(section.items.count == 8)
+        #expect(section.items.count == 9)
     }
 
     @Test("Every word must match; they need not be together or in order")
