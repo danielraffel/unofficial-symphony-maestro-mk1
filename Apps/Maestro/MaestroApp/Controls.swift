@@ -849,7 +849,10 @@ struct LEDMeterView: View {
 
     private static let overHeight: CGFloat = 9   // taller than a segment, like Apogee's Over box
     private static let segmentGap: CGFloat = 1
-    static func indicatorSpace(shown: Bool) -> CGFloat { shown ? overHeight + segmentGap : 0 }
+    /// Clear space between the Over LED and the top meter segment, so the LED
+    /// reads as its own light, as in Apogee's meters.
+    private static let overGap: CGFloat = 4
+    static func indicatorSpace(shown: Bool) -> CGFloat { shown ? overHeight + overGap : 0 }
     private var indicatorSpace: CGFloat { Self.indicatorSpace(shown: onClear != nil) }
 
     private let segmentCount = 24
@@ -887,14 +890,16 @@ struct LEDMeterView: View {
                     VStack(spacing: Self.segmentGap) {
                         if let onClear {
                             Button(action: onClear) {
-                                RoundedRectangle(cornerRadius: 1)
-                                    // Unlit, it takes the muted red of the zone below
-                                    // it, as Apogee's dark red Over box did.
-                                    .fill(isOver ? .red
-                                          : (showZoneColoring ? colorForSegment(segmentCount - 1).opacity(0.15)
-                                             : Color(.separatorColor).opacity(0.5)))
+                                // A separate LED above the meter, always visible:
+                                // dark red with an outline when off, bright red
+                                // when lit (Apogee's Over box).
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(isOver ? Color.red : Color.red.opacity(0.18))
+                                    .overlay(RoundedRectangle(cornerRadius: 1.5)
+                                        .strokeBorder(Color.red.opacity(isOver ? 0.9 : 0.45), lineWidth: 1))
                                     .frame(width: width, height: Self.overHeight)
                             }
+                            .padding(.bottom, Self.overGap - Self.segmentGap)
                             .buttonStyle(.plain)
                             .accessibilityLabel("Clear Meters")
                             .accessibilityValue(isOver ? "Over" : "No over")
@@ -951,11 +956,9 @@ struct LEDMeterView: View {
 
             // Major marks — labeled
             for db in majorMarks {
-                // With an Over box, 0 sits beside it, as in Apogee's meters:
-                // Over is what lies past 0 dBFS.
-                let y = db == 0 && indicatorSpace > 0
-                    ? scalePad + Self.overHeight / 2
-                    : scale.perceptualY(db: Double(db), topCenter: Double(topY), bottomCenter: Double(bottomY))
+                // 0 stays on the top meter segment; the Over LED above it is a
+                // separate light (owner, 2026-11-23, after Apogee's meters).
+                let y = scale.perceptualY(db: Double(db), topCenter: Double(topY), bottomCenter: Double(bottomY))
 
                 if leftSide {
                     // Tick on right edge (near meter)
