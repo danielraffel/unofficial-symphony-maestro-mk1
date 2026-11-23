@@ -36,7 +36,7 @@ extension AppState {
     nonisolated static func currentOriginalApogeeDrivers() -> OriginalApogeeDriverFinding {
         previewOriginalApogeeDrivers() ?? OriginalApogeeDrivers.detect(
             fileExists: { FileManager.default.fileExists(atPath: $0) },
-            loadedBundleIDs: loadedOriginalApogeeKextIDs())
+            loadedBundleIDs: OriginalApogeeDrivers.loadedKextIDs())
     }
 
     /// What Maestro does about the finding: nothing, the warning only, or no
@@ -84,11 +84,13 @@ extension AppState {
         return nil
         #endif
     }
+}
 
+extension OriginalApogeeDrivers {
     /// Which of Apogee's MkI kext identifiers are loaded in the kernel. Asks for
     /// exactly those identifiers, so nothing else is enumerated.
-    nonisolated static func loadedOriginalApogeeKextIDs() -> Set<String> {
-        let ids = OriginalApogeeDrivers.kernelExtensionBundleIDs as CFArray
+    static func loadedKextIDs() -> Set<String> {
+        let ids = kernelExtensionBundleIDs as CFArray
         guard let info = KextManagerCopyLoadedKextInfo(ids, nil)?.takeRetainedValue() as? [String: Any] else {
             return []
         }

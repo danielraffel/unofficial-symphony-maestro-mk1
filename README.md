@@ -185,13 +185,21 @@ From 0.8.40, Maestro can also offer beta versions: builds that are still being t
 
 ## Uninstalling Unofficial Symphony Maestro
 
-To remove everything this project installs, run this one command in Terminal (in Applications › Utilities) and enter your Mac's password when asked:
+To uninstall Maestro, run this command in Terminal (in Applications › Utilities) and enter your Mac's password when asked.
 
 ```
 sudo /Applications/Maestro.app/Contents/Resources/uninstall.sh
 ```
 
-It removes the Unofficial Symphony Maestro app, its audio plug-in, its ThunderBridge driver and its background service, and restores Apogee's original audio plug-in if our installer had set it aside. Audio stops briefly while it runs. macOS may not let the script remove the driver itself; if so, the script says so, and you turn off **Symphony Thunderbridge** under **System Settings › General › Login Items & Extensions › Driver Extensions**. The script does not run while Apogee's original ThunderBridge or PCIe driver is loaded and Maestro's driver is active: stopping Maestro's driver then can crash your Mac. It says so and changes nothing; shut down your Mac, disconnect the ThunderBridge or PCIe chassis, start up again, and run it again.
+The script removes the app, audio plug-in and background service, and restores Apogee's original audio plug-in if our installer had set it aside. Audio stops briefly. Confirm the removal if macOS asks, and the script removes the ThunderBridge driver. If automatic removal fails, the script tells you how to remove the driver in System Settings.
+
+If Apogee's original ThunderBridge or PCIe driver is loaded and Maestro's driver is active, stopping Maestro's driver can crash your Mac. The script stops before making any changes. Shut down your Mac, disconnect the ThunderBridge or PCIe chassis, start up again, and rerun the script.
+
+The script keeps your Maestro settings in `~/Library/Preferences/com.danielraffel.maestro.plist` so reinstalling restores your setup. To delete those settings, run this command as your usual user.
+
+```
+defaults delete com.danielraffel.maestro
+```
 
 If you have already deleted the app from Applications, the same script is in this repository at [Installer/uninstall.sh](Installer/uninstall.sh).
 

@@ -17,7 +17,6 @@ import MaestroDevice
 
 // MARK: - App Entry Point
 
-@main
 struct MaestroApp: App {
     @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(MaestroAppDelegate.self) private var appDelegate

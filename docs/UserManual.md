@@ -144,7 +144,19 @@ For reference only, the complete list of what Apogee's Release 5.5 uninstaller d
 
 ## Remove the software
 
-The installed app includes an uninstall script at `/Applications/Maestro.app/Contents/Resources/uninstall.sh`. Review its instructions before running it with administrator privileges. Removing audio components interrupts audio; an active system extension may require an additional macOS removal step. Keep a known-good installer available before changing the installation.
+Run this command in Terminal and enter your Mac's password when asked. Audio stops briefly during removal.
+
+```sh
+sudo /Applications/Maestro.app/Contents/Resources/uninstall.sh
+```
+
+Confirm the removal if macOS asks, and the script removes the ThunderBridge driver. If automatic removal fails, the script tells you how to remove the driver in System Settings.
+
+The script keeps your Maestro settings in `~/Library/Preferences/com.danielraffel.maestro.plist` so reinstalling restores your setup. To delete those settings, run this command as your usual user.
+
+```sh
+defaults delete com.danielraffel.maestro
+```
 
 ## Help and feedback
 

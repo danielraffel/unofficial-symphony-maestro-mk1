@@ -109,20 +109,39 @@ maestro_dext_registered() {
     awk -v id="$DEXT_ID" 'index($0, id) && /\[activated/ && !/uninstall/ { found = 1 } END { exit !found }' <<< "$listed"
 }
 
-# The team identifier that step 7 needs to remove the driver extension, or nothing: from
-# the driver inside Maestro.app, or, when the app is already gone, from the
-# teamID column of macOS's own list. Never fails: under `set -e` and pipefail a
-# codesign that finds no app would otherwise end the script without a word.
-maestro_dext_team_id() {
-    local team listed
-    team="$("$(test_override CODESIGN /usr/bin/codesign)" -dvv "$APP/Contents/Library/SystemExtensions/$DEXT_ID.dext" 2>&1 \
-        | awk -F= '/^TeamIdentifier=/ { print $2; exit }' || true)"
-    if ! [[ "$team" =~ ^[A-Z0-9]{10}$ ]]; then
-        listed="$(system_extensions_listed)"
-        team="$(awk -v id="$DEXT_ID" '{ for (i = 2; i <= NF; i++) if ($i == id) { print $(i - 1); exit } }' <<< "$listed" || true)"
-        [[ "$team" =~ ^[A-Z0-9]{10}$ ]] || team=""
+# The authentication dialog belongs to the console session. The sudo
+# invoker may be a different user (for example, when uninstalling over SSH).
+deactivate_maestro_driver() {
+    local user uid app_id supported plist executable
+    user="$(test_override CONSOLE_USER "$(stat -f %Su /dev/console 2>/dev/null || true)")"
+    uid="$(id -u "$user" 2>/dev/null || true)"
+    if [ -z "$user" ] || [ -z "$uid" ] || [ "$uid" -lt 501 ]; then
+        echo "  Sign in to your Mac to confirm driver removal."
+        return 1
     fi
-    printf '%s\n' "$team"
+
+    plist="$(test_override PLISTBUDDY /usr/libexec/PlistBuddy)"
+    app_id="$("$plist" -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+    supported="$("$plist" -c 'Print :MaestroSupportsDriverDeactivation' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+    executable="$APP/Contents/MacOS/MaestroApp"
+    # Older executables ignore the flag and start the app.
+    if [ "$app_id" != com.danielraffel.maestro ] || [ "$supported" != true ] || [ ! -x "$executable" ]; then
+        echo "  This copy of the uninstaller could not find a Maestro app that can remove the driver."
+        return 1
+    fi
+
+    launchctl asuser "$uid" /usr/bin/sudo -n -u "$user" -- "$executable" --deactivate-driver
+}
+
+forget_maestro_receipts() {
+    local receipt
+    # Evidence: og_source/symphonymk1/ApogeeUninstaller/Source/MainComponent.cpp:168-170
+    # The original uninstaller also forgets its package receipts.
+    for receipt in com.generouscorp.maestro.core com.generouscorp.maestro.usb; do
+        if pkgutil --pkg-info "$receipt" >/dev/null 2>&1; then
+            pkgutil --forget "$receipt" || echo "  Could not forget the installer receipt for $receipt." >&2
+        fi
+    done
 }
 
 # Why this script can refuse to run (the full account is in AGENTS.md,
@@ -265,21 +284,9 @@ fi
 echo "[7/8] Deactivating ThunderBridge driver extension..."
 DEXT_NEEDS_MANUAL=0
 if maestro_dext_registered; then
-    # `systemextensionsctl uninstall` only works with developer mode on (SIP disabled). On a normal
-    # SIP-enabled Mac it fails harmlessly — macOS requires the user to remove driver extensions from
-    # System Settings — so we detect that and print instructions.
-    TEAM_ID="$(maestro_dext_team_id)"
-    if [ -n "$TEAM_ID" ]; then
-        systemextensionsctl uninstall "$TEAM_ID" "$DEXT_ID" 2>/dev/null || true
-    fi
-    sleep 1
-    if maestro_dext_registered; then
+    if ! deactivate_maestro_driver; then
         DEXT_NEEDS_MANUAL=1
-        echo "  Driver extension still registered — macOS requires you to remove it manually:"
-        echo "    System Settings > General > Login Items & Extensions > Driver Extensions"
-        echo "    → turn off / remove 'Symphony Thunderbridge'."
-    else
-        echo "  Driver extension deactivated."
+        echo "  Automatic driver removal failed. See the instructions below."
     fi
 else
     echo "  No ThunderBridge driver extension activated (nothing to deactivate)."
@@ -296,14 +303,20 @@ if [ -d "$APP" ]; then
     fi
 fi
 
-# ── 8. Restart coreaudiod ───────────────────────────────────────────────────
+# ── Restart coreaudiod ───────────────────────────────────────────────────
 echo ""
 echo "Restarting coreaudiod..."
 killall coreaudiod 2>/dev/null || true
 sleep 3
 
+forget_maestro_receipts
+
 echo ""
-echo "=== Uninstall complete ==="
+if [ "$DEXT_NEEDS_MANUAL" -eq 1 ]; then
+    echo "=== Uninstall needs one more step ==="
+else
+    echo "=== Uninstall complete ==="
+fi
 echo ""
 echo "Symphony Maestro's app, plug-in, and volume service have been removed."
 if [ "${DEXT_NEEDS_MANUAL:-0}" -eq 1 ]; then
@@ -311,7 +324,6 @@ if [ "${DEXT_NEEDS_MANUAL:-0}" -eq 1 ]; then
     echo "ONE MANUAL STEP REMAINS — remove the Thunderbolt driver extension:"
     echo "  System Settings > General > Login Items & Extensions > Driver Extensions"
     echo "  → turn off / remove 'Symphony Thunderbridge'."
-    echo "  (macOS does not allow scripts to remove a driver extension while SIP is on.)"
 fi
 if [ "$RESTORED" -gt 0 ]; then
     echo "The original Apogee HAL plugin has been restored."
