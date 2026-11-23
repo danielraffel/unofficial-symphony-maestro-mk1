@@ -702,7 +702,7 @@ struct MixerView: View {
                 Task { await writeSWReturnMute(newValue) }
                 continue
             }
-            guard i < editor.channels.count else { continue }
+            guard editor.channels.indices.contains(i) else { continue }
             editor.channels[i].isMuted = newValue
             if batchChannelIsRouted(i) { Task { await writeMute(channel: i, muted: newValue) } }
         }
@@ -717,7 +717,7 @@ struct MixerView: View {
                 Task { await writeSWReturnSolo(newValue) }
                 continue
             }
-            guard i < editor.channels.count else { continue }
+            guard editor.channels.indices.contains(i) else { continue }
             editor.channels[i].isSoloed = newValue
             if batchChannelIsRouted(i) { Task { await writeSolo(channel: i, solo: newValue) } }
         }
@@ -728,7 +728,7 @@ struct MixerView: View {
     private func beginBatchLevelDrag(fromChannel: Int) {
         batchDragStartLevels = [:]
         for i in batchTargetChannels {
-            guard i < editor.channels.count else { continue }
+            guard editor.channels.indices.contains(i) else { continue }
             batchDragStartLevels[i] = editor.channels[i].level
         }
         // Option-drag with no selection keeps its existing all-strip meaning.
@@ -761,7 +761,7 @@ struct MixerView: View {
                 editor.masterRightLevel = newLevel
                 scheduleMasterWrite(level: newLevel)
             } else {
-                guard i < editor.channels.count else { continue }
+                guard editor.channels.indices.contains(i) else { continue }
                 editor.channels[i].level = newLevel
                 if batchChannelIsRouted(i) { levelThrottle.submit(i, newLevel) { value in await writeLevel(channel: i, level: value) } }
             }
@@ -773,7 +773,7 @@ struct MixerView: View {
     private func beginBatchPanDrag(fromChannel: Int) {
         batchDragStartPans = [:]
         for i in batchTargetChannels {
-            guard i < editor.channels.count else { continue }
+            guard editor.channels.indices.contains(i) else { continue }
             batchDragStartPans[i] = editor.channels[i].pan
         }
     }
@@ -796,7 +796,7 @@ struct MixerView: View {
     /// Software Return has no pan.
     private func batchCenterPans() {
         for i in batchTargetChannels {
-            guard i < editor.channels.count else { continue }
+            guard editor.channels.indices.contains(i) else { continue }
             editor.channels[i].pan = 0
             if batchChannelIsRouted(i) { Task { await writePan(channel: i, pan: 0) } }
         }

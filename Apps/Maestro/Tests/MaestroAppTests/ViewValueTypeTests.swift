@@ -46,4 +46,13 @@ struct ViewValueTypeTests {
         #expect(settings.contains(#"@AppStorage("showLevelOverlay") private var showLevelOverlay = false"#))
         #expect(document.contains(#"forKey: "showLevelOverlay") as? Bool ?? false"#))
     }
+
+    /// Software Return and Master are selected as -1 and -2: a bounds check of
+    /// the form `i < channels.count` let them through and a group drag with
+    /// everything selected crashed (2026-11-23). Index checks must reject
+    /// negatives.
+    @Test func mixerIndexChecksRejectNegativeSelectionIDs() throws {
+        let text = try String(contentsOf: Self.appDir.appendingPathComponent("MixerViews.swift"), encoding: .utf8)
+        #expect(!text.contains("guard i < editor.channels.count"))
+    }
 }
