@@ -786,7 +786,7 @@ mkstub "$C/kmutil" "echo '  190  0 0 0 0 com.apogeedigital.driver.Symphony64Thun
     OUT="$(MAESTRO_PREINSTALL_TEST=1 APOGEE_ROOT="$C/root" KMUTIL="$C/kmutil" KEXTSTAT="$C/kmutil" find_original_apogee)"
     case "$OUT" in *"$C/root/Library/Extensions/Symphony64Thunderbridge.kext"*"Loaded kernel extension"*) ;; *) fail "guarded overrides not used: $OUT" ;; esac
     # Every override is read through test_override, never straight from the environment.
-    if grep -nE '\$\{?(APOGEE_ROOT|KMUTIL|KEXTSTAT|PLISTBUDDY|OSASCRIPT|CONSOLE_USER|PROBE_TIMEOUT|SYSTEMEXTENSIONSCTL|CODESIGN)\b' "$PRE" "$REPO_ROOT/Installer/uninstall.sh" | grep -q .; then
+    if grep -nE '\$\{?(APOGEE_ROOT|KMUTIL|KEXTSTAT|PLISTBUDDY|OSASCRIPT|CONSOLE_USER|PROBE_TIMEOUT|SYSTEMEXTENSIONSCTL)\b' "$PRE" "$REPO_ROOT/Installer/uninstall.sh" | grep -q .; then
         fail "an override variable is read without test_override"
     fi
 ) || exit 1
@@ -839,13 +839,20 @@ grep -q "Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, th
 # The check comes before the confirmation and before anything is stopped or removed.
 CHECK_LINE="$(grep -n '^if uninstall_blocked_by_apogee_driver; then$' "$UNINSTALL" | cut -d: -f1)"
 [ -n "$CHECK_LINE" ] || fail "uninstall.sh does not make the check"
-for PATTERN in 'read -p "Proceed with uninstall' 'pkill -x MaestroApp' 'systemextensionsctl uninstall' 'rm -rf "\$APP"' 'launchctl bootout'; do
+for PATTERN in 'read -p "Proceed with uninstall' 'pkill -x MaestroApp' 'if ! deactivate_maestro_driver; then' 'rm -rf "\$APP"' 'launchctl bootout'; do
     FIRST="$(grep -n -- "$PATTERN" "$UNINSTALL" | head -1 | cut -d: -f1)"
     [ -n "$FIRST" ] && [ "$CHECK_LINE" -lt "$FIRST" ] || fail "uninstall.sh reaches '$PATTERN' before the Apogee driver check"
 done
-# APP is set before the step that reads the driver's team identifier from it.
-[ "$(grep -n '^APP="/Applications/Maestro.app"$' "$UNINSTALL" | cut -d: -f1)" -lt "$(grep -n -- '-dvv "\$APP/' "$UNINSTALL" | cut -d: -f1)" ] \
-    || fail "uninstall.sh reads \$APP before setting it"
+# The app must still exist at step 7, and receipts are forgotten at the end.
+DRIVER_LINE="$(grep -n '^    if ! deactivate_maestro_driver; then$' "$UNINSTALL" | cut -d: -f1)"
+APP_LINE="$(grep -n 'rm -rf "\$APP"' "$UNINSTALL" | cut -d: -f1)"
+RECEIPTS_LINE="$(grep -n '^forget_maestro_receipts$' "$UNINSTALL" | cut -d: -f1)"
+RESTART_LINE="$(grep -n '^killall coreaudiod' "$UNINSTALL" | cut -d: -f1)"
+[ -n "$DRIVER_LINE" ] && [ -n "$APP_LINE" ] && [ -n "$RESTART_LINE" ] && [ -n "$RECEIPTS_LINE" ] \
+    && [ "$DRIVER_LINE" -lt "$APP_LINE" ] && [ "$APP_LINE" -lt "$RESTART_LINE" ] \
+    && [ "$RESTART_LINE" -lt "$RECEIPTS_LINE" ] \
+    || fail "uninstall: driver removal, app removal, audio restart and receipt cleanup are out of order"
+ok "uninstall: requests deactivation before removing the app and forgets receipts after the audio restart"
 ok "uninstall: refuses, changing nothing, while Apogee's ThunderBridge or PCIe kext is loaded and Maestro's driver is registered"
 
 # A driver extension macOS has already terminated is not on the card: it does
@@ -870,38 +877,84 @@ SYSEXT_OTHER="$SYSEXT_HEAD
     || fail "uninstall refused for another vendor's activated extension"
 ok "uninstall: a driver extension already terminated and waiting to uninstall is not counted as registered"
 
-# The team identifier: from the driver in the app, else from macOS's list; and
-# never a silent end of the script (set -e, pipefail) when Maestro.app is gone.
-# $1 = case dir, $2 = body of the codesign stub, $3 = what systemextensionsctl
-# list prints. Prints "<team>|reached" when the script carries on.
-team_id_check() {
-    local dir="$1"
-    mkdir -p "$dir"
-    printf '%s\n' "$3" > "$dir/sysext.txt"
-    mkstub "$dir/codesign" "$2"
-    mkstub "$dir/systemextensionsctl" "cat '$dir/sysext.txt'"
-    (
-        # shellcheck source=/dev/null
-        . "$UNINSTALL"
-        set -euo pipefail
-        export MAESTRO_PREINSTALL_TEST=1 CODESIGN="$dir/codesign" SYSTEMEXTENSIONSCTL="$dir/systemextensionsctl"
-        TEAM_ID="$(maestro_dext_team_id)"
-        echo "$TEAM_ID|reached"
-    ) || echo "aborted"
-}
-GONE='echo "/Applications/Maestro.app/Contents/Library/SystemExtensions/x.dext: No such file or directory" >&2; exit 1'
-[ "$(team_id_check "$WORK/t-app" 'echo "Identifier=x" >&2; echo "TeamIdentifier=ZZZZZ99999" >&2' "$SYSEXT_OURS")" = "ZZZZZ99999|reached" ] \
-    || fail "uninstall: the team identifier is not read from the driver in the app"
-[ "$(team_id_check "$WORK/t-gone" "$GONE" "$SYSEXT_OURS")" = "ABCDE12345|reached" ] \
-    || fail "uninstall: with Maestro.app gone, the team identifier is not taken from macOS's list"
-[ "$(team_id_check "$WORK/t-neither" "$GONE" "0 extension(s)")" = "|reached" ] \
-    || fail "uninstall: stops silently when neither the app nor macOS's list gives a team identifier"
-[ "$(team_id_check "$WORK/t-unsigned" 'echo "TeamIdentifier=not set" >&2' "$SYSEXT_OTHER")" = "|reached" ] \
-    || fail "uninstall: takes a team identifier that is not one"
-grep -q '^    TEAM_ID="$(maestro_dext_team_id)"$' "$UNINSTALL" || fail "uninstall.sh does not use maestro_dext_team_id"
-if grep -nE '^[[:space:]]*TEAM_ID=\$\(codesign' "$UNINSTALL" | grep -q .; then
-    fail "uninstall.sh reads the team identifier in a pipeline that can end the script"
+# Load only step 7 in a subshell. Its registration check and launch command
+# are stubs, so the test can never start Maestro or reach app removal.
+run_uninstall_driver_step() (
+    local registered="$1" status="$2"
+    . "$UNINSTALL"
+    maestro_dext_registered() { [ "$registered" = yes ]; }
+    deactivate_maestro_driver() { echo "stub: requested deactivation"; return "$status"; }
+    eval "$(sed -n '/^# .*7\. Deactivate/,/^# .*8\. Remove app/p' "$UNINSTALL")"
+    eval "$(sed -n '/^if \[ "\${DEXT_NEEDS_MANUAL:-0}" -eq 1 \]; then$/,/^fi$/p' "$UNINSTALL")"
+    echo "manual=$DEXT_NEEDS_MANUAL"
+)
+# Receipt cleanup only sees this stub. The two identifiers must match both
+# component package builds and the distribution, even on a USB-free install.
+run_receipt_cleanup() (
+    . "$UNINSTALL"
+    pkgutil() {
+        case "$1" in
+            --pkg-info) return 0 ;;
+            --forget) echo "$2" ;;
+            *) return 1 ;;
+        esac
+    }
+    forget_maestro_receipts
+)
+EXPECTED_RECEIPTS="$(sed -n 's/.*--identifier "\(com\.generouscorp\.maestro\.[^"]*\)".*/\1/p' "$REPO_ROOT/Installer/build-installer.sh")"
+[ -n "$EXPECTED_RECEIPTS" ] && [ "$(run_receipt_cleanup)" = "$EXPECTED_RECEIPTS" ] \
+    || fail "uninstall: did not forget both component receipts"
+while IFS= read -r RECEIPT; do
+    grep -qF "<pkg-ref id=\"$RECEIPT\"" "$REPO_ROOT/Installer/distribution.xml" \
+        || fail "uninstall: receipt $RECEIPT is missing from the distribution"
+done <<< "$EXPECTED_RECEIPTS"
+ok "uninstall: forgets the package receipts from the installer distribution"
+
+OUT="$(run_uninstall_driver_step yes 0)"
+[[ "$OUT" == *"stub: requested deactivation"* && "$OUT" == *"manual=0"* && "$OUT" != *"System Settings"* ]] \
+    || fail "uninstall: successful deactivation should skip manual instructions: $OUT"
+OUT="$(run_uninstall_driver_step yes 1)"
+[[ "$OUT" == *"stub: requested deactivation"* && "$OUT" == *"manual=1"* && "$OUT" == *"Driver Extensions"* ]] \
+    || fail "uninstall: failed deactivation should print manual instructions: $OUT"
+OUT="$(run_uninstall_driver_step no 0)"
+[[ "$OUT" != *"stub: requested deactivation"* && "$OUT" == *"manual=0"* ]] \
+    || fail "uninstall: requested deactivation without a registered driver: $OUT"
+ok "uninstall: requests deactivation only for a registered driver and gives manual instructions on failure"
+
+# Check the actual command with a scratch app and a fake GUI session. The
+# fake executable is never started: launchctl only reports its arguments.
+run_driver_launch() (
+    . "$UNINSTALL"
+    APP="$WORK/$1/Maestro.app"
+    mkdir -p "$APP/Contents/MacOS"
+    cp "$REPO_ROOT/Apps/Maestro/MaestroApp/Resources/Info.plist" "$APP/Contents/Info.plist"
+    mkstub "$APP/Contents/MacOS/MaestroApp" 'echo "unexpected start" >&2; exit 1'
+    if [ "$1" = older ]; then
+        /usr/libexec/PlistBuddy -c 'Delete :MaestroSupportsDriverDeactivation' "$APP/Contents/Info.plist"
+    fi
+    # The mocks check the actual user path even if a different user ran sudo.
+    local console="$2"
+    stat() { [ "$*" = '-f %Su /dev/console' ] && echo "$console"; }
+    id() {
+        case "$*" in
+            '-u console-owner') echo 502 ;;
+            '-u root') echo 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    launchctl() { printf 'launchctl:%s\n' "$*"; }
+    export SUDO_USER=ssh-user
+    deactivate_maestro_driver
+)
+OUT="$(run_driver_launch current console-owner)"
+[ "$OUT" = "launchctl:asuser 502 /usr/bin/sudo -n -u console-owner -- $WORK/current/Maestro.app/Contents/MacOS/MaestroApp --deactivate-driver" ] \
+    || fail "uninstall: did not run the headless command in the console user's GUI session: $OUT"
+if OUT="$(run_driver_launch older console-owner)" || [[ "$OUT" == *"launchctl:"* ]]; then
+    fail "uninstall: attempted to start a Maestro app without the headless command: $OUT"
 fi
-ok "uninstall: the team identifier comes from the app or from macOS's list, and a missing Maestro.app does not end the script"
+if OUT="$(run_driver_launch at-login root)" || [[ "$OUT" == *"launchctl:"* ]]; then
+    fail "uninstall: attempted to start the app with no signed-in console user: $OUT"
+fi
+ok "uninstall: launches as the console user and skips the launch with an older app or no GUI user"
 
 echo "Installer tool tests passed ($PASS)"

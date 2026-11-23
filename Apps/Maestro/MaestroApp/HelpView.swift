@@ -637,7 +637,7 @@ extension HelpSection {
                 .text("**Maestro** is the app itself. It runs only while it is open."),
                 .text("**com.danielraffel.maestro.thunderbridge** is Maestro's ThunderBridge driver. macOS runs it while a ThunderBridge or Symphony 64 PCIe card is in the Mac, whether or not Maestro is open: it is what carries your audio and the volume keys over the card."),
                 .text("**MaestroVolumeProxy** is the USB helper, installed with USB support. It runs in the background so that **Symphony I/O : Maestro USB** works and the Mac's volume keys reach the Symphony over USB, and it mutes the Symphony while the Mac sleeps. It uses almost nothing when no Symphony is on USB."),
-                .text("The uninstaller removes them (see **Uninstalling**). macOS may ask you to turn the driver off yourself in System Settings › General › Login Items & Extensions › Driver Extensions; the uninstaller says when."),
+                .text("The uninstaller removes them (see **Uninstalling**). macOS may ask you to confirm driver removal."),
             ]),
             HelpItem(title: "The status bar says \"No hardware detected\" or \"Bus error\".", blocks: [
                 .text("The ThunderBridge or PCIe card is there, but the Symphony on its port is not answering. **No hardware detected** means nothing was found on the port: no unit is connected to it, or the unit is off. **Bus error** means a unit was found and the link to it failed. With 64 channels the message names the port. The ⓘ button next to it shows the whole message."),
@@ -707,9 +707,11 @@ extension HelpSection {
     private static var uninstalling: HelpSection {
         HelpSection(id: .uninstalling, title: "Uninstalling", items: [
             HelpItem(blocks: [
-                .text("Run this one command in Terminal. It removes the app, the audio plug-in and the background service. It does not install or remove anything of Apogee's."),
+                .text("Run this command in Terminal to remove the app, the audio plug-in and the background service."),
                 .command(uninstallCommand),
-                .text("If it says the driver extension is still registered, turn off **Symphony Thunderbridge** in **System Settings › General › Login Items & Extensions › Driver Extensions**. It does not run while Apogee's driver and Maestro's are both running."),
+                .text("Confirm the removal if macOS asks, and the script removes the ThunderBridge driver. If automatic removal fails, the script tells you how to remove the driver in System Settings. The script stops before making changes if Apogee's driver and Maestro's are both running."),
+                .text("The script keeps your Maestro settings in `~/Library/Preferences/com.danielraffel.maestro.plist` so reinstalling restores your setup. To delete those settings, run this command as your usual user."),
+                .command("defaults delete com.danielraffel.maestro"),
             ]),
         ])
     }

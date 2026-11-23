@@ -9,6 +9,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 ### Changes that may affect your setup
 
 - **After a ThunderBridge replug, audio output stays muted until macOS restores the monitor controls, or three seconds pass.** This prevents a short burst of audio when the speaker was muted before the replug.
+- **The uninstaller removes the ThunderBridge driver after you confirm in macOS.** It keeps your Maestro settings so reinstalling restores your setup.
 
 - **Choosing 2 or 3 Speaker Sets replaces the routes on Line 3-6 with the Line 1-2 source.** Leaving speaker sets or resetting the Output tab restores those outputs to their default DAW pairs.
 

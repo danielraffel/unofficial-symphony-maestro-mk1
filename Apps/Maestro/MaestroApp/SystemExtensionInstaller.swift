@@ -26,7 +26,7 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
 
     public static let shared = SystemExtensionInstaller()
 
-    private let dextBundleID = "com.danielraffel.maestro.thunderbridge"
+    static let dextBundleID = "com.danielraffel.maestro.thunderbridge"
     private let log = Logger(subsystem: "com.danielraffel.maestro", category: "sysext")
 
     /// macOS keeps an activation request alive while it waits for approval or a
@@ -99,7 +99,7 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     /// and for any bundle assembled without the embed step in build-installer.sh.
     public var isDextBundled: Bool {
         let path = Bundle.main.bundlePath
-            + "/Contents/Library/SystemExtensions/\(dextBundleID).dext"
+            + "/Contents/Library/SystemExtensions/\(Self.dextBundleID).dext"
         return FileManager.default.fileExists(atPath: path)
     }
 
@@ -110,7 +110,7 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     /// `sysextd` compares when deciding whether an activation is an upgrade.
     public var bundledDextBuildVersion: String? {
         let plist = Bundle.main.bundlePath
-            + "/Contents/Library/SystemExtensions/\(dextBundleID).dext/Info.plist"
+            + "/Contents/Library/SystemExtensions/\(Self.dextBundleID).dext/Info.plist"
         guard let data = FileManager.default.contents(atPath: plist),
               let dict = try? PropertyListSerialization.propertyList(from: data, format: nil)
                 as? [String: Any]
@@ -127,9 +127,9 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
     /// to Apogee's, and a replacement would stop a running one. With both on
     /// the card, macOS's kernel crashes when either lets go of the card's
     /// interrupt, so no request of any kind is submitted and nothing here
-    /// ever stops our own running driver (ApogeeDriverConflict.swift; the
-    /// account is in AGENTS.md, "Apogee's original drivers: what we do and
-    /// why"). Keep this the only place a request is submitted. The check is a few
+    /// stops our own running driver while Apogee's kernel driver is loaded
+    /// (see AGENTS.md). The uninstaller checks for the same conflict before
+    /// requesting deactivation. The activation check is a few
     /// file lookups and one loaded-kext query for two identifiers, made only
     /// when a request is about to be submitted, never on a timer.
     public func activate() {
@@ -153,12 +153,12 @@ public final class SystemExtensionInstaller: NSObject, OSSystemExtensionRequestD
             break
         }
 
-        log.notice("Requesting activation of \(self.dextBundleID, privacy: .public)")
+        log.notice("Requesting activation of \(Self.dextBundleID, privacy: .public)")
         activationRequestInFlight = true
         report(.activating)
 
         let request = OSSystemExtensionRequest.activationRequest(
-            forExtensionWithIdentifier: dextBundleID,
+            forExtensionWithIdentifier: Self.dextBundleID,
             queue: .main
         )
         request.delegate = self
@@ -458,7 +458,7 @@ extension SystemExtensionInstaller {
             return nil
         }
         let found = extensions
-            .filter { $0["identifier"] as? String == dextBundleID }
+            .filter { $0["identifier"] as? String == Self.dextBundleID }
             .map { Self.parseEntry($0) }
         let summary = found.map(\.displayVersion).joined(separator: ", ")
         let changed: Bool = lastLoggedDextsLock.withLock {
