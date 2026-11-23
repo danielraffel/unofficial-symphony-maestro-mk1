@@ -505,6 +505,16 @@ struct OutputTabParityTests {
         }
     }
 
+    @Test("routing keeps one pair for every non-speaker-set mode")
+    func routingSpeakerSetCountMatchesOriginalDefaults() {
+        for mode in [SpeakerOutputLogic.line, SpeakerOutputLogic.stereo,
+                     SpeakerOutputLogic.surround51, SpeakerOutputLogic.surround71] {
+            #expect(SpeakerOutputLogic.routingSpeakerSetCount(mode: mode) == 1)
+        }
+        #expect(SpeakerOutputLogic.routingSpeakerSetCount(mode: SpeakerOutputLogic.twoSpeakerSets) == 2)
+        #expect(SpeakerOutputLogic.routingSpeakerSetCount(mode: SpeakerOutputLogic.threeSpeakerSets) == 3)
+    }
+
     @Test func aPlainSpeakerSelectClickSelectsThatSetAlone() {
         #expect(SpeakerOutputLogic.speakerSetMask(clicking: 0, current: 0x7, extending: false) == 0x1)
         #expect(SpeakerOutputLogic.speakerSetMask(clicking: 1, current: 0x1, extending: false) == 0x2)

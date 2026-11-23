@@ -60,6 +60,29 @@ struct FrontPanelHALEchoTests {
         #expect(connection.writes.isEmpty)
     }
 
+    @Test("front-panel Mute All mirrors all three firmware output states")
+    func muteAllUpdatesMinimumAndLineOutputs() async {
+        let connection = EchoConnection()
+        let state = state(connection, build: .build(138))
+        state.speakerOutputMode = SpeakerOutputLogic.line
+        state.speakerLevel = -6
+        state.hp1Level = -64
+        state.hp2Level = -12
+        state.speakerMuted = false
+        state.hp1Muted = false
+        state.hp2Muted = false
+
+        await state.applyFrontPanelChange(.muteAll(true))
+        #expect(state.speakerMuted)
+        #expect(state.hp1Muted)
+        #expect(state.hp2Muted)
+
+        await state.applyFrontPanelChange(.muteAll(false))
+        #expect(!state.speakerMuted)
+        #expect(!state.hp1Muted)
+        #expect(!state.hp2Muted)
+    }
+
     @Test func driverHandoverDuringTheWaitCancelsTheLevelPush() async {
         let connection = EchoConnection()
         let state = state(connection, build: .build(131))

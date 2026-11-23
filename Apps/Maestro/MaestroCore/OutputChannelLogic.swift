@@ -383,6 +383,13 @@ public enum SpeakerOutputLogic {
         }
     }
 
+    /// Routing treats every non-speaker-set mode as one pair. This matches
+    /// `SymphonyIO.cpp:6125-6136`, whose default count is one even for Line,
+    /// Stereo, 5.1 and 7.1.
+    public static func routingSpeakerSetCount(mode: UInt32) -> Int {
+        max(1, speakerSetCount(mode: mode))
+    }
+
     /// Default Speaker Select mask — set A only (`SymphonyIO.cpp:168`).
     public static let defaultSpeakerSetMask: UInt32 = 0x1
 

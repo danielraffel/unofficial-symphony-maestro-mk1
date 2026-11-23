@@ -79,4 +79,5 @@ public enum ThunderboltOutputMeterMap {
             return level(word)
         }
     }
+
 }

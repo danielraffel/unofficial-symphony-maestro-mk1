@@ -112,4 +112,5 @@ struct ThunderboltOutputMeterMapTests {
             layout: CardLayout(isKnown: false), table: table(.optical, .none), unitBActive: false) == nil)
         #expect(words(.optical, .none, [:]) == nil)
     }
+
 }

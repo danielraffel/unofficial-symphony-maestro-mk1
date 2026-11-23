@@ -8,6 +8,8 @@ Thanks to the testers who reported that the AES meters did not move while music 
 
 ### Changes that may affect your setup
 
+- **Speaker-set routing and front-panel Mute All now stay in sync with the unit.** Leaving 2 or 3 Speaker Sets, or resetting the Output tab, restores freed pairs to their default routes. Mute All updates the speaker and both headphones, including outputs at minimum and the speaker in Line mode.
+
 - **The update replaces the ThunderBridge driver (0.11.18).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
 - **Mixer levels on ThunderBridge and PCIe now follow Apogee's arithmetic, so some mixes will sound different.** Master now turns down the inputs as well as Software Return, as it did in Apogee's software (before, it only changed Software Return). Pan uses Apogee's law: a centred strip is about 3 dB quieter on each side than before, and a hard-panned strip is silent on the other side. A fader or Master at the bottom is off. Master mute silences the inputs too.
 - **Faders and Master now go up to +6 dB on ThunderBridge and PCIe.** Before, anything above 0 dB played at 0 dB. So that your mix does not get louder by itself, Maestro sets any saved fader above 0 dB to 0 dB once, the first time it restores the mixers with this driver (it keeps the old values). Setup files saved with an earlier version load the same way; files saved now load as written.
@@ -21,6 +23,8 @@ Thanks to the testers who reported that the AES meters did not move while music 
 - **On ThunderBridge and PCIe, with some pairs of cards, Mixer strips controlled a different input from the one in their name.** This happened with a card that has digital inputs in slot 1 together with a card that has analog inputs in slot 2 (an 8x8, 16 Digital In / 16 Analog Out or 2x6 in slot 1 with an 8x8, 16 Analog In / 16 Digital Out, 16x16 or 2x6 in slot 2), and with slot 1 empty and a card in slot 2, where no input reached the mixer at all. Faders, pan, mute and solo now act on the input the strip is named for. After updating, each strip's saved settings apply to the input in its name, so an input may be louder or unmuted compared with before: check the mixer before turning your monitors up. Over USB nothing changes.
 
 ### Fixed
+
+- **Output monitor controls now match Apogee's behavior.** Option-clicking Mute, Dim or Sum to Mono applies it to the speaker and both headphones, plain clicks stay local, speaker-set formats copy the Line 1-2 route to each active set, and Output reset restores the speaker-set and headphone routing defaults. Front-panel Mute All leaves outputs already at minimum alone.
 
 - **With converters on both ports of the card at 64 channels, the routing pages no longer go blank,** show 32 inputs and 48 outputs, and Software Return offers all 32 pairs.
 - **With one Symphony I/O on the card, Software Return offers all 16 pairs** of the port, as in Apogee's software (it offered 8).
