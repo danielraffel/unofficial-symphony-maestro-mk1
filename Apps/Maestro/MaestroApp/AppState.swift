@@ -5159,10 +5159,10 @@ final class AppState: @unchecked Sendable {
             mScope: kAudioObjectPropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
-        var current: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        if AudioObjectGetPropertyData(targetID, &addr, 0, nil, &size, &current) == noErr,
-           (current != 0) == muted { return }
+        // Always set, even when the control already shows this value: the
+        // driver mirrors the unit's mute onto its control itself, and macOS
+        // saves only what a client sets (diagnostics 2026-11-23 09-59: the
+        // control showed muted, Maestro skipped, macOS restored "unmuted").
         var value: UInt32 = muted ? 1 : 0
         _ = AudioObjectSetPropertyData(targetID, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
     }
