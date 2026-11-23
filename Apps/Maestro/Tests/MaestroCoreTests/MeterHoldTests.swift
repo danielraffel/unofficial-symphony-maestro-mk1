@@ -94,8 +94,12 @@ struct MeterHoldTests {
     }
 
     @Test func cardOverAtFullScale() {
+        // Full scale measured on hardware reads 0xFE.
+        #expect(MeterReading.card(word: 0xFE00_0003).isOver)
         #expect(MeterReading.card(word: 0xFF00_0000).isOver)
-        #expect(!MeterReading.card(word: 0xFE00_0000).isOver)
+        #expect(!MeterReading.card(word: 0xFD00_0000).isOver)
+        // The latched bit 1 alone never lights Over.
+        #expect(!MeterReading.card(word: 0x1A00_0003).isOver)
         // The clip bit alone lights nothing until H-M4 confirms it.
         #expect(MeterReading.card(word: 0x8000_0002).isOver == MeterOverSources.cardOverBitConfirmed)
     }

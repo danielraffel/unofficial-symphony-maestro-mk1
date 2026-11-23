@@ -13,21 +13,26 @@ public struct MeterReading: Equatable, Sendable {
         return Self(level: level, isOver: word & 0x8000 != 0)
     }
 
-    /// Over on the card: the peak at full scale (its top value, 255), or the
-    /// clip bit once hardware check H-M4 confirms it.
+    /// Over on the card: the peak at full scale. Measured on hardware
+    /// (2026-11-23, full-scale square wave to playback 1-2): the peak byte
+    /// reads 254 (0xFE), never 255, so full scale is 254 and up. Bit 1 came on
+    /// with the tone but stayed set afterwards at any level (a latch, not a
+    /// live flag), so it is not used.
+    public static let cardFullScalePeak: UInt32 = 0xFE
+
     public static func card(word: UInt32) -> Self {
         let peakByte = word >> 24
         let peak = Double(peakByte)
         let level = peak == 0 ? -60.0 : max(-60, 20 * log10(peak / 256))
-        let over = peakByte == 0xFF || (MeterOverSources.cardOverBitConfirmed && word & 0x2 != 0)
-        return Self(level: level, isOver: over)
+        return Self(level: level, isOver: peakByte >= cardFullScalePeak)
     }
 }
 
 /// The hardware clip sources available to the display at the current transport
 /// and serving build. USB output and mixer taps may fall back to software.
 public enum MeterOverSources {
-    /// Set once hardware check H-M4 shows the card words' clip bit is real.
+    /// Hardware check H-M4 (2026-11-23): the card words' bit 1 latches, so it
+    /// is not used as a clip flag; Over comes from the full-scale peak.
     public static let cardOverBitConfirmed = false
 
     public static func available(card: Bool, build: ServingDextBuild? = nil,
