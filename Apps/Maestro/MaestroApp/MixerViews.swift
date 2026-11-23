@@ -234,11 +234,16 @@ struct MixerView: View {
             .padding(.vertical, 6)
 
             if let notice = appState.mixerHeadroomNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Dismiss") { appState.mixerHeadroomNotice = nil }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
             }
 
             Spacer().frame(height: 8)
@@ -587,12 +592,13 @@ struct MixerView: View {
 
     // MARK: - Batch Operations
 
-    /// Channels affected by batch operations: selected channels if any, otherwise all visible.
+    /// Channels affected by batch operations: selected channels if any, otherwise every
+    /// saved channel. Hidden unrouted strips must still be clearable on the card.
     private var batchTargetChannels: [Int] {
         if !selectedChannels.isEmpty {
             return selectedChannels.sorted()
         }
-        return (0..<min(editor.channels.count, channelCount)).filter { isChannelVisible($0) }
+        return Array(0..<min(editor.channels.count, channelCount))
     }
 
     /// Set mute to the same value for all target channels.

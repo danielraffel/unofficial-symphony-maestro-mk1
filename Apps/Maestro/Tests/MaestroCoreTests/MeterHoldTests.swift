@@ -3,6 +3,11 @@ import Testing
 @testable import MaestroCore
 
 struct MeterHoldTests {
+    @Test("Legacy Auto Clear is read as the original two-second behavior")
+    func legacyAutoClearMapsToTwoSeconds() {
+        #expect(MeterDisplaySettings.OverHoldMode.autoClear.userFacingValue == .twoSeconds)
+    }
+
     @Test(arguments: [
         (UInt32(0), 0.0, -60.0),
         (UInt32(1), 1.5, -3.0),

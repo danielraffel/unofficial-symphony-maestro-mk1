@@ -133,9 +133,10 @@ public struct MeterDisplaySettings: Sendable, Equatable {
         /// as a new choice. Evidence: `og_source/maestro2/App/Controllers/APSystemMetersViewController.m:69-74`.
         public static var userFacingCases: [Self] { [.off, .twoSeconds, .infinite] }
 
-        /// Values written by older builds are mapped to the closest original
-        /// choice before they are shown or saved again.
-        public var userFacingValue: Self { self == .autoClear ? .infinite : self }
+        /// Older Maestro builds used Auto Clear for this setting. The original
+        /// app's saved Auto Clear state was the two-second over indication
+        /// (`og_source/maestrolink/Software/DuetController.cpp:3472-3473`).
+        public var userFacingValue: Self { self == .autoClear ? .twoSeconds : self }
 
         public var wireValue: UInt32 {
             switch self {

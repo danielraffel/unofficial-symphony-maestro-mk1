@@ -48,7 +48,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 - **Input and output meters follow a routing change within a couple of seconds, however long Maestro has been open.** After opening the Mixer page they could keep showing the old routing for a long time.
 - **Show Trims and insert labels are remembered separately for each Symphony I/O.**
 - **Inputs removed from Input Routing no longer appear as live Mixer strips.** Their saved settings return when the route is restored.
-- **Over Hold now offers Off, 2 Seconds and Infinite, as in Apogee's software.** Older Auto Clear values are shown as Infinite.
+- **Over Hold now offers Off, 2 Seconds and Infinite, as in Apogee's software.** Older Auto Clear values are shown as 2 Seconds, the behavior this app used for them.
 
 ### What's new
 

@@ -84,7 +84,7 @@ struct DeviceSettingsTests {
 
     @Test func overHoldUserFacingChoicesMigrateAutoClear() {
         #expect(MeterDisplaySettings.OverHoldMode.userFacingCases == [.off, .twoSeconds, .infinite])
-        #expect(MeterDisplaySettings.OverHoldMode.autoClear.userFacingValue == .infinite)
+        #expect(MeterDisplaySettings.OverHoldMode.autoClear.userFacingValue == .twoSeconds)
     }
 
     /// The wire values ARE the menu order -- legacy binds the popup's

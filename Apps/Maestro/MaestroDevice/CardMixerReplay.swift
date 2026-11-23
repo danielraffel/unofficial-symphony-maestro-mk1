@@ -138,6 +138,12 @@ public enum CardMixerReplay {
             }
         }
         let ids = inputIDs(layout: layout, routes: routes)
+        let mapped = Set(ids.compactMap { $0 })
+        let inputCount = 32
+        for id in 0..<inputCount where !mapped.contains(id) {
+            put(.mixerChannelMute, .bool(true), id)
+            put(.mixerChannelSolo, .bool(false), id)
+        }
         for (index, _) in layout.mixerChannels.enumerated() {
             guard let id = ids[index] else { continue }
             guard index < saved.count else {

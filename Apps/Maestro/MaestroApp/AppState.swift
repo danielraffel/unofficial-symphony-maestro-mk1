@@ -206,6 +206,8 @@ final class AppState: @unchecked Sendable {
     var restoreStatusNote: String?
     /// One-time explanation shown after the driver-144 fader migration.
     var mixerHeadroomNotice: String?
+    /// Observation token for per-unit preferences stored outside the model.
+    var unitPreferenceRevision = 0
     /// Pause between the strip writes of a USB mixer restore (tests set zero).
     @ObservationIgnored var usbMixerStripSpacing: Duration = .milliseconds(5)
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
@@ -349,7 +351,12 @@ final class AppState: @unchecked Sendable {
     }
 
     private func unitBoolPreference(_ base: String, unit: DeviceUnit) -> Bool {
-        let key = unitPreferenceKey(base, unit: unit)
+        _ = unitPreferenceRevision
+        let scope = preferenceViewScope(for: unit)
+        guard let scopeKey = scope.key else {
+            return unit == .a ? (UserDefaults.standard.object(forKey: base) as? Bool ?? false) : false
+        }
+        let key = "\(base).\(unit == .a ? "a" : "b").\(scopeKey)"
         if UserDefaults.standard.object(forKey: key) == nil,
            unit == .a,
            let legacy = UserDefaults.standard.object(forKey: base) as? Bool {
@@ -359,7 +366,9 @@ final class AppState: @unchecked Sendable {
     }
 
     private func setUnitBoolPreference(_ value: Bool, _ base: String, unit: DeviceUnit) {
-        UserDefaults.standard.set(value, forKey: unitPreferenceKey(base, unit: unit))
+        guard let scopeKey = preferenceViewScope(for: unit).key else { return }
+        UserDefaults.standard.set(value, forKey: "\(base).\(unit == .a ? "a" : "b").\(scopeKey)")
+        unitPreferenceRevision &+= 1
     }
 
     var showInputTrims: Bool {
@@ -372,7 +381,11 @@ final class AppState: @unchecked Sendable {
     }
 
     func insertLabelsJSON(for unit: DeviceUnit) -> String {
-        let key = unitPreferenceKey("micPreInsertLabels", unit: unit)
+        _ = unitPreferenceRevision
+        guard let scopeKey = preferenceViewScope(for: unit).key else {
+            return unit == .a ? (UserDefaults.standard.string(forKey: "micPreInsertLabels") ?? "{}") : "{}"
+        }
+        let key = "micPreInsertLabels.\(unit == .a ? "a" : "b").\(scopeKey)"
         if UserDefaults.standard.object(forKey: key) == nil, unit == .a,
            let legacy = UserDefaults.standard.string(forKey: "micPreInsertLabels") {
             UserDefaults.standard.set(legacy, forKey: key)
@@ -381,7 +394,9 @@ final class AppState: @unchecked Sendable {
     }
 
     func setInsertLabelsJSON(_ value: String, for unit: DeviceUnit) {
-        UserDefaults.standard.set(value, forKey: unitPreferenceKey("micPreInsertLabels", unit: unit))
+        guard let scopeKey = preferenceViewScope(for: unit).key else { return }
+        UserDefaults.standard.set(value, forKey: "micPreInsertLabels.\(unit == .a ? "a" : "b").\(scopeKey)")
+        unitPreferenceRevision &+= 1
     }
     /// Whether idle meter segments show muted zone coloring (green/yellow/red gradient).
     /// Disabled by default — when enabled, unlit segments show a dim version of their zone color.
@@ -5736,7 +5751,10 @@ final class AppState: @unchecked Sendable {
             }
             await refreshChannelNaming()
             await write(PropertyAddress(selector: .peakHoldMode), .uint32(preset.peakHoldMode))
-            await write(PropertyAddress(selector: .oversHoldMode), .uint32(preset.overHoldMode))
+            let overHold = MeterDisplaySettings.OverHoldMode.allCases
+                .first { $0.wireValue == preset.overHoldMode }?.userFacingValue.wireValue
+                ?? MeterDisplaySettings.OverHoldMode.twoSeconds.wireValue
+            await write(PropertyAddress(selector: .oversHoldMode), .uint32(overHold))
             await write(PropertyAddress(selector: .metersShowInput, element: 1), .uint32(preset.meterBank1Source))
             await write(PropertyAddress(selector: .metersShowInput, element: 2), .uint32(preset.meterBank2Source))
         }

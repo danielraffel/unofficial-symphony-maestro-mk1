@@ -502,8 +502,7 @@ extension AppState {
         if lowered > 0 {
             print("[Maestro] Mixer: \(lowered) fader(s) saved above 0 dB set to 0 dB for driver 144 (old values kept in \(MixerHeadroomMigration.backupKey))")
             let noticeKey = "mixerHeadroom144.noticeShown.\(mixerPreferences.storageKey ?? "a")"
-            if !UserDefaults.standard.bool(forKey: noticeKey) {
-                UserDefaults.standard.set(true, forKey: noticeKey)
+            if !TestEnvironment.isRunningTests, !UserDefaults.standard.bool(forKey: noticeKey) {
                 mixerHeadroomNotice = MixerHeadroomMigration.noticeText
             }
             viewReloadToken = UUID()

@@ -1412,9 +1412,6 @@ struct DeviceSettingsView: View {
                 overHoldMode = MeterDisplaySettings.OverHoldMode.allCases
                     .first { $0.wireValue == over }?.userFacingValue.wireValue
                     ?? MeterDisplaySettings.OverHoldMode.infinite.wireValue
-                if over == MeterDisplaySettings.OverHoldMode.autoClear.wireValue {
-                    await writeProperty(.oversHoldMode, value: .uint32(overHoldMode))
-                }
             }
         } catch is CancellationError {
             return
