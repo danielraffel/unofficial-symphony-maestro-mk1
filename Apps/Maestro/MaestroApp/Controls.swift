@@ -705,11 +705,15 @@ struct FaderView: View {
                     )
                     // Apogee's APFaderCell reset value is zero by default
                     // (og_source/maestro2/App/Views/APFaderCell.m:35-36, 180-184).
-                    .onTapGesture(count: 2) {
-                        let oldValue = value
-                        value = defaultValue
-                        reportUserChange(oldValue: oldValue, newValue: value)
-                    }
+                    // Simultaneous: the drag above starts at distance 0 and
+                    // otherwise takes every click, so a double-click never fired.
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded {
+                            let oldValue = value
+                            value = defaultValue
+                            reportUserChange(oldValue: oldValue, newValue: value)
+                        }
+                    )
                     .simultaneousGesture(
                         TapGesture()
                             .modifiers(.option)

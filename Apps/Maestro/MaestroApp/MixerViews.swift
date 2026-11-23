@@ -633,6 +633,11 @@ struct MixerView: View {
                 selectedChannels.removeAll()
                 return nil
             }
+            // Escape clears the selection, as Help says (it was not handled).
+            if event.keyCode == 53, !selectedChannels.isEmpty {
+                selectedChannels.removeAll()
+                return nil
+            }
             return event
         }
     }
