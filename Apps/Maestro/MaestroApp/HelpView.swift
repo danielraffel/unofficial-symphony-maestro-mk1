@@ -374,7 +374,7 @@ extension HelpSection {
                 .text("On USB, Over lights use the unit’s Input, Output and Mixer meter data where available. On ThunderBridge and PCIe, Over lights on the Output page come from the unit’s own output meters (driver build 144 or later). On the Input and Mixer pages they light when the card’s meter reaches full scale (0 dBFS)."),
             ]),
             HelpItem(title: "How long are Peaks and Overs held?", blocks: [
-                .text("Set **Peak Hold** and **Over Hold** in **Device Settings › Front Panel**. Peak Hold Off hides the peak mark. With 2 Seconds it holds, then falls. Over Hold Off lights for a tenth of a second, and 2 Seconds or Auto Clear lights for two seconds on screen. Infinite holds until you click an Over light, choose **Clear Meters**, or clear meters with the front-panel encoder."),
+                .text("Set **Peak Hold** and **Over Hold** in **Device Settings › Front Panel**. Peak Hold Off hides the peak mark. With 2 Seconds it holds, then falls. Over Hold Off lights for a tenth of a second, and 2 Seconds lights for two seconds on screen. Infinite holds until you click an Over light, choose **Clear Meters**, or clear meters with the front-panel encoder."),
             ]),
             HelpItem(title: "Why do the outputs still say \"Line\" when I've set up speakers?", blocks: [
                 .text("Output channels keep their **Line 1, Line 2 …** names in every mode. The menu under the **Speaker** knob on the Output page (Analog Out Format) changes what the outputs *do* — whether the level knob, Mute, Dim and Sum to Mono apply to them — but it does not rename them. Apogee labels the first pair **Monitor Out** on the rear panel; that is a label on the hardware, not a name that changes on screen."),
@@ -495,6 +495,8 @@ extension HelpSection {
             HelpItem(title: "Why doesn't the Software Return fader or mute, or Master, change what I hear?", blocks: [
                 .text("**By default nothing is fed from a mixer,** so the **Mixer** page does nothing until you route **Mixer 1** or **Mixer 2** to an output in **Output Routing**. An output fed straight from a software output pair (for example **1-2 → Line 1/2**, the default) plays your Mac's audio directly, and Software Return, Master and the input strips do not touch it."),
                 .text("Route **Mixer 1** or **Mixer 2** to that output instead and the mixer's controls apply: your Mac's audio then arrives through **Software Return**, together with the hardware inputs that are unmuted, and **Master** sets the level."),
+                .text("Inputs removed from **Input Routing** are hidden from the mixer until you route them again. Their saved mixer settings stay with the input."),
+                .text("After an update that changes mixer headroom, saved faders above 0 dB may be set to 0 dB. The previous values are kept, and the update now plays levels above 0 dB as Apogee's did."),
                 .text("**Mixer 1 and Mixer 2 are separate.** A control on Mixer 2 changes only the outputs fed from Mixer 2. If no output is fed from Mixer 2 in Output Routing, nothing on Mixer 2 can be heard, and the same goes for Mixer 1."),
                 .text("**Over USB,** see **The Mixer over USB** further down for how Software Return mute behaves with the two Symphony audio devices."),
             ]),

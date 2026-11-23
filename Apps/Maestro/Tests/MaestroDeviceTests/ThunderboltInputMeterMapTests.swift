@@ -79,6 +79,20 @@ struct ThunderboltInputMeterMapTests {
         #expect(Map.stripLevels(host: [Double](repeating: -3, count: 32), words: w, count: 32)[0] == -60)
     }
 
+    @Test("Unrouted card inputs are marked unavailable to mixer strips")
+    func unroutedMixerChannels() {
+        let layout = CardLayout(slot1: .analogAES, slot2: .analogAD16, isKnown: true)
+        let a16Line1 = layout.inputRoutingColumns.firstIndex {
+            $0.routingByte == SymphonyIORoutingAddress.ioBoard1Base
+        }!
+        let routes = Map.currentRoutes(
+            slot1: .analogAES,
+            replayed: InputRoutingReplay.writes(saved: [0: a16Line1], columns: layout.inputRoutingColumns, pairCount: 16))
+        let routed = Map.routedMixerChannels(layout: layout, routes: routes)
+        #expect(routed[0] == false && routed[1] == false)
+        #expect(routed[8] == true)
+    }
+
     @Test("Unknown layout keeps host input i on strip i")
     func unknownLayoutIsIdentity() {
         let w = Map.words(layout: CardLayout(slot1: .none, slot2: .none, isKnown: false),

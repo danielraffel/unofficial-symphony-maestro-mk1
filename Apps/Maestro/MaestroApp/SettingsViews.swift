@@ -50,7 +50,9 @@ struct DeviceSettingsView: View {
     @State private var showAIMInfo = false
     /// User-editable insert names -- see `InsertLabels`. Shared across channels,
     /// which is why they are edited here rather than on an individual strip.
-    @AppStorage("micPreInsertLabels") private var insertLabelsJSON: String = "{}"
+    private var insertLabelsJSON: String {
+        appState.insertLabelsJSON(for: appState.activeUnit)
+    }
 
     // MARK: Read by `loadProperties` (clock, firmware, boards, word clock)
 
@@ -232,21 +234,13 @@ struct DeviceSettingsView: View {
     /// Rates queried from the actual device — updated in loadStatus().
     @State private var availableRates: [Double] = defaultRates
 
-    /// Peak Hold and Over Hold are NOT the same list. Over Hold carries a fourth
-    /// mode, Auto Clear (`eSymphonyIOMeteringLEDOverHold_AutoClear` = 3,
-    /// SymphonyIOVendorSpecific.h:706-712), which Peak Hold has no equivalent of.
-    ///
-    /// One shared 3-value list used to drive both pickers here, so Auto Clear was
-    /// unreachable. Both now come from the MaestroCore enums, whose `wireValue`
-    /// is pinned by tests and whose case order IS the wire order -- legacy binds
-    /// the popup's selectedIndex straight to the property
-    /// (APSystemMetersViewController.m:69-74), so order is load-bearing.
+    /// The original Over Hold popup offered only the three choices below.
     private var peakHoldOptions: [(UInt32, String)] {
         MeterDisplaySettings.PeakHoldMode.allCases.map { ($0.wireValue, $0.rawValue) }
     }
 
     private var overHoldOptions: [(UInt32, String)] {
-        MeterDisplaySettings.OverHoldMode.allCases.map { ($0.wireValue, $0.rawValue) }
+        MeterDisplaySettings.OverHoldMode.userFacingCases.map { ($0.wireValue, $0.rawValue) }
     }
 
     /// Port 2's converters are listed with port 1's (from the driver's
@@ -1415,7 +1409,12 @@ struct DeviceSettingsView: View {
         }
         do {
             if let over = (try await readSetting(.oversHoldMode))?.asUInt32 {
-                overHoldMode = over
+                overHoldMode = MeterDisplaySettings.OverHoldMode.allCases
+                    .first { $0.wireValue == over }?.userFacingValue.wireValue
+                    ?? MeterDisplaySettings.OverHoldMode.infinite.wireValue
+                if over == MeterDisplaySettings.OverHoldMode.autoClear.wireValue {
+                    await writeProperty(.oversHoldMode, value: .uint32(overHoldMode))
+                }
             }
         } catch is CancellationError {
             return
@@ -1447,7 +1446,7 @@ struct DeviceSettingsView: View {
     private func saveInsertLabels(_ labels: InsertLabels) {
         guard labels.storage != insertLabels.storage, let data = try? JSONEncoder().encode(labels.storage),
               let json = String(data: data, encoding: .utf8) else { return }
-        insertLabelsJSON = json
+        appState.setInsertLabelsJSON(json, for: appState.activeUnit)
         appState.markSetupEdited(.deviceSettings)
     }
 

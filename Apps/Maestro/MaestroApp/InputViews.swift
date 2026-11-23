@@ -145,7 +145,9 @@ struct InputControlsView: View {
     /// User-editable insert names, edited in Device Settings and shared across
     /// every channel -- see `InsertLabels`. Stored as a plain dictionary so it
     /// lives in UserDefaults without a custom coder.
-    @AppStorage("micPreInsertLabels") private var insertLabelsJSON: String = "{}"
+    private var insertLabelsJSON: String {
+        appState.insertLabelsJSON(for: appState.activeUnit)
+    }
 
     private var insertLabels: InsertLabels {
         guard let data = insertLabelsJSON.data(using: .utf8),

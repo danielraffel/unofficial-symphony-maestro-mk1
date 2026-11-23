@@ -204,6 +204,8 @@ final class AppState: @unchecked Sendable {
     /// Status bar text while saved routing or mixer state is not on the unit
     /// yet (`updateRestoreStatus`).
     var restoreStatusNote: String?
+    /// One-time explanation shown after the driver-144 fader migration.
+    var mixerHeadroomNotice: String?
     /// Pause between the strip writes of a USB mixer restore (tests set zero).
     @ObservationIgnored var usbMixerStripSpacing: Duration = .milliseconds(5)
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
@@ -338,13 +340,48 @@ final class AppState: @unchecked Sendable {
     /// (daemon broken on macOS 26) — software metering still works via CoreAudio IO proc
     /// because it reads from the USB audio class driver, not the daemon.
     var meterDevice: CoreAudioDeviceConnection?
-    /// Whether input trim faders are visible. Persisted via UserDefaults.
-    var showInputTrims: Bool = UserDefaults.standard.bool(forKey: "inputShowTrims") {
-        didSet { UserDefaults.standard.set(showInputTrims, forKey: "inputShowTrims") }
+    /// Trim visibility belongs to the physical unit, as it did in the original
+    /// app. Evidence: `Docs/2026-11-21-parity-differences.md:242` (I10).
+    /// The legacy global values are copied to unit A on first access.
+    private func unitPreferenceKey(_ base: String, unit: DeviceUnit) -> String {
+        let scope = preferenceViewScope(for: unit)
+        return "\(base).\(unit == .a ? "a" : "b").\(scope.key ?? scope.generation.uuidString)"
     }
-    /// Whether output trim faders are visible. Persisted via UserDefaults.
-    var showOutputTrims: Bool = UserDefaults.standard.bool(forKey: "outputShowTrims") {
-        didSet { UserDefaults.standard.set(showOutputTrims, forKey: "outputShowTrims") }
+
+    private func unitBoolPreference(_ base: String, unit: DeviceUnit) -> Bool {
+        let key = unitPreferenceKey(base, unit: unit)
+        if UserDefaults.standard.object(forKey: key) == nil,
+           unit == .a,
+           let legacy = UserDefaults.standard.object(forKey: base) as? Bool {
+            UserDefaults.standard.set(legacy, forKey: key)
+        }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    private func setUnitBoolPreference(_ value: Bool, _ base: String, unit: DeviceUnit) {
+        UserDefaults.standard.set(value, forKey: unitPreferenceKey(base, unit: unit))
+    }
+
+    var showInputTrims: Bool {
+        get { unitBoolPreference("inputShowTrims", unit: activeUnit) }
+        set { setUnitBoolPreference(newValue, "inputShowTrims", unit: activeUnit) }
+    }
+    var showOutputTrims: Bool {
+        get { unitBoolPreference("outputShowTrims", unit: activeUnit) }
+        set { setUnitBoolPreference(newValue, "outputShowTrims", unit: activeUnit) }
+    }
+
+    func insertLabelsJSON(for unit: DeviceUnit) -> String {
+        let key = unitPreferenceKey("micPreInsertLabels", unit: unit)
+        if UserDefaults.standard.object(forKey: key) == nil, unit == .a,
+           let legacy = UserDefaults.standard.string(forKey: "micPreInsertLabels") {
+            UserDefaults.standard.set(legacy, forKey: key)
+        }
+        return UserDefaults.standard.string(forKey: key) ?? "{}"
+    }
+
+    func setInsertLabelsJSON(_ value: String, for unit: DeviceUnit) {
+        UserDefaults.standard.set(value, forKey: unitPreferenceKey("micPreInsertLabels", unit: unit))
     }
     /// Whether idle meter segments show muted zone coloring (green/yellow/red gradient).
     /// Disabled by default — when enabled, unlit segments show a dim version of their zone color.

@@ -233,6 +233,14 @@ struct MixerView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
 
+            if let notice = appState.mixerHeadroomNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 6)
+            }
+
             Spacer().frame(height: 8)
 
             // Channel strips — left-aligned horizontal scroll matching Input/Output tab layout.
@@ -739,11 +747,26 @@ struct MixerView: View {
     }
 
     private func isChannelVisible(_ index: Int) -> Bool {
+        guard isChannelRouted(index) else { return false }
         let vis = channelVisibility
         if index < vis.count {
             return vis[index]
         }
         return true // default visible
+    }
+
+    /// Card inputs removed from Input Routing remain saved, but the original
+    /// removed their mixer strips until a route was restored. Evidence:
+    /// `Docs/2026-11-21-parity-differences.md:103` (C9). The meter map's nil
+    /// entry is the exact unrouted condition.
+    private func isChannelRouted(_ index: Int) -> Bool {
+        guard appState.transportType == .thunderbolt,
+              appState.connectedUnit == nil,
+              !appState.converterRoutingSurface else { return true }
+        let unit: DeviceUnit = isUnitBChannel(index) ? .b : .a
+        let local = localChannelIndex(index)
+        let numbers = appState.thunderboltMixerInputNumbers(unit: unit)
+        return local < numbers.count && numbers[local] != nil
     }
 
     private func ensureNamesAndVisibility() {
