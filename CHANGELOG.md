@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.9.23 (beta)
+## 0.9.24 (beta)
 
-This beta makes the Mixer on ThunderBridge and the Symphony 64 PCIe card sound as it did in Apogee's software, fixes the meters, cuts Maestro USB's latency from about 39 ms to about 13 ms, and adds Use Loop Sync with one Symphony I/O. It contains everything in 0.9.21; 0.9.22 was never released, and its changes are listed here.
+This beta makes the Mixer on ThunderBridge and the Symphony 64 PCIe card sound as it did in Apogee's software, fixes the meters, cuts Maestro USB's latency from about 39 ms to about 13 ms, and adds Use Loop Sync with one Symphony I/O. It contains everything in 0.9.21; 0.9.22 and 0.9.23 were never released, and their changes are listed here.
 
 Thanks to the testers who reported that the AES meters did not move while music played through AES 3/4, and that the routing pages went blank with converters on both ports.
 
