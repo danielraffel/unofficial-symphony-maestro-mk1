@@ -18,7 +18,7 @@ import MaestroCore
 struct UpdateControllerRefreshTests {
     @Test func aFinishedGoBackRedrawsPreferences() async throws {
         let name = "UpdateControllerRefreshTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         defer { try? FileManager.default.removeItem(at: root) }

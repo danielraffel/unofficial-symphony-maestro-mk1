@@ -12,7 +12,7 @@ struct RoutingMixerResetTests {
 
     private func suite() -> (UserDefaults, () -> Void) {
         let name = "RoutingMixerResetTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         return (defaults, { defaults.removePersistentDomain(forName: name) })
     }
 

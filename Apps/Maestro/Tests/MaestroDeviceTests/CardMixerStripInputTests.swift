@@ -190,7 +190,7 @@ struct CardMixerStripInputTests {
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let routes = ThunderboltInputMeterMap.currentRoutes(slot1: .optical, replayed: [])
         let name = "strip-order-\(UUID())"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 9)
         let strip = MixerChannelState(level: -3, pan: 0, isMuted: false, isSoloed: false)

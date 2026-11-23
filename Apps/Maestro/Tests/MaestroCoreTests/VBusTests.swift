@@ -10,7 +10,7 @@ struct VBusTests {
 
     private func defaults() -> UserDefaults {
         let name = "VBusTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
         return defaults
     }

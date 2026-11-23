@@ -8,7 +8,7 @@ struct MonitorDeviceSelectionTests {
     @Test("defaults to unit A and persists unit B by card role")
     func defaultAndPersistence() {
         let suite = "MonitorDeviceSelectionTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = ScratchUserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         #expect(MonitorDeviceSelectionStore.load(productID: 2200, defaults: defaults) == .a)
         MonitorDeviceSelectionStore.save(.b, productID: 2200, defaults: defaults)

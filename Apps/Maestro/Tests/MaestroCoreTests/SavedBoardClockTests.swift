@@ -38,7 +38,7 @@ struct SavedBoardClockTests {
 
     @Test("stored per unit and removed")
     func storage() throws {
-        let defaults = try #require(UserDefaults(suiteName: "SavedBoardClockTests.\(UUID().uuidString)"))
+        let defaults = try #require(ScratchUserDefaults(suiteName: "SavedBoardClockTests.\(UUID().uuidString)"))
         SavedBoardClock.store(.init(key: aes, control: 1), identity: 0xABC, defaults: defaults)
         #expect(SavedBoardClock.load(identity: 0xABC, defaults: defaults) == .init(key: aes, control: 1))
         #expect(SavedBoardClock.load(identity: 0xDEF, defaults: defaults) == nil)

@@ -47,7 +47,7 @@ struct ThunderboltPresetTests {
         preset.outputRoutes[1] = SymphonyIORoutingAddress.mixer1Base + 1
         preset.outputRoutes[2] = SymphonyIORoutingAddress.none
         preset.outputRoutes[3] = SymphonyIORoutingAddress.none
-        let defaults = try #require(UserDefaults(suiteName: "B4a-\(UUID().uuidString)"))
+        let defaults = try #require(ScratchUserDefaults(suiteName: "B4a-\(UUID().uuidString)"))
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: true)
         for mixer in 0..<2 {
             store.save((0..<layout.mixerChannelCount).map {
@@ -392,7 +392,7 @@ struct PartialPresetCaptureTests {
         var seed = ThunderboltPreset(layout: layout, metadata: metadata)
         seed.outputRoutes = Array(0..<32)
         let suite = "partial.capture.\(UUID())"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = ScratchUserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42)
         seed.mixers = (0..<2).map {

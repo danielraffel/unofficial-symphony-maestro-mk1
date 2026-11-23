@@ -30,7 +30,7 @@ struct CardMixerRestoreTests {
 
     static func store(_ name: String, layout: CardLayout) -> (ChannelStateStore, UserDefaults, String) {
         let suite = "d5-\(name)-\(UUID())"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = ScratchUserDefaults(suiteName: suite)!
         return (ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 42), defaults, suite)
     }
 

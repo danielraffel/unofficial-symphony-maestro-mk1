@@ -22,7 +22,7 @@ struct MixerHeadroomMigrationTests {
     @Test("above 0 to 0, at or below unchanged, backup written, runs once")
     func migration() throws {
         let name = "MixerHeadroomMigrationTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 7)
@@ -56,7 +56,7 @@ struct HeadroomStripAndFlagTests {
     @Test("a Software Return level held only in the saved strips is lowered, then reads 0")
     func strips() throws {
         let name = "HeadroomStrips.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let layout = CardLayout(slot1: .optical, slot2: .none)
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 9)
@@ -118,7 +118,7 @@ struct PresetHeadroomTests {
         let layout = CardLayout(slot1: .optical, slot2: .none)
         var preset = ThunderboltPreset(layout: layout, metadata: MaestroPreset())
         let name = "PresetHeadroomTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
+        let defaults = try #require(ScratchUserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 3)
         let snapshot = MixerStateSnapshot(channelCount: 2, mixer: 0, store: store)

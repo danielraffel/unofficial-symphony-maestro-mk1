@@ -13,7 +13,7 @@ struct MixerStateSnapshotTests {
 
     private func withDefaults(_ body: (UserDefaults, ChannelStateStore) throws -> Void) rethrows {
         let name = "maestro.tests.mixerSnapshot.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = ScratchUserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
         let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 1)
         try body(defaults, store)

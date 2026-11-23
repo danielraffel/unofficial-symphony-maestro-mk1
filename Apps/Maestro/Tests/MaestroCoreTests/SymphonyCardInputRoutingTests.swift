@@ -59,7 +59,7 @@ struct SymphonyCardInputRoutingTests {
 
     @Test func persistenceReplayAndReset() throws {
         let suite = UUID().uuidString
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = try #require(ScratchUserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = SymphonyCardInputStore(scope: "cards.64", defaults: defaults)
         let other = SymphonyCardInputStore(scope: "cards.32", defaults: defaults)
