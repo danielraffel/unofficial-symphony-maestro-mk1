@@ -316,10 +316,11 @@ struct ThunderBridgeActionBanner: View {
             Spacer(minLength: 8)
             if let actionTitle {
                 // The unfinished-update banner's one instruction is the
-                // cable; the Settings route is a small link beside it.
+                // cable; the Settings route is a regular button beside it (a
+                // link read as plain text, owner 2026-11-22).
                 if banner.secondaryMessage != nil {
                     Button(actionTitle, action: onAction)
-                        .buttonStyle(.link)
+                        .buttonStyle(.bordered)
                         .controlSize(.small)
                 } else {
                     Button(actionTitle, action: onAction)
