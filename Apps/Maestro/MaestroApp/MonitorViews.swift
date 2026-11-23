@@ -549,7 +549,14 @@ struct MonitorToolbarView: View {
             if !inLine, let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
                 // A muted speaker stays muted, as with the original; only the
                 // Mac's own mute control is brought into line.
-                let decision = SpeakerMuteAdoption.decide(unitMuted: mute)
+                // On ThunderBridge/PCIe a speaker muted earlier in this session
+                // is muted again when the unit comes back unmuted (replug).
+                let kept = appState.transportType == .thunderbolt && appState.speakerMuted
+                let decision = SpeakerMuteAdoption.decide(unitMuted: mute, keptMuted: kept)
+                if decision.writeUnit {
+                    print("[Maestro] Speaker was muted before the unit was lost; muting it again")
+                    try? await appState.device?.setProperty(PropertyAddress(selector: .outputMute), value: .bool(true))
+                }
                 appState.speakerMuted = decision.showMuted
                 if decision.tellMac { appState.writeASPMute(true) }
             }

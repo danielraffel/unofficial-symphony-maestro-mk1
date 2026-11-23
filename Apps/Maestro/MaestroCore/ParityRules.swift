@@ -43,8 +43,14 @@ public enum MasterOutputLabel {
 /// muted speaker muted; nothing is written to the unit. The Mac's own mute
 /// control is told, so it does not flip the screen back.
 public enum SpeakerMuteAdoption {
-    public static func decide(unitMuted: Bool) -> (showMuted: Bool, writeUnit: Bool, tellMac: Bool) {
-        (unitMuted, false, unitMuted)
+    /// `keptMuted`: the speakers were muted in this Maestro session before the
+    /// unit was lost (a replug, power cycle or link drop). The unit forgets
+    /// its mute then and answers unmuted; it is muted again (only ever
+    /// towards muted, never louder). Owner, 2026-11-22, replug test.
+    public static func decide(unitMuted: Bool, keptMuted: Bool = false)
+        -> (showMuted: Bool, writeUnit: Bool, tellMac: Bool) {
+        if !unitMuted && keptMuted { return (true, true, true) }
+        return (unitMuted, false, unitMuted)
     }
 }
 

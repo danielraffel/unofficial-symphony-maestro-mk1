@@ -30,6 +30,12 @@ struct ParityRulesTests {
 
     @Test("a muted speaker is shown muted, the unit is not written")
     func mute() {
+        // Muted in this session, unit forgot it across a replug: muted again.
+        let rearmed = SpeakerMuteAdoption.decide(unitMuted: false, keptMuted: true)
+        #expect(rearmed.showMuted && rearmed.writeUnit && rearmed.tellMac)
+        // Never unmutes: a kept "unmuted" leaves a muted unit muted.
+        let stays = SpeakerMuteAdoption.decide(unitMuted: true, keptMuted: false)
+        #expect(stays.showMuted && !stays.writeUnit)
         let muted = SpeakerMuteAdoption.decide(unitMuted: true)
         #expect(muted.showMuted && !muted.writeUnit && muted.tellMac)
         let open = SpeakerMuteAdoption.decide(unitMuted: false)
