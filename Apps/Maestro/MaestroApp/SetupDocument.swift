@@ -163,7 +163,7 @@ final class LevelOverlayController {
     private var generation = 0
 
     func show(source: LevelOverlaySource, level: Double, muted: Bool) {
-        guard UserDefaults.standard.object(forKey: "showLevelOverlay") as? Bool ?? true else { return }
+        guard UserDefaults.standard.object(forKey: "showLevelOverlay") as? Bool ?? false else { return }  // off unless turned on
         hideTask?.cancel()
         generation &+= 1
         let shownGeneration = generation

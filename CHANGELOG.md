@@ -50,7 +50,7 @@ Thanks to the testers who reported that the AES meters did not move while music 
 ### What's new
 
 - **Setup files work like documents:** the window title shows the open file and whether it has changes, File › Save and Save As write it, Maestro asks before closing unsaved changes, and .mst2 files open from Finder. App Settings can reopen the last file at launch.
-- **A level overlay** shows speaker, headphone and 8MicPre gain changes on screen, including ones made on the front panel (App Settings, on by default).
+- **A level overlay**, a HUD that shows speaker, headphone and 8MicPre gain changes on screen, including ones made with the front-panel knob. Off by default: turn it on in App Settings › Show level overlay.
 - **Meters show Over lights, Peak Hold and Over Hold** as set in Device Settings › Front Panel, and every digital output pair is metered. On ThunderBridge and PCIe the Input and Mixer Over lights come on when a meter reaches full scale. As in Apogee's meters, the Over box sits above 0 in dark red and lights bright red.
 - **Pan reads <64 … <0> … 64>,** as in Apogee's software; inputs are named Mic N and Inst N in Input Routing and the Mixer.
 - **Menus:** Settings… (⌘,), File › Rescan, Window › Maestro (⇧⌘O).

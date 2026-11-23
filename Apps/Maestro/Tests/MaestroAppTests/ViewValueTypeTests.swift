@@ -38,4 +38,12 @@ struct ViewValueTypeTests {
             #expect(text.contains(".unredacted()"), "\(name): its popover must be .unredacted()")
         }
     }
+
+    /// The level overlay (a HUD) is off until the user turns it on (owner, 2026-11-22).
+    @Test func levelOverlayIsOffByDefault() throws {
+        let settings = try String(contentsOf: Self.appDir.appendingPathComponent("SettingsViews.swift"), encoding: .utf8)
+        let document = try String(contentsOf: Self.appDir.appendingPathComponent("SetupDocument.swift"), encoding: .utf8)
+        #expect(settings.contains(#"@AppStorage("showLevelOverlay") private var showLevelOverlay = false"#))
+        #expect(document.contains(#"forKey: "showLevelOverlay") as? Bool ?? false"#))
+    }
 }

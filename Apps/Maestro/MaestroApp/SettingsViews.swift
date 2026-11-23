@@ -2123,7 +2123,7 @@ struct AppSettingsView: View {
     @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
     @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
     @AppStorage("openMostRecentSetupAtLaunch") private var openMostRecentSetupAtLaunch = false
-    @AppStorage("showLevelOverlay") private var showLevelOverlay = true
+    @AppStorage("showLevelOverlay") private var showLevelOverlay = false
     /// Separate from Device Settings › Info's Copy so the two buttons never flash
     /// each other's checkmark.
     @State private var showSoftwareCopied: Bool = false
@@ -2153,8 +2153,11 @@ struct AppSettingsView: View {
                 Toggle("Open the most recent setup file at launch", isOn: $openMostRecentSetupAtLaunch)
                     .maestroHelp("Recall the setup file remembered by Save Preset or Open Preset after the unit finishes restoring. Speaker and headphone level and mute are left as they are; File › Open applies them")
 
-                Toggle("Show level overlay", isOn: $showLevelOverlay)
-                    .maestroHelp("Show a temporary level display when a monitor level, mute or preamp gain changes")
+                Toggle(isOn: $showLevelOverlay) {
+                    InfoLabel(title: "Show level overlay", paragraphs: SettingsInfoText.levelOverlay,
+                              helpSection: .settings, appState: appState)
+                }
+                    .maestroHelp("Show a HUD on screen when a speaker or headphone level, mute or 8MicPre gain changes")
             }
 
             Section("When a Device Connects") {
@@ -2168,9 +2171,12 @@ struct AppSettingsView: View {
                     .maestroHelp("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
 
                 if autoSwitchToSymphony {
-                    Picker("Preferred USB output", selection: $preferredUSBOutput) {
+                    Picker(selection: $preferredUSBOutput) {
                         Text("Maestro USB (Recommended)").tag(0)
                         Text("USB Audio (No Keyboard Volume)").tag(1)
+                    } label: {
+                        InfoLabel(title: "Preferred USB output", paragraphs: SettingsInfoText.preferredUSBOutput,
+                                  helpSection: .usbOutput, appState: appState)
                     }
                     .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
                 }
