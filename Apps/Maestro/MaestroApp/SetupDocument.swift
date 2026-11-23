@@ -217,7 +217,7 @@ final class LevelOverlayController {
 }
 
 @MainActor
-final class WindowDocumentBridge: NSObject, NSViewRepresentable {
+struct WindowDocumentBridge: NSViewRepresentable {
     static weak var currentWindow: NSWindow?
     static weak var currentAppState: AppState?
 
