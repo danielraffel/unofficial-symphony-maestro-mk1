@@ -452,8 +452,13 @@ struct MixerView: View {
             .simultaneousGesture(DragGesture(minimumDistance: 4)
                 .onChanged { value in
                     guard NSEvent.modifierFlags.contains(.option) else { return }
+                    // A fader or pan knob Option-drag (move all/selected) marks
+                    // its start before this 4 pt gesture begins; then it is not
+                    // a rubber band. Anywhere else (meters, names, background)
+                    // draws the box. (Strip frames cover almost the whole page,
+                    // so "outside every strip" never started one.)
                     if rubberBandStart == nil,
-                       mixerStripFrames.values.contains(where: { $0.contains(value.startLocation) }) {
+                       !batchDragStartLevels.isEmpty || !batchDragStartPans.isEmpty {
                         return
                     }
                     if rubberBandStart == nil { rubberBandStart = value.startLocation }
