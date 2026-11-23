@@ -39,6 +39,7 @@ final class DiagnosticsRecorder {
 
     @ObservationIgnored weak var appState: AppState?
     @ObservationIgnored private var snapshotTask: Task<Void, Never>?
+    @ObservationIgnored private var meterWordsTask: Task<Void, Never>?
     @ObservationIgnored private var logStream: Process?
     @ObservationIgnored private var stdoutTee: StdoutTee?
     @ObservationIgnored private var lastLink: (irq: UInt64, wraps: UInt32)?
@@ -87,6 +88,14 @@ final class DiagnosticsRecorder {
         let report = appState?.diagnosticsText ?? ""
         append(section("Maestro and device (at start)", report))
         Task { await runChecks() }
+        meterWordsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                if let self {
+                    self.recordThunderboltMeterWords()
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
         // What happened just before: people often turn this on right after
         // a crash or a jam. Read off the main actor (about 20 s), into its own
         // file so it lands in order in the saved report.
@@ -118,6 +127,8 @@ final class DiagnosticsRecorder {
         isRecording = false
         snapshotTask?.cancel()
         snapshotTask = nil
+        meterWordsTask?.cancel()
+        meterWordsTask = nil
         if let appState, let t = await Self.timingHealthText(appState) {
             append(section("Driver timing health (at end)", t))
         }
@@ -169,6 +180,29 @@ final class DiagnosticsRecorder {
         defer { try? h.close() }
         _ = try? h.seekToEnd()
         try? h.write(contentsOf: data)
+    }
+
+    /// Formats the card's raw meter words for the diagnostics report.
+    /// The card layout is fixed by the ThunderBridge/PCIe dext ABI.
+    nonisolated static func meterWordsLine(_ words: [UInt32]) -> String? {
+        let indexes = [64, 65, 66, 67, 128, 129, 130, 131]
+        guard indexes.allSatisfy({ words.indices.contains($0) }) else { return nil }
+        func word(_ index: Int) -> String {
+            let value = words[index]
+            let peak = (value >> 24) & 0xff
+            let clip = (value & 0x2) != 0 ? 1 : 0
+            return String(format: "%d=0x%08X peak=%u clip=%d", index, value, peak, clip)
+        }
+        return "[MeterWords] playback \(word(64)) \(word(65)) \(word(66)) \(word(67)); mixer \(word(128)) \(word(129)) \(word(130)) \(word(131))"
+    }
+
+    private func recordThunderboltMeterWords() {
+        guard isRecording,
+              appState?.transportType == .thunderbolt,
+              let connection = appState?.device as? ThunderboltDeviceConnection,
+              let words = connection.readMeters(),
+              let line = Self.meterWordsLine(words) else { return }
+        append("[\(Self.stamp(Date()))] \(line)\n")
     }
 
     private func section(_ title: String, _ body: String) -> String {

@@ -100,6 +100,11 @@ enum : uint32_t { kMicPreLanePhase = 0, kMicPreLaneHighPass = 1, kMicPreLaneType
 
 // The clock used for the HAL Mic arm delay (finding 9). The host test injects
 // its own so it can step past the delay without sleeping.
+#ifndef SYMPHONY_STARTUP_OUTPUT_HOLD_NS
+// How long a fresh instance keeps the card's outputs muted while Core Audio
+// restores its saved mute and volume (0 = no hold; the test harness sets it).
+#define SYMPHONY_STARTUP_OUTPUT_HOLD_NS() 3000000000ull
+#endif
 #ifndef SYMPHONY_MICPRE_NOW_NS
 #define SYMPHONY_MICPRE_NOW_NS() clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
 #endif
@@ -401,6 +406,11 @@ struct SymphonyThunderbridge_IVars {
     // sampled on the next IRQ, without blocking the audio interrupt queue.
     bool      monitorPollScheduled;
     uint32_t  monitorGeneration;
+    // A fresh driver instance keeps the card's output path muted while
+    // Core Audio restores its published monitor controls. Input remains live.
+    // This is only armed by Start(), never by in-place link recovery.
+    bool      startupOutputMuteHeld;
+    uint64_t  startupOutputMuteDeadlineNs;
     double    lastSampleRate;  // Last SUCCESSFULLY programmed hardware sample rate
     uint32_t  namingSampleRate; // Hz the channel names follow: Core Audio's nominal rate
                                // (SymphonyNamingRateHz), updated on every HandleChangeSampleRate
@@ -4033,6 +4043,7 @@ static bool Port2StopBothEngines(IOPCIDevice *dev, uint8_t mi)
     return wasRunning;
 }
 
+static uint32_t ClkCtrlUnmuteBits(const SymphonyThunderbridge_IVars *ivars);
 // Start port 1's engine alone and unmute: the same writes, in the same order,
 // as the rate change's restart (StartDevice steps 5-7).
 static void Port2StartPort1Engine(SymphonyThunderbridge_IVars *ivars)
@@ -4057,7 +4068,7 @@ static void Port2StartPort1Engine(SymphonyThunderbridge_IVars *ivars)
     WriteRegister(dev, mi, kRegGCSR, gcsr);
     IOSleep(10);
     ModifyRegister(dev, mi, kRegClkCtrl,
-                   kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+                   ClkCtrlUnmuteBits(ivars), 0);
 }
 
 // Start both engines in the original's order and unmute. Each step goes to
@@ -4100,7 +4111,7 @@ static void Port2StartBothEngines(SymphonyThunderbridge_IVars *ivars)
 
     IOSleep(10);
     ModifyRegister(dev, mi, kRegClkCtrl,
-                   kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+                   ClkCtrlUnmuteBits(ivars), 0);
 }
 
 // Port 2's routing entries (32..63): input n <- XLink RX slot n, output n <-
@@ -4400,6 +4411,36 @@ static bool MonitorControlsMoved(SymphonyThunderbridge_IVars *ivars)
         if (diff > 0.5f || diff < -0.5f) return true;
     }
     return ivars->outputMuteControl && ivars->outputMuteControl->GetControlValue() != ivars->lastMuteState;
+}
+
+// The ClkCtrl bits an unmute may set: while a fresh instance holds its
+// start-up output gate, every unmute (rate change, recovery, wake) leaves the
+// output path muted, so nothing plays before Core Audio's saved state lands.
+static uint32_t ClkCtrlUnmuteBits(const SymphonyThunderbridge_IVars *ivars)
+{
+    uint32_t bits = kClkCtrl_Unmute | kClkCtrl_InputUnmute;
+    if (!ivars || !ivars->startupOutputMuteHeld) bits |= kClkCtrl_OutputUnmute;
+    return bits;
+}
+
+static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
+                                          bool controlSet)
+{
+    if (!ivars || !ivars->startupOutputMuteHeld) return;
+    const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+    if (!controlSet && now < ivars->startupOutputMuteDeadlineNs) return;
+
+    // Release the card's whole output path. A restored mute is applied to
+    // the unit's own speaker/headphone mute by the control handler (queued on
+    // this same queue before us); the card gate covers every output, so it
+    // must never stay closed.
+    if (ivars->pciDevice) {
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
+                       kClkCtrl_OutputUnmute, 0);
+        STLOG("ClkCtrl: startup output unmuted after %{public}s",
+              controlSet ? "Core Audio control set" : "3 s timeout");
+    }
+    ivars->startupOutputMuteHeld = false;
 }
 
 static bool ReadUnitAMonitorLevel(SymphonyThunderbridge_IVars *ivars, uint32_t output);
@@ -5316,7 +5357,7 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
         ivars->dmaRunning = true;
         IOSleep(10);
         ModifyRegister(dev, mi, kRegClkCtrl,
-                       kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+                       ClkCtrlUnmuteBits(ivars), 0);
         uint32_t verify = 0;
         ReadRegister(dev, mi, kRegGCSR, &verify);
         STLOG("Card re-init: DMA restarted, unmuted (GCSR=0x%08x)", verify);
@@ -5724,6 +5765,14 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
     if (!ivars) return;
     if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE)) return;
+    const bool startupGateWasHeld = ivars->startupOutputMuteHeld;
+    MaybeReleaseStartupOutputMute(ivars, false);
+    if (startupGateWasHeld && !ivars->startupOutputMuteHeld) {
+        // The timeout tick only releases the output gate. Leave link probing
+        // to the next ordinary watch tick so the timeout adds no bus traffic.
+        ArmLinkWatch(ivars, kLinkWatchIdleNs);
+        return;
+    }
     ivars->linkWatchTicks++;
     uint64_t next = kLinkWatchFastNs;
     do {
@@ -5900,6 +5949,11 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
             __atomic_load_n(&ivars->portMode, __ATOMIC_ACQUIRE) == 64)
             next = kLinkWatchFastNs;
     } while (false);
+    if (ivars->startupOutputMuteHeld) {
+        const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        if (now < ivars->startupOutputMuteDeadlineNs)
+            next = std::min(next, ivars->startupOutputMuteDeadlineNs - now);
+    }
     ArmLinkWatch(ivars, next);
 }
 
@@ -7947,10 +8001,19 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
     // data to the XLink bus, confusing the Symphony IO.
 
     IOSleep(10);  // Legacy: IOSleep(10) between StartDMA and unmute
-    ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                   kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute,
-                   0);
-    STLOG("ClkCtrl: unmuted AFTER DMA start (global + input + output = 0x70000000)");
+    if (SYMPHONY_STARTUP_OUTPUT_HOLD_NS() > 0) {
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
+                       kClkCtrl_Unmute | kClkCtrl_InputUnmute,
+                       kClkCtrl_OutputUnmute);
+        ivars->startupOutputMuteHeld = true;
+        ivars->startupOutputMuteDeadlineNs =
+            clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + SYMPHONY_STARTUP_OUTPUT_HOLD_NS();
+        STLOG("ClkCtrl: global + input unmuted AFTER DMA start; output held for Core Audio restore");
+    } else {
+        ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
+                       kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+        STLOG("ClkCtrl: unmuted AFTER DMA start (global + input + output = 0x70000000)");
+    }
 
     // Verify ClkCtrl readback
     {
@@ -9053,6 +9116,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                     } else {
                         const bool b = ivars->monitorDeviceB;
                         const bool converter = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
+                        const bool startupControlSet = MonitorControlsMoved(ivars);
                         const uint32_t arms = __atomic_load_n(&ivars->monitorSettleArms, __ATOMIC_ACQUIRE);
                         // The app's Audio Output choice: 0 speakers, 1/2 a headphone
                         // (the headphone's index is kind - 1).
@@ -9162,6 +9226,8 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                                 }
                             }
                         }
+                        if (startupControlSet && ivars->xlinkQueue)
+                            ivars->xlinkQueue->DispatchAsync(^{ MaybeReleaseStartupOutputMute(ivars, true); });
                         __atomic_store_n(&ivars->monitorPolledArm, arms, __ATOMIC_RELEASE);
                     }
                 }
@@ -9594,7 +9660,7 @@ static kern_return_t ApplyRequestedSampleRate(SymphonyThunderbridge_IVars *ivars
         // 7. Unmute after DMA is running (legacy: unmute AFTER StartDMA + delay)
         IOSleep(10);
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
-                       kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+                       ClkCtrlUnmuteBits(ivars), 0);
         STLOG("StartDevice: unmuted after rate change to %.0f Hz", requestedRate);
     };
 
@@ -9775,7 +9841,7 @@ kern_return_t SymphonyThunderbridge::StartDevice(
             if (ivars->meterDMAActive) gcsr |= kGCSR_MeterDMAEnable;
             WriteRegister(dev, mi, kRegGCSR, gcsr);
             IOSleep(10);
-            ModifyRegister(dev, mi, kRegClkCtrl, kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
+            ModifyRegister(dev, mi, kRegClkCtrl, ClkCtrlUnmuteBits(ivars), 0);
             IOSleep(90);
             uint32_t cha3 = 0, intStatus = 0;
             ReadRegister(dev, mi, kRegA2HCHA, &cha3);
@@ -9892,6 +9958,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
         __atomic_store_n(&ivars->stopping, true, __ATOMIC_RELEASE);
         __atomic_store_n(&ivars->ioRunning, false, __ATOMIC_RELEASE);  // M2
         __atomic_store_n(&ivars->txShutdown, true, __ATOMIC_RELEASE);
+        ivars->startupOutputMuteHeld = false;
         // No more nominal-rate renames: the device is about to be released.
         UnregisterNominalRateObserver(this);
 

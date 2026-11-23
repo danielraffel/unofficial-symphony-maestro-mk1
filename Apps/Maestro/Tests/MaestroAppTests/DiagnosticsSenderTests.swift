@@ -101,6 +101,19 @@ struct DiagnosticsSenderTests {
         #expect(DiagnosticsRecorder.dropRepeatedMeterDumps("a\nb") == "a\nb")
     }
 
+    @Test("card meter diagnostics include raw words, peaks and clip flags")
+    func cardMeterWords() {
+        var words = [UInt32](repeating: 0, count: 256)
+        words[64] = 0xAB000002
+        words[67] = 0x12000000
+        words[128] = 0xFF000000
+        let line = DiagnosticsRecorder.meterWordsLine(words)
+        #expect(line?.contains("[MeterWords] playback 64=0xAB000002 peak=171 clip=1") == true)
+        #expect(line?.contains("67=0x12000000 peak=18 clip=0") == true)
+        #expect(line?.contains("mixer 128=0xFF000000 peak=255 clip=0") == true)
+        #expect(DiagnosticsRecorder.meterWordsLine(Array(words.prefix(131))) == nil)
+    }
+
     @Test("the Thunderbolt section names devices but carries no identifiers")
     func thunderbolt() {
         let block = DiagnosticsRecorder.thunderboltBlock()

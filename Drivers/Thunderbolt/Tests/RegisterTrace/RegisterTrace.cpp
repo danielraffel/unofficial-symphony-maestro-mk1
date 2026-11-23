@@ -31,6 +31,8 @@
 #include <cstdarg>
 #include <algorithm>
 #include <functional>
+#include <thread>
+#include <chrono>
 
 // The app-facing layouts: the existing link-state reply must keep its size, and
 // the new port-2 reply is a separate 16-word struct.
@@ -74,6 +76,7 @@ HostBackend *gHostBackend = nullptr;
 int gHostTerminateCalls = 0;
 int gHostLocksHeld = 0;
 uint64_t gHostMicPreClockOffsetNs = 0;
+uint64_t gHostStartupOutputHoldNs = 0;
 HostAudioRegistry gHostAudio;
 std::deque<HostBlock> gHostCompletions;
 static std::vector<std::deque<HostBlock> *> gQueues;
@@ -807,6 +810,10 @@ static void RunScenario(const Options &o, Run &r)
         gHostMicPreClockOffsetNs += kKeyPressAfterSettleNs;
         if (gHostAudio.volume) gHostAudio.volume->SetDecibelValue(-31.0f);
         Irq(r, 1);
+        HostPump();
+        CHECK((card.reg[kRegClkCtrl] & 0x70000000u) == 0x70000000u,
+              "%s: first Core Audio volume set did not release output (ClkCtrl=0x%08x)",
+              o.name, card.reg[kRegClkCtrl]);
         if (gHostAudio.mute) gHostAudio.mute->SetControlValue(true);
         Irq(r, 1);
         HostPump();
@@ -2630,14 +2637,17 @@ static void CheckBothPortsRunning(const char *what, Run &r, size_t mark)
 }
 
 // The card is running port 1 alone, as the driver has always left it.
-static void CheckPort1Alone(const char *what, Run &r, bool expectRunning = true)
+static void CheckPort1Alone(const char *what, Run &r, bool expectRunning = true,
+                            bool expectOutputUnmuted = true)
 {
     FakeCard &c = r.card;
     const uint32_t gcsr = c.reg[kRegGCSR], gcsr2 = c.reg[kRegGCSR2];
     if (expectRunning) {
         CHECK((gcsr & (kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable)) == (kGCSR_A2HDMAEnable | kGCSR_H2ADMAEnable),
               "%s: port 1 DMA not running (GCSR=0x%08x)", what, gcsr);
-        CHECK((c.reg[kRegClkCtrl] & 0x70000000u) == 0x70000000u, "%s: card left muted (ClkCtrl=0x%08x)", what, c.reg[kRegClkCtrl]);
+        const uint32_t outputBits = c.reg[kRegClkCtrl] & 0x70000000u;
+        CHECK(expectOutputUnmuted ? outputBits == 0x70000000u : outputBits == 0x60000000u,
+              "%s: card output mute state 0x%08x", what, outputBits);
     }
     CHECK((gcsr2 & kGCSR2_DMAEnableMask) == 0, "%s: port 2 DMA still on (GCSR2=0x%08x)", what, gcsr2);
     // Port 2 itself is disabled again at 32 (the original's SetNumPorts(1)).
@@ -2873,6 +2883,42 @@ static void RunAudioEnable(const Options &o, Run &r)
     mark = Select(r, 1, "select Port 1-2: 64ch again");
     CheckBothPortsRunning("second enable", r, mark);
     CheckPublished("second enable", 64);
+}
+
+// H: a fresh instance keeps only the output gate muted while Core Audio
+// restores its controls. A control set releases it, a restored mute does not,
+// and the bounded timeout releases an unmuted output. Link recovery is covered
+// by the existing full lifecycle traces and must not arm this gate.
+static void RunStartupOutputMuteChecks()
+{
+    gHostStartupOutputHoldNs = 3000000000ull;
+    struct Restore { ~Restore() { gHostStartupOutputHoldNs = 0; } } restore;
+    Options o; o.name = "startup output mute"; o.shortFlow = true;
+    o.port1 = Port::Symphony;
+    Run r;
+    RunScenario(o, r);
+    CHECK((r.card.reg[kRegClkCtrl] & 0x70000000u) == 0x60000000u,
+          "H: fresh instance left output unmuted (ClkCtrl=0x%08x)", r.card.reg[kRegClkCtrl]);
+    Finish(o, r);
+
+    Run muted;
+    RunScenario(o, muted);
+    gHostAudio.mute->SetControlValue(true);
+    Irq(muted, 1);
+    HostPump();
+    // The card gate covers every output, so it opens once Core Audio's state
+    // has landed; the restored mute is the unit's speaker mute, sent first.
+    CHECK((muted.card.reg[kRegClkCtrl] & 0x70000000u) == 0x70000000u,
+          "H: output not released after Core Audio restored the mute (ClkCtrl=0x%08x)", muted.card.reg[kRegClkCtrl]);
+    Finish(o, muted);
+
+    Run timeout;
+    RunScenario(o, timeout);
+    std::this_thread::sleep_for(std::chrono::milliseconds(3100));
+    timeout.drv->LinkWatchTimerOccurred(nullptr, 0);
+    CHECK((timeout.card.reg[kRegClkCtrl] & 0x70000000u) == 0x70000000u,
+          "H: output did not release after the 3 s timeout (ClkCtrl=0x%08x)", timeout.card.reg[kRegClkCtrl]);
+    Finish(o, timeout);
 }
 
 // p2-audio-refused: nothing on port 2. Choosing 64 (in Audio MIDI Setup or by
@@ -5607,6 +5653,7 @@ int main(int argc, char **argv)
     RunMixerMaths();
     RunSymphonyCardInputRoutes();
     RunPreampHostRoutes();
+    RunStartupOutputMuteChecks();
 #ifdef TRACE_HAVE_MIC_PRE_DAW
     RunMicPreDAWControls();
 #endif

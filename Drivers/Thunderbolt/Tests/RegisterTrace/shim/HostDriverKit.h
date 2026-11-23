@@ -51,6 +51,10 @@ static inline void IOSleep(uint64_t ms) { gHostBackend->Sleep(ms); }
 
 // The MicPre HAL Mic arm delay reads this clock; a test steps it forward
 // instead of sleeping (see SYMPHONY_MICPRE_NOW_NS in the driver).
+// The start-up output hold (SYMPHONY_STARTUP_OUTPUT_HOLD_NS): 0 for the
+// recorded scenarios, set by the checks that test the hold.
+extern uint64_t gHostStartupOutputHoldNs;
+#define SYMPHONY_STARTUP_OUTPUT_HOLD_NS() gHostStartupOutputHoldNs
 extern uint64_t gHostMicPreClockOffsetNs;
 #define SYMPHONY_MICPRE_NOW_NS() (clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + gHostMicPreClockOffsetNs)
 
