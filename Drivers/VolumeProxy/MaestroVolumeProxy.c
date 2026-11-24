@@ -250,6 +250,10 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
    command at all, which is how Maestro recognises one. */
 #define MAESTRO_HELPER_VERSION 3u
 
+/* The "getProperty" status for "no unit is open" (XPCDeviceConnection
+   helperStatusUnitNotOpen). Any other failure is -1. */
+#define HELPER_STATUS_UNIT_NOT_OPEN (-2)
+
 /* ── Which output the volume and mute of "Maestro USB" move ─────────────── */
 /* The original's "Audio Output" choice for the keyboard volume
    (eSymphonyIO_MonitorOutput, og_source/symphonymk1/ext/SymphonyIO/generic/
@@ -3171,7 +3175,11 @@ static void handle_peer(xpc_connection_t peer) {
             xpc_retain(peer);
             dispatch_async(gQueue, ^{
                 if (!gUSBDev) {
-                    xpc_dictionary_set_int64(replyMsg, "status", -1);
+                    /* Not -1: the app tells "no unit open" (a real loss, the
+                       restore follows when it is back) from a read that failed
+                       once (no restore). An older app treats any non-zero
+                       status as a failed read, as before. */
+                    xpc_dictionary_set_int64(replyMsg, "status", HELPER_STATUS_UNIT_NOT_OPEN);
                     xpc_connection_send_message(peer, replyMsg);
                     xpc_release(replyMsg);
                     note_getproperty_denied();

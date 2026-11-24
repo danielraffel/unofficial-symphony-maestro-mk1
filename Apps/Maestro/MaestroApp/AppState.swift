@@ -591,8 +591,18 @@ final class AppState: @unchecked Sendable {
     /// Incremented when USB recovery is detected (meter polling failure→success transition).
     /// MixerView observes via .onChange to re-sync persisted state to hardware.
     var deviceRecoveryCount: Int = 0
-    /// Tracks whether meter polling was in a disconnected/failed state.
-    private var meterPollWasDisconnected: Bool = false
+    /// USB: whether failed reads are a unit that went away (`USBLossDetector`).
+    @ObservationIgnored var usbLoss = USBLossDetector()
+    /// USB: when a read last told the unit's health (a meter read or the
+    /// heartbeat); the heartbeat reads only when no meter read has lately.
+    @ObservationIgnored var usbLastReadOutcomeAt: Date = .distantPast
+    /// USB: whether Maestro's window can be seen (tests replace it).
+    @ObservationIgnored var usbMeterWindowVisible: @MainActor () -> Bool = { AppState.mainWindowIsVisible() }
+    /// USB: the 1 Hz tick that watches the unit while no meter is read, and
+    /// runs recovery, the owed restore and the volume keys' output.
+    @ObservationIgnored var usbHealthTask: Task<Void, Never>?
+    /// The heartbeat's pace, and how long since the last read before it reads.
+    @ObservationIgnored var usbHealthInterval: Duration = .seconds(1)
     /// Debounce guard — prevents rapid recovery events from triggering multiple re-syncs.
     var lastRecoveryTime: Date = .distantPast
 
@@ -3795,6 +3805,7 @@ final class AppState: @unchecked Sendable {
     func startMeterPolling() {
         guard !hardwareWritesSuspended else { return }
         meterPollingTask?.cancel()
+        startUSBHealthTick()
         refreshSoftwareReturnMeterGains()
         // Use actual stream-derived channel count when available (inputMeterStreamCount × 8).
         // Falls back to identifier.mode.channelCount which is the USB audio class channel count.
@@ -3853,7 +3864,17 @@ final class AppState: @unchecked Sendable {
                 var over: [DisplayMeterBank: Set<Int>] = [:]
                 var newInput: [Double]
                 var newOutput: [Double]
-                if self.tdmMeteringAvailable, let xpcDev = device as? XPCDeviceConnection {
+                // USB: only the meters on screen are read (`USBMeterPlan`).
+                let usbPlan: USBMeterPlan? = self.tdmMeteringAvailable && device is XPCDeviceConnection
+                    ? USBMeterPlan.plan(area: self.selectedArea, windowVisible: self.usbMeterWindowVisible(),
+                                        outputGroupUsable: !self.tdmOutputMeteringUnavailable)
+                    : nil
+                if let usbPlan, !usbPlan.active {
+                    // No meter on screen: nothing is read from the unit. The
+                    // unit's health is watched by `startUSBHealthTick`.
+                    newInput = self.inputMeterLevels
+                    newOutput = self.outputMeterLevels
+                } else if let usbPlan, let xpcDev = device as? XPCDeviceConnection {
                     do {
                         // Poll ONLY the routing group the visible page needs.
                         //
@@ -3935,11 +3956,13 @@ final class AppState: @unchecked Sendable {
                             // precisely what lets the second read see a refresh.
                             inVal = try await xpcDev.getProperty(
                                 PropertyAddress(selector: .meterData, scope: .input))
-                            if hwOutputUsable {
+                            // Mixer meters are shown on the Mixer page only.
+                            if hwOutputUsable, usbPlan.mixer {
                                 mixVal = try await xpcDev.getProperty(
                                     PropertyAddress(selector: .meterData, scope: .global))
                             }
                         }
+                        if usbPlan.reads > 0 { self.noteUSBReadSucceeded() }
                         if routingSwitched {
                             inVal = nil; outVal = nil; mixVal = nil
                         }
@@ -3949,73 +3972,6 @@ final class AppState: @unchecked Sendable {
                         // only software-meter call in the cycle; SW Return L/R are
                         // channels 0/1 of it.
                         let softwareOutputPeaks = await xpcDev.getSoftwareOutputPeaks()
-                        // USB recovery detection: if we were disconnected and reads now succeed,
-                        // the FPGA has been power-cycled and mixer state needs re-syncing.
-                        if self.meterPollWasDisconnected {
-                            self.meterPollWasDisconnected = false
-                            // The unit's mixers are back at 0 dB, unmuted:
-                            // no mixer is routed until the restore has
-                            // written them again.
-                            self.usbMixersWritten = nil
-                            self.usbSettingsRestored = nil
-                            self.tdmMeteringAvailable = true
-                            // Re-evaluate the firmware's output-meter verdict after
-                            // a power-cycle rather than trusting the old latch.
-                            self.tdmOutputMeteringUnavailable = false
-                            self.tdmOutputEchoStreak = 0
-                            self.usbUnitMixerMetersSeen = false
-                            self.tdmOutputReplyLogged = false
-                            self.lastMeterPollWantedOutput = nil
-                            if self.unitAIdentityState == .pending {
-                                Task { await self.readCardTypes() }
-                            }
-                            let now = Date()
-                            if self.usbRecoveryRestoreDueOrOwed(now: now) {
-                                self.lastRecoveryTime = now
-                                // The unit comes back at 0 dB, unmuted, with its
-                                // routing, speaker mode and mixer at defaults, so
-                                // all of it is put back, always: the original restored a
-                                // returning unit's settings without asking
-                                // (SymphonyIO::ApplySettingsToHardware), and the
-                                // "Restore my mixer after a USB reconnect" switch
-                                // that used to make part of this optional is gone.
-                                // Like the reconnect path, leave a unit that has just
-                                // appeared alone until it has settled.
-                                let recoveryMixer = self.lastSelectedMixer
-                                Task { @MainActor [weak self] in
-                                    guard let self, self.device === xpcDev else { return }
-                                    let generation = self.unitAGeneration
-                                    let restoreGenerationAtStart = self.usbIdentityRestoreGeneration
-                                    // A failed connect already consumed its initial restore.
-                                    // Retry identity before this ordinary recovery restore.
-                                    self.retryFailedIdentityOnRecovery()
-                                    if self.unitAIdentityState == .pending { await self.readCardTypes() }
-                                    guard self.device === xpcDev, self.unitAGeneration == generation else { return }
-                                    // Identity discovery owns the first restore. If this
-                                    // recovery joined that pending discovery, do not replay
-                                    // the mixer a second time.
-                                    if restoreGenerationAtStart != self.usbIdentityRestoreGeneration { return }
-                                    do {
-                                        let wait = Self.usbSettleRemaining(
-                                            appearedAt: self.symphonyAppearedAt, now: Date())
-                                        if wait > 0 {
-                                            try? await Task.sleep(for: .milliseconds(Int(wait * 1000)))
-                                        }
-                                    }
-                                    guard self.device === xpcDev, self.unitAGeneration == generation, !Task.isCancelled,
-                                          self.mixerPreferences.isWritable else { return }
-                                    await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer)
-                                }
-                                self.deviceRecoveryCount += 1
-                                print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(self.deviceRecoveryCount))")
-                            }
-                        }
-                        // A USB restore that did not finish, or a helper that
-                        // restarted under the app, is put right here.
-                        self.serviceUSBRestore(xpcDev)
-                        // The volume keys' output, where the helper now
-                        // answering has not been told it.
-                        await self.serviceKeyboardVolumeOutput()
                         // FPGA meter registers return all-zero when no new data is ready.
                         // Real data arrives ~3Hz (every ~300ms). All-zero means "no update" —
                         // NOT silence. Skip zero reads to hold the last valid meter values.
@@ -4176,13 +4132,11 @@ final class AppState: @unchecked Sendable {
                             }
                         }
                     } catch {
-                        // TDM reads failed — mark disconnected for recovery detection.
-                        // Don't permanently disable TDM; retry each cycle so we detect
-                        // when USB recovers (XPC fails fast when USB is down).
-                        if !self.meterPollWasDisconnected {
-                            print("[MeterPoll] TDM metering failed, tracking for recovery: \(error)")
-                        }
-                        self.meterPollWasDisconnected = true
+                        // A failed read: `USBLossDetector` decides whether
+                        // it is a unit that went away. Don't permanently
+                        // disable TDM; retry each cycle so we see when it is
+                        // back (XPC fails fast when USB is down).
+                        self.noteUSBReadFailed(error)
                         newInput = self.inputMeterLevels
                         newOutput = self.outputMeterLevels
                     }
@@ -4586,8 +4540,13 @@ final class AppState: @unchecked Sendable {
                 // nothing downstream can tell the difference. Meters are already
                 // frozen at their last values in this state — there is nothing on
                 // screen for the faster cadence to update.
-                let idle = self.meterPollWasDisconnected
-                try? await Task.sleep(for: .milliseconds(idle ? 1000 : 50))
+                // USB: the plan's pace (`USBMeterPlan`), 1 Hz while reads fail.
+                let idle = self.usbLoss.isFailing && usbPlan?.active == true
+                if let usbPlan, !idle {
+                    try? await Task.sleep(for: usbPlan.interval)
+                } else {
+                    try? await Task.sleep(for: .milliseconds(idle ? 1000 : 50))
+                }
             }
         }
     }
@@ -4625,7 +4584,132 @@ final class AppState: @unchecked Sendable {
     func stopMeterPolling() {
         meterPollingTask?.cancel()
         meterPollingTask = nil
+        usbHealthTask?.cancel()
+        usbHealthTask = nil
         clearDisplayedMeterHolds()
+    }
+
+    // MARK: - USB health (0.9.26)
+
+    /// Maestro's window is on screen: not hidden, not minimized, not covered.
+    @MainActor
+    static func mainWindowIsVisible() -> Bool {
+        guard let app = NSApp as NSApplication?, !app.isHidden,
+              let window = WindowDocumentBridge.currentWindow ?? app.mainWindow else { return false }
+        return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+
+    /// A USB read succeeded. After a real loss (`USBLossDetector`) the unit
+    /// is back at its defaults and everything the Mac owns is put back.
+    @MainActor
+    func noteUSBReadSucceeded() {
+        usbLastReadOutcomeAt = Date()
+        guard usbLoss.succeeded() else { return }
+        guard let xpcDev = device as? XPCDeviceConnection else { return }
+        recoverUSBUnit(xpcDev)
+    }
+
+    /// A USB read failed.
+    @MainActor
+    func noteUSBReadFailed(_ error: Error) {
+        let now = Date()
+        usbLastReadOutcomeAt = now
+        let wasFailing = usbLoss.isFailing, wasLost = usbLoss.lost
+        usbLoss.failed(USBLossDetector.failure(for: error), at: now)
+        if !wasFailing { print("[MeterPoll] USB read failed, watching whether the unit went away: \(error)") }
+        if usbLoss.lost, !wasLost { print("[MeterPoll] USB unit lost (\(error)); everything is put back when it answers again") }
+    }
+
+    /// The 1 Hz USB tick, for the life of the meter polling. It reads the unit
+    /// once (the heartbeat) only when no meter read has in the last interval,
+    /// so with no meter on screen the unit is asked one question a second,
+    /// and runs the owed restore and the volume keys' output, which used to
+    /// run in every meter cycle and stopped with the meters.
+    @MainActor
+    func startUSBHealthTick() {
+        usbHealthTask?.cancel()
+        usbHealthTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.usbHealthInterval else { return }
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
+                await self.usbHealthTick()
+            }
+        }
+    }
+
+    @MainActor
+    func usbHealthTick() async {
+        guard isHardwareInitialized, tdmMeteringAvailable, !hardwareWritesSuspended,
+              let xpcDev = device as? XPCDeviceConnection else { return }
+        let quiet = Date().timeIntervalSince(usbLastReadOutcomeAt)
+        let interval = Double(usbHealthInterval.components.seconds)
+            + Double(usbHealthInterval.components.attoseconds) / 1e18
+        if quiet >= interval * 0.9 {
+            do {
+                _ = try await xpcDev.getProperty(PropertyAddress(selector: .meterData, scope: .input))
+                // The unit's meter routing is InputAndMixer now.
+                lastMeterPollWantedOutput = false
+                noteUSBReadSucceeded()
+            } catch {
+                noteUSBReadFailed(error)
+            }
+        }
+        guard device === xpcDev else { return }
+        // A USB restore that did not finish, or a helper that restarted
+        // under the app, is put right here.
+        serviceUSBRestore(xpcDev)
+        // The volume keys' output, where the helper now answering has not
+        // been told it.
+        await serviceKeyboardVolumeOutput()
+    }
+
+    /// The unit came back from a real loss: its mixers are at 0 dB, unmuted,
+    /// its routing, speaker mode and mixer at defaults, so all of it is put
+    /// back, always, as the original restored a returning unit's settings
+    /// without asking (SymphonyIO::ApplySettingsToHardware).
+    @MainActor
+    func recoverUSBUnit(_ xpcDev: XPCDeviceConnection) {
+        // No mixer is routed until the restore has written them again.
+        usbMixersWritten = nil
+        usbSettingsRestored = nil
+        tdmMeteringAvailable = true
+        // Re-evaluate the firmware's output-meter verdict after a power
+        // cycle rather than trusting the old latch.
+        tdmOutputMeteringUnavailable = false
+        tdmOutputEchoStreak = 0
+        usbUnitMixerMetersSeen = false
+        tdmOutputReplyLogged = false
+        lastMeterPollWantedOutput = nil
+        if unitAIdentityState == .pending {
+            Task { await self.readCardTypes() }
+        }
+        let now = Date()
+        guard usbRecoveryRestoreDueOrOwed(now: now) else { return }
+        lastRecoveryTime = now
+        // Like the reconnect path, leave a unit that has just appeared alone
+        // until it has settled.
+        let recoveryMixer = lastSelectedMixer
+        Task { @MainActor [weak self] in
+            guard let self, self.device === xpcDev else { return }
+            let generation = self.unitAGeneration
+            let restoreGenerationAtStart = self.usbIdentityRestoreGeneration
+            // A failed connect already consumed its initial restore.
+            // Retry identity before this ordinary recovery restore.
+            self.retryFailedIdentityOnRecovery()
+            if self.unitAIdentityState == .pending { await self.readCardTypes() }
+            guard self.device === xpcDev, self.unitAGeneration == generation else { return }
+            // Identity discovery owns the first restore. If this recovery
+            // joined that pending discovery, do not replay the mixer again.
+            if restoreGenerationAtStart != self.usbIdentityRestoreGeneration { return }
+            let wait = Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date())
+            if wait > 0 { try? await Task.sleep(for: .milliseconds(Int(wait * 1000))) }
+            guard self.device === xpcDev, self.unitAGeneration == generation, !Task.isCancelled,
+                  self.mixerPreferences.isWritable else { return }
+            await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer)
+        }
+        deviceRecoveryCount += 1
+        print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(deviceRecoveryCount))")
     }
 
     // MARK: - Front Panel Sync

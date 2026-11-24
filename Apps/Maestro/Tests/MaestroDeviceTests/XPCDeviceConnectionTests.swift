@@ -142,6 +142,23 @@ struct XPCDeviceConnectionTests {
         #expect(call.bRequest == SymphonyIOCommand.speakerOutputVolume.rawValue)
     }
 
+    @Test("a helper with no unit open (-2) is 'not connected'; any other failed read is a transport error")
+    func getPropertyUnitNotOpen() async throws {
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        let meters = PropertyAddress(selector: .meterData, scope: .input)
+        transport.nextReply = XPCPropertyReply(status: XPCDeviceConnection.helperStatusUnitNotOpen, data: Data())
+        await #expect(throws: DeviceConnectionError.notConnected) { _ = try await conn.getProperty(meters) }
+        transport.nextReply = XPCPropertyReply(status: -1, data: Data())
+        do {
+            _ = try await conn.getProperty(meters)
+            Issue.record("a failed read must throw")
+        } catch DeviceConnectionError.transportError {
+        } catch {
+            Issue.record("unexpected \(error)")
+        }
+    }
+
     @Test func setPropertySendsCorrectUSBFields() async throws {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)

@@ -37,6 +37,16 @@ extension AppState {
         return .written
     }
 
+    /// Whether the Mixer page may send a mixer's strips to the unit: always
+    /// on ThunderBridge and PCIe (and in simulation); over USB never for a
+    /// recall (the page opening, Mix 1/2, a card layout change), and for a
+    /// reset only once the connection's restore has written that mixer.
+    @MainActor
+    func mixerPageMayWriteStrips(mixer: Int, recalling: Bool) -> Bool {
+        guard device is XPCDeviceConnection else { return true }
+        return !recalling && usbMixerIsWritten(mixer)
+    }
+
     /// The first step of the USB restore, before any mixer strip is written:
     /// no audible destination may be left on a mixer that is about to be
     /// written. In order:

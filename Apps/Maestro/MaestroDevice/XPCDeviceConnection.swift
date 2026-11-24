@@ -526,6 +526,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// still safe for mixers and routing from `requiredHelperVersion` on.
     public static let audioOutputHelperVersion: UInt64 = 3
 
+    /// The status the helper's "getProperty" replies with when it has no
+    /// unit open (`MaestroVolumeProxy.c`, `HELPER_STATUS_UNIT_NOT_OPEN`).
+    public static let helperStatusUnitNotOpen: Int64 = -2
+
     /// The helper's version, nil when it did not say.
     public func helperVersionNumber() async -> UInt64? { await transport.helperVersion() }
 
@@ -785,6 +789,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             wIndex: usbRequest.index,
             dataLength: UInt16(usbRequest.data.count))
 
+        // -2: the helper has no unit open (helper 0.9.26 on; an older one
+        // says -1 for that too). The app's recovery tells it from a read
+        // that failed once (`USBLossDetector`).
+        if reply.status == Self.helperStatusUnitNotOpen { throw DeviceConnectionError.notConnected }
         guard reply.status == 0 else {
             throw DeviceConnectionError.transportError(
                 "XPC getProperty failed (status=\(reply.status))")
