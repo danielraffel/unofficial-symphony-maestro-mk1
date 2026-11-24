@@ -429,6 +429,9 @@ static void check_write_shadow(void)
     shadow_note_write(0x20, 0, &level, 1, 1);   /* not tracked */
     close_usb_device();
     CHECK(gRouteShadow[33] == -1 && gDigitalShadow[0][1] == -1, "a closed handle forgets it all");
+    const uint64_t configures = gConfigureCount;
+    CHECK(configure_fpga_routing() == -1 && gConfigureCount == configures,
+          "no unit open: nothing configured, nothing counted");
 }
 
 int main(void)

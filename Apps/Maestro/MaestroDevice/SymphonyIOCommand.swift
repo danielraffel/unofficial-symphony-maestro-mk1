@@ -885,6 +885,34 @@ public enum SymphonyIOConstants {
 
 // MARK: - Reset
 
+/// What the unit says about a reset (0xDB `SymphonyIOResetMode`, one byte,
+/// `SymphonyIOResetRequestType` in SymphonyIOVendorSpecific.h).
+///
+/// The firmware keeps it in RAM: `WaitForInit` from power-on, then
+/// `WaitForUserSelection` while the start-up reset menu is up, then `None`,
+/// or a reset the user picked on the front panel while it started
+/// (SymphonyIOMainController.cpp:75, :1170, :1325-1337,
+/// SymphonyIOFrontPanel.cpp:610-671). Nothing sets it again until the next
+/// power-on, so it does not tell a replug from a power cycle: both read
+/// `None`. The original read it every 200 ms until the unit had started
+/// (og_source/maestrolink/Software/SymphonyIO.cpp:6338-6416) and, after a
+/// front-panel reset, put its settings on the unit and wrote `None` back
+/// (:6417-6432, `clearResetRequest`).
+public enum SymphonyIOResetRequest: UInt8, Sendable, Equatable {
+    case waitForInit = 0
+    case waitForUserSelection = 1
+    case none = 2
+    case resetAll = 3
+    case resetAllButCalibration = 4
+
+    public static let command: UInt8 = 0xDB
+
+    /// The unit is still starting: ask again in a moment.
+    public var isStarting: Bool { self == .waitForInit || self == .waitForUserSelection }
+    /// The user reset the unit from its front panel while it started.
+    public var isFrontPanelReset: Bool { self == .resetAll || self == .resetAllButCalibration }
+}
+
 /// How much of the device a reset touches.
 ///
 /// Evidence: `SymphonyIOResetRequestType` distinguishes `ResetAll` from

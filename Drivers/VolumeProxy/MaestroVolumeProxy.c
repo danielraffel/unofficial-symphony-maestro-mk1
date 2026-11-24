@@ -2082,6 +2082,14 @@ static int try_recover_usb(void)
 static int16_t gRouteShadow[256];                       /* -1: unknown */
 static int16_t gDigitalShadow[SHADOW_DIGITAL_COUNT][2]; /* -1: unknown */
 
+/* How many times configure_fpga_routing has started on any unit since this
+   helper started. Every configure puts every output and both headphones back
+   on the direct table, also the ones Maestro never hears about (a stale
+   handle or a ResetDevice in try_recover_usb, where its reads never answer
+   "no unit"). Sent with getWriteShadow; Maestro restores the saved routing
+   when it changes. gQueue only. */
+static uint64_t gConfigureCount = 0;
+
 static void shadow_reset(void)
 {
     for (unsigned i = 0; i < 256; i++) gRouteShadow[i] = -1;
@@ -2257,6 +2265,7 @@ static int current_board_type(uint32_t board)
 static int configure_fpga_routing(void)
 {
     if (!gUSBDev) return -1;
+    gConfigureCount++;
 
     int err;
 
@@ -3420,8 +3429,9 @@ static void handle_peer(xpc_connection_t peer) {
             /* What the unit holds of what this helper wrote (see shadow_reset).
                Reply: { status, routes (256 bytes, the source per destination),
                routesKnown (256 bytes, 1 where known), digital (6 bytes,
-               0x34/0x35/0x36 x board 0/1), digitalKnown (6 bytes) }. status
-               -2 while no unit is open. */
+               0x34/0x35/0x36 x board 0/1), digitalKnown (6 bytes),
+               configures (uint64, gConfigureCount) }. status -2 while no
+               unit is open. */
             xpc_object_t reply = xpc_dictionary_create_reply(msg);
             if (!reply) return;
             xpc_retain(peer);
@@ -3441,6 +3451,7 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_dictionary_set_data(reply, "routesKnown", routesKnown, sizeof routesKnown);
                 xpc_dictionary_set_data(reply, "digital", digital, sizeof digital);
                 xpc_dictionary_set_data(reply, "digitalKnown", digitalKnown, sizeof digitalKnown);
+                xpc_dictionary_set_uint64(reply, "configures", gConfigureCount);
                 xpc_connection_send_message(peer, reply);
                 xpc_release(reply);
                 xpc_release(peer);

@@ -168,6 +168,9 @@ final class AppState: @unchecked Sendable {
     /// The helper connection the USB restore last ran on: a helper that
     /// reconnects re-programs the direct routes, so the restore runs again.
     @ObservationIgnored var usbRestoredHelperEpoch: UInt64?
+    /// The helper's configure count when the completed restore began
+    /// (`serviceHelperReconfigure`); nil from a helper that does not say.
+    @ObservationIgnored var usbRestoredHelperConfigures: UInt64?
     /// The connection generation whose input routing and device settings the
     /// restore has sent (a retry of owed mixers or routes leaves them alone).
     @ObservationIgnored var usbSettingsRestored: (generation: UUID, helperEpoch: UInt64)?
@@ -4688,7 +4691,11 @@ final class AppState: @unchecked Sendable {
         // A USB restore that did not finish, or a helper that restarted
         // under the app, is put right here; not while reads fail, when a
         // try would only fail and lengthen the retry pause.
-        if !usbLoss.isFailing { serviceUSBRestore(xpcDev) }
+        if !usbLoss.isFailing {
+            await serviceHelperReconfigure(xpcDev)
+            guard device === xpcDev else { return }
+            serviceUSBRestore(xpcDev)
+        }
         // The volume keys' output, where the helper now answering has not
         // been told it.
         await serviceKeyboardVolumeOutput()

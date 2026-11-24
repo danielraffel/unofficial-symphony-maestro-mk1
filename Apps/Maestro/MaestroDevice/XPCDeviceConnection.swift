@@ -126,10 +126,15 @@ public struct USBWriteShadow: Sendable, Equatable {
     public var routes: [UInt8: UInt8]
     /// `(request << 8) | board` to value.
     public var digital: [UInt16: UInt8]
+    /// How many times the helper has configured a unit since it started
+    /// (every configure puts all outputs and headphones back on the direct
+    /// table); nil from a helper that does not say.
+    public var configures: UInt64?
 
-    public init(routes: [UInt8: UInt8] = [:], digital: [UInt16: UInt8] = [:]) {
+    public init(routes: [UInt8: UInt8] = [:], digital: [UInt16: UInt8] = [:], configures: UInt64? = nil) {
         self.routes = routes
         self.digital = digital
+        self.configures = configures
     }
 
     static func isAudibleDestination(_ destination: UInt8) -> Bool {
@@ -390,6 +395,9 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
                 }
                 for slot in 0..<6 where digitalKnown[slot] != 0 {
                     shadow.digital[UInt16(0x34 + slot / 2) << 8 | UInt16(slot % 2)] = digital[slot]
+                }
+                if xpc_dictionary_get_value(reply, "configures") != nil {
+                    shadow.configures = xpc_dictionary_get_uint64(reply, "configures")
                 }
                 once.resume(shadow)
             }
@@ -911,14 +919,33 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// (``USBWriteShadow``), and how many writes it already held.
     private var elisionShadow: USBWriteShadow?
     private var elidedCount = 0
+    /// While the restore runs: read the unit before a write that can be read
+    /// back (``readCompareRequest(for:)``) and skip it when the unit has the
+    /// value. Off after `readCompareFailureLimit` reads in a row fail.
+    private var readCompareActive = false
+    private var readCompareFailures = 0
+    private var readComparedCount = 0
+    static let readCompareFailureLimit = 3
+    /// The helper's configure count when the restore began
+    /// (``USBWriteShadow/configures``).
+    private var elisionConfigures: UInt64?
 
-    /// Start skipping writes the unit already holds (routes of outputs and
-    /// headphones, the digital format settings), for the restore. False when
-    /// the helper does not say what the unit holds: everything is sent.
+    /// Start skipping writes the unit already holds, for the restore: routes
+    /// of outputs and headphones and the digital format settings the helper
+    /// says it holds, and, with `compareReads`, every write whose value the
+    /// unit can be asked for first (``readCompareRequest(for:)``). Returns
+    /// whether the helper said what it holds.
     @discardableResult
-    public func beginRestoreElision() async -> Bool {
+    public func beginRestoreElision(compareReads: Bool = false) async -> Bool {
         let shadow = await transport.writeShadow()
-        lock.withLock { elisionShadow = shadow; elidedCount = 0 }
+        lock.withLock {
+            elisionShadow = shadow
+            elidedCount = 0
+            readCompareActive = compareReads
+            readCompareFailures = 0
+            readComparedCount = 0
+            elisionConfigures = shadow?.configures
+        }
         return shadow != nil
     }
 
@@ -927,12 +954,23 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     public func endRestoreElision() -> Int {
         lock.withLock {
             elisionShadow = nil
+            readCompareActive = false
             return elidedCount
         }
     }
 
     /// Writes skipped since `beginRestoreElision`.
     public var restoreElidedWrites: Int { lock.withLock { elidedCount } }
+    /// Of those, the ones skipped because a read showed the unit had it.
+    public var restoreReadComparedSkips: Int { lock.withLock { readComparedCount } }
+    /// The helper's configure count when the last restore began.
+    public var restoreHelperConfigures: UInt64? { lock.withLock { elisionConfigures } }
+
+    /// How many times the helper has configured a unit (nil: it does not
+    /// say, or has no unit open). Asks the helper, not the unit.
+    public func helperConfigureCount() async -> UInt64? {
+        await transport.writeShadow()?.configures
+    }
 
     /// Whether `request` is skipped because the unit already holds it.
     private func elides(_ request: USBControlRequest) -> Bool {
@@ -941,6 +979,124 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             elidedCount += 1
             return true
         }
+    }
+
+    /// How to ask the unit whether it holds what `request` writes: the reads
+    /// and the replies that mean it does. Nil for a write that cannot be read
+    /// back over USB. The firmware answers each of these reads with the
+    /// value its write sets (SymphonyIOCore3MainController.cpp: 0x20 :1475,
+    /// 0x21 :1508, 0x22 :1536, 0xE9 :1593, 0xE7/0xE8 :1616, 0x25 :1676,
+    /// 0xB0-0xB3 :2379-2495; 0x31 the routing table, one read per
+    /// destination; 0x10-0x12 through the 0xDE preference block,
+    /// `SymphonyIOPropertyMapper`, handled by the caller).
+    ///
+    /// 0x20 (analog reference level) is a question, not a read: "is type T
+    /// current?", with T in bits 16-23 of nValue (wValue's low byte), and the
+    /// reply is [isCurrent, the trim kept for T]. A trim of
+    /// `doNotSetTrimValue` is not compared.
+    public static func readCompareRequest(for request: USBControlRequest)
+        -> (reads: [USBControlRequest], matches: @Sendable ([Data]) -> Bool)? {
+        let data = request.data
+        switch request.request {
+        case 0x21, 0x22, 0x25, 0xE7, 0xE8, 0xE9, 0xB0, 0xB1, 0xB2, 0xB3:
+            guard data.count == 1 else { return nil }
+            let read = USBControlRequest(direction: .read, request: request.request,
+                                         value: request.value, index: request.index, data: Data(count: 1))
+            return ([read], { $0.count == 1 && $0[0].first == data.first })
+        case 0x20:
+            guard data.count == 2, request.value & 0x00FF == 0 else { return nil }
+            let type = data[data.startIndex], trim = data[data.startIndex + 1]
+            let read = USBControlRequest(direction: .read, request: 0x20,
+                                         value: request.value | UInt16(type),
+                                         index: request.index, data: Data(count: 2))
+            return ([read], { replies in
+                guard replies.count == 1, replies[0].count >= 2 else { return false }
+                let reply = Array(replies[0])
+                return reply[0] == 1 && (trim == SymphonyIOConstants.doNotSetTrimValue || reply[1] == trim)
+            })
+        case 0x31:
+            // [destination, source] pairs: the source each destination plays now.
+            let bytes = Array(data)
+            guard !bytes.isEmpty, bytes.count % 2 == 0 else { return nil }
+            let pairs = stride(from: 0, to: bytes.count, by: 2).map { (bytes[$0], bytes[$0 + 1]) }
+            let reads = pairs.map { SymphonyIORequestBuilder.getAudioRoute(destination: UInt16($0.0)) }
+            let sources = pairs.map(\.1)
+            return (reads, { replies in
+                replies.count == sources.count && zip(replies, sources).allSatisfy { $0.first == $1 }
+            })
+        default:
+            return nil
+        }
+    }
+
+    /// The restore's read before a write: true when the unit already holds
+    /// what `request` (for `address`) writes, so it is not sent. A read that
+    /// fails sends the write, as before; after a few in a row the restore
+    /// stops asking.
+    private func unitHolds(_ request: USBControlRequest, address: PropertyAddress) async -> Bool {
+        guard lock.withLock({ readCompareActive }) else { return false }
+        var held: Bool?
+        if [0x10, 0x11, 0x12].contains(request.request) {
+            // Front panel meter source, peak and over hold: read from the 0xDE
+            // block and compared as the write they would make.
+            if let value = try? await readFromUnit(address),
+               let again = try? SymphonyIOPropertyMapper.buildWriteRequest(
+                for: try USBMixerAddressing.usbAddress(for: address), value: value) {
+                held = again.request == request.request && again.value == request.value
+                    && again.index == request.index && again.data == request.data
+            }
+        } else if let compare = Self.readCompareRequest(for: request) {
+            var replies: [Data] = []
+            for read in compare.reads {
+                guard let reply = try? await transport.sendGetProperty(
+                    bRequest: read.request, wValue: read.value,
+                    wIndex: read.index, dataLength: UInt16(read.data.count)),
+                      reply.status == 0 else { break }
+                replies.append(reply.data)
+            }
+            if replies.count == compare.reads.count { held = compare.matches(replies) }
+        } else {
+            return false
+        }
+        return lock.withLock {
+            guard let held else {
+                readCompareFailures += 1
+                if readCompareFailures >= Self.readCompareFailureLimit { readCompareActive = false }
+                return false
+            }
+            readCompareFailures = 0
+            if held { elidedCount += 1; readComparedCount += 1 }
+            return held
+        }
+    }
+
+    /// The unit's reset request (0xDB, `SymphonyIOResetRequestType`):
+    /// nil when it cannot be read.
+    public func readResetRequest() async -> SymphonyIOResetRequest? {
+        guard transport.isConnected,
+              let reply = try? await transport.sendGetProperty(bRequest: SymphonyIOResetRequest.command,
+                                                                wValue: 0, wIndex: 0, dataLength: 1),
+              reply.status == 0, let byte = reply.data.first else { return nil }
+        return SymphonyIOResetRequest(rawValue: byte)
+    }
+
+    /// Acknowledge a front-panel reset once the settings are on the unit:
+    /// write None, as the original's clearResetRequest did
+    /// (eecontrol/generic/Products/SymphonyIO/SymphonyIOControl.cpp,
+    /// SymphonyIO.cpp:6427).
+    @discardableResult
+    public func clearResetRequest() async -> Bool {
+        guard writeGate.allowsWrites, transport.isConnected else { return false }
+        await sequenceOwner.acquire()
+        var sent = true
+        do {
+            try await transport.sendSetProperty(bRequest: SymphonyIOResetRequest.command, wValue: 0, wIndex: 0,
+                                                data: Data([SymphonyIOResetRequest.none.rawValue]))
+        } catch {
+            sent = false
+        }
+        await sequenceOwner.release()
+        return sent
     }
 
     private func noteSent(_ request: USBControlRequest, ok: Bool) {
@@ -1051,7 +1207,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
                 // silently reporting success and updating caches.
                 // During the restore, a write the unit already holds is not
                 // sent (`beginRestoreElision`); it counts as written.
-                if !elides(usbRequest) {
+                if !elides(usbRequest), await !unitHolds(usbRequest, address: address) {
                     do {
                         try await transport.sendSetProperty(
                             bRequest: usbRequest.request,
@@ -1274,8 +1430,11 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             guard transport.isConnected else { throw DeviceConnectionError.notConnected }
             await sequenceOwner.acquire()
             do {
-                try await transport.sendSetProperty(bRequest: request.request, wValue: request.value,
-                                                    wIndex: request.index, data: request.data)
+                // During the restore a unit already in Stereo is not told so.
+                if await !unitHolds(request, address: address) {
+                    try await transport.sendSetProperty(bRequest: request.request, wValue: request.value,
+                                                        wIndex: request.index, data: request.data)
+                }
                 await sequenceOwner.release()
             } catch {
                 await sequenceOwner.release()

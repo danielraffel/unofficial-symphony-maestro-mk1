@@ -188,19 +188,43 @@ extension AppState {
                 && !Task.isCancelled && mixerPreferences.isWritable == preferences.isWritable
                 && mixerPreferences.storageKey == preferences.storageKey
         }
+        // The unit's reset request (0xDB). It does not tell a replug from a
+        // power cycle (both read None once the unit has started;
+        // `SymphonyIOResetRequest`), so it decides only two things, as in
+        // the original (SymphonyIO.cpp:6338-6432): a unit still starting is
+        // waited for, polled every 200 ms; after a reset picked on the front
+        // panel everything is written without asking the unit first, and
+        // the request is acknowledged at the end.
+        var reset = await connection.readResetRequest()
+        var polls = 0
+        while reset?.isStarting == true, polls < Self.usbResetRequestPolls {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard isCurrent() else { return }
+            reset = await connection.readResetRequest()
+            polls += 1
+        }
+        guard isCurrent() else { return }
+        let frontPanelReset = reset?.isFrontPanelReset == true
         // What the unit already holds is not written again: a route of an
         // output or a headphone, or a digital format setting, that the helper
         // says the unit has (its configure's direct table, or an earlier
-        // write since the unit was opened). 0.9.25 rewrote all of them while
-        // USB audio played, about 3 s after a replug, and the audio stopped
-        // briefly; with Maestro closed it did not (`USBWriteShadow`). The
+        // write since the unit was opened), and every setting whose value the
+        // unit can be asked for (speaker mode, dim, sum to mono, analog and
+        // digital reference levels, soft limit, mixer strips, routes, the
+        // front panel meter settings) and already has. A plain replug leaves
+        // the unit with all of them; 1140 still rewrote the speaker mode,
+        // dim/sum, the meter settings and every channel's level and soft
+        // limit while USB audio played, and the owner heard it. A power-cycled
+        // unit answers its defaults and gets every write that differs. The
         // order below is unchanged: a skipped write is one the unit holds.
-        let elision = await connection.beginRestoreElision()
+        let elision = await connection.beginRestoreElision(compareReads: !frontPanelReset)
         defer {
             let skipped = connection.endRestoreElision()
-            if elision { print("[Maestro] USB restore: \(skipped) writes skipped, the unit already held them") }
+            print("[Maestro] USB restore: \(skipped) writes skipped, the unit already held them"
+                + (elision ? "" : " (the helper did not say what it holds)"))
         }
         guard isCurrent() else { return }
+        if frontPanelReset { print("[Maestro] USB restore: the unit was reset from its front panel (\(reset!)); writing every setting") }
         usbRestoreStarted = (generation, Date())
         usbRestoreRuns += 1
         // Anything that becomes owed from here on (an Output Routing edit, a
@@ -296,8 +320,34 @@ extension AppState {
         }
         usbRestoredGeneration = generation
         usbRestoredHelperEpoch = helperEpoch
+        usbRestoredHelperConfigures = connection.restoreHelperConfigures
         usbRestoreRetryAttempts = 0
+        if frontPanelReset, await connection.clearResetRequest() {
+            print("[Maestro] USB restore: front panel reset acknowledged")
+        }
         updateRestoreStatus()
+    }
+
+    /// How many times (200 ms apart) the restore asks a unit that is still
+    /// starting before it goes ahead anyway: 5 s.
+    static let usbResetRequestPolls = 25
+
+    /// The 1 Hz tick: the helper configured the unit again since the restore
+    /// (a stale handle or a port reset it recovered from by itself; it then
+    /// puts every output and headphone back on the direct table, and the
+    /// app's reads never fail long enough to call it a loss). The saved
+    /// routing is owed; the retry asks the unit before each write, so only
+    /// what the configure changed is sent.
+    @MainActor
+    func serviceHelperReconfigure(_ connection: XPCDeviceConnection) async {
+        guard device === connection, let restored = usbRestoredHelperConfigures,
+              usbRestoredGeneration == unitAGeneration, !usbRestoreOwed, usbRestoreTask == nil,
+              let now = await connection.helperConfigureCount(), now != restored,
+              device === connection, usbRestoredGeneration == unitAGeneration else { return }
+        usbRestoredHelperConfigures = nil
+        usbRestoreOwed = true
+        usbRestoreRetryAfter = .distantPast
+        print("[Maestro] The USB helper configured the unit again (\(restored) -> \(now)): restoring the routing")
     }
 
     /// A healthy meter-loop cycle over USB: run the restore again when it is
