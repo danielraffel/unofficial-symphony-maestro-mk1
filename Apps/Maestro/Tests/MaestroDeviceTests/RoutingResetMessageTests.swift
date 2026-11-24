@@ -18,6 +18,22 @@ struct RoutingResetMessageTests {
         RoutingResetGuard.outputResetMessage(board1: b1, board2: b2, transport: transport)
     }
 
+    @Test("8x8 with optical and 16 analog in, on an analog-first ThunderBridge driver (150+)")
+    func opticalAndAD16AnalogFirst() {
+        #expect(RoutingResetGuard.inputResetMessage(
+            board1: .optical, board2: .analogAD16, usbChannelCount: 32,
+            routes: SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: .optical, slot2: .analogAD16,
+                                                                    order: .analogFirst)) == """
+            Each software input goes back to its default hardware input:
+
+            Software 1–8: Card 1 analog in 1–8
+            Software 9–24: Card 2 analog in 1–16
+            Software 25–32: Card 1 ADAT in 1–8
+
+            Only what your Mac records from changes. Outputs are not affected.
+            """)
+    }
+
     @Test("8x8 with optical and 16 analog in / 16 digital out, on ThunderBridge")
     func opticalAndAD16() {
         #expect(input(.optical, .analogAD16) == """

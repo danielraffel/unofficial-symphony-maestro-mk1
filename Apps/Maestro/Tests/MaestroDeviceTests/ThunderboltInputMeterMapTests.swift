@@ -108,4 +108,33 @@ struct ThunderboltInputMeterMapTests {
         #expect(channels[8].boardIndex == 1 && channels[8].channelOnBoard == 0)
         #expect(channels[24].boardIndex == 0 && channels[24].channelOnBoard == 8)
     }
+
+    /// A driver build 150+ lays the inputs out analog first. The mixer's
+    /// analog strips are in that order too, so strip i reads host input i;
+    /// its digital strips group AES before optical across both cards, which
+    /// is not host order when the cards' digital kinds differ (e.g. a 2x6 +
+    /// 8x8 AES), so there each strip is found by its channel. Every host
+    /// input carrying a channel is metered by exactly one strip.
+    @Test("Analog-first driver: every channel metered once, analog strips at their position",
+          arguments: IOCardType.allCases)
+    func analogFirstMetersEveryChannel(slot1: IOCardType) {
+        for slot2 in IOCardType.allCases {
+            let layout = CardLayout(slot1: slot1, slot2: slot2, isKnown: true)
+            let routes = Map.currentRoutes(slot1: slot1, slot2: slot2, order: .analogFirst, replayed: [])
+            let w = Map.words(layout: layout, routes: routes)
+            let analog = slot1.analogInputChannels + slot2.analogInputChannels
+            let real = slot1.totalInputChannels + slot2.totalInputChannels
+            #expect(Array(w.channels.prefix(analog)) == (0..<analog).map { Optional($0) }, "\(slot1)/\(slot2)")
+            #expect(w.channels.compactMap { $0 }.sorted() == Array(0..<real), "\(slot1)/\(slot2)")
+        }
+    }
+
+    @Test("Analog-first driver, Daniel's rig: A16 Line 1 is host input 9")
+    func analogFirstDanielsRig() {
+        let layout = CardLayout(slot1: .analogAES, slot2: .analogAD16, isKnown: true)
+        let w = Map.words(layout: layout,
+                          routes: Map.currentRoutes(slot1: .analogAES, slot2: .analogAD16, order: .analogFirst, replayed: []))
+        #expect(w.channels[8] == 8)                                         // A16 Line 1 strip
+        #expect(Array(w.digital[0..<8]) == (24..<32).map { Optional($0) })  // AES 1-8 on host inputs 25-32
+    }
 }

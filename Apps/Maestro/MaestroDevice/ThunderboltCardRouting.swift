@@ -59,6 +59,23 @@ public enum ThunderboltCardRouting {
         return nil
     }
 
+    /// The XLink TX channel feeding a Symphony output destination byte under
+    /// the serving driver's `order`: card by card (driver 149 and earlier) as
+    /// ``channel(forDestination:)``; analog first (driver 150+) the channel the
+    /// unit's playback table plays on that output
+    /// (``SymphonyIODefaultRouting/thunderboltOutputRoutes(slot1:slot2:order:)``,
+    /// `SymphonyPlaybackSource` in the driver): XLink n for the n-th board
+    /// output in host order, nil for a board output no XLink channel reaches.
+    /// The card layer itself stays identity (XLink TX n ← `PCI_OUT n`).
+    public static func channel(forDestination destination: UInt8, slot1: IOCardType?, slot2: IOCardType?,
+                               order: ThunderboltChannelOrder) -> UInt8? {
+        guard order == .analogFirst, slot1 != nil, slot2 != nil else { return channel(forDestination: destination) }
+        let routes = SymphonyIODefaultRouting.thunderboltOutputRoutes(slot1: slot1, slot2: slot2, order: order)
+        guard let source = routes.first(where: { $0.destination == destination })?.source,
+              source < channelCount else { return nil }
+        return source
+    }
+
     /// The TDM slot for a source byte as the app addresses it on ThunderBridge:
     /// XLink 0...31 (DAW playback n) → `PCI_OUT n`; `mixer0Base`/`mixer1Base`
     /// pairs → card mixer 0/1 outputs. With unit B active, DAW 0...63 are

@@ -1216,6 +1216,11 @@ public enum ServingDextBuild: Sendable, Equatable {
 
     /// The first dext build that answers the build request.
     public static let firstReportingBuild = 123
+
+    /// The first dext build that lays the unit's host channels out analog
+    /// first (``ThunderboltChannelOrder/analogFirst``); earlier builds lay
+    /// them out card by card.
+    public static let firstAnalogFirstBuild = 150
 }
 
 /// The header banner's content, decided in one place so the banner and Device

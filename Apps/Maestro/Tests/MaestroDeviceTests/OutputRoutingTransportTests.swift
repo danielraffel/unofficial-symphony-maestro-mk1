@@ -116,6 +116,38 @@ struct OutputRoutingTransportTests {
         #expect(empty.first { $0.destination == 48 }?.source == 16)
     }
 
+    /// A driver build 150+ (`SymphonyPlaybackSource`): the n-th board output
+    /// in analog-first order plays XLink n; the card stays identity, so the
+    /// card channel that reaches a board output is that XLink n.
+    @Test("Analog-first driver: Mac n on the n-th board output, every Line first")
+    func thunderboltAnalogFirstTable() {
+        let routes = SymphonyIODefaultRouting.thunderboltOutputRoutes(slot1: .optical, slot2: .optical, order: .analogFirst)
+        var byDestination: [UInt8: UInt8] = [:]
+        for route in routes { byDestination[route.destination] = route.source }
+        for channel in UInt8(0)...UInt8(7) {
+            #expect(byDestination[32 + channel] == channel)          // slot 1 Line 1-8 ← Mac 1-8
+            #expect(byDestination[48 + channel] == 8 + channel)      // slot 2 Line 1-8 ← Mac 9-16
+            #expect(byDestination[40 + channel] == 16 + channel)     // slot 1 ADAT 1-8 ← Mac 17-24
+            #expect(byDestination[56 + channel] == 24 + channel)     // slot 2 ADAT 1-8 ← Mac 25-32
+        }
+        #expect(!routes.contains { $0.source >= SymphonyIORoutingAddress.mixer0Base &&
+                                   $0.source != SymphonyIORoutingAddress.none })
+        for route in routes where route.source < 32 {
+            #expect(ThunderboltCardRouting.channel(forDestination: route.destination, slot1: .optical, slot2: .optical,
+                                                   order: .analogFirst) == route.source)
+        }
+        // Empty slot 1: slot 2 from Mac 1, slot 1's destinations silent and unreachable.
+        let empty = SymphonyIODefaultRouting.thunderboltOutputRoutes(slot1: IOCardType.none, slot2: .optical, order: .analogFirst)
+        #expect(empty.first { $0.destination == 48 }?.source == 0)
+        #expect(empty.first { $0.destination == 34 }?.source == SymphonyIORoutingAddress.none)
+        #expect(ThunderboltCardRouting.channel(forDestination: 34, slot1: IOCardType.none, slot2: .optical,
+                                               order: .analogFirst) == nil)
+        // A slot not read: by position, as the driver keeps it.
+        #expect(ThunderboltCardRouting.channel(forDestination: 48, slot1: .optical, slot2: nil, order: .analogFirst) == 16)
+        #expect(SymphonyIODefaultRouting.thunderboltOutputRoutes(slot1: nil, slot2: .optical, order: .analogFirst)
+                    .map(\.source) == (0..<32).map { UInt8($0) })
+    }
+
     @Test("The default and Reset Routing layout is Apogee's on both transports: every software output on its output, no mixer")
     func thunderboltResetLayout() {
         // SymphonyPCIeRoutingController::ResetRouting (output): mixer destinations

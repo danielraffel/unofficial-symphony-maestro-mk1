@@ -1919,18 +1919,15 @@ public enum SymphonyIODefaultRouting {
         return routes
     }
 
-    /// Default OUTPUT routing on ThunderBridge: what the driver and the card
-    /// program at start-up, by position. The Symphony side is the driver's
-    /// fixed table, XLink n → board output n (`SymphonyThunderbridge.cpp`
-    /// steps 19b-1 / 19b-1b: XLink 0-15 → slot 1's outputs, 16-31 → slot 2's),
-    /// and the card feeds XLink TX n from playback n (step 21b), so Mac output
-    /// n plays through slot 1 output n for 1-16 and slot 2 output n-16 for
-    /// 17-32. A destination past a card's outputs (or in an empty slot) is
-    /// silent.
-    ///
-    /// It is NOT the USB table above, which puts every analog output first:
-    /// with two cards that have analog outputs, that table drew Mac 9-10 on
-    /// slot 2's Line 1/2 while the unit played it on slot 1's digital outputs.
+    /// Default OUTPUT routing on ThunderBridge under a card-by-card driver
+    /// (build 149 and earlier; ``thunderboltOutputRoutes(slot1:slot2:order:)``
+    /// takes the order): what the driver and the card program at start-up,
+    /// by position. The Symphony side was the driver's fixed table, XLink n
+    /// → board output n (`SymphonyThunderbridge.cpp` steps 19b-1 / 19b-1b:
+    /// XLink 0-15 → slot 1's outputs, 16-31 → slot 2's), and the card feeds
+    /// XLink TX n from playback n (step 21b), so Mac output n plays through
+    /// slot 1 output n for 1-16 and slot 2 output n-16 for 17-32. A
+    /// destination past a card's outputs (or in an empty slot) is silent.
     ///
     /// Every output is direct, the main pair included, and no mixer is routed
     /// to an output: the original's default and its Reset Routing layout
@@ -1957,18 +1954,57 @@ public enum SymphonyIODefaultRouting {
         return routes
     }
 
-    /// The capture routing the ThunderBridge driver programs at link
-    /// configuration (`SymphonyThunderbridge.cpp` step 19b-2,
-    /// `SymphonyCaptureSource` in `SymphonyChannelNames.h`): card by card,
-    /// host input n from slot 1 channel n, then slot 2's channels from where
-    /// slot 1's real inputs end. The original laid the Mac's inputs out the
-    /// same way, at each card's real channel count (`SymphonyPCIeRoutingController.cpp:200-217, 849-866`,
-    /// plugs sorted by board then start channel, `NonCAStreamObject.cpp:326-384`).
-    /// Every card has 16 inputs except the 2x6 (12), so slot 2 starts at host
-    /// input 13 behind a 2x6 and 17 otherwise. `slot1` nil (type not read), an
-    /// empty slot 1 and a Mic Pre in slot 1 keep the fixed 16 + 16, as the
-    /// driver does. Host inputs past slot 2's 16 are fed from silence (236).
-    /// It is NOT the USB table below, which puts every analog channel first.
+    /// Default OUTPUT routing on ThunderBridge in the serving driver's
+    /// `order` (``ThunderboltChannelOrder/serving(_:)``), board outputs 32-63
+    /// in order.
+    ///
+    /// - Card by card (driver 149 and earlier):
+    ///   ``thunderboltOutputRoutes(board0Outputs:board1Outputs:)``, a nil
+    ///   slot taken as a full 16.
+    /// - Analog first (driver 150+): exactly the table the driver programs
+    ///   (`SymphonyPlaybackSource`, steps 19b-1 / 19b-1b and ConfigureUnitB):
+    ///   the n-th board output in host order (every analog output of slot 1,
+    ///   then of slot 2, then slot 1's digital, then slot 2's) plays XLink n,
+    ///   any other board output None. It is the USB walk
+    ///   (``outputRoutes(board0:board1:usbChannelCount:playbackBase:)``) over
+    ///   XLink at 32 channels. With a slot nil (type not read) the driver
+    ///   keeps its by-position table, XLink n → board n / 16, channel n % 16,
+    ///   for all 32, and so does this.
+    public static func thunderboltOutputRoutes(slot1: IOCardType?, slot2: IOCardType?,
+                                               order: ThunderboltChannelOrder) -> [Route] {
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        switch order {
+        case .cardByCard:
+            return thunderboltOutputRoutes(board0Outputs: slot1?.totalOutputChannels ?? perBoard,
+                                           board1Outputs: slot2?.totalOutputChannels ?? perBoard)
+        case .analogFirst:
+            guard let slot1, let slot2 else {
+                let bases = [SymphonyIORoutingAddress.ioBoard0Base, SymphonyIORoutingAddress.ioBoard1Base]
+                return (0..<2).flatMap { board in
+                    (0..<perBoard).map { index in
+                        (destination: bases[board] + UInt8(index),
+                         source: SymphonyIORoutingAddress.xlinkPlaybackBase + UInt8(board * perBoard + index))
+                    }
+                }
+            }
+            return outputRoutes(
+                board0: .init(analog: slot1.analogOutputChannels, digital: slot1.digitalOutputChannels),
+                board1: .init(analog: slot2.analogOutputChannels, digital: slot2.digitalOutputChannels),
+                usbChannelCount: 2 * perBoard,
+                playbackBase: SymphonyIORoutingAddress.xlinkPlaybackBase)
+        }
+    }
+
+    /// The capture routing a card-by-card ThunderBridge driver (build 149
+    /// and earlier) programs at link configuration; for either order use
+    /// ``thunderboltInputRoutes(slot1:slot2:order:)``. Card by card, host
+    /// input n from slot 1 channel n, then slot 2's channels from where
+    /// slot 1's real inputs end (`SymphonyCardByCardCaptureSource` in
+    /// `SymphonyChannelNames.h`). Every card has 16 inputs except the 2x6
+    /// (12), so slot 2 starts at host input 13 behind a 2x6 and 17
+    /// otherwise. `slot1` nil (type not read), an empty slot 1 and a Mic Pre
+    /// in slot 1 keep the fixed 16 + 16, as the driver does. Host inputs past
+    /// slot 2's 16 are fed from silence (236).
     public static func thunderboltInputRoutes(slot1: IOCardType? = nil) -> [Route] {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         let base = thunderboltSlot2InputBase(slot1: slot1)
@@ -1983,6 +2019,28 @@ public enum SymphonyIODefaultRouting {
             }
             return (destination: SymphonyIORoutingAddress.p2pBase + UInt8(n), source: source)
         }
+    }
+
+    /// The capture routing the serving ThunderBridge driver programs at link
+    /// configuration, in its `order` (``ThunderboltChannelOrder/serving(_:)``):
+    /// P2P 192-223 in order.
+    ///
+    /// - Card by card (driver 149 and earlier): ``thunderboltInputRoutes(slot1:)``.
+    /// - Analog first (driver 150+): exactly what the driver programs
+    ///   (`SymphonyCaptureSource`, step 19b-2 and ConfigureUnitB): host input
+    ///   n from the n-th board input in host order (every analog input of
+    ///   slot 1, then of slot 2, then slot 1's digital, then slot 2's), None
+    ///   past the unit's inputs. It is the USB walk
+    ///   (``inputRoutes(board0:board1:usbChannelCount:)``) at 32 channels.
+    ///   With a slot nil (type not read) the driver keeps the card-by-card
+    ///   table from slot 1's type, and so does this.
+    public static func thunderboltInputRoutes(slot1: IOCardType?, slot2: IOCardType?,
+                                              order: ThunderboltChannelOrder) -> [Route] {
+        guard order == .analogFirst, let slot1, let slot2 else { return thunderboltInputRoutes(slot1: slot1) }
+        return inputRoutes(
+            board0: .init(analog: slot1.analogInputChannels, digital: slot1.digitalInputChannels),
+            board1: .init(analog: slot2.analogInputChannels, digital: slot2.digitalInputChannels),
+            usbChannelCount: 2 * SymphonyIORoutingAddress.channelsPerIOBoard)
     }
 
     /// Slot 1's card as the serving ThunderBridge driver lays its capture
@@ -2000,8 +2058,11 @@ public enum SymphonyIODefaultRouting {
         return card
     }
 
-    /// The host input (0-based) where slot 2's inputs start on ThunderBridge;
-    /// `SymphonySlot2InputBase` in the driver.
+    /// The host input (0-based) where slot 2's inputs start on ThunderBridge
+    /// under a card-by-card driver (build 149 and earlier);
+    /// `SymphonyCardByCardSlot2InputBase` in the driver. An analog-first
+    /// driver (150+) has no such base: slot 2's analog inputs follow slot 1's
+    /// analog inputs and its digital inputs slot 1's digital ones.
     public static func thunderboltSlot2InputBase(slot1: IOCardType?) -> Int {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         guard let slot1 else { return perBoard }
@@ -2105,11 +2166,20 @@ public enum ThunderboltInputMeterMap {
     /// Host inputs the meter payload carries (words 0-31).
     public static let hostInputCount = 32
 
-    /// The capture table the unit carries: the driver's board-order table
-    /// with `replayed` (``InputRoutingReplay/writes(saved:columns:pairCount:)``)
+    /// The capture table the unit carries under a card-by-card driver
+    /// (build 149 and earlier): the driver's board-order table with
+    /// `replayed` (``InputRoutingReplay/writes(saved:columns:pairCount:)``)
     /// written over it, as the app sends them at connect.
     public static func currentRoutes(slot1: IOCardType?, replayed: [Route]) -> [Route] {
-        var table = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1)
+        currentRoutes(slot1: slot1, slot2: nil, order: .cardByCard, replayed: replayed)
+    }
+
+    /// The capture table the unit carries: the serving driver's table in its
+    /// `order` (``SymphonyIODefaultRouting/thunderboltInputRoutes(slot1:slot2:order:)``)
+    /// with `replayed` written over it.
+    public static func currentRoutes(slot1: IOCardType?, slot2: IOCardType?, order: ThunderboltChannelOrder,
+                                     replayed: [Route]) -> [Route] {
+        var table = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1, slot2: slot2, order: order)
         for write in replayed {
             guard write.destination >= SymphonyIORoutingAddress.p2pBase else { continue }
             let n = Int(write.destination - SymphonyIORoutingAddress.p2pBase)
