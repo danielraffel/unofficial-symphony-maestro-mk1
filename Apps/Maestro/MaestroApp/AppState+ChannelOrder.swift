@@ -105,6 +105,10 @@ extension AppState {
         symphonyCardInputNamingRevision += 1
         viewReloadToken = UUID()
         guard wasKnown, connectionMode == .hardware else { return }
+        // As after a link recovery: the strips are numbered from the new
+        // table until a replay lands, and the mixers are owed a whole write.
+        thunderboltInputRoutingWritten = false
+        tb.cardMixers.noteOwed()
         invalidateCardOutputTable(tb)
         if usesTwoUnitReplay { twoUnitReplayNeeded = true } else { inputRoutingReplayNeeded = true }
     }

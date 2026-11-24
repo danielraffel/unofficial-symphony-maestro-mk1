@@ -62,6 +62,11 @@ struct ChannelOrderAppTests {
         #expect(new.thunderboltUnitOrder(unit: .a) == nil)
         #expect(new.thunderboltChannelOrderUnknownReason != nil)
         #expect(new.cardTableUnreadableReason() != nil)
+        // An Output Routing click is not sent either while the order is not known.
+        await #expect(throws: (any Error).self) {
+            try await new.writeOutputRoute(destination: SymphonyIORoutingAddress.ioBoard1Base, source: 8, device: newTB)
+        }
+        #expect(!driver.log.contains { if case .route = $0 { true } else { false } })
         driver.channelOrder = nil   // the fake answers as a build-150 driver would
         await new.refreshThunderboltChannelOrder(newTB)
         #expect(new.thunderboltUnitOrder(unit: .a) == ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16))
@@ -75,6 +80,10 @@ struct ChannelOrderAppTests {
         let channels = Set(table.keys.compactMap { new.thunderboltXLinkChannel(forDestination: $0) })
             .union(new.thunderboltUnreachedChannels)
         #expect(channels == Set(0..<32))
+        // Once known a click is sent (the positive control): slot 1's ADAT 1
+        // is XLink 8 (the A16 in slot 2 has no analog outputs).
+        _ = try? await new.writeOutputRoute(destination: SymphonyIORoutingAddress.ioBoard0Base + 8, source: 8, device: newTB)
+        #expect(driver.log.contains { if case .route(channel: 8, _, true) = $0 { true } else { false } })
     }
 
     @Test("The first connect with driver 150 and moving cards resets the routing once and shows the notice")

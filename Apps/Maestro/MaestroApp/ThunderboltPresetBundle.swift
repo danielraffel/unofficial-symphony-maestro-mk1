@@ -155,7 +155,7 @@ extension AppState {
         }
         let orderB = recallB ? thunderboltUnitOrder(unit: .b) : nil
         let restoresRouting = legacy || preset.routingApplies(current: orderA.order)
-        if !restoresRouting { recallWarnings.add(ThunderboltPreset.routingSkippedNote) }
+        if !restoresRouting { recallWarnings.add(ThunderboltPreset.routingSkippedNote(current: orderA.order)) }
         recallWritesStarted = true
         try await Task.detached {
             try connection.withPresetLock {

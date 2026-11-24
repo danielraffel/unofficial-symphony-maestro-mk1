@@ -1780,6 +1780,10 @@ enum HeadphoneCrosspoint {
         }
         remember(headphone, sourceID)
 
+        if transport == .thunderbolt, let reason = state.thunderboltChannelOrderUnknownReason {
+            print("[Maestro] HP\(headphone.rawValue + 1) crosspoint: not written — \(reason)")
+            return false
+        }
         let order = transport == .thunderbolt ? state.thunderboltDisplayOrder(unit: .a) : nil
         guard let srcLeft = SymphonyIOHeadphoneRouting.inheritedSource(
                 forDestination: pair.left, cachedRoutes: cachedRoutes, transport: transport,

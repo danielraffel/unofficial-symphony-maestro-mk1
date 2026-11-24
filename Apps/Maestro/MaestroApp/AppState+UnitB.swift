@@ -440,6 +440,9 @@ extension AppState {
     /// 32-63), through unit A's connection: the card's routing is not a unit's.
     @MainActor
     func writeUnitBOutputRoutePair(destLeft: UInt8, gridRow row: Int?) async throws {
+        if let reason = thunderboltChannelOrderUnknownReason {
+            throw DeviceConnectionError.transportError("Unit B output route not sent: \(reason)")
+        }
         guard let routes = Self.unitBRoutePair(destLeft: destLeft, gridRow: row,
                                                order: thunderboltDisplayOrder(unit: .b)) else {
             throw DeviceConnectionError.transportError("No unit B card route for output \(destLeft)")
@@ -504,6 +507,9 @@ extension AppState {
         guard let b = unitBDevice as? ThunderboltUnitBConnection,
               let card = device as? ThunderboltDeviceConnection else {
             throw DeviceConnectionError.notConnected
+        }
+        if let reason = thunderboltChannelOrderUnknownReason {
+            throw DeviceConnectionError.transportError("Unit B output preset not sent: \(reason)")
         }
         var writes: [ThunderboltCardRouting.Route] = []
         for (col, column) in columns.enumerated() {

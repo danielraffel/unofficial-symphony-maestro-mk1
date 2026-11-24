@@ -62,9 +62,14 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     }
 
     /// What a restore says when it skips the file's routing.
-    public static let routingSkippedNote = "Routing not restored: this file was saved with Mac channels in the "
-        + "other order (Maestro now uses Apogee's order, all analog first, then digital). "
-        + "Set the routing again and save the file again."
+    public static func routingSkippedNote(current: ThunderboltChannelOrder) -> String {
+        current == .analogFirst
+            ? "Routing not restored: this file was saved before Mac channels were in Apogee's order "
+                + "(all analog first, then digital). Set the routing again and save the file again."
+            : "Routing not restored: this file was saved with Mac channels in Apogee's order (all analog "
+                + "first, then digital), which the ThunderBridge driver now running does not use. Unplug and "
+                + "replug the ThunderBridge, or restart the Mac, so the updated driver runs."
+    }
 
     public struct Peripheral: Codable, Sendable, Equatable {
         public var boards: [UInt8]

@@ -3173,6 +3173,11 @@ final class AppState: @unchecked Sendable {
         if let thunderbolt = device as? ThunderboltDeviceConnection {
             // Converters route through `applyConverterRouting` (their own
             // grid and channels); this path is the Symphony I/O table.
+            // The XLink channel depends on the order the driver programmed;
+            // nothing is sent while it has not said which.
+            if let reason = thunderboltChannelOrderUnknownReason {
+                throw DeviceConnectionError.transportError("Output route not sent: \(reason)")
+            }
             guard let route = thunderboltCardRoute(destination: destination, source: source, unitBActive: unitBOnCard) else {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
