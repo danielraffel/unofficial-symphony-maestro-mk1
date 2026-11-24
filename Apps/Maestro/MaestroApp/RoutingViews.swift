@@ -74,6 +74,7 @@ struct InputRoutingView: View {
     }
     private var canWrite: Bool {
         (unit == .a || appState.unitBInputRoutingAllowed) && !appState.hardwareWritesSuspended
+            && appState.routingHardwareAvailable
     }
     private var unitBResetRoutes: [SymphonyIODefaultRouting.Route] {
         // The table the driver programs for unit B in its channel order:
@@ -208,6 +209,7 @@ struct InputRoutingView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(!appState.routingHardwareAvailable)
                 .maestroHelp("Put Input Routing back to the default: each software input records the matching hardware input.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
@@ -245,7 +247,8 @@ struct InputRoutingView: View {
                         RoutingPresetChannelOrder.unmark(name: name, presetKey: presetKey)
                         presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
                     },
-                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) }
+                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) },
+                    canLoad: appState.routingHardwareAvailable
                 )
             }
             .disabled(isLoadingRoutes || !canWrite)
@@ -276,6 +279,7 @@ struct InputRoutingView: View {
                         isActiveCell: { row, col in routes[row] == col },
                         hoverRow: $hoverRow,
                         hoverCol: $hoverCol,
+                        isEnabled: appState.routingHardwareAvailable,
                         onCellTap: { row, col in
                             guard !isLoadingRoutes, canWrite, routes[row] != col else { return }
                             let previousRoutes = appState.thunderboltCaptureRoutes(unit: unit)
@@ -754,6 +758,7 @@ struct OutputRoutingView: View {
                 Button("Reset Routing") { requestRoutingReset() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(!appState.routingHardwareAvailable)
                 .maestroHelp("Put Output Routing back to the default: each software output goes to the matching hardware output.")
                 .routingResetPrompt($resetPrompt) {
                     Task { await resetToDefaultRouting() }
@@ -762,9 +767,11 @@ struct OutputRoutingView: View {
                 // (APRoutingDeviceColumnViewController.m:212-219); Symphony I/O only.
                 if appState.connectedUnit == nil {
                     IdentifyButton(title: appState.unitBOnCard ? "Identify A" : "Identify",
-                                   device: appState.device, state: appState.identifyA)
+                                   device: appState.routingHardwareAvailable ? appState.device : nil,
+                                   state: appState.identifyA)
                     if appState.unitBOnCard {
-                        IdentifyButton(title: "Identify B", device: appState.unitBDevice,
+                        IdentifyButton(title: "Identify B",
+                                       device: appState.routingHardwareAvailable ? appState.unitBDevice : nil,
                                        state: appState.identifyB)
                     }
                 }
@@ -774,7 +781,8 @@ struct OutputRoutingView: View {
                     onSave: { name in savePreset(name) },
                     onLoad: { name in loadPreset(name) },
                     onDelete: { name in deletePreset(name) },
-                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) }
+                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) },
+                    canLoad: appState.routingHardwareAvailable
                 )
             }
             .disabled(isLoadingRoutes)
@@ -804,6 +812,7 @@ struct OutputRoutingView: View {
                         hoverCol: $hoverCol,
                         columnMeterLevels: [],
                         columnGroups: grid.columnGroups,
+                        isEnabled: appState.routingHardwareAvailable,
                         onCellTap: { gridRow, gridCol in
                             guard !isLoadingRoutes, !appState.hardwareWritesSuspended,
                                   let cell = grid.cell(gridRow: gridRow, column: gridCol) else { return }
@@ -1342,7 +1351,7 @@ struct OutputRoutingView: View {
                     : (refusal ?? "Maestro has not read the second Symphony I/O's cards since it connected."), isRefusal: !ready)
             return
         }
-        guard appState.device != nil else { return }
+        guard appState.device != nil, appState.routingHardwareAvailable else { return }
         let b1 = appState.primaryBoardReading
         let b2 = appState.secondaryBoardReading
         if let refusal = RoutingResetGuard.refusalReason(board1: b1, board2: b2) {
@@ -1463,6 +1472,11 @@ struct RoutingGridView: View {
     /// Headers over runs of columns (two Symphony I/Os: one per unit), in
     /// place of the single `colGroupLabel` header. Empty: the single header.
     var columnGroups: [(label: String, count: Int)] = []
+    /// False with no hardware connected: the grid shows the saved routing and
+    /// ignores clicks (the original showed no routing rows without a device,
+    /// `og_source/maestro2/App/Controllers/APOutputRoutingTabRowViewController.m:129-133`,
+    /// and disabled Identify, `APRoutingDeviceColumnViewController.m:185-188`).
+    var isEnabled: Bool = true
     let onCellTap: (Int, Int) -> Void
 
     private let cellSize: CGFloat = 40
@@ -1588,6 +1602,7 @@ struct RoutingGridView: View {
                         let isHovered = hoverRow == row || hoverCol == col
 
                         Button {
+                            guard isEnabled else { return }
                             onCellTap(row, col)
                         } label: {
                             ZStack {
@@ -1604,6 +1619,7 @@ struct RoutingGridView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .disabled(!isEnabled)
                         .contentShape(Rectangle())
                         .onHover { hovering in
                             if hovering {
@@ -1636,6 +1652,9 @@ struct PresetMenuButton: View {
     /// The menu line for a name (a routing preset of the old channel order
     /// is marked, `RoutingPresetChannelOrder`); the actions get the name.
     var label: (String) -> String = { $0 }
+    /// False while no hardware is connected: a preset would write routes, so
+    /// loading is disabled (saving and deleting stay available).
+    var canLoad: Bool = true
 
     @State private var showSaveAlert: Bool = false
     @State private var newPresetName: String = ""
@@ -1649,6 +1668,7 @@ struct PresetMenuButton: View {
                 } else {
                     ForEach(presetNames, id: \.self) { name in
                         Button(label(name)) { onLoad(name) }
+                            .disabled(!canLoad)
                     }
                 }
             }

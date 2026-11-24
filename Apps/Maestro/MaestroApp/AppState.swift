@@ -304,6 +304,17 @@ final class AppState: @unchecked Sendable {
     /// Latches the single unit-B identity attempt for the current connection.
     var unitBIdentityAttempted = false
 
+    /// Whether a unit is there to write to. Routing pages disable Reset
+    /// Routing, Identify and preset loading while this is false, and the
+    /// status bar shows dashes. Simulation counts as connected.
+    var routingHardwareAvailable: Bool {
+        Self.routingHardwareAvailable(mode: connectionMode, hasDevice: device != nil)
+    }
+
+    nonisolated static func routingHardwareAvailable(mode: ConnectionMode, hasDevice: Bool) -> Bool {
+        mode != .disconnected && hasDevice
+    }
+
     /// Currently connected device (real or simulated).
     var device: (any DeviceConnection)? {
         willSet {

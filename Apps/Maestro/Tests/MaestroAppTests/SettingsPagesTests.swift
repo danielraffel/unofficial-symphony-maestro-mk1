@@ -134,7 +134,7 @@ struct SettingsPagesTests {
         #expect(tasks == 1)
         let propertyTasks = view.components(separatedBy: ".task(id: appState.viewReloadToken)").count - 1
         #expect(propertyTasks == 1)
-        #expect(view.contains("private var isLoading: Bool { settingsLoading || propertiesLoading }"))
+        #expect(view.contains("private var isLoading: Bool { settingsLoading || propertiesLoading || !appState.routingHardwareAvailable }"))
     }
 
     @Test("App Settings is one form with its sections in the owner's order")

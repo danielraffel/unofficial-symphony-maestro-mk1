@@ -24,15 +24,18 @@ struct StatusBarView: View {
         HStack(spacing: 16) {
             // Clock lock indicator
             HStack(spacing: 4) {
-                Image(systemName: shownClockLocked ? "lock.fill" : "lock.open")
-                    .foregroundStyle(shownClockLocked ? .green : .red)
+                // No hardware: show a dash, never the last connection's Ready.
+                Image(systemName: !hardwareAvailable ? "lock.open" : shownClockLocked ? "lock.fill" : "lock.open")
+                    .foregroundStyle(!hardwareAvailable ? Color.secondary : shownClockLocked ? .green : .red)
                     .font(.system(size: 11))
-                Text(PortStatusMessage.clock(locked: shownClockLocked, link: appState.transportType == .thunderbolt ? appState.thunderboltPortLink : .other))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                Text(!hardwareAvailable ? "—" : PortStatusMessage.clock(locked: shownClockLocked, link: appState.transportType == .thunderbolt ? appState.thunderboltPortLink : .other))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
             .contentShape(Rectangle())
-            .maestroHelp(shownClockLocked
+            .maestroHelp(!hardwareAvailable
+                ? "Clock Status: no hardware is connected."
+                : shownClockLocked
                 ? "Clock Status: the Symphony I/O is locked to its clock source."
                 : "Clock Status: the Symphony I/O is not locked to its clock source. Check Clock Source in Device Settings > Clock.")
 
@@ -175,6 +178,8 @@ struct StatusBarView: View {
     /// The unit's own lock state where it reports one (ThunderBridge and PCIe),
     /// held "locked" for the moments after a rate change as before; otherwise
     /// the Core Audio rate comparison.
+    private var hardwareAvailable: Bool { appState.routingHardwareAvailable }
+
     private var shownClockLocked: Bool {
         if appState.clockLockSuppressed { return true }
         return ClockStatusRule.shownLocked(isUSB: appState.transportType == .usb, reported: appState.reportedClockLocked ?? clockLocked)

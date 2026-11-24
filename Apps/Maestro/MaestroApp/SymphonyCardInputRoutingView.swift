@@ -39,6 +39,7 @@ struct SymphonyCardInputRoutingView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .disabled(!appState.routingHardwareAvailable)
                 .routingResetPrompt($resetPrompt) {
                     Task {
                         do {
@@ -76,7 +77,8 @@ struct SymphonyCardInputRoutingView: View {
                         RoutingPresetChannelOrder.unmark(name: name, presetKey: presetKey)
                         presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
                     },
-                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) })
+                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) },
+                    canLoad: appState.routingHardwareAvailable)
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -97,6 +99,7 @@ struct SymphonyCardInputRoutingView: View {
                             && routing.source(host: row * 2 + 1, edits: appState.symphonyCardInputEdits) == source + 1
                     },
                     hoverRow: $hoverRow, hoverCol: $hoverColumn,
+                    isEnabled: appState.routingHardwareAvailable,
                     onCellTap: { row, column in
                         guard !writing else { return }
                         guard columns.indices.contains(column) else { return }

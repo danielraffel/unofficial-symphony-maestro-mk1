@@ -53,6 +53,7 @@ struct ConverterOutputRoutingView: View {
                 Button("Reset Routing") { resetPrompt = converterResetPrompt() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(!appState.routingHardwareAvailable)
                     .maestroHelp("Put Output Routing back to the default placement across the converter chain.")
                     .routingResetPrompt($resetPrompt) {
                         Task {
@@ -80,6 +81,7 @@ struct ConverterOutputRoutingView: View {
                         isActiveCell: { row, col in layout.outputCellActive(row: row, column: col, sources: sources) },
                         hoverRow: $hoverRow,
                         hoverCol: $hoverCol,
+                        isEnabled: appState.routingHardwareAvailable,
                         onCellTap: { row, col in
                             guard let change = layout.toggleOutput(row: row, column: col,
                                                                    edits: appState.converterRoutingEdits) else { return }
@@ -128,6 +130,7 @@ struct ConverterInputRoutingView: View {
                 Button("Reset Routing") { resetPrompt = converterResetPrompt() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabled(!appState.routingHardwareAvailable)
                     .maestroHelp("Put Input Routing back to the default placement across the converter chain.")
                     .routingResetPrompt($resetPrompt) {
                         Task {
@@ -157,6 +160,7 @@ struct ConverterInputRoutingView: View {
                         isActiveCell: { row, col in layout.inputColumn(row: row, sources: sources) == col },
                         hoverRow: $hoverRow,
                         hoverCol: $hoverCol,
+                        isEnabled: appState.routingHardwareAvailable,
                         onCellTap: { row, col in
                             guard let change = layout.toggleInput(row: row, column: col,
                                                                   edits: appState.converterRoutingEdits) else { return }
@@ -214,7 +218,8 @@ private struct ConverterRoutingPresetButton: View {
             onDelete: { name in
                 appState.converterRoutingStore?.deletePreset(name: name, input: input)
                 presetNames = appState.converterRoutingStore?.presetNames(input: input) ?? []
-            }
+            },
+            canLoad: appState.routingHardwareAvailable
         )
     }
 }

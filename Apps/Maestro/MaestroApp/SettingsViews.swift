@@ -131,7 +131,15 @@ struct DeviceSettingsView: View {
     /// and a single shared flag would let the faster one re-enable the controls
     /// while the slower one is still assigning readbacks -- which would then reach
     /// the pickers' onChange as user selections and be written to the hardware.
-    private var isLoading: Bool { settingsLoading || propertiesLoading }
+    private var isLoading: Bool { settingsLoading || propertiesLoading || !appState.routingHardwareAvailable }
+
+    /// Whether the grey placeholder skeleton shows. With no hardware the load
+    /// never finishes, so the page shows its last values (or dashes) with the
+    /// controls disabled instead of looking stuck. Maestro 2 had no device
+    /// settings page without a device
+    /// (`og_source/maestro2/App/Controllers/APSystemSymphonySetupViewController.m:67-70`
+    /// disables the controls rather than redacting them).
+    private var showsPlaceholder: Bool { (settingsLoading || propertiesLoading) && appState.routingHardwareAvailable }
 
     /// Hover text for the AIM info button — the one fact that matters at a glance.
     private static let aimExplainer =
@@ -288,7 +296,7 @@ struct DeviceSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Device Settings")
-        .redacted(reason: isLoading ? .placeholder : [])
+        .redacted(reason: showsPlaceholder ? .placeholder : [])
         // Redaction is cosmetic -- it greys the content out and still delivers every
         // click. Combined with the `guard !isLoading` in each onChange, that silently
         // THREW AWAY the user's change: the picker moved to the new value, nothing was
@@ -478,9 +486,9 @@ struct DeviceSettingsView: View {
                             Spacer()
                             HStack(spacing: 4) {
                                 Circle()
-                                    .fill(shownClockLocked ? .green : .red)
+                                    .fill(!appState.routingHardwareAvailable ? Color.gray : shownClockLocked ? .green : .red)
                                     .frame(width: 8, height: 8)
-                                Text(PortStatusMessage.clock(locked: shownClockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                                Text(!appState.routingHardwareAvailable ? "—" : PortStatusMessage.clock(locked: shownClockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                                     .foregroundStyle(.secondary)
                                 Button { showClockStatusInfo.toggle() } label: {
                                     Image(systemName: "info.circle")
