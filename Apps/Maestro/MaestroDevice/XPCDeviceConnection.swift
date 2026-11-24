@@ -990,6 +990,9 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// The least time between two transfers of the restore (its reads and
     /// the writes after them); zero: as fast as they go.
     private var restoreSpacing: Duration = .zero
+    /// The least time before each of the restore's reads, also when
+    /// `restoreSpacing` is zero: the strip reads go as a burst otherwise.
+    private var restoreReadGap: Duration = .zero
     private var lastRestoreTransfer: ContinuousClock.Instant?
 
     /// Start skipping writes the unit already holds, for the restore: routes
@@ -997,10 +1000,11 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// says it holds, and, with `compareReads`, every write whose value the
     /// unit can be asked for first (``readCompareRequest(for:)``) and is seen
     /// to answer (``trustedRead(_:)``). `spacing` is the least time between
-    /// two of the restore's transfers. Returns whether the helper said what
-    /// it holds.
+    /// two of the restore's transfers, `readGap` the least time before each
+    /// of its reads. Returns whether the helper said what it holds.
     @discardableResult
-    public func beginRestoreElision(compareReads: Bool = false, spacing: Duration = .zero) async -> Bool {
+    public func beginRestoreElision(compareReads: Bool = false, spacing: Duration = .zero,
+                                    readGap: Duration = .zero) async -> Bool {
         let shadow = await transport.writeShadow()
         lock.withLock {
             elisionShadow = shadow
@@ -1017,6 +1021,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             preferenceBlock = nil
             stripVerdicts = [:]
             restoreSpacing = spacing
+            restoreReadGap = readGap
             lastRestoreTransfer = nil
         }
         return shadow != nil
@@ -1064,10 +1069,14 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         }
     }
 
-    /// Wait until the restore's spacing has passed since its last transfer.
-    private func paceRestoreTransfer() async {
-        let (active, spacing, last) = lock.withLock { (restoreActive, restoreSpacing, lastRestoreTransfer) }
+    /// Wait until the restore's spacing (for a read, at least its read gap)
+    /// has passed since its last transfer.
+    private func paceRestoreTransfer(read: Bool = false) async {
+        let (active, configured, gap, last) = lock.withLock {
+            (restoreActive, restoreSpacing, restoreReadGap, lastRestoreTransfer)
+        }
         guard active else { return }
+        let spacing = read ? max(configured, gap) : configured
         if spacing > .zero, let last {
             let wait = last + spacing - ContinuousClock.now
             if wait > .zero { try? await Task.sleep(for: wait) }
@@ -1078,7 +1087,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// One read of the restore, paced. Nil unless the helper says the unit
     /// answered (status 0) with the length asked for.
     private func restoreRead(_ read: USBControlRequest) async -> Data? {
-        await paceRestoreTransfer()
+        await paceRestoreTransfer(read: true)
         guard let reply = try? await transport.sendGetProperty(
             bRequest: read.request, wValue: read.value, wIndex: read.index,
             dataLength: UInt16(read.data.count)), reply.status == 0 else { return nil }
@@ -1190,7 +1199,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// is written. A mixer must never be routed with a strip left at the
     /// unit's power-on 0 dB because a residue reply looked like the saved
     /// value.
-    public func verifyMixerStrips(mixer: Int, channels: [Int]) async {
+    /// Stops at once when `isCurrent` turns false or the task is cancelled
+    /// (no verdicts are kept, so every strip is written by a later run).
+    public func verifyMixerStrips(mixer: Int, channels: [Int],
+                                  isCurrent: @Sendable () async -> Bool = { true }) async {
         guard lock.withLock({ readCompareActive }) else { return }
         var keys: [RequestAddress] = []
         var values: [RequestAddress: Data] = [:]
@@ -1207,6 +1219,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
                 guard trusted else { continue }
                 guard let compare = Self.readCompareRequest(for: write), compare.reads.count == 1 else {
                     trusted = false; why = String(format: "no read for 0x%02X strip %d", write.request, channel); continue
+                }
+                guard !Task.isCancelled, await isCurrent() else {
+                    print("[Maestro] USB restore mixer \(mixer + 1) strips: reads stopped (the restore was superseded)")
+                    return
                 }
                 switch await trustedRead(compare.reads[0]) {
                 case .value(let data) where Self.plausibleStripReply(write.request, data):
@@ -1376,23 +1392,116 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         return SymphonyIOResetRequest(rawValue: byte)
     }
 
+    /// The 0xDB read as the reset request's checks make it.
+    static let resetRequestRead = USBControlRequest(
+        direction: .read, request: SymphonyIOResetRequest.command, data: Data(count: 1))
+
+    /// Reads that put a first byte other than a reset request's in the shared
+    /// buffer, for the checks of 0xDB (``answeredResetRequest()``). Several,
+    /// because any one of them can happen to answer 3 or 4 (a board major
+    /// version, a meter bank): the speaker and headphone levels, the
+    /// preference block, both slots' board versions.
+    static let resetRequestDecoys: [USBControlRequest] = [
+        USBControlRequest(direction: .read, request: 0x26, data: Data(count: 1)),
+        USBControlRequest(direction: .read, request: 0x23, value: 0, index: 0, data: Data(count: 1)),
+        USBControlRequest(direction: .read, request: 0x23, value: 0, index: 1, data: Data(count: 1)),
+        USBControlRequest(direction: .read, request: 0xDE, data: Data(count: 4)),
+        USBControlRequest(direction: .read, request: 0xA0, value: 0, index: 5, data: Data(count: 3)),
+        USBControlRequest(direction: .read, request: 0xA0, value: 0, index: 6, data: Data(count: 3)),
+    ]
+
+    /// One check of 0xDB, with `sequenceOwner` and `readGate` held: the
+    /// read, a decoy whose first byte is seen to differ, the read again.
+    /// The value only when the second read repeats the first (the unit
+    /// answered 0xDB, the decoy's bytes did not come through); nil when a
+    /// read failed or no decoy differed (``trustedRead(_:)``).
+    private func answeredResetRequestHoldingGates() async -> UInt8? {
+        let read = Self.resetRequestRead
+        guard let first = await restoreRead(read), let byte = first.first else { return nil }
+        var decoyed = false
+        for decoy in Self.resetRequestDecoys {
+            guard let reply = await restoreRead(decoy), let other = reply.first else { continue }
+            if other != byte { decoyed = true; break }
+        }
+        guard decoyed, let again = await restoreRead(read), again == first else { return nil }
+        return byte
+    }
+
+    /// One check of 0xDB (``answeredResetRequestHoldingGates()``). Holds the
+    /// write sequence as well as the read gate, so no write of this app (a
+    /// fader, a route) lands between its reads and leaves its bytes behind.
+    private func answeredResetRequest() async -> UInt8? {
+        guard transport.isConnected else { return nil }
+        await sequenceOwner.acquire()
+        await readGate.acquire()
+        let value = await answeredResetRequestHoldingGates()
+        await readGate.release()
+        await sequenceOwner.release()
+        return value
+    }
+
+    /// A front-panel reset (0xDB ResetAll or ResetAllButCalibration) only when
+    /// the unit is seen to say so twice: two checks `separation` apart, each
+    /// a read, a decoy and the read again (``answeredResetRequest()``), both
+    /// answering the same 3 or 4. Nil otherwise: the reset resets Maestro's
+    /// saved state for the unit, and a reply the firmware did not give (the
+    /// bytes of the transfer before it, `trustedRead(_:)`) must never do
+    /// that. `isCurrent` is asked after the pause.
+    public func confirmFrontPanelReset(separation: Duration,
+                                       isCurrent: @Sendable () async -> Bool = { true }) async -> SymphonyIOResetRequest? {
+        var seen: [UInt8] = []
+        for check in 0..<2 {
+            if check > 0 {
+                do { try await Task.sleep(for: separation) } catch { return nil }
+                guard await isCurrent() else { return nil }
+            }
+            guard let value = await answeredResetRequest(),
+                  SymphonyIOResetRequest(rawValue: value)?.isFrontPanelReset == true else {
+                print("[Maestro] USB front panel reset: 0xDB not confirmed (check \(check + 1) of 2); treated as no reset")
+                return nil
+            }
+            seen.append(value)
+        }
+        guard seen[0] == seen[1] else {
+            print("[Maestro] USB front panel reset: 0xDB answered \(seen[0]), then \(seen[1]); treated as no reset")
+            return nil
+        }
+        return SymphonyIOResetRequest(rawValue: seen[0])
+    }
+
+    /// Whether the unit is seen to answer None (2) to 0xDB
+    /// (``answeredResetRequest()``): the request is acknowledged.
+    public func resetRequestReadsNone() async -> Bool {
+        await answeredResetRequest() == SymphonyIOResetRequest.none.rawValue
+    }
+
     /// Acknowledge a front-panel reset once the settings are on the unit:
     /// write None, as the original's clearResetRequest did
     /// (og_source/eecontrol/generic/Products/SymphonyIO/SymphonyIOControl.cpp:1167-1180,
     /// called at og_source/maestrolink/Software/SymphonyIO.cpp:6427).
+    ///
+    /// True only once the unit is seen to answer None afterwards
+    /// (``resetRequestReadsNone()``; a plain read right after the write
+    /// would return the write's own byte from the shared buffer, answered or
+    /// not). Up to `attempts` writes, each followed by that check.
     @discardableResult
-    public func clearResetRequest() async -> Bool {
-        guard writeGate.allowsWrites, transport.isConnected else { return false }
-        await sequenceOwner.acquire()
-        var sent = true
-        do {
-            try await transport.sendSetProperty(bRequest: SymphonyIOResetRequest.command, wValue: 0, wIndex: 0,
-                                                data: Data([SymphonyIOResetRequest.none.rawValue]))
-        } catch {
-            sent = false
+    public func clearResetRequest(attempts: Int = 3) async -> Bool {
+        for attempt in 0..<max(attempts, 1) {
+            guard writeGate.allowsWrites, transport.isConnected else { return false }
+            await sequenceOwner.acquire()
+            var sent = true
+            do {
+                try await transport.sendSetProperty(bRequest: SymphonyIOResetRequest.command, wValue: 0, wIndex: 0,
+                                                    data: Data([SymphonyIOResetRequest.none.rawValue]))
+            } catch {
+                sent = false
+            }
+            await sequenceOwner.release()
+            if sent, await resetRequestReadsNone() { return true }
+            print("[Maestro] USB front panel reset: clear \(attempt + 1) of \(attempts) "
+                + (sent ? "not seen on the unit (0xDB does not answer None)" : "refused"))
         }
-        await sequenceOwner.release()
-        return sent
+        return false
     }
 
     private func noteSent(_ request: USBControlRequest, ok: Bool) {
@@ -1688,7 +1797,7 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         mixers: for mixer in 0..<2 {
             // During the restore: what the unit has, read first, so a strip
             // write is skipped only when every read of this mixer is believed.
-            await verifyMixerStrips(mixer: mixer, channels: hardwareIndexes)
+            await verifyMixerStrips(mixer: mixer, channels: hardwareIndexes, isCurrent: isCurrent)
             for (strip, channel) in hardwareIndexes.enumerated() where (0...31).contains(channel) {
                 var state = await savedStrip(mixer, strip) ?? USBMixerRestorePlan.defaultStrip
                 for _ in 0..<Self.restoreEditPasses {
