@@ -12,6 +12,14 @@ struct CardMixerReplayTests {
         #expect(!CardMixerReplay.supportsSingleUnit(channelCount: 32, converterFlags: 1))
     }
 
+    @Test("The gap between card mixer commands is short but not zero: both mixers in under a second")
+    func commandGap() {
+        #expect(CardMixerReplay.commandGap == .milliseconds(2))
+        #expect(CardMixerReplay.commandGap > .zero)
+        // 270 commands for two 32-channel mixers (below): the gaps alone.
+        #expect(CardMixerReplay.commandGap * 270 < .seconds(1))
+    }
+
     @Test("16x16 plus 8x8 restores both mixers with the documented command count")
     func commandCountAndRightReturnID() throws {
         let name = "d5-count-\(UUID())"

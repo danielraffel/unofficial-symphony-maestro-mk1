@@ -32,9 +32,12 @@ public enum CardMixerReplay {
     }
     /// Gap between two commands. Each 0xB0-0xB3 makes the driver recompute
     /// the whole mixer, 66 card register writes at 32 channels
-    /// (SymphonyThunderbridge.cpp RecomputeCardMixer); 0xB4 makes 2. At 20 ms
-    /// that is at most 50 commands, about 3,300 register writes, a second.
-    public static let commandGap: Duration = .milliseconds(20)
+    /// (SymphonyThunderbridge.cpp RecomputeCardMixer); 0xB4 makes 2. Each
+    /// command is a round trip to the driver, which writes the card
+    /// registers (no XLink traffic), so a short gap is enough to keep other
+    /// work moving: both mixers are written in under a second (6 s at the
+    /// earlier 20 ms). ThunderBridge only.
+    public static let commandGap: Duration = .milliseconds(2)
     /// 21 samples 250 ms apart: 5.0 s of a stable link before the first write.
     public static let stableSamples = 21
     public static let stableInterval: Duration = .milliseconds(250)
