@@ -1599,7 +1599,7 @@ struct RoutingGridView: View {
                     // Routing cells
                     ForEach(0..<columnCount, id: \.self) { col in
                         let isActive = isActiveCell(row, col)
-                        let isHovered = hoverRow == row || hoverCol == col
+                        let isHovered = isEnabled && (hoverRow == row || hoverCol == col)
 
                         Button {
                             guard isEnabled else { return }
@@ -1622,7 +1622,9 @@ struct RoutingGridView: View {
                         .disabled(!isEnabled)
                         .contentShape(Rectangle())
                         .onHover { hovering in
-                            if hovering {
+                            // No crosshair on a read-only grid (no Symphony
+                            // connected): it looked clickable (owner, 2026-11-24).
+                            if hovering, isEnabled {
                                 hoverRow = row
                                 hoverCol = col
                             } else if hoverRow == row && hoverCol == col {

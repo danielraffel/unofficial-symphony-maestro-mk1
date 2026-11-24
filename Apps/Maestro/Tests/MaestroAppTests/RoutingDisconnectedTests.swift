@@ -89,4 +89,14 @@ struct PagesDisconnectedTests {
         #expect(text.contains("Text(!hardwareAvailable ? \"—\" : PortStatusMessage.clock("))
         #expect(text.contains("!hardwareAvailable ? Color.secondary : shownClockLocked ? .green : .red"))
     }
+
+    /// A read-only grid (no Symphony connected) shows no hover crosshair
+    /// (owner, 2026-11-24: it looked clickable).
+    @Test func readOnlyGridHasNoHoverHighlight() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("MaestroApp/RoutingViews.swift")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        #expect(text.contains("let isHovered = isEnabled && (hoverRow == row || hoverCol == col)"))
+        #expect(text.contains("if hovering, isEnabled {"))
+    }
 }
