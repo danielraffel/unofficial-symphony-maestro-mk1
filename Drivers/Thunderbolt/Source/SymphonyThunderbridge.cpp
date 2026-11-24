@@ -3147,6 +3147,20 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // Without this, the XMOS may apply partial routing and produce glitches.
         // Without the final unlock (step 19b-4), XMOS stays muted = total silence.
         // Evidence: MaestroVolumeProxy.c:783-786 configure_fpga_routing() step 1.
+        //
+        // dext 152, log only: on the first configuration of this driver
+        // instance (Start, or the unit's first appearance after it), whether
+        // the unit already holds a preference lock before the driver's own.
+        // Groundwork for telling a replug from a power cycle; nothing
+        // depends on it.
+        if (ivars->linkRecoveryCount == 0 && !ivars->symphonyLinkConfigured) {
+            uint8_t locked = 0xFF;
+            const bool read = ReadVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                symphonyAddr, kSIOCmd_PreferenceLoadLock,
+                                                0, &locked, 1, txSeq, ivars->isLegacyPCIe2100);
+            if (read) STLOG("SymphonyIO: unit found locked=%u at start", locked);
+            else STLOG("SymphonyIO: unit lock state at start not read");
+        }
         {
             uint8_t lock = 1;
             bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
