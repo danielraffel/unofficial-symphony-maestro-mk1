@@ -162,7 +162,7 @@ struct ChannelOrderAppTests {
         #expect(!state.cardOutputTableReplayNeeded)
         let notice = state.channelOrderResetNotice ?? ""
         #expect(notice.contains("DAW input 9, was 17"))
-        #expect(notice.contains("Output Routing was kept"))
+        #expect(notice.contains("Output Routing for these cards was kept"))
         #expect(!notice.contains("different physical outputs"))
         #expect(state.channelOrderResetAlert == notice)
     }

@@ -254,7 +254,7 @@ struct ChannelOrderWiringTests {
         #expect(ChannelOrderRoutingReset.runIfNeeded(
             transport: .thunderbolt, serving: .build(150),
             units: [ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .analogADDA16, slot2: .analogADDA16),
-                    ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .none)], defaults: none) == nil)
+                    ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: IOCardType.none)], defaults: none) == nil)
         #expect(ChannelOrderRoutingReset.pendingAlert(defaults: none) == nil)
     }
 
@@ -266,16 +266,16 @@ struct ChannelOrderWiringTests {
         #expect(ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: false, inputExample: example) == """
             DAW input channels are now in Apogee's order: all analog first, then digital (for example, analog input 1 \
             of the card in slot 2 is now DAW input 9, was 17). Input Routing was reset to the defaults, on ThunderBridge \
-            and USB. Output Routing was kept. Set your routes again if you had changed them. Input Routing presets saved \
-            before this update are kept but can't be applied: delete them or save them again. Setup files saved before \
-            this update load without their routing.
+            and USB. Output Routing for these cards was kept. Set your routes again if you had changed them. Input \
+            Routing presets saved before this update are kept but can't be applied: delete them or save them again. \
+            Setup files saved before this update load without their routing.
             """)
         #expect(ChannelOrderRoutingReset.noticeText(inputsMoved: false, outputsMoved: true) == """
             Some Mac outputs now play on different physical outputs. Check levels and speakers before playing loud \
             material. Output Routing (including routes from the mixers and speaker sets) was reset to the defaults, on \
-            ThunderBridge and USB. Input Routing was kept. Set your routes again if you had changed them. Output Routing \
-            presets saved before this update are kept but can't be applied: delete them or save them again. Setup files \
-            saved before this update load without their routing.
+            ThunderBridge and USB. Input Routing for these cards was kept. Set your routes again if you had changed \
+            them. Output Routing presets saved before this update are kept but can't be applied: delete them or save \
+            them again. Setup files saved before this update load without their routing.
             """)
         let two88 = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .optical)
         let bothText = ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: true,
@@ -285,7 +285,8 @@ struct ChannelOrderWiringTests {
         #expect(bothText.contains("Input Routing and Output Routing (including routes from the mixers and speaker sets) were reset"))
         #expect(bothText.contains("Routing presets saved before"))
         // Unit B alone moving is named.
-        #expect(ChannelOrderRoutingReset.inputExample(units: [nil, rig])?.contains("on the second Symphony I/O") == true)
+        #expect(ChannelOrderRoutingReset.inputExample(units: [nil, rig])
+            == "analog input 1 of the card in slot 2 on the second Symphony I/O is now DAW input 41, was 49")
         #expect(ChannelOrderRoutingReset.inputExample(
             units: [ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogDA16)]) == nil)
     }

@@ -111,10 +111,11 @@ public enum ChannelOrderRoutingReset {
             presets = "Routing presets"
         case (false, true):
             reset = "Output Routing (including routes from the mixers and speaker sets) was reset to the "
-                + "defaults, on ThunderBridge and USB. Input Routing was kept."
+                + "defaults, on ThunderBridge and USB. Input Routing for these cards was kept."
             presets = "Output Routing presets"
         default:
-            reset = "Input Routing was reset to the defaults, on ThunderBridge and USB. Output Routing was kept."
+            reset = "Input Routing was reset to the defaults, on ThunderBridge and USB. Output Routing for these cards "
+                + "was kept."
             presets = "Input Routing presets"
         }
         parts.append(reset + " Set your routes again if you had changed them.")
@@ -140,9 +141,11 @@ public enum ChannelOrderRoutingReset {
                 ? "analog input \(channel.channel + 1)"
                 : "\(card.digitalRoutingLabel) input \(channel.channel - analog + 1)"
             let was = ThunderboltChannelOrder.hostChannels(of: channel, slot1: slot1, slot2: slot2, isInput: true).cardByCard
+            // Unit B's channels are Mac 33-64 on the card.
             let unitText = index == 0 ? "" : " on the second Symphony I/O"
-            return "\(what) of the card in slot \(channel.board + 1)\(unitText) is now DAW input \(host + 1)"
-                + (was.map { ", was \($0 + 1)" } ?? ", which had no DAW input before")
+            let offset = index == 0 ? 1 : 33
+            return "\(what) of the card in slot \(channel.board + 1)\(unitText) is now DAW input \(host + offset)"
+                + (was.map { ", was \($0 + offset)" } ?? ", which had no DAW input before")
         }
         return nil
     }
