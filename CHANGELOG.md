@@ -2,6 +2,8 @@
 
 ## 0.9.26 (beta)
 
+This beta fixes Maestro USB audio cutting out and dropping when the Symphony connects, and makes the Software Return and Master faders always move together.
+
 ### Fixed
 
 - **Maestro USB audio no longer cuts out while Maestro is open.** Maestro now reads the Symphony's meters only while a meter is on screen, and no longer rewrites the mixer when you open the Mixer page or after a single failed read. The USB helper no longer writes its log from the audio thread, which made macOS skip a cycle of Maestro USB audio now and then, with Maestro open or closed.
