@@ -10,7 +10,7 @@ This beta fixes Maestro USB audio cutting out and dropping when the Symphony con
 
 ### Fixed
 
-- **On ThunderBridge and PCIe, the outputs stay silent when the driver starts until macOS has put back your saved sample rate, for three seconds at most.** The driver starts the Symphony at 44.1 kHz and macOS sets your rate a moment later; before, the outputs could play during that moment. The front panel still shows 44.1 kHz briefly.
+- **On ThunderBridge and PCIe, the outputs stay silent when the driver starts until macOS has put back your saved sample rate, for three seconds at most.** The driver starts the Symphony at 44.1 kHz and macOS sets your rate a moment later; before, the outputs could play during that moment. The front panel still shows 44.1 kHz briefly. If an app is already playing to the Symphony when the driver starts, it can still be heard at 44.1 kHz for that moment.
 - **"Saving diagnostics…" now appears as soon as you press Stop Diagnostics.** It used to show up a few seconds later.
 - **Maestro USB audio no longer cuts out while Maestro is open.** Maestro now reads the Symphony's meters only while a meter is on screen, and no longer rewrites the mixer when you open the Mixer page or after a single failed read. The USB helper no longer writes its log from the audio thread, which made macOS skip a cycle of Maestro USB audio now and then, with Maestro open or closed.
 - **Over USB, audio no longer stops for a moment when you plug the Symphony in with Maestro open.** Maestro no longer sends routes and the optical format that the unit already has while audio is playing.
