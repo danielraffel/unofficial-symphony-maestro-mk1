@@ -3012,6 +3012,13 @@ final class AppState: @unchecked Sendable {
         // mixers, the routes they feed, then the input
         // routing.
         invalidateCardOutputTable(tb)
+        // A4: the unit may have come back at its own
+        // start-up levels (a power cycle): the quieter of
+        // those and the saved ones, before the routing and
+        // mixer restore below, which takes seconds. The
+        // device settings are not replayed on a recovery,
+        // so this is the only place it runs then.
+        if device === tb { await applyMonitorLevelsAtConnect(tb) }
         if recallInFlight {
             replayDeferral.request()
         } else if usesTwoUnitReplay {
@@ -3020,12 +3027,6 @@ final class AppState: @unchecked Sendable {
             await syncInputRoutingToHardware(restoreFollows: true)
             await syncOutputRoutingToHardware()
         }
-        // A4: the unit may have come back at its own
-        // start-up levels (a power cycle): the quieter of
-        // those and the saved ones. The device settings
-        // are not replayed on a recovery, so this is the
-        // only place it runs then.
-        if device === tb { await applyMonitorLevelsAtConnect(tb) }
     }
 
     /// Sync persisted output routing to hardware on connect/reconnect.
@@ -3553,7 +3554,7 @@ final class AppState: @unchecked Sendable {
                 + (channelReplay.failed == 0 ? "" : ", " + String(channelReplay.failed) + " refused"))
         }
         // The audible half of a saved headphone source: the crosspoint, taken
-        // from the output routing as it stands after the routing replay.
+        // from the saved output routing (never read back from the unit).
         let store = (device as? ThunderboltDeviceConnection)?.settingsStore
             ?? (device as? XPCDeviceConnection)?.settingsStore
         let replaysHeadphones = !(device is XPCDeviceConnection) || XPCDeviceConnection.replaysOnConnect
@@ -3862,9 +3863,10 @@ final class AppState: @unchecked Sendable {
                 await self.readCardTypes()
                 await self.reapplyDigitalSettings()
                 await self.refreshChannelNaming()
-                // Over ThunderBridge the output table goes first and card
-                // mixer writes are held until it is on the card; over USB the
-                // ordered restore (mixers first, output routing last).
+                // Over ThunderBridge the settings this Mac owns, then the
+                // routing and card restore (card mixer writes are held until
+                // the output table is on the card); over USB the ordered
+                // restore (mixers first, output routing last).
                 await self.syncSavedStateToHardware()
 
                 guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }

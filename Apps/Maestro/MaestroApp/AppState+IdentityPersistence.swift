@@ -138,9 +138,14 @@ extension AppState {
             await restoreUSBUnit(usb, helperMixer: lastSelectedMixer)
             return
         }
+        // ThunderBridge: the settings this Mac owns first (monitor mode,
+        // levels, dim, mono, speaker set, Loop Sync, analog channels). None of
+        // them depends on the routing or the card mixers, and the routing and
+        // mixer restore that follows takes seconds. The input routing and the
+        // output restore stay together: one card restore per connect.
+        await syncDeviceSettingsToHardware()
         await syncInputRoutingToHardware(restoreFollows: true)
         await syncOutputRoutingToHardware()
-        await syncDeviceSettingsToHardware()
     }
 
     /// The one USB restore, used by connect and by recovery, one at a time

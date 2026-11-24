@@ -248,6 +248,63 @@ struct CardOutputTableGuardTests {
         expectUnitEqualsTable(state, tb, driver)
     }
 
+    /// Index of the first routing write (an input route, a card output route
+    /// or a card mixer control) in what reached the driver.
+    private func firstRoutingWrite(_ sent: [FakeThunderboltDriver.Command], from: Int = 0) -> Int? {
+        sent.indices.dropFirst(from).first { index in
+            let command = sent[index].command
+            return command == SymphonyIOCommand.audioRouting.rawValue
+                || command == ThunderboltCardRouting.outputRouteCommand
+                || (0xB0...0xB4).contains(command)
+        }
+    }
+
+    @Test("connect: the settings this Mac owns are sent before the routing, then one restore")
+    func connectSendsSettingsBeforeRouting() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0107, mixer1ToLine12: true)
+        driver.boards = (layout.slot1.rawValue, layout.slot2.rawValue)
+        let dim = PropertyAddress(selector: .outputDim)
+        tb.settingsStore.record(.bool(true), for: dim)
+        let dimCommand = try SymphonyIOPropertyMapper.buildWriteRequest(for: dim, value: .bool(true)).request
+        UserDefaults.standard.set(true, forKey: ThunderboltInputRoutingMigration.doneKey)
+        state.peripheralRoutingCache(direction: "input").save([0: 2])
+        await state.syncSavedStateToHardware()
+        await drain(state)
+        let sent = driver.sent
+        let dimAt = try #require(sent.firstIndex { $0.command == dimCommand && $0.port == 0 })
+        let routingAt = try #require(firstRoutingWrite(sent))
+        #expect(dimAt < routingAt, "the saved dim went out after the routing")
+        // Still one restore of the routes and both mixers, in order.
+        #expect(wholeMixerWrites(state, driver) == [1, 1])
+        #expect(violations(state, driver).isEmpty)
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(!state.cardOutputTableReplayNeeded)
+    }
+
+    @Test("a link recovery: the levels at connect are written before the routing and mixer restore")
+    func recoveryLevelsBeforeRouting() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = await connected(identity: 0xF2C0_0108)
+        // The unit came back loud (0 dB); Headphone 1 was saved at -30 dB.
+        tb.recordSavedMonitorLevel(.headphone1, attenuation: 30)
+        let address = ThunderboltDeviceConnection.savedLevelAddress(.headphone1)
+        let levelCommand = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .uint32(30)).request
+        driver.simulateLinkRecovery()
+        _ = tb.probeEndpoint()
+        let mark = driver.sent.count
+        await state.restoreAfterLinkRecovery(tb)
+        await drain(state)
+        let sent = driver.sent
+        let levelAt = try #require(sent.indices.dropFirst(mark).first {
+            sent[$0].command == levelCommand && sent[$0].payload == [30]
+        })
+        let routingAt = try #require(firstRoutingWrite(sent, from: mark))
+        #expect(levelAt < routingAt, "the saved level went out after the routing")
+    }
+
     @Test("with nothing owed the output sync writes nothing, and the same input table written again owes nothing")
     func nothingOwedWritesNothing() async {
         let restore = restoringDefaults()
