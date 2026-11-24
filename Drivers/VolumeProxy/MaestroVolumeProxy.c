@@ -735,6 +735,18 @@ static double   gHwNominalRate = 48000.0;
    sample-time origin, and the plugin must re-anchor when it changes. Starts at
    0, which the plugin reads as "never published". */
 static uint32_t gClockGeneration = 0;
+/* Whether a resetAudioOutput asked for while the output was at generation
+   `asked` still has anything to do now, at `now`. Not when the output has
+   been created again since (a recovery or a device-id rebind that ran while
+   the request waited on gQueue): that output is already the fresh one, and
+   stopping it again is one more audible drop. 1142: a reset that arrived
+   during a USB recovery stopped and restarted the output 24 ms after the
+   recovery had started it. */
+static bool reset_output_still_needed(uint32_t asked, uint32_t now)
+{
+    return asked == now;
+}
+
 /* Device we have a nominal-rate listener registered on, or kAudioObjectUnknown. */
 static AudioObjectID gRateListenerDev = kAudioObjectUnknown;
 /* The device our AudioUnit is actually bound to. CoreAudio reassigns device IDs
@@ -1364,7 +1376,7 @@ static void start_audio_output(MaestroAudioShm* shm)
                at old-mapping slots into the ring we just wiped -- which the new
                sweep then plays. hwHostTime = 0 fails the staleness check, so the
                plugin flywheels until the first real publish. */
-            gClockGeneration++;
+            __atomic_add_fetch(&gClockGeneration, 1u, __ATOMIC_RELEASE);
             maestro_shm_publish_clock(shm, 0.0, 0, 1.0, gHwNominalRate, gClockGeneration);
 
             __atomic_store_n(&shm->delayFrames, D, __ATOMIC_RELEASE);
@@ -2116,6 +2128,29 @@ static int usb_vendor_write(uint8_t bRequest, uint32_t nValue,
     const int err = usb_vendor_write_raw(bRequest, nValue, data, len);
     shadow_note_write(bRequest, nValue, (const uint8_t *)data, len, err == 0);
     return err;
+}
+
+/* Whether the unit already holds a digital format write (0x34 OpticalFormat,
+   0x35/0x36 S/PDIF Coax, board 0 or 1): this helper wrote that value since
+   it opened the unit and the unit took it. Unknown is not held. */
+static bool shadow_holds_digital(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
+{
+    if (bRequest < SHADOW_DIGITAL_FIRST || bRequest >= SHADOW_DIGITAL_FIRST + SHADOW_DIGITAL_COUNT
+        || nValue > 1 || !data || len != 1)
+        return false;
+    const int16_t held = gDigitalShadow[bRequest - SHADOW_DIGITAL_FIRST][nValue];
+    return held >= 0 && held == data[0];
+}
+
+/* Maestro's setProperty write: a digital format setting the unit already
+   holds is not sent again (*held set) and counts as written. Maestro 1142
+   wrote both boards' optical format at every connect, just after this
+   helper's configure had set the same values, while USB audio played. */
+static int set_property_write(uint8_t bRequest, uint32_t nValue, void *data, uint16_t len, bool *held)
+{
+    *held = shadow_holds_digital(bRequest, nValue, (const uint8_t *)data, len);
+    if (*held) return 0;
+    return usb_vendor_write(bRequest, nValue, data, len);
 }
 
 static int usb_vendor_write_raw(uint8_t bRequest, uint32_t nValue,
@@ -3266,9 +3301,13 @@ static void handle_peer(xpc_connection_t peer) {
                    hardware stays on the old one. */
                 /* Reconstruct nValue from wValue/wIndex for usb_vendor_write */
                 uint32_t nValue = ((uint32_t)wVal << 16) | (uint32_t)wIdx;
-                int err = usb_vendor_write(bReq, nValue, dataCopy, copyLen);
+                bool held = false;
+                int err = set_property_write(bReq, nValue, dataCopy, copyLen, &held);
                 int mixerVal = mixer_param_payload(bReq, dataCopy, copyLen);
-                if (mixerVal >= 0)
+                if (held)
+                    LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: the unit already holds it, not sent",
+                        bReq, wVal, wIdx, copyLen);
+                else if (mixerVal >= 0)
                     LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u val=%d: %s",
                         bReq, wVal, wIdx, copyLen, mixerVal, err ? "FAILED" : "OK");
                 else
@@ -3611,7 +3650,7 @@ static void handle_peer(xpc_connection_t peer) {
             /* Tear down and recreate the HAL AudioUnit targeting the USB device.
                Fixes stale AudioUnit sessions after FPGA reconfiguration commands
                that disrupt the audio chain without requiring a Mac reboot. */
-            LOG("resetAudioOutput: tearing down AudioUnit...");
+            LOG("resetAudioOutput: asked for");
 
             /* Reply immediately — fire-and-forget silently dropped on macOS 26. */
             xpc_object_t reply = xpc_dictionary_create_reply(msg);
@@ -3621,7 +3660,13 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+            const uint32_t askedGeneration = __atomic_load_n(&gClockGeneration, __ATOMIC_ACQUIRE);
             dispatch_async(gQueue, ^{
+                if (!reset_output_still_needed(askedGeneration, gClockGeneration)) {
+                    LOG("resetAudioOutput: the output was already rebuilt since it was asked for — not restarted");
+                    return;
+                }
+                LOG("resetAudioOutput: tearing down AudioUnit...");
                 stop_audio_output();
                 if (gAudioRing) {
                     LOG("resetAudioOutput: recreating AudioUnit...");

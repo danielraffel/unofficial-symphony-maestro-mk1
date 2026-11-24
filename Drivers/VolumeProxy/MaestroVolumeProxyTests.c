@@ -434,9 +434,39 @@ static void check_write_shadow(void)
           "no unit open: nothing configured, nothing counted");
 }
 
+static void check_digital_write_held(void)
+{
+    shadow_reset();
+    uint8_t adat = 0, spdif = 1;
+    bool held = true;
+    /* Nothing known: sent (no unit open in the test, so a send fails). */
+    CHECK(set_property_write(0x34, 0, &adat, 1, &held) == -1 && !held, "an unknown optical format is sent");
+    /* configure's ADAT/SMUX on both boards */
+    shadow_note_write(0x34, 0, &adat, 1, 1);
+    shadow_note_write(0x34, 1, &adat, 1, 1);
+    CHECK(set_property_write(0x34, 0, &adat, 1, &held) == 0 && held, "the same optical format is not sent");
+    CHECK(set_property_write(0x34, 1, &adat, 1, &held) == 0 && held, "on either board");
+    CHECK(set_property_write(0x34, 1, &spdif, 1, &held) == -1 && !held, "a different format is sent");
+    CHECK(gDigitalShadow[0][1] == -1, "a write that failed leaves the format unknown");
+    shadow_note_write(0x35, 0, &spdif, 1, 1);
+    CHECK(set_property_write(0x35, 0, &spdif, 1, &held) == 0 && held, "S/PDIF Coax Replaces held too");
+    CHECK(set_property_write(0x34, 0x10000, &adat, 1, &held) == -1 && !held, "a non-zero wValue is not a board");
+    uint8_t level = 0;
+    CHECK(set_property_write(0x20, 0, &level, 1, &held) == -1 && !held, "anything else is always sent");
+    shadow_reset();
+}
+
+static void check_reset_output_once(void)
+{
+    CHECK(reset_output_still_needed(6, 6), "an output not rebuilt since the request is restarted");
+    CHECK(!reset_output_still_needed(6, 7), "an output rebuilt while the request waited is not restarted again");
+}
+
 int main(void)
 {
     check_write_shadow();
+    check_digital_write_held();
+    check_reset_output_once();
     test_latency_defaults_scale_with_rate();
     test_power_actions();
     test_startup_volume_window();
