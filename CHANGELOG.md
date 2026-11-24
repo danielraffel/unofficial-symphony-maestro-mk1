@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.27 (beta)
+
+This beta makes ThunderBridge connect faster after a replug or after the Symphony is switched off and on.
+
+### Changes that may affect your setup
+
+- **The update replaces the ThunderBridge driver (0.11.21, build 152).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
+
+### Fixed
+
+- **After a ThunderBridge replug, sound comes back about two seconds sooner.**
+- **After the Symphony is switched off and on, your speaker level, mute and dim come back within a few seconds instead of about ten.**
+- **Maestro no longer re-sends the clock and optical format several times when the ThunderBridge connects, and Loop Sync is no longer switched off and on.**
+- **Mixer 1 and Mixer 2 are restored in under a second after a replug.**
+
 ## 0.9.26 (beta)
 
 This beta fixes Maestro USB audio cutting out and dropping when the Symphony connects, and makes the Software Return and Master faders always move together.
