@@ -1411,6 +1411,70 @@ static void ResetCardAndRecover(Run &r)
     r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
 }
 
+// dext 152: Core Audio restoring the clock source or an optical format the
+// unit already took on this link is not sent again; a different value is,
+// and so is anything after a path that does not record what it sent. A link
+// recovery sends both again (its own configuration step).
+static size_t OpticalWrites(const Run &r, size_t from)
+{
+    size_t n = 0;
+    const auto &w = r.card.port[0].vendorWrites;
+    for (size_t i = from; i < w.size(); i++) if (w[i] == 0x34) n++;
+    return n;
+}
+
+static void RunSameValueChecks()
+{
+    Options o; o.name = "same value: ClockMode and optical format not sent again"; o.shortFlow = true;
+    Run r; RunScenario(o, r);
+    auto &clock = r.card.port[0].clockModes;
+    clock.clear();
+    size_t mark = r.card.port[0].vendorWrites.size();
+    // Start sent Internal and ADAT/SMUX: Core Audio's restore of them is not sent.
+    r.drv->RequestClockSource(1); HostPump();
+    r.drv->RequestClockSource(1); HostPump();
+    r.drv->RequestOpticalFormat(1, 0); HostPump();
+    r.drv->RequestOpticalFormat(0, 0); HostPump();
+    CHECK(clock.empty() && OpticalWrites(r, mark) == 0,
+          "%s: %zu ClockMode, %zu OpticalFormat sent for values the unit has", o.name, clock.size(), OpticalWrites(r, mark));
+    // A change is sent once; the same again is not.
+    r.drv->RequestClockSource(2); HostPump();
+    r.drv->RequestClockSource(2); HostPump();
+    r.drv->RequestOpticalFormat(1, 1); HostPump();
+    r.drv->RequestOpticalFormat(1, 1); HostPump();
+    CHECK(clock.size() == 1 && clock[0] == 2 && OpticalWrites(r, mark) == 1,
+          "%s: change: %zu ClockMode, %zu OpticalFormat (want 1, 1)", o.name, clock.size(), OpticalWrites(r, mark));
+    r.drv->RequestClockSource(1); HostPump();
+    CHECK(clock.size() == 2 && clock[1] == 1, "%s: back to Internal not sent (%zu)", o.name, clock.size());
+    // An optical format sent on the vendor path is not known: the next
+    // request is sent.
+    { uint8_t p = 0; r.drv->SendVendorCommand(0x34, 1, &p, 1); }
+    mark = r.card.port[0].vendorWrites.size();
+    r.drv->RequestOpticalFormat(1, 0); HostPump();
+    CHECK(OpticalWrites(r, mark) == 1, "%s: optical after a vendor-path send: %zu sent (want 1)", o.name, OpticalWrites(r, mark));
+    // A ClockMode sent on the vendor path is recorded as sent.
+    clock.clear();
+    { uint8_t p[4] = { 2, 1, 0, 0 }; r.drv->SendVendorCommand(0x50, 0, p, 4); }
+    r.drv->RequestClockSource(2); HostPump();
+    CHECK(clock.size() == 1, "%s: Word Clock after the vendor path's Word Clock: %zu ClockMode (want 1)", o.name, clock.size());
+    // A link recovery: the configuration sends the clock and the format
+    // again, and records them.
+    clock.clear();
+    mark = r.card.port[0].vendorWrites.size();
+    ResetCardAndRecover(r);
+    CHECK(!clock.empty() && clock.back() == 2 && OpticalWrites(r, mark) >= 1,
+          "%s: recovery: %zu ClockMode (last %u), %zu OpticalFormat (want the clock and the format sent)", o.name,
+          clock.size(), clock.empty() ? 0xFFu : clock.back(), OpticalWrites(r, mark));
+    const size_t afterRecovery = clock.size();
+    mark = r.card.port[0].vendorWrites.size();
+    r.drv->RequestClockSource(2); HostPump();
+    r.drv->RequestOpticalFormat(1, 0); HostPump();
+    CHECK(clock.size() == afterRecovery && OpticalWrites(r, mark) == 0,
+          "%s: after recovery the same values were sent again (%zu ClockMode, %zu OpticalFormat)", o.name,
+          clock.size() - afterRecovery, OpticalWrites(r, mark));
+    Finish(o, r);
+}
+
 static float ShownDb() { return gHostAudio.volume->GetDecibelValue(); }
 
 // Every card output channel direct, none on a mixer output slot. exact: channel
@@ -6179,6 +6243,7 @@ int main(int argc, char **argv)
     RunSymphonyCardInputRoutes();
     RunPreampHostRoutes();
     RunStartupOutputMuteChecks();
+    RunSameValueChecks();
 #ifdef TRACE_HAVE_MIC_PRE_DAW
     RunMicPreDAWControls();
 #endif

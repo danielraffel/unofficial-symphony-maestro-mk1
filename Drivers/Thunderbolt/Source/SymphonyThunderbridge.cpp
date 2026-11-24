@@ -605,6 +605,19 @@ struct SymphonyThunderbridge_IVars {
     // output byte and never the user's source. xlinkQueue only.
     uint8_t   unitAClock[4];
     bool      unitAClockKnown;
+    // dext 152: the exact ClockMode bytes and optical formats unit A accepted
+    // on this link configuration, so the Core Audio selectors' restore of the
+    // same values is not sent again (RequestClockSource,
+    // RequestOpticalFormat). Not unitAClock: that keeps the user's choice
+    // across recoveries and is not always the bytes sent. Forgotten at every
+    // link configuration (Start, recovery), at Stop, and by any ClockMode
+    // path that does not record what it sent. xlinkQueue only.
+    uint8_t   unitAClockSent[4];
+    bool      unitAClockSentKnown;
+    uint8_t   opticalSent[2];
+    bool      opticalSentKnown[2];
+    bool      clockSkipLogged;
+    bool      opticalSkipLogged;
     uint8_t   unitBOptical[2];         // unit B's optical format per slot (names 33-64)
     uint8_t   unitBCoaxReplace[2];     // unit B's S/PDIF Coax Replaces per slot (names 33-64)
 
@@ -2065,6 +2078,20 @@ static void ApplyOneUnitLoopSyncByte(const SymphonyThunderbridge_IVars *ivars, u
     bytes[2] = ivars->oneUnitLoopSync ? 1 : 0;
 }
 
+// dext 152: what unit A holds after a ClockMode send (see unitAClockSent).
+static void NoteUnitAClockSent(SymphonyThunderbridge_IVars *ivars, const uint8_t bytes[4], bool ok)
+{
+    if (ok) memcpy(ivars->unitAClockSent, bytes, 4);
+    ivars->unitAClockSentKnown = ok;
+}
+
+static void ForgetSentClockAndOptical(SymphonyThunderbridge_IVars *ivars)
+{
+    ivars->unitAClockSentKnown = false;
+    ivars->opticalSentKnown[0] = ivars->opticalSentKnown[1] = false;
+    ivars->clockSkipLogged = ivars->opticalSkipLogged = false;
+}
+
 static void SilenceCardMixersForSleep(SymphonyThunderbridge_IVars *ivars);   // below
 static void RestoreCardMixersAfterSleep(SymphonyThunderbridge_IVars *ivars); // below
 
@@ -2489,6 +2516,9 @@ static void UnmuteConverterUnits(SymphonyThunderbridge_IVars *ivars, uint64_t tx
 static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rate,
                                   SymphonyLinkInitResult *out)
 {
+    // The unit may have been power-cycled or replaced: nothing is known to
+    // be on it until this configuration sends it.
+    ForgetSentClockAndOptical(ivars);
     // The capture routes below put every host input back on its board
     // channel (step 19b-2). Until then the tracked sources are the table the
     // driver last programmed into unit A (channelOrderLatch: the fixed
@@ -3238,6 +3268,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                                          0, clockData, sizeof(clockData), txSeq);
             memcpy(ivars->unitAClock, clockData, 4);   // dext 131: unit A's last ClockMode
             ivars->unitAClockKnown = true;
+            NoteUnitAClockSent(ivars, clockData, ok);
             if (chosen && clockData[0] != 1)
                 STLOG("SymphonyIO: ClockMode(source %u, master %u, loop sync %u) re-applied: %{public}s",
                       clockData[0], clockData[1], clockData[2], ok ? "OK" : "FAILED");
@@ -3286,6 +3317,8 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                                             symphonyAddr, kSIOCmd_OpticalFormat,
                                             b, &format, 1, txSeq);
                 result[b] = ok ? (format ? "OK (SPDIF)" : "OK (ADAT/SMUX)") : "FAILED";
+                ivars->opticalSent[b] = format;
+                ivars->opticalSentKnown[b] = ok;
                 IOSleep(10);
             }
             STLOG("SymphonyIO: OpticalFormat: board0=%{public}s, board1=%{public}s", result[0], result[1]);
@@ -4411,6 +4444,7 @@ static bool SendUnitAClock(SymphonyThunderbridge_IVars *ivars, bool loopSyncOut)
     }
     const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
                       kSIOCmd_ClockMode, 0, bytes, sizeof(bytes), ivars->runtimeTxSeq);
+    ivars->unitAClockSentKnown = false;   // two-unit bytes: never a same-value skip
     STLOG("Unit A clock: source %u, %{public}s, Loop Sync output %{public}s",
           bytes[0], bytes[1] ? "master" : "slave", bytes[2] ? "on" : "off");
     return ok;
@@ -4436,6 +4470,7 @@ static bool ApplyLoopSync(SymphonyThunderbridge_IVars *ivars, uint32_t config)
     clock[slave][2] = enabled ? 1 : 0;
     clock[slave][3] = 0;
     ivars->loopSyncValid = false;
+    ivars->unitAClockSentKnown = false;   // two-unit bytes: never a same-value skip
     for (unsigned n = 0; n < 2; n++) {
         if (!XLinkTxAdmissible(ivars) || !ivars->port2On) return false;
         const unsigned p = n == 0 ? master : slave;
@@ -5560,6 +5595,8 @@ static void ReprogramCardAfterReset(SymphonyThunderbridge_IVars *ivars, uint32_t
 // Runs ON xlinkQueue. Clears linkRecoveryInFlight when done.
 static void RunLinkRecoveryOnQueue(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self)
 {
+    // dext 152: the unit may have lost its clock and optical settings.
+    ForgetSentClockAndOptical(ivars);
     if (!XLinkTxAdmissible(ivars)) {
         __atomic_store_n(&ivars->linkRecoveryInFlight, false, __ATOMIC_RELEASE);
         return;
@@ -6284,8 +6321,10 @@ kern_return_t SymphonyThunderbridge::LoopSyncConfig(uint32_t operation, uint32_t
                 uint8_t bytes[4] = { 0x01, 0x01, 0x00, 0x00 };
                 if (ivars->unitAClockKnown) memcpy(bytes, ivars->unitAClock, 4);
                 ApplyOneUnitLoopSyncByte(ivars, bytes);
-                if (!SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
-                                       kSIOCmd_ClockMode, 0, bytes, sizeof(bytes), ivars->runtimeTxSeq)) {
+                const bool sent = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex, ivars->symphonyAddr,
+                                                    kSIOCmd_ClockMode, 0, bytes, sizeof(bytes), ivars->runtimeTxSeq);
+                NoteUnitAClockSent(ivars, bytes, sent);
+                if (!sent) {
                     result = kIOReturnIOError;
                     return;
                 }
@@ -9723,6 +9762,7 @@ static kern_return_t ApplyRequestedSampleRate(SymphonyThunderbridge_IVars *ivars
             const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                               ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
                                               clockData, sizeof(clockData), ivars->runtimeTxSeq);
+            NoteUnitAClockSent(ivars, clockData, ok);
             // Give the unit up to a second to lock to its external
             // clock before DMA restarts and the card is unmuted (it
             // goes on either way, as before this change).
@@ -10190,6 +10230,9 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
         __atomic_store_n(&ivars->txShutdown, true, __ATOMIC_RELEASE);
         ivars->startupOutputMuteHeld = false;
         __atomic_store_n(&ivars->startupRatePending, false, __ATOMIC_RELEASE);
+        // dext 152: nothing is known to be on a unit after Stop (xlinkQueue
+        // state, but TX is shut down above, so no sender reads it again).
+        ForgetSentClockAndOptical(ivars);
         // No more nominal-rate renames: the device is about to be released.
         UnregisterNominalRateObserver(this);
 
@@ -11268,6 +11311,13 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
         bool ok = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, tx,
                                       port ? 1 : ivars->symphonyAddr, command, value,
                                       sendPayload, payloadLen, seq);
+        // dext 152: what unit A holds now, for the same-value skip.
+        if (port == 0 && command == kSIOCmd_ClockMode) {
+            if (ivars->unitBConfigured || payloadLen != 4) ivars->unitAClockSentKnown = false;
+            else NoteUnitAClockSent(ivars, sendPayload, ok);
+        } else if (port == 0 && command == kSIOCmd_OpticalFormat && value < 2) {
+            ivars->opticalSentKnown[value] = false;
+        }
         if (!ok) {
             if (ivars->unitBConfigured && command == kSIOCmd_ClockMode) ivars->loopSyncValid = false;
             STERR("SendVendorCommand: failed cmd=0x%02x value=0x%08x payload=%u",
@@ -12005,9 +12055,22 @@ kern_return_t SymphonyThunderbridge::RequestClockSource(uint32_t source)
                                    || (!ivars->unitBConfigured && ivars->oneUnitLoopSync)) ? 1 : 0),
                         0
                     };
-                    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                      ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
-                                      clockData, sizeof(clockData), ivars->runtimeTxSeq);
+                    // dext 152: the bytes unit A already accepted on this
+                    // link (Core Audio restoring the selector it shows) are
+                    // not sent again.
+                    if (!ivars->unitBConfigured && ivars->unitAClockSentKnown &&
+                        memcmp(clockData, ivars->unitAClockSent, 4) == 0) {
+                        if (!ivars->clockSkipLogged) {
+                            ivars->clockSkipLogged = true;
+                            STLOG("RequestClockSource: ClockMode unchanged, not sent (source %u)", src);
+                        }
+                    } else {
+                        const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                          ivars->symphonyAddr, kSIOCmd_ClockMode, 0,
+                                                          clockData, sizeof(clockData), ivars->runtimeTxSeq);
+                        if (ivars->unitBConfigured) ivars->unitAClockSentKnown = false;
+                        else NoteUnitAClockSent(ivars, clockData, ok);
+                    }
                     memcpy(ivars->unitAClock, clockData, 4);
                     ivars->unitAClockKnown = true;
                 }
@@ -12056,12 +12119,22 @@ kern_return_t SymphonyThunderbridge::RequestOpticalFormat(uint32_t board, uint32
             for (;;) {
                 uint32_t gen = __atomic_load_n(&ivars->pendingOpticalGen[b], __ATOMIC_ACQUIRE);
                 uint8_t  val = __atomic_load_n(&ivars->pendingOpticalFmt[b], __ATOMIC_RELAXED);
-                if (XLinkTxAdmissible(ivars)) {
+                const bool admissible = XLinkTxAdmissible(ivars);   // one presence check per pass
+                if (admissible && ivars->opticalSentKnown[b] && ivars->opticalSent[b] == val) {
+                    // dext 152: the format this board already took on this
+                    // link (Core Audio restoring it) is not sent again.
+                    if (!ivars->opticalSkipLogged) {
+                        ivars->opticalSkipLogged = true;
+                        STLOG("RequestOpticalFormat: OpticalFormat unchanged, not sent (board %u)", b);
+                    }
+                } else if (admissible) {
                     uint8_t pData = val;   // 0=ADAT/SMUX, 1=S/PDIF
-                    SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
-                                      ivars->symphonyAddr, kSIOCmd_OpticalFormat,
-                                      b /*nValue = 0-based board index*/,
-                                      &pData, 1, ivars->runtimeTxSeq);
+                    const bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
+                                                      ivars->symphonyAddr, kSIOCmd_OpticalFormat,
+                                                      b /*nValue = 0-based board index*/,
+                                                      &pData, 1, ivars->runtimeTxSeq);
+                    ivars->opticalSent[b] = val;
+                    ivars->opticalSentKnown[b] = ok;
                 }
                 __atomic_store_n(&ivars->opticalTxScheduled[b], false, __ATOMIC_RELEASE);
                 if (__atomic_load_n(&ivars->pendingOpticalGen[b], __ATOMIC_ACQUIRE) == gen)
