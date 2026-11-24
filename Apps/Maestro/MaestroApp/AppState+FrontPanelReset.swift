@@ -101,9 +101,9 @@ extension AppState {
     ///
     /// - Every saved output routing table of a card topology this unit is in
     ///   (`cardRouting.v3.<product>.a=<A>.b=<B>...`, as unit A or B, either
-    ///   unit's table) has its two mixer rows emptied: the rows after unit
-    ///   A's playback pairs, in the 32- and the 64-channel grid alike
-    ///   (`cachedOutputRouteMap`, `TwoUnitOutputRouting.playbackPair`).
+    ///   unit's table) has its two mixer rows emptied: in unit A's table the
+    ///   rows after its playback pairs (`cachedOutputRouteMap`), in unit B's
+    ///   the 64-channel grid's mixer rows (`TwoUnitOutputRouting.mixer1Row`).
     ///   Direct routes are kept. With no mixer row no
     ///   output is fed by a mixer, so no headphone following one is either.
     /// - ThunderBridge's input routing and card mixers are marked pending
@@ -146,9 +146,11 @@ extension AppState {
 
     /// A saved output routing key of a topology the unit `identityHex` is in
     /// (`peripheralRoutingCache`: `cardRouting.v3.<product>.<topology>.<unit>.<scope>`,
-    /// with or without `_multi`): the first mixer row (unit A's playback
-    /// pairs). The identity must be a whole topology field (`a=<hex>` or
-    /// `b=<hex>`), never a prefix of another unit's.
+    /// with or without `_multi`): the first mixer row, which is the count of
+    /// unit A's playback pairs in unit A's table and
+    /// `TwoUnitOutputRouting.mixer1Row` in unit B's. The identity must be a
+    /// whole topology field (`a=<hex>` or `b=<hex>`), never a prefix of
+    /// another unit's.
     static func frontPanelResetOutputRoutingKey(_ key: String, identityHex hex: String) -> Int? {
         let prefix = "cardRouting.v3."
         guard key.hasPrefix(prefix), !key.hasSuffix(".migratedTo") else { return nil }
@@ -161,7 +163,14 @@ extension AppState {
         // `peripheralRoutingCache` keys its tables by a Symphony product
         // (unit A's mode); none other is saved.
         guard let mode = USBMode(productID: product) else { return nil }
-        return mode.channelCount / 2
+        // Unit B's table is in the 64-channel grid's numbering (DAW pairs
+        // 0-31, then Mixer 1 and Mixer 2: `unitBOutputRoutingCache`); unit
+        // A's keeps its single-unit rows (its playback pairs, then the mixers).
+        switch parts[4] {
+        case "a": return mode.channelCount / 2
+        case "b": return TwoUnitOutputRouting.mixer1Row
+        default: return nil
+        }
     }
 
     /// The original's speaker and headphone attenuation after a reset

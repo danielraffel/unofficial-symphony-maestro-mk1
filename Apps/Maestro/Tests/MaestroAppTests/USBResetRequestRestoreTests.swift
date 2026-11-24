@@ -696,7 +696,9 @@ struct USBResetRequestRestoreTests {
         // unit whose identity starts with this one's.
         let pairKey = "cardRouting.v3.18.a=f2b00014.b=abcd.channels=64.b.analogADDA16+none_multi"
         let otherKey = "cardRouting.v3.18.a=f2b000140.b=none.channels=32.a.analogADDA16+none_multi"
-        defaults.set(["16": [0], "20": [1]], forKey: pairKey)
+        // Unit B's table is in the 64-channel grid: rows 16/17 are DAW
+        // pairs (direct routes, kept), its mixers are rows 32/33.
+        defaults.set(["16": [0], "17": [3], "20": [1], "32": [2], "33": [4]], forKey: pairKey)
         defaults.set(["16": [0]], forKey: otherKey)
         RoutingMixerReset.clearPending(.thunderboltCardMixer)
         RoutingMixerReset.clearPending(.thunderboltInputRouting)
@@ -710,7 +712,9 @@ struct USBResetRequestRestoreTests {
         use(tb)
         #expect(state.mixersRoutedToOutput() == [false, false])
         use(usb)
-        #expect(defaults.dictionary(forKey: pairKey) as? [String: [Int]] == ["16": [], "20": [1]])
+        #expect(defaults.dictionary(forKey: pairKey) as? [String: [Int]]
+            == ["16": [0], "17": [3], "20": [1], "32": [], "33": []],
+            "unit B's mixer rows (32/33) emptied, its DAW pairs 16/17 kept")
         #expect(defaults.dictionary(forKey: otherKey) as? [String: [Int]] == ["16": [0]], "another unit is left alone")
         #expect(RoutingMixerReset.isPending(.thunderboltCardMixer))
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
