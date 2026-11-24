@@ -139,22 +139,22 @@ layout 3 3 48000 0 0 A 1
 6 A Line 6
 7 A Line 7
 8 A Line 8
-9 A ADAT 1
-10 A ADAT 2
-11 A ADAT 3
-12 A ADAT 4
-13 A ADAT 5
-14 A ADAT 6
-15 A ADAT 7
-16 A ADAT 8
-17 A Line 9
-18 A Line 10
-19 A Line 11
-20 A Line 12
-21 A Line 13
-22 A Line 14
-23 A Line 15
-24 A Line 16
+9 A Line 9
+10 A Line 10
+11 A Line 11
+12 A Line 12
+13 A Line 13
+14 A Line 14
+15 A Line 15
+16 A Line 16
+17 A ADAT 1
+18 A ADAT 2
+19 A ADAT 3
+20 A ADAT 4
+21 A ADAT 5
+22 A ADAT 6
+23 A ADAT 7
+24 A ADAT 8
 25 A ADAT 9
 26 A ADAT 10
 27 A ADAT 11
@@ -164,38 +164,38 @@ layout 3 3 48000 0 0 A 1
 31 A ADAT 15
 32 A ADAT 16
 layout 0 3 44100 0 0 A 1
-1 N.A.
-2 N.A.
-3 N.A.
-4 N.A.
-5 N.A.
-6 N.A.
-7 N.A.
-8 N.A.
-9 N.A.
-10 N.A.
-11 N.A.
-12 N.A.
-13 N.A.
-14 N.A.
-15 N.A.
-16 N.A.
-17 A Line 1
-18 A Line 2
-19 A Line 3
-20 A Line 4
-21 A Line 5
-22 A Line 6
-23 A Line 7
-24 A Line 8
-25 A ADAT 1
-26 A ADAT 2
-27 A ADAT 3
-28 A ADAT 4
-29 A ADAT 5
-30 A ADAT 6
-31 A ADAT 7
-32 A ADAT 8
+1 A Line 1
+2 A Line 2
+3 A Line 3
+4 A Line 4
+5 A Line 5
+6 A Line 6
+7 A Line 7
+8 A Line 8
+9 A ADAT 1
+10 A ADAT 2
+11 A ADAT 3
+12 A ADAT 4
+13 A ADAT 5
+14 A ADAT 6
+15 A ADAT 7
+16 A ADAT 8
+17 N.A.
+18 N.A.
+19 N.A.
+20 N.A.
+21 N.A.
+22 N.A.
+23 N.A.
+24 N.A.
+25 N.A.
+26 N.A.
+27 N.A.
+28 N.A.
+29 N.A.
+30 N.A.
+31 N.A.
+32 N.A.
 layout 7 0 96000 0 0 A 1
 1 A Line 1
 2 A Line 2

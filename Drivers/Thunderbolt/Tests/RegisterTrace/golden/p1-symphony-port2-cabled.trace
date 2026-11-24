@@ -482,13 +482,13 @@ W 0x00003c 0x00000000
 R 0x00003c 0x09022112
 R 0x000038 0x00000000 | W 0x000038 each of n=13: 00022100 00022012 0002202a 00022080 00022068 00022002 00022000 00022000 00022000 00022002 00022000 00022000 00022096
 S 10
-R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 0002202c 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 00022040 00022000 00022042 00022002 00022044 00022004 00022046 00022006 00022048 00022008 0002204a 0002200a 0002204c 0002200c 0002204e 0002200e 00022050 00022010 00022052 00022012 00022054 00022014 00022056 00022016 00022058 00022018 0002205a 0002201a 0002205c 0002201c 0002205e 0002201e 0002216a
+R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 0002202c 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 00022040 000221d8 00022042 000221d8 00022044 000221d8 00022046 000221d8 00022048 000221d8 0002204a 000221d8 0002204c 000221d8 0002204e 000221d8 00022050 000221d8 00022052 000221d8 00022054 000221d8 00022056 000221d8 00022058 000221d8 0002205a 000221d8 0002205c 000221d8 0002205e 000221d8 00022062
 S 20
-R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 0002202e 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 00022060 00022020 00022062 00022022 00022064 00022024 00022066 00022026 00022068 00022028 0002206a 0002202a 0002206c 0002202c 0002206e 0002202e 00022070 00022030 00022072 00022032 00022074 00022034 00022076 00022036 00022078 00022038 0002207a 0002203a 0002207c 0002203c 0002207e 0002203e 0002203c
+R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 0002202e 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 00022060 00022000 00022062 00022002 00022064 00022004 00022066 00022006 00022068 00022008 0002206a 0002200a 0002206c 0002200c 0002206e 0002200e 00022070 00022010 00022072 00022012 00022074 00022014 00022076 00022016 00022078 00022018 0002207a 0002201a 0002207c 0002201c 0002207e 0002201e 000221fe
 S 20
-R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 00022030 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 00022180 00022040 00022182 00022042 00022184 00022044 00022186 00022046 00022188 00022048 0002218a 0002204a 0002218c 0002204c 0002218e 0002204e 00022190 00022050 00022192 00022052 00022194 00022054 00022196 00022056 00022198 00022058 0002219a 0002205a 0002219c 0002205c 0002219e 0002205e 0002212a
+R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 00022030 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 00022180 00022060 00022182 00022062 00022184 00022064 00022186 00022066 00022188 00022068 0002218a 0002206a 0002218c 0002206c 0002218e 0002206e 00022190 00022070 00022192 00022072 00022194 00022074 00022196 00022076 00022198 00022078 0002219a 0002207a 0002219c 0002207c 0002219e 0002207e 000220e8
 S 20
-R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 00022032 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 000221a0 00022060 000221a2 00022062 000221a4 00022064 000221a6 00022066 000221a8 00022068 000221aa 0002206a 000221ac 0002206c 000221ae 0002206e 000221b0 00022070 000221b2 00022072 000221b4 00022074 000221b6 00022076 000221b8 00022078 000221ba 0002207a 000221bc 0002207c 000221be 0002207e 0002207c
+R 0x000038 0x00000000 | W 0x000038 each of n=44: 00022100 00022050 00022032 00022080 00022062 00022000 00022000 00022000 00022000 00022040 00022000 000221a0 000221d8 000221a2 000221d8 000221a4 000221d8 000221a6 000221d8 000221a8 000221d8 000221aa 000221d8 000221ac 000221d8 000221ae 000221d8 000221b0 000221d8 000221b2 000221d8 000221b4 000221d8 000221b6 000221d8 000221b8 000221d8 000221ba 000221d8 000221bc 000221d8 000221be 000221d8 0002213c
 S 20
 R 0x000038 0x00000000 | W 0x000038 each of n=13: 00022100 00022012 00022034 00022080 000221ba 00022000 00022000 00022000 00022000 00022002 00022000 00022000 00022088
 S 10
@@ -823,70 +823,70 @@ W 0x00003c 0x00000000
 R 0x00003c 0x0902205c
 R 0x00005c 0x01014101
 H driver-add-device
-H element-name dir=in ch=1 name=N.A.
-H element-name dir=in ch=2 name=N.A.
-H element-name dir=in ch=3 name=N.A.
-H element-name dir=in ch=4 name=N.A.
-H element-name dir=in ch=5 name=N.A.
-H element-name dir=in ch=6 name=N.A.
-H element-name dir=in ch=7 name=N.A.
-H element-name dir=in ch=8 name=N.A.
-H element-name dir=in ch=9 name=N.A.
-H element-name dir=in ch=10 name=N.A.
-H element-name dir=in ch=11 name=N.A.
-H element-name dir=in ch=12 name=N.A.
-H element-name dir=in ch=13 name=N.A.
-H element-name dir=in ch=14 name=N.A.
-H element-name dir=in ch=15 name=N.A.
-H element-name dir=in ch=16 name=N.A.
-H element-name dir=in ch=17 name=A Line 1
-H element-name dir=in ch=18 name=A Line 2
-H element-name dir=in ch=19 name=A Line 3
-H element-name dir=in ch=20 name=A Line 4
-H element-name dir=in ch=21 name=A Line 5
-H element-name dir=in ch=22 name=A Line 6
-H element-name dir=in ch=23 name=A Line 7
-H element-name dir=in ch=24 name=A Line 8
-H element-name dir=in ch=25 name=A ADAT 1
-H element-name dir=in ch=26 name=A ADAT 2
-H element-name dir=in ch=27 name=A ADAT 3
-H element-name dir=in ch=28 name=A ADAT 4
-H element-name dir=in ch=29 name=A ADAT 5
-H element-name dir=in ch=30 name=A ADAT 6
-H element-name dir=in ch=31 name=A ADAT 7
-H element-name dir=in ch=32 name=A ADAT 8
-H element-name dir=out ch=1 name=N.A.
-H element-name dir=out ch=2 name=N.A.
-H element-name dir=out ch=3 name=N.A.
-H element-name dir=out ch=4 name=N.A.
-H element-name dir=out ch=5 name=N.A.
-H element-name dir=out ch=6 name=N.A.
-H element-name dir=out ch=7 name=N.A.
-H element-name dir=out ch=8 name=N.A.
-H element-name dir=out ch=9 name=N.A.
-H element-name dir=out ch=10 name=N.A.
-H element-name dir=out ch=11 name=N.A.
-H element-name dir=out ch=12 name=N.A.
-H element-name dir=out ch=13 name=N.A.
-H element-name dir=out ch=14 name=N.A.
-H element-name dir=out ch=15 name=N.A.
-H element-name dir=out ch=16 name=N.A.
-H element-name dir=out ch=17 name=A Line 1
-H element-name dir=out ch=18 name=A Line 2
-H element-name dir=out ch=19 name=A Line 3
-H element-name dir=out ch=20 name=A Line 4
-H element-name dir=out ch=21 name=A Line 5
-H element-name dir=out ch=22 name=A Line 6
-H element-name dir=out ch=23 name=A Line 7
-H element-name dir=out ch=24 name=A Line 8
-H element-name dir=out ch=25 name=A ADAT 1
-H element-name dir=out ch=26 name=A ADAT 2
-H element-name dir=out ch=27 name=A ADAT 3
-H element-name dir=out ch=28 name=A ADAT 4
-H element-name dir=out ch=29 name=A ADAT 5
-H element-name dir=out ch=30 name=A ADAT 6
-H element-name dir=out ch=31 name=A ADAT 7
-H element-name dir=out ch=32 name=A ADAT 8
+H element-name dir=in ch=1 name=A Line 1
+H element-name dir=in ch=2 name=A Line 2
+H element-name dir=in ch=3 name=A Line 3
+H element-name dir=in ch=4 name=A Line 4
+H element-name dir=in ch=5 name=A Line 5
+H element-name dir=in ch=6 name=A Line 6
+H element-name dir=in ch=7 name=A Line 7
+H element-name dir=in ch=8 name=A Line 8
+H element-name dir=in ch=9 name=A ADAT 1
+H element-name dir=in ch=10 name=A ADAT 2
+H element-name dir=in ch=11 name=A ADAT 3
+H element-name dir=in ch=12 name=A ADAT 4
+H element-name dir=in ch=13 name=A ADAT 5
+H element-name dir=in ch=14 name=A ADAT 6
+H element-name dir=in ch=15 name=A ADAT 7
+H element-name dir=in ch=16 name=A ADAT 8
+H element-name dir=in ch=17 name=N.A.
+H element-name dir=in ch=18 name=N.A.
+H element-name dir=in ch=19 name=N.A.
+H element-name dir=in ch=20 name=N.A.
+H element-name dir=in ch=21 name=N.A.
+H element-name dir=in ch=22 name=N.A.
+H element-name dir=in ch=23 name=N.A.
+H element-name dir=in ch=24 name=N.A.
+H element-name dir=in ch=25 name=N.A.
+H element-name dir=in ch=26 name=N.A.
+H element-name dir=in ch=27 name=N.A.
+H element-name dir=in ch=28 name=N.A.
+H element-name dir=in ch=29 name=N.A.
+H element-name dir=in ch=30 name=N.A.
+H element-name dir=in ch=31 name=N.A.
+H element-name dir=in ch=32 name=N.A.
+H element-name dir=out ch=1 name=A Line 1
+H element-name dir=out ch=2 name=A Line 2
+H element-name dir=out ch=3 name=A Line 3
+H element-name dir=out ch=4 name=A Line 4
+H element-name dir=out ch=5 name=A Line 5
+H element-name dir=out ch=6 name=A Line 6
+H element-name dir=out ch=7 name=A Line 7
+H element-name dir=out ch=8 name=A Line 8
+H element-name dir=out ch=9 name=A ADAT 1
+H element-name dir=out ch=10 name=A ADAT 2
+H element-name dir=out ch=11 name=A ADAT 3
+H element-name dir=out ch=12 name=A ADAT 4
+H element-name dir=out ch=13 name=A ADAT 5
+H element-name dir=out ch=14 name=A ADAT 6
+H element-name dir=out ch=15 name=A ADAT 7
+H element-name dir=out ch=16 name=A ADAT 8
+H element-name dir=out ch=17 name=N.A.
+H element-name dir=out ch=18 name=N.A.
+H element-name dir=out ch=19 name=N.A.
+H element-name dir=out ch=20 name=N.A.
+H element-name dir=out ch=21 name=N.A.
+H element-name dir=out ch=22 name=N.A.
+H element-name dir=out ch=23 name=N.A.
+H element-name dir=out ch=24 name=N.A.
+H element-name dir=out ch=25 name=N.A.
+H element-name dir=out ch=26 name=N.A.
+H element-name dir=out ch=27 name=N.A.
+H element-name dir=out ch=28 name=N.A.
+H element-name dir=out ch=29 name=N.A.
+H element-name dir=out ch=30 name=N.A.
+H element-name dir=out ch=31 name=N.A.
+H element-name dir=out ch=32 name=N.A.
 -- after Start: queued work
 -- StartDevice
 CR32 0x00 0x220019c2

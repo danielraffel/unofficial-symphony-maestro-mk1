@@ -3448,8 +3448,9 @@ static std::string LastElementName(const FakeCard &c, size_t from, const char *d
 // rate change. Seen on hardware after a replug: coreaudiod restored the saved
 // 176.4 kHz, a stream start ran there (every optical channel "N.A."), then the
 // nominal rate became 48 kHz with no stream start and nothing renamed them.
-// The fake card has an Optical card in slot 2: host output 25 is its first
-// optical output.
+// The fake card has an Optical card in slot 2 and an 8MicPre (no outputs) in
+// slot 1: analog first (dext 150), host output 9 is its first optical output
+// (host output 25 while the outputs went by position, up to dext 149).
 static void RunNominalRateNames()
 {
     const char *name = "nominal-rate-names";
@@ -3466,8 +3467,8 @@ static void RunNominalRateNames()
     gHostAudio.device->SetSampleRate(176400.0);
     CHECK(drv->StartDevice(1, IOUserAudioStartStopFlags::None) == kIOReturnSuccess, "%s: StartDevice at 176.4k failed", name);
     HostPump();
-    CHECK(LastElementName(card, 0, "out", 25) == "A N.A.", "%s: output 25 at 176.4k is \"%s\"", name,
-          LastElementName(card, 0, "out", 25).c_str());
+    CHECK(LastElementName(card, 0, "out", 9) == "A N.A.", "%s: output 9 at 176.4k is \"%s\"", name,
+          LastElementName(card, 0, "out", 9).c_str());
     drv->StopDevice(1, IOUserAudioStartStopFlags::None);
     HostPump();
 
@@ -3476,14 +3477,14 @@ static void RunNominalRateNames()
     gHostAudio.device->SetSampleRate(48000.0);
     SymphonyNoteNominalSampleRate(gHostAudio.device, 48000.0);
     HostPump();
-    CHECK(LastElementName(card, mark, "out", 25) == "A ADAT 1", "%s: output 25 after 48k nominal is \"%s\"", name,
-          LastElementName(card, mark, "out", 25).c_str());
+    CHECK(LastElementName(card, mark, "out", 9) == "A ADAT 1", "%s: output 9 after 48k nominal is \"%s\"", name,
+          LastElementName(card, mark, "out", 9).c_str());
 
     card.phase("the same nominal rate again renames nothing");
     mark = card.lines.size();
     SymphonyNoteNominalSampleRate(gHostAudio.device, 48000.0);
     HostPump();
-    CHECK(LastElementName(card, mark, "out", 25).empty(), "%s: repeated nominal rate renamed output 25", name);
+    CHECK(LastElementName(card, mark, "out", 9).empty(), "%s: repeated nominal rate renamed output 9", name);
 
     // After Stop the hook is gone: a late rate change touches nothing.
     card.phase("Stop");
@@ -4905,6 +4906,12 @@ static void RunMicPreDAWControls()
     pa = Port();
     drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
     Attach(pa, Port::Symphony);          // the new unit reads Variable (0) everywhere
+    // ... and is the same kind of rig, a 16x16 with the 8MicPre in slot 2.
+    // Since dext 150 the recovery lays the capture table out from the types
+    // it reads, and MicPre routes need slot 1's analog inputs behind them;
+    // the fake's default types (8MicPre in slot 1, 8x8 in slot 2) have none.
+    pa.stored[key(0xA1, 0)] = {6};
+    pa.stored[key(0xA1, 1)] = {1};
     pa.stored[key(0x60, 0x80000001u)] = {0xFF};   // except MicPre 2, whose read is invalid
     drv->LinkWatchTimerOccurred(nullptr, 0); HostPump();
     PastMicPreSettle();
