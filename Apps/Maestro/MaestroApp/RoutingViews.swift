@@ -56,34 +56,6 @@ extension View {
 ///
 /// Evidence: `og_source/maestro2/App/Controllers/InputRouting/`
 /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
-/// The one-time notice after the analog-first channel order reset
-/// (`ChannelOrderRoutingReset`), on the Input Routing and Output Routing
-/// pages until dismissed.
-struct ChannelOrderResetNoticeRow: View {
-    let appState: AppState
-
-    var body: some View {
-        if let notice = appState.channelOrderResetNotice {
-            // Same shape as the Mixer's headroom notice. No vertical
-            // fixedSize: in a narrow layout pass it measured the text
-            // thousands of points tall and the routing pages drew above the
-            // window, blank (package 1137, 2026-11-23).
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button("Dismiss") { appState.dismissChannelOrderResetNotice() }
-                    .buttonStyle(.link)
-                    .font(.caption)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-        }
-    }
-}
-
 struct InputRoutingView: View {
     private let appState: AppState
     // AppShell rebuilds per-unit pages on picker changes. Capture the connection
@@ -217,7 +189,6 @@ struct InputRoutingView: View {
                 // two Symphony I/Os the combined card grid owns the whole
                 // surface; the per-unit grid remains the single-unit page.
                 if appState.showsSymphonyCardInputGrid {
-                    ChannelOrderResetNoticeRow(appState: appState)
                     SymphonyCardInputRoutingView(appState: appState)
                 } else {
                     routingGrid
@@ -231,7 +202,6 @@ struct InputRoutingView: View {
 
     private var routingGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ChannelOrderResetNoticeRow(appState: appState)
             HStack {
                 Button("Reset Routing") {
                     requestRoutingReset()
@@ -780,7 +750,6 @@ struct OutputRoutingView: View {
 
     private var routingGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ChannelOrderResetNoticeRow(appState: appState)
             HStack {
                 Button("Reset Routing") { requestRoutingReset() }
                 .buttonStyle(.bordered)

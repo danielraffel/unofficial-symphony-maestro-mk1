@@ -86,13 +86,11 @@ struct ChannelOrderAppTests {
         #expect(driver.log.contains { if case .route(channel: 8, _, true) = $0 { true } else { false } })
     }
 
-    @Test("The first connect with driver 150 and moving cards resets the routing once and shows the notice")
+    @Test("The first connect with driver 150 and moving cards resets the routing once, with no in-app message")
     func resetAtConnect() async {
         let restore = restoringDefaults(); defer { restore() }
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: ChannelOrderRoutingReset.doneKey)
-        defaults.removeObject(forKey: ChannelOrderRoutingReset.noticePendingKey)
-        defaults.removeObject(forKey: ChannelOrderRoutingReset.alertPendingKey)
         defaults.removeObject(forKey: ChannelOrderRoutingReset.noticeTextKey)
         RoutingMixerReset.clearPending(.thunderboltInputRouting)
 
@@ -120,30 +118,20 @@ struct ChannelOrderAppTests {
         #expect(input.load() == nil)
         #expect(output.loadMulti() == nil)
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
-        // Two 8x8s: both directions moved, and the notice says so, once as an alert.
-        #expect(state.channelOrderResetNotice?.contains("Inputs and outputs") == true)
-        #expect(state.channelOrderResetNotice?.contains("check levels") == true)
-        #expect(state.channelOrderResetAlert == state.channelOrderResetNotice)
+        // Two 8x8s: both directions moved.
         #expect(state.inputRoutingReplayNeeded)
         #expect(state.cardOutputTableReplayNeeded)
-        state.acknowledgeChannelOrderResetAlert()
-        #expect(state.channelOrderResetAlert == nil && state.channelOrderResetNotice != nil)
-        #expect(!defaults.bool(forKey: ChannelOrderRoutingReset.alertPendingKey))
         // Once: a routing saved after it stays.
         input.save([4: 1])
         await state.refreshThunderboltChannelOrder(tb)
         #expect(input.load() == [4: 1])
-        state.dismissChannelOrderResetNotice()
-        #expect(state.channelOrderResetNotice == nil)
-        #expect(!defaults.bool(forKey: ChannelOrderRoutingReset.noticePendingKey))
     }
 
     @Test("The owner's rig (8x8 + A16): only Input Routing is reset; Output Routing is kept and not rewritten")
     func resetInputsOnly() async {
         let restore = restoringDefaults(); defer { restore() }
         let defaults = UserDefaults.standard
-        for key in [ChannelOrderRoutingReset.doneKey, ChannelOrderRoutingReset.noticePendingKey,
-                    ChannelOrderRoutingReset.alertPendingKey, ChannelOrderRoutingReset.noticeTextKey] {
+        for key in [ChannelOrderRoutingReset.doneKey, ChannelOrderRoutingReset.noticeTextKey] {
             defaults.removeObject(forKey: key)
         }
         RoutingMixerReset.clearPending(.thunderboltInputRouting)
@@ -160,11 +148,6 @@ struct ChannelOrderAppTests {
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
         #expect(state.inputRoutingReplayNeeded)
         #expect(!state.cardOutputTableReplayNeeded)
-        let notice = state.channelOrderResetNotice ?? ""
-        #expect(notice.contains("Input Routing was reset"))
-        #expect(!notice.contains("check levels"))
-        // Inputs alone: no alert, the Routing pages' note only.
-        #expect(state.channelOrderResetAlert == nil)
     }
 
     @Test("Selector 17 is trusted when the build read fails; a known build is not replaced by a failed read")

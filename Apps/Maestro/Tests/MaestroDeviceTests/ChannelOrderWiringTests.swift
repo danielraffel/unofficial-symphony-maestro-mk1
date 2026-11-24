@@ -105,7 +105,6 @@ struct ChannelOrderWiringTests {
                                                    units: still + [analogFirst88], defaults: defaults))
         #expect(ChannelOrderRoutingReset.runIfNeeded(transport: .thunderbolt, serving: .build(150), units: moving, defaults: defaults) != nil)
         #expect(defaults.bool(forKey: ChannelOrderRoutingReset.doneKey))
-        #expect(defaults.bool(forKey: ChannelOrderRoutingReset.noticePendingKey))
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting, defaults: defaults))
         #expect(ChannelOrderRoutingReset.runIfNeeded(transport: .thunderbolt, serving: .build(150), units: moving, defaults: defaults) == nil)
     }
@@ -237,9 +236,6 @@ struct ChannelOrderWiringTests {
         #expect(defaults.object(forKey: "cardRouting.v3.18.a=1f.b=none.channels=32.a.optical+analogAD16") != nil)
         #expect(defaults.object(forKey: "unit.v3.1f.inputRouting.optical+analogAD16") == nil)
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting, defaults: defaults))
-        // Inputs alone: the Routing pages' note, no alert.
-        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: defaults) == nil)
-        #expect(ChannelOrderRoutingReset.pendingNotice(defaults: defaults) == outcome?.notice)
 
         let outputs = scratch("outputsOnly")
         outputs.set(["0": 1], forKey: "unit.v3.1f.inputRouting.optical+analogDA16")
@@ -249,8 +245,6 @@ struct ChannelOrderWiringTests {
         #expect(outputOutcome?.inputsMoved == false && outputOutcome?.outputsMoved == true)
         #expect(outputs.object(forKey: "unit.v3.1f.inputRouting.optical+analogDA16") != nil)
         #expect(!RoutingMixerReset.isPending(.thunderboltInputRouting, defaults: outputs))
-        // Outputs moved: sound can come out of a different output, so an alert.
-        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: outputs) == outputOutcome?.notice)
 
         // No pair that moves: it does not run.
         let none = scratch("noMove")
@@ -258,7 +252,6 @@ struct ChannelOrderWiringTests {
             transport: .thunderbolt, serving: .build(150),
             units: [ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .analogADDA16, slot2: .analogADDA16),
                     ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: IOCardType.none)], defaults: none) == nil)
-        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: none) == nil)
     }
 
     @Test("The notice says what moved and what was reset")

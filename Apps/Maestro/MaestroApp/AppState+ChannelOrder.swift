@@ -187,8 +187,7 @@ extension AppState {
         print("[Maestro] Routing reset to the defaults once for the analog-first channel order (driver 150): "
             + "inputs \(outcome.inputsMoved ? "moved" : "kept"), outputs \(outcome.outputsMoved ? "moved" : "kept"), "
             + "\(outcome.removed.count) saved routing entries removed")
-        channelOrderResetNotice = outcome.notice
-        channelOrderResetAlert = outcome.outputsMoved ? outcome.notice : nil
+        // No in-app message (owner, 2026-11-23): the release notes explain it.
         symphonyCardInputNamingRevision += 1
         viewReloadToken = UUID()
         if outcome.inputsMoved {
@@ -207,17 +206,5 @@ extension AppState {
             }
             if usesTwoUnitReplay { twoUnitReplayNeeded = true }
         }
-    }
-
-    /// The routing pages' caption was dismissed: it is not shown again.
-    func dismissChannelOrderResetNotice() {
-        channelOrderResetNotice = nil
-        UserDefaults.standard.removeObject(forKey: ChannelOrderRoutingReset.noticePendingKey)
-    }
-
-    /// The one-time alert was closed; the caption stays until dismissed.
-    func acknowledgeChannelOrderResetAlert() {
-        channelOrderResetAlert = nil
-        UserDefaults.standard.removeObject(forKey: ChannelOrderRoutingReset.alertPendingKey)
     }
 }

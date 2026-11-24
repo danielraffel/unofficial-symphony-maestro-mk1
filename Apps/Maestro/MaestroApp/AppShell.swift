@@ -141,17 +141,6 @@ struct ContentView: View {
                 StatusBarView()
                 DetailView(area: appState.selectedArea)
                     .frame(maxHeight: .infinity)
-                    // The one-time analog-first routing reset: said once, over
-                    // the window, whatever page is open (the Routing pages
-                    // keep a caption until it is dismissed). Not on the view
-                    // that carries DiagnosticsAlerts: one alert per view.
-                    .alert(ChannelOrderRoutingReset.alertTitle,
-                           isPresented: Binding(get: { appState.channelOrderResetAlert != nil },
-                                                set: { if !$0 { appState.acknowledgeChannelOrderResetAlert() } })) {
-                        Button("OK") { appState.acknowledgeChannelOrderResetAlert() }
-                    } message: {
-                        Text(appState.channelOrderResetAlert ?? "")
-                    }
             }
             // P3F-44: warm cream overlay in light mode; neutral in dark mode.
             .background(Color(.windowBackgroundColor).overlay(

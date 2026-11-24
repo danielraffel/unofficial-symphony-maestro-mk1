@@ -206,12 +206,6 @@ final class AppState: @unchecked Sendable {
     var restoreStatusNote: String?
     /// One-time explanation shown after the driver-144 fader migration.
     var mixerHeadroomNotice: String?
-    /// One-time explanation shown on the routing pages after the analog-first
-    /// channel order reset (`ChannelOrderRoutingReset`), until dismissed.
-    var channelOrderResetNotice: String? = ChannelOrderRoutingReset.pendingNotice()
-    /// The same explanation as a one-time alert over the window, shown when
-    /// the reset runs (or at the next launch if it was not closed).
-    var channelOrderResetAlert: String? = ChannelOrderRoutingReset.pendingAlert()
     /// The ThunderBridge connection `thunderboltAppliedChannelOrder` was read
     /// from: a new connection reads it afresh, a rediscovery of the same one
     /// keeps it.

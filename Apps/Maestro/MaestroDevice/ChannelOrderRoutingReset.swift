@@ -61,15 +61,9 @@ import MaestroCore
 /// the whole default table from the now empty store.
 public enum ChannelOrderRoutingReset {
     public static let doneKey = "channelOrderRoutingReset.analogFirst.v1.done"
-    /// Set with `doneKey`; cleared when the user dismisses the Routing
-    /// pages' caption, so a quit before visiting Routing does not lose it.
-    public static let noticePendingKey = "channelOrderRoutingReset.analogFirst.v1.noticePending"
     /// The notice's text, built from what moved (`noticeText(...)`).
     public static let noticeTextKey = "channelOrderRoutingReset.analogFirst.v1.noticeText"
-    /// Set with `doneKey`; cleared when the one-time alert is closed.
-    public static let alertPendingKey = "channelOrderRoutingReset.analogFirst.v1.alertPending"
 
-    public static let alertTitle = "Some Mac outputs moved"
 
     /// For a pending notice saved without what moved (a test build of 0.9.25).
     public static let genericNoticeText =
@@ -165,32 +159,8 @@ public enum ChannelOrderRoutingReset {
         defaults.set(notice, forKey: noticeTextKey)
         defaults.set(inputs, forKey: movedInputsKey)
         defaults.set(outputs, forKey: movedOutputsKey)
-        defaults.set(true, forKey: noticePendingKey)
-        // The alert only when outputs moved: then sound can come out of a
-        // different output. Inputs alone get the Routing pages' note.
-        if outputs { defaults.set(true, forKey: alertPendingKey) }
         defaults.set(true, forKey: doneKey)
         return Outcome(removed: removed, inputsMoved: inputs, outputsMoved: outputs, notice: notice)
-    }
-
-    /// The caption's text while it has not been dismissed, nil otherwise.
-    public static func pendingNotice(defaults: UserDefaults = .standard) -> String? {
-        guard defaults.bool(forKey: noticePendingKey) else { return nil }
-        return currentText(defaults: defaults)
-    }
-
-    /// The notice built now from what moved, or the generic text.
-    static func currentText(defaults: UserDefaults) -> String {
-        guard defaults.object(forKey: movedInputsKey) != nil || defaults.object(forKey: movedOutputsKey) != nil
-        else { return genericNoticeText }
-        return noticeText(inputsMoved: defaults.bool(forKey: movedInputsKey),
-                          outputsMoved: defaults.bool(forKey: movedOutputsKey))
-    }
-
-    /// The alert's text while it has not been closed, nil otherwise.
-    public static func pendingAlert(defaults: UserDefaults = .standard) -> String? {
-        guard defaults.bool(forKey: alertPendingKey) else { return nil }
-        return currentText(defaults: defaults)
     }
 
     /// Remove every saved store of a card pair whose channels move in the
