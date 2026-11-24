@@ -208,9 +208,17 @@ extension AppState {
         // As the original did (SymphonyIO.cpp:6417-6432): the unit's saved
         // state goes back to defaults first, then the restore below writes
         // it, then the request is cleared (`AppState+FrontPanelReset`).
+        // Only for a unit whose identity is known: without one the stores can
+        // be the product-wide legacy ones, which are not this unit's alone.
+        // Then everything is still written without asking and the request
+        // cleared, but Maestro's saved state is left as it is.
         if frontPanelReset, let reset, usbFrontPanelResetGeneration != generation {
             usbFrontPanelResetGeneration = generation
-            resetSavedStateForFrontPanelReset(reset, connection: connection)
+            if case .known = unitAIdentityState {
+                resetSavedStateForFrontPanelReset(reset, connection: connection)
+            } else {
+                print("[Maestro] USB front panel reset (\(reset)): unit identity not known; Maestro's saved settings left as they are, every setting written")
+            }
         }
         // What the unit already holds is not written again: a route of an
         // output or a headphone, or a digital format setting, that the helper

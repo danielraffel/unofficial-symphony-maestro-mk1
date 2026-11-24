@@ -134,11 +134,17 @@ extension AppState {
             do {
                 try await connection.setProperty(address, value: .uint32(Self.frontPanelResetAttenuation))
                 let level = -Double(Self.frontPanelResetAttenuation)
+                let output: KeyboardVolumeOutput
                 switch selector {
-                case .outputLevel: speakerLevel = level
-                case .headphone1Level: hp1Level = level
-                default: hp2Level = level
+                case .outputLevel: speakerLevel = level; output = .speakers
+                case .headphone1Level: hp1Level = level; output = .headphone1
+                default: hp2Level = level; output = .headphone2
                 }
+                // The helper keeps the level it is sent (note_speaker_level),
+                // and the Mac's volume follows when this is the output the
+                // volume keys move, as the in-app reset does: the next key
+                // press then starts from the lowered level, not the old one.
+                writeASPVolume(level, output: output)
                 print("[Maestro] USB front panel reset: \(selector) lowered from -\(current) dB to -\(Self.frontPanelResetAttenuation) dB")
             } catch {
                 print("[Maestro] USB front panel reset: \(selector) not written: \(error)")

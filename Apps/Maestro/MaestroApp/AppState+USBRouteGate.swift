@@ -111,7 +111,7 @@ extension AppState {
                 print("[Maestro] USB restore: destination \(write.destination) ← source \(write.source) failed: \(error)")
             }
         }
-        print("[Maestro] USB restore: \(writes.count - failed) of \(writes.count) routes written before the mixers; no output or headphone is on a mixer that is not set")
+        print("[Maestro] USB restore: \(writes.count - failed) of \(writes.count) routes on the unit before the mixers (sent or already there; see the sent/held line); no output or headphone is on a mixer that is not set")
         if unknown, failed == 0 { RoutingMixerReset.clearPending(.usbOutputRouting) }
         return failed == 0
     }

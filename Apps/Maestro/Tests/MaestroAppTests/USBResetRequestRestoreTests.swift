@@ -343,6 +343,30 @@ struct USBResetRequestRestoreTests {
         #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
     }
 
+    @Test("a front-panel reset on a unit whose identity could not be read: saved state left alone, everything written")
+    func frontPanelResetWithoutIdentity() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-no-identity", identity: 0xF2B0_000E)
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        state.unitAIdentityState = .failed
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        // Without an identity the channel store is another (shared) scope:
+        // nothing in it, and nothing in the unit's own, was reset.
+        #expect((state.channelStateStore.load(ChannelStateStore.outputKey) as [OutputChannelState]?) == nil)
+        state.unitAIdentityState = .known(0xF2B0_000E)
+        let outputs: [OutputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.outputKey))
+        #expect(outputs.allSatisfy { $0.trim == -1.5 }, "the unit's own saved state is not reset")
+        #expect(usb.settingsStore.value(for: PropertyAddress(selector: .peakHoldMode))?.asUInt32 == 2)
+        #expect(usb.restoreReadComparedSkips == 0, "still written without asking")
+        // That restore did not complete (no identity), so the request stays
+        // for the one that does.
+        #expect(state.usbRestoreOwed)
+        #expect(unit.resetRequest == SymphonyIOResetRequest.resetAll.rawValue)
+    }
+
     @Test("a front-panel reset is applied to the saved state once per connection")
     func frontPanelResetOncePerGeneration() async throws {
         let restore = restoringDefaults()

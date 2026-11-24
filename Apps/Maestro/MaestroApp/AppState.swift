@@ -3231,7 +3231,7 @@ final class AppState: @unchecked Sendable {
                 print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
             }
         }
-        print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) input routes over USB\(resetPending ? " (default table, then saved)" : " (saved)")")
+        print("[Maestro] syncInputRouting: \(written) of \(writes.count) input routes on the unit over USB (sent or already there)\(resetPending ? " (default table, then saved)" : " (saved)")")
         if resetPending, written == writes.count { RoutingMixerReset.clearPending(.usbInputRouting) }
     }
 
@@ -3477,8 +3477,8 @@ final class AppState: @unchecked Sendable {
                 spacing: device is XPCDeviceConnection ? .milliseconds(25) : nil)
         }
         if channelReplay.applied > 0 || channelReplay.failed > 0 {
-            print("[Maestro] syncDeviceSettings: re-applied " + String(channelReplay.applied)
-                + " analog channel setting(s)"
+            print("[Maestro] syncDeviceSettings: " + String(channelReplay.applied)
+                + " analog channel setting(s) on the unit (sent or already there)"
                 + (channelReplay.skipped == 0 ? "" : ", " + String(channelReplay.skipped) + " already set")
                 + (channelReplay.failed == 0 ? "" : ", " + String(channelReplay.failed) + " refused"))
         }
