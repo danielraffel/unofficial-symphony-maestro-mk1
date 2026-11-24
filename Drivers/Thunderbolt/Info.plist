@@ -17,13 +17,13 @@
 	<key>CFBundlePackageType</key>
 	<string>DEXT</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.11.18</string>
+	<string>0.11.19</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>DriverKit</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>149</string>
+	<string>150</string>
 	<key>DTPlatformName</key>
 	<string>driverkit</string>
 	<key>DTPlatformVersion</key>
