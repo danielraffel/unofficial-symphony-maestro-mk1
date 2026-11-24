@@ -280,7 +280,9 @@ struct USBResetRequestRestoreTests {
         let inputs: [InputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.inputKey))
         let outputs: [OutputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.outputKey))
         #expect(inputs.allSatisfy { $0.softLimit == InputResetDefaults.softLimit && $0.digitalRefLevel == InputResetDefaults.digitalRefLevel })
-        #expect(outputs.allSatisfy { $0 == OutputChannelState() })
+        // Outputs: the defaults, except nothing louder: the saved -1.5 dB
+        // trim is below the default 0 dB and stays (`frontPanelResetOutput`).
+        #expect(outputs.allSatisfy { $0.analogRefLevel == 1 && $0.digitalRefLevel == 2 && $0.trim == -1.5 })
         let strips: [MixerChannelState] = state.channelStateStore.load(ChannelStateStore.mixerKey(0)) ?? []
         #expect(strips.isEmpty)
         #expect(state.peripheralRoutingCache(direction: "output").loadMulti() == nil)
@@ -551,6 +553,268 @@ struct USBResetRequestRestoreTests {
         #expect(unit.writes.suffix(2).map(\.data) == [[32, 64], [33, 65]])
         #expect(!state.usbRestoreOwed)
         #expect(state.usbRestoredHelperConfigures == 2)
+    }
+
+    /// The same unit, after Maestro quit and was opened again: a new
+    /// `AppState` and connection on the same saved settings, nothing seeded.
+    private func relaunch(uid: String, identity: UInt64, unit: HoldingUnit) throws -> (AppState, XPCDeviceConnection) {
+        let state = AppState()
+        state.usbMixerStripSpacing = .zero
+        state.connectionMode = .hardware
+        state.transportType = .usb
+        state.isHardwareInitialized = true
+        let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: uid))
+        let usb = XPCDeviceConnection(identifier: id, transport: unit)
+        state.device = usb
+        state.primaryBoardType = .analogADDA16
+        state.primaryBoardSource = .detected
+        state.secondaryBoardType = .none
+        state.secondaryBoardSource = .detected
+        state.unitAIdentity = identity
+        state.unitAIdentityState = .known(identity)
+        unit.configure()
+        return (state, usb)
+    }
+
+    /// Put `byte` in the unit's shared reply buffer, as the transfer before
+    /// the restore's first read would.
+    private func leaveInBuffer(_ byte: UInt8, _ unit: HoldingUnit) async throws {
+        try await unit.sendSetProperty(bRequest: 0x99, wValue: 0, wIndex: 0, data: Data([byte]))
+        unit.clearWrites()
+    }
+
+    @Test("residue in the reply buffer reading 3 (0xDB unanswered) is not a front-panel reset: nothing is wiped or cleared")
+    func residueResetRequestDoesNotWipe() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-residue-db", identity: 0xF2B0_0010)
+        try await firstRestore(state, usb, unit)
+        defer { FrontPanelResetMarker.clear(for: 0xF2B0_0010) }
+        replug(state, unit)
+        unit.unanswered = [SymphonyIOResetRequest.command]
+        try await leaveInBuffer(SymphonyIOResetRequest.resetAll.rawValue, unit)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let strips: [MixerChannelState] = state.channelStateStore.load(ChannelStateStore.mixerKey(0)) ?? []
+        #expect(strips == [MixerChannelState(level: -12, pan: 0.5, isMuted: true, isSoloed: false)], "saved strip kept")
+        #expect(usb.settingsStore.value(for: PropertyAddress(selector: .peakHoldMode))?.asUInt32 == 2)
+        let outputs: [OutputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.outputKey))
+        #expect(outputs.allSatisfy { $0.trim == -1.5 })
+        #expect(!unit.writes.contains { $0.request == SymphonyIOResetRequest.command }, "0xDB not cleared")
+        #expect(!unit.writes.contains { $0.request == 0x26 || $0.request == 0x23 }, "no level lowered")
+        #expect(usb.restoreReadComparedSkips > 0, "the unit is asked before each write, as on a replug")
+        #expect(FrontPanelResetMarker.stage(for: 0xF2B0_0010) == nil)
+    }
+
+    @Test("a reset request that answers differently on its two checks is not a front-panel reset")
+    func resetRequestMustRepeat() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-disagree", identity: 0xF2B0_0011)
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        // The poll, then check 1 (read, read again), then check 2.
+        unit.startingAnswers = [3, 3, 3, 4, 4]
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let strips: [MixerChannelState] = state.channelStateStore.load(ChannelStateStore.mixerKey(0)) ?? []
+        #expect(strips.count == 1, "saved strip kept")
+        #expect(!unit.writes.contains { $0.request == SymphonyIOResetRequest.command })
+        #expect(usb.restoreReadComparedSkips > 0)
+    }
+
+    @Test("Reset All: an output on -10 dBV stays on -10 dBV; reference levels and trims only ever move the quieter way")
+    func resetAllNeverRaisesOutputReferences() async throws {
+        let quiet = OutputChannelState(analogRefLevel: OutputChannelLogic.minus10dBV, digitalRefLevel: 4, trim: -0.5)
+        let kept = AppState.frontPanelResetOutput(quiet)
+        #expect(kept.analogRefLevel == OutputChannelLogic.minus10dBV, "-10 dBV kept: +4 dBu would be about 12 dB louder")
+        #expect(kept.digitalRefLevel == 4, "-12 dBFS kept: -16 dBFS would be louder")
+        #expect(kept.trim == -0.5 && kept.trimMinus10 == -0.5)
+        // Saved louder than the defaults: brought to them.
+        var loud = OutputChannelState(analogRefLevel: OutputChannelLogic.plus4dBu, digitalRefLevel: 1, trim: 1.0)
+        loud.trimMinus10 = 2.0
+        let lowered = AppState.frontPanelResetOutput(loud)
+        #expect(lowered == OutputChannelState(), "\(lowered)")
+
+        // Through the restore: the saved -10 dBV is what is written.
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-minus10", identity: 0xF2B0_0012)
+        defer { FrontPanelResetMarker.clear(for: 0xF2B0_0012) }
+        state.channelStateStore.save(Array(repeating: quiet, count: 4), for: ChannelStateStore.outputKey)
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let outputs: [OutputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.outputKey))
+        #expect(outputs.allSatisfy { $0.analogRefLevel == OutputChannelLogic.minus10dBV && $0.digitalRefLevel == 4 })
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
+    }
+
+    @Test("after a front-panel reset the speaker and headphone levels come down before any other write")
+    func resetLowersLevelsFirst() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, _, unit, writes) = try await frontPanelReset(.resetAll, uid: "reset-order", identity: 0xF2B0_0013)
+        defer { FrontPanelResetMarker.clear(for: 0xF2B0_0013) }
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
+        _ = state
+        let first = try #require(writes.firstIndex { $0.request != 0x26 && $0.request != 0x23 })
+        #expect(first == 2, "\(writes.prefix(4))")
+        #expect(writes.prefix(2).allSatisfy { ($0.request == 0x26 || $0.request == 0x23) && $0.data == [20] })
+    }
+
+    @Test("a USB front-panel reset leaves no ThunderBridge route on a mixer and marks ThunderBridge's mixers and input routing pending")
+    func resetMakesThunderBridgeSafe() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let defaults = UserDefaults.standard
+        let (state, usb, unit) = try makeState(uid: "reset-tb", identity: 0xF2B0_0014)
+        defer { FrontPanelResetMarker.clear(for: 0xF2B0_0014) }
+        try await firstRestore(state, usb, unit)
+        // ThunderBridge (32 channels, PID 0x12) saved state for this unit:
+        // Mixer 1 (row 16) on Line 1/2, a direct route on row 0; a unit B
+        // table of a pair it is in; and another unit whose identity starts
+        // with this one's.
+        let tbKey = "cardRouting.v3.18.a=f2b00014.b=none.channels=32.a.analogADDA16+none_multi"
+        let pairKey = "cardRouting.v3.18.a=abcd.b=f2b00014.channels=64.b.analogADDA16+none_multi"
+        let otherKey = "cardRouting.v3.18.a=f2b000140.b=none.channels=32.a.analogADDA16+none_multi"
+        defaults.set(["16": [0], "17": [2], "0": [4]], forKey: tbKey)
+        defaults.set(["16": [0]], forKey: pairKey)
+        defaults.set(["16": [0]], forKey: otherKey)
+        RoutingMixerReset.clearPending(.thunderboltCardMixer)
+        RoutingMixerReset.clearPending(.thunderboltInputRouting)
+        replug(state, unit)
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(defaults.dictionary(forKey: tbKey) as? [String: [Int]] == ["0": [4]], "mixer rows gone, the direct route kept")
+        #expect(defaults.object(forKey: pairKey) == nil, "unit B table removed")
+        #expect(defaults.dictionary(forKey: otherKey) as? [String: [Int]] == ["16": [0]], "another unit is left alone")
+        #expect(RoutingMixerReset.isPending(.thunderboltCardMixer))
+        #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
+        defaults.removeObject(forKey: tbKey)
+        defaults.removeObject(forKey: otherKey)
+        RoutingMixerReset.clearPending(.thunderboltCardMixer)
+        RoutingMixerReset.clearPending(.thunderboltInputRouting)
+    }
+
+    @Test("a clear that does not land: a replug and a relaunch do not reset again or lower a raised level; acknowledged once the unit answers None")
+    func failedClearDoesNotReWipe() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let identity: UInt64 = 0xF2B0_0015
+        let (state, usb, unit) = try makeState(uid: "reset-failed-clear", identity: identity)
+        defer { FrontPanelResetMarker.clear(for: identity) }
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.set(0x26, 0, 0, [0])
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        unit.refuseResetClear = true
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.writes.contains(HoldingUnit.Write(request: 0x26, value: 0, index: 0, data: [20])))
+        #expect(unit.writes.filter { $0.request == SymphonyIOResetRequest.command }.count == 3, "the clear is tried 3 times")
+        #expect(unit.resetRequest == SymphonyIOResetRequest.resetAll.rawValue)
+        #expect(FrontPanelResetMarker.stage(for: identity) == .levelsLowered)
+        // Edits after the reset: a strip, and the speaker back up to 0 dB.
+        let edited = MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: false)
+        state.channelStateStore.save([edited], for: ChannelStateStore.mixerKey(0))
+        unit.set(0x26, 0, 0, [0])
+        // Replug: the same app, a new connection.
+        unit.clearWrites()
+        replug(state, unit)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect((state.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?) == [edited])
+        #expect(!unit.writes.contains { $0.request == 0x26 }, "the raised level is not lowered again")
+        // Relaunch: a new app on the same saved settings.
+        unit.clearWrites()
+        let (again, usbAgain) = try relaunch(uid: "reset-failed-clear", identity: identity, unit: unit)
+        await again.restoreUSBMixerAfterRecovery(usbAgain, helperMixer: 0)
+        #expect((again.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?) == [edited],
+                "the edit is not wiped by the reset the unit still reports")
+        #expect(!unit.writes.contains { $0.request == 0x26 })
+        #expect(unit.writes.contains { $0.request == SymphonyIOResetRequest.command }, "the clear is tried again")
+        // The clear lands: the marker goes.
+        unit.refuseResetClear = false
+        unit.clearWrites()
+        again.unitAGeneration = UUID()
+        await again.restoreUSBMixerAfterRecovery(usbAgain, helperMixer: 0)
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
+        #expect(FrontPanelResetMarker.stage(for: identity) == nil)
+        #expect((again.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?) == [edited])
+    }
+
+    @Test("a clear whose read-back the unit does not answer is not believed: the marker stays")
+    func clearReadBackMustBeAnswered() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let identity: UInt64 = 0xF2B0_0016
+        let (state, usb, unit) = try makeState(uid: "reset-clear-unanswered", identity: identity)
+        defer { FrontPanelResetMarker.clear(for: identity) }
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        unit.refuseResetClear = true
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        // 0xDB stops answering: the write's own byte (None) comes back as residue.
+        unit.unanswered = [SymphonyIOResetRequest.command]
+        #expect(await usb.clearResetRequest(attempts: 1) == false)
+        #expect(FrontPanelResetMarker.stage(for: identity) != nil)
+    }
+
+    @Test("a front-panel reset is not applied while the cards are not read this session")
+    func resetWaitsForBoardDetection() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-no-boards", identity: 0xF2B0_0017)
+        defer { FrontPanelResetMarker.clear(for: 0xF2B0_0017) }
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        state.secondaryBoardSource = .cached
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect((state.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?)?.count == 1)
+        #expect(!unit.writes.contains { $0.request == SymphonyIOResetRequest.command })
+        #expect(unit.resetRequest == SymphonyIOResetRequest.resetAll.rawValue)
+        #expect(FrontPanelResetMarker.stage(for: 0xF2B0_0017) == nil)
+    }
+
+    @Test("a headphone whose source a mixer feeds counts as a mixer-fed destination (the restore is not paced)")
+    func mixerFedHeadphoneCounted() throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, _) = try makeState(uid: "reset-hp-mixer", identity: 0xF2B0_0018)
+        usb.settingsStore.record(.uint32(0), for: PropertyAddress(selector: .headphone1RoutingID))
+        #expect(!state.mixerFeedsAudibleDestination(), "the headphone follows Line 1/2 on USB 1-2")
+        // Mixer 2 (row 9) feeds Line 1/2, which Headphone 1 follows.
+        state.peripheralRoutingCache(direction: "output").save([9: Set([0])])
+        let sources = try #require(state.usbHeadphoneSources(.headphone1, cachedRoutes: state.cachedOutputRouteMap()))
+        #expect(CardOutputTableOrder.mixer(ofSource: sources.left) == 1)
+        #expect(state.mixerFeedsAudibleDestination())
+    }
+
+    @Test("the mixer strip reads stop as soon as the restore is superseded")
+    func stripReadsStopWhenSuperseded() async throws {
+        let unit = HoldingUnit()
+        let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "reset-strip-cancel"))
+        let usb = XPCDeviceConnection(identifier: id, transport: unit)
+        await usb.beginRestoreElision(compareReads: true)
+        await usb.verifyMixerStrips(mixer: 0, channels: Array(0..<16), isCurrent: { false })
+        #expect(unit.reads == 0)
+        usb.endRestoreElision()
+    }
+
+    @Test("a confirmed reset with a reset-request read at a board version of 3: another decoy is used")
+    func resetDecoysSkipMatchingByte() async throws {
+        let unit = HoldingUnit()
+        let id = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+            productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "reset-decoys"))
+        let usb = XPCDeviceConnection(identifier: id, transport: unit)
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        unit.set(0x26, 0, 0, [3])
+        unit.set(0x23, 0, 0, [3])
+        #expect(await usb.confirmFrontPanelReset(separation: .zero) == .resetAll)
+        unit.unanswered = [SymphonyIOResetRequest.command]
+        #expect(await usb.confirmFrontPanelReset(separation: .zero) == nil)
     }
 }
 }

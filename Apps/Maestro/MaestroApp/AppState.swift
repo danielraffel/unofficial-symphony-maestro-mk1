@@ -183,6 +183,14 @@ final class AppState: @unchecked Sendable {
     /// saved state for the unit back to defaults (once per generation: a
     /// retry before 0xDB is cleared must not wipe edits made since).
     @ObservationIgnored var usbFrontPanelResetGeneration: UUID?
+    /// The connection generation whose front-panel reset has lowered the
+    /// speaker and headphone levels (once: a retry must not lower a level
+    /// raised since; across relaunches `FrontPanelResetMarker` says so).
+    @ObservationIgnored var usbFrontPanelResetLevelsGeneration: UUID?
+    /// The pause between the two checks of a front-panel reset request
+    /// (`XPCDeviceConnection.confirmFrontPanelReset`).
+    @ObservationIgnored var usbResetConfirmSeparation: Duration =
+        TestEnvironment.isRunningTests ? .milliseconds(1) : .milliseconds(100)
     /// How many USB restores have begun (past their guards), for the log and
     /// the tests.
     @ObservationIgnored var usbRestoreRuns = 0
@@ -237,6 +245,11 @@ final class AppState: @unchecked Sendable {
     /// throughout it); zero under the tests.
     @ObservationIgnored var usbRestoreReadSpacing: Duration =
         TestEnvironment.isRunningTests ? .zero : .milliseconds(25)
+    /// The least time before each read of a USB restore, also while a mixer
+    /// feeds an output and the restore otherwise goes at its own pace: the
+    /// mixer strip reads are not sent as one burst. Zero under the tests.
+    @ObservationIgnored var usbRestoreMinimumReadGap: Duration =
+        TestEnvironment.isRunningTests ? .zero : .milliseconds(3)
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
     /// D5: which mixers are restored on which driver instance (keyed by the
     /// driver's own nonce), the stored restore task, and whether launch or

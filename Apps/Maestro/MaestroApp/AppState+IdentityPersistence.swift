@@ -204,7 +204,46 @@ extension AppState {
             polls += 1
         }
         guard isCurrent() else { return }
-        let frontPanelReset = reset?.isFrontPanelReset == true
+        // A front-panel reset is believed only once the unit is seen to say
+        // so: two checks apart, each a read, a decoy and the read again, both
+        // answering the same 3 or 4 (`confirmFrontPanelReset`). The read
+        // above is a single transfer, and one the firmware does not answer
+        // comes back with the bytes of the transfer before it; it must never
+        // reset Maestro's saved state. Not confirmed: no reset, the unit is
+        // asked before each write as on a replug, and 0xDB is not cleared.
+        if reset?.isFrontPanelReset == true {
+            let stillCurrent: @Sendable () async -> Bool = { @MainActor [weak self] in
+                guard let self else { return false }
+                return self.device === connection && self.unitAGeneration == generation
+                    && !self.hardwareWritesSuspended && !Task.isCancelled
+            }
+            reset = await connection.confirmFrontPanelReset(separation: usbResetConfirmSeparation,
+                                                            isCurrent: stillCurrent)
+            guard isCurrent() else { return }
+        }
+        let identity: UInt64? = if case .known(let id) = unitAIdentityState { id } else { nil }
+        // The reset of an earlier connection or launch is acknowledged once
+        // the unit is seen to answer None (`FrontPanelResetMarker`).
+        if reset == SymphonyIOResetRequest.none, let identity, FrontPanelResetMarker.stage(for: identity) != nil {
+            if await connection.resetRequestReadsNone() {
+                FrontPanelResetMarker.clear(for: identity)
+                print("[Maestro] USB front panel reset: the unit answers None; the reset applied earlier is done")
+            }
+            guard isCurrent() else { return }
+        }
+        // Not on a unit whose cards were not read this session: the defaults
+        // depend on them (the routing ones most of all), and a reset of the
+        // wrong layout is not undone. Left for a restore after the cards are
+        // read; 0xDB stays as it is until then.
+        var frontPanelReset = reset?.isFrontPanelReset == true
+        if frontPanelReset {
+            let refusal = !isHardwareInitialized ? "the unit is not ready yet"
+                : RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading)
+            if let refusal {
+                print("[Maestro] USB front panel reset (\(reset!)): not applied in this restore; \(refusal)")
+                frontPanelReset = false
+            }
+        }
         // As the original did (SymphonyIO.cpp:6417-6432): the unit's saved
         // state goes back to defaults first, then the restore below writes
         // it, then the request is cleared (`AppState+FrontPanelReset`).
@@ -212,10 +251,20 @@ extension AppState {
         // be the product-wide legacy ones, which are not this unit's alone.
         // Then everything is still written without asking and the request
         // cleared, but Maestro's saved state is left as it is.
+        //
+        // Once per reset: the marker is saved with the reset in the same
+        // turn, and kept until the unit is seen to answer None. A clear that
+        // did not land (or a quit before it) must not wipe, on the next
+        // restore, relaunch or replug, what was edited after the reset.
         if frontPanelReset, let reset, usbFrontPanelResetGeneration != generation {
             usbFrontPanelResetGeneration = generation
-            if case .known = unitAIdentityState {
-                resetSavedStateForFrontPanelReset(reset, connection: connection)
+            if let identity {
+                if FrontPanelResetMarker.stage(for: identity) != nil {
+                    print("[Maestro] USB front panel reset (\(reset)): already applied to Maestro's saved settings for this unit; not reset again")
+                } else {
+                    resetSavedStateForFrontPanelReset(reset, connection: connection)
+                    FrontPanelResetMarker.set(.savedStateReset, for: identity)
+                }
             } else {
                 print("[Maestro] USB front panel reset (\(reset)): unit identity not known; Maestro's saved settings left as they are, every setting written")
             }
@@ -241,9 +290,10 @@ extension AppState {
         // gently (`usbRestoreReadSpacing` between transfers); with one, its
         // outputs are silent until step 5 and the restore goes at its own
         // pace.
-        let mixerFeedsOutput = mixersRoutedToOutput().contains(true)
+        let mixerFeedsOutput = mixerFeedsAudibleDestination()
         let elision = await connection.beginRestoreElision(
-            compareReads: !frontPanelReset, spacing: mixerFeedsOutput ? .zero : usbRestoreReadSpacing)
+            compareReads: !frontPanelReset, spacing: mixerFeedsOutput ? .zero : usbRestoreReadSpacing,
+            readGap: usbRestoreMinimumReadGap)
         defer {
             let total = connection.restoreCountsNow
             connection.endRestoreElision()
@@ -268,6 +318,20 @@ extension AppState {
         usbRestoreOwed = false
         let helperEpoch = connection.helperEpoch
         updateRestoreStatus()
+        // After a front-panel reset the speaker and headphone levels come
+        // down first, before any other write: the reference levels, the
+        // routing and the mixers written below are then heard at the lowered
+        // level, never at the old one. Once per reset (not again on a retry,
+        // a replug or a relaunch before 0xDB is cleared): a level raised
+        // since stays where it was put.
+        if frontPanelReset, connectedUnit == nil, usbFrontPanelResetLevelsGeneration != generation,
+           identity.map({ FrontPanelResetMarker.stage(for: $0) != .levelsLowered }) ?? true {
+            usbFrontPanelResetLevelsGeneration = generation
+            if let identity { FrontPanelResetMarker.set(.levelsLowered, for: identity) }
+            await applyFrontPanelResetLevels(connection)
+            guard isCurrent() else { return }
+            phase("front panel reset levels")
+        }
         // Mixers this connection already holds in full (a retry of something
         // owed) stay in step and keep their routes.
         let kept = Set((0..<2).filter { usbMixerIsWritten($0) })
@@ -323,11 +387,6 @@ extension AppState {
             guard isCurrent() else { return }
             phase("device and channel settings")
         }
-        if frontPanelReset, connectedUnit == nil {
-            await applyFrontPanelResetLevels(connection)
-            guard isCurrent() else { return }
-            phase("front panel reset levels")
-        }
         var routed: Bool
         if converterRoutingSurface {
             // Converters: their own routes, not the Symphony I/O table.
@@ -369,8 +428,13 @@ extension AppState {
         usbRestoredHelperEpoch = helperEpoch
         usbRestoredHelperConfigures = connection.restoreHelperConfigures
         usbRestoreRetryAttempts = 0
-        if frontPanelReset, await connection.clearResetRequest() {
-            print("[Maestro] USB restore: front panel reset acknowledged")
+        if frontPanelReset {
+            if await connection.clearResetRequest() {
+                if let identity { FrontPanelResetMarker.clear(for: identity) }
+                print("[Maestro] USB restore: front panel reset acknowledged")
+            } else {
+                print("[Maestro] USB restore: front panel reset not acknowledged (0xDB does not answer None); the reset stays applied once, not again")
+            }
         }
         updateRestoreStatus()
     }
@@ -480,6 +544,25 @@ extension AppState {
         guard await current() else { return [false, false] }
         print("[Maestro] USB restore mixer return and master: \((connection.restoreCountsNow - afterStrips).line)")
         return strips.mixersWritten.map { $0 && returnAndMaster }
+    }
+
+    /// Whether a mixer feeds anything heard over USB: an output in the saved
+    /// Output Routing, or a headphone whose saved source follows a pair a
+    /// mixer feeds. The restore paces its reads only when none does: with one,
+    /// that output or headphone is silent until the restore routes it back,
+    /// and 25 ms between transfers kept a mixer-fed headphone silent for
+    /// 8-12 s. (A headphone's source comes from the same saved rows, so the
+    /// first test already covers it; it is asked separately so a headphone
+    /// is counted whatever the rows are built from.)
+    @MainActor
+    func mixerFeedsAudibleDestination() -> Bool {
+        if mixersRoutedToOutput().contains(true) { return true }
+        let routes = cachedOutputRouteMap()
+        return SymphonyIOHeadphoneRouting.Headphone.allCases.contains { headphone in
+            guard let sources = usbHeadphoneSources(headphone, cachedRoutes: routes) else { return false }
+            return CardOutputTableOrder.mixer(ofSource: sources.left) != nil
+                || CardOutputTableOrder.mixer(ofSource: sources.right) != nil
+        }
     }
 
     /// Which of the two mixers feed an output, from the saved Output Routing
