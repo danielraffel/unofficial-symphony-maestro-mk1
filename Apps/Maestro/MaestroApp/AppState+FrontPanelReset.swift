@@ -99,11 +99,12 @@ extension AppState {
     /// whatever key it shares: restricting would have to tell the shared
     /// stores apart, and they cannot be (the same keys serve both).
     ///
-    /// - Every saved output routing of this unit, in any product and card
-    ///   topology (`cardRouting.v3.<product>.a=<unit>.b=...`), loses its two
-    ///   mixer rows (the rows after the playback pairs,
-    ///   `cachedOutputRouteMap`); a unit B table of a 64-channel pair is
-    ///   removed whole. Direct routes are kept. With no mixer row no
+    /// - Every saved output routing table of a card topology this unit is in
+    ///   (`cardRouting.v3.<product>.a=<A>.b=<B>...`, as unit A or B, either
+    ///   unit's table) has its two mixer rows emptied: the rows after unit
+    ///   A's playback pairs, in the 32- and the 64-channel grid alike
+    ///   (`cachedOutputRouteMap`, `TwoUnitOutputRouting.playbackPair`).
+    ///   Direct routes are kept. With no mixer row no
     ///   output is fed by a mixer, so no headphone following one is either.
     /// - ThunderBridge's input routing and card mixers are marked pending
     ///   (`RoutingMixerReset.Pending`): the next ThunderBridge connect writes
@@ -116,22 +117,23 @@ extension AppState {
         let hex = String(identity, radix: 16)
         var changed: [String] = []
         for (key, value) in defaults.dictionaryRepresentation() {
-            guard let match = Self.frontPanelResetOutputRoutingKey(key, identityHex: hex) else { continue }
-            if match.unitB {
-                defaults.removeObject(forKey: key)
-                changed.append(key)
-                continue
-            }
-            guard var rows = value as? [String: [Int]] ?? (value as? [String: Int]).map({ $0.mapValues { [$0] } }) else {
-                continue
-            }
-            let mixerRows = [match.softwarePairs, match.softwarePairs + 1].map(String.init)
-            guard mixerRows.contains(where: { rows[$0] != nil }) else { continue }
-            for row in mixerRows { rows[row] = nil }
-            if value is [String: Int] {
-                defaults.set(rows.compactMapValues(\.first), forKey: key)
-            } else {
+            guard let softwarePairs = Self.frontPanelResetOutputRoutingKey(key, identityHex: hex) else { continue }
+            let mixerRows = [softwarePairs, softwarePairs + 1].map(String.init)
+            if let rows = value as? [String: [Int]] {
+                // Emptied, not removed: a table with every row present is
+                // "complete" (`thunderboltOutputTable`), and its outputs
+                // with no source stay silent instead of taking the defaults.
+                guard mixerRows.contains(where: { !(rows[$0] ?? []).isEmpty }) else { continue }
+                var emptied = rows
+                for row in mixerRows where rows[row] != nil { emptied[row] = [] }
+                defaults.set(emptied, forKey: key)
+            } else if var rows = value as? [String: Int] {
+                // The single-route form has no empty row: the mixer rows go.
+                guard mixerRows.contains(where: { rows[$0] != nil }) else { continue }
+                for row in mixerRows { rows[row] = nil }
                 defaults.set(rows, forKey: key)
+            } else {
+                continue
             }
             changed.append(key)
         }
@@ -142,13 +144,12 @@ extension AppState {
             + "; ThunderBridge writes its default input table and both mixers at its next connect")
     }
 
-    /// A saved output routing key of the unit `identityHex`
+    /// A saved output routing key of a topology the unit `identityHex` is in
     /// (`peripheralRoutingCache`: `cardRouting.v3.<product>.<topology>.<unit>.<scope>`,
-    /// with or without `_multi`), and where its mixer rows are. The identity
-    /// must be a whole topology field (`a=<hex>.` or `b=<hex>.`), never a
-    /// prefix of another unit's.
-    static func frontPanelResetOutputRoutingKey(_ key: String, identityHex hex: String)
-        -> (softwarePairs: Int, unitB: Bool)? {
+    /// with or without `_multi`): the first mixer row (unit A's playback
+    /// pairs). The identity must be a whole topology field (`a=<hex>` or
+    /// `b=<hex>`), never a prefix of another unit's.
+    static func frontPanelResetOutputRoutingKey(_ key: String, identityHex hex: String) -> Int? {
         let prefix = "cardRouting.v3."
         guard key.hasPrefix(prefix), !key.hasSuffix(".migratedTo") else { return nil }
         let parts = key.dropFirst(prefix.count).split(separator: ".", omittingEmptySubsequences: false)
@@ -157,13 +158,10 @@ extension AppState {
               parts[1].hasPrefix("a="), parts[2].hasPrefix("b="), parts[3].hasPrefix("channels=") else { return nil }
         let a = parts[1].dropFirst(2), b = parts[2].dropFirst(2)
         guard a == hex || b == hex else { return nil }
-        let unit = parts[4]
-        // A unit B table (64 channels: its own grid) is removed whole, and so
-        // is a table of a product whose rows are not known. A unit A table
-        // has its mixer rows after its playback pairs, also in a pair
-        // (`TwoUnitOutputRouting.playbackPair`).
-        guard let mode = USBMode(productID: product) else { return (0, true) }
-        return (mode.channelCount / 2, unit == "b")
+        // `peripheralRoutingCache` keys its tables by a Symphony product
+        // (unit A's mode); none other is saved.
+        guard let mode = USBMode(productID: product) else { return nil }
+        return mode.channelCount / 2
     }
 
     /// The original's speaker and headphone attenuation after a reset

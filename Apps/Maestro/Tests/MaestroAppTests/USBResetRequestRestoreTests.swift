@@ -671,28 +671,50 @@ struct USBResetRequestRestoreTests {
         let (state, usb, unit) = try makeState(uid: "reset-tb", identity: 0xF2B0_0014)
         defer { FrontPanelResetMarker.clear(for: 0xF2B0_0014) }
         try await firstRestore(state, usb, unit)
-        // ThunderBridge (32 channels, PID 0x12) saved state for this unit:
-        // Mixer 1 (row 16) on Line 1/2, a direct route on row 0; a unit B
-        // table of a pair it is in; and another unit whose identity starts
-        // with this one's.
-        let tbKey = "cardRouting.v3.18.a=f2b00014.b=none.channels=32.a.analogADDA16+none_multi"
-        let pairKey = "cardRouting.v3.18.a=abcd.b=f2b00014.channels=64.b.analogADDA16+none_multi"
+        // The key ThunderBridge (32 channels, PID 0x12) saves this unit's
+        // output routing under, from the app's own key builder: Mixer 1
+        // (row 16) and Mixer 2 (row 17) on outputs, a direct route on row 0,
+        // every other row present (a complete table).
+        let tbID = try #require(USBDeviceIdentifier(vendorID: ApogeeUSB.vendorID,
+            productID: ApogeeUSB.SymphonyIO.pid32ch, deviceUID: "reset-tb-32"))
+        // A device change clears the unit's identity: put it back each time.
+        func use(_ device: XPCDeviceConnection) {
+            state.device = device
+            state.unitAIdentity = 0xF2B0_0014
+            state.unitAIdentityState = .known(0xF2B0_0014)
+        }
+        let tb = XPCDeviceConnection(identifier: tbID, transport: HoldingUnit())
+        use(tb)
+        var rows: [Int: Set<Int>] = Dictionary(uniqueKeysWithValues: (0..<18).map { ($0, Set<Int>()) })
+        rows[0] = [4]; rows[16] = [0]; rows[17] = [2]
+        let tbCache = state.peripheralRoutingCache(direction: "output")
+        tbCache.save(rows)
+        let tbKey = tbCache.multiKey
+        use(usb)
+        #expect(tbKey.hasPrefix("cardRouting.v3.18.a=f2b00014.b=none.channels=32.a."), "\(tbKey)")
+        // A 64-channel pair this unit is in (its unit B table), and another
+        // unit whose identity starts with this one's.
+        let pairKey = "cardRouting.v3.18.a=f2b00014.b=abcd.channels=64.b.analogADDA16+none_multi"
         let otherKey = "cardRouting.v3.18.a=f2b000140.b=none.channels=32.a.analogADDA16+none_multi"
-        defaults.set(["16": [0], "17": [2], "0": [4]], forKey: tbKey)
-        defaults.set(["16": [0]], forKey: pairKey)
+        defaults.set(["16": [0], "20": [1]], forKey: pairKey)
         defaults.set(["16": [0]], forKey: otherKey)
         RoutingMixerReset.clearPending(.thunderboltCardMixer)
         RoutingMixerReset.clearPending(.thunderboltInputRouting)
         replug(state, unit)
         unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
         await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
-        #expect(defaults.dictionary(forKey: tbKey) as? [String: [Int]] == ["0": [4]], "mixer rows gone, the direct route kept")
-        #expect(defaults.object(forKey: pairKey) == nil, "unit B table removed")
+        let after = try #require(defaults.dictionary(forKey: tbKey) as? [String: [Int]])
+        #expect(after["16"] == [] && after["17"] == [], "mixer rows emptied: \(after)")
+        #expect(after["0"] == [4], "the direct route kept")
+        #expect(after.count == 18, "every row still there: the table stays complete")
+        use(tb)
+        #expect(state.mixersRoutedToOutput() == [false, false])
+        use(usb)
+        #expect(defaults.dictionary(forKey: pairKey) as? [String: [Int]] == ["16": [], "20": [1]])
         #expect(defaults.dictionary(forKey: otherKey) as? [String: [Int]] == ["16": [0]], "another unit is left alone")
         #expect(RoutingMixerReset.isPending(.thunderboltCardMixer))
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
-        defaults.removeObject(forKey: tbKey)
-        defaults.removeObject(forKey: otherKey)
+        for key in [tbKey, pairKey, otherKey] { defaults.removeObject(forKey: key) }
         RoutingMixerReset.clearPending(.thunderboltCardMixer)
         RoutingMixerReset.clearPending(.thunderboltInputRouting)
     }

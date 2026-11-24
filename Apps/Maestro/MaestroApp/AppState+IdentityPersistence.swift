@@ -233,8 +233,10 @@ extension AppState {
         }
         // Not on a unit whose cards were not read this session: the defaults
         // depend on them (the routing ones most of all), and a reset of the
-        // wrong layout is not undone. Left for a restore after the cards are
-        // read; 0xDB stays as it is until then.
+        // wrong layout is not undone. 0xDB stays as it is, so the reset is
+        // applied by the restore of a later connection (or a later restore
+        // of this one) that finds the cards read; this restore asks the unit
+        // before each write, as on a replug.
         var frontPanelReset = reset?.isFrontPanelReset == true
         if frontPanelReset {
             let refusal = !isHardwareInitialized ? "the unit is not ready yet"
