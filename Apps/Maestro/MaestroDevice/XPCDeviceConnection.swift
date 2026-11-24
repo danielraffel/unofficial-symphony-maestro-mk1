@@ -148,6 +148,12 @@ public struct USBWriteShadow: Sendable, Equatable {
         return stride(from: 0, to: bytes.count, by: 2).map { (bytes[$0], bytes[$0 + 1]) }
     }
 
+    /// Whether `request` is a digital format write (0x34 optical format,
+    /// 0x35/0x36 S/PDIF Coax, board 0 or 1) the shadow keeps.
+    static func isDigitalFormatWrite(_ request: USBControlRequest) -> Bool {
+        digitalKey(request) != nil
+    }
+
     private static func digitalKey(_ request: USBControlRequest) -> UInt16? {
         guard (0x34...0x36).contains(request.request), request.value == 0, request.index <= 1,
               request.data.count == 1 else { return nil }
@@ -1069,6 +1075,18 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         }
     }
 
+    /// Outside the restore: whether `request` is a digital format write
+    /// (0x34-0x36) the helper says the unit already holds, so it is not sent
+    /// and counts as written. 1142 wrote both boards' optical format again
+    /// at every connect (`AppState.reapplyDigitalSettings`), after a restore
+    /// that had written nothing, while USB audio played. A helper that does
+    /// not say what it holds gets the write, as before.
+    private func helperHoldsDigitalFormat(_ request: USBControlRequest) async -> Bool {
+        guard USBWriteShadow.isDigitalFormatWrite(request), !lock.withLock({ restoreActive }),
+              let shadow = await transport.writeShadow() else { return false }
+        return shadow.holds(request)
+    }
+
     /// Wait until the restore's spacing (for a read, at least its read gap)
     /// has passed since its last transfer.
     private func paceRestoreTransfer(read: Bool = false) async {
@@ -1643,7 +1661,8 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
                 // silently reporting success and updating caches.
                 // During the restore, a write the unit already holds is not
                 // sent (`beginRestoreElision`); it counts as written.
-                if !elides(usbRequest), await !unitHolds(usbRequest, address: address) {
+                if !elides(usbRequest), await !unitHolds(usbRequest, address: address),
+                   await !helperHoldsDigitalFormat(usbRequest) {
                     await paceRestoreTransfer()
                     do {
                         try await transport.sendSetProperty(

@@ -777,6 +777,26 @@ struct USBWriteShadowTests {
         try await conn.setProperty(line1, value: .uint32(64))
         #expect(transport.setPropertyCalls.count == 2, "outside the restore every write is sent")
     }
+
+    @Test("outside the restore, an optical format the unit already holds is not sent; a change, or no shadow, is")
+    func digitalFormatHeldOutsideRestore() async throws {
+        let transport = ShadowTransport()
+        // What the helper's configure leaves: both boards ADAT/SMUX.
+        transport.shadow = USBWriteShadow(digital: [0x3400: 0, 0x3401: 0])
+        let conn = XPCDeviceConnection(identifier: USBDeviceIdentifier(
+            vendorID: ApogeeUSB.vendorID, productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "shadow")!,
+            transport: transport)
+        let board0 = PropertyAddress(selector: .opticalInFormat, element: 0)
+        let board1 = PropertyAddress(selector: .opticalInFormat, element: 1)
+        try await conn.setProperty(board0, value: .uint32(0))
+        try await conn.setProperty(board1, value: .uint32(0))
+        #expect(transport.setPropertyCalls.isEmpty, "no 0x34 when the unit holds it")
+        try await conn.setProperty(board1, value: .uint32(1))
+        #expect(transport.setPropertyCalls == [0x34], "a different format is sent")
+        transport.shadow = nil
+        try await conn.setProperty(board0, value: .uint32(0))
+        #expect(transport.setPropertyCalls == [0x34, 0x34], "a helper that does not say gets the write")
+    }
 }
 
 private final class ShadowTransport: XPCTransport, @unchecked Sendable {

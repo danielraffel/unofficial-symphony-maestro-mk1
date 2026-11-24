@@ -689,6 +689,27 @@ struct USBRestoreOrderTests {
         #expect(Set(routes) == Set(saved.keys))
     }
 
+    @Test("connect: a saved optical format the unit already holds is not written again; one it does not hold is")
+    func connectDigitalSettingsHeldAreNotRewritten() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, _, unit) = try makeState(uid: "order-digital-held", identity: 0xF2A0_000D, routeMixer1ToLine12: false)
+        let card = state.cardLayout.card(atSlot: 0)
+        try #require(card.hasOpticalPorts)
+        state.rememberDigitalSetting(card.opticalFormatUsesInput ? .opticalInFormat : .opticalOutFormat, slot: 0, value: 0)
+        try #require(state.rememberedDigitalSettings.writes(layout: state.cardLayout).count == 1)
+        // The helper's configure has just put both boards on ADAT/SMUX.
+        unit.shadow = RecordingUnit.helperDirectTable
+        await state.reapplyDigitalSettings()
+        #expect(unit.writes.filter { $0.request == 0x34 }.isEmpty, "no 0x34 while USB audio plays")
+        // A unit left on S/PDIF gets the saved ADAT/SMUX.
+        var spdif = RecordingUnit.helperDirectTable
+        spdif.digital[0x3400] = 1
+        unit.shadow = spdif
+        await state.reapplyDigitalSettings()
+        #expect(unit.writes.filter { $0.request == 0x34 }.map(\.data) == [[0]])
+    }
+
     @Test("connect restore: a saved route the unit does not hold is written")
     func changedRouteIsWritten() async throws {
         let restore = restoringDefaults()
