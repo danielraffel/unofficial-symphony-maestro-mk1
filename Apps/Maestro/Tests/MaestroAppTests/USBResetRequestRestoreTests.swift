@@ -6,7 +6,13 @@ import MaestroDevice
 
 /// A fake unit that keeps what it is told and answers reads with it, the way
 /// the firmware does (`XPCDeviceConnection.readCompareRequest(for:)`); what it
-/// was never told reads as 0, as a power-cycled unit's start values.
+/// was never told reads as a power-cycled unit's start values (a mixer fader
+/// at 48, 0 dB, a pan at 64, centre; everything else 0).
+///
+/// Like the XMOS control endpoint it answers from one buffer shared by every
+/// transfer and always sends the full length asked for
+/// (SymphonyIOVendorSpecifics.xc:15-35): a read of an opcode in `unanswered`
+/// comes back with status 0 and whatever the transfer before it left there.
 private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     struct Key: Hashable { let request: UInt8, value: UInt16, index: UInt16 }
     struct Write: Equatable { let request: UInt8, value: UInt16, index: UInt16, data: [UInt8] }
@@ -26,19 +32,31 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     var startingAnswers: [UInt8] = []
     /// Every read fails (an older helper or firmware).
     var readsFail = false
+    /// Read opcodes the firmware leaves unanswered: their replies are the
+    /// shared buffer's residue.
+    var unanswered: Set<UInt8> = []
+    private var buffer = [UInt8](repeating: 0, count: 64)
+    private var otherTransfers = false
     var shadow: USBWriteShadow?
     func writeShadow() async -> USBWriteShadow? { shadow }
     var isConnected: Bool { true }
 
     var writes: [Write] { lock.withLock { recorded } }
+    /// 0xDB reads before any other transfer (the restore's start; the read
+    /// checks use it later as a decoy).
     var resetRequestReads: Int { lock.withLock { resetReads } }
     var reads: Int { lock.withLock { readCount } }
-    func clearWrites() { lock.withLock { recorded.removeAll(); readCount = 0 } }
+    func clearWrites() { lock.withLock { recorded.removeAll(); readCount = 0; resetReads = 0; otherTransfers = false } }
     func value(_ request: UInt8, _ value: UInt16 = 0, _ index: UInt16 = 0) -> [UInt8]? {
         lock.withLock { held[Key(request: request, value: value, index: index)] }
     }
     func set(_ request: UInt8, _ value: UInt16 = 0, _ index: UInt16 = 0, _ data: [UInt8]) {
         lock.withLock { held[Key(request: request, value: value, index: index)] = data }
+    }
+    /// A power cycle of the mixers: every strip back at the firmware's start
+    /// values (fader 48, pan 64, mute and solo off).
+    func powerCycleMixers() {
+        lock.withLock { for key in held.keys where (0xB0...0xB3).contains(key.request) { held[key] = nil } }
     }
     /// What a helper's configure does on every attach: every output and both
     /// headphones on the direct table (MaestroVolumeProxy.c direct_route_table).
@@ -58,6 +76,8 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
         let bytes = Array(data)
         lock.withLock {
+            for (i, byte) in bytes.prefix(buffer.count).enumerated() { buffer[i] = byte }
+            otherTransfers = true
             recorded.append(Write(request: bRequest, value: wValue, index: wIndex, data: bytes))
             switch bRequest {
             case 0x31:
@@ -75,14 +95,18 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     func sendGetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, dataLength: UInt16) async throws -> XPCPropertyReply {
         try lock.withLock {
             readCount += 1
+            if bRequest != SymphonyIOResetRequest.command { otherTransfers = true }
             if readsFail { throw DeviceConnectionError.transportError("no reads") }
             let length = Int(dataLength)
+            if unanswered.contains(bRequest) { return XPCPropertyReply(status: 0, data: Data(buffer.prefix(length))) }
             func reply(_ bytes: [UInt8]) -> XPCPropertyReply {
-                XPCPropertyReply(status: 0, data: Data((bytes + Array(repeating: 0, count: length)).prefix(length)))
+                let sent = Array((bytes + Array(repeating: 0, count: length)).prefix(length))
+                for (i, byte) in sent.prefix(buffer.count).enumerated() { buffer[i] = byte }
+                return XPCPropertyReply(status: 0, data: Data(sent))
             }
             switch bRequest {
             case SymphonyIOResetRequest.command:
-                resetReads += 1
+                if !otherTransfers { resetReads += 1 }
                 if !startingAnswers.isEmpty { return reply([startingAnswers.removeFirst()]) }
                 guard let resetRequest else { throw DeviceConnectionError.transportError("unanswered") }
                 return reply([resetRequest])
@@ -100,6 +124,8 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
                 let over = held[Key(request: 0x12, value: 0, index: 0)]?.first ?? 0
                 let peak = held[Key(request: 0x11, value: 0, index: 0)]?.first ?? 0
                 return reply([bank0, bank1, over, peak])
+            case 0xB0, 0xB1:
+                return reply(held[Key(request: bRequest, value: wValue, index: wIndex)] ?? [bRequest == 0xB0 ? 48 : 64])
             default:
                 return reply(held[Key(request: bRequest, value: wValue, index: wIndex)] ?? [])
             }
@@ -306,6 +332,73 @@ struct USBResetRequestRestoreTests {
         await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
         #expect(unit.writes.count >= first.count)
         #expect(usb.restoreReadComparedSkips == 0)
+    }
+
+    /// Strip writes of input strips (0-31), in order.
+    private func stripWrites(_ writes: [HoldingUnit.Write]) -> [HoldingUnit.Write] {
+        writes.filter { (0xB0...0xB3).contains($0.request) && $0.index < 32 }
+    }
+
+    @Test("mixer reads the firmware does not answer (residue of the write before): every strip is written, as with no reads")
+    func residueMixerReadsWriteEveryStrip() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-residue", identity: 0xF2B0_0008)
+        // The same values strip after strip: a residue reply of strip N+1 is
+        // strip N's write, and looks right.
+        let strip = MixerChannelState(level: -12, pan: 0.5, isMuted: true, isSoloed: false)
+        state.channelStateStore.save(Array(repeating: strip, count: 16), for: ChannelStateStore.mixerKey(0))
+        state.channelStateStore.save(Array(repeating: strip, count: 16), for: ChannelStateStore.mixerKey(1))
+        try await firstRestore(state, usb, unit)
+        // What a unit whose reads all fail gets after a power cycle.
+        unit.powerCycleMixers()
+        unit.readsFail = true
+        replug(state, unit)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let full = stripWrites(unit.writes)
+        unit.clearWrites()
+        unit.readsFail = false
+        // The same power cycle, with the mixer reads left to residue.
+        unit.powerCycleMixers()
+        unit.unanswered = [0xB0, 0xB1, 0xB2, 0xB3]
+        replug(state, unit)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(full.count == state.cardLayout.mixerChannels.filter { (0...31).contains($0.hardwareIndex) }.count * 8)
+        #expect(stripWrites(unit.writes) == full, "every strip written, none skipped on a residue reply")
+        #expect(usb.restoreReadLiveness[0xB0] == false && usb.restoreReadLiveness[0xB3] == false)
+        #expect(usb.restoreReadLiveness[0x25] == true, "the opcodes it answers are still compared")
+        #expect(!state.usbRestoreOwed)
+    }
+
+    @Test("one strip read that cannot be real: every strip of that mixer is written, the other mixer is left alone")
+    func implausibleStripWritesWholeMixer() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-implausible", identity: 0xF2B0_0009)
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.set(0xB3, 2, 3, [7])
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let writes = stripWrites(unit.writes)
+        #expect(!writes.isEmpty && writes.allSatisfy { $0.value == 2 }, "\(writes)")
+        #expect(writes.count == state.cardLayout.mixerChannels.filter { (0...31).contains($0.hardwareIndex) }.count * 4)
+    }
+
+    @Test("routing reads the firmware does not answer: the routes the helper does not vouch for are written, nothing else")
+    func residueRouteReads() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-residue-routes", identity: 0xF2B0_000A)
+        try await firstRestore(state, usb, unit)
+        unit.unanswered = [0x31]
+        replug(state, unit)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.writes.allSatisfy { $0.request == 0x31 }, "\(unit.writes)")
+        // Outputs and headphones are the helper's (its shadow); only the
+        // mixers' Software Return inputs are sent again.
+        let destinations = unit.writes.flatMap { write in stride(from: 0, to: write.data.count, by: 2).map { write.data[$0] } }
+        #expect(destinations.allSatisfy { $0 >= 228 }, "\(destinations)")
+        #expect(usb.restoreReadLiveness[0x31] == false)
     }
 
     @Test("the helper configured the unit again after the restore: the routing is owed")

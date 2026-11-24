@@ -57,6 +57,15 @@ struct USBMeterPlan: Equatable {
     }
 }
 
+/// When a USB restore began, for which connection generation, and whether it
+/// reached the unit (`AppState.usbRestoreCoversLoss`). `reachedUnit` is
+/// filled in when the restore ends; while it runs it is false.
+struct USBRestoreStart: Equatable {
+    var generation: UUID
+    var at: Date
+    var reachedUnit = false
+}
+
 /// USB only: tells a unit that really went away (powered off, unplugged, the
 /// helper lost its handle) from a read that failed once.
 ///

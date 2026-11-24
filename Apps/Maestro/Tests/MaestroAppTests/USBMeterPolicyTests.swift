@@ -250,14 +250,41 @@ struct USBMeterPollingTests {
     @Test("a restore of an earlier connection does not cover a loss on this one")
     func earlierRestoreDoesNotCover() async throws {
         let (state, _, _) = try makeState(visible: false, area: .input)
-        state.usbRestoreStarted = (UUID(), Date())
+        state.usbRestoredGeneration = state.unitAGeneration
+        state.usbRestoreStarted = USBRestoreStart(generation: UUID(), at: Date(), reachedUnit: true)
         #expect(!state.usbRestoreCoversLoss(since: Date().addingTimeInterval(-10)))
         // This connection's, but begun before the loss: the unit came back
         // from a power cycle after it, and is restored.
-        state.usbRestoreStarted = (state.unitAGeneration, Date().addingTimeInterval(-10))
+        state.usbRestoreStarted = USBRestoreStart(generation: state.unitAGeneration,
+                                                  at: Date().addingTimeInterval(-10), reachedUnit: true)
         #expect(!state.usbRestoreCoversLoss(since: Date()))
-        state.usbRestoreStarted = (state.unitAGeneration, Date())
+        state.usbRestoreStarted = USBRestoreStart(generation: state.unitAGeneration, at: Date(), reachedUnit: true)
         #expect(state.usbRestoreCoversLoss(since: Date().addingTimeInterval(-1)))
+    }
+
+    @Test("a loss is covered only by a restore that completed, is owed or is running, and reached the unit")
+    func coveringRestoreMustCount() async throws {
+        let (state, _, _) = try makeState(visible: false, area: .input)
+        let lossBegan = Date().addingTimeInterval(-1)
+        state.usbRestoreStarted = USBRestoreStart(generation: state.unitAGeneration, at: Date(), reachedUnit: true)
+        // Began after the loss but neither completed, owed nor running: it
+        // stopped part way (the connection went away under it, say).
+        state.usbRestoredGeneration = nil
+        state.usbRestoreOwed = false
+        #expect(!state.usbRestoreCoversLoss(since: lossBegan))
+        state.usbRestoreOwed = true
+        #expect(state.usbRestoreCoversLoss(since: lossBegan), "owed: it runs again")
+        state.usbRestoreOwed = false
+        state.usbRestoredGeneration = state.unitAGeneration
+        #expect(state.usbRestoreCoversLoss(since: lossBegan), "completed")
+        // Completed, but nothing it sent or read reached a unit.
+        state.usbRestoreStarted?.reachedUnit = false
+        #expect(!state.usbRestoreCoversLoss(since: lossBegan))
+        // Running now: it is the one for this return.
+        state.usbRestoredGeneration = nil
+        state.usbRestoreTask = Task { @MainActor in }
+        #expect(state.usbRestoreCoversLoss(since: lossBegan))
+        state.usbRestoreTask = nil
     }
 
     @Test("while reads fail the tick does not retry an owed restore")

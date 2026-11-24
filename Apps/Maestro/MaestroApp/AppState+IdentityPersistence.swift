@@ -217,15 +217,36 @@ extension AppState {
         // limit while USB audio played, and the owner heard it. A power-cycled
         // unit answers its defaults and gets every write that differs. The
         // order below is unchanged: a skipped write is one the unit holds.
-        let elision = await connection.beginRestoreElision(compareReads: !frontPanelReset)
+        //
+        // A read is believed only once the unit is seen to answer that opcode
+        // (`XPCDeviceConnection.trustedRead`); one it does not answer comes
+        // back with the bytes of the transfer before it, and the write is
+        // sent. With no mixer feeding an output nothing is silenced while
+        // this runs and USB audio plays throughout, so the unit is asked
+        // gently (`usbRestoreReadSpacing` between transfers); with one, its
+        // outputs are silent until step 5 and the restore goes at its own
+        // pace.
+        let mixerFeedsOutput = mixersRoutedToOutput().contains(true)
+        let elision = await connection.beginRestoreElision(
+            compareReads: !frontPanelReset, spacing: mixerFeedsOutput ? .zero : usbRestoreReadSpacing)
         defer {
-            let skipped = connection.endRestoreElision()
-            print("[Maestro] USB restore: \(skipped) writes skipped, the unit already held them"
+            let total = connection.restoreCountsNow
+            connection.endRestoreElision()
+            if usbRestoreStarted?.generation == generation {
+                usbRestoreStarted?.reachedUnit = connection.restoreReachedUnit
+            }
+            print("[Maestro] USB restore total: \(total.line)"
                 + (elision ? "" : " (the helper did not say what it holds)"))
         }
         guard isCurrent() else { return }
         if frontPanelReset { print("[Maestro] USB restore: the unit was reset from its front panel (\(reset!)); writing every setting") }
-        usbRestoreStarted = (generation, Date())
+        usbRestoreStarted = USBRestoreStart(generation: generation, at: Date())
+        var mark = connection.restoreCountsNow
+        func phase(_ name: String) {
+            let now = connection.restoreCountsNow
+            print("[Maestro] USB restore \(name): \((now - mark).line)")
+            mark = now
+        }
         usbRestoreRuns += 1
         // Anything that becomes owed from here on (an Output Routing edit, a
         // helper restart) is for the next run, not cleared by this one.
@@ -261,6 +282,7 @@ extension AppState {
         if symphony {
             away = await usbPointRoutesAwayFromMixers(connection, keeping: kept)
             guard isCurrent() else { return }
+            phase("routes before the mixers")
         }
         // 2. The mixers. Mixer state that cannot be read for this unit is
         //    not written, and then no mixer is routed either; the rest is
@@ -270,6 +292,7 @@ extension AppState {
             usbMixerLifecycleRestoreGeneration = generation
             mixers = await restoreUSBMixer(connection, generation: generation, helperMixer: helperMixer,
                                            preferences: preferences)
+            mark = connection.restoreCountsNow
         }
         guard isCurrent() else { return }
         usbMixersWritten = (generation, mixers)
@@ -280,8 +303,10 @@ extension AppState {
             || usbSettingsRestored.map({ $0.generation != generation || $0.helperEpoch != helperEpoch }) ?? true {
             await syncInputRoutingToHardware()
             guard isCurrent() else { return }
+            phase("input routing")
             await syncDeviceSettingsToHardware()
             guard isCurrent() else { return }
+            phase("device and channel settings")
         }
         var routed: Bool
         if converterRoutingSurface {
@@ -293,9 +318,11 @@ extension AppState {
         } else {
             // 5. Last: the routes a mixer feeds, then the headphones.
             routed = await syncUSBOutputRouting(connection, mixerFedOnly: symphony)
+            phase("mixer routes")
             if symphony, isCurrent() {
                 let headphones = await syncUSBHeadphoneCrosspoints(connection)
                 routed = routed && headphones
+                phase("headphones")
             }
         }
         routed = routed && away
@@ -340,10 +367,16 @@ extension AppState {
     /// what the configure changed is sent.
     @MainActor
     func serviceHelperReconfigure(_ connection: XPCDeviceConnection) async {
-        guard device === connection, let restored = usbRestoredHelperConfigures,
-              usbRestoredGeneration == unitAGeneration, !usbRestoreOwed, usbRestoreTask == nil,
+        // Not while the unit is still settling after it appeared (the same
+        // wait every other USB write honours), and not when a restore is
+        // already owed or running: that one puts the routing back.
+        func due() -> Bool {
+            device === connection && usbRestoredGeneration == unitAGeneration
+                && !usbRestoreOwed && usbRestoreTask == nil && usbSettleRemainingNow <= 0
+        }
+        guard due(), let restored = usbRestoredHelperConfigures,
               let now = await connection.helperConfigureCount(), now != restored,
-              device === connection, usbRestoredGeneration == unitAGeneration else { return }
+              due(), usbRestoredHelperConfigures == restored else { return }
         usbRestoredHelperConfigures = nil
         usbRestoreOwed = true
         usbRestoreRetryAfter = .distantPast
@@ -415,14 +448,17 @@ extension AppState {
             let saved: [MixerChannelState] = self?.channelStateStore.load(ChannelStateStore.mixerKey(mixer)) ?? []
             return strip < saved.count ? saved[strip] : nil
         }
+        let before = connection.restoreCountsNow
         let strips = await connection.restoreMixerStrips(
             hardwareIndexes: cardLayout.mixerChannels.map(\.hardwareIndex),
             spacing: usbMixerStripSpacing, savedStrip: savedStrip, isCurrent: current)
         guard await current() else { return [false, false] }
-        print("[Maestro] USB mixer restore: \(strips.applied) strip writes, \(strips.failed) refused")
+        let afterStrips = connection.restoreCountsNow
+        print("[Maestro] USB restore mixer strips: \((afterStrips - before).line), \(strips.failed) refused")
         let returnAndMaster = await connection.restoreReturnAndMaster(
             helperMixer: helperMixer, preferences: preferences, routedToOutput: mixersRoutedToOutput())
         guard await current() else { return [false, false] }
+        print("[Maestro] USB restore mixer return and master: \((connection.restoreCountsNow - afterStrips).line)")
         return strips.mixersWritten.map { $0 && returnAndMaster }
     }
 

@@ -178,7 +178,7 @@ final class AppState: @unchecked Sendable {
     /// A loss that ends after a restore for the same generation began is
     /// that restore's to put right, not a second one's
     /// (`usbRestoreCoversLoss`).
-    @ObservationIgnored var usbRestoreStarted: (generation: UUID, at: Date)?
+    @ObservationIgnored var usbRestoreStarted: USBRestoreStart?
     /// How many USB restores have begun (past their guards), for the log and
     /// the tests.
     @ObservationIgnored var usbRestoreRuns = 0
@@ -228,6 +228,11 @@ final class AppState: @unchecked Sendable {
     var unitPreferenceRevision = 0
     /// Pause between the strip writes of a USB mixer restore (tests set zero).
     @ObservationIgnored var usbMixerStripSpacing: Duration = .milliseconds(5)
+    /// The least time between two transfers of a USB restore that asks the
+    /// unit before it writes, while no mixer feeds an output (audio plays
+    /// throughout it); zero under the tests.
+    @ObservationIgnored var usbRestoreReadSpacing: Duration =
+        TestEnvironment.isRunningTests ? .zero : .milliseconds(25)
     @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
     /// D5: which mixers are restored on which driver instance (keyed by the
     /// driver's own nonce), the stored restore task, and whether launch or
@@ -4632,9 +4637,20 @@ final class AppState: @unchecked Sendable {
     /// new generation whose discovery restored the unit, and the meter loop's
     /// loss (the helper had answered "no unit" while it was unplugged) ended
     /// with the first good read after it and restored it again.
+    ///
+    /// Only a restore that can still put the unit right counts: one that
+    /// completed for this generation, is owed (it will run again), or is
+    /// running now; and one that reached the unit (a read answered or a
+    /// write landed, `XPCDeviceConnection.restoreReachedUnit`), since a
+    /// restore that ran while the helper still had no unit open, and gave
+    /// up, did nothing. The meter loop's own reads cannot show that: any
+    /// good read ends the loss.
     @MainActor
     func usbRestoreCoversLoss(since lossBegan: Date?) -> Bool {
         guard let started = usbRestoreStarted, started.generation == unitAGeneration else { return false }
+        let running = usbRestoreTask != nil
+        guard usbRestoredGeneration == unitAGeneration || usbRestoreOwed || running else { return false }
+        guard running || started.reachedUnit else { return false }
         guard let lossBegan else { return true }
         return started.at >= lossBegan
     }
