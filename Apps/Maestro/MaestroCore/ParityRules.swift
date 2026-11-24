@@ -109,10 +109,12 @@ public enum MonitorLevelsAtConnect {
     }
 
     /// A level Maestro shows (dB, 0 loudest) as the attenuation saved for it;
-    /// nil outside -64...0.
+    /// nil outside -64...0. Truncated, as the level knobs convert it for the
+    /// unit (`UInt32(max(0, -level))`, MonitorViews/OutputViews), so what is
+    /// saved is what landed.
     public static func attenuation(dB: Double) -> UInt32? {
         guard dB.isFinite, dB <= 0.5, dB >= -64.5 else { return nil }
-        return UInt32(min(64, max(0, (-dB).rounded())))
+        return UInt32(min(64, max(0, -dB)))
     }
 }
 

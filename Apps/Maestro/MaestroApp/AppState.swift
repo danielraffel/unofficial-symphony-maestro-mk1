@@ -436,6 +436,11 @@ final class AppState: @unchecked Sendable {
     /// link recovery until the step has run again, what the app shows may be
     /// a default or the unit's start-up level, not one the user chose.
     @ObservationIgnored var monitorLevelsSettled: MonitorLevelsSettled?
+    /// A4: the connection whose connect step is still owed (it could not run:
+    /// asleep, the link state unreadable). Retried by the health loop
+    /// (`serviceMonitorLevels`); only ever set by the connect and recovery
+    /// calls, so the service never makes the first run.
+    @ObservationIgnored weak var monitorLevelsOwed: ThunderboltDeviceConnection?
     /// HP2 mute (shared between output tab and monitor panel).
     var hp2Muted: Bool = false
     /// The setup file currently associated with the document window.
@@ -840,6 +845,8 @@ final class AppState: @unchecked Sendable {
                     // The VBus size, where the driver now serving has not
                     // been told it (a new driver starts without VBus).
                     await self.serviceVBus()
+                    // A4: levels at connect, where the step could not run.
+                    await self.serviceMonitorLevels()
                     if self.inputRoutingReplayNeeded, !self.recallInFlight,
                        self.connectionMode == .hardware {
                         self.inputRoutingReplayNeeded = false
@@ -2085,7 +2092,7 @@ final class AppState: @unchecked Sendable {
     private var lastMacMonitorWrite: ObservedMonitorLevel?
     private var macVolumeOverlayAfter = ContinuousClock.now + .seconds(3)
 
-    private func suppressMacVolumeOverlay() {
+    func suppressMacVolumeOverlay() {
         macVolumeOverlayAfter = ContinuousClock.now + .seconds(3)
     }
     private var micPreDAWListenerAddresses: [AudioObjectPropertyAddress] = []

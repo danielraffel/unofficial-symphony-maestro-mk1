@@ -85,6 +85,9 @@ struct ParityRulesTests {
         #expect(MonitorLevelsAtConnect.attenuation(dB: 0) == 0)
         #expect(MonitorLevelsAtConnect.attenuation(dB: -64) == 64)
         #expect(MonitorLevelsAtConnect.attenuation(dB: -20.4) == 20)
+        // As the knobs send it: -20.6 dB reaches the unit as 20.
+        #expect(MonitorLevelsAtConnect.attenuation(dB: -20.6) == UInt32(max(0, 20.6)))
+        #expect(MonitorLevelsAtConnect.attenuation(dB: -20.6) == 20)
         #expect(MonitorLevelsAtConnect.attenuation(dB: -70) == nil)
         #expect(MonitorLevelsAtConnect.attenuation(dB: 3) == nil)
         #expect(MonitorLevelsAtConnect.attenuation(dB: .nan) == nil)

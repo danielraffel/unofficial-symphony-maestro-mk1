@@ -125,6 +125,54 @@ struct LevelsAtConnectAppTests {
         #expect(levelWrites(driver).map(\.payload).last == [30])
     }
 
+    @Test("a step that could not run (asleep) is owed and run by the health loop's service")
+    func owedWhileAsleep() async {
+        let (state, tb, driver) = thunderbolt(saved: [.speakers: 30])
+        state.hardwareSleepState = .sleeping
+        await state.applyMonitorLevelsAtConnect(tb)
+        #expect(driver.sent.isEmpty)
+        #expect(state.monitorLevelsOwed === tb)
+        await state.serviceMonitorLevels()   // still asleep: still owed
+        #expect(driver.sent.isEmpty && state.monitorLevelsOwed === tb)
+        state.hardwareSleepState = .awake
+        await state.serviceMonitorLevels()
+        #expect(levelWrites(driver).map(\.payload) == [[30]])
+        #expect(state.monitorLevelsOwed == nil)
+        // Saving has resumed.
+        state.speakerLevel = -36
+        #expect(tb.savedMonitorLevel(.speakers) == 36)
+        // Nothing owed: the service sends nothing more.
+        await state.serviceMonitorLevels()
+        #expect(levelWrites(driver).count == 1)
+    }
+
+    @Test("an unreadable link state leaves the step owed; the service runs it once it reads")
+    func owedWithoutLinkState() async {
+        let (state, tb, driver) = thunderbolt(saved: [.headphone2: 40])
+        driver.linkReported = false
+        await state.applyMonitorLevelsAtConnect(tb)
+        #expect(driver.sent.isEmpty && state.monitorLevelsOwed === tb)
+        driver.linkReported = true
+        _ = tb.probeEndpoint()
+        await state.serviceMonitorLevels()
+        #expect(levelWrites(driver).map(\.payload) == [[40]])
+        #expect(state.hp2Level == -40)
+    }
+
+    @Test("the service never makes the first run, nor runs for another connection")
+    func serviceOnlyRetries() async {
+        let (state, tb, driver) = thunderbolt(saved: [.speakers: 30])
+        await state.serviceMonitorLevels()
+        #expect(driver.sent.isEmpty)
+        state.hardwareSleepState = .sleeping
+        await state.applyMonitorLevelsAtConnect(tb)
+        state.hardwareSleepState = .awake
+        let (_, other, _) = thunderbolt()
+        state.device = other
+        await state.serviceMonitorLevels()
+        #expect(driver.sent.isEmpty)
+    }
+
     @Test("converters: nothing is sent, nothing saved")
     func converters() async {
         let (state, tb, driver) = thunderbolt(saved: [.speakers: 40])
