@@ -2816,6 +2816,8 @@ final class AppState: @unchecked Sendable {
             if (self.device as? ThunderboltDeviceConnection) === tb { servingDextBuild = build }
             // Which order the driver programmed the tables in, before anything
             // reads the saved routing (and the one-time reset that may follow).
+            // A new connection reads it afresh.
+            thunderboltAppliedChannelOrder = nil
             await refreshThunderboltChannelOrder(tb)
             guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         } else {

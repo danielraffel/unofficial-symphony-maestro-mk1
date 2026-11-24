@@ -73,7 +73,10 @@ extension AppState {
     func refreshThunderboltChannelOrder(_ tb: ThunderboltDeviceConnection) async {
         let applied = await Task.detached(priority: .utility) { tb.appliedChannelOrder() }.value
         guard device === tb else { return }
-        if applied != thunderboltAppliedChannelOrder {
+        // A failed read keeps what this connection last read: a build-150
+        // driver always answers, and a different driver is a new connection
+        // (or a new serving build, which decides the order by itself).
+        if let applied, applied != thunderboltAppliedChannelOrder {
             let before = (thunderboltUnitOrder(unit: .a), thunderboltUnitOrder(unit: .b))
             thunderboltAppliedChannelOrder = applied
             let after = (thunderboltUnitOrder(unit: .a), thunderboltUnitOrder(unit: .b))
