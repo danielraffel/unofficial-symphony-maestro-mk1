@@ -69,15 +69,16 @@ public enum ChannelOrderRoutingReset {
     /// Set with `doneKey`; cleared when the one-time alert is closed.
     public static let alertPendingKey = "channelOrderRoutingReset.analogFirst.v1.alertPending"
 
-    public static let alertTitle = "Mac channels are now in Apogee's order"
+    public static let alertTitle = "Some Mac outputs moved"
 
-    /// For a pending notice saved without its text (a test build of 0.9.25).
-    public static let genericNoticeText = """
-        Mac channels on ThunderBridge are now in Apogee's order: all analog first, then digital. \
-        Routing whose channels moved was reset to the defaults, on ThunderBridge and USB. Check \
-        levels and speakers before playing loud material, and set your routes again if you had \
-        changed them.
-        """
+    /// For a pending notice saved without what moved (a test build of 0.9.25).
+    public static let genericNoticeText =
+        "Channels are now in Apogee's order (analog first, then digital), so routing was reset to the defaults."
+
+    /// Which directions moved, saved with the notice so its text is built
+    /// when it is shown (the wording can change between builds).
+    public static let movedInputsKey = "channelOrderRoutingReset.analogFirst.v1.movedInputs"
+    public static let movedOutputsKey = "channelOrderRoutingReset.analogFirst.v1.movedOutputs"
 
     /// What one run did.
     public struct Outcome: Sendable, Equatable {
@@ -90,38 +91,23 @@ public enum ChannelOrderRoutingReset {
     }
 
     /// The notice for a reset that moved `inputsMoved` / `outputsMoved` on
-    /// the units connected now. `inputExample`: one input that moved, as
-    /// `inputExample(units:)` words it.
+    /// the units connected now: one or two short sentences (owner,
+    /// 2026-11-23: the first version was far too long). Presets and setup
+    /// files are explained in Help and the release notes, and old presets
+    /// say "(old channel order)" in their menu. `inputExample` is unused.
     public static func noticeText(inputsMoved: Bool, outputsMoved: Bool, inputExample: String? = nil) -> String {
-        var parts: [String] = []
-        if inputsMoved {
-            parts.append("DAW input channels are now in Apogee's order: all analog first, then digital"
-                + (inputExample.map { " (for example, \($0))." } ?? "."))
-        }
-        if outputsMoved {
-            parts.append("Some Mac outputs now play on different physical outputs. "
-                + "Check levels and speakers before playing loud material.")
-        }
-        let reset: String
-        let presets: String
         switch (inputsMoved, outputsMoved) {
         case (true, true):
-            reset = "Input Routing and Output Routing (including routes from the mixers and speaker sets) "
-                + "were reset to the defaults, on ThunderBridge and USB."
-            presets = "Routing presets"
+            return "Inputs and outputs are now in Apogee's order (analog first, then digital), so routing was "
+                + "reset to the defaults. Some Mac outputs now play on different outputs: check levels before "
+                + "playing loud."
         case (false, true):
-            reset = "Output Routing (including routes from the mixers and speaker sets) was reset to the "
-                + "defaults, on ThunderBridge and USB. Input Routing for these cards was kept."
-            presets = "Output Routing presets"
+            return "Outputs are now in Apogee's order (analog first, then digital), so Output Routing was reset "
+                + "to the defaults. Some Mac outputs now play on different outputs: check levels before playing loud."
         default:
-            reset = "Input Routing was reset to the defaults, on ThunderBridge and USB. Output Routing for these cards "
-                + "was kept."
-            presets = "Input Routing presets"
+            return "Inputs are now in Apogee's order (analog first, then digital), so Input Routing was reset to "
+                + "the defaults."
         }
-        parts.append(reset + " Set your routes again if you had changed them.")
-        parts.append("\(presets) saved before this update are kept but can't be applied: delete them or save "
-            + "them again. Setup files saved before this update load without their routing.")
-        return parts.joined(separator: " ")
     }
 
     /// One input that moved, in words, for the notice: "analog input 1 of
@@ -177,8 +163,12 @@ public enum ChannelOrderRoutingReset {
         let notice = noticeText(inputsMoved: inputs, outputsMoved: outputs, inputExample: inputExample(units: units))
         if inputs { defaults.set(true, forKey: RoutingMixerReset.Pending.thunderboltInputRouting.key) }
         defaults.set(notice, forKey: noticeTextKey)
+        defaults.set(inputs, forKey: movedInputsKey)
+        defaults.set(outputs, forKey: movedOutputsKey)
         defaults.set(true, forKey: noticePendingKey)
-        defaults.set(true, forKey: alertPendingKey)
+        // The alert only when outputs moved: then sound can come out of a
+        // different output. Inputs alone get the Routing pages' note.
+        if outputs { defaults.set(true, forKey: alertPendingKey) }
         defaults.set(true, forKey: doneKey)
         return Outcome(removed: removed, inputsMoved: inputs, outputsMoved: outputs, notice: notice)
     }
@@ -186,13 +176,21 @@ public enum ChannelOrderRoutingReset {
     /// The caption's text while it has not been dismissed, nil otherwise.
     public static func pendingNotice(defaults: UserDefaults = .standard) -> String? {
         guard defaults.bool(forKey: noticePendingKey) else { return nil }
-        return defaults.string(forKey: noticeTextKey) ?? genericNoticeText
+        return currentText(defaults: defaults)
+    }
+
+    /// The notice built now from what moved, or the generic text.
+    static func currentText(defaults: UserDefaults) -> String {
+        guard defaults.object(forKey: movedInputsKey) != nil || defaults.object(forKey: movedOutputsKey) != nil
+        else { return genericNoticeText }
+        return noticeText(inputsMoved: defaults.bool(forKey: movedInputsKey),
+                          outputsMoved: defaults.bool(forKey: movedOutputsKey))
     }
 
     /// The alert's text while it has not been closed, nil otherwise.
     public static func pendingAlert(defaults: UserDefaults = .standard) -> String? {
         guard defaults.bool(forKey: alertPendingKey) else { return nil }
-        return defaults.string(forKey: noticeTextKey) ?? genericNoticeText
+        return currentText(defaults: defaults)
     }
 
     /// Remove every saved store of a card pair whose channels move in the

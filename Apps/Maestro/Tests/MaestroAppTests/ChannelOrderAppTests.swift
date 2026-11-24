@@ -121,8 +121,8 @@ struct ChannelOrderAppTests {
         #expect(output.loadMulti() == nil)
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
         // Two 8x8s: both directions moved, and the notice says so, once as an alert.
-        #expect(state.channelOrderResetNotice?.contains("Input Routing and Output Routing") == true)
-        #expect(state.channelOrderResetNotice?.contains("different physical outputs") == true)
+        #expect(state.channelOrderResetNotice?.contains("Inputs and outputs") == true)
+        #expect(state.channelOrderResetNotice?.contains("check levels") == true)
         #expect(state.channelOrderResetAlert == state.channelOrderResetNotice)
         #expect(state.inputRoutingReplayNeeded)
         #expect(state.cardOutputTableReplayNeeded)
@@ -161,10 +161,10 @@ struct ChannelOrderAppTests {
         #expect(state.inputRoutingReplayNeeded)
         #expect(!state.cardOutputTableReplayNeeded)
         let notice = state.channelOrderResetNotice ?? ""
-        #expect(notice.contains("DAW input 9, was 17"))
-        #expect(notice.contains("Output Routing for these cards was kept"))
-        #expect(!notice.contains("different physical outputs"))
-        #expect(state.channelOrderResetAlert == notice)
+        #expect(notice.contains("Input Routing was reset"))
+        #expect(!notice.contains("check levels"))
+        // Inputs alone: no alert, the Routing pages' note only.
+        #expect(state.channelOrderResetAlert == nil)
     }
 
     @Test("Selector 17 is trusted when the build read fails; a known build is not replaced by a failed read")

@@ -188,7 +188,7 @@ extension AppState {
             + "inputs \(outcome.inputsMoved ? "moved" : "kept"), outputs \(outcome.outputsMoved ? "moved" : "kept"), "
             + "\(outcome.removed.count) saved routing entries removed")
         channelOrderResetNotice = outcome.notice
-        channelOrderResetAlert = outcome.notice
+        channelOrderResetAlert = outcome.outputsMoved ? outcome.notice : nil
         symphonyCardInputNamingRevision += 1
         viewReloadToken = UUID()
         if outcome.inputsMoved {

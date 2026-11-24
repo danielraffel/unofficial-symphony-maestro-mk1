@@ -74,4 +74,17 @@ struct ViewValueTypeTests {
         #expect(text.contains(".disabled(appState.loopSyncChanging || appState.loopSyncState == nil)"))
         #expect(!text.contains(".disabled(appState.loopSyncBusy"))
     }
+
+    /// Package 1137 drew both Routing pages blank: the reset notice had a
+    /// vertical fixedSize, a narrow layout pass measured its text thousands
+    /// of points tall and the page was laid out above the window. Notices
+    /// on pages must not size themselves vertically.
+    @Test func routingNoticeDoesNotFixItsHeight() throws {
+        let text = try String(contentsOf: Self.appDir.appendingPathComponent("RoutingViews.swift"), encoding: .utf8)
+        let start = try #require(text.range(of: "struct ChannelOrderResetNoticeRow"))
+        let end = try #require(text.range(of: "struct InputRoutingView"))
+        let row = text[start.lowerBound..<end.lowerBound]
+        #expect(!row.contains("fixedSize(horizontal: false, vertical: true)"))
+        #expect(row.contains(".lineLimit(2)"))
+    }
 }

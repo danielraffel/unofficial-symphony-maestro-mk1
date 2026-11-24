@@ -64,11 +64,16 @@ struct ChannelOrderResetNoticeRow: View {
 
     var body: some View {
         if let notice = appState.channelOrderResetNotice {
+            // Same shape as the Mixer's headroom notice. No vertical
+            // fixedSize: in a narrow layout pass it measured the text
+            // thousands of points tall and the routing pages drew above the
+            // window, blank (package 1137, 2026-11-23).
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label(notice, systemImage: "info.circle")
+                Text(notice)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Dismiss") { appState.dismissChannelOrderResetNotice() }
                     .buttonStyle(.link)
                     .font(.caption)

@@ -237,7 +237,8 @@ struct ChannelOrderWiringTests {
         #expect(defaults.object(forKey: "cardRouting.v3.18.a=1f.b=none.channels=32.a.optical+analogAD16") != nil)
         #expect(defaults.object(forKey: "unit.v3.1f.inputRouting.optical+analogAD16") == nil)
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting, defaults: defaults))
-        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: defaults) == outcome?.notice)
+        // Inputs alone: the Routing pages' note, no alert.
+        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: defaults) == nil)
         #expect(ChannelOrderRoutingReset.pendingNotice(defaults: defaults) == outcome?.notice)
 
         let outputs = scratch("outputsOnly")
@@ -248,6 +249,8 @@ struct ChannelOrderWiringTests {
         #expect(outputOutcome?.inputsMoved == false && outputOutcome?.outputsMoved == true)
         #expect(outputs.object(forKey: "unit.v3.1f.inputRouting.optical+analogDA16") != nil)
         #expect(!RoutingMixerReset.isPending(.thunderboltInputRouting, defaults: outputs))
+        // Outputs moved: sound can come out of a different output, so an alert.
+        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: outputs) == outputOutcome?.notice)
 
         // No pair that moves: it does not run.
         let none = scratch("noMove")
@@ -263,27 +266,14 @@ struct ChannelOrderWiringTests {
         let rig = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
         let example = ChannelOrderRoutingReset.inputExample(units: [rig])
         #expect(example == "analog input 1 of the card in slot 2 is now DAW input 9, was 17")
-        #expect(ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: false, inputExample: example) == """
-            DAW input channels are now in Apogee's order: all analog first, then digital (for example, analog input 1 \
-            of the card in slot 2 is now DAW input 9, was 17). Input Routing was reset to the defaults, on ThunderBridge \
-            and USB. Output Routing for these cards was kept. Set your routes again if you had changed them. Input \
-            Routing presets saved before this update are kept but can't be applied: delete them or save them again. \
-            Setup files saved before this update load without their routing.
-            """)
-        #expect(ChannelOrderRoutingReset.noticeText(inputsMoved: false, outputsMoved: true) == """
-            Some Mac outputs now play on different physical outputs. Check levels and speakers before playing loud \
-            material. Output Routing (including routes from the mixers and speaker sets) was reset to the defaults, on \
-            ThunderBridge and USB. Input Routing for these cards was kept. Set your routes again if you had changed \
-            them. Output Routing presets saved before this update are kept but can't be applied: delete them or save \
-            them again. Setup files saved before this update load without their routing.
-            """)
-        let two88 = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .optical)
-        let bothText = ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: true,
-                                                           inputExample: ChannelOrderRoutingReset.inputExample(units: [two88]))
-        #expect(bothText.contains("analog input 1 of the card in slot 2 is now DAW input 9, was 17"))
-        #expect(bothText.contains("different physical outputs"))
-        #expect(bothText.contains("Input Routing and Output Routing (including routes from the mixers and speaker sets) were reset"))
-        #expect(bothText.contains("Routing presets saved before"))
+        // Short (owner, 2026-11-23): one or two sentences.
+        #expect(ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: false) ==
+            "Inputs are now in Apogee's order (analog first, then digital), so Input Routing was reset to the defaults.")
+        let outputsText = ChannelOrderRoutingReset.noticeText(inputsMoved: false, outputsMoved: true)
+        #expect(outputsText.contains("Output Routing was reset") && outputsText.contains("check levels"))
+        let bothText = ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: true)
+        #expect(bothText.contains("Inputs and outputs") && bothText.contains("check levels"))
+        for text in [outputsText, bothText] { #expect(text.count < 220) }
         // Unit B alone moving is named.
         #expect(ChannelOrderRoutingReset.inputExample(units: [nil, rig])
             == "analog input 1 of the card in slot 2 on the second Symphony I/O is now DAW input 41, was 49")
