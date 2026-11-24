@@ -3230,6 +3230,34 @@ static void RunStartupOutputMuteChecks()
         noIrq.card.onVendorWrite = nullptr;
         Finish(idle, noIrq);
     }
+    // The same with the unit's levels never read at bring-up (every read
+    // lost): the poll's rules alone would drop the restored mute (the level
+    // read shows the unit's mute off, or with reads still lost the mute is
+    // put back). A mute on is never louder, so the release sends it anyway.
+    for (int stillLost = 0; stillLost < 2; stillLost++) {
+        Options lost = idle; lost.dropVendorReads = 8; lost.symphonyInquire = 0xF0;
+        Run r;
+        RunScenario(lost, r);
+        size_t muteLine = SIZE_MAX;
+        r.card.onVendorWrite = [&](unsigned p, uint8_t cmd) {
+            if (p == 0 && cmd == 0x27 && muteLine == SIZE_MAX) muteLine = r.card.lines.size();
+        };
+        const size_t mark = r.card.lines.size();
+        gHostAudio.mute->SetControlValue(true);
+        gHostAudio.device->SetSampleRate(48000.0);
+        SymphonySyncHardwareRate(gHostAudio.device, 48000.0, 0, "test, Core Audio restores 48 kHz");
+        HostPump();
+        pastGrace();
+        if (stillLost) r.card.port[0].dropVendorReads = 3;
+        tick(r);
+        r.card.port[0].dropVendorReads = 0;
+        checkMuteBeforeUnmute(stillLost ? "mute, levels unknown, reads still lost"
+                                        : "mute, levels unknown, read at release", r, mark, muteLine);
+        CHECK(gHostAudio.mute->GetControlValue(),
+              "H: levels unknown (%d): the Mac's mute was turned off by the release", stillLost);
+        r.card.onVendorWrite = nullptr;
+        Finish(lost, r);
+    }
     {
         // The same with IO started at the hardware's rate: held to the 3 s
         // deadline, and the mute Core Audio set meanwhile is applied first.

@@ -4593,6 +4593,7 @@ static uint32_t ClkCtrlUnmuteBits(const SymphonyThunderbridge_IVars *ivars)
 static constexpr uint64_t kStartupRateGraceNs = 400000000ull;   // 400 ms
 
 static void RunMonitorPollOnQueue(SymphonyThunderbridge_IVars *ivars);
+static void ApplyStartupMuteOnQueue(SymphonyThunderbridge_IVars *ivars);
 
 static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars)
 {
@@ -4617,8 +4618,11 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars)
     // interrupt's poll, so the unit's own speaker/headphone mute is on before
     // any output opens. Then release the card's whole output path; the card
     // gate covers every output, so it must never stay closed.
-    if (!__atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE))
+    if (!__atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE)) {
+        const bool coreAudioMuted = ivars->outputMuteControl && ivars->outputMuteControl->GetControlValue();
         RunMonitorPollOnQueue(ivars);
+        if (coreAudioMuted) ApplyStartupMuteOnQueue(ivars);
+    }
     if (ivars->pciDevice) {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_OutputUnmute, 0);
@@ -9307,6 +9311,49 @@ start_success:
     return kIOReturnSuccess;
 }
 
+// The Core Audio mute sent to the chosen output (or to the converter keys'
+// trim), and remembered as sent. xlinkQueue.
+static void SendMonitorMuteOnQueue(SymphonyThunderbridge_IVars *ivars, bool b, unsigned kind,
+                                   bool converter, bool muted)
+{
+    ivars->lastMuteState = muted;
+    uint8_t value = muted ? 1 : 0;
+    if (converter) {
+        ivars->converterTrimMuted = muted;
+        ApplyConverterTrim(ivars);
+    } else {
+        // The Core Audio mute is the chosen output's own mute
+        // (SymphonyIO.cpp:2239-2276).
+        MonitorMute(ivars, b, kind) = muted;
+        SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+            b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
+            kind ? kSIOCmd_HeadphoneMute : kSIOCmd_SpeakerMute, kind ? kind - 1 : 0,
+            &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
+    }
+}
+
+// Just before the start-up gate opens: Core Audio showed mute on before the
+// poll ran. The poll's rules can drop it (the unit's levels unknown: the
+// level read shows the unit's mute, or the mute is put back), but a mute on
+// never makes anything louder, so it is sent whenever the chosen output is
+// not known to be muted, and the control shows it again. Not with the
+// converter keys set to None. xlinkQueue.
+static void ApplyStartupMuteOnQueue(SymphonyThunderbridge_IVars *ivars)
+{
+    if (!ivars->outputMuteControl || !XLinkTxAdmissible(ivars)) return;
+    const bool b = ivars->monitorDeviceB;
+    const bool converter = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
+    if (converter && ivars->converterKeysOff) return;
+    const unsigned kind = SelectedMonitorKind(ivars, b);
+    const bool unitMuted = converter ? ivars->converterTrimMuted : MonitorMute(ivars, b, kind);
+    if (!unitMuted || !ivars->lastMuteState) {
+        STLOG("ClkCtrl: Core Audio's mute sent before the startup output unmute");
+        SendMonitorMuteOnQueue(ivars, b, kind, converter, true);
+    }
+    if (!ivars->outputMuteControl->GetControlValue())
+        ivars->outputMuteControl->SetControlValue(true);
+}
+
 // The monitor control poll: the Core Audio volume/mute (or the converter
 // keys) sent to the chosen output when they moved. Runs on xlinkQueue, from
 // the interrupt's poll block and, inline, just before the start-up output
@@ -9413,20 +9460,7 @@ static void RunMonitorPollOnQueue(SymphonyThunderbridge_IVars *ivars)
                 ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
             } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
                 keyLog("mute", "sent", ivars->lastMuteState ? 1.0f : 0.0f, muted ? 1.0f : 0.0f);
-                ivars->lastMuteState = muted;
-                uint8_t value = muted ? 1 : 0;
-                if (converter) {
-                    ivars->converterTrimMuted = muted;
-                    ApplyConverterTrim(ivars);
-                } else {
-                    // The Core Audio mute is the chosen output's own mute
-                    // (SymphonyIO.cpp:2239-2276).
-                    MonitorMute(ivars, b, kind) = muted;
-                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
-                        b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
-                        kind ? kSIOCmd_HeadphoneMute : kSIOCmd_SpeakerMute, kind ? kind - 1 : 0,
-                        &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
-                }
+                SendMonitorMuteOnQueue(ivars, b, kind, converter, muted);
             }
         }
         __atomic_store_n(&ivars->monitorPolledArm, arms, __ATOMIC_RELEASE);
