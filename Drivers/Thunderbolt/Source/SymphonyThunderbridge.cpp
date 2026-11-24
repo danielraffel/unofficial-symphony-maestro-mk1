@@ -4570,16 +4570,18 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
     __atomic_store_n(&ivars->startupRatePending, false, __ATOMIC_RELEASE);
 }
 
-// dext 151: the hardware now runs at a rate Core Audio set (it was
-// programmed, or it is the rate the hardware already runs at). Clears the
-// start-up gate's rate wait and tries the release on xlinkQueue, which owns
-// the gate; a no-op once the gate has opened. An IO start does not count:
-// a client can start IO at 44.1 kHz before Core Audio restores the saved
-// rate, and the deadline covers a saved rate of 44.1 kHz.
-static void NoteStartupRateSettled(SymphonyThunderbridge_IVars *ivars, double rate)
+// dext 151: the hardware now runs at Core Audio's rate: a rate Core Audio
+// set was programmed, Core Audio set the rate the hardware already runs at,
+// or a client started IO at the hardware's rate (Core Audio's saved rate is
+// the start-up 44.1 kHz, so it never sets one; a client that starts IO
+// before Core Audio's restore only gets today's behaviour, the later rate
+// transaction mutes the card itself). Clears the start-up gate's rate wait
+// and tries the release on xlinkQueue, which owns the gate; a no-op once the
+// gate has opened.
+static void NoteStartupRateSettled(SymphonyThunderbridge_IVars *ivars, double rate, const char *why)
 {
     if (!ivars || !__atomic_exchange_n(&ivars->startupRatePending, false, __ATOMIC_ACQ_REL)) return;
-    STLOG("ClkCtrl: startup rate settled at %.0f Hz (Core Audio's rate)", rate);
+    STLOG("ClkCtrl: startup rate settled at %.0f Hz (%{public}s)", rate, why);
     if (ivars->xlinkQueue)
         ivars->xlinkQueue->DispatchAsync(^{ MaybeReleaseStartupOutputMute(ivars, false); });
 }
@@ -9894,7 +9896,7 @@ static kern_return_t ApplyRequestedSampleRate(SymphonyThunderbridge_IVars *ivars
     ivars->lastSampleRate = requestedRate;
     __atomic_store_n(&ivars->namingSampleRate, SymphonyNamingRateHz(requestedRate), __ATOMIC_RELEASE);
     STLOG("StartDevice: hardware now at %.0f Hz", requestedRate);
-    NoteStartupRateSettled(ivars, requestedRate);
+    NoteStartupRateSettled(ivars, requestedRate, "Core Audio's rate programmed");
     // Optical channel names follow the rate (ADAT / SMUX / N.A.).
     ScheduleChannelNames(ivars, self);
     return kIOReturnSuccess;
@@ -9936,7 +9938,7 @@ void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t c
     const double requestedRate = rate > 0.0 ? rate : device->GetSampleRate();
     // dext 151: Core Audio set the rate the hardware already runs at.
     if (rate > 0.0 && requestedRate == ivars->lastSampleRate)
-        NoteStartupRateSettled(ivars, requestedRate);
+        NoteStartupRateSettled(ivars, requestedRate, "Core Audio set the rate the hardware runs at");
     if (requestedRate != ivars->lastSampleRate) {
         // No "recovery in flight" gate: the transaction waits its turn behind
         // a recovery on xlinkQueue, as StartDevice's does.
@@ -10003,6 +10005,9 @@ kern_return_t SymphonyThunderbridge::StartDevice(
             const kern_return_t rateResult =
                 ApplyRequestedSampleRate(ivars, this, requestedRate, "StartDevice");
             if (rateResult != kIOReturnSuccess) return rateResult;
+        } else {
+            // dext 151: IO starts at the rate the hardware already runs at.
+            NoteStartupRateSettled(ivars, requestedRate, "IO start at the hardware's rate");
         }
     }
 
