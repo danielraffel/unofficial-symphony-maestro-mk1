@@ -734,3 +734,66 @@ struct XPCDeviceConnectionTests {
         #expect(result.applied == 0 && transport.setPropertyCalls.isEmpty)
     }
 }
+
+@Suite("USB write shadow")
+struct USBWriteShadowTests {
+    private func route(_ pairs: [(UInt8, UInt8)]) -> USBControlRequest {
+        SymphonyIORequestBuilder.setAudioRoutes(pairs.map { (destination: $0.0, source: $0.1) })
+    }
+
+    @Test("a route of an output or headphone the unit holds is held; anything else is sent")
+    func holds() {
+        var shadow = USBWriteShadow(routes: [32: 192, 33: 193, 224: 192, 228: 192], digital: [0x3401: 1])
+        #expect(shadow.holds(route([(32, 192)])))
+        #expect(shadow.holds(route([(32, 192), (33, 193)])))
+        #expect(!shadow.holds(route([(32, 192), (33, 194)])), "a batch is held only whole")
+        #expect(shadow.holds(route([(224, 192)])))
+        #expect(!shadow.holds(route([(228, 192)])), "a mixer's Software Return source is always sent")
+        #expect(!shadow.holds(route([(34, 194)])), "unknown")
+        #expect(shadow.holds(SymphonyIORequestBuilder.setOpticalFormat(board: 1, format: 1)))
+        #expect(!shadow.holds(SymphonyIORequestBuilder.setOpticalFormat(board: 1, format: 0)))
+        #expect(!shadow.holds(SymphonyIORequestBuilder.setOpticalFormat(board: 0, format: 0)))
+        shadow.note(route([(32, 64)]), ok: true)
+        #expect(shadow.routes[32] == 64)
+        shadow.note(route([(33, 65)]), ok: false)
+        #expect(shadow.routes[33] == nil, "a failed write is unknown")
+    }
+
+    @Test("while the restore skips, a held route is not sent and counts as written; afterwards it is sent")
+    func elision() async throws {
+        let transport = ShadowTransport()
+        transport.shadow = USBWriteShadow(routes: [32: 192])
+        let conn = XPCDeviceConnection(identifier: USBDeviceIdentifier(
+            vendorID: ApogeeUSB.vendorID, productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "shadow")!,
+            transport: transport)
+        let line1 = PropertyAddress(selector: .routing, scope: .output, element: 32)
+        #expect(await conn.beginRestoreElision())
+        try await conn.setProperty(line1, value: .uint32(192))
+        #expect(transport.setPropertyCalls.isEmpty)
+        try await conn.setProperty(line1, value: .uint32(64))
+        try await conn.setProperty(line1, value: .uint32(64))
+        #expect(transport.setPropertyCalls.count == 1, "what was just written is held too")
+        #expect(conn.endRestoreElision() == 2)
+        try await conn.setProperty(line1, value: .uint32(64))
+        #expect(transport.setPropertyCalls.count == 2, "outside the restore every write is sent")
+    }
+}
+
+private final class ShadowTransport: XPCTransport, @unchecked Sendable {
+    var shadow: USBWriteShadow?
+    var setPropertyCalls: [UInt8] = []
+    var isConnected: Bool { true }
+    func writeShadow() async -> USBWriteShadow? { shadow }
+    func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
+        setPropertyCalls.append(bRequest)
+    }
+    func sendGetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, dataLength: UInt16) async throws -> XPCPropertyReply {
+        XPCPropertyReply(status: 0, data: Data(count: Int(dataLength)))
+    }
+    func getSoftwareMeterLevels() async -> (Float, Float)? { nil }
+    func setSwReturnMute(_ muted: Bool) {}
+    func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {}
+    func setSwReturnLevel(_ dB: Double) {}
+    func setSwReturnProcessing(_ enabled: Bool) {}
+    func resetAudioOutput() {}
+}

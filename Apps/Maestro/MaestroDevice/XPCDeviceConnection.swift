@@ -101,8 +101,72 @@ public protocol XPCTransport: Sendable {
     /// False when the helper refused or did not answer.
     func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool
 
+    /// What the unit holds of what the helper wrote to it since it opened it
+    /// (helper "getWriteShadow"): nil from a helper without the question, or
+    /// with no unit open.
+    func writeShadow() async -> USBWriteShadow?
+
     /// Whether the transport is connected.
     var isConnected: Bool { get }
+}
+
+/// What the unit holds, as far as the helper knows: every route and digital
+/// format setting (0x34 optical format, 0x35/0x36 S/PDIF coax, per board) it
+/// has written to the unit it has open and the unit took, configure's direct
+/// table included. Forgotten by the helper when the unit goes away.
+///
+/// The connect restore skips a write the unit already holds
+/// (``XPCDeviceConnection/beginRestoreElision()``): 0.9.25 rewrote every saved
+/// route, both headphones and the optical format while USB audio played,
+/// about 3 s after a replug, and the owner heard the audio stop briefly.
+/// Only the routes of audible destinations (outputs 32-63, headphones
+/// 224-227) and the digital settings are ever skipped.
+public struct USBWriteShadow: Sendable, Equatable {
+    /// Destination to source.
+    public var routes: [UInt8: UInt8]
+    /// `(request << 8) | board` to value.
+    public var digital: [UInt16: UInt8]
+
+    public init(routes: [UInt8: UInt8] = [:], digital: [UInt16: UInt8] = [:]) {
+        self.routes = routes
+        self.digital = digital
+    }
+
+    static func isAudibleDestination(_ destination: UInt8) -> Bool {
+        (32...63).contains(destination) || (224...227).contains(destination)
+    }
+
+    private static func routePairs(_ request: USBControlRequest) -> [(UInt8, UInt8)]? {
+        guard request.request == SymphonyIOCommand.audioRouting.rawValue,
+              !request.data.isEmpty, request.data.count % 2 == 0 else { return nil }
+        let bytes = Array(request.data)
+        return stride(from: 0, to: bytes.count, by: 2).map { (bytes[$0], bytes[$0 + 1]) }
+    }
+
+    private static func digitalKey(_ request: USBControlRequest) -> UInt16? {
+        guard (0x34...0x36).contains(request.request), request.value == 0, request.index <= 1,
+              request.data.count == 1 else { return nil }
+        return UInt16(request.request) << 8 | request.index
+    }
+
+    /// Whether the unit already holds everything `request` writes, and it is
+    /// one of the writes that may be skipped.
+    public func holds(_ request: USBControlRequest) -> Bool {
+        if let pairs = Self.routePairs(request) {
+            return pairs.allSatisfy { Self.isAudibleDestination($0.0) && routes[$0.0] == $0.1 }
+        }
+        if let key = Self.digitalKey(request) { return digital[key] == request.data.first }
+        return false
+    }
+
+    /// `request` was sent: what the unit holds now (unknown where it failed).
+    public mutating func note(_ request: USBControlRequest, ok: Bool) {
+        if let pairs = Self.routePairs(request) {
+            for (destination, source) in pairs { routes[destination] = ok ? source : nil }
+        } else if let key = Self.digitalKey(request) {
+            digital[key] = ok ? request.data.first : nil
+        }
+    }
 }
 
 public extension XPCTransport {
@@ -117,6 +181,10 @@ public extension XPCTransport {
     /// and accept nothing.
     func helperMonitorOutput() async -> UInt64? { nil }
     func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool { false }
+
+    /// Transports that do not model the helper's record know nothing: every
+    /// write is sent.
+    func writeShadow() async -> USBWriteShadow? { nil }
 
     func setSwReturnChannelLevel(channel: Int, dB: Double) {
         // Older test transports and proxies use the linked command.  The real
@@ -295,6 +363,38 @@ public final class MachXPCTransport: XPCTransport, @unchecked Sendable {
                 once.resume(version == 0 ? nil : version)
             }
             queue.asyncAfter(deadline: .now() + 2) { once.resume(nil) }
+        }
+    }
+
+    public func writeShadow() async -> USBWriteShadow? {
+        let msg = xpc_dictionary_create(nil, nil, 0)
+        xpc_dictionary_set_string(msg, "command", "getWriteShadow")
+        let once = ResumeOnce<USBWriteShadow?>()
+        return await withCheckedContinuation { continuation in
+            once.set(continuation)
+            xpc_connection_send_message_with_reply(connection, msg, queue) { reply in
+                guard xpc_get_type(reply) == XPC_TYPE_DICTIONARY,
+                      xpc_dictionary_get_int64(reply, "status") == 0 else { once.resume(nil); return }
+                func bytes(_ key: String, _ count: Int) -> [UInt8]? {
+                    var length = 0
+                    guard let pointer = xpc_dictionary_get_data(reply, key, &length), length == count else { return nil }
+                    return Array(UnsafeRawBufferPointer(start: pointer, count: length))
+                }
+                guard let routes = bytes("routes", 256), let routesKnown = bytes("routesKnown", 256),
+                      let digital = bytes("digital", 6), let digitalKnown = bytes("digitalKnown", 6) else {
+                    once.resume(nil); return
+                }
+                var shadow = USBWriteShadow()
+                for destination in 0..<256 where routesKnown[destination] != 0 {
+                    shadow.routes[UInt8(destination)] = routes[destination]
+                }
+                for slot in 0..<6 where digitalKnown[slot] != 0 {
+                    shadow.digital[UInt16(0x34 + slot / 2) << 8 | UInt16(slot % 2)] = digital[slot]
+                }
+                once.resume(shadow)
+            }
+            // A helper from before the question does not answer it.
+            queue.asyncAfter(deadline: .now() + 0.5) { once.resume(nil) }
         }
     }
 
@@ -807,6 +907,46 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     private let sequenceOwner = AsyncSequenceOwner()
 
+    /// While the connect restore runs: what the unit holds
+    /// (``USBWriteShadow``), and how many writes it already held.
+    private var elisionShadow: USBWriteShadow?
+    private var elidedCount = 0
+
+    /// Start skipping writes the unit already holds (routes of outputs and
+    /// headphones, the digital format settings), for the restore. False when
+    /// the helper does not say what the unit holds: everything is sent.
+    @discardableResult
+    public func beginRestoreElision() async -> Bool {
+        let shadow = await transport.writeShadow()
+        lock.withLock { elisionShadow = shadow; elidedCount = 0 }
+        return shadow != nil
+    }
+
+    /// Stop skipping. Returns how many writes were skipped.
+    @discardableResult
+    public func endRestoreElision() -> Int {
+        lock.withLock {
+            elisionShadow = nil
+            return elidedCount
+        }
+    }
+
+    /// Writes skipped since `beginRestoreElision`.
+    public var restoreElidedWrites: Int { lock.withLock { elidedCount } }
+
+    /// Whether `request` is skipped because the unit already holds it.
+    private func elides(_ request: USBControlRequest) -> Bool {
+        lock.withLock {
+            guard let shadow = elisionShadow, shadow.holds(request) else { return false }
+            elidedCount += 1
+            return true
+        }
+    }
+
+    private func noteSent(_ request: USBControlRequest, ok: Bool) {
+        lock.withLock { elisionShadow?.note(request, ok: ok) }
+    }
+
     public func applyMicPreWrites(_ writes: [ThunderboltPreset.Write]) async throws {
         await sequenceOwner.acquire()
         var failure: (any Error)?
@@ -909,11 +1049,21 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
                     for: try USBMixerAddressing.usbAddress(for: address), value: value)
                 // S5: await the reply — a failed USB write throws instead of
                 // silently reporting success and updating caches.
-                try await transport.sendSetProperty(
-                    bRequest: usbRequest.request,
-                    wValue: usbRequest.value,
-                    wIndex: usbRequest.index,
-                    data: usbRequest.data)
+                // During the restore, a write the unit already holds is not
+                // sent (`beginRestoreElision`); it counts as written.
+                if !elides(usbRequest) {
+                    do {
+                        try await transport.sendSetProperty(
+                            bRequest: usbRequest.request,
+                            wValue: usbRequest.value,
+                            wIndex: usbRequest.index,
+                            data: usbRequest.data)
+                        noteSent(usbRequest, ok: true)
+                    } catch {
+                        noteSent(usbRequest, ok: false)
+                        throw error
+                    }
+                }
             } catch DeviceConnectionError.cacheOnly {
                 // No hardware opcode (or an unsafe one) — cache only, never send.
                 //

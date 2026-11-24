@@ -405,8 +405,35 @@ static void test_latency_defaults_scale_with_rate(void)
     CHECK(default_scaled_for_rate(64, 0.0) == 64, "an unknown rate keeps the 48 kHz frames");
 }
 
+static void check_write_shadow(void)
+{
+    shadow_reset();
+    CHECK(gRouteShadow[32] == -1 && gDigitalShadow[0][1] == -1, "nothing is known before a write");
+    /* configure's direct table, one route per transfer */
+    uint8_t table[DIRECT_ROUTE_COUNT][2];
+    unsigned n = direct_route_table(table);
+    for (unsigned i = 0; i < n; i++) shadow_note_write(0x31, 0, table[i], 2, 1);
+    CHECK(gRouteShadow[32] == 192 && gRouteShadow[63] == 192 + 15, "both I/O boards on USB 1-16");
+    CHECK(gRouteShadow[224] == 192 && gRouteShadow[225] == 193, "headphone 1 on USB 1-2");
+    /* a two-route transfer, then one that failed */
+    uint8_t pair[4] = { 32, 64, 33, 65 };
+    shadow_note_write(0x31, 0, pair, 4, 1);
+    CHECK(gRouteShadow[32] == 64 && gRouteShadow[33] == 65, "a batch sets each destination");
+    shadow_note_write(0x31, 0, pair, 2, 0);
+    CHECK(gRouteShadow[32] == -1 && gRouteShadow[33] == 65, "a failed write leaves it unknown");
+    uint8_t spdif = 1;
+    shadow_note_write(0x34, 1, &spdif, 1, 1);
+    CHECK(gDigitalShadow[0][1] == 1 && gDigitalShadow[0][0] == -1, "optical format per board");
+    shadow_note_write(0x34, 7, &spdif, 1, 1);   /* not a board: ignored */
+    uint8_t level = 3;
+    shadow_note_write(0x20, 0, &level, 1, 1);   /* not tracked */
+    close_usb_device();
+    CHECK(gRouteShadow[33] == -1 && gDigitalShadow[0][1] == -1, "a closed handle forgets it all");
+}
+
 int main(void)
 {
+    check_write_shadow();
     test_latency_defaults_scale_with_rate();
     test_power_actions();
     test_startup_volume_window();

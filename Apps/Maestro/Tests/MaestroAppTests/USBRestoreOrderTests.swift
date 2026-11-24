@@ -36,6 +36,17 @@ private final class RecordingUnit: XPCTransport, @unchecked Sendable {
     /// the question (it still answers the meter read).
     var version: UInt64? = XPCDeviceConnection.requiredHelperVersion
     func helperVersion() async -> UInt64? { version }
+    /// What the helper says the unit holds; nil: an older helper, nothing said.
+    var shadow: USBWriteShadow?
+    func writeShadow() async -> USBWriteShadow? { shadow }
+    /// What a helper's configure leaves on the unit: both I/O boards on USB
+    /// 1-16, both headphones on USB 1-2 (MaestroVolumeProxy.c direct_route_table).
+    static var helperDirectTable: USBWriteShadow {
+        var routes: [UInt8: UInt8] = [:]
+        for destination in UInt8(32)...63 { routes[destination] = 192 + (destination - 32) % 16 }
+        for destination in UInt8(224)...227 { routes[destination] = 192 + (destination - 224) % 2 }
+        return USBWriteShadow(routes: routes, digital: [0x3400: 0, 0x3401: 0])
+    }
     var shouldFail: (@Sendable (Write) -> Bool)?
     var onWrite: (@Sendable (Write) async -> Void)?
 
@@ -649,6 +660,71 @@ struct USBRestoreOrderTests {
         await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
         #expect(unit.writes.last { $0.isSpeakerMode }?.data == [6])
         #expect(state.speakerOutputMode == 6)
+    }
+
+    @Test("connect restore, saved routing equal to what the helper just wrote: no route of an output or headphone is written")
+    func unchangedRoutesAreNotRewritten() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-elide", identity: 0xF2A0_000B, routeMixer1ToLine12: false)
+        // USB 1-2 to the first output pair, 3-4 to the second, ... as the helper routes them.
+        state.peripheralRoutingCache(direction: "output").save([0: Set([0]), 1: Set([1]), 2: Set([2]), 3: Set([3])])
+        let saved = state.cachedOutputRouteMap()
+        try #require(!saved.isEmpty)
+        for (destination, source) in saved {
+            try #require(RecordingUnit.helperDirectTable.routes[destination] == source, "saved equals the helper's table at \(destination)")
+        }
+        unit.shadow = RecordingUnit.helperDirectTable
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.writes.filter { $0.isAudibleRoute }.map(\.data) == [])
+        #expect(usb.restoreElidedWrites >= saved.count)
+        // The mixers are still written in full; nothing else changed.
+        #expect(unit.writes.filter { $0.isMixer }.count == 16 * 8 + 10)
+        #expect(state.usbMixerIsWritten(0) && state.usbMixerIsWritten(1))
+        // An older helper says nothing: every saved route is written, as before.
+        unit.shadow = nil
+        let before = unit.writes.count
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let routes = unit.writes.dropFirst(before).filter { $0.isOutputRoute }.map { $0.data[0] }
+        #expect(Set(routes) == Set(saved.keys))
+    }
+
+    @Test("connect restore: a saved route the unit does not hold is written")
+    func changedRouteIsWritten() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-elide-changed", identity: 0xF2A0_000C, routeMixer1ToLine12: false)
+        // USB 3-4 to the first output pair: the helper put USB 1-2 there.
+        state.peripheralRoutingCache(direction: "output").save([1: Set([0])])
+        let saved = state.cachedOutputRouteMap()
+        let changed = try #require(saved.min { $0.key < $1.key })
+        try #require(RecordingUnit.helperDirectTable.routes[changed.key] != changed.value)
+        unit.shadow = RecordingUnit.helperDirectTable
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let written = unit.writes.filter { $0.isOutputRoute }.map(\.data)
+        #expect(written.contains([changed.key, changed.value]))
+        #expect(written.count == saved.count)
+    }
+
+    @Test("connect restore with the helper's table on the unit and Mixer 1 saved on Line 1/2: the pair is disabled before the strips and routed after them")
+    func elisionKeepsTheSafetyOrder() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "order-elide-mixer", identity: 0xF2A0_000D)
+        unit.shadow = RecordingUnit.helperDirectTable
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let writes = unit.writes
+        #expect(USBWriteLogChecker.violations(writes, onUnit: RecordingUnit.helperDirectTable.routes,
+                                              strips: strips(state)) == [])
+        let firstMixer = try #require(writes.firstIndex { $0.isMixer })
+        let lastMixer = try #require(writes.lastIndex { $0.isMixer })
+        let disabled = writes.prefix(firstMixer).filter { $0.isOutputRoute }.map(\.data)
+        #expect(disabled == [[32, SymphonyIORoutingAddress.none], [33, SymphonyIORoutingAddress.none]])
+        let mixerRoutes = writes.indices.filter { writes[$0].isMixerFedRoute }
+        #expect(mixerRoutes.map { writes[$0].data } == [[32, 64], [33, 65]])
+        #expect(mixerRoutes.allSatisfy { $0 > lastMixer })
+        // The headphones were already on USB 1-2: not written.
+        #expect(!writes.contains { $0.isHeadphoneRoute })
     }
 
     @Test("the input routing reset flag survives a failed write and is consumed by the next complete one")

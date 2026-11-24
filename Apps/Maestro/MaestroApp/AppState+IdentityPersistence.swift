@@ -188,6 +188,19 @@ extension AppState {
                 && !Task.isCancelled && mixerPreferences.isWritable == preferences.isWritable
                 && mixerPreferences.storageKey == preferences.storageKey
         }
+        // What the unit already holds is not written again: a route of an
+        // output or a headphone, or a digital format setting, that the helper
+        // says the unit has (its configure's direct table, or an earlier
+        // write since the unit was opened). 0.9.25 rewrote all of them while
+        // USB audio played, about 3 s after a replug, and the audio stopped
+        // briefly; with Maestro closed it did not (`USBWriteShadow`). The
+        // order below is unchanged: a skipped write is one the unit holds.
+        let elision = await connection.beginRestoreElision()
+        defer {
+            let skipped = connection.endRestoreElision()
+            if elision { print("[Maestro] USB restore: \(skipped) writes skipped, the unit already held them") }
+        }
+        guard isCurrent() else { return }
         // Anything that becomes owed from here on (an Output Routing edit, a
         // helper restart) is for the next run, not cleared by this one.
         usbRestoreOwed = false

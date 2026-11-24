@@ -1675,6 +1675,7 @@ static void start_reconcile_timer(void)
 /* Forward declarations for USB recovery */
 static int open_usb_device(void);
 static void close_usb_device(void);
+static void shadow_reset(void);
 static int configure_fpga_routing(void);
 static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
                            void *outBuf, uint16_t len);
@@ -1956,6 +1957,7 @@ static int try_recover_usb(void)
     if (gUSBDev) {
         IOReturn kr = (*gUSBDev)->ResetDevice(gUSBDev);
         LOG("ResetDevice: 0x%08X (%s)", kr, kr == kIOReturnSuccess ? "OK" : "failed");
+        shadow_reset();   /* a port reset: what the unit holds is not known */
         /* CoreAudio can lag the bus by a moment; the port saying "no device" is
            the same fact from the other side. */
         if (kr == kIOReturnNoDevice) {
@@ -2057,8 +2059,57 @@ static int try_recover_usb(void)
     return -1;
 }
 
+/* ── What the unit holds (the write shadow) ────────────────────────────── */
+/* What this helper has written to the unit it has open, and the unit took:
+   the routing table (0x31, destination -> source) and the digital format
+   settings (0x34 OpticalFormat, 0x35/0x36 S/PDIF Coax Replaces/Mirrors, per
+   board). Every write to the unit goes through usb_vendor_write, configure's
+   and Maestro's alike, and nothing else changes these on the unit while it
+   stays enumerated, so after configure_fpga_routing this is the direct table.
+   Forgotten whenever the handle closes (an unplug, a power cycle, a reset):
+   unknown then, until written again.
+
+   Maestro asks for it ("getWriteShadow") at the start of its connect
+   restore and skips a route or a digital setting the unit already holds.
+   0.9.25 rewrote every saved route, both headphones and the optical format
+   while USB audio was playing, about 3 s after a replug, and the owner heard
+   the audio stop briefly; with Maestro closed (configure alone, before the
+   stream starts) it did not. */
+#define SHADOW_DIGITAL_FIRST 0x34
+#define SHADOW_DIGITAL_COUNT 3
+static int16_t gRouteShadow[256];                       /* -1: unknown */
+static int16_t gDigitalShadow[SHADOW_DIGITAL_COUNT][2]; /* -1: unknown */
+
+static void shadow_reset(void)
+{
+    for (unsigned i = 0; i < 256; i++) gRouteShadow[i] = -1;
+    for (unsigned c = 0; c < SHADOW_DIGITAL_COUNT; c++) gDigitalShadow[c][0] = gDigitalShadow[c][1] = -1;
+}
+
+/* A write reached the unit (ok) or did not: what it now holds. */
+static void shadow_note_write(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len, int ok)
+{
+    if (bRequest == 0x31 && data) {
+        for (uint16_t i = 0; i + 1 < len; i += 2)
+            gRouteShadow[data[i]] = ok ? (int16_t)data[i + 1] : -1;
+    } else if (bRequest >= SHADOW_DIGITAL_FIRST && bRequest < SHADOW_DIGITAL_FIRST + SHADOW_DIGITAL_COUNT
+               && nValue <= 1 && data && len >= 1) {
+        gDigitalShadow[bRequest - SHADOW_DIGITAL_FIRST][nValue] = ok ? (int16_t)data[0] : -1;
+    }
+}
+
+static int usb_vendor_write_raw(uint8_t bRequest, uint32_t nValue, void *data, uint16_t len);
+
 static int usb_vendor_write(uint8_t bRequest, uint32_t nValue,
                             void *data, uint16_t len)
+{
+    const int err = usb_vendor_write_raw(bRequest, nValue, data, len);
+    shadow_note_write(bRequest, nValue, (const uint8_t *)data, len, err == 0);
+    return err;
+}
+
+static int usb_vendor_write_raw(uint8_t bRequest, uint32_t nValue,
+                                void *data, uint16_t len)
 {
     if (!gUSBDev) return -1;
 
@@ -2162,6 +2213,7 @@ static int open_usb_device(void)
 static void close_usb_device(void)
 {
     gConfiguredAtNs = 0;   /* whatever is opened next is a new enumeration */
+    shadow_reset();        /* and what it holds is not known */
     if (!gUSBDev) return;
     (*gUSBDev)->USBDeviceClose(gUSBDev);
     (*gUSBDev)->Release(gUSBDev);
@@ -3362,6 +3414,36 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_dictionary_set_data(reply, "levels16", peaks16, sizeof(peaks16));
                 xpc_connection_send_message(peer, reply);
             }
+        } else if (strcmp(cmd, "getWriteShadow") == 0) {
+            /* What the unit holds of what this helper wrote (see shadow_reset).
+               Reply: { status, routes (256 bytes, the source per destination),
+               routesKnown (256 bytes, 1 where known), digital (6 bytes,
+               0x34/0x35/0x36 x board 0/1), digitalKnown (6 bytes) }. status
+               -2 while no unit is open. */
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (!reply) return;
+            xpc_retain(peer);
+            dispatch_async(gQueue, ^{
+                uint8_t routes[256], routesKnown[256], digital[6], digitalKnown[6];
+                for (unsigned i = 0; i < 256; i++) {
+                    routesKnown[i] = gRouteShadow[i] >= 0;
+                    routes[i] = gRouteShadow[i] >= 0 ? (uint8_t)gRouteShadow[i] : 0;
+                }
+                for (unsigned c = 0; c < SHADOW_DIGITAL_COUNT; c++)
+                    for (unsigned b = 0; b < 2; b++) {
+                        digitalKnown[c * 2 + b] = gDigitalShadow[c][b] >= 0;
+                        digital[c * 2 + b] = gDigitalShadow[c][b] >= 0 ? (uint8_t)gDigitalShadow[c][b] : 0;
+                    }
+                xpc_dictionary_set_int64(reply, "status", gUSBDev ? 0 : HELPER_STATUS_UNIT_NOT_OPEN);
+                xpc_dictionary_set_data(reply, "routes", routes, sizeof routes);
+                xpc_dictionary_set_data(reply, "routesKnown", routesKnown, sizeof routesKnown);
+                xpc_dictionary_set_data(reply, "digital", digital, sizeof digital);
+                xpc_dictionary_set_data(reply, "digitalKnown", digitalKnown, sizeof digitalKnown);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
+                xpc_release(peer);
+            });
+
         } else if (strcmp(cmd, "helperVersion") == 0) {
             /* Which helper this is (see MAESTRO_HELPER_VERSION). */
             xpc_object_t reply = xpc_dictionary_create_reply(msg);
@@ -3768,6 +3850,7 @@ static void register_power_notifications(void)
 
 int main(void) {
     sLog  = os_log_create("com.danielraffel.Maestro.volumeproxy", "main");
+    shadow_reset();   /* nothing is known about the unit yet */
     sVerbose = (getenv("MAESTRO_PROXY_DEBUG") != NULL) ? 1 : 0;
     sTrace   = (getenv("MAESTRO_PROXY_TRACE") != NULL) ? 1 : 0;
     gQueue = dispatch_queue_create("com.danielraffel.Maestro.volumeproxy.daemon",
