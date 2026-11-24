@@ -56,7 +56,8 @@ struct SymphonyCardInputRoutingView: View {
                             routes: appState.symphonyCardInputEdits, key: presetKey)
                         RoutingPresetChannelOrder.mark(name: name, presetKey: presetKey,
                             order: RoutingPresetChannelOrder.savingOrder(transport: appState.transportType,
-                                                                         current: appState.thunderboltUnitOrder(unit: .a)))
+                                                                         covering: [appState.thunderboltUnitOrder(unit: .a),
+                                                                                    appState.thunderboltUnitOrder(unit: .b)]))
                         presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
                     },
                     onLoad: { name in

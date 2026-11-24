@@ -54,6 +54,9 @@ struct CardOutputTableGuardTests {
         let tb = ThunderboltDeviceConnection(identifier: SimulatedDevice.symphonyIO32ch().identifier,
                                              audioDeviceID: 0, driver: driver)
         state.device = tb
+        // A driver that reports a build before 150 (no selector 17): card by
+        // card. With no build known nothing would be written.
+        state.servingDextBuild = .build(140)
         state.primaryBoardType = .analogADDA16
         state.secondaryBoardType = .analogADDA16
         state.primaryBoardSource = cardsRead ? .detected : .cached

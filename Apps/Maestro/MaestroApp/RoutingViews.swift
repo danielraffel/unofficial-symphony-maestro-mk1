@@ -501,6 +501,11 @@ struct InputRoutingView: View {
             return
         }
         guard canWrite, let device else { return }
+        if let reason = appState.thunderboltChannelOrderUnknownReason {
+            resetPrompt = RoutingResetPrompt(
+                title: "Reset Input Routing", message: "Reset Routing is not available yet: \(reason).", isRefusal: true)
+            return
+        }
         let b1 = board1Reading
         let b2 = board2Reading
         if let refusal = RoutingResetGuard.refusalReason(board1: b1, board2: b2) {
@@ -542,6 +547,12 @@ struct InputRoutingView: View {
             return
         }
         guard canWrite, let device else { return }
+        // The default capture table follows the order the driver programmed:
+        // none is written while it is not known (as for the outputs).
+        if let reason = appState.thunderboltChannelOrderUnknownReason {
+            errorMessage = "Reset Routing is not available yet: \(reason)."
+            return
+        }
         let b1 = board1Reading
         let b2 = board2Reading
         // Provenance guard, re-checked at the point of writing. A cached or
@@ -959,10 +970,12 @@ struct OutputRoutingView: View {
                                                      unitBActive: appState.unitBOnCard),
                      unitB: unitB)
         OutputRoutingPresetStore.store(presets, replacing: old)
+        // Marked with the order of every unit it covers: unit B's half too.
         RoutingPresetChannelOrder.mark(name: name, presetKey: OutputRoutingPresetStore.unitAKey,
                                        order: RoutingPresetChannelOrder.savingOrder(
                                         transport: appState.transportType,
-                                        current: appState.thunderboltUnitOrder(unit: .a)))
+                                        covering: [appState.thunderboltUnitOrder(unit: .a)]
+                                            + (unitB != nil ? [appState.thunderboltUnitOrder(unit: .b)] : [])))
         presetNames = loadPresetNames()
     }
 
@@ -1781,7 +1794,9 @@ enum HeadphoneCrosspoint {
         remember(headphone, sourceID)
 
         if transport == .thunderbolt, let reason = state.thunderboltChannelOrderUnknownReason {
-            print("[Maestro] HP\(headphone.rawValue + 1) crosspoint: not written — \(reason)")
+            // Written once the order is known (`thunderboltChannelOrderDidChange`).
+            state.thunderboltHeadphoneCrosspointOwed = true
+            print("[Maestro] HP\(headphone.rawValue + 1) crosspoint: not written yet — \(reason)")
             return false
         }
         let order = transport == .thunderbolt ? state.thunderboltDisplayOrder(unit: .a) : nil

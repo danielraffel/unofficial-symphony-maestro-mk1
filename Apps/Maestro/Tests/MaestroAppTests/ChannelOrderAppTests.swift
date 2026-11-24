@@ -92,6 +92,8 @@ struct ChannelOrderAppTests {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: ChannelOrderRoutingReset.doneKey)
         defaults.removeObject(forKey: ChannelOrderRoutingReset.noticePendingKey)
+        defaults.removeObject(forKey: ChannelOrderRoutingReset.alertPendingKey)
+        defaults.removeObject(forKey: ChannelOrderRoutingReset.noticeTextKey)
         RoutingMixerReset.clearPending(.thunderboltInputRouting)
 
         // USB never runs it, nor an older driver.
@@ -118,8 +120,15 @@ struct ChannelOrderAppTests {
         #expect(input.load() == nil)
         #expect(output.loadMulti() == nil)
         #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
-        #expect(state.channelOrderResetNotice == ChannelOrderRoutingReset.noticeText)
+        // Two 8x8s: both directions moved, and the notice says so, once as an alert.
+        #expect(state.channelOrderResetNotice?.contains("Input Routing and Output Routing") == true)
+        #expect(state.channelOrderResetNotice?.contains("different physical outputs") == true)
+        #expect(state.channelOrderResetAlert == state.channelOrderResetNotice)
         #expect(state.inputRoutingReplayNeeded)
+        #expect(state.cardOutputTableReplayNeeded)
+        state.acknowledgeChannelOrderResetAlert()
+        #expect(state.channelOrderResetAlert == nil && state.channelOrderResetNotice != nil)
+        #expect(!defaults.bool(forKey: ChannelOrderRoutingReset.alertPendingKey))
         // Once: a routing saved after it stays.
         input.save([4: 1])
         await state.refreshThunderboltChannelOrder(tb)
@@ -127,6 +136,74 @@ struct ChannelOrderAppTests {
         state.dismissChannelOrderResetNotice()
         #expect(state.channelOrderResetNotice == nil)
         #expect(!defaults.bool(forKey: ChannelOrderRoutingReset.noticePendingKey))
+    }
+
+    @Test("The owner's rig (8x8 + A16): only Input Routing is reset; Output Routing is kept and not rewritten")
+    func resetInputsOnly() async {
+        let restore = restoringDefaults(); defer { restore() }
+        let defaults = UserDefaults.standard
+        for key in [ChannelOrderRoutingReset.doneKey, ChannelOrderRoutingReset.noticePendingKey,
+                    ChannelOrderRoutingReset.alertPendingKey, ChannelOrderRoutingReset.noticeTextKey] {
+            defaults.removeObject(forKey: key)
+        }
+        RoutingMixerReset.clearPending(.thunderboltInputRouting)
+        let (state, tb, _) = makeState(slot1: .optical, slot2: .analogAD16, build: 150)
+        let input = state.peripheralRoutingCache(direction: "input")
+        let output = state.peripheralRoutingCache(direction: "output")
+        input.save([4: 0])
+        // Mixer 1 on Line 1-2, as monitored through the mixer.
+        output.save([16: Set([0])])
+        await state.refreshThunderboltChannelOrder(tb)
+        #expect(defaults.bool(forKey: ChannelOrderRoutingReset.doneKey))
+        #expect(input.load() == nil)
+        #expect(output.loadMulti() == [16: Set([0])])
+        #expect(RoutingMixerReset.isPending(.thunderboltInputRouting))
+        #expect(state.inputRoutingReplayNeeded)
+        #expect(!state.cardOutputTableReplayNeeded)
+        let notice = state.channelOrderResetNotice ?? ""
+        #expect(notice.contains("DAW input 9, was 17"))
+        #expect(notice.contains("Output Routing was kept"))
+        #expect(!notice.contains("different physical outputs"))
+        #expect(state.channelOrderResetAlert == notice)
+    }
+
+    @Test("Selector 17 is trusted when the build read fails; a known build is not replaced by a failed read")
+    func unknownBuild() async {
+        let restore = restoringDefaults(); defer { restore() }
+        UserDefaults.standard.set(true, forKey: ChannelOrderRoutingReset.doneKey)
+        let (state, tb, driver) = makeState(slot1: .optical, slot2: .analogAD16, build: 150)
+        // The build read failed: not known until selector 17 answers.
+        state.servingDextBuild = nil
+        driver.channelOrder = ThunderboltAppliedChannelOrder(unitA: .init(order: nil, slot1: nil, slot2: nil))
+        await state.refreshThunderboltChannelOrder(tb)
+        #expect(state.thunderboltUnitOrder(unit: .a) == nil)
+        // A headphone skipped meanwhile is owed.
+        #expect(!(await HeadphoneCrosspoint.apply(.headphone1, sourceID: 0, device: tb, cachedRoutes: [:],
+                                                  transport: .thunderbolt, state: state)))
+        #expect(state.thunderboltHeadphoneCrosspointOwed)
+        driver.channelOrder = ThunderboltAppliedChannelOrder(unitA: .init(order: .analogFirst, slot1: .optical, slot2: .analogAD16))
+        await state.refreshThunderboltChannelOrder(tb)
+        #expect(state.thunderboltUnitOrder(unit: .a)?.order == .analogFirst)
+        #expect(!state.thunderboltHeadphoneCrosspointOwed)
+        // `.olderThanBuildReporting` from a failed read does not replace a known build.
+        state.servingDextBuild = .build(150)
+        state.noteServingDextBuild(.olderThanBuildReporting, from: tb)
+        state.noteServingDextBuild(nil, from: tb)
+        #expect(state.servingDextBuild == .build(150))
+    }
+
+    @Test("Without selector 17 an unknown build holds routing; a reported old build is card by card")
+    func unknownBuildWithoutSelector17() async {
+        let restore = restoringDefaults(); defer { restore() }
+        UserDefaults.standard.set(true, forKey: ChannelOrderRoutingReset.doneKey)
+        let (state, tb, _) = makeState(slot1: .optical, slot2: .analogAD16, build: 149)
+        state.servingDextBuild = .olderThanBuildReporting
+        await state.refreshThunderboltChannelOrder(tb)
+        #expect(state.thunderboltUnitOrder(unit: .a) == nil)
+        #expect(state.thunderboltChannelOrderUnknownReason != nil)
+        state.noteServingDextBuild(.build(149), from: tb)
+        #expect(state.thunderboltUnitOrder(unit: .a)?.order == .cardByCard)
+        #expect(state.thunderboltChannelOrderUnknownReason == nil)
     }
 
     @Test("Speaker sets go back to the output the driver plays there in its order")

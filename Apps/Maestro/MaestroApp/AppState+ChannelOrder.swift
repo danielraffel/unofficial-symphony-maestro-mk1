@@ -94,17 +94,59 @@ extension AppState {
         return "\(order.order == .analogFirst ? "analog first" : "card by card") (\(order.slot1?.caseName ?? "?")+\(order.slot2?.caseName ?? "?"))"
     }
 
+    /// The serving build was read again on the same connection
+    /// (`refreshServingDextBuild`, a rediscovery). A build once known is not
+    /// replaced by a failed read (nil, or `.olderThanBuildReporting`, which a
+    /// failed build read also gives): the order and every build-gated
+    /// feature would flap with it. A different build is a different driver:
+    /// what the old one reported is dropped and read again. When the order
+    /// follows (from not known to known, a build without selector 17), it is
+    /// handled as any order change.
+    @MainActor
+    func noteServingDextBuild(_ build: ServingDextBuild?, from tb: ThunderboltDeviceConnection) {
+        let old = servingDextBuild
+        guard build != old, device === tb else { return }
+        if case .build? = old, !Self.isKnownBuild(build) { return }
+        let before = (thunderboltUnitOrder(unit: .a), thunderboltUnitOrder(unit: .b))
+        if case .build(let was)? = old, case .build(let now)? = build, was != now {
+            thunderboltAppliedChannelOrder = nil
+            Task { @MainActor [weak self] in await self?.refreshThunderboltChannelOrder(tb) }
+        }
+        servingDextBuild = build
+        let after = (thunderboltUnitOrder(unit: .a), thunderboltUnitOrder(unit: .b))
+        if before != after {
+            print("[Maestro] ThunderBridge channel order after the driver build was read: A \(Self.describe(before.0)) → "
+                + "\(Self.describe(after.0)), B \(Self.describe(before.1)) → \(Self.describe(after.1))")
+            thunderboltChannelOrderDidChange(tb, wasKnown: before.0 != nil)
+        }
+        runChannelOrderResetIfNeeded()
+    }
+
+    private static func isKnownBuild(_ build: ServingDextBuild?) -> Bool {
+        if case .build? = build { return true }
+        return false
+    }
+
     /// The order a unit's tables follow changed: what was drawn and numbered
     /// from the old one is worked out again, and what was written in it is
     /// owed again. From not known to known the skipped writes are already
-    /// owed (they wait on `thunderboltChannelOrderUnknownReason`).
+    /// owed (they wait on `thunderboltChannelOrderUnknownReason`), except a
+    /// headphone crosspoint, which is written again from what is saved.
     @MainActor
     private func thunderboltChannelOrderDidChange(_ tb: ThunderboltDeviceConnection, wasKnown: Bool) {
         invalidateThunderboltInputMeterMap()
         invalidateThunderboltOutputMeterMap()
         symphonyCardInputNamingRevision += 1
         viewReloadToken = UUID()
-        guard wasKnown, connectionMode == .hardware else { return }
+        guard connectionMode == .hardware else { return }
+        // A headphone follows the XLink channel of the output it plays, which
+        // the order decides: one skipped while it was not known, or written
+        // in the old order, is written again in this one.
+        if wasKnown || thunderboltHeadphoneCrosspointOwed {
+            thunderboltHeadphoneCrosspointOwed = false
+            Task { @MainActor [weak self] in await self?.reapplySavedThunderboltHeadphones(tb) }
+        }
+        guard wasKnown else { return }
         // As after a link recovery: the strips are numbered from the new
         // table until a replay lands, and the mixers are owed a whole write.
         thunderboltInputRoutingWritten = false
@@ -113,33 +155,69 @@ extension AppState {
         if usesTwoUnitReplay { twoUnitReplayNeeded = true } else { inputRoutingReplayNeeded = true }
     }
 
+    /// Write both headphones' saved sources again on ThunderBridge (the
+    /// crosspoint half; `syncDeviceSettingsToHardware` writes them at
+    /// connect). The two-unit replay writes its own.
+    @MainActor
+    func reapplySavedThunderboltHeadphones(_ tb: ThunderboltDeviceConnection) async {
+        guard device === tb, connectionMode == .hardware, !usesTwoUnitReplay, !hardwareWritesSuspended else { return }
+        let saved: [(SymphonyIOHeadphoneRouting.Headphone, AudioPropertySelector)] =
+            [(.headphone1, .headphone1RoutingID), (.headphone2, .headphone2RoutingID)]
+        for (headphone, selector) in saved {
+            guard device === tb,
+                  let id = tb.settingsStore.value(for: PropertyAddress(selector: selector))?.asUInt32 else { continue }
+            await HeadphoneCrosspoint.apply(headphone, sourceID: id, device: tb,
+                                            cachedRoutes: cachedOutputRouteMap(),
+                                            transport: .thunderbolt, state: self)
+        }
+    }
+
     /// The one-time analog-first routing reset (`ChannelOrderRoutingReset`),
     /// for the units connected now. When it runs, the stores it removed are
-    /// read again empty: the card's input routes go back to straight through,
-    /// and the next input sync and output restore write the defaults.
+    /// read again empty, per direction that moved: inputs, the card's input
+    /// routes go back to straight through and the next input sync writes the
+    /// defaults; outputs, the output restore writes the default table. A
+    /// direction that did not move keeps its routing and is not rewritten.
     @MainActor
     func runChannelOrderResetIfNeeded() {
         guard connectionMode == .hardware, cardSimulation == nil, simulatedUnitB == nil else { return }
         let units = [thunderboltUnitOrder(unit: .a), unitBOnCard ? thunderboltUnitOrder(unit: .b) : nil]
-        guard let removed = ChannelOrderRoutingReset.runIfNeeded(
+        guard let outcome = ChannelOrderRoutingReset.runIfNeeded(
             transport: transportType, serving: servingDextBuild, units: units) else { return }
         print("[Maestro] Routing reset to the defaults once for the analog-first channel order (driver 150): "
-            + "\(removed.count) saved routing entries removed")
-        symphonyCardInputEdits = [:]
-        symphonyCardInputVersion &+= 1
-        channelOrderResetNotice = ChannelOrderRoutingReset.noticeText
-        thunderboltInputRoutingWritten = false
-        invalidateThunderboltInputMeterMap()
-        outputRoutingSaved()
+            + "inputs \(outcome.inputsMoved ? "moved" : "kept"), outputs \(outcome.outputsMoved ? "moved" : "kept"), "
+            + "\(outcome.removed.count) saved routing entries removed")
+        channelOrderResetNotice = outcome.notice
+        channelOrderResetAlert = outcome.notice
         symphonyCardInputNamingRevision += 1
         viewReloadToken = UUID()
-        if let tb = device as? ThunderboltDeviceConnection { invalidateCardOutputTable(tb) }
-        if usesTwoUnitReplay { twoUnitReplayNeeded = true } else { inputRoutingReplayNeeded = true }
+        if outcome.inputsMoved {
+            symphonyCardInputEdits = [:]
+            symphonyCardInputVersion &+= 1
+            thunderboltInputRoutingWritten = false
+            invalidateThunderboltInputMeterMap()
+            if usesTwoUnitReplay { twoUnitReplayNeeded = true } else { inputRoutingReplayNeeded = true }
+        }
+        if outcome.outputsMoved {
+            outputRoutingSaved()
+            if let tb = device as? ThunderboltDeviceConnection {
+                invalidateCardOutputTable(tb)
+                // The headphones follow the outputs' default table now.
+                Task { @MainActor [weak self] in await self?.reapplySavedThunderboltHeadphones(tb) }
+            }
+            if usesTwoUnitReplay { twoUnitReplayNeeded = true }
+        }
     }
 
-    /// The routing pages' notice was dismissed: it is not shown again.
+    /// The routing pages' caption was dismissed: it is not shown again.
     func dismissChannelOrderResetNotice() {
         channelOrderResetNotice = nil
         UserDefaults.standard.removeObject(forKey: ChannelOrderRoutingReset.noticePendingKey)
+    }
+
+    /// The one-time alert was closed; the caption stays until dismissed.
+    func acknowledgeChannelOrderResetAlert() {
+        channelOrderResetAlert = nil
+        UserDefaults.standard.removeObject(forKey: ChannelOrderRoutingReset.alertPendingKey)
     }
 }

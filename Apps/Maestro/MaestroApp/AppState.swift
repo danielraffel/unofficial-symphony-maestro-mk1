@@ -208,8 +208,17 @@ final class AppState: @unchecked Sendable {
     var mixerHeadroomNotice: String?
     /// One-time explanation shown on the routing pages after the analog-first
     /// channel order reset (`ChannelOrderRoutingReset`), until dismissed.
-    var channelOrderResetNotice: String? = UserDefaults.standard.bool(forKey: ChannelOrderRoutingReset.noticePendingKey)
-        ? ChannelOrderRoutingReset.noticeText : nil
+    var channelOrderResetNotice: String? = ChannelOrderRoutingReset.pendingNotice()
+    /// The same explanation as a one-time alert over the window, shown when
+    /// the reset runs (or at the next launch if it was not closed).
+    var channelOrderResetAlert: String? = ChannelOrderRoutingReset.pendingAlert()
+    /// The ThunderBridge connection `thunderboltAppliedChannelOrder` was read
+    /// from: a new connection reads it afresh, a rediscovery of the same one
+    /// keeps it.
+    @ObservationIgnored weak var thunderboltAppliedChannelOrderConnection: ThunderboltDeviceConnection?
+    /// A headphone crosspoint was skipped while the ThunderBridge order was
+    /// not known: written once it is (`thunderboltChannelOrderDidChange`).
+    @ObservationIgnored var thunderboltHeadphoneCrosspointOwed = false
     /// Observation token for per-unit preferences stored outside the model.
     var unitPreferenceRevision = 0
     /// Pause between the strip writes of a USB mixer restore (tests set zero).
@@ -1113,11 +1122,17 @@ final class AppState: @unchecked Sendable {
     var thunderboltAppliedChannelOrder: ThunderboltAppliedChannelOrder?
     /// How `unit`'s host channels are laid out on ThunderBridge, and the slot
     /// types to build its tables and names from
-    /// (`ThunderboltUnitChannelOrder.resolve`): what a build-150 driver
-    /// reports it applied, card by card under an older one (from the app's
-    /// own trusted slot types). Nil while a build-150 driver has not
-    /// reported it: no routing is written then. Card by card off ThunderBridge.
+    /// (`ThunderboltUnitChannelOrder.resolve`): what the driver reports it
+    /// applied (selector 17, build 150 and later), card by card under a
+    /// driver that reported an older build (from the app's own trusted slot
+    /// types). Nil while neither is known: no routing is written then. Card
+    /// by card off ThunderBridge.
     func thunderboltUnitOrder(unit: DeviceUnit = .a) -> ThunderboltUnitChannelOrder? {
+        thunderboltUnitOrder(unit: unit, serving: servingDextBuild, applied: thunderboltAppliedChannelOrder)
+    }
+    /// `thunderboltUnitOrder` as it would be with `serving` and `applied`.
+    func thunderboltUnitOrder(unit: DeviceUnit, serving servingDextBuild: ServingDextBuild?,
+                              applied thunderboltAppliedChannelOrder: ThunderboltAppliedChannelOrder?) -> ThunderboltUnitChannelOrder? {
         guard transportType == .thunderbolt else {
             return ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: nil)
         }
@@ -2843,16 +2858,24 @@ final class AppState: @unchecked Sendable {
         if let tb = device as? ThunderboltDeviceConnection {
             let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
             guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
-            if (self.device as? ThunderboltDeviceConnection) === tb { servingDextBuild = build }
+            // A new connection reads the order afresh, and that is cleared
+            // before the build is set (its change handling compares against
+            // the order). The same connection found again keeps what it read.
+            if thunderboltAppliedChannelOrderConnection !== tb {
+                thunderboltAppliedChannelOrder = nil
+                thunderboltAppliedChannelOrderConnection = tb
+                servingDextBuild = build
+            } else {
+                noteServingDextBuild(build, from: tb)
+            }
             // Which order the driver programmed the tables in, before anything
             // reads the saved routing (and the one-time reset that may follow).
-            // A new connection reads it afresh.
-            thunderboltAppliedChannelOrder = nil
             await refreshThunderboltChannelOrder(tb)
             guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         } else {
             servingDextBuild = nil
             thunderboltAppliedChannelOrder = nil
+            thunderboltAppliedChannelOrderConnection = nil
         }
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")

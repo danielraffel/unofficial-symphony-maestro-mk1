@@ -305,8 +305,8 @@ extension AppState {
             guard isCurrent() else { return .superseded }
             do {
                 let route = ThunderboltCardRouting.disabled(channel: channel)
-                guard try await Task.detached(priority: .utility) { try tb.setCardOutputRoute(route) }.value
-                        == .written else { return .failed("the driver state changed during the write") }
+                let result = try await Task.detached(priority: .utility) { try tb.setCardOutputRoute(route) }.value
+                guard result == .written else { return .failed("the driver state changed during the write") }
             } catch {
                 return .failed("XLink \(channel) disabled: \(error)")
             }

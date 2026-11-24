@@ -39,9 +39,7 @@ extension AppState {
             let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
             guard let self else { return }
             self.servingDextBuildReadInFlight = false
-            if (self.device as? ThunderboltDeviceConnection) === tb, self.servingDextBuild != build {
-                self.servingDextBuild = build
-            }
+            if (self.device as? ThunderboltDeviceConnection) === tb { self.noteServingDextBuild(build, from: tb) }
         }
     }
 

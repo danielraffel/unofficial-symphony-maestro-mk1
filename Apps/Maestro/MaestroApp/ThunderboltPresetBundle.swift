@@ -82,6 +82,9 @@ extension AppState {
                 value.unitID = withUnsafeBytes(of: identity.bigEndian) { Data($0) }
             }
             value.outputRoutes = Array(0..<32)
+            // Unit B's routing is in unit B's order (card by card, the
+            // tables the app draws, while it is not known).
+            value.channelOrder = ThunderboltPreset.channelOrderTag(thunderboltDisplayOrder(unit: .b).order)
             value.mixers = (0..<2).map {
                 ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: bLayout.mixerChannelCount, mixer: $0, store: store))
             }
@@ -154,7 +157,7 @@ extension AppState {
             throw ThunderboltPreset.RecallError.unsupported("the driver has not reported its channel order yet.")
         }
         let orderB = recallB ? thunderboltUnitOrder(unit: .b) : nil
-        let restoresRouting = legacy || preset.routingApplies(current: orderA.order)
+        let restoresRouting = legacy || preset.routingApplies(current: orderA.order, currentB: orderB?.order)
         if !restoresRouting { recallWarnings.add(ThunderboltPreset.routingSkippedNote(current: orderA.order)) }
         recallWritesStarted = true
         try await Task.detached {
