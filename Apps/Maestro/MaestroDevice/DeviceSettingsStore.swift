@@ -130,6 +130,14 @@ public final class DeviceSettingsStore: @unchecked Sendable {
         defaults.set(Self.encode(values), forKey: key)
     }
 
+    /// Forget a setting (it is then never replayed, as on a new install).
+    public func remove(_ address: PropertyAddress) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard values.removeValue(forKey: address) != nil, let defaults, let key else { return }
+        defaults.set(Self.encode(values), forKey: key)
+    }
+
     /// The settings the Mac owns, in the order they are written to the unit on
     /// connect. Both transports use this one list.
     ///

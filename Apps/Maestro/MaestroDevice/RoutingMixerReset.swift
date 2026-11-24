@@ -50,6 +50,12 @@ public enum RoutingMixerReset {
         defaults.bool(forKey: item.key)
     }
 
+    /// The saved copy is gone but the hardware may still hold the old state:
+    /// the next write of that part puts the defaults on it.
+    public static func setPending(_ item: Pending, defaults: UserDefaults = .standard) {
+        defaults.set(true, forKey: item.key)
+    }
+
     public static func clearPending(_ item: Pending, defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: item.key)
     }

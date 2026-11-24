@@ -1227,6 +1227,17 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
             + (trusted ? "\(keys.count) values read" : "\(why); writing every strip of this mixer"))
     }
 
+    /// During a restore: the first reply byte of `address`'s read, only when
+    /// the unit is seen to answer that opcode (``trustedRead(_:)``); nil
+    /// otherwise.
+    public func restoreReadBelievedByte(_ address: PropertyAddress) async -> UInt8? {
+        guard lock.withLock({ restoreActive }),
+              let read = try? SymphonyIOPropertyMapper.buildReadRequest(
+                for: try USBMixerAddressing.usbAddress(for: address)),
+              case .value(let data) = await trustedRead(read) else { return nil }
+        return data.first
+    }
+
     /// Whether the restore will skip this strip write (no transfer, so no
     /// pause before it).
     public func restoreHoldsStripWrite(_ address: PropertyAddress, value: PropertyValue) -> Bool {

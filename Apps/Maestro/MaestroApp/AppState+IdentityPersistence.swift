@@ -205,6 +205,13 @@ extension AppState {
         }
         guard isCurrent() else { return }
         let frontPanelReset = reset?.isFrontPanelReset == true
+        // As the original did (SymphonyIO.cpp:6417-6432): the unit's saved
+        // state goes back to defaults first, then the restore below writes
+        // it, then the request is cleared (`AppState+FrontPanelReset`).
+        if frontPanelReset, let reset, usbFrontPanelResetGeneration != generation {
+            usbFrontPanelResetGeneration = generation
+            resetSavedStateForFrontPanelReset(reset, connection: connection)
+        }
         // What the unit already holds is not written again: a route of an
         // output or a headphone, or a digital format setting, that the helper
         // says the unit has (its configure's direct table, or an earlier
@@ -299,7 +306,7 @@ extension AppState {
         // A retry of owed mixers or routes (`serviceUSBRestore`) does not send
         // the input routing and the device settings again, unless they have
         // not been sent on this connection and helper.
-        if !owedOnly
+        if !owedOnly || frontPanelReset
             || usbSettingsRestored.map({ $0.generation != generation || $0.helperEpoch != helperEpoch }) ?? true {
             await syncInputRoutingToHardware()
             guard isCurrent() else { return }
@@ -307,6 +314,11 @@ extension AppState {
             await syncDeviceSettingsToHardware()
             guard isCurrent() else { return }
             phase("device and channel settings")
+        }
+        if frontPanelReset, connectedUnit == nil {
+            await applyFrontPanelResetLevels(connection)
+            guard isCurrent() else { return }
+            phase("front panel reset levels")
         }
         var routed: Bool
         if converterRoutingSurface {

@@ -28,6 +28,8 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
 
     /// 0xDB; nil: the read fails (older firmware).
     var resetRequest: UInt8? = SymphonyIOResetRequest.none.rawValue
+    /// A 0xDB write is taken but does not change the request.
+    var refuseResetClear = false
     /// Answers to 0xDB before `resetRequest` (a unit still starting).
     var startingAnswers: [UInt8] = []
     /// Every read fails (an older helper or firmware).
@@ -50,6 +52,7 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     func value(_ request: UInt8, _ value: UInt16 = 0, _ index: UInt16 = 0) -> [UInt8]? {
         lock.withLock { held[Key(request: request, value: value, index: index)] }
     }
+    func route(_ destination: UInt8) -> UInt8? { lock.withLock { routeTable[destination] } }
     func set(_ request: UInt8, _ value: UInt16 = 0, _ index: UInt16 = 0, _ data: [UInt8]) {
         lock.withLock { held[Key(request: request, value: value, index: index)] = data }
     }
@@ -85,7 +88,7 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
             case 0x20 where bytes.count == 2:
                 analog[Key(request: 0x20, value: wValue, index: wIndex)] = (bytes[0], bytes[1])
             case SymphonyIOResetRequest.command:
-                resetRequest = bytes.first
+                if !refuseResetClear { resetRequest = bytes.first }
             default:
                 held[Key(request: bRequest, value: wValue, index: wIndex)] = bytes
             }
@@ -249,42 +252,135 @@ struct USBResetRequestRestoreTests {
                 "the pair is taken off USB, the strips are already there, then routed: \(unit.writes)")
     }
 
-    @Test("the unit reports a front-panel reset: everything is written in the usual order, once, then the request is cleared")
-    func frontPanelResetRestoresAllThenClears() async throws {
+    /// A front-panel reset of `type` on a unit with non-default saved state
+    /// (a mixer on Line 1/2, a muted strip at -12 dB, dim on, soft limit,
+    /// digital reference level and output trim set). The speaker and
+    /// Headphone 2 report 0 dB attenuation (louder than the reset's -20 dB),
+    /// Headphone 1 reports -40 dB. Returns the restore's writes.
+    private func frontPanelReset(_ type: SymphonyIOResetRequest, uid: String, identity: UInt64)
+        async throws -> (AppState, XPCDeviceConnection, HoldingUnit, [HoldingUnit.Write]) {
+        let (state, usb, unit) = try makeState(uid: uid, identity: identity)
+        state.peripheralRoutingCache(direction: "output").save([8: Set([0])])
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.set(0x26, 0, 0, [0])
+        unit.set(0x23, 0, 0, [40])
+        unit.set(0x23, 0, 1, [0])
+        unit.resetRequest = type.rawValue
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        return (state, usb, unit, unit.writes)
+    }
+
+    @Test("a front-panel Reset All: Maestro's saved state for the unit goes to defaults, is written in full, then the request is cleared")
+    func frontPanelResetAll() async throws {
         let restore = restoringDefaults()
         defer { restore() }
-        let (state, usb, unit) = try makeState(uid: "reset-front-panel", identity: 0xF2B0_0003)
-        try await firstRestore(state, usb, unit)
-        // What a restore that cannot read the unit sends (today's full restore).
-        unit.readsFail = true
-        replug(state, unit)
-        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
-        let full = unit.writes
-        unit.clearWrites()
-        unit.readsFail = false
-        // Reset from the front panel while it started; it still holds every value.
-        replug(state, unit)
-        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
-        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
-        let writes = unit.writes
-        // The digital reference levels and the inputs' analog types are read
-        // first by the channel replay itself (as before this change), so they
-        // are left out of the comparison.
-        func sent(_ writes: [HoldingUnit.Write]) -> [HoldingUnit.Write] {
-            writes.filter { $0.request != 0x21 && !($0.request == 0x20 && $0.value & 0x8000 != 0) }
-        }
-        #expect(sent(Array(writes.dropLast())) == sent(full), "the same writes, in the same order, as a full restore")
-        #expect(writes.filter { (0xB0...0xB3).contains($0.request) }.count
-                == full.filter { (0xB0...0xB3).contains($0.request) }.count)
+        let (state, usb, unit, writes) = try await frontPanelReset(.resetAll, uid: "reset-all", identity: 0xF2B0_0003)
+        // Saved state: defaults.
+        let inputs: [InputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.inputKey))
+        let outputs: [OutputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.outputKey))
+        #expect(inputs.allSatisfy { $0.softLimit == InputResetDefaults.softLimit && $0.digitalRefLevel == InputResetDefaults.digitalRefLevel })
+        #expect(outputs.allSatisfy { $0 == OutputChannelState() })
+        let strips: [MixerChannelState] = state.channelStateStore.load(ChannelStateStore.mixerKey(0)) ?? []
+        #expect(strips.isEmpty)
+        #expect(state.peripheralRoutingCache(direction: "output").loadMulti() == nil)
+        #expect(usb.settingsStore.value(for: PropertyAddress(selector: .peakHoldMode))?.asUInt32 == 0)
+        #expect(usb.settingsStore.value(for: PropertyAddress(selector: .outputDim))?.asBool == true, "dim on is kept")
+        // Written: the default strips, no mixer on any output, nothing
+        // compared with the unit first.
+        #expect(writes.contains(HoldingUnit.Write(request: 0xB0, value: 1, index: 0, data: [48])))
+        #expect(writes.contains(HoldingUnit.Write(request: 0xB3, value: 1, index: 0, data: [0])))
+        let routes = writes.filter { $0.request == 0x31 }.flatMap { write in
+            stride(from: 0, to: write.data.count - 1, by: 2).map { (write.data[$0], write.data[$0 + 1]) } }
+        #expect(!routes.contains { $0.0 < 228 && CardOutputTableOrder.mixer(ofSource: $0.1) != nil },
+                "no output or headphone on a mixer: \(routes)")
+        #expect(unit.route(32) == 192 && unit.route(33) == 193, "Line 1/2 back on USB 1-2")
+        #expect(usb.restoreReadComparedSkips == 0)
+        // Levels: only ever lowered, to -20 dB; mutes untouched.
+        #expect(writes.contains(HoldingUnit.Write(request: 0x26, value: 0, index: 0, data: [20])), "speaker 0 dB -> -20 dB")
+        #expect(writes.contains(HoldingUnit.Write(request: 0x23, value: 0, index: 1, data: [20])), "Headphone 2 0 dB -> -20 dB")
+        #expect(!writes.contains { $0.request == 0x23 && $0.index == 0 }, "Headphone 1 at -40 dB is not raised")
+        #expect(!writes.contains { $0.request == 0x27 }, "no mute written")
+        // Cleared last, once.
         #expect(writes.last == HoldingUnit.Write(request: 0xDB, value: 0, index: 0, data: [SymphonyIOResetRequest.none.rawValue]))
         #expect(writes.filter { $0.request == 0xDB }.count == 1)
         #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
-        #expect(state.usbRestoreRuns == 3)
+        #expect(!state.usbRestoreOwed)
         // Cleared: the next restore writes nothing.
         unit.clearWrites()
         replug(state, unit)
         await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
-        #expect(unit.writes == [])
+        #expect(unit.writes == [], "\(unit.writes)")
+    }
+
+    @Test("a front-panel Reset All But Calibration keeps reference levels and trims, and resets the rest")
+    func frontPanelResetKeepsCalibration() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, _, unit, writes) = try await frontPanelReset(.resetAllButCalibration, uid: "reset-calibration",
+                                                                 identity: 0xF2B0_000B)
+        let inputs: [InputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.inputKey))
+        let outputs: [OutputChannelState] = try #require(state.channelStateStore.load(ChannelStateStore.outputKey))
+        #expect(inputs.allSatisfy { $0.softLimit == InputResetDefaults.softLimit }, "soft limit reset in both")
+        #expect(inputs.allSatisfy { $0.digitalRefLevel == 2 }, "digital reference level kept")
+        #expect(outputs.allSatisfy { $0.trim == -1.5 }, "trims kept")
+        #expect((state.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?)?.isEmpty ?? true)
+        #expect(writes.contains(HoldingUnit.Write(request: 0x26, value: 0, index: 0, data: [20])))
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
+    }
+
+    @Test("a level the unit does not answer is not written after a front-panel reset")
+    func frontPanelResetUnreadLevelsLeftAlone() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-levels-unread", identity: 0xF2B0_000C)
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.unanswered = [0x26, 0x23]
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(!unit.writes.contains { $0.request == 0x26 || $0.request == 0x23 }, "\(unit.writes.filter { $0.request == 0x26 || $0.request == 0x23 })")
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
+    }
+
+    @Test("a front-panel reset is applied to the saved state once per connection")
+    func frontPanelResetOncePerGeneration() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-once", identity: 0xF2B0_000D)
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        // The clear is refused: 0xDB still reads Reset All on the retry.
+        unit.refuseResetClear = true
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.resetRequest == SymphonyIOResetRequest.resetAll.rawValue)
+        // An edit made after the reset, then another restore of the same connection.
+        let edited = MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: false)
+        state.channelStateStore.save([edited], for: ChannelStateStore.mixerKey(0))
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        let strips: [MixerChannelState] = state.channelStateStore.load(ChannelStateStore.mixerKey(0)) ?? []
+        #expect(strips == [edited], "the edit is not wiped by a second reset")
+    }
+
+    @Test("ThunderBridge: the front-panel reset is only read and applied over USB")
+    func frontPanelResetIsUSBOnly() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let app = root.appendingPathComponent("MaestroApp")
+        let files = try FileManager.default.contentsOfDirectory(atPath: app.path).filter { $0.hasSuffix(".swift") }
+        var callers: [String] = []
+        for file in files {
+            let text = try String(contentsOf: app.appendingPathComponent(file), encoding: .utf8)
+            if text.contains("resetSavedStateForFrontPanelReset(reset") { callers.append(file) }
+            #expect(!(file.localizedCaseInsensitiveContains("thunder") && text.contains("FrontPanelReset")), "\(file)")
+        }
+        #expect(callers == ["AppState+IdentityPersistence.swift"])
+        let restore = try String(contentsOf: app.appendingPathComponent("AppState+IdentityPersistence.swift"), encoding: .utf8)
+        let start = try #require(restore.range(of: "private func performUSBRestore(_ connection: XPCDeviceConnection"))
+        let call = try #require(restore.range(of: "resetSavedStateForFrontPanelReset(reset"))
+        let next = restore.range(of: "\n    func ", range: start.upperBound..<restore.endIndex)?.lowerBound ?? restore.endIndex
+        #expect(call.lowerBound > start.upperBound && call.lowerBound < next, "only inside the USB restore")
     }
 
     @Test("the reset request cannot be read: only the settings the unit does not hold are written")
@@ -414,6 +510,16 @@ struct USBResetRequestRestoreTests {
         // A stale handle the helper recovered from by itself.
         unit.configure()
         unit.shadow?.configures = 2
+        // Not while the unit is still settling after it appeared.
+        state.symphonyAppearedAt = Date()
+        await state.serviceHelperReconfigure(usb)
+        #expect(!state.usbRestoreOwed, "inside the settle wait")
+        state.symphonyAppearedAt = nil
+        // Not while a restore runs: that one puts the routing back.
+        state.usbRestoreTask = Task { @MainActor in }
+        await state.serviceHelperReconfigure(usb)
+        #expect(!state.usbRestoreOwed, "a restore is running")
+        state.usbRestoreTask = nil
         await state.serviceHelperReconfigure(usb)
         #expect(state.usbRestoreOwed)
         state.serviceUSBRestore(usb)

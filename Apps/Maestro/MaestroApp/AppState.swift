@@ -179,6 +179,10 @@ final class AppState: @unchecked Sendable {
     /// that restore's to put right, not a second one's
     /// (`usbRestoreCoversLoss`).
     @ObservationIgnored var usbRestoreStarted: USBRestoreStart?
+    /// The connection generation whose front-panel reset has put Maestro's
+    /// saved state for the unit back to defaults (once per generation: a
+    /// retry before 0xDB is cleared must not wipe edits made since).
+    @ObservationIgnored var usbFrontPanelResetGeneration: UUID?
     /// How many USB restores have begun (past their guards), for the log and
     /// the tests.
     @ObservationIgnored var usbRestoreRuns = 0
@@ -2200,8 +2204,8 @@ final class AppState: @unchecked Sendable {
     }
 
     /// When a Symphony audio device last appeared in the system device list.
-    /// See `waitForUSBUnitToSettle()`.
-    private var symphonyAppearedAt: Date?
+    /// See `waitForUSBUnitToSettle()`. Internal for the tests.
+    var symphonyAppearedAt: Date?
     /// The active unit went away and has not been seen since. The reconnect loop
     /// can find the returning unit by polling before the device-list callback
     /// has stamped `symphonyAppearedAt`, so it stamps it itself.
