@@ -2989,11 +2989,20 @@ static void RunStartupOutputMuteChecks()
 
     // Core Audio has not started IO in the cases below.
     Options idle = o; idle.noIoStart = true;
+    // dext 152: the gate opens a short grace after the rate settles; it no
+    // longer waits for a Core Audio control to change. A tick of the link
+    // watch queues the release on xlinkQueue; HostPump runs it.
+    auto tick = [](Run &r) { r.drv->LinkWatchTimerOccurred(nullptr, 0); HostPump(); };
+    auto pastGrace = [] { std::this_thread::sleep_for(std::chrono::milliseconds(450)); };
+    auto speakerMute = [](const FakeCard &c) {
+        auto it = c.port[0].stored.find((uint64_t)0x27 << 32);
+        return it != c.port[0].stored.end() && !it->second.empty() ? (int)it->second[0] : -1;
+    };
 
     // Fresh start at 44.1 kHz; Core Audio restores the mute, then its saved
     // 48 kHz. The gate stays closed after the control set (the hardware is
-    // still at Start's 44.1 kHz), the 48 kHz is programmed exactly once, and
-    // the output opens only after it.
+    // still at Start's 44.1 kHz), the 48 kHz is programmed exactly once, the
+    // mute is on the unit, and the output opens only after the grace.
     Run muted;
     RunScenario(idle, muted);
     const size_t startMark = muted.card.lines.size();
@@ -3002,6 +3011,7 @@ static void RunStartupOutputMuteChecks()
     gHostAudio.mute->SetControlValue(true);
     Irq(muted, 1);
     HostPump();
+    tick(muted);
     CHECK(OutputGate(muted.card) == 0x60000000u,
           "H: output released after the control set, before Core Audio's rate (ClkCtrl=0x%08x)",
           muted.card.reg[kRegClkCtrl]);
@@ -3012,13 +3022,21 @@ static void RunStartupOutputMuteChecks()
     SymphonySyncHardwareRate(gHostAudio.device, 48000.0, 0, "test, Core Audio restores 48 kHz");
     HostPump();
     CheckOneRateProgramAt48k("control then rate", muted.card, rateMark);
-    CHECK(!OutputUnmuteWritten(muted.card, 0, rateMark),
-          "H: the output unmute was written before Core Audio's rate was on the hardware");
-    CHECK(OutputGate(muted.card) == 0x70000000u,
-          "H: output not released after Core Audio's control and rate (ClkCtrl=0x%08x)", muted.card.reg[kRegClkCtrl]);
+    tick(muted);
+    CHECK(OutputGate(muted.card) == 0x60000000u,
+          "H: control then rate: output released within the grace (ClkCtrl=0x%08x)", muted.card.reg[kRegClkCtrl]);
+    const size_t graceMark = muted.card.lines.size();
+    pastGrace();
+    tick(muted);
+    CHECK(!OutputUnmuteWritten(muted.card, 0, graceMark),
+          "H: the output unmute was written before the grace after Core Audio's rate");
+    CHECK(OutputGate(muted.card) == 0x70000000u && speakerMute(muted.card) == 1,
+          "H: control then rate: ClkCtrl=0x%08x, unit speaker mute %d after the grace (want released, muted)",
+          muted.card.reg[kRegClkCtrl], speakerMute(muted.card));
     Finish(idle, muted);
 
-    // The rate first, then the control: programmed once, released at the control set.
+    // The rate first, then Core Audio's mute within the grace: the mute is
+    // on the unit before the outputs open.
     Run rateFirst;
     RunScenario(idle, rateFirst);
     const size_t rfMark = rateFirst.card.lines.size();
@@ -3026,25 +3044,45 @@ static void RunStartupOutputMuteChecks()
     SymphonySyncHardwareRate(gHostAudio.device, 48000.0, 0, "test, Core Audio restores 48 kHz");
     HostPump();
     CheckOneRateProgramAt48k("rate then control", rateFirst.card, rfMark);
-    CHECK(OutputGate(rateFirst.card) == 0x60000000u,
-          "H: rate first: output released before any control set (ClkCtrl=0x%08x)", rateFirst.card.reg[kRegClkCtrl]);
     gHostAudio.mute->SetControlValue(true);
     Irq(rateFirst, 1);
     HostPump();
-    CHECK(OutputGate(rateFirst.card) == 0x70000000u,
-          "H: rate first: output not released at the control set (ClkCtrl=0x%08x)", rateFirst.card.reg[kRegClkCtrl]);
+    tick(rateFirst);
+    CHECK(OutputGate(rateFirst.card) == 0x60000000u && speakerMute(rateFirst.card) == 1,
+          "H: mute within the grace: ClkCtrl=0x%08x, unit speaker mute %d (want held, muted)",
+          rateFirst.card.reg[kRegClkCtrl], speakerMute(rateFirst.card));
+    pastGrace();
+    tick(rateFirst);
+    CHECK(OutputGate(rateFirst.card) == 0x70000000u && speakerMute(rateFirst.card) == 1,
+          "H: mute within the grace: ClkCtrl=0x%08x, unit speaker mute %d after it (want released, muted)",
+          rateFirst.card.reg[kRegClkCtrl], speakerMute(rateFirst.card));
     Finish(idle, rateFirst);
 
+    // The rate and no control change at all (Core Audio restores the values
+    // the controls already show): released after the grace, not at 3 s.
+    Run noControl;
+    RunScenario(idle, noControl);
+    gHostAudio.device->SetSampleRate(48000.0);
+    SymphonySyncHardwareRate(gHostAudio.device, 48000.0, 0, "test, Core Audio restores 48 kHz");
+    HostPump();
+    tick(noControl);
+    CHECK(OutputGate(noControl.card) == 0x60000000u,
+          "H: rate, no control: output released within the grace (ClkCtrl=0x%08x)", noControl.card.reg[kRegClkCtrl]);
+    pastGrace();
+    tick(noControl);
+    CHECK(OutputGate(noControl.card) == 0x70000000u,
+          "H: rate, no control: output not released after the grace (ClkCtrl=0x%08x)", noControl.card.reg[kRegClkCtrl]);
+    Finish(idle, noControl);
+
     // Core Audio sets the rate the hardware already runs at: nothing is
-    // reprogrammed, and the gate opens without waiting for the deadline.
+    // reprogrammed, and the gate opens after the grace, not at the deadline.
     Run same;
     RunScenario(idle, same);
-    gHostAudio.mute->SetControlValue(true);
-    Irq(same, 1);
-    HostPump();
     const size_t sameMark = same.card.lines.size();
     SymphonySyncHardwareRate(gHostAudio.device, 44100.0, 0, "test, Core Audio sets 44.1 kHz");
     HostPump();
+    pastGrace();
+    tick(same);
     CHECK(RateCommands(same.card, sameMark, kRegXLink1TX).empty() && OutputGate(same.card) == 0x70000000u,
           "H: same rate: %zu rate writes, ClkCtrl=0x%08x (want none, released)",
           RateCommands(same.card, sameMark, kRegXLink1TX).size(), same.card.reg[kRegClkCtrl]);
@@ -3052,15 +3090,15 @@ static void RunStartupOutputMuteChecks()
 
     // A DAW starts IO before Core Audio sets any rate (a saved 44.1 kHz is
     // never set): the IO start at the hardware's rate confirms it, so the
-    // control set opens the gate at once, with no reprogram. A later 48 kHz
-    // is one rate transaction that mutes the card's outputs for its length.
+    // gate opens after the grace, with no reprogram. A later 48 kHz is one
+    // rate transaction that mutes the card's outputs for its length.
     Run daw;
     RunScenario(idle, daw);
     const size_t dawMark = daw.card.lines.size();
     daw.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
-    gHostAudio.mute->SetControlValue(true);
-    Irq(daw, 1);
     HostPump();
+    pastGrace();
+    tick(daw);
     CHECK(OutputGate(daw.card) == 0x70000000u && RateCommands(daw.card, dawMark, kRegXLink1TX).empty(),
           "H: DAW: ClkCtrl=0x%08x, %zu rate writes after the IO start (want released, none)",
           daw.card.reg[kRegClkCtrl], RateCommands(daw.card, dawMark, kRegXLink1TX).size());
@@ -3094,11 +3132,11 @@ static void RunStartupOutputMuteChecks()
     Run timeout;
     RunScenario(idle, timeout);
     const size_t timeoutMark = timeout.card.lines.size();
-    timeout.drv->LinkWatchTimerOccurred(nullptr, 0);
+    tick(timeout);
     CHECK(OutputGate(timeout.card) == 0x60000000u,
           "H: timeout: output released before the deadline (ClkCtrl=0x%08x)", timeout.card.reg[kRegClkCtrl]);
     std::this_thread::sleep_for(std::chrono::milliseconds(3100));
-    timeout.drv->LinkWatchTimerOccurred(nullptr, 0);
+    tick(timeout);
     CHECK(OutputGate(timeout.card) == 0x70000000u,
           "H: output did not release after the 3 s timeout (ClkCtrl=0x%08x)", timeout.card.reg[kRegClkCtrl]);
     CHECK(timeout.card.port[0].rateCode == 0x04 && RateCommands(timeout.card, timeoutMark, kRegXLink1TX).empty(),

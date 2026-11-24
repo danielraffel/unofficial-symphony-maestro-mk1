@@ -413,12 +413,13 @@ struct SymphonyThunderbridge_IVars {
     uint64_t  startupOutputMuteDeadlineNs;
     // dext 151: Start() programs 44.1 kHz and Core Audio puts back the
     // device's saved rate about a second and a half later. The output gate
-    // also waits for that: it opens once Core Audio has restored a control
-    // AND the hardware runs at Core Audio's rate (or the deadline passes,
-    // which is the behaviour before this). Both armed with the gate, by
-    // Start() only; set and cleared on any thread, read on xlinkQueue.
-    bool      startupControlSeen;
+    // waits for that. dext 152: it opens a short grace after the hardware
+    // runs at Core Audio's rate (kStartupRateGraceNs, time for Core Audio's
+    // restored mute to land first), or at the deadline when no rate
+    // settles. startupReleaseAtNs is 0 until the rate settles. Armed with
+    // the gate, by Start() only; set on any thread, read on xlinkQueue.
     bool      startupRatePending;
+    uint64_t  startupReleaseAtNs;
     double    lastSampleRate;  // Last SUCCESSFULLY programmed hardware sample rate
     uint32_t  namingSampleRate; // Hz the channel names follow: Core Audio's nominal rate
                                // (SymphonyNamingRateHz), updated on every HandleChangeSampleRate
@@ -4532,19 +4533,24 @@ static uint32_t ClkCtrlUnmuteBits(const SymphonyThunderbridge_IVars *ivars)
     return bits;
 }
 
-// dext 151: the gate opens when Core Audio has restored a control and the
-// hardware runs at Core Audio's rate, or at the deadline. `controlSet` is
-// true when called for a Core Audio control set.
-static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
-                                          bool controlSet)
+// dext 152: the gate opens kStartupRateGraceNs after the hardware runs at
+// Core Audio's rate, or at the deadline when no rate settled. It no longer
+// waits for a Core Audio control to change: Core Audio restores the values
+// the controls already show, so that wait always ran to the deadline. A
+// mute Core Audio restores within the grace is applied first: the monitor
+// poll and this release both run on xlinkQueue, and the release is queued
+// there (LinkWatchTimerOccurred) behind any control work already pending.
+static constexpr uint64_t kStartupRateGraceNs = 400000000ull;   // 400 ms
+
+static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars)
 {
     if (!ivars || !ivars->startupOutputMuteHeld) return;
-    if (controlSet) __atomic_store_n(&ivars->startupControlSeen, true, __ATOMIC_RELEASE);
     const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
-    const bool timedOut = now >= ivars->startupOutputMuteDeadlineNs;
-    const bool controlSeen = __atomic_load_n(&ivars->startupControlSeen, __ATOMIC_ACQUIRE);
-    const bool ratePending = __atomic_load_n(&ivars->startupRatePending, __ATOMIC_ACQUIRE);
-    if (!timedOut && (!controlSeen || ratePending)) return;
+    const uint64_t releaseAt = __atomic_load_n(&ivars->startupReleaseAtNs, __ATOMIC_ACQUIRE);
+    // Once the rate has settled, the grace decides (the 3 s cap is for a
+    // rate that never settles).
+    const bool settled = releaseAt != 0;
+    if (settled ? now < releaseAt : now < ivars->startupOutputMuteDeadlineNs) return;
     // ModifyRegister reads the BAR: never with the endpoint gone (asleep,
     // powered off, link down). Stay held; a later tick retries, and every
     // reprogram after recovery or wake goes through ClkCtrlUnmuteBits.
@@ -4561,10 +4567,11 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
     if (ivars->pciDevice) {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_OutputUnmute, 0);
-        STLOG("ClkCtrl: startup output unmuted after %{public}s",
-              !timedOut ? "Core Audio's control set and rate" :
-              ratePending ? "3 s timeout (Core Audio set no rate)" :
-              controlSeen ? "3 s timeout" : "3 s timeout (Core Audio set no control)");
+        if (settled)
+            STLOG("ClkCtrl: startup output unmuted %llu ms after the rate settled",
+                  (unsigned long long)(kStartupRateGraceNs / 1000000ull));
+        else
+            STLOG("ClkCtrl: startup output unmuted after 3 s timeout (no rate)");
     }
     ivars->startupOutputMuteHeld = false;
     __atomic_store_n(&ivars->startupRatePending, false, __ATOMIC_RELEASE);
@@ -4582,8 +4589,10 @@ static void NoteStartupRateSettled(SymphonyThunderbridge_IVars *ivars, double ra
 {
     if (!ivars || !__atomic_exchange_n(&ivars->startupRatePending, false, __ATOMIC_ACQ_REL)) return;
     STLOG("ClkCtrl: startup rate settled at %.0f Hz (%{public}s)", rate, why);
-    if (ivars->xlinkQueue)
-        ivars->xlinkQueue->DispatchAsync(^{ MaybeReleaseStartupOutputMute(ivars, false); });
+    __atomic_store_n(&ivars->startupReleaseAtNs,
+                     clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + kStartupRateGraceNs, __ATOMIC_RELEASE);
+    // The link watch releases the gate when the grace is over.
+    ArmLinkWatch(ivars, kStartupRateGraceNs);
 }
 
 static bool ReadUnitAMonitorLevel(SymphonyThunderbridge_IVars *ivars, uint32_t output);
@@ -5948,7 +5957,10 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
     if (!ivars) return;
     if (__atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE)) return;
-    MaybeReleaseStartupOutputMute(ivars, false);
+    // On xlinkQueue, behind any monitor control work already queued there
+    // (a mute Core Audio restored is applied before the outputs open).
+    if (ivars->startupOutputMuteHeld && ivars->xlinkQueue)
+        ivars->xlinkQueue->DispatchAsync(^{ MaybeReleaseStartupOutputMute(ivars); });
     ivars->linkWatchTicks++;
     uint64_t next = kLinkWatchFastNs;
     do {
@@ -6127,9 +6139,10 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
     } while (false);
     if (ivars->startupOutputMuteHeld) {
         const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
-        if (now < ivars->startupOutputMuteDeadlineNs)
-        {
-            const uint64_t untilRelease = ivars->startupOutputMuteDeadlineNs - now;
+        const uint64_t releaseAt = __atomic_load_n(&ivars->startupReleaseAtNs, __ATOMIC_ACQUIRE);
+        const uint64_t due = releaseAt ? releaseAt : ivars->startupOutputMuteDeadlineNs;
+        if (now < due) {
+            const uint64_t untilRelease = due - now;
             if (untilRelease < next) next = untilRelease;
         }
     }
@@ -8216,12 +8229,12 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_Unmute | kClkCtrl_InputUnmute,
                        kClkCtrl_OutputUnmute);
-        __atomic_store_n(&ivars->startupControlSeen, false, __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->startupReleaseAtNs, (uint64_t)0, __ATOMIC_RELEASE);
         __atomic_store_n(&ivars->startupRatePending, true, __ATOMIC_RELEASE);
         ivars->startupOutputMuteHeld = true;
         ivars->startupOutputMuteDeadlineNs =
             clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + SYMPHONY_STARTUP_OUTPUT_HOLD_NS();
-        STLOG("ClkCtrl: global + input unmuted AFTER DMA start; output held for Core Audio's controls and rate");
+        STLOG("ClkCtrl: global + input unmuted AFTER DMA start; output held until Core Audio's rate settles");
     } else {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
@@ -9329,7 +9342,6 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                     } else {
                         const bool b = ivars->monitorDeviceB;
                         const bool converter = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
-                        const bool startupControlSet = MonitorControlsMoved(ivars);
                         const uint32_t arms = __atomic_load_n(&ivars->monitorSettleArms, __ATOMIC_ACQUIRE);
                         // The app's Audio Output choice: 0 speakers, 1/2 a headphone
                         // (the headphone's index is kind - 1).
@@ -9439,8 +9451,6 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                                 }
                             }
                         }
-                        if (startupControlSet && ivars->xlinkQueue)
-                            ivars->xlinkQueue->DispatchAsync(^{ MaybeReleaseStartupOutputMute(ivars, true); });
                         __atomic_store_n(&ivars->monitorPolledArm, arms, __ATOMIC_RELEASE);
                     }
                 }
