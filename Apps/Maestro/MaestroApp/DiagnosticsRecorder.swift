@@ -125,6 +125,9 @@ final class DiagnosticsRecorder {
     func stopAndSave() async {
         guard isRecording else { return }
         isRecording = false
+        // Show "Saving diagnostics…" on the click, before the final checks
+        // and the save below make the file; save() clears it at the end.
+        isSaving = true
         snapshotTask?.cancel()
         snapshotTask = nil
         meterWordsTask?.cancel()

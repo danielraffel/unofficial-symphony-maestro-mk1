@@ -6,6 +6,7 @@ This beta fixes Maestro USB audio cutting out and dropping when the Symphony con
 
 ### Fixed
 
+- **"Saving diagnostics…" now appears as soon as you press Stop Diagnostics.** It used to show up a few seconds later.
 - **Maestro USB audio no longer cuts out while Maestro is open.** Maestro now reads the Symphony's meters only while a meter is on screen, and no longer rewrites the mixer when you open the Mixer page or after a single failed read. The USB helper no longer writes its log from the audio thread, which made macOS skip a cycle of Maestro USB audio now and then, with Maestro open or closed.
 - **Over USB, audio no longer stops for a moment when you plug the Symphony in with Maestro open.** Maestro no longer sends routes and the optical format that the unit already has while audio is playing.
 - **Over USB, Maestro no longer re-sends your settings when you unplug and replug the Symphony.** It checks what the unit still holds and sends only what it lost, so a Symphony that was switched off and on still gets its settings back. Where the unit does not answer Maestro's check, Maestro sends the setting anyway. If you route a mixer to an output, that output still goes quiet for a few seconds after a replug while Maestro checks the mixer, and then comes back. Maestro also connects to the Symphony once when it appears, not twice.
