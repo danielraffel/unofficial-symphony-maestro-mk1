@@ -183,6 +183,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
 
     public func presetWrites(_ saved: ThunderboltPreset.Peripheral, layout: CardLayout,
                              cardInputSupported: Bool = true, recallsMonitorLevels: Bool = true,
+                             restoresRouting: Bool = true, channelOrder: ThunderboltUnitChannelOrder? = nil,
                              onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
         let currentRoutes = (0..<32).compactMap { index -> ThunderboltInputMeterMap.Route? in
@@ -194,6 +195,7 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
                                                         peripheralB: true, currentInputRoutes: currentRoutes,
                                                         cardInputSupported: cardInputSupported,
                                                         recallsMonitorLevels: recallsMonitorLevels,
+                                                        restoresRouting: restoresRouting, channelOrder: channelOrder,
                                                         onSkipped: onSkipped)
     }
 

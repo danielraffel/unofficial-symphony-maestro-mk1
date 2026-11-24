@@ -47,10 +47,19 @@ extension AppState {
             ThunderboltPreset.Mixer(snapshot: MixerStateSnapshot(channelCount: layout.mixerChannelCount,
                                                                  mixer: $0, store: channelStateStore, preferences: mixerPreferences))
         }
+        // The order the routing below is in, and the output table by XLink
+        // channel (Mac output n plays XLink n): the board output each XLink
+        // channel plays in the driver's order, what Output Routing plays
+        // there, otherwise the default (XLink n from Mac output n; one that no
+        // output plays stays on it).
+        guard let orderA = thunderboltUnitOrder(unit: .a) else {
+            throw ThunderboltPreset.RecallError.unsupported("the driver has not reported its channel order yet.")
+        }
+        seed.channelOrder = ThunderboltPreset.channelOrderTag(orderA.order)
         let saved = cachedOutputRouteMap()
+        let playedBy = Self.xlinkDestinations(order: orderA)
         seed.outputRoutes = (0..<32).map { channel in
-            let destination = UInt8(channel + 32)
-            return saved[destination] ?? UInt8(channel)
+            playedBy[UInt8(channel)].flatMap { saved[$0] } ?? UInt8(channel)
         }
         let b = unitBOnCard ? unitBDevice as? ThunderboltUnitBConnection : nil
         let bLayout = unitBLayout
@@ -137,16 +146,28 @@ extension AppState {
             && unitBBoardSource(slot: 0) == .detected && unitBBoardSource(slot: 1) == .detected)
         let recallB = preset.unitB != nil && skip == nil
         let cardChannels = unitBOnCard && unitBInputRoutingAllowed && skip == nil ? 64 : 32
+        // A file saved in the other channel order (an older file is card by
+        // card): everything but its routing, which would land on other
+        // channels where these cards move.
+        guard let orderA = thunderboltUnitOrder(unit: .a),
+              !recallB || thunderboltUnitOrder(unit: .b) != nil else {
+            throw ThunderboltPreset.RecallError.unsupported("the driver has not reported its channel order yet.")
+        }
+        let orderB = recallB ? thunderboltUnitOrder(unit: .b) : nil
+        let restoresRouting = legacy || preset.routingApplies(current: orderA.order)
+        if !restoresRouting { recallWarnings.add(ThunderboltPreset.routingSkippedNote) }
         recallWritesStarted = true
         try await Task.detached {
             try connection.withPresetLock {
                 let aWrites = try connection.presetWrites(preset, layout: layout, legacy: legacy, channels: cardChannels,
                                                           recallsMonitorLevels: recallsMonitorLevels,
+                                                          restoresRouting: restoresRouting, channelOrder: orderA,
                                                           onSkipped: recallWarnings.add)
                 if recallB, let b, let bLayout, let saved = preset.unitB {
                     try b.withPresetLock {
                         let bWrites = try b.presetWrites(saved, layout: bLayout, cardInputSupported: cardInputSupported,
                                                          recallsMonitorLevels: recallsMonitorLevels,
+                                                         restoresRouting: restoresRouting, channelOrder: orderB,
                                                          onSkipped: recallWarnings.add)
                         do { try connection.applyPresetWrites(aWrites, layout: layout,
                                                                recoveryCount: admissionFence.0) }
@@ -197,9 +218,9 @@ extension AppState {
                     SlotDigitalSettings.remember(digital.address.selector, slot: Int(digital.address.element), value: digital.value, key: bDigitalKey)
                 }
             }
-            unitBInputRoutingCache?.save(SymphonyIODefaultRouting.inputGrid(
+            if restoresRouting { unitBInputRoutingCache?.save(SymphonyIODefaultRouting.inputGrid(
                 saved.inputRoutes.enumerated().map { (destination: UInt8(192 + $0.offset), source: $0.element) },
-                columns: bLayout.inputRoutingColumns))
+                columns: bLayout.inputRoutingColumns)) }
         }
         let warningText = recallWarnings.all
         statusMessage = (skip.map { "Unit A loaded. " + $0 } ?? "Settings loaded.")
@@ -219,7 +240,7 @@ extension AppState {
             rememberDigitalSetting(digital.address.selector, slot: Int(digital.address.element), value: digital.value)
         }
         try channelStateStore.saveMixerPreset(preset.mixers, sourceCount: cardChannels == 64 ? 32 : 8)
-        if !legacy {
+        if !legacy, restoresRouting {
             persistPresetRoutes(preset, productID: connection.identifier.productID, recalledChannels: cardChannels,
                                 currentRoutes: priorInputRoutes)
             if let routes = preset.cardInputRoutes {
@@ -230,11 +251,14 @@ extension AppState {
                 symphonyCardInputStore?.save(symphonyCardInputEdits)
             }
         }
-        if !legacy, cardChannels == 64, let bLayout {
+        if !legacy, restoresRouting, cardChannels == 64, let bLayout {
             let sources = try ThunderboltPreset.cardTable(preset.outputRoutes.map(Int.init), channels: 64)
-            unitBOutputRoutingCache?.save(outputGrid(sources: Array(sources.dropFirst(32)).map(UInt8.init), layout: bLayout, channels: 64))
+            unitBOutputRoutingCache?.save(outputGrid(sources: Array(sources.dropFirst(32)).map(UInt8.init), layout: bLayout, channels: 64,
+                                                     order: thunderboltDisplayOrder(unit: .b)))
         }
-        thunderboltInputRoutingWritten = true
+        // Without the file's routing the unit keeps the routing it had,
+        // which the saved stores (unchanged) describe.
+        if restoresRouting { thunderboltInputRoutingWritten = true }
         invalidateThunderboltInputMeterMap()
         if let mode = preset.globals[AudioPropertySelector.speakerOutputMode.rawValue] { speakerOutputMode = mode }
         await refreshChannelNaming()
@@ -261,13 +285,21 @@ extension AppState {
         let channels = unitBOnCard ? 64 : 32
         invalidateThunderboltOutputMeterMap()
         peripheralRoutingCache(direction: "output").save(
-            outputGrid(sources: preset.outputRoutes.prefix(32).map { Int($0) >= recalledChannels && $0 < 64 ? SymphonyIORoutingAddress.none : $0 }, layout: cardLayout, channels: channels, unitA: true))
+            outputGrid(sources: preset.outputRoutes.prefix(32).map { Int($0) >= recalledChannels && $0 < 64 ? SymphonyIORoutingAddress.none : $0 }, layout: cardLayout, channels: channels, unitA: true,
+                       order: thunderboltDisplayOrder(unit: .a)))
     }
 
-    private func outputGrid(sources: [UInt8], layout: CardLayout, channels: Int, unitA: Bool = false) -> [Int: Set<Int>] {
+    /// `sources` by XLink channel (0-31 of the unit); each output column
+    /// reads the XLink channel its unit's playback table plays there.
+    private func outputGrid(sources: [UInt8], layout: CardLayout, channels: Int, unitA: Bool = false,
+                            order: ThunderboltUnitChannelOrder) -> [Int: Set<Int>] {
         var output = Dictionary(uniqueKeysWithValues: (0..<(channels / 2 + 2)).map { ($0, Set<Int>()) })
         for (column, destination) in layout.outputRoutingColumns.enumerated() {
-            let source = sources[Int(destination.routingByte) - 32]
+            guard let channel = ThunderboltCardRouting.channel(forDestination: destination.routingByte,
+                                                               slot1: order.slot1, slot2: order.slot2,
+                                                               order: order.order),
+                  Int(channel) < sources.count else { continue }
+            let source = sources[Int(channel)]
             let row: Int?
             if Int(source) < channels { row = Int(source) / 2 }
             else if source == SymphonyIORoutingAddress.mixer0Base { row = channels / 2 }
@@ -284,9 +316,28 @@ extension AppState {
         return output
     }
 
+    /// XLink channel (0-31 of one unit) → the board output its playback
+    /// table plays it on, in `order`.
+    static func xlinkDestinations(order: ThunderboltUnitChannelOrder) -> [UInt8: UInt8] {
+        var map: [UInt8: UInt8] = [:]
+        for destination in SymphonyIORoutingAddress.ioBoard0Base..<(SymphonyIORoutingAddress.ioBoard1Base
+            &+ UInt8(SymphonyIORoutingAddress.channelsPerIOBoard)) {
+            if let channel = ThunderboltCardRouting.channel(forDestination: destination, slot1: order.slot1,
+                                                            slot2: order.slot2, order: order.order) {
+                map[channel] = destination
+            }
+        }
+        return map
+    }
+
     private func unitBOutputSources(layout: CardLayout) -> [UInt8] {
         var sources = Array(UInt8(32)..<UInt8(64))
         guard let rows = unitBOutputRoutingCache?.loadMulti() else { return sources }
+        let order = thunderboltDisplayOrder(unit: .b)
+        func xlink(_ destination: UInt8) -> UInt8? {
+            ThunderboltCardRouting.channel(forDestination: destination, slot1: order.slot1, slot2: order.slot2,
+                                           order: order.order)
+        }
         for (col, destination) in layout.outputRoutingColumns.enumerated() {
             let complete = (0..<34).allSatisfy { rows[$0] != nil }
             let row = rows.first { $0.value.contains(col) }?.key
@@ -297,7 +348,9 @@ extension AppState {
                 else if row == 32 { source = SymphonyIORoutingAddress.mixer0Base + UInt8(side) }
                 else if row == 33 { source = SymphonyIORoutingAddress.mixer1Base + UInt8(side) }
                 else { source = SymphonyIORoutingAddress.none }
-                sources[Int(destination.routingByte) - 32 + side] = source
+                // By the XLink channel unit B's playback table plays there.
+                guard let channel = xlink(destination.routingByte &+ UInt8(side)), Int(channel) < sources.count else { continue }
+                sources[Int(channel)] = source
             }
         }
         return sources

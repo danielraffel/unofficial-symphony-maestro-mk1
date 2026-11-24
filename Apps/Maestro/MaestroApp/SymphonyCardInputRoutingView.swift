@@ -1,5 +1,6 @@
 import SwiftUI
 import MaestroCore
+import MaestroDevice
 
 /// Original card-level Input Routing surface: software rows, peripheral
 /// source columns. Evidence: og_source/maestro2/App/Model/APAudioSystemModel.m:725-752;
@@ -14,6 +15,14 @@ struct SymphonyCardInputRoutingView: View {
     @State private var resetPrompt: RoutingResetPrompt?
 
     private let presetKey = "inputRoutingPresets.twoUnit"
+    /// The card's 64 host channels span both units: a preset of the old
+    /// channel order is marked and refused when either unit's channels move.
+    private func presetIsStale(_ name: String) -> Bool {
+        appState.transportType == .thunderbolt
+            && RoutingPresetChannelOrder.isStale(name: name, presetKey: presetKey,
+                                                 current: [appState.thunderboltUnitOrder(unit: .a),
+                                                           appState.thunderboltUnitOrder(unit: .b)])
+    }
 
     var body: some View {
         let routing = appState.symphonyCardInputs
@@ -45,9 +54,16 @@ struct SymphonyCardInputRoutingView: View {
                     onSave: { name in
                         PresetManager.saveRoutingPreset(name: name,
                             routes: appState.symphonyCardInputEdits, key: presetKey)
+                        RoutingPresetChannelOrder.mark(name: name, presetKey: presetKey,
+                            order: RoutingPresetChannelOrder.savingOrder(transport: appState.transportType,
+                                                                         current: appState.thunderboltUnitOrder(unit: .a)))
                         presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
                     },
                     onLoad: { name in
+                        if presetIsStale(name) {
+                            errorMessage = RoutingPresetChannelOrder.refusalMessage
+                            return
+                        }
                         guard let preset = PresetManager.loadRoutingPresets(key: presetKey)[name] else { return }
                         Task {
                             let ok = await appState.applySymphonyCardInputs(preset)
@@ -56,8 +72,10 @@ struct SymphonyCardInputRoutingView: View {
                     },
                     onDelete: { name in
                         PresetManager.deleteRoutingPreset(name: name, key: presetKey)
+                        RoutingPresetChannelOrder.unmark(name: name, presetKey: presetKey)
                         presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
-                    })
+                    },
+                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) })
                 Spacer()
             }
             .padding(.horizontal, 16)

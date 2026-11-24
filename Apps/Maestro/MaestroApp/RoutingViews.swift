@@ -155,6 +155,18 @@ struct InputRoutingView: View {
     // P3C-05: Routing presets
     @State private var presetNames: [String] = []
     private var presetKey: String { unit == .b ? "inputRoutingPresets.unitB" : "inputRoutingPresets" }
+    /// The order a preset saved now is in (`RoutingPresetChannelOrder`).
+    private var presetSavingOrder: ThunderboltChannelOrder {
+        RoutingPresetChannelOrder.savingOrder(transport: appState.transportType,
+                                              current: appState.thunderboltUnitOrder(unit: unit))
+    }
+    /// A preset of the old channel order, on a unit whose channels the
+    /// driver now lays out elsewhere: marked and refused.
+    private func presetIsStale(_ name: String) -> Bool {
+        appState.transportType == .thunderbolt
+            && RoutingPresetChannelOrder.isStale(name: name, presetKey: presetKey,
+                                                 current: [appState.thunderboltUnitOrder(unit: unit)])
+    }
 
     private var routingCache: RoutingStateCache? {
         if unit == .b { return unitBCache }
@@ -230,9 +242,14 @@ struct InputRoutingView: View {
                     presetNames: presetNames,
                     onSave: { name in
                         PresetManager.saveRoutingPreset(name: name, routes: routes, key: presetKey)
+                        RoutingPresetChannelOrder.mark(name: name, presetKey: presetKey, order: presetSavingOrder)
                         presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
                     },
                     onLoad: { name in
+                        if presetIsStale(name) {
+                            errorMessage = RoutingPresetChannelOrder.refusalMessage
+                            return
+                        }
                         if let preset = PresetManager.loadRoutingPresets(key: presetKey)[name] {
                             let previousRoutes = appState.thunderboltCaptureRoutes(unit: unit)
                             routes = preset
@@ -250,8 +267,10 @@ struct InputRoutingView: View {
                     },
                     onDelete: { name in
                         PresetManager.deleteRoutingPreset(name: name, key: presetKey)
+                        RoutingPresetChannelOrder.unmark(name: name, presetKey: presetKey)
                         presetNames = Array(PresetManager.loadRoutingPresets(key: presetKey).keys.sorted())
-                    }
+                    },
+                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) }
                 )
             }
             .disabled(isLoadingRoutes || !canWrite)
@@ -769,7 +788,8 @@ struct OutputRoutingView: View {
                     presetNames: presetNames,
                     onSave: { name in savePreset(name) },
                     onLoad: { name in loadPreset(name) },
-                    onDelete: { name in deletePreset(name) }
+                    onDelete: { name in deletePreset(name) },
+                    label: { RoutingPresetChannelOrder.label($0, stale: presetIsStale($0)) }
                 )
             }
             .disabled(isLoadingRoutes)
@@ -896,6 +916,31 @@ struct OutputRoutingView: View {
 
     /// Save the whole preset: unit A's table and, with two units, unit B's
     /// with unit B's cards. A one-unit save drops the name's unit B half.
+    /// Where an entry's channel order is kept (`RoutingPresetChannelOrder`):
+    /// a preset under unit A's key, a unit-B-only one under the old key.
+    private func presetOrderKey(_ entry: OutputRoutingPresets.Entry) -> (key: String, name: String) {
+        switch entry {
+        case .preset(let name): return (OutputRoutingPresetStore.unitAKey, name)
+        case .unitBOnly(let name): return (OutputRoutingPresetStore.legacyUnitBKey, name)
+        }
+    }
+
+    /// A preset of the old channel order where the driver now lays a unit's
+    /// channels out elsewhere: marked and refused.
+    private func presetIsStale(_ displayName: String) -> Bool {
+        guard appState.transportType == .thunderbolt,
+              let entry = OutputRoutingPresetStore.load().entry(displayName: displayName, twoUnits: appState.unitBOnCard)
+        else { return false }
+        let at = presetOrderKey(entry)
+        let units: [ThunderboltUnitChannelOrder?]
+        switch entry {
+        case .preset: units = [appState.thunderboltUnitOrder(unit: .a),
+                               appState.unitBOnCard ? appState.thunderboltUnitOrder(unit: .b) : nil]
+        case .unitBOnly: units = [appState.thunderboltUnitOrder(unit: .b)]
+        }
+        return RoutingPresetChannelOrder.isStale(name: at.name, presetKey: at.key, current: units)
+    }
+
     private func savePreset(_ name: String) {
         var unitB: OutputRoutingPresets.UnitBHalf?
         if appState.unitBOnCard {
@@ -914,6 +959,10 @@ struct OutputRoutingView: View {
                                                      unitBActive: appState.unitBOnCard),
                      unitB: unitB)
         OutputRoutingPresetStore.store(presets, replacing: old)
+        RoutingPresetChannelOrder.mark(name: name, presetKey: OutputRoutingPresetStore.unitAKey,
+                                       order: RoutingPresetChannelOrder.savingOrder(
+                                        transport: appState.transportType,
+                                        current: appState.thunderboltUnitOrder(unit: .a)))
         presetNames = loadPresetNames()
     }
 
@@ -923,6 +972,8 @@ struct OutputRoutingView: View {
         guard let entry = presets.entry(displayName: displayName, twoUnits: appState.unitBOnCard) else { return }
         presets.delete(entry)
         OutputRoutingPresetStore.store(presets, replacing: old)
+        let at = presetOrderKey(entry)
+        RoutingPresetChannelOrder.unmark(name: at.name, presetKey: at.key)
         presetNames = loadPresetNames()
     }
 
@@ -930,6 +981,10 @@ struct OutputRoutingView: View {
     /// cards first; a mismatch writes nothing. A preset without a unit B
     /// half leaves unit B's outputs as they are.
     private func loadPreset(_ displayName: String) {
+        if presetIsStale(displayName) {
+            errorMessage = RoutingPresetChannelOrder.refusalMessage
+            return
+        }
         let presets = OutputRoutingPresetStore.load()
         let twoUnits = appState.unitBOnCard
         guard let entry = presets.entry(displayName: displayName, twoUnits: twoUnits) else { return }
@@ -1591,6 +1646,9 @@ struct PresetMenuButton: View {
     let onSave: (String) -> Void
     let onLoad: (String) -> Void
     let onDelete: (String) -> Void
+    /// The menu line for a name (a routing preset of the old channel order
+    /// is marked, `RoutingPresetChannelOrder`); the actions get the name.
+    var label: (String) -> String = { $0 }
 
     @State private var showSaveAlert: Bool = false
     @State private var newPresetName: String = ""
@@ -1603,7 +1661,7 @@ struct PresetMenuButton: View {
                         .foregroundStyle(.tertiary)
                 } else {
                     ForEach(presetNames, id: \.self) { name in
-                        Button(name) { onLoad(name) }
+                        Button(label(name)) { onLoad(name) }
                     }
                 }
             }
@@ -1618,7 +1676,7 @@ struct PresetMenuButton: View {
             if !presetNames.isEmpty {
                 Menu("Delete Preset") {
                     ForEach(presetNames, id: \.self) { name in
-                        Button(name, role: .destructive) { onDelete(name) }
+                        Button(label(name), role: .destructive) { onDelete(name) }
                     }
                 }
             }

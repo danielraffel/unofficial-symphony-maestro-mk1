@@ -3204,6 +3204,25 @@ final class AppState: @unchecked Sendable {
         return left == .deferred || right == .deferred ? .deferred : .written
     }
 
+    /// The software output a speaker-set pair goes back to when sets are
+    /// removed (and the source of Line 1-2 when nothing is saved for it):
+    /// on ThunderBridge the one the driver's playback table plays on that
+    /// output in its channel order (analog first from driver 150, by
+    /// position before); over USB by position, as before.
+    func speakerSetDefaultSource(forDestination destination: UInt8) -> UInt8 {
+        if transportType == .thunderbolt,
+           let source = thunderboltDefaultOutputRoutes(unit: .a).first(where: { $0.destination == destination })?.source,
+           source != SymphonyIORoutingAddress.none {
+            return source
+        }
+        let hostBase = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb)
+        let boardBase = destination >= SymphonyIORoutingAddress.ioBoard1Base
+            ? SymphonyIORoutingAddress.ioBoard1Base : SymphonyIORoutingAddress.ioBoard0Base
+        let channel = (destination >= SymphonyIORoutingAddress.ioBoard1Base ? 16 : 0)
+            + Int(destination - boardBase)
+        return hostBase + UInt8(channel)
+    }
+
     /// Match the legacy routing side effect of changing the Analog Out Format.
     /// When speaker sets are added, every new pair repeats the source feeding
     /// Line 1-2. When sets are removed, those pairs return to the defaults the
@@ -3222,19 +3241,8 @@ final class AppState: @unchecked Sendable {
         let hostBase = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb)
         let firstDestination = analogColumns[0].routingByte
         let cached = cachedOutputRouteMap()
-        // ThunderBridge: the software output the driver's playback table
-        // plays there (analog first from driver 150, by position before).
-        let thunderboltDefaults = transportType == .thunderbolt
-            ? Dictionary(thunderboltDefaultOutputRoutes(unit: .a).map { ($0.destination, $0.source) },
-                         uniquingKeysWith: { first, _ in first })
-            : [:]
         func defaultPlaybackSource(for destination: UInt8) -> UInt8 {
-            if let source = thunderboltDefaults[destination], source != SymphonyIORoutingAddress.none { return source }
-            let boardBase = destination >= SymphonyIORoutingAddress.ioBoard1Base
-                ? SymphonyIORoutingAddress.ioBoard1Base : SymphonyIORoutingAddress.ioBoard0Base
-            let channel = (destination >= SymphonyIORoutingAddress.ioBoard1Base ? 16 : 0)
-                + Int(destination - boardBase)
-            return hostBase + UInt8(channel)
+            speakerSetDefaultSource(forDestination: destination)
         }
         let source = cached[firstDestination] ?? defaultPlaybackSource(for: firstDestination)
         let sourceRow: Int? = {

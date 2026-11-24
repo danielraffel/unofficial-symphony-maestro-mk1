@@ -29,6 +29,42 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     /// 144). Absent in older files: their faders above 0 played at 0, and are
     /// loaded at 0 (`headroomClamped`).
     public var fadersAboveZeroPlay: Bool?
+    /// The host channel order the routing in this file was saved in
+    /// (`ThunderboltChannelOrder`): "analogFirst" from 0.9.25 with a
+    /// ThunderBridge driver of build 150 or later serving, "cardByCard"
+    /// before. Absent in older files, which are card by card. The input
+    /// routes are indexed by Mac input, the output routes by XLink channel
+    /// (Mac output n plays XLink n), so a file of the other order means
+    /// other channels where the cards move (`routingApplies`).
+    public var channelOrder: String?
+
+    public static func channelOrderTag(_ order: ThunderboltChannelOrder) -> String {
+        order == .analogFirst ? "analogFirst" : "cardByCard"
+    }
+
+    /// The order this file's routing was saved in.
+    public var savedChannelOrder: ThunderboltChannelOrder {
+        channelOrder == "analogFirst" ? .analogFirst : .cardByCard
+    }
+
+    /// Whether this file's routing (input routes, card input routes, output
+    /// routes) means the same channels under `current`: the same order, or
+    /// cards (both units') that the order does not move. Everything else in
+    /// the file is restored either way.
+    public func routingApplies(current: ThunderboltChannelOrder) -> Bool {
+        guard savedChannelOrder != current else { return true }
+        func moves(_ boards: [UInt8]) -> Bool {
+            guard boards.count == 2 else { return true }
+            return ThunderboltChannelOrder.differs(slot1: IOCardType(rawValue: boards[0]),
+                                                   slot2: IOCardType(rawValue: boards[1]))
+        }
+        return !moves(boards) && !(unitB.map { moves($0.boards) } ?? false)
+    }
+
+    /// What a restore says when it skips the file's routing.
+    public static let routingSkippedNote = "Routing not restored: this file was saved with Mac channels in the "
+        + "other order (Maestro now uses Apogee's order, all analog first, then digital). "
+        + "Set the routing again and save the file again."
 
     public struct Peripheral: Codable, Sendable, Equatable {
         public var boards: [UInt8]
@@ -166,6 +202,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
                        oneUnitSoftwareReturnPairs: Int = 8,
                        currentInputRoutes: [ThunderboltInputMeterMap.Route]? = nil,
                        cardInputSupported: Bool = true, recallsMonitorLevels: Bool = true,
+                       restoresRouting: Bool = true,
+                       channelOrder order: ThunderboltUnitChannelOrder? = nil,
                        onSkipped: ((String) -> Void)? = nil) throws -> [Write] {
         func require(_ condition: Bool, _ reason: String) throws {
             if !condition { throw RecallError.unsupported(reason) }
@@ -248,7 +286,12 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         }
         // Card routing precedes peripheral recall: og_source/maestrolink/Software/
         // SymphonyController.cpp:696-704; SymphonyCard.cpp:412-415.
-        if let cardInputRoutes, cardInputSupported {
+        // `restoresRouting` false (a file of the other channel order): its
+        // input routes, card input routes and output routes would land on
+        // other channels; they are checked above and not written.
+        if !restoresRouting {
+            // Nothing.
+        } else if let cardInputRoutes, cardInputSupported {
             let table = try Self.cardTable(cardInputRoutes, channels: hostChannels)
             try require(cardInputRoutes.allSatisfy { $0 >= -1 && $0 < cardInputRoutes.count }, "invalid card input source.")
             let routing = SymphonyCardInputRouting(model: .init(topology: .symphonyOnly, hostChannels: hostChannels, unitBConfigured: hostChannels == 64))
@@ -264,13 +307,13 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             onSkipped?("card input routing not restored: serving driver does not support it")
         }
         let effectiveInputRoutes: [UInt8] = inputRoutes.enumerated().map { index, source in
-            if let mask = inputRouteMask, (index >= mask.count || !mask[index]),
+            if !restoresRouting || inputRouteMask.map({ index >= $0.count || !$0[index] }) == true,
                let current = currentInputRoutes?.first(where: { $0.destination == SymphonyIORoutingAddress.p2pBase + UInt8(index) }) {
                 return current.source
             }
             return source
         }
-        for (index, source) in inputRoutes.enumerated() {
+        for (index, source) in inputRoutes.enumerated() where restoresRouting {
             if let mask = inputRouteMask, (index >= mask.count || !mask[index]) { continue }
             try require((32...63).contains(source) || source == SymphonyIORoutingAddress.none,
                         "unsupported input route.")
@@ -281,7 +324,8 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             try require(ThunderboltCardRouting.route(destination: 32, source: source, unitBActive: outputRoutes.count == 64 || hostChannels == 64) != nil,
                         "unsupported output route.")
         }
-        let outputsOnCard = legacy ? [] : try Self.cardTable(outputRoutes.map(Int.init), channels: hostChannels)
+        // Indexed by XLink channel: the card layer the file records.
+        let outputsOnCard = legacy || !restoresRouting ? [] : try Self.cardTable(outputRoutes.map(Int.init), channels: hostChannels)
         for (index, saved) in outputsOnCard.enumerated() {
             let source = UInt8(saved >= hostChannels && saved < 64 ? Int(SymphonyIORoutingAddress.none) : saved)
             let local = ThunderboltCardRouting.route(destination: UInt8(index % 32 + 32), source: source, unitBActive: hostChannels == 64)!
@@ -346,8 +390,14 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
             put(selector, .uint32(id))
             let pair = SymphonyIOHeadphoneRouting.outputPairDestinations(sourceID: id)!
             let dest = SymphonyIOHeadphoneRouting.Headphone(rawValue: hp)!.destinations
-            put(.routing, .uint32(UInt32(pair.left - 32)), scope: .output, element: UInt32(dest.left))
-            put(.routing, .uint32(UInt32(pair.right - 32)), scope: .output, element: UInt32(dest.right))
+            // The XLink channels the unit's playback table plays on that
+            // pair, in its channel order (by position card by card).
+            let left = SymphonyIOHeadphoneRouting.thunderboltBootTableSource(forDestination: pair.left, order: order)
+                ?? SymphonyIORoutingAddress.none
+            let right = SymphonyIOHeadphoneRouting.thunderboltBootTableSource(forDestination: pair.right, order: order)
+                ?? SymphonyIORoutingAddress.none
+            put(.routing, .uint32(UInt32(left)), scope: .output, element: UInt32(dest.left))
+            put(.routing, .uint32(UInt32(right)), scope: .output, element: UInt32(dest.right))
         }
         // The mixer numbers in a recall follow the capture table this same
         // preset writes, rather than the table that was active before recall.
