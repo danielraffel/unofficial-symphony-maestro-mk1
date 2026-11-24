@@ -105,9 +105,11 @@ static inline const char *log_stamp(void) {
 } while (0)
 
 /* Verbose gate for recurring/periodic diagnostics (e.g. the per-render heartbeat).
-   Off by default so a shipped release produces no steady-state log spam. Set the
-   MAESTRO_PROXY_DEBUG environment variable (any value) to re-enable. Read once at
-   startup in main() — never touched from the realtime audio render thread. */
+   On when the MAESTRO_PROXY_DEBUG environment variable is set (any value), off
+   otherwise. The launch plist (com.danielraffel.Maestro.volumeproxy.plist) sets
+   it to 1 for the beta, so beta helpers log these lines; drop it there for a
+   release. Read once at startup in main(); never touched from the real-time
+   audio render thread. */
 static int sVerbose = 0;
 
 /* Latency tuning: the IO buffer this process asks of the USB device, and the

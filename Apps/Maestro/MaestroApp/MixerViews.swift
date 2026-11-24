@@ -1069,13 +1069,14 @@ struct MixerView: View {
     private func syncMixerToHardware(recalling: Bool = false) async {
         guard editor.canEdit(appState) else { return }
         // Over USB the connection's restore writes each mixer in full, in an
-        // order that keeps it off every output until it is done, and the page never re-sends a mixer it shows (opening the page,
-        // Mix 1/2, a card layout change): the restore has written it in full
-        // on this connection, or will, and a copy from here could unmute strips
-        // on a mixer that still feeds an output (an older helper, a restore
-        // that has not reached it yet). 0.9.25 sent 64 strip writes every time
-        // the page opened. Only a reset sends the strips again, once the
-        // restore has written this mixer. Edits are written as they are made.
+        // order that keeps it off every output until it is done. The page
+        // never re-sends a mixer it shows (opening the page, Mix 1/2, a card
+        // layout change): the restore has written it in full on this
+        // connection, or will, and a copy from here could unmute strips on a
+        // mixer that still feeds an output (an older helper, a restore that
+        // has not reached it yet). 0.9.25 sent 64 strip writes every time the
+        // page opened. Only a reset sends the strips again, once the restore
+        // has written this mixer. Edits are written as they are made.
         guard appState.mixerPageMayWriteStrips(mixer: selectedMixer, recalling: recalling) else { return }
         // Two-unit lifecycle recall belongs to AppState even with this page closed.
         if recalling && appState.usesTwoUnitReplay { return }

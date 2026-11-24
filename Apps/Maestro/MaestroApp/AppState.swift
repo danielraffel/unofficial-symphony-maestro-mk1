@@ -171,6 +171,14 @@ final class AppState: @unchecked Sendable {
     /// The connection generation whose input routing and device settings the
     /// restore has sent (a retry of owed mixers or routes leaves them alone).
     @ObservationIgnored var usbSettingsRestored: (generation: UUID, helperEpoch: UInt64)?
+    /// When the last USB restore began, and for which connection generation.
+    /// A loss that ends after a restore for the same generation began is
+    /// that restore's to put right, not a second one's
+    /// (`usbRestoreCoversLoss`).
+    @ObservationIgnored var usbRestoreStarted: (generation: UUID, at: Date)?
+    /// How many USB restores have begun (past their guards), for the log and
+    /// the tests.
+    @ObservationIgnored var usbRestoreRuns = 0
     /// ThunderBridge: the app asked for the restore (the connection's ledger,
     /// `ThunderboltDeviceConnection.cardMixers`, says by itself when one is
     /// owed), whether one is running, and when to try next.
@@ -238,6 +246,9 @@ final class AppState: @unchecked Sendable {
         unitAIdentityTask = nil
         unitAGeneration = UUID()
         usbIdentityRestoreGeneration = nil
+        // A loss seen on the connection that is going away is not this new
+        // connection's: its discovery restores the unit once.
+        usbLoss = USBLossDetector()
         // Keep the discovery handle until its task has been cancelled and
         // awaited by the next owner. This prevents a replacement discovery
         // from running concurrently against a retired connection.
@@ -4604,9 +4615,25 @@ final class AppState: @unchecked Sendable {
     @MainActor
     func noteUSBReadSucceeded() {
         usbLastReadOutcomeAt = Date()
+        let lossBegan = usbLoss.failingSince
         guard usbLoss.succeeded() else { return }
         guard let xpcDev = device as? XPCDeviceConnection else { return }
-        recoverUSBUnit(xpcDev)
+        recoverUSBUnit(xpcDev, lossBegan: lossBegan)
+    }
+
+    /// Whether a USB restore for the current connection generation began
+    /// after a loss that began at `lossBegan`: that restore (the connect
+    /// restore of the replugged unit, normally) is the one for this return,
+    /// and a recovery must not run a second. On 1140 a replug with Maestro
+    /// open ran two full restores four seconds apart: the removal started a
+    /// new generation whose discovery restored the unit, and the meter loop's
+    /// loss (the helper had answered "no unit" while it was unplugged) ended
+    /// with the first good read after it and restored it again.
+    @MainActor
+    func usbRestoreCoversLoss(since lossBegan: Date?) -> Bool {
+        guard let started = usbRestoreStarted, started.generation == unitAGeneration else { return false }
+        guard let lossBegan else { return true }
+        return started.at >= lossBegan
     }
 
     /// A USB read failed.
@@ -4622,9 +4649,11 @@ final class AppState: @unchecked Sendable {
 
     /// The 1 Hz USB tick, for the life of the meter polling. It reads the unit
     /// once (the heartbeat) only when no meter read has in the last interval,
-    /// so with no meter on screen the unit is asked one question a second,
     /// and runs the owed restore and the volume keys' output, which used to
-    /// run in every meter cycle and stopped with the meters.
+    /// run in every meter cycle and stopped with the meters. With no meter on
+    /// screen the unit is asked this one question a second plus the front
+    /// panel read (`startFrontPanelSync`: every 300 ms while Maestro's window
+    /// is visible, once a second otherwise).
     @MainActor
     func startUSBHealthTick() {
         usbHealthTask?.cancel()
@@ -4657,8 +4686,9 @@ final class AppState: @unchecked Sendable {
         }
         guard device === xpcDev else { return }
         // A USB restore that did not finish, or a helper that restarted
-        // under the app, is put right here.
-        serviceUSBRestore(xpcDev)
+        // under the app, is put right here; not while reads fail, when a
+        // try would only fail and lengthen the retry pause.
+        if !usbLoss.isFailing { serviceUSBRestore(xpcDev) }
         // The volume keys' output, where the helper now answering has not
         // been told it.
         await serviceKeyboardVolumeOutput()
@@ -4669,7 +4699,13 @@ final class AppState: @unchecked Sendable {
     /// back, always, as the original restored a returning unit's settings
     /// without asking (SymphonyIO::ApplySettingsToHardware).
     @MainActor
-    func recoverUSBUnit(_ xpcDev: XPCDeviceConnection) {
+    func recoverUSBUnit(_ xpcDev: XPCDeviceConnection, lossBegan: Date? = nil) {
+        // The restore of this connection that began after the loss began is
+        // the one for it (`usbRestoreCoversLoss`).
+        if usbRestoreCoversLoss(since: lossBegan ?? .distantFuture) {
+            print("[Maestro] USB unit answers again; its restore for this connection already ran, not run twice")
+            return
+        }
         // No mixer is routed until the restore has written them again.
         usbMixersWritten = nil
         usbSettingsRestored = nil
@@ -4706,6 +4742,9 @@ final class AppState: @unchecked Sendable {
             if wait > 0 { try? await Task.sleep(for: .milliseconds(Int(wait * 1000))) }
             guard self.device === xpcDev, self.unitAGeneration == generation, !Task.isCancelled,
                   self.mixerPreferences.isWritable else { return }
+            // A restore that began while this one waited (discovery's) is the
+            // one for this return.
+            if self.usbRestoreCoversLoss(since: now) { return }
             await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer)
         }
         deviceRecoveryCount += 1
@@ -4725,6 +4764,15 @@ final class AppState: @unchecked Sendable {
     /// daemon polled continuously; this is deliberately gentle, and still fast
     /// enough that a turning encoder looks live.
     static let frontPanelSyncInterval: Duration = .milliseconds(300)
+    /// The USB front panel read while no Maestro window is visible: nobody
+    /// is watching the levels move, so once a second is enough to keep them
+    /// current, and the unit is asked a third as often.
+    static let frontPanelSyncHiddenInterval: Duration = .seconds(1)
+
+    /// How long the USB front panel sync waits between reads.
+    nonisolated static func usbFrontPanelSyncInterval(windowVisible: Bool) -> Duration {
+        windowVisible ? frontPanelSyncInterval : frontPanelSyncHiddenInterval
+    }
 
     /// Keep the on-screen speaker and headphone levels and mutes in step with
     /// the unit's front panel encoder (USB).
@@ -4767,7 +4815,7 @@ final class AppState: @unchecked Sendable {
                 if let usb = device as? XPCDeviceConnection,
                    Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date()) == 0 {
                     update = await usb.readParameterUpdates()
-                    interval = Self.frontPanelSyncInterval
+                    interval = Self.usbFrontPanelSyncInterval(windowVisible: Self.mainWindowIsVisible())
                 } else if let thunderbolt = device as? ThunderboltDeviceConnection,
                           self.thunderboltHardwareResponsive, self.connectedUnit == nil {
                     // Same question, asked through the driver. A converter has

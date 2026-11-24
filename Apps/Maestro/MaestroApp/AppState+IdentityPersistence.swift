@@ -201,6 +201,8 @@ extension AppState {
             if elision { print("[Maestro] USB restore: \(skipped) writes skipped, the unit already held them") }
         }
         guard isCurrent() else { return }
+        usbRestoreStarted = (generation, Date())
+        usbRestoreRuns += 1
         // Anything that becomes owed from here on (an Output Routing edit, a
         // helper restart) is for the next run, not cleared by this one.
         usbRestoreOwed = false

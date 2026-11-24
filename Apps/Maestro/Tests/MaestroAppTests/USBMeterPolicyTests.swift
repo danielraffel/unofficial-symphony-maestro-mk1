@@ -216,6 +216,68 @@ struct USBMeterPollingTests {
         #expect(state.deviceRecoveryCount == 1)
     }
 
+    @Test("a replug with Maestro open: the loss ends after this connection's restore began, and the unit is restored once")
+    func replugRestoresOnce() async throws {
+        let (state, usb, unit) = try makeState(visible: false, area: .input)
+        // Unplugged: the helper has no unit open.
+        unit.status = XPCDeviceConnection.helperStatusUnitNotOpen
+        await state.usbHealthTick()
+        #expect(state.usbLoss.lost)
+        // Plugged back in: the connect restore runs for this connection...
+        unit.status = 0
+        await state.restoreUSBUnit(usb, helperMixer: 0)
+        #expect(state.usbRestoreRuns == 1)
+        // ...and the meter loop's first good read after it ends the loss.
+        state.usbLastReadOutcomeAt = .distantPast
+        await state.usbHealthTick()
+        await state.usbRestoreServiceTask?.value
+        await state.usbRestoreTask?.value
+        #expect(!state.usbLoss.lost)
+        #expect(state.deviceRecoveryCount == 0)
+        #expect(state.usbRestoreRuns == 1, "not a second restore for the same connection")
+    }
+
+    @Test("the removal of the unit forgets the loss the old connection saw")
+    func removalForgetsLoss() async throws {
+        let (state, _, unit) = try makeState(visible: false, area: .input)
+        unit.status = XPCDeviceConnection.helperStatusUnitNotOpen
+        await state.usbHealthTick()
+        #expect(state.usbLoss.lost)
+        state.invalidateUnitAIdentity()
+        #expect(!state.usbLoss.lost && !state.usbLoss.isFailing)
+    }
+
+    @Test("a restore of an earlier connection does not cover a loss on this one")
+    func earlierRestoreDoesNotCover() async throws {
+        let (state, _, _) = try makeState(visible: false, area: .input)
+        state.usbRestoreStarted = (UUID(), Date())
+        #expect(!state.usbRestoreCoversLoss(since: Date().addingTimeInterval(-10)))
+        // This connection's, but begun before the loss: the unit came back
+        // from a power cycle after it, and is restored.
+        state.usbRestoreStarted = (state.unitAGeneration, Date().addingTimeInterval(-10))
+        #expect(!state.usbRestoreCoversLoss(since: Date()))
+        state.usbRestoreStarted = (state.unitAGeneration, Date())
+        #expect(state.usbRestoreCoversLoss(since: Date().addingTimeInterval(-1)))
+    }
+
+    @Test("while reads fail the tick does not retry an owed restore")
+    func noRetryWhileFailing() async throws {
+        let (state, _, unit) = try makeState(visible: false, area: .input)
+        state.usbRestoreOwed = true
+        state.usbRestoreRetryAfter = .distantPast
+        unit.status = -1
+        await state.usbHealthTick()
+        #expect(state.usbLoss.isFailing)
+        #expect(state.usbRestoreServiceTask == nil)
+        #expect(state.usbRestoreRetryAttempts == 0)
+    }
+
+    @Test("the front panel is read every 300 ms with Maestro's window visible, once a second without")
+    func frontPanelInterval() {
+        #expect(AppState.usbFrontPanelSyncInterval(windowVisible: true) == .milliseconds(300))
+        #expect(AppState.usbFrontPanelSyncInterval(windowVisible: false) == .seconds(1))
+    }
+
     @Test("over USB the Mixer page never re-sends a mixer it shows, and resends on reset only once it is written")
     func mixerPageWrites() throws {
         let (state, _, _) = try makeState(visible: true, area: .mixer)
