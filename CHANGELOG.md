@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.26 (beta)
+
+### Fixed
+
+- **Maestro USB audio no longer cuts out while Maestro is open.** Maestro now reads the Symphony's meters only while a meter is on screen, and no longer rewrites the mixer when you open the Mixer page or after a single failed read. The USB helper no longer writes its log from the audio thread, which made macOS skip a cycle of Maestro USB audio now and then, with Maestro open or closed.
+- **Over USB, audio no longer stops for a moment when you plug the Symphony in with Maestro open.** Maestro no longer sends routes and the optical format that the unit already has while audio is playing.
+
 ## 0.9.25 (beta)
 
 This beta puts the Mac's channels on ThunderBridge and the Symphony 64 PCIe card in Apogee's order, the same order Maestro USB and Apogee's own software use: every analog channel first, then the digital ones.
