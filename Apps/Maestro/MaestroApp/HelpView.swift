@@ -382,7 +382,7 @@ extension HelpSection {
             ]),
             HelpItem(title: "Why do some channels say N.A., ADAT, SMUX or SPDIF Opt?", blocks: [
                 .text("Channel names follow each card's optical format and the sample rate, as in Apogee's original Maestro. Optical channels are **ADAT** up to 48 kHz, **SMUX** at 88.2 and 96 kHz, and **SPDIF Opt** when the card's optical format is S/PDIF. **N.A.** means the channel carries nothing at the current setting, for example optical channels at 176.4 or 192 kHz. A pair that the S/PDIF coax input replaces is named **SPDIF Cx**."),
-                .text("N.A. channels stay in their place on every page and are faded. Over ThunderBridge, Audio MIDI Setup and your DAW see the same names. Each Mac output is named after the hardware output in the same position, and keeps that name when you re-route it."),
+                .text("N.A. channels stay in their place on every page and are faded. Over ThunderBridge, Audio MIDI Setup and your DAW see the same names. Each Mac output is named after the hardware output at the same place in Apogee's order (every analog output of both cards first, then the digital ones), and keeps that name when you re-route it."),
             ]),
             HelpItem(title: "How do I use the AES port on an 8x8 card?", blocks: [
                 .text("Press the card's **DIG I/O** button so it selects **AES**, then turn the Symphony off and on again. Its digital channels then read **AES** in Maestro."),
@@ -462,6 +462,11 @@ extension HelpSection {
             HelpItem(title: "What do Reset Routing and Identify do?", blocks: [
                 .text("**Reset Routing** is on the Input Routing and Output Routing pages. It puts that page back to its default: on Input Routing each software input records the matching hardware input, and on Output Routing each software output goes to the matching hardware output. Maestro asks before it changes anything. With a Symphony I/O, only the page you are on is reset. With converters only, it resets both pages."),
                 .text("**Identify** is on the Output Routing page. It lights every light on the Symphony I/O's front panel so you can tell which unit is which, for example in a rack. Click it again to turn the lights off; quitting Maestro also turns them off. With two Symphony I/Os at 64 channels there is one button for each unit, **Identify A** and **Identify B**."),
+            ]),
+            HelpItem(title: "In what order are the Mac's channels?", blocks: [
+                .text("In Apogee's order, over USB, ThunderBridge and PCIe alike: every analog input of the card in slot 1, then of the card in slot 2, then slot 1's digital inputs (AES, then optical), then slot 2's. The outputs follow the same rule. With an 8x8 with ADAT in slot 1 and an A16 in slot 2, Mac inputs 1-24 are Line 1-24 and 25-32 are ADAT 1-8."),
+                .text("ThunderBridge and PCIe drivers before build 150 laid the channels out card by card instead (all of slot 1, then slot 2). The first time Maestro finds the new driver on a setup whose channels moved, it puts Input Routing and Output Routing back to their defaults once and says so on those pages. Some Mac outputs then play on different hardware outputs, so check your levels and speakers before playing loud material."),
+                .text("Routing presets saved before then are marked **(old channel order)** and cannot be applied; delete them, or set the routing again and save it under the same name. A setup file saved before then restores everything except its routing, and says so."),
             ]),
         ])
     }

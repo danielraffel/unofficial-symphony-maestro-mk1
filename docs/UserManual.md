@@ -46,9 +46,11 @@ N.A. channels stay in place but are faded, as in Apogee's original Maestro.
 
 Every name starts with the unit's peripheral prefix letter, set in Device Settings › Naming ("A Line 1"). The letter is stored in the Symphony.
 
-Over ThunderBridge, Mac inputs follow the cards in slot order by default: the inputs of the card in slot 1 first, then those of slot 2. Slot 2 starts at Mac input 17, or at 13 behind a 2x6 card, which has 12 inputs. Each Mac input is named after what feeds it, so a change on Input Routing renames it.
+Over ThunderBridge and PCIe, as over USB, Mac channels are in Apogee's order by default: every analog input of the card in slot 1, then of the card in slot 2, then slot 1's digital inputs (AES, then optical), then slot 2's. With an 8x8 with ADAT in slot 1 and an A16 in slot 2, Mac inputs 1-24 are Line 1-24 and 25-32 are ADAT 1-8. Each Mac input is named after what feeds it, so a change on Input Routing renames it.
 
-Over ThunderBridge, Mac outputs 1-16 play through the card in slot 1 and 17-32 through the card in slot 2, in order, unless you route them elsewhere. Mac outputs keep fixed names based on their position: each is named after the output at the same position ("A Line 1", "A ADAT 9"), or "N.A." where the slot is empty, and the name does not change when you re-route it. This differs from the original, which renamed each output after the hardware it reached: an output that fed the mixer rather than a hardware output read "N.A.".
+Mac outputs follow the same order: every analog output of both cards first, then the digital ones, unless you route them elsewhere. Mac outputs keep fixed names based on their position in that order: each is named after the output at the same place ("A Line 1", "A ADAT 1"), or "N.A." where nothing is there, and the name does not change when you re-route it. This differs from the original, which renamed each output after the hardware it reached: an output that fed the mixer rather than a hardware output read "N.A.".
+
+ThunderBridge drivers before build 150 (Maestro 0.9.24 and earlier) laid the channels out card by card: all of slot 1's channels, then slot 2's, with Mac outputs 17-32 on slot 2. The first time Maestro finds the newer driver on a setup whose channels moved, it puts Input Routing and Output Routing back to their defaults once and shows a notice on those pages. Routing presets saved before then are marked "(old channel order)" and cannot be applied: delete them, or set the routing again and save them again. Setup files saved before then restore everything except their routing.
 
 The optical format, the S/PDIF settings, the prefix letter and your routing choices are kept when the Symphony is turned off and on.
 

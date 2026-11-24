@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.25 (beta)
+
+This beta puts the Mac's channels on ThunderBridge and the Symphony 64 PCIe card in Apogee's order, the same order Maestro USB and Apogee's own software use: every analog channel first, then the digital ones.
+
+### Changes that may affect your setup
+
+- **On ThunderBridge and PCIe, Mac channels are now in Apogee's order: all analog inputs and outputs first, then digital.** Before, they went card by card (all of slot 1, then slot 2). With two cards, DAW channel numbers past the first card's analog channels can move. For example, with an 8x8 with ADAT in slot 1 and an A16 in slot 2, Mac inputs 1-24 are now Line 1-24 and 25-32 ADAT 1-8 (before, 9-16 were ADAT 1-8 and 17-32 the A16). Check the inputs and outputs in your DAW sessions. A single card in slot 1, or two cards without digital channels (two 16x16s), does not change.
+- **Some Mac outputs now play on different hardware outputs.** For example, with two 8x8s, Mac outputs 9-16 now play on slot 2's Line 1-8 instead of slot 1's ADAT outputs, and with slot 1 empty, Mac outputs 1-16 now play on the card in slot 2. Check your levels and speakers before playing loud material.
+- **Routing is reset to the defaults once.** The first time Maestro finds the new driver on a setup whose channels moved, Input Routing and Output Routing go back to their defaults (the mixers are not changed) and a notice on those pages says why. Set your routes again if you had changed them.
+- **Routing presets saved before this update can't be applied** on a setup whose channels moved. They stay in the list marked "(old channel order)": delete them, or set the routing again and save them under the same name.
+- **Setup files saved before this update restore without their routing** on a setup whose channels moved. Everything else in them is restored, and Maestro says the routing was skipped.
+- **The update replaces the ThunderBridge driver (0.11.19, build 150).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running. Until then the old driver keeps the old order, and Maestro keeps using it.
+
 ## 0.9.24 (beta)
 
 This beta makes the Mixer on ThunderBridge and the Symphony 64 PCIe card sound as it did in Apogee's software, fixes the meters, cuts Maestro USB's latency from about 39 ms to about 13 ms, and adds Use Loop Sync with one Symphony I/O. It contains everything in 0.9.21; 0.9.22 and 0.9.23 were never released, and their changes are listed here.

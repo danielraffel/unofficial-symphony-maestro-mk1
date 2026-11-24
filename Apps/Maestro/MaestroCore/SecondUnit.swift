@@ -172,7 +172,8 @@ public enum SecondUnitHelp {
             + "card, with the first unit's outputs and then the second unit's, each block headed by its unit, "
             + "and any software output pair or mixer can go to any output on either unit (scroll sideways to "
             + "see them all). Its presets and Reset Routing cover both units. Software 33–64 play on the "
-            + "second unit until you route them elsewhere.",
+            + "second unit, in the same order as the first unit's (its analog outputs first, then its "
+            + "digital ones), until you route them elsewhere.",
         "The clock master's source cannot be Loop Sync. Configured Role and Clock Status show the "
             + "selected topology and measured lock separately.",
     ]
