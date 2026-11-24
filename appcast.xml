@@ -7,6 +7,37 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.26</title>
+      <pubDate>Tue, 24 Nov 2026 20:25:14 GMT</pubDate>
+      <sparkle:version>0.9.26</sparkle:version>
+      <sparkle:shortVersionString>0.9.26</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.26</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta fixes Maestro USB audio cutting out and dropping when the Symphony connects, and makes the Software Return and Master faders always move together.
+
+### Changes that may affect your setup
+
+- **The update replaces the ThunderBridge driver (0.11.20, build 151).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
+
+### Fixed
+
+- **With no Symphony connected, Reset Routing, Identify, routing grids and routing presets are greyed out, Device Settings no longer looks stuck loading, and the clock status shows a dash instead of the last "Ready".** Before, Reset Routing could be pressed and reported "32 of 32 routes failed to write", and a failed write showed a raw error.
+- **On ThunderBridge and PCIe, the outputs stay silent when the driver starts until macOS has put back your saved sample rate, for three seconds at most.** The driver starts the Symphony at 44.1 kHz and macOS sets your rate a moment later; before, the outputs could play during that moment. The front panel still shows 44.1 kHz briefly. If an app is already playing to the Symphony when the driver starts, it can still be heard at 44.1 kHz for that moment.
+- **"Saving diagnostics…" now appears as soon as you press Stop Diagnostics.** It used to show up a few seconds later.
+- **Maestro USB audio no longer cuts out while Maestro is open.** Maestro now reads the Symphony's meters only while a meter is on screen, and no longer rewrites the mixer when you open the Mixer page or after a single failed read. The USB helper no longer writes its log from the audio thread, which made macOS skip a cycle of Maestro USB audio now and then, with Maestro open or closed.
+- **Over USB, audio no longer stops for a moment when you plug the Symphony in with Maestro open.** Maestro no longer sends routes and the optical format that the unit already has while audio is playing.
+- **Over USB, Maestro no longer re-sends your settings when you unplug and replug the Symphony.** It checks what the unit still holds and sends only what it lost, so a Symphony that was switched off and on still gets its settings back. Where the unit does not answer Maestro's check, Maestro sends the setting anyway. If you route a mixer to an output, that output still goes quiet for a few seconds after a replug while Maestro checks the mixer, and then comes back. Maestro also connects to the Symphony once when it appears, not twice.
+- **Over USB, a reset from the Symphony's front panel now resets Maestro too.** When you reset the Symphony from its front panel as it starts, Maestro puts its own settings for that unit back to the defaults, as Apogee's software did, and sends them to the unit. Reset All But Calibration keeps your reference levels and trims. Maestro never turns the speakers or headphones up after a reset, and it leaves their mute and dim as they were. It turns them down before it sends anything else, and only once for each reset. An output set to -10 dBV stays at -10 dBV, and no output reference level or trim is changed in the louder direction. Maestro acts only when the unit reports the reset twice, and only after it has read the installed cards. After such a reset, that unit's saved ThunderBridge routes no longer send its mixers to any output either.
+- **Maestro USB no longer drops for a moment about ten seconds after the Symphony connects.**
+- **On ThunderBridge and PCIe, Maestro restores the mixers and routing once when it connects, not twice, and opening the Mixer page no longer re-sends every strip.**
+- **The Software Return and Master faders now always stay together.** Each of these is one stereo fader, but pulling down one side and then Option-clicking could swap or split left and right. Left and right are now a single level, so any move, reset, double-click, typed value or group drag changes both, and a saved setting that was already split loads with both sides equal.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.26/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="dcmLyCOND4jGSRx8AuXxw9C70E4WvZodCfJO4utxgjxLM8omSyqKdvBrRG+RQqbMsXmNgIQMQVTbDZ15ZBZtDA==" length="6352155" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.25</title>
       <pubDate>Tue, 24 Nov 2026 03:53:31 GMT</pubDate>
       <sparkle:version>0.9.25</sparkle:version>
@@ -1511,6 +1542,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: vKU3aB8s4Zwp/n9zmE1jm3LQ+jWvfdGLnCAMaN4KIcrs0RLq5S11m4IcIGKyVQhrk0UD2cCnJPoa+b5U9goxAQ==
-length: 163899
+edSignature: OESUnN8gP3wKSuFxQ5KpIcRoXHfBE9emOZGpoARe1Y1aRnjsa86zbZq25tEbA1Og7mbNZbeQB2GFtmQDAcxFBA==
+length: 168851
 -->
