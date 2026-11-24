@@ -410,7 +410,9 @@ final class AppState: @unchecked Sendable {
     /// Current speaker level (shared between monitor panel and volume key handler).
     var unitBMonitor = UnitBMonitorState()
     var unitBDeviceInfo = SymphonyDeviceInfo()
-    var speakerLevel: Double = -20
+    var speakerLevel: Double = -20 {
+        didSet { if speakerLevel != oldValue { noteMonitorLevel(.speakers, dB: speakerLevel) } }
+    }
     /// Current speaker mute state (shared between monitor panel and volume key handler).
     var speakerMuted: Bool = false
     /// Current Analog Out Format. Line mode disables the speaker monitor
@@ -419,11 +421,21 @@ final class AppState: @unchecked Sendable {
     /// before build 142 moves Headphone 1 by itself in Line mode).
     var speakerOutputMode: UInt32 = SpeakerOutputLogic.stereo
     /// HP1 level (shared between output tab and monitor panel).
-    var hp1Level: Double = -20
+    var hp1Level: Double = -20 {
+        didSet { if hp1Level != oldValue { noteMonitorLevel(.headphone1, dB: hp1Level) } }
+    }
     /// HP1 mute (shared between output tab and monitor panel).
     var hp1Muted: Bool = false
     /// HP2 level (shared between output tab and monitor panel).
-    var hp2Level: Double = -20
+    var hp2Level: Double = -20 {
+        didSet { if hp2Level != oldValue { noteMonitorLevel(.headphone2, dB: hp2Level) } }
+    }
+    /// A4: the connection, driver link state and outputs whose levels the
+    /// connect step has read from the unit. Only then is a level change saved
+    /// as the output's level (`noteMonitorLevel`); before it, and after a
+    /// link recovery until the step has run again, what the app shows may be
+    /// a default or the unit's start-up level, not one the user chose.
+    @ObservationIgnored var monitorLevelsSettled: MonitorLevelsSettled?
     /// HP2 mute (shared between output tab and monitor panel).
     var hp2Muted: Bool = false
     /// The setup file currently associated with the document window.
@@ -809,6 +821,12 @@ final class AppState: @unchecked Sendable {
                                 await self.syncInputRoutingToHardware()
                                 await self.syncOutputRoutingToHardware()
                             }
+                            // A4: the unit may have come back at its own
+                            // start-up levels (a power cycle): the quieter of
+                            // those and the saved ones. The device settings
+                            // are not replayed on a recovery, so this is the
+                            // only place it runs then.
+                            if self.device === tb { await self.applyMonitorLevelsAtConnect(tb) }
                         }
                         self.thunderboltSeenRecoveryCount = count
                     }
@@ -3334,7 +3352,13 @@ final class AppState: @unchecked Sendable {
             speakerOutputMode = mode
         }
         guard unitAIdentity != nil else { return }
-        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
+        if usesTwoUnitReplay {
+            // A4: unit A's levels at connect also with two units (the step
+            // reads the unit's own speaker mode). Unit B keeps its own.
+            if let tb = device as? ThunderboltDeviceConnection { await applyMonitorLevelsAtConnect(tb) }
+            twoUnitReplayNeeded = true
+            return
+        }
         guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
         // These are Symphony I/O settings. A converter does not have them, and
         // what its firmware does with Symphony commands is unknown, so nothing
@@ -3358,6 +3382,10 @@ final class AppState: @unchecked Sendable {
             }
             replay = await tb.reapplyStoredSettings()
             await replaySavedBoardClock(tb)
+            guard self.device === tb else { return }
+            // A4: after the monitor mode, as the original wrote the levels
+            // after it (SymphonyIO.cpp:4669-4670).
+            await applyMonitorLevelsAtConnect(tb)
             guard self.device === tb else { return }
             // B7: one unit's Loop Sync output, which the driver starts off
             // each session.
