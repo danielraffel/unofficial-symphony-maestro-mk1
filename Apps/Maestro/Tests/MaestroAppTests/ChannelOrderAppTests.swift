@@ -43,6 +43,36 @@ struct ChannelOrderAppTests {
         return (state, tb, driver)
     }
 
+    @Test("Unit B set up (its order from not known to known) owes nothing of unit A; unit A changing does")
+    func unitBKnownDoesNotReowe() async {
+        let restore = restoringDefaults(); defer { restore() }
+        UserDefaults.standard.set(true, forKey: ChannelOrderRoutingReset.doneKey)
+        let (state, tb, driver) = makeState(slot1: .optical, slot2: .analogAD16, build: 150)
+        let unitA = ThunderboltAppliedChannelOrder.Unit(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
+        driver.channelOrder = ThunderboltAppliedChannelOrder(unitA: unitA)
+        await state.refreshThunderboltChannelOrder(tb)
+        #expect(state.thunderboltUnitOrder(unit: .a) != nil)
+        state.cardOutputTableReplayNeeded = false
+        state.inputRoutingReplayNeeded = false
+        let owed = tb.cardMixers.owed
+        driver.channelOrder = ThunderboltAppliedChannelOrder(
+            generation: 1, unitA: unitA,
+            unitB: .init(order: .analogFirst, slot1: .analogADDA16, slot2: .analogADDA16))
+        await state.refreshThunderboltChannelOrder(tb)
+        #expect(state.thunderboltUnitOrder(unit: .b) != nil, "unit B's order is known now")
+        #expect(tb.cardMixers.owed == owed)
+        #expect(!state.cardOutputTableReplayNeeded)
+        #expect(!state.inputRoutingReplayNeeded)
+        // The positive control: unit A, already known, changes order.
+        driver.channelOrder = ThunderboltAppliedChannelOrder(
+            generation: 2, unitA: .init(order: .cardByCard, slot1: .optical, slot2: .analogAD16),
+            unitB: .init(order: .analogFirst, slot1: .analogADDA16, slot2: .analogADDA16))
+        await state.refreshThunderboltChannelOrder(tb)
+        #expect(tb.cardMixers.owed == owed + 1)
+        #expect(state.cardOutputTableReplayNeeded)
+        #expect(state.inputRoutingReplayNeeded)
+    }
+
     @Test("AppState follows the driver's order: card by card under 149, what 150 applied, nothing written until known")
     func gate() async {
         let restore = restoringDefaults(); defer { restore() }

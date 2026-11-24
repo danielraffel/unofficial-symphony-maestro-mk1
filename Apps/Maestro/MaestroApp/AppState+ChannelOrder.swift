@@ -83,10 +83,18 @@ extension AppState {
             if before != after {
                 print("[Maestro] ThunderBridge channel order: A \(Self.describe(before.0)) → \(Self.describe(after.0)), "
                     + "B \(Self.describe(before.1)) → \(Self.describe(after.1))")
-                thunderboltChannelOrderDidChange(tb, wasKnown: before.0 != nil)
+                thunderboltChannelOrderDidChange(tb, wasKnown: Self.knownUnitMoved(before: before, after: after))
             }
         }
         runChannelOrderResetIfNeeded()
+    }
+
+    /// Whether a unit whose order was already known now has another order
+    /// or other types. A unit seen for the first time (unit B set up, from
+    /// nil) moves nothing that was written: its writes waited for it.
+    static func knownUnitMoved(before: (ThunderboltUnitChannelOrder?, ThunderboltUnitChannelOrder?),
+                               after: (ThunderboltUnitChannelOrder?, ThunderboltUnitChannelOrder?)) -> Bool {
+        (before.0 != nil && before.0 != after.0) || (before.1 != nil && before.1 != after.1)
     }
 
     private static func describe(_ order: ThunderboltUnitChannelOrder?) -> String {
@@ -117,7 +125,7 @@ extension AppState {
         if before != after {
             print("[Maestro] ThunderBridge channel order after the driver build was read: A \(Self.describe(before.0)) → "
                 + "\(Self.describe(after.0)), B \(Self.describe(before.1)) → \(Self.describe(after.1))")
-            thunderboltChannelOrderDidChange(tb, wasKnown: before.0 != nil)
+            thunderboltChannelOrderDidChange(tb, wasKnown: Self.knownUnitMoved(before: before, after: after))
         }
         runChannelOrderResetIfNeeded()
     }
