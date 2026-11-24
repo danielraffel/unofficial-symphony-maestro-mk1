@@ -13,11 +13,25 @@ struct MixerEditorState {
     let loadedReturn: Bool
     var channels: [MixerChannelState]
     var masterLevel: Double
-    var masterLeftLevel: Double
-    var masterRightLevel: Double
+    /// Master and Software Return are one stereo fader: the two handles are
+    /// one level, so left and right cannot differ whatever path moves them.
+    var masterLeftLevel: Double {
+        get { masterLevel }
+        set { masterLevel = newValue }
+    }
+    var masterRightLevel: Double {
+        get { masterLevel }
+        set { masterLevel = newValue }
+    }
     var swReturnChannel: MixerChannelState
-    var swReturnLeftLevel: Double
-    var swReturnRightLevel: Double
+    var swReturnLeftLevel: Double {
+        get { swReturnChannel.level }
+        set { swReturnChannel.level = newValue }
+    }
+    var swReturnRightLevel: Double {
+        get { swReturnChannel.level }
+        set { swReturnChannel.level = newValue }
+    }
     var softwareReturnSource: UInt32
 
     init(appState: AppState, selectedMixer: Int) {
@@ -35,15 +49,11 @@ struct MixerEditorState {
         softwareReturnSource = TwoUnitMixer.shownSoftwareReturnSource(
             snapshot.softwareReturnSource, pairCount: appState.softwareReturnPairCount)
         masterLevel = snapshot.masterLevel
-        masterLeftLevel = snapshot.masterLevel
-        masterRightLevel = snapshot.masterLevel
         let swLevel = appState.mixerPreferences.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") as? Double
             ?? snapshot.swReturnChannel.level
         var swReturn = snapshot.swReturnChannel
         swReturn.level = swLevel
         swReturnChannel = swReturn
-        swReturnLeftLevel = swLevel
-        swReturnRightLevel = swLevel
     }
 
     /// Also false while hardware writes are suspended (sleep, wake validation):
