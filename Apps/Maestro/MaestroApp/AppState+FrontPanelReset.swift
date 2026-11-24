@@ -61,6 +61,7 @@ struct BoardReadOnConnection {
 
 extension AppState {
     /// Remember that `slot` was read as `card` on `connection` under `generation`.
+    @MainActor
     func noteBoardRead(slot: Int, card: IOCardType, connection: any DeviceConnection, generation: UUID) {
         boardReadsOnConnection[slot] = BoardReadOnConnection(connection: connection, generation: generation, card: card)
     }
@@ -68,16 +69,41 @@ extension AppState {
     /// Over USB a slot's 0xA1 reply of 0 is not a reading on its own (an
     /// unanswered read returns the shared buffer's residue, and the source
     /// stays `.unknown`). Asked again with a decoy in between
-    /// (`XPCDeviceConnection.optionBoardReadsEmpty`): when the unit is seen
-    /// to answer 0, the slot is recorded as read empty on this connection.
+    /// (`XPCDeviceConnection.optionBoardReadsEmpty`), and asked twice,
+    /// `usbResetConfirmSeparation` apart (as 0xDB is): a unit still starting
+    /// can answer 0 for a slot whose card is not enumerated yet. Only when
+    /// both checks see the unit answer 0 is the slot recorded as read empty
+    /// on this connection.
+    @MainActor
     func noteUSBEmptySlotIfAnswered(slot: Int, connection: any DeviceConnection, generation: UUID) async {
         guard let usb = connection as? XPCDeviceConnection else { return }
-        let empty = await usb.optionBoardReadsEmpty(slot: UInt16(slot))
+        guard await usb.optionBoardReadsEmpty(slot: UInt16(slot)) else { return }
+        do { try await Task.sleep(for: usbResetConfirmSeparation) } catch { return }
         guard device === connection, unitAGeneration == generation, !Task.isCancelled else { return }
-        if empty {
-            noteBoardRead(slot: slot, card: .none, connection: connection, generation: generation)
-            print("[Maestro] Card \(slot + 1): the unit answers empty (read checked)")
+        guard await usb.optionBoardReadsEmpty(slot: UInt16(slot)) else { return }
+        guard device === connection, unitAGeneration == generation, !Task.isCancelled else { return }
+        noteBoardRead(slot: slot, card: .none, connection: connection, generation: generation)
+        print("[Maestro] Card \(slot + 1): the unit answers empty (read checked twice)")
+    }
+
+    /// Just before a front-panel reset is applied on the strength of a slot
+    /// read empty: asks the unit once more. Nil when no slot relies on an
+    /// empty read, or each such slot is seen to answer empty again; otherwise
+    /// why the reset must wait (the empty reading is dropped, so the cards
+    /// are read again before a later restore applies it).
+    @MainActor
+    func frontPanelResetEmptySlotRecheck(connection: XPCDeviceConnection, generation: UUID) async -> String? {
+        for slot in 0..<2 {
+            guard let read = boardReadsOnConnection[slot], read.connection === connection,
+                  read.generation == generation, read.card == IOCardType.none else { continue }
+            let empty = await connection.optionBoardReadsEmpty(slot: UInt16(slot))
+            guard device === connection, unitAGeneration == generation else { return "the connection changed" }
+            if !empty {
+                boardReadsOnConnection[slot] = nil
+                return "card \(slot + 1) not seen empty on the last check"
+            }
         }
+        return nil
     }
 
     /// Why a front-panel reset must not be applied with the cards Maestro
@@ -86,6 +112,7 @@ extension AppState {
     /// read on an earlier connection, or never read, refuses: the defaults
     /// depend on the cards. So does a slot whose shown card differs from
     /// what was read (USB never writes an empty read over a cached card).
+    @MainActor
     func frontPanelResetCardRefusal(connection: any DeviceConnection, generation: UUID) -> String? {
         var refused: [String] = []
         for (slot, shown) in [(0, primaryBoardType), (1, secondaryBoardType)] {

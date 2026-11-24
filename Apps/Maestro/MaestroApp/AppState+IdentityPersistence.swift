@@ -241,8 +241,12 @@ extension AppState {
         // each write, as on a replug.
         var frontPanelReset = reset?.isFrontPanelReset == true
         if frontPanelReset {
-            let refusal = !isHardwareInitialized ? "the unit is not ready yet"
+            var refusal: String? = !isHardwareInitialized ? "the unit is not ready yet"
                 : frontPanelResetCardRefusal(connection: connection, generation: generation)
+            // A slot the reset relies on as empty is asked once more now.
+            if refusal == nil {
+                refusal = await frontPanelResetEmptySlotRecheck(connection: connection, generation: generation)
+            }
             if let refusal {
                 print("[Maestro] USB front panel reset (\(reset!)): not applied in this restore; \(refusal)")
                 frontPanelReset = false

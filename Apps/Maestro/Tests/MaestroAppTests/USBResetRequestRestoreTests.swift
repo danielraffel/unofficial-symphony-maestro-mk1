@@ -39,6 +39,8 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     /// Read opcodes the firmware leaves unanswered: their replies are the
     /// shared buffer's residue.
     var unanswered: Set<UInt8> = []
+    /// Replies for an opcode, one per read, before `held` is used.
+    var scripted: [UInt8: [UInt8]] = [:]
     private var buffer = [UInt8](repeating: 0, count: 64)
     private var otherTransfers = false
     var shadow: USBWriteShadow?
@@ -133,6 +135,11 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
             case 0xB0, 0xB1:
                 return reply(held[Key(request: bRequest, value: wValue, index: wIndex)] ?? [bRequest == 0xB0 ? 48 : 64])
             default:
+                if var queue = scripted[bRequest], !queue.isEmpty {
+                    let next = queue.removeFirst()
+                    scripted[bRequest] = queue
+                    return reply([next])
+                }
                 return reply(held[Key(request: bRequest, value: wValue, index: wIndex)] ?? [])
             }
         }
@@ -886,6 +893,20 @@ struct USBResetRequestRestoreTests {
         replug(state, unit, readingCards: false)
         unit.unanswered = [0xA1]
         try await leaveInBuffer(0, unit)
+        await state.noteUSBEmptySlotIfAnswered(slot: 1, connection: usb, generation: state.unitAGeneration)
+        #expect(state.boardReadsOnConnection[1]?.generation != state.unitAGeneration)
+        #expect(state.frontPanelResetCardRefusal(connection: usb, generation: state.unitAGeneration) != nil)
+    }
+
+    @Test("a slot that answers 0 once and then reports a card is not recorded empty")
+    func emptySlotAnsweredZeroOnceNotRecorded() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-slot-zero-once", identity: 0xF2B0_001D)
+        replug(state, unit, readingCards: false)
+        // The first check (read, decoy, read) sees 0; the second sees the card.
+        unit.scripted[0xA1] = [0, 0]
+        unit.set(0xA1, 0, 1, [IOCardType.analogADDA16.rawValue])
         await state.noteUSBEmptySlotIfAnswered(slot: 1, connection: usb, generation: state.unitAGeneration)
         #expect(state.boardReadsOnConnection[1]?.generation != state.unitAGeneration)
         #expect(state.frontPanelResetCardRefusal(connection: usb, generation: state.unitAGeneration) != nil)
