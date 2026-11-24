@@ -283,6 +283,60 @@ struct CardOutputTableGuardTests {
         #expect(!state.cardOutputTableReplayNeeded)
     }
 
+    /// The saved monitor mode on a ThunderBridge connect: Line (the monitor
+    /// level out of the speaker path) is written after the routing restore;
+    /// any other mode with the rest of the device settings, before it. The
+    /// other settings go first either way.
+    private func connectWithSavedSpeakerMode(_ mode: UInt32) async throws
+        -> (speakerModeAt: Int, dimAt: Int, firstRouting: Int, lastRouting: Int, modeWrites: Int) {
+        let (state, tb, driver) = makeState(identity: 0xF2C0_0109, mixer1ToLine12: true)
+        driver.boards = (layout.slot1.rawValue, layout.slot2.rawValue)
+        let modeAddress = PropertyAddress(selector: .speakerOutputMode)
+        let dim = PropertyAddress(selector: .outputDim)
+        tb.settingsStore.record(.uint32(mode), for: modeAddress)
+        tb.settingsStore.record(.bool(true), for: dim)
+        let modeCommand = try SymphonyIOPropertyMapper.buildWriteRequest(for: modeAddress, value: .uint32(mode)).request
+        let dimCommand = try SymphonyIOPropertyMapper.buildWriteRequest(for: dim, value: .bool(true)).request
+        UserDefaults.standard.set(true, forKey: ThunderboltInputRoutingMigration.doneKey)
+        state.peripheralRoutingCache(direction: "input").save([0: 2])
+        await state.syncSavedStateToHardware()
+        await drain(state)
+        let sent = driver.sent
+        let modeWrites = sent.indices.filter { sent[$0].command == modeCommand && sent[$0].port == 0 }
+        let speakerModeAt = try #require(modeWrites.first)
+        let dimAt = try #require(sent.firstIndex { $0.command == dimCommand && $0.port == 0 })
+        let firstRouting = try #require(firstRoutingWrite(sent))
+        let lastRouting = try #require(sent.indices.last { index in
+            let command = sent[index].command
+            return command == SymphonyIOCommand.audioRouting.rawValue
+                || command == ThunderboltCardRouting.outputRouteCommand
+                || (0xB0...0xB4).contains(command)
+        })
+        #expect(wholeMixerWrites(state, driver) == [1, 1])
+        #expect(violations(state, driver).isEmpty)
+        return (speakerModeAt, dimAt, firstRouting, lastRouting, modeWrites.count)
+    }
+
+    @Test("connect with a saved Line mode: the mode is written after the routing restore, the rest before")
+    func connectWritesLineModeAfterRouting() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let r = try await connectWithSavedSpeakerMode(SpeakerOutputLogic.line)
+        #expect(r.dimAt < r.firstRouting, "the saved dim went out after the routing")
+        #expect(r.speakerModeAt > r.lastRouting, "Line mode went out before the routing restore ended")
+        #expect(r.modeWrites == 1)
+    }
+
+    @Test("connect with a saved monitor (non-Line) mode: the mode goes with the device settings, before the routing")
+    func connectWritesMonitorModeBeforeRouting() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let r = try await connectWithSavedSpeakerMode(SpeakerOutputLogic.stereo)
+        #expect(r.speakerModeAt < r.firstRouting, "the saved monitor mode went out after the routing")
+        #expect(r.dimAt < r.firstRouting)
+        #expect(r.modeWrites == 1)
+    }
+
     @Test("a link recovery: the levels at connect are written before the routing and mixer restore")
     func recoveryLevelsBeforeRouting() async throws {
         let restore = restoringDefaults()

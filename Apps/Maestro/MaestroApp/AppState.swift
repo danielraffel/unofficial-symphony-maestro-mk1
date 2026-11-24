@@ -3464,8 +3464,9 @@ final class AppState: @unchecked Sendable {
     /// the user last chose. Only settings that were changed through Maestro are
     /// stored, so a unit nobody has configured here is left alone.
     @MainActor
-    func syncDeviceSettingsToHardware() async {
-        guard !hardwareWritesSuspended else { return }
+    @discardableResult
+    func syncDeviceSettingsToHardware(deferLineSpeakerMode: Bool = false) async -> Bool {
+        guard !hardwareWritesSuspended else { return false }
         // Over USB the monitor mode goes first and always, also for a unit
         // whose identity could not be read: the saved mode, or Stereo when
         // none is saved, as the original
@@ -3476,26 +3477,27 @@ final class AppState: @unchecked Sendable {
         // added there.
         if let xpc = device as? XPCDeviceConnection, connectionMode == .hardware, connectedUnit == nil,
            let mode = await xpc.applySpeakerOutputMode() {
-            guard self.device === xpc else { return }
+            guard self.device === xpc else { return false }
             speakerOutputMode = mode
         }
-        guard unitAIdentity != nil else { return }
+        guard unitAIdentity != nil else { return false }
         if usesTwoUnitReplay {
             // A4: unit A's levels at connect also with two units (the step
             // reads the unit's own speaker mode). Unit B keeps its own.
             if let tb = device as? ThunderboltDeviceConnection { await applyMonitorLevelsAtConnect(tb) }
             twoUnitReplayNeeded = true
-            return
+            return false
         }
-        guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
+        guard connectionMode == .hardware, isHardwareInitialized, let device else { return false }
         // These are Symphony I/O settings. A converter does not have them, and
         // what its firmware does with Symphony commands is unknown, so nothing
         // is sent to one unprompted.
         guard connectedUnit == nil else {
             print("[Maestro] syncDeviceSettings: skipped — connected unit is not a Symphony I/O")
-            return
+            return false
         }
         let replay: DeviceSettingsReplay
+        var deferredLine = false
         if let tb = device as? ThunderboltDeviceConnection {
             if cardLayout.slot2 == .micPre8 {
                 let link = await Task.detached(priority: .utility) { tb.linkState() }.value
@@ -3505,21 +3507,27 @@ final class AppState: @unchecked Sendable {
                 guard unitAIdentity != nil, connectedUnit == nil,
                       connectionMode == .hardware, isHardwareInitialized,
                       !usesTwoUnitReplay, converterSystem == nil,
-                      self.device === tb else { return }
+                      self.device === tb else { return false }
                 applyPhantomObservations(link)
             }
-            replay = await tb.reapplyStoredSettings()
+            // A saved Line mode takes the monitor level out of the speaker
+            // path (full level). On a connect it waits for the routing
+            // restore that follows (`syncSavedStateToHardware`), so the
+            // speakers never play the unit's old routing at full level.
+            deferredLine = deferLineSpeakerMode && tb.storedSpeakerModeIsLine
+            replay = await tb.reapplyStoredSettings(
+                excluding: deferredLine ? [.speakerOutputMode] : [])
             await replaySavedBoardClock(tb)
-            guard self.device === tb else { return }
+            guard self.device === tb else { return false }
             // A4: after the monitor mode, as the original wrote the levels
             // after it (SymphonyIO.cpp:4669-4670).
             await applyMonitorLevelsAtConnect(tb)
-            guard self.device === tb else { return }
+            guard self.device === tb else { return false }
             // B7: one unit's Loop Sync output, which the driver starts off
             // each session.
             if loopSyncOneUnit {
                 await refreshLoopSync()
-                guard self.device === tb else { return }
+                guard self.device === tb else { return false }
             }
             // The monitor mode is shown outside the Output tab too; start from
             // the saved one rather than the built-in default.
@@ -3531,7 +3539,7 @@ final class AppState: @unchecked Sendable {
             // The monitor mode was applied above (`applySpeakerOutputMode`).
             replay = await xpc.reapplyStoredSettings()
         } else {
-            return
+            return false
         }
         // `MAESTRO_USB_REPLAY_SETTINGS=0` turns this off over USB too.
         var channelReplay = AnalogChannelSettingsReplay.Result()
@@ -3571,7 +3579,7 @@ final class AppState: @unchecked Sendable {
             }
         }
         guard replay.applied > 0 || !replay.failed.isEmpty
-                || channelReplay.applied > 0 || channelReplay.failed > 0 else { return }
+                || channelReplay.applied > 0 || channelReplay.failed > 0 else { return deferredLine }
         print("[Maestro] syncDeviceSettings: re-applied \(replay.applied) saved setting(s)"
             + (replay.failed.isEmpty ? "" : ", \(replay.failed.count) refused: \(replay.failed)"))
         // On USB the views read these settings from the hardware, and one that
@@ -3581,6 +3589,7 @@ final class AppState: @unchecked Sendable {
         if device is XPCDeviceConnection {
             viewReloadToken = UUID()
         }
+        return deferredLine
     }
 
     /// Mark hardware as ready for property access.

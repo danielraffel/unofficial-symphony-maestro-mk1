@@ -138,9 +138,14 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// restarted is put back to what the app is showing.
     ///
     /// A setting the hardware refuses stays stored and is reported in `failed`.
-    public func reapplyStoredSettings() async -> DeviceSettingsReplay {
+    /// `excluding` leaves settings out (a saved Line mode the connect writes
+    /// after the routing restore); `only` writes just those.
+    public func reapplyStoredSettings(excluding: Set<AudioPropertySelector> = [],
+                                      only: Set<AudioPropertySelector>? = nil) async -> DeviceSettingsReplay {
         var replay = DeviceSettingsReplay()
-        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector) {
+        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector)
+            && !excluding.contains(entry.address.selector)
+            && only.map({ $0.contains(entry.address.selector) }) ?? true {
             do {
                 try await setProperty(entry.address, value: entry.value)
                 replay.applied += 1
@@ -149,6 +154,13 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             }
         }
         return replay
+    }
+
+    /// The saved monitor mode is Line: the speakers at full level, the
+    /// monitor level out of their path.
+    public var storedSpeakerModeIsLine: Bool {
+        settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32
+            == SpeakerOutputLogic.line
     }
 
     // MARK: - Levels at connect (A4)

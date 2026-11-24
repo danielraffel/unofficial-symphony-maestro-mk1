@@ -143,9 +143,19 @@ extension AppState {
         // them depends on the routing or the card mixers, and the routing and
         // mixer restore that follows takes seconds. The input routing and the
         // output restore stay together: one card restore per connect.
-        await syncDeviceSettingsToHardware()
+        // Except a saved Line mode: it takes the monitor level out of the
+        // speaker path, so it is written after the routing restore, and the
+        // speakers never play the unit's old routing at full level meanwhile.
+        let lineDeferred = await syncDeviceSettingsToHardware(deferLineSpeakerMode: true)
         await syncInputRoutingToHardware(restoreFollows: true)
         await syncOutputRoutingToHardware()
+        if lineDeferred, let tb = device as? ThunderboltDeviceConnection, !hardwareWritesSuspended,
+           tb.storedSpeakerModeIsLine {
+            let replay = await tb.reapplyStoredSettings(only: [.speakerOutputMode])
+            if !replay.failed.isEmpty {
+                print("[Maestro] syncSavedState: the saved Line mode was refused after the routing restore")
+            }
+        }
     }
 
     /// The one USB restore, used by connect and by recovery, one at a time
