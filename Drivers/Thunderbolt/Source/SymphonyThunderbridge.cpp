@@ -4586,10 +4586,13 @@ static uint32_t ClkCtrlUnmuteBits(const SymphonyThunderbridge_IVars *ivars)
 // Core Audio's rate, or at the deadline when no rate settled. It no longer
 // waits for a Core Audio control to change: Core Audio restores the values
 // the controls already show, so that wait always ran to the deadline. A
-// mute Core Audio restores within the grace is applied first: the monitor
-// poll and this release both run on xlinkQueue, and the release is queued
-// there (LinkWatchTimerOccurred) behind any control work already pending.
+// mute Core Audio restores before the gate opens is applied first: the
+// release runs the monitor poll itself, inline on xlinkQueue, just before
+// it unmutes the outputs. The interrupt's poll is not enough on its own:
+// with no IO running nothing schedules it.
 static constexpr uint64_t kStartupRateGraceNs = 400000000ull;   // 400 ms
+
+static void RunMonitorPollOnQueue(SymphonyThunderbridge_IVars *ivars);
 
 static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars)
 {
@@ -4609,17 +4612,21 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars)
         __atomic_load_n(&ivars->providerPowerOff, __ATOMIC_ACQUIRE))
         return;
 
-    // Release the card's whole output path. A restored mute is applied to
-    // the unit's own speaker/headphone mute by the control handler (queued on
-    // this same queue before us); the card gate covers every output, so it
-    // must never stay closed.
+    // Send whatever the monitor poll would send (a restored mute on, a
+    // level) to the unit first, the same way and on the same queue as the
+    // interrupt's poll, so the unit's own speaker/headphone mute is on before
+    // any output opens. Then release the card's whole output path; the card
+    // gate covers every output, so it must never stay closed.
+    if (!__atomic_load_n(&ivars->txShutdown, __ATOMIC_ACQUIRE))
+        RunMonitorPollOnQueue(ivars);
     if (ivars->pciDevice) {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_OutputUnmute, 0);
-        if (settled)
+        if (settled) {
+            const uint64_t settledAt = releaseAt > kStartupRateGraceNs ? releaseAt - kStartupRateGraceNs : 0;
             STLOG("ClkCtrl: startup output unmuted %llu ms after the rate settled",
-                  (unsigned long long)(kStartupRateGraceNs / 1000000ull));
-        else
+                  (unsigned long long)((now - settledAt) / 1000000ull));
+        } else
             STLOG("ClkCtrl: startup output unmuted after 3 s timeout (no rate)");
     }
     ivars->startupOutputMuteHeld = false;
@@ -4627,13 +4634,11 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars)
 }
 
 // dext 151: the hardware now runs at Core Audio's rate: a rate Core Audio
-// set was programmed, Core Audio set the rate the hardware already runs at,
-// or a client started IO at the hardware's rate (Core Audio's saved rate is
-// the start-up 44.1 kHz, so it never sets one; a client that starts IO
-// before Core Audio's restore only gets today's behaviour, the later rate
-// transaction mutes the card itself). Clears the start-up gate's rate wait
-// and tries the release on xlinkQueue, which owns the gate; a no-op once the
-// gate has opened.
+// set was programmed, or Core Audio set the rate the hardware already runs
+// at. dext 152: an IO start at the hardware's rate no longer counts (it can
+// come before Core Audio has restored its controls); the gate keeps its
+// deadline then. Clears the start-up gate's rate wait and arms the release
+// on xlinkQueue, which owns the gate; a no-op once the gate has opened.
 static void NoteStartupRateSettled(SymphonyThunderbridge_IVars *ivars, double rate, const char *why)
 {
     if (!ivars || !__atomic_exchange_n(&ivars->startupRatePending, false, __ATOMIC_ACQ_REL)) return;
@@ -6198,6 +6203,17 @@ void IMPL(SymphonyThunderbridge, LinkWatchTimerOccurred)
         }
     }
     ArmLinkWatch(ivars, next);
+    // NoteStartupRateSettled may have stored a release time and armed the
+    // timer for it between the read above and this arm, which would push the
+    // release out to `next`. Arming first and reading again afterwards takes
+    // the earlier of the two: either this re-read sees the store, or the
+    // store's own arm comes after ours.
+    if (ivars->startupOutputMuteHeld) {
+        const uint64_t releaseAt = __atomic_load_n(&ivars->startupReleaseAtNs, __ATOMIC_ACQUIRE);
+        const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        if (releaseAt && releaseAt < now + next)
+            ArmLinkWatch(ivars, releaseAt > now ? releaseAt - now : 0);
+    }
 }
 
 // ── ReadLinkState (dext 113) ─────────────────────────────────────────────────
@@ -9291,6 +9307,132 @@ start_success:
     return kIOReturnSuccess;
 }
 
+// The monitor control poll: the Core Audio volume/mute (or the converter
+// keys) sent to the chosen output when they moved. Runs on xlinkQueue, from
+// the interrupt's poll block and, inline, just before the start-up output
+// gate opens (MaybeReleaseStartupOutputMute), so a mute Core Audio restored
+// reaches the unit before the outputs do even when no interrupt ran.
+static void RunMonitorPollOnQueue(SymphonyThunderbridge_IVars *ivars)
+{
+    if (ivars->monitorDeviceB && (!ivars->unitBConfigured || ivars->portMode != 64)) {
+        ivars->monitorDeviceB = false;
+        PublishSelectedMonitor(ivars);
+    } else {
+        const bool b = ivars->monitorDeviceB;
+        const bool converter = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
+        const uint32_t arms = __atomic_load_n(&ivars->monitorSettleArms, __ATOMIC_ACQUIRE);
+        // The app's Audio Output choice: 0 speakers, 1/2 a headphone
+        // (the headphone's index is kind - 1).
+        const unsigned kind = SelectedMonitorKind(ivars, b);
+        // Nothing to move: Speakers chosen in Line mode
+        // (SymphonyIO.cpp:2345-2351), or "None" on converters. The
+        // control is put back to what it showed and nothing is written.
+        const bool inert = converter ? ivars->converterKeysOff : SelectedMonitorInert(ivars, b);
+        // The control's value is not known to belong to this output
+        // while coreaudiod may be restoring a value it saved earlier,
+        // possibly for another output (the settle window: Start, a
+        // coreaudiod connection, wake, link recovery, a configuration
+        // change; kHALMicPreSettleNs). A level is never sent from such
+        // a value: the control is put back to the output's level, and
+        // a key pressed after the window is honoured.
+        // Unit A's levels were never read (every read was lost when
+        // the link came up): read them now that a control moved. The
+        // controls then show the unit's level; that value is not sent.
+        if (!converter && !b && !ivars->monitorLevelsKnown && ivars->symphonyLinkConfigured &&
+            !ivars->convPort1 && XLinkTxAdmissible(ivars) && MonitorControlsMoved(ivars)) {
+            if (ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputSpeakers) &&
+                ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputHP1) &&
+                ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputHP2)) {
+                ivars->monitorLevelsKnown = true;
+                PublishSelectedMonitor(ivars);
+            }
+        }
+        // The first pass after the window was armed counts as inside
+        // it, however late it runs (monitorSettleArms).
+        const bool settling = MicPreSettling(ivars) ||
+            arms != __atomic_load_n(&ivars->monitorPolledArm, __ATOMIC_ACQUIRE);
+        // No level of the unit's is known: nothing at all is sent.
+        const bool unknown = !converter && !b && (!ivars->monitorLevelsKnown ||
+            (SelectedMonitorKind(ivars, false) == 0 && !ivars->speakerLevelKnown));
+        // While settling, only a change towards quiet is honoured: a
+        // level below the output's, and mute on. Those cannot make
+        // anything louder than the unit was, and a mute the user sees
+        // as on is never dropped. Louder and unmute are put back.
+        // Target and value are consumed together here. No delayed block
+        // re-resolves a physical destination after selection changes.
+        // Diagnostics: one line per handled change, for reports
+        // of keys that "do nothing". The first 64 lines of a
+        // driver session, then one in 16, so key repeat cannot
+        // flood the log. No behaviour depends on it.
+        static uint32_t sKeyLogCount = 0;
+        const char *keyOutput = converter ? "converter"
+            : (kind == 1 ? "HP1" : (kind == 2 ? "HP2" : "speakers"));
+        auto keyLog = [&](const char *what, const char *outcome, float shown, float wanted) {
+            const uint32_t n = sKeyLogCount++;
+            if (n < 64 || n % 16 == 0)
+                STLOG("Volume keys: unit=%{public}s output=%{public}s %{public}s %.1f -> %.1f: %{public}s",
+                      b ? "B" : "A", keyOutput, what, shown, wanted, outcome);
+        };
+        auto keepReason = [&](bool louder) -> const char * {
+            if (inert) return "put back: line mode";
+            if (unknown) return "put back: levels not known";
+            return louder ? "put back: settling (louder)" : "put back: settling (unmute)";
+        };
+        if (ivars->outputVolumeControl) {
+            const float db = ivars->outputVolumeControl->GetDecibelValue();
+            const float diff = db - ivars->lastVolumeDb;
+            if ((diff > 0.5f || diff < -0.5f) && (inert || unknown || (settling && diff > 0.0f))) {
+                keyLog("level", keepReason(true), ivars->lastVolumeDb, db);
+                ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
+            } else if ((diff > 0.5f || diff < -0.5f) && XLinkTxAdmissible(ivars)) {
+                keyLog("level", "sent", ivars->lastVolumeDb, db);
+                ivars->lastVolumeDb = db;
+                uint8_t value = static_cast<uint8_t>(db > 0 ? 0 : (db < -64 ? 64 : -db));
+                if (converter) {
+                    ivars->converterTrimAtten = value;
+                    ApplyConverterTrim(ivars);
+                } else {
+                    MonitorAttenuation(ivars, b, kind) = value;
+                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                        b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
+                        kind ? kSIOCmd_HeadphoneVolume : kSIOCmd_SpeakerVolume, kind ? kind - 1 : 0,
+                        &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
+                }
+            }
+        }
+        // The mute key is ignored only with "None" on converters.
+        // With Speakers chosen in Line mode the original still
+        // set the speaker mute (SymphonyIO.cpp:2239-2251 has no
+        // mode check; only the volume set has one, :2345-2351).
+        const bool muteInert = converter && ivars->converterKeysOff;
+        if (ivars->outputMuteControl) {
+            const bool muted = ivars->outputMuteControl->GetControlValue();
+            if (muted != ivars->lastMuteState && (muteInert || unknown || (settling && !muted))) {
+                keyLog("mute", muteInert ? "put back: keys set to None" : keepReason(false),
+                       ivars->lastMuteState ? 1.0f : 0.0f, muted ? 1.0f : 0.0f);
+                ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
+            } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
+                keyLog("mute", "sent", ivars->lastMuteState ? 1.0f : 0.0f, muted ? 1.0f : 0.0f);
+                ivars->lastMuteState = muted;
+                uint8_t value = muted ? 1 : 0;
+                if (converter) {
+                    ivars->converterTrimMuted = muted;
+                    ApplyConverterTrim(ivars);
+                } else {
+                    // The Core Audio mute is the chosen output's own mute
+                    // (SymphonyIO.cpp:2239-2276).
+                    MonitorMute(ivars, b, kind) = muted;
+                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
+                        b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
+                        kind ? kSIOCmd_HeadphoneMute : kSIOCmd_SpeakerMute, kind ? kind - 1 : 0,
+                        &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
+                }
+            }
+        }
+        __atomic_store_n(&ivars->monitorPolledArm, arms, __ATOMIC_RELEASE);
+    }
+}
+
 // ── Interrupt Handler ───────────────────────────────────────────────────────
 // Called by IOInterruptDispatchSource when MSI interrupt fires (A2H DMA wrap).
 // Legacy: Symphony64Card::interruptService() — takeTimeStamp + clear INTSTATUS.
@@ -9389,123 +9531,7 @@ void IMPL(SymphonyThunderbridge, InterruptOccurred)
                                         false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
             txq->DispatchAsync(^{
                 if (generation == __atomic_load_n(&ivars->monitorGeneration, __ATOMIC_ACQUIRE)) {
-                    if (ivars->monitorDeviceB && (!ivars->unitBConfigured || ivars->portMode != 64)) {
-                        ivars->monitorDeviceB = false;
-                        PublishSelectedMonitor(ivars);
-                    } else {
-                        const bool b = ivars->monitorDeviceB;
-                        const bool converter = __atomic_load_n(&ivars->converterVolumeKeys, __ATOMIC_ACQUIRE);
-                        const uint32_t arms = __atomic_load_n(&ivars->monitorSettleArms, __ATOMIC_ACQUIRE);
-                        // The app's Audio Output choice: 0 speakers, 1/2 a headphone
-                        // (the headphone's index is kind - 1).
-                        const unsigned kind = SelectedMonitorKind(ivars, b);
-                        // Nothing to move: Speakers chosen in Line mode
-                        // (SymphonyIO.cpp:2345-2351), or "None" on converters. The
-                        // control is put back to what it showed and nothing is written.
-                        const bool inert = converter ? ivars->converterKeysOff : SelectedMonitorInert(ivars, b);
-                        // The control's value is not known to belong to this output
-                        // while coreaudiod may be restoring a value it saved earlier,
-                        // possibly for another output (the settle window: Start, a
-                        // coreaudiod connection, wake, link recovery, a configuration
-                        // change; kHALMicPreSettleNs). A level is never sent from such
-                        // a value: the control is put back to the output's level, and
-                        // a key pressed after the window is honoured.
-                        // Unit A's levels were never read (every read was lost when
-                        // the link came up): read them now that a control moved. The
-                        // controls then show the unit's level; that value is not sent.
-                        if (!converter && !b && !ivars->monitorLevelsKnown && ivars->symphonyLinkConfigured &&
-                            !ivars->convPort1 && XLinkTxAdmissible(ivars) && MonitorControlsMoved(ivars)) {
-                            if (ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputSpeakers) &&
-                                ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputHP1) &&
-                                ReadUnitAMonitorLevel(ivars, kSymphonyMonitorOutputHP2)) {
-                                ivars->monitorLevelsKnown = true;
-                                PublishSelectedMonitor(ivars);
-                            }
-                        }
-                        // The first pass after the window was armed counts as inside
-                        // it, however late it runs (monitorSettleArms).
-                        const bool settling = MicPreSettling(ivars) ||
-                            arms != __atomic_load_n(&ivars->monitorPolledArm, __ATOMIC_ACQUIRE);
-                        // No level of the unit's is known: nothing at all is sent.
-                        const bool unknown = !converter && !b && (!ivars->monitorLevelsKnown ||
-                            (SelectedMonitorKind(ivars, false) == 0 && !ivars->speakerLevelKnown));
-                        // While settling, only a change towards quiet is honoured: a
-                        // level below the output's, and mute on. Those cannot make
-                        // anything louder than the unit was, and a mute the user sees
-                        // as on is never dropped. Louder and unmute are put back.
-                        // Target and value are consumed together here. No delayed block
-                        // re-resolves a physical destination after selection changes.
-                        // Diagnostics: one line per handled change, for reports
-                        // of keys that "do nothing". The first 64 lines of a
-                        // driver session, then one in 16, so key repeat cannot
-                        // flood the log. No behaviour depends on it.
-                        static uint32_t sKeyLogCount = 0;
-                        const char *keyOutput = converter ? "converter"
-                            : (kind == 1 ? "HP1" : (kind == 2 ? "HP2" : "speakers"));
-                        auto keyLog = [&](const char *what, const char *outcome, float shown, float wanted) {
-                            const uint32_t n = sKeyLogCount++;
-                            if (n < 64 || n % 16 == 0)
-                                STLOG("Volume keys: unit=%{public}s output=%{public}s %{public}s %.1f -> %.1f: %{public}s",
-                                      b ? "B" : "A", keyOutput, what, shown, wanted, outcome);
-                        };
-                        auto keepReason = [&](bool louder) -> const char * {
-                            if (inert) return "put back: line mode";
-                            if (unknown) return "put back: levels not known";
-                            return louder ? "put back: settling (louder)" : "put back: settling (unmute)";
-                        };
-                        if (ivars->outputVolumeControl) {
-                            const float db = ivars->outputVolumeControl->GetDecibelValue();
-                            const float diff = db - ivars->lastVolumeDb;
-                            if ((diff > 0.5f || diff < -0.5f) && (inert || unknown || (settling && diff > 0.0f))) {
-                                keyLog("level", keepReason(true), ivars->lastVolumeDb, db);
-                                ivars->outputVolumeControl->SetDecibelValue(ivars->lastVolumeDb);
-                            } else if ((diff > 0.5f || diff < -0.5f) && XLinkTxAdmissible(ivars)) {
-                                keyLog("level", "sent", ivars->lastVolumeDb, db);
-                                ivars->lastVolumeDb = db;
-                                uint8_t value = static_cast<uint8_t>(db > 0 ? 0 : (db < -64 ? 64 : -db));
-                                if (converter) {
-                                    ivars->converterTrimAtten = value;
-                                    ApplyConverterTrim(ivars);
-                                } else {
-                                    MonitorAttenuation(ivars, b, kind) = value;
-                                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
-                                        b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
-                                        kind ? kSIOCmd_HeadphoneVolume : kSIOCmd_SpeakerVolume, kind ? kind - 1 : 0,
-                                        &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
-                                }
-                            }
-                        }
-                        // The mute key is ignored only with "None" on converters.
-                        // With Speakers chosen in Line mode the original still
-                        // set the speaker mute (SymphonyIO.cpp:2239-2251 has no
-                        // mode check; only the volume set has one, :2345-2351).
-                        const bool muteInert = converter && ivars->converterKeysOff;
-                        if (ivars->outputMuteControl) {
-                            const bool muted = ivars->outputMuteControl->GetControlValue();
-                            if (muted != ivars->lastMuteState && (muteInert || unknown || (settling && !muted))) {
-                                keyLog("mute", muteInert ? "put back: keys set to None" : keepReason(false),
-                                       ivars->lastMuteState ? 1.0f : 0.0f, muted ? 1.0f : 0.0f);
-                                ivars->outputMuteControl->SetControlValue(ivars->lastMuteState);
-                            } else if (muted != ivars->lastMuteState && XLinkTxAdmissible(ivars)) {
-                                keyLog("mute", "sent", ivars->lastMuteState ? 1.0f : 0.0f, muted ? 1.0f : 0.0f);
-                                ivars->lastMuteState = muted;
-                                uint8_t value = muted ? 1 : 0;
-                                if (converter) {
-                                    ivars->converterTrimMuted = muted;
-                                    ApplyConverterTrim(ivars);
-                                } else {
-                                    // The Core Audio mute is the chosen output's own mute
-                                    // (SymphonyIO.cpp:2239-2276).
-                                    MonitorMute(ivars, b, kind) = muted;
-                                    SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex,
-                                        b ? kRegXLink2TX : kRegXLink1TX, b ? 1 : ivars->symphonyAddr,
-                                        kind ? kSIOCmd_HeadphoneMute : kSIOCmd_SpeakerMute, kind ? kind - 1 : 0,
-                                        &value, 1, b ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq);
-                                }
-                            }
-                        }
-                        __atomic_store_n(&ivars->monitorPolledArm, arms, __ATOMIC_RELEASE);
-                    }
+                    RunMonitorPollOnQueue(ivars);
                 }
                 __atomic_store_n(&ivars->monitorPollScheduled, false, __ATOMIC_RELEASE);
             });
@@ -10069,9 +10095,15 @@ kern_return_t SymphonyThunderbridge::StartDevice(
             const kern_return_t rateResult =
                 ApplyRequestedSampleRate(ivars, this, requestedRate, "StartDevice");
             if (rateResult != kIOReturnSuccess) return rateResult;
-        } else {
+        } else if (__atomic_load_n(&ivars->startupRatePending, __ATOMIC_ACQUIRE)) {
             // dext 151: IO starts at the rate the hardware already runs at.
-            NoteStartupRateSettled(ivars, requestedRate, "IO start at the hardware's rate");
+            // dext 152: not counted as the rate settling. A client can start
+            // IO before Core Audio has restored its controls (a saved mute),
+            // and nothing the release could sample would show it yet, so the
+            // start-up gate keeps its deadline. A later rate Core Audio sets
+            // still shortens it (startupRatePending stays set).
+            STLOG("ClkCtrl: IO start at the hardware's rate (%.0f Hz); startup output gate keeps its deadline",
+                  requestedRate);
         }
     }
 

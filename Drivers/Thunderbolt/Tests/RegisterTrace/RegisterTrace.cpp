@@ -3153,9 +3153,11 @@ static void RunStartupOutputMuteChecks()
     Finish(idle, same);
 
     // A DAW starts IO before Core Audio sets any rate (a saved 44.1 kHz is
-    // never set): the IO start at the hardware's rate confirms it, so the
-    // gate opens after the grace, with no reprogram. A later 48 kHz is one
-    // rate transaction that mutes the card's outputs for its length.
+    // never set). The IO start can come before Core Audio has restored its
+    // controls, so it does not count as the rate settling for the gate: the
+    // gate keeps the 3 s deadline (dext 152, second fix), with no reprogram.
+    // A later 48 kHz is one rate transaction that mutes the card's outputs
+    // for its length.
     Run daw;
     RunScenario(idle, daw);
     const size_t dawMark = daw.card.lines.size();
@@ -3163,8 +3165,13 @@ static void RunStartupOutputMuteChecks()
     HostPump();
     pastGrace();
     tick(daw);
+    CHECK(OutputGate(daw.card) == 0x60000000u,
+          "H: DAW: output released within the grace after an IO start (ClkCtrl=0x%08x, want held to 3 s)",
+          daw.card.reg[kRegClkCtrl]);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2700));
+    tick(daw);
     CHECK(OutputGate(daw.card) == 0x70000000u && RateCommands(daw.card, dawMark, kRegXLink1TX).empty(),
-          "H: DAW: ClkCtrl=0x%08x, %zu rate writes after the IO start (want released, none)",
+          "H: DAW: ClkCtrl=0x%08x, %zu rate writes after the IO start (want released at 3 s, none)",
           daw.card.reg[kRegClkCtrl], RateCommands(daw.card, dawMark, kRegXLink1TX).size());
     daw.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
     HostPump();
@@ -3189,6 +3196,66 @@ static void RunStartupOutputMuteChecks()
               daw.card.reg[kRegClkCtrl]);
     }
     Finish(idle, daw);
+
+    // Core Audio restores mute on, but no interrupt runs the monitor poll
+    // before the gate opens (IO not started yet). The release samples the
+    // controls itself: the speaker mute reaches the unit before the output
+    // unmute. Line index of the first speaker-mute write vs the first
+    // ClkCtrl write with the output unmute bit.
+    auto checkMuteBeforeUnmute = [&](const char *what, Run &r, size_t from, size_t muteLine) {
+        size_t unmuteLine = SIZE_MAX;
+        for (size_t i = from; i < r.card.lines.size() && unmuteLine == SIZE_MAX; i++)
+            if (OutputUnmuteWritten(r.card, i, i + 1)) unmuteLine = i;
+        CHECK(unmuteLine != SIZE_MAX && OutputGate(r.card) == 0x70000000u,
+              "H: %s: outputs not released (ClkCtrl=0x%08x)", what, r.card.reg[kRegClkCtrl]);
+        CHECK(muteLine != SIZE_MAX && muteLine < unmuteLine && speakerMute(r.card) == 1,
+              "H: %s: speaker mute line %zu, output unmute line %zu, unit mute %d (want the mute first, on)",
+              what, muteLine, unmuteLine, speakerMute(r.card));
+    };
+    {
+        Run noIrq;
+        RunScenario(idle, noIrq);
+        size_t muteLine = SIZE_MAX;
+        noIrq.card.onVendorWrite = [&](unsigned p, uint8_t cmd) {
+            if (p == 0 && cmd == 0x27 && muteLine == SIZE_MAX) muteLine = noIrq.card.lines.size();
+        };
+        const size_t mark = noIrq.card.lines.size();
+        gHostAudio.mute->SetControlValue(true);
+        gHostAudio.device->SetSampleRate(48000.0);
+        SymphonySyncHardwareRate(gHostAudio.device, 48000.0, 0, "test, Core Audio restores 48 kHz");
+        HostPump();
+        pastGrace();
+        tick(noIrq);
+        checkMuteBeforeUnmute("mute, rate, no interrupt", noIrq, mark, muteLine);
+        noIrq.card.onVendorWrite = nullptr;
+        Finish(idle, noIrq);
+    }
+    {
+        // The same with IO started at the hardware's rate: held to the 3 s
+        // deadline, and the mute Core Audio set meanwhile is applied first.
+        Run ioStart;
+        RunScenario(idle, ioStart);
+        size_t muteLine = SIZE_MAX;
+        ioStart.card.onVendorWrite = [&](unsigned p, uint8_t cmd) {
+            if (p == 0 && cmd == 0x27 && muteLine == SIZE_MAX) muteLine = ioStart.card.lines.size();
+        };
+        const size_t mark = ioStart.card.lines.size();
+        ioStart.drv->StartDevice(1, IOUserAudioStartStopFlags::None);
+        HostPump();
+        pastGrace();
+        tick(ioStart);
+        CHECK(OutputGate(ioStart.card) == 0x60000000u,
+              "H: IO start: output released within the grace (ClkCtrl=0x%08x, want held to 3 s)",
+              ioStart.card.reg[kRegClkCtrl]);
+        gHostAudio.mute->SetControlValue(true);   // Core Audio's restore, after the IO start
+        std::this_thread::sleep_for(std::chrono::milliseconds(2700));
+        tick(ioStart);
+        checkMuteBeforeUnmute("IO start, then mute, no interrupt", ioStart, mark, muteLine);
+        ioStart.card.onVendorWrite = nullptr;
+        ioStart.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        HostPump();
+        Finish(idle, ioStart);
+    }
 
     // Timeout: Core Audio sets no rate and no control, and starts no IO. The
     // unit keeps Start's 44.1 kHz, nothing reprograms it, and the output
