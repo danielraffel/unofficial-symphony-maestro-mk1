@@ -20,6 +20,14 @@ struct LoopSyncControls: View {
             opticalIsSPDIF: appState.unitBChannelNaming.opticalIsSPDIF), unitBFollows: true)
     }
 
+    /// Show what the unit reports after a change, also when the change was
+    /// not applied (the state did not change, so onChange does not fire).
+    private func resync() {
+        guard let state = appState.loopSyncState else { return }
+        enabled = state.settings.enabled
+        master = state.settings.master
+    }
+
     var body: some View {
         Group {
             Toggle(isOn: $enabled) {
@@ -53,7 +61,7 @@ struct LoopSyncControls: View {
                 .maestroHelp("Lock Symphony I/Os to the same clock over their Loop Sync connection.")
                 .onChange(of: enabled) { _, value in
                     guard let state = appState.loopSyncState, value != state.settings.enabled else { return }
-                    Task { await appState.setLoopSync(.init(enabled: value, master: state.settings.master)) }
+                    Task { await appState.setLoopSync(.init(enabled: value, master: state.settings.master)); resync() }
                 }
             if enabled && !appState.loopSyncOneUnit {
                 Picker("Loop Sync Master", selection: $master) {
@@ -63,7 +71,7 @@ struct LoopSyncControls: View {
                 .maestroHelp("Choose which Symphony I/O is the Loop Sync clock master.")
                 .onChange(of: master) { _, value in
                     guard let state = appState.loopSyncState, value != state.settings.master else { return }
-                    Task { await appState.setLoopSync(.init(enabled: state.settings.enabled, master: value)) }
+                    Task { await appState.setLoopSync(.init(enabled: state.settings.enabled, master: value)); resync() }
                 }
             }
             if appState.activeUnit == .b, appState.loopSyncState?.settings.effectiveMaster == .b {
@@ -74,14 +82,16 @@ struct LoopSyncControls: View {
                     guard let state = appState.loopSyncState, value != state.sourceKey(.b),
                           let tb = appState.device as? ThunderboltDeviceConnection else { return }
                     Task {
+                        appState.loopSyncChanging = true
                         do { try await tb.setUnitBMasterSource(value) }
                         catch { appState.loopSyncError = "The driver could not set the clock source." }
+                        appState.loopSyncChanging = false
                         await appState.refreshLoopSync()
                     }
                 }
             }
         }
-        .disabled(appState.loopSyncBusy || appState.loopSyncState == nil)
+        .disabled(appState.loopSyncChanging || appState.loopSyncState == nil)
         .onChange(of: appState.loopSyncState, initial: true) { _, state in
             guard let state else { return }
             enabled = state.settings.enabled

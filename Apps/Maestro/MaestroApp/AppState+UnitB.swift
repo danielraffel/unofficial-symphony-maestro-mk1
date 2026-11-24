@@ -50,8 +50,9 @@ extension AppState {
             return
         }
         guard device === tb, unitBDevice === owner, loopSyncVisible else { return }
-        loopSyncState = state
-        loopSyncError = nil
+        // Assign only a change, so the page does not redraw every two seconds.
+        if loopSyncState != state { loopSyncState = state }
+        if loopSyncError != nil { loopSyncError = nil }
         // With one unit the driver starts each session with the output off;
         // the saved choice, or the original's default (on), is applied once
         // it has connected.
@@ -75,10 +76,15 @@ extension AppState {
 
     @MainActor
     func setLoopSync(_ settings: LoopSyncSettings) async {
+        // The controls stay enabled during the two-second background read, so
+        // a click can land while it runs: wait for it (bounded) rather than
+        // dropping the click.
+        for _ in 0..<100 where loopSyncBusy { try? await Task.sleep(for: .milliseconds(50)) }
         guard loopSyncVisible, !loopSyncBusy, loopSyncState != nil,
               let tb = device as? ThunderboltDeviceConnection else { return }
         loopSyncBusy = true
-        defer { loopSyncBusy = false }
+        loopSyncChanging = true
+        defer { loopSyncBusy = false; loopSyncChanging = false }
         let owner = unitBDevice
         do {
             let state = try await tb.loopSync(settings)

@@ -1544,6 +1544,11 @@ final class AppState: @unchecked Sendable {
     var loopSyncState: LoopSyncState?
     var loopSyncNeedsRestore = false
     var loopSyncBusy = false
+    /// True only while a change the user made (Use Loop Sync, master, clock
+    /// source) is being applied. The controls are disabled for that, not for
+    /// the two-second background read, which greyed the toggle and its info
+    /// button out and back every two seconds (owner, 2026-11-23).
+    var loopSyncChanging = false
     var loopSyncError: String?
     /// What the driver reports about unit B (selector 11), nil unless it is
     /// configured, which it is only while 64 channels run.

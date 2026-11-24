@@ -65,4 +65,13 @@ struct ViewValueTypeTests {
         #expect(text.components(separatedBy: #"Button("Select All")"#).count == 2)
         #expect(text.components(separatedBy: #"Button("Deselect All")"#).count == 2)
     }
+
+    /// Use Loop Sync flashed every two seconds: the background read set the
+    /// busy flag the controls were disabled by (owner, 2026-11-23). Only a
+    /// user's change disables them.
+    @Test func loopSyncControlsAreNotDisabledByTheBackgroundRead() throws {
+        let text = try String(contentsOf: Self.appDir.appendingPathComponent("LoopSyncControls.swift"), encoding: .utf8)
+        #expect(text.contains(".disabled(appState.loopSyncChanging || appState.loopSyncState == nil)"))
+        #expect(!text.contains(".disabled(appState.loopSyncBusy"))
+    }
 }
