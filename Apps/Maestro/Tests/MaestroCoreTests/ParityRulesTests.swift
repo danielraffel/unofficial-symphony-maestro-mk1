@@ -42,6 +42,54 @@ struct ParityRulesTests {
         #expect(!open.showMuted && !open.writeUnit && !open.tellMac)
     }
 
+    @Test("A4: at connect the quieter of the saved level and the unit's wins")
+    func levelsAtConnectQuieterWins() {
+        typealias Rule = MonitorLevelsAtConnect
+        for output in Rule.Output.allCases {
+            // Unit came up at its own -20 dB, -30 saved: down to -30.
+            #expect(Rule.write(output: output, saved: 30, unit: 20, speakersInLine: false) == 30)
+            #expect(Rule.settled(output: output, saved: 30, unit: 20, speakersInLine: false, written: true) == 30)
+            // Saved louder than the unit (turned down on the front panel while
+            // Maestro was closed, or the unit's default is quieter): left alone.
+            #expect(Rule.write(output: output, saved: 10, unit: 20, speakersInLine: false) == nil)
+            #expect(Rule.settled(output: output, saved: 10, unit: 20, speakersInLine: false, written: false) == 20)
+            // Same level (a replug with the unit still on): nothing sent.
+            #expect(Rule.write(output: output, saved: 25, unit: 25, speakersInLine: false) == nil)
+            // Nothing saved: the unit is left alone and its level is what is saved from now on.
+            #expect(Rule.write(output: output, saved: nil, unit: 20, speakersInLine: false) == nil)
+            #expect(Rule.settled(output: output, saved: nil, unit: 20, speakersInLine: false, written: false) == 20)
+            // The unit's level unreadable: nothing sent, the saved level kept.
+            #expect(Rule.write(output: output, saved: 30, unit: nil, speakersInLine: false) == nil)
+            #expect(Rule.settled(output: output, saved: 30, unit: nil, speakersInLine: false, written: false) == nil)
+            // Out-of-range values are unreadable, never clamped (0xFF sentinel).
+            #expect(Rule.write(output: output, saved: 30, unit: 0xFF, speakersInLine: false) == nil)
+            #expect(Rule.write(output: output, saved: 0xFF, unit: 20, speakersInLine: false) == nil)
+            #expect(Rule.settled(output: output, saved: nil, unit: 0xFF, speakersInLine: false, written: false) == nil)
+            // Fully down is a level like any other.
+            #expect(Rule.write(output: output, saved: 64, unit: 0, speakersInLine: false) == 64)
+        }
+    }
+
+    @Test("A4: in Line the speakers are never written or saved; the headphones still are")
+    func levelsAtConnectLine() {
+        typealias Rule = MonitorLevelsAtConnect
+        #expect(Rule.write(output: .speakers, saved: 40, unit: 0, speakersInLine: true) == nil)
+        #expect(Rule.settled(output: .speakers, saved: 40, unit: 0, speakersInLine: true, written: false) == nil)
+        #expect(Rule.write(output: .headphone1, saved: 40, unit: 20, speakersInLine: true) == 40)
+        #expect(Rule.write(output: .headphone2, saved: 40, unit: 20, speakersInLine: true) == 40)
+    }
+
+    @Test("A4: a shown level is saved as its whole-dB attenuation")
+    func levelsAtConnectAttenuation() {
+        #expect(MonitorLevelsAtConnect.attenuation(dB: -20) == 20)
+        #expect(MonitorLevelsAtConnect.attenuation(dB: 0) == 0)
+        #expect(MonitorLevelsAtConnect.attenuation(dB: -64) == 64)
+        #expect(MonitorLevelsAtConnect.attenuation(dB: -20.4) == 20)
+        #expect(MonitorLevelsAtConnect.attenuation(dB: -70) == nil)
+        #expect(MonitorLevelsAtConnect.attenuation(dB: 3) == nil)
+        #expect(MonitorLevelsAtConnect.attenuation(dB: .nan) == nil)
+    }
+
     @Test("sample rates read as the original's")
     func rates() {
         #expect(SampleRateText.format(48000) == "48 kHz")

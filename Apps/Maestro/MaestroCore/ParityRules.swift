@@ -54,6 +54,68 @@ public enum SpeakerMuteAdoption {
     }
 }
 
+/// A4: the speaker and headphone levels put on the unit when Maestro
+/// connects to it, or the unit comes back under a running connection (a
+/// power cycle, a link recovery).
+///
+/// The original owned these levels on the Mac and wrote its own copy at every
+/// connect, whatever the unit held (`SymphonyIO::ApplySettingsToHardware`,
+/// og_source/maestrolink/Software/SymphonyIO.cpp:4660-4687: speaker volume at
+/// :4670, each headphone's at :4677; saved to its preferences from :5103). It
+/// also polled the unit for front panel changes to keep that copy current
+/// (`getParameterUpdates`, :6459-6460). Ours sends the QUIETER of the level saved on
+/// this Mac and the level the unit reports, so a connect never makes anything
+/// louder than either: a unit that came up at its own default (-20 dB) goes
+/// back down to a lower saved level, and a level turned down on the front
+/// panel while Maestro was closed is kept.
+///
+/// Levels are attenuations, 0...64 dB, where more is quieter (the unit's own
+/// unit, `SymphonyIOControl` speaker/headphone volume).
+public enum MonitorLevelsAtConnect {
+    public enum Output: CaseIterable, Sendable, Equatable {
+        case speakers, headphone1, headphone2
+    }
+
+    /// Highest valid attenuation; the unit's quietest step.
+    public static let maximumAttenuation: UInt32 = 64
+
+    /// The attenuation to write to one output, or nil to leave it alone.
+    ///
+    /// - `saved`: what this Mac last saw on the output (nil: nothing saved).
+    /// - `unit`: what the unit reports now (nil: the read failed).
+    /// - `speakersInLine`: the unit's speaker mode is Line, or could not be
+    ///   read. Line has no speaker level (the unit answers 0), so the
+    ///   speakers are never written then. The headphones still are.
+    ///
+    /// A value outside 0...64 is treated as unreadable, never clamped: a
+    /// failed read can come back as 0xFF.
+    public static func write(output: Output, saved: UInt32?, unit: UInt32?,
+                             speakersInLine: Bool) -> UInt32? {
+        if output == .speakers && speakersInLine { return nil }
+        guard let saved, let unit, saved <= maximumAttenuation, unit <= maximumAttenuation else { return nil }
+        return saved > unit ? saved : nil
+    }
+
+    /// The level the output is at once the connect step is done, which is
+    /// what is saved from then on: the quieter of the two, or the unit's own
+    /// when nothing is saved. Nil when the unit's level is not known (the
+    /// saved one is then kept as it is).
+    public static func settled(output: Output, saved: UInt32?, unit: UInt32?,
+                               speakersInLine: Bool, written: Bool) -> UInt32? {
+        if output == .speakers && speakersInLine { return nil }
+        guard let unit, unit <= maximumAttenuation else { return nil }
+        if written, let saved, saved <= maximumAttenuation { return max(saved, unit) }
+        return unit
+    }
+
+    /// A level Maestro shows (dB, 0 loudest) as the attenuation saved for it;
+    /// nil outside -64...0.
+    public static func attenuation(dB: Double) -> UInt32? {
+        guard dB.isFinite, dB <= 0.5, dB >= -64.5 else { return nil }
+        return UInt32(min(64, max(0, (-dB).rounded())))
+    }
+}
+
 public enum SampleRateText {
     /// "48 kHz", "44.1 kHz", "176.4 kHz"; other rates with up to three
     /// decimals and no trailing zeros ("47.952 kHz").
