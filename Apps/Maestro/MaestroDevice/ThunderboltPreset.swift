@@ -51,14 +51,21 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
     /// routes) means the same channels under `current`: the same order, or
     /// cards (both units') that the order does not move. Everything else in
     /// the file is restored either way.
-    public func routingApplies(current: ThunderboltChannelOrder) -> Bool {
-        guard savedChannelOrder != current else { return true }
+    ///
+    /// Unit B's half is judged by unit B's own order: the one it was saved
+    /// in (`Peripheral.channelOrder`; the file's own tag in a file saved
+    /// before that was kept) against `currentB` (unit A's `current` when not
+    /// given).
+    public func routingApplies(current: ThunderboltChannelOrder, currentB: ThunderboltChannelOrder? = nil) -> Bool {
         func moves(_ boards: [UInt8]) -> Bool {
             guard boards.count == 2 else { return true }
             return ThunderboltChannelOrder.differs(slot1: IOCardType(rawValue: boards[0]),
                                                    slot2: IOCardType(rawValue: boards[1]))
         }
-        return !moves(boards) && !(unitB.map { moves($0.boards) } ?? false)
+        let aApplies = savedChannelOrder == current || !moves(boards)
+        guard let unitB else { return aApplies }
+        let savedB: ThunderboltChannelOrder = (unitB.channelOrder ?? channelOrder) == "analogFirst" ? .analogFirst : .cardByCard
+        return aApplies && (savedB == (currentB ?? current) || !moves(unitB.boards))
     }
 
     /// What a restore says when it skips the file's routing.
@@ -81,11 +88,15 @@ public struct ThunderboltPreset: Codable, Sendable, Equatable {
         public var unitID: Data?
         public var mixers: [Mixer]
         public var routingMode: Int
+        /// The order unit B's routing was saved in (`ThunderboltPreset.channelOrderTag`);
+        /// absent in older files, which go by the file's `channelOrder`.
+        public var channelOrder: String?
 
         public init(_ preset: ThunderboltPreset) {
             boards = preset.boards; metadata = preset.metadata; globals = preset.globals
             inputRoutes = preset.inputRoutes; inputRouteMask = preset.inputRouteMask; frontPanelSelection = preset.frontPanelSelection
             unitID = preset.unitID; mixers = preset.mixers; routingMode = preset.routingMode
+            channelOrder = preset.channelOrder
         }
 
         public func preset(layout: CardLayout) -> ThunderboltPreset {

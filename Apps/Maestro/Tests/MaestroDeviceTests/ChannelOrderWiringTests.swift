@@ -19,15 +19,23 @@ struct ChannelOrderWiringTests {
 
     // MARK: Gate
 
-    @Test("The order follows the serving build: 149 keeps card by card, 150 takes what the driver applied")
+    @Test("The order: what selector 17 reports, card by card under a reported build before 150, otherwise not known")
     func gate() {
         let applied = ThunderboltAppliedChannelOrder.Unit(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
         let fallback: (slot1: IOCardType?, slot2: IOCardType?) = (.optical, .analogAD16)
-        #expect(ThunderboltUnitChannelOrder.resolve(serving: .build(149), applied: applied, fallback: fallback)
+        // A driver reporting build 149 has no selector 17: card by card.
+        #expect(ThunderboltUnitChannelOrder.resolve(serving: .build(149), applied: nil, fallback: fallback)
             == ThunderboltUnitChannelOrder(order: .cardByCard, slot1: .optical, slot2: .analogAD16))
+        // Selector 17 answered: trusted whatever the build read said (a
+        // failed build read gives nil or `.olderThanBuildReporting`).
         #expect(ThunderboltUnitChannelOrder.resolve(serving: .olderThanBuildReporting, applied: applied, fallback: fallback)?.order
-            == .cardByCard)
-        #expect(ThunderboltUnitChannelOrder.resolve(serving: nil, applied: applied, fallback: fallback)?.order == .cardByCard)
+            == .analogFirst)
+        #expect(ThunderboltUnitChannelOrder.resolve(serving: nil, applied: applied, fallback: fallback)?.order == .analogFirst)
+        #expect(ThunderboltUnitChannelOrder.resolve(serving: .build(149), applied: applied, fallback: fallback)?.order == .analogFirst)
+        // The build not known and no selector 17 answer: not known, nothing is written.
+        #expect(ThunderboltUnitChannelOrder.resolve(serving: nil, applied: nil, fallback: fallback) == nil)
+        #expect(ThunderboltUnitChannelOrder.resolve(serving: .olderThanBuildReporting, applied: nil, fallback: fallback) == nil)
+        #expect(ThunderboltUnitChannelOrder.resolve(serving: .build(0), applied: nil, fallback: fallback) == nil)
         #expect(ThunderboltUnitChannelOrder.resolve(serving: .build(150), applied: applied, fallback: fallback)
             == ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16))
         // An unstamped local build of this code is treated as 150.
@@ -82,7 +90,8 @@ struct ChannelOrderWiringTests {
         let still: [ThunderboltUnitChannelOrder?] = [ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .analogADDA16, slot2: .analogADDA16)]
         #expect(!ChannelOrderRoutingReset.shouldRun(transport: .usb, serving: .build(150), units: moving, defaults: defaults))
         #expect(!ChannelOrderRoutingReset.shouldRun(transport: .thunderbolt, serving: .build(149), units: moving, defaults: defaults))
-        #expect(!ChannelOrderRoutingReset.shouldRun(transport: .thunderbolt, serving: nil, units: moving, defaults: defaults))
+        // The build read failed but the driver reported analog first (selector 17): it runs.
+        #expect(ChannelOrderRoutingReset.shouldRun(transport: .thunderbolt, serving: nil, units: moving, defaults: defaults))
         #expect(!ChannelOrderRoutingReset.shouldRun(transport: .thunderbolt, serving: .build(150), units: still, defaults: defaults))
         #expect(!ChannelOrderRoutingReset.shouldRun(transport: .thunderbolt, serving: .build(150), units: [nil], defaults: defaults))
         // Card by card reported by a 150 driver (a type unknown): nothing moved.
@@ -148,6 +157,136 @@ struct ChannelOrderWiringTests {
         #expect(defaults.object(forKey: destination) == nil)
     }
 
+    @Test("Inputs and outputs move separately: 8x8 + A16 inputs only, 8x8 + DA16 outputs only, two 8x8s both")
+    func differsPerDirection() {
+        func moves(_ slot1: IOCardType, _ slot2: IOCardType) -> (inputs: Bool, outputs: Bool) {
+            (ThunderboltChannelOrder.differs(slot1: slot1, slot2: slot2, isInput: true),
+             ThunderboltChannelOrder.differs(slot1: slot1, slot2: slot2, isInput: false))
+        }
+        // The owner's rig: 8x8 (ADAT or AES) in slot 1, A16 in slot 2.
+        #expect(moves(.optical, .analogAD16) == (true, false))
+        #expect(moves(.analogAES, .analogAD16) == (true, false))
+        #expect(moves(.optical, .analogDA16) == (false, true))
+        #expect(moves(.analogAD16, .analogDA16) == (false, true))
+        #expect(moves(.optical, .optical) == (true, true))
+        #expect(moves(.analogADDA16, .analogADDA16) == (false, false))
+        #expect(moves(.optical, .none) == (false, false))
+        #expect(moves(.analogADDA16, .micPre8) == (false, false))
+        let rig = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
+        #expect(rig.movesInputs && !rig.movesOutputs && rig.movesChannels)
+        // Card by card reported: nothing moves.
+        #expect(!ThunderboltUnitChannelOrder(order: .cardByCard, slot1: .optical, slot2: .analogAD16).movesChannels)
+    }
+
+    @Test("Each direction is reset only for pairs that move in it; unscoped stores only where it moved now")
+    func resetPerDirection() {
+        let defaults = scratch()
+        let inputsOnly = "optical+analogAD16", outputsOnly = "optical+analogDA16"
+        let both = "optical+optical", neither = "analogADDA16+analogADDA16"
+        let topology = "a=1f.b=none.channels=32"
+        let removedKeys = [
+            "unit.v3.1f.inputRouting.\(inputsOnly)",
+            "unit.v3.1f.inputRouting_multi.\(inputsOnly)",
+            "unit.v3.1f.inputRouting.\(both)",
+            "unit.v3.1f.cardOutput.\(outputsOnly)",
+            "cardRouting.v3.18.\(topology).a.\(outputsOnly)",
+            "cardRouting.v3.18.\(topology).a.\(both)_multi",
+            "symphonyCardInputs.\(inputsOnly).none.32.\(topology)",
+            "symphonyCardInputs.\(neither).\(both).64.a=1f.b=2e.channels=64",
+            "pending.4.inputRouting",
+            "unit.v3.1f.inputRouting.unknown",
+        ]
+        let keptKeys = [
+            // The owner's Output Routing (mixer-to-output and speaker-set routes are in it).
+            "cardRouting.v3.18.\(topology).a.\(inputsOnly)",
+            "cardRouting.v3.18.\(topology).a.\(inputsOnly)_multi",
+            "unit.v3.1f.cardOutput.\(inputsOnly)",
+            "unit.v3.1f.inputRouting.\(outputsOnly)",
+            "symphonyCardInputs.\(outputsOnly).none.32.\(topology)",
+            "unit.v3.1f.inputRouting.\(neither)",
+            "cardRouting.v3.18.\(topology).a.\(neither)",
+            // Outputs did not move on the unit connected now: unscoped output stores stay.
+            "pending.cardOutput.a=pending-3.b=none.channels=32.a",
+            "cardRouting.v3.18.\(topology).a.unknown",
+            // A legacy output source owned by a store that stays.
+            "routing_output_18_v2", "routing_output_18_v2.migrationReceipt",
+        ]
+        for key in removedKeys + keptKeys { defaults.set(["0": 1], forKey: key) }
+        defaults.set(["owner": "cardRouting.v3.18.\(topology).a.\(inputsOnly)", "data": Data()],
+                     forKey: "routing_output_18_v2.migrationReceipt")
+        let removed = ChannelOrderRoutingReset.purge(defaults: defaults, unscopedInputs: true, unscopedOutputs: false)
+        for key in removedKeys {
+            #expect(defaults.object(forKey: key) == nil, "\(key) kept")
+            #expect(removed.contains(key))
+        }
+        for key in keptKeys { #expect(defaults.object(forKey: key) != nil, "\(key) removed") }
+    }
+
+    @Test("The reset on the owner's rig resets inputs only; outputs only where only outputs move")
+    func resetOutcome() {
+        let rig = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
+        let defaults = scratch()
+        defaults.set(["0": 1], forKey: "cardRouting.v3.18.a=1f.b=none.channels=32.a.optical+analogAD16")
+        defaults.set(["0": 1], forKey: "unit.v3.1f.inputRouting.optical+analogAD16")
+        let outcome = ChannelOrderRoutingReset.runIfNeeded(transport: .thunderbolt, serving: .build(150),
+                                                           units: [rig], defaults: defaults)
+        #expect(outcome?.inputsMoved == true && outcome?.outputsMoved == false)
+        #expect(defaults.object(forKey: "cardRouting.v3.18.a=1f.b=none.channels=32.a.optical+analogAD16") != nil)
+        #expect(defaults.object(forKey: "unit.v3.1f.inputRouting.optical+analogAD16") == nil)
+        #expect(RoutingMixerReset.isPending(.thunderboltInputRouting, defaults: defaults))
+        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: defaults) == outcome?.notice)
+        #expect(ChannelOrderRoutingReset.pendingNotice(defaults: defaults) == outcome?.notice)
+
+        let outputs = scratch("outputsOnly")
+        outputs.set(["0": 1], forKey: "unit.v3.1f.inputRouting.optical+analogDA16")
+        let outputOutcome = ChannelOrderRoutingReset.runIfNeeded(
+            transport: .thunderbolt, serving: .build(150),
+            units: [ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogDA16)], defaults: outputs)
+        #expect(outputOutcome?.inputsMoved == false && outputOutcome?.outputsMoved == true)
+        #expect(outputs.object(forKey: "unit.v3.1f.inputRouting.optical+analogDA16") != nil)
+        #expect(!RoutingMixerReset.isPending(.thunderboltInputRouting, defaults: outputs))
+
+        // No pair that moves: it does not run.
+        let none = scratch("noMove")
+        #expect(ChannelOrderRoutingReset.runIfNeeded(
+            transport: .thunderbolt, serving: .build(150),
+            units: [ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .analogADDA16, slot2: .analogADDA16),
+                    ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .none)], defaults: none) == nil)
+        #expect(ChannelOrderRoutingReset.pendingAlert(defaults: none) == nil)
+    }
+
+    @Test("The notice says what moved and what was reset")
+    func noticeText() {
+        let rig = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
+        let example = ChannelOrderRoutingReset.inputExample(units: [rig])
+        #expect(example == "analog input 1 of the card in slot 2 is now DAW input 9, was 17")
+        #expect(ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: false, inputExample: example) == """
+            DAW input channels are now in Apogee's order: all analog first, then digital (for example, analog input 1 \
+            of the card in slot 2 is now DAW input 9, was 17). Input Routing was reset to the defaults, on ThunderBridge \
+            and USB. Output Routing was kept. Set your routes again if you had changed them. Input Routing presets saved \
+            before this update are kept but can't be applied: delete them or save them again. Setup files saved before \
+            this update load without their routing.
+            """)
+        #expect(ChannelOrderRoutingReset.noticeText(inputsMoved: false, outputsMoved: true) == """
+            Some Mac outputs now play on different physical outputs. Check levels and speakers before playing loud \
+            material. Output Routing (including routes from the mixers and speaker sets) was reset to the defaults, on \
+            ThunderBridge and USB. Input Routing was kept. Set your routes again if you had changed them. Output Routing \
+            presets saved before this update are kept but can't be applied: delete them or save them again. Setup files \
+            saved before this update load without their routing.
+            """)
+        let two88 = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .optical)
+        let bothText = ChannelOrderRoutingReset.noticeText(inputsMoved: true, outputsMoved: true,
+                                                           inputExample: ChannelOrderRoutingReset.inputExample(units: [two88]))
+        #expect(bothText.contains("analog input 1 of the card in slot 2 is now DAW input 9, was 17"))
+        #expect(bothText.contains("different physical outputs"))
+        #expect(bothText.contains("Input Routing and Output Routing (including routes from the mixers and speaker sets) were reset"))
+        #expect(bothText.contains("Routing presets saved before"))
+        // Unit B alone moving is named.
+        #expect(ChannelOrderRoutingReset.inputExample(units: [nil, rig])?.contains("on the second Symphony I/O") == true)
+        #expect(ChannelOrderRoutingReset.inputExample(
+            units: [ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogDA16)]) == nil)
+    }
+
     // MARK: Presets
 
     @Test("A routing preset is marked with its order on save, refused only where channels move")
@@ -175,6 +314,25 @@ struct ChannelOrderWiringTests {
         #expect(RoutingPresetChannelOrder.savingOrder(transport: .thunderbolt, current: analogFirst88) == .analogFirst)
         // The stored presets themselves are untouched.
         #expect(defaults.object(forKey: key) == nil)
+    }
+
+    @Test("A preset is refused only where its own direction moves, and is marked with every unit it covers")
+    func presetDirectionAndCoverage() {
+        let defaults = scratch()
+        let rig = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
+        // The owner's rig: old Output Routing presets still apply, old Input Routing presets do not.
+        #expect(!RoutingPresetChannelOrder.isStale(name: "Old", presetKey: "outputRoutingPresets", current: [rig], defaults: defaults))
+        #expect(RoutingPresetChannelOrder.isStale(name: "Old", presetKey: "inputRoutingPresets", current: [rig], defaults: defaults))
+        #expect(RoutingPresetChannelOrder.isStale(name: "Old", presetKey: "inputRoutingPresets.twoUnit", current: [rig], defaults: defaults))
+        let outputsMove = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogDA16)
+        #expect(RoutingPresetChannelOrder.isStale(name: "Old", presetKey: "outputRoutingPresets", current: [outputsMove], defaults: defaults))
+        #expect(!RoutingPresetChannelOrder.isStale(name: "Old", presetKey: "inputRoutingPresets", current: [outputsMove], defaults: defaults))
+        // Saved now: analog first only when every unit it covers is.
+        #expect(RoutingPresetChannelOrder.savingOrder(transport: .thunderbolt, covering: [rig, rig]) == .analogFirst)
+        #expect(RoutingPresetChannelOrder.savingOrder(transport: .thunderbolt, covering: [rig, nil]) == .cardByCard)
+        #expect(RoutingPresetChannelOrder.savingOrder(
+            transport: .thunderbolt, covering: [rig, ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: .optical)]) == .cardByCard)
+        #expect(RoutingPresetChannelOrder.savingOrder(transport: .usb, covering: [nil]) == .analogFirst)
     }
 
     // MARK: Setup files
@@ -216,6 +374,26 @@ struct ChannelOrderWiringTests {
         #expect(!new.routingApplies(current: .cardByCard))
         // Cards the order does not move: the routing applies either way.
         #expect(preset(boards: (.analogADDA16, .analogADDA16)).routingApplies(current: .analogFirst))
+    }
+
+    @Test("A two-unit setup file judges unit B's routing by unit B's own order")
+    func setupFileUnitBOrder() throws {
+        var file = preset(boards: (.analogADDA16, .analogADDA16))
+        file.channelOrder = ThunderboltPreset.channelOrderTag(.analogFirst)
+        var b = preset(boards: (.optical, .optical))
+        b.channelOrder = ThunderboltPreset.channelOrderTag(.cardByCard)
+        file.version = 2
+        file.unitB = .init(b)
+        #expect(file.unitB?.channelOrder == "cardByCard")
+        // Unit B's cards move and it was saved card by card: refused where B is analog first now.
+        #expect(!file.routingApplies(current: .analogFirst, currentB: .analogFirst))
+        #expect(file.routingApplies(current: .analogFirst, currentB: .cardByCard))
+        // A file without unit B's own tag goes by the file's.
+        file.unitB?.channelOrder = nil
+        #expect(file.routingApplies(current: .analogFirst, currentB: .analogFirst))
+        #expect(!file.routingApplies(current: .analogFirst, currentB: .cardByCard))
+        let decoded = try PropertyListDecoder().decode(ThunderboltPreset.self, from: PropertyListEncoder().encode(file))
+        #expect(decoded == file)
     }
 
     @Test("Restoring without routing writes no input, card input or output route, and keeps the rest")

@@ -93,23 +93,47 @@ extension ThunderboltChannelOrder {
     /// (the driver keeps card by card then). A single card, 16x16 + 16x16,
     /// 2x6 + empty and 16x16 + 8MicPre do not differ; 8x8 + A16 does.
     public static func differs(slot1: IOCardType?, slot2: IOCardType?) -> Bool {
-        guard let slot1, let slot2 else { return false }
-        let cards = [slot1, slot2]
-        for isInput in [true, false] {
-            func real(_ at: BoardChannel?) -> BoardChannel? {
-                guard let at, (0..<2).contains(at.board) else { return nil }
-                let card = cards[at.board]
-                let total = isInput ? card.totalInputChannels : card.totalOutputChannels
-                return at.channel < min(total, IOCardType.busChannelsPerBoard) ? at : nil
-            }
-            let analogFirst = analogFirstOrder(slot1: slot1, slot2: slot2, isInput: isInput)
-            for host in 0..<32 {
-                let first = real(host < analogFirst.count ? analogFirst[host] : nil)
-                let byCard = real(cardByCardBoardChannel(host: host, slot1: slot1, isInput: isInput))
-                if first != byCard { return true }
-            }
+        differs(slot1: slot1, slot2: slot2, isInput: true) || differs(slot1: slot1, slot2: slot2, isInput: false)
+    }
+
+    /// `differs` for one direction: whether the unit's inputs (`isInput`)
+    /// or its outputs move. 8x8 + A16 (16 analog in) moves only its inputs,
+    /// 8x8 + DA16 (16 analog out) only its outputs, two 8x8s both.
+    public static func differs(slot1: IOCardType?, slot2: IOCardType?, isInput: Bool) -> Bool {
+        firstMovedHost(slot1: slot1, slot2: slot2, isInput: isInput) != nil
+    }
+
+    /// The first host channel (0-based) that carries a different real board
+    /// channel analog first than card by card, nil when none does.
+    public static func firstMovedHost(slot1: IOCardType?, slot2: IOCardType?, isInput: Bool) -> Int? {
+        guard let slot1, let slot2 else { return nil }
+        let analogFirst = analogFirstOrder(slot1: slot1, slot2: slot2, isInput: isInput)
+        for host in 0..<32 {
+            let first = realBoardChannel(host < analogFirst.count ? analogFirst[host] : nil,
+                                         slot1: slot1, slot2: slot2, isInput: isInput)
+            let byCard = realBoardChannel(cardByCardBoardChannel(host: host, slot1: slot1, isInput: isInput),
+                                          slot1: slot1, slot2: slot2, isInput: isInput)
+            if first != byCard { return host }
         }
-        return false
+        return nil
+    }
+
+    /// Where a board channel sits on the host channels under each order:
+    /// `(analogFirst, cardByCard)`, 0-based, nil where that order gives it
+    /// no host channel.
+    public static func hostChannels(of channel: BoardChannel, slot1: IOCardType, slot2: IOCardType,
+                                    isInput: Bool) -> (analogFirst: Int?, cardByCard: Int?) {
+        let analogFirst = analogFirstOrder(slot1: slot1, slot2: slot2, isInput: isInput).firstIndex(of: channel)
+        let cardByCard = (0..<32).first { cardByCardBoardChannel(host: $0, slot1: slot1, isInput: isInput) == channel }
+        return (analogFirst, cardByCard)
+    }
+
+    private static func realBoardChannel(_ at: BoardChannel?, slot1: IOCardType, slot2: IOCardType,
+                                         isInput: Bool) -> BoardChannel? {
+        guard let at, (0..<2).contains(at.board) else { return nil }
+        let card = at.board == 0 ? slot1 : slot2
+        let total = isInput ? card.totalInputChannels : card.totalOutputChannels
+        return at.channel < min(total, IOCardType.busChannelsPerBoard) ? at : nil
     }
 
     /// The board channel host channel `host` carries under a card-by-card
@@ -203,25 +227,37 @@ public struct ThunderboltUnitChannelOrder: Sendable, Equatable {
     }
 
     /// Whether this unit's channels sit elsewhere than card by card put them.
-    public var movesChannels: Bool {
-        order == .analogFirst && ThunderboltChannelOrder.differs(slot1: slot1, slot2: slot2)
+    public var movesChannels: Bool { movesInputs || movesOutputs }
+    /// Whether this unit's inputs sit elsewhere than card by card put them.
+    public var movesInputs: Bool {
+        order == .analogFirst && ThunderboltChannelOrder.differs(slot1: slot1, slot2: slot2, isInput: true)
+    }
+    /// Whether this unit's outputs sit elsewhere than card by card put them.
+    public var movesOutputs: Bool {
+        order == .analogFirst && ThunderboltChannelOrder.differs(slot1: slot1, slot2: slot2, isInput: false)
     }
 
-    /// The order to follow, nil while it is not known.
+    /// The order to follow, nil while it is not known (nothing is written then).
     ///
-    /// - A driver from build 150 (or an unstamped local build, 0) reports
-    ///   what it applied (`applied`, selector 17): that order and the types
-    ///   it built the tables from. Not known until it has programmed the
-    ///   unit, or when the read fails: nothing is written then.
-    /// - An older driver, one that does not report its build, or no reading
-    ///   (`serving` nil): card by card, from `fallback` (the app's own trusted
-    ///   slot types), as up to 0.9.24.
+    /// - The driver answered selector 17 (`applied` non-nil; only build 150
+    ///   and later, or an unstamped local build, have it): what it reports,
+    ///   whatever the build read said. Nil until it has programmed the unit.
+    /// - No answer from selector 17, and the driver reported a build before
+    ///   150: card by card, from `fallback` (the app's own trusted slot
+    ///   types), as up to 0.9.24.
+    /// - No answer from selector 17 otherwise: not known. That covers a
+    ///   build of 150 or later whose read failed, and a build that is not
+    ///   known (`serving` nil, or `.olderThanBuildReporting`, which a failed
+    ///   build read on any driver also gives). A driver before 123, which
+    ///   cannot report its build, has its ThunderBridge routing held too.
     public static func resolve(serving: ServingDextBuild?, applied: ThunderboltAppliedChannelOrder.Unit?,
                                fallback: (slot1: IOCardType?, slot2: IOCardType?)) -> ThunderboltUnitChannelOrder? {
-        guard ThunderboltChannelOrder.serving(serving) == .analogFirst else {
-            return ThunderboltUnitChannelOrder(order: .cardByCard, slot1: fallback.slot1, slot2: fallback.slot2)
+        if let applied {
+            guard let order = applied.order else { return nil }
+            return ThunderboltUnitChannelOrder(order: order, slot1: applied.slot1, slot2: applied.slot2)
         }
-        guard let applied, let order = applied.order else { return nil }
-        return ThunderboltUnitChannelOrder(order: order, slot1: applied.slot1, slot2: applied.slot2)
+        guard case .build(let build)? = serving, build != 0,
+              build < UInt32(ServingDextBuild.firstAnalogFirstBuild) else { return nil }
+        return ThunderboltUnitChannelOrder(order: .cardByCard, slot1: fallback.slot1, slot2: fallback.slot2)
     }
 }

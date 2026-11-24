@@ -30,8 +30,22 @@ public enum RoutingPresetChannelOrder {
     /// the driver's (`current`, card by card while not known); USB analog
     /// first, as its tables always were.
     public static func savingOrder(transport: TransportType?, current: ThunderboltUnitChannelOrder?) -> ThunderboltChannelOrder {
-        transport == .thunderbolt ? (current?.order ?? .cardByCard) : .analogFirst
+        savingOrder(transport: transport, covering: [current])
     }
+
+    /// The order for a preset that covers several units (an Output Routing
+    /// preset with unit B's half, the two-unit card input grid): analog
+    /// first only when every unit it covers is; card by card otherwise,
+    /// which is refused wherever a covered unit's channels move (the safe
+    /// side for a preset whose halves are in different orders).
+    public static func savingOrder(transport: TransportType?, covering units: [ThunderboltUnitChannelOrder?]) -> ThunderboltChannelOrder {
+        guard transport == .thunderbolt else { return .analogFirst }
+        return !units.isEmpty && units.allSatisfy({ $0?.order == .analogFirst }) ? .analogFirst : .cardByCard
+    }
+
+    /// Whether presets under `presetKey` hold output routing ("outputRoutingPresets…")
+    /// rather than input routing ("inputRoutingPresets…").
+    static func isOutputPreset(_ presetKey: String) -> Bool { presetKey.hasPrefix("output") }
 
     /// Record the order `name` was saved in under `presetKey`.
     public static func mark(name: String, presetKey: String, order: ThunderboltChannelOrder,
@@ -56,10 +70,13 @@ public enum RoutingPresetChannelOrder {
 
     /// Whether `name` must be refused (and is shown marked): it was not saved
     /// analog first and one of `current` (the units it would be applied to,
-    /// nil entries ignored) is laid out analog first with channels that move.
+    /// nil entries ignored) is laid out analog first with channels that move
+    /// in the preset's direction: an Input Routing preset where inputs move,
+    /// an Output Routing preset where outputs move.
     public static func isStale(name: String, presetKey: String, current: [ThunderboltUnitChannelOrder?],
                                defaults: UserDefaults = .standard) -> Bool {
-        guard current.contains(where: { $0?.movesChannels == true }) else { return false }
+        let output = isOutputPreset(presetKey)
+        guard current.contains(where: { (output ? $0?.movesOutputs : $0?.movesInputs) == true }) else { return false }
         return order(name: name, presetKey: presetKey, defaults: defaults) != .analogFirst
     }
 
