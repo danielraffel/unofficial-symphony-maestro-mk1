@@ -187,6 +187,13 @@ final class AppState: @unchecked Sendable {
     /// speaker and headphone levels (once: a retry must not lower a level
     /// raised since; across relaunches `FrontPanelResetMarker` says so).
     @ObservationIgnored var usbFrontPanelResetLevelsGeneration: UUID?
+    /// Each slot's card as read from the unit, with the connection and unit
+    /// generation it was read on (`noteBoardRead`). Unlike `.detected`, this
+    /// also holds a slot seen to be empty over USB
+    /// (`XPCDeviceConnection.optionBoardReadsEmpty`), and it is only believed
+    /// for the connection and generation that read it
+    /// (`frontPanelResetCardRefusal`).
+    @ObservationIgnored var boardReadsOnConnection: [Int: BoardReadOnConnection] = [:]
     /// The pause between the two checks of a front-panel reset request
     /// (`XPCDeviceConnection.confirmFrontPanelReset`).
     @ObservationIgnored var usbResetConfirmSeparation: Duration =
@@ -2960,6 +2967,11 @@ final class AppState: @unchecked Sendable {
             self.primaryBoardSource = (card == .none && !thunderboltReadDistinguishesEmptySlot)
                 ? .unknown : .detected
             print("[Maestro] Primary board: \(card.digitalLabel) (raw=\(raw))")
+            if self.primaryBoardSource == .detected {
+                noteBoardRead(slot: 0, card: card, connection: device, generation: generation)
+            } else {
+                await noteUSBEmptySlotIfAnswered(slot: 0, connection: device, generation: generation)
+            }
         }
 
         guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
@@ -2979,6 +2991,7 @@ final class AppState: @unchecked Sendable {
                 guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
                 self.secondaryBoardType = card
                 self.secondaryBoardSource = .detected
+                noteBoardRead(slot: 1, card: card, connection: device, generation: generation)
                 print("[Maestro] Secondary board: \(card.digitalLabel) (raw=\(raw)) [attempt \(attempt)]")
                 saveBoardTypeCache()
                 await readUnitAIdentityAfterCapabilities()
@@ -2987,6 +3000,8 @@ final class AppState: @unchecked Sendable {
         }
         guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         print("[Maestro] Secondary board: not detected after 3 attempts (hardware may have 1 board or slot 1 empty)")
+        await noteUSBEmptySlotIfAnswered(slot: 1, connection: device, generation: generation)
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         // Still save whatever we got (primary may have succeeded)
         saveBoardTypeCache()
         await readUnitAIdentityAfterCapabilities()

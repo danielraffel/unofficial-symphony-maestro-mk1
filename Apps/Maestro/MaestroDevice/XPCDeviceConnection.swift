@@ -1416,10 +1416,16 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
     /// answered 0xDB, the decoy's bytes did not come through); nil when a
     /// read failed or no decoy differed (``trustedRead(_:)``).
     private func answeredResetRequestHoldingGates() async -> UInt8? {
-        let read = Self.resetRequestRead
+        await answeredReadHoldingGates(Self.resetRequestRead, decoys: Self.resetRequestDecoys)
+    }
+
+    /// `read`'s first byte, only when a decoy whose first byte is seen to
+    /// differ leaves the second reply equal to the first (the unit answered
+    /// it). With `sequenceOwner` and `readGate` held.
+    private func answeredReadHoldingGates(_ read: USBControlRequest, decoys: [USBControlRequest]) async -> UInt8? {
         guard let first = await restoreRead(read), let byte = first.first else { return nil }
         var decoyed = false
-        for decoy in Self.resetRequestDecoys {
+        for decoy in decoys where decoy.request != read.request {
             guard let reply = await restoreRead(decoy), let other = reply.first else { continue }
             if other != byte { decoyed = true; break }
         }
@@ -1438,6 +1444,23 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         await readGate.release()
         await sequenceOwner.release()
         return value
+    }
+
+    /// Whether the unit is seen to answer "no card" (0) for the option board
+    /// in `slot` (0xA1): the read, a decoy whose first byte differs, the
+    /// read again (``answeredResetRequestHoldingGates()``). A single 0xA1
+    /// reply of 0 can be the shared buffer's residue (``trustedRead(_:)``),
+    /// so an empty slot is believed only this way.
+    public func optionBoardReadsEmpty(slot: UInt16) async -> Bool {
+        guard transport.isConnected else { return false }
+        await sequenceOwner.acquire()
+        await readGate.acquire()
+        let value = await answeredReadHoldingGates(
+            SymphonyIORequestBuilder.getOptionBoardType(slot: slot),
+            decoys: [Self.resetRequestRead] + Self.resetRequestDecoys)
+        await readGate.release()
+        await sequenceOwner.release()
+        return value == 0
     }
 
     /// A front-panel reset (0xDB ResetAll or ResetAllButCalibration) only when

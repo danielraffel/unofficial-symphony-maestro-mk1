@@ -51,7 +51,55 @@ import MaestroDevice
 // (`makeOtherTransportsSafeAfterFrontPanelReset`).
 // Optical format is not saved by Maestro over USB (it reads the unit's), and
 // the channel name prefix is left alone.
+/// A slot's card as read from the unit on one connection and unit
+/// generation (`AppState.boardReadsOnConnection`).
+struct BoardReadOnConnection {
+    weak var connection: AnyObject?
+    let generation: UUID
+    let card: IOCardType
+}
+
 extension AppState {
+    /// Remember that `slot` was read as `card` on `connection` under `generation`.
+    func noteBoardRead(slot: Int, card: IOCardType, connection: any DeviceConnection, generation: UUID) {
+        boardReadsOnConnection[slot] = BoardReadOnConnection(connection: connection, generation: generation, card: card)
+    }
+
+    /// Over USB a slot's 0xA1 reply of 0 is not a reading on its own (an
+    /// unanswered read returns the shared buffer's residue, and the source
+    /// stays `.unknown`). Asked again with a decoy in between
+    /// (`XPCDeviceConnection.optionBoardReadsEmpty`): when the unit is seen
+    /// to answer 0, the slot is recorded as read empty on this connection.
+    func noteUSBEmptySlotIfAnswered(slot: Int, connection: any DeviceConnection, generation: UUID) async {
+        guard let usb = connection as? XPCDeviceConnection else { return }
+        let empty = await usb.optionBoardReadsEmpty(slot: UInt16(slot))
+        guard device === connection, unitAGeneration == generation, !Task.isCancelled else { return }
+        if empty {
+            noteBoardRead(slot: slot, card: .none, connection: connection, generation: generation)
+            print("[Maestro] Card \(slot + 1): the unit answers empty (read checked)")
+        }
+    }
+
+    /// Why a front-panel reset must not be applied with the cards Maestro
+    /// shows, or nil when both slots were read on `connection` under
+    /// `generation` (a card, or seen empty) and show what was read. A slot
+    /// read on an earlier connection, or never read, refuses: the defaults
+    /// depend on the cards. So does a slot whose shown card differs from
+    /// what was read (USB never writes an empty read over a cached card).
+    func frontPanelResetCardRefusal(connection: any DeviceConnection, generation: UUID) -> String? {
+        var refused: [String] = []
+        for (slot, shown) in [(0, primaryBoardType), (1, secondaryBoardType)] {
+            guard let read = boardReadsOnConnection[slot], read.connection === connection,
+                  read.generation == generation else {
+                refused.append("card \(slot + 1) not read on this connection"); continue
+            }
+            if read.card != shown {
+                refused.append("card \(slot + 1) read as \(read.card.digitalLabel) but shown as \(shown.digitalLabel)")
+            }
+        }
+        return refused.isEmpty ? nil : refused.joined(separator: "; ")
+    }
+
     /// An output channel after a front-panel Reset All: the original's
     /// defaults (+4 dBu, -16 dBFS, trims 0), except that nothing is moved in
     /// the louder direction. The original put every output on its defaults;
@@ -185,7 +233,7 @@ extension AppState {
         let includingCalibration = reset == .resetAll
         // Monitor settings.
         let store = connection.settingsStore
-        let boardsMeasured = primaryBoardSource == .detected && secondaryBoardSource == .detected
+        let boardsMeasured = frontPanelResetCardRefusal(connection: connection, generation: unitAGeneration) == nil
         let mode: SymphonyIOSpeakerMode = boardsMeasured
             ? SymphonyIOMonitorDefaults.speakerMode(
                 analogOutputChannels: primaryBoardType.analogOutputChannels + secondaryBoardType.analogOutputChannels)
@@ -251,13 +299,18 @@ extension AppState {
     /// headphones at the quieter of -20 dB (the original's reset level) and
     /// what the unit reports, and never louder. A level whose read the unit
     /// is not seen to answer is left alone. Mutes are not touched.
+    /// False when a level's write failed or the connection was replaced
+    /// meanwhile: the lowering is then owed, and tried again. A level the
+    /// unit does not answer stays left alone, as before.
     @MainActor
-    func applyFrontPanelResetLevels(_ connection: XPCDeviceConnection) async {
+    @discardableResult
+    func applyFrontPanelResetLevels(_ connection: XPCDeviceConnection) async -> Bool {
+        var done = true
         for selector in [AudioPropertySelector.outputLevel, .headphone1Level, .headphone2Level] {
             let address = PropertyAddress(selector: selector)
             let range: UInt8 = selector == .outputLevel ? 64 : 127
-            guard device === connection,
-                  let byte = await connection.restoreReadBelievedByte(address), byte <= range else {
+            guard device === connection else { return false }
+            guard let byte = await connection.restoreReadBelievedByte(address), byte <= range else {
                 print("[Maestro] USB front panel reset: \(selector) not read; left as it is")
                 continue
             }
@@ -280,8 +333,10 @@ extension AppState {
                 print("[Maestro] USB front panel reset: \(selector) lowered from -\(current) dB to -\(Self.frontPanelResetAttenuation) dB")
             } catch {
                 print("[Maestro] USB front panel reset: \(selector) not written: \(error)")
+                done = false
             }
         }
+        return done
     }
 }
 

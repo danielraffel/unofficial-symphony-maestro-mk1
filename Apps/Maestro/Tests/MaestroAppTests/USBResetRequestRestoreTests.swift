@@ -34,6 +34,8 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     var startingAnswers: [UInt8] = []
     /// Every read fails (an older helper or firmware).
     var readsFail = false
+    /// Writes of these opcodes fail (nothing is kept).
+    var failWrites: Set<UInt8> = []
     /// Read opcodes the firmware leaves unanswered: their replies are the
     /// shared buffer's residue.
     var unanswered: Set<UInt8> = []
@@ -78,6 +80,7 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
 
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
         let bytes = Array(data)
+        if lock.withLock({ failWrites.contains(bRequest) }) { throw DeviceConnectionError.transportError("write refused") }
         lock.withLock {
             for (i, byte) in bytes.prefix(buffer.count).enumerated() { buffer[i] = byte }
             otherTransfers = true
@@ -172,10 +175,13 @@ struct USBResetRequestRestoreTests {
         state.device = usb
         state.primaryBoardType = .analogADDA16
         state.primaryBoardSource = .detected
+        // What USB produces for an empty slot 2: the type stays .none, the
+        // source unknown, and the slot is recorded as read empty.
         state.secondaryBoardType = .none
-        state.secondaryBoardSource = .detected
+        state.secondaryBoardSource = .unknown
         state.unitAIdentity = identity
         state.unitAIdentityState = .known(identity)
+        cardsRead(state)
         let store = usb.settingsStore
         store.record(.uint32(2), for: PropertyAddress(selector: .speakerOutputMode))
         store.record(.bool(true), for: PropertyAddress(selector: .outputDim))
@@ -210,9 +216,19 @@ struct USBResetRequestRestoreTests {
 
     /// The USB cable out and back in: the helper configures the unit again
     /// and the app gets a new connection generation.
-    private func replug(_ state: AppState, _ unit: HoldingUnit) {
+    private func replug(_ state: AppState, _ unit: HoldingUnit, readingCards: Bool = true) {
         unit.configure()
         state.unitAGeneration = UUID()
+        if readingCards { cardsRead(state) }
+    }
+
+    /// What `readCardTypes` records on this connection and generation for
+    /// a one-card USB unit: slot 1 read as its card, slot 2 seen empty
+    /// (`noteUSBEmptySlotIfAnswered`).
+    private func cardsRead(_ state: AppState) {
+        guard let device = state.device else { return }
+        state.noteBoardRead(slot: 0, card: state.primaryBoardType, connection: device, generation: state.unitAGeneration)
+        state.noteBoardRead(slot: 1, card: .none, connection: device, generation: state.unitAGeneration)
     }
 
     @Test("a plain replug (the unit reports no reset and holds every setting): Maestro writes nothing")
@@ -569,10 +585,13 @@ struct USBResetRequestRestoreTests {
         state.device = usb
         state.primaryBoardType = .analogADDA16
         state.primaryBoardSource = .detected
+        // What USB produces for an empty slot 2: the type stays .none, the
+        // source unknown, and the slot is recorded as read empty.
         state.secondaryBoardType = .none
-        state.secondaryBoardSource = .detected
+        state.secondaryBoardSource = .unknown
         state.unitAIdentity = identity
         state.unitAIdentityState = .known(identity)
+        cardsRead(state)
         unit.configure()
         return (state, usb)
     }
@@ -762,6 +781,7 @@ struct USBResetRequestRestoreTests {
         unit.refuseResetClear = false
         unit.clearWrites()
         again.unitAGeneration = UUID()
+        cardsRead(again)
         await again.restoreUSBMixerAfterRecovery(usbAgain, helperMixer: 0)
         #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
         #expect(FrontPanelResetMarker.stage(for: identity) == nil)
@@ -786,21 +806,115 @@ struct USBResetRequestRestoreTests {
         #expect(FrontPanelResetMarker.stage(for: identity) != nil)
     }
 
-    @Test("a front-panel reset is not applied while the cards are not read this session")
+    @Test("a front-panel reset is not applied while the cards were read only on an earlier connection")
     func resetWaitsForBoardDetection() async throws {
         let restore = restoringDefaults()
         defer { restore() }
         let (state, usb, unit) = try makeState(uid: "reset-no-boards", identity: 0xF2B0_0017)
         defer { FrontPanelResetMarker.clear(for: 0xF2B0_0017) }
         try await firstRestore(state, usb, unit)
-        replug(state, unit)
-        state.secondaryBoardSource = .cached
+        // Replugged, and the cards not read again yet: the earlier
+        // connection's reading (and slot 1's `.detected`) is not enough.
+        replug(state, unit, readingCards: false)
+        #expect(state.primaryBoardSource == .detected)
         unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
         await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
         #expect((state.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?)?.count == 1)
         #expect(!unit.writes.contains { $0.request == SymphonyIOResetRequest.command })
         #expect(unit.resetRequest == SymphonyIOResetRequest.resetAll.rawValue)
         #expect(FrontPanelResetMarker.stage(for: 0xF2B0_0017) == nil)
+        // Read on this connection: applied, and cleared.
+        cardsRead(state)
+        unit.clearWrites()
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect((state.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?)?.isEmpty ?? true)
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
+    }
+
+    @Test("a front-panel reset is not applied when slot 2 shows a cached card but was read empty")
+    func resetRefusesStaleCachedCard() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-stale-card", identity: 0xF2B0_001A)
+        defer { FrontPanelResetMarker.clear(for: 0xF2B0_001A) }
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        // USB never writes an empty read over a cached card.
+        state.secondaryBoardType = .optical
+        state.secondaryBoardSource = .cached
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        #expect(state.frontPanelResetCardRefusal(connection: usb, generation: state.unitAGeneration) != nil)
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(!unit.writes.contains { $0.request == SymphonyIOResetRequest.command })
+        #expect(unit.resetRequest == SymphonyIOResetRequest.resetAll.rawValue)
+        #expect(FrontPanelResetMarker.stage(for: 0xF2B0_001A) == nil)
+    }
+
+    @Test("a one-card USB unit (slot 2 seen empty, source not .detected): the reset is applied and 0xDB cleared")
+    func oneCardUSBResetApplied() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let identity: UInt64 = 0xF2B0_001B
+        let (state, usb, unit) = try makeState(uid: "reset-one-card", identity: identity)
+        defer { FrontPanelResetMarker.clear(for: identity) }
+        try await firstRestore(state, usb, unit)
+        // A real 0xA1 read of slot 2 on the new connection, checked with a
+        // decoy between, records it as read empty.
+        replug(state, unit, readingCards: false)
+        state.noteBoardRead(slot: 0, card: .analogADDA16, connection: usb, generation: state.unitAGeneration)
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        await state.noteUSBEmptySlotIfAnswered(slot: 1, connection: usb, generation: state.unitAGeneration)
+        #expect(state.boardReadsOnConnection[1]?.card == IOCardType.none)
+        #expect(state.secondaryBoardSource == .unknown, "USB does not mark an empty slot .detected")
+        #expect(state.frontPanelResetCardRefusal(connection: usb, generation: state.unitAGeneration) == nil)
+        unit.clearWrites()
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect((state.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?)?.isEmpty ?? true,
+                "saved state reset")
+        #expect(state.peripheralRoutingCache(direction: "output").loadMulti() == nil)
+        #expect(unit.writes.contains { $0.request == SymphonyIOResetRequest.command })
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue, "0xDB cleared")
+    }
+
+    @Test("an empty slot is not recorded from a 0xA1 reply the unit is not seen to answer")
+    func emptySlotResidueNotRecorded() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, usb, unit) = try makeState(uid: "reset-slot-residue", identity: 0xF2B0_001C)
+        replug(state, unit, readingCards: false)
+        unit.unanswered = [0xA1]
+        try await leaveInBuffer(0, unit)
+        await state.noteUSBEmptySlotIfAnswered(slot: 1, connection: usb, generation: state.unitAGeneration)
+        #expect(state.boardReadsOnConnection[1]?.generation != state.unitAGeneration)
+        #expect(state.frontPanelResetCardRefusal(connection: usb, generation: state.unitAGeneration) != nil)
+    }
+
+    @Test("a lowering of the levels whose write failed is tried again on the next connection; 0xDB is cleared only after")
+    func failedLevelLoweringRetried() async throws {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let identity: UInt64 = 0xF2B0_001D
+        let (state, usb, unit) = try makeState(uid: "reset-levels-failed", identity: identity)
+        defer { FrontPanelResetMarker.clear(for: identity) }
+        try await firstRestore(state, usb, unit)
+        replug(state, unit)
+        unit.set(0x26, 0, 0, [0])
+        unit.failWrites = [0x26]
+        unit.resetRequest = SymphonyIOResetRequest.resetAll.rawValue
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(FrontPanelResetMarker.stage(for: identity) == .savedStateReset, "levels not noted as lowered")
+        #expect(unit.resetRequest == SymphonyIOResetRequest.resetAll.rawValue, "not acknowledged yet")
+        #expect(unit.value(0x26) == [0])
+        // The next connection: the levels come down, the saved state is not reset again, 0xDB cleared.
+        unit.failWrites = []
+        replug(state, unit)
+        let edited = MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: false)
+        state.channelStateStore.save([edited], for: ChannelStateStore.mixerKey(0))
+        unit.clearWrites()
+        await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        #expect(unit.writes.contains(HoldingUnit.Write(request: 0x26, value: 0, index: 0, data: [20])))
+        #expect((state.channelStateStore.load(ChannelStateStore.mixerKey(0)) as [MixerChannelState]?) == [edited])
+        #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue)
     }
 
     @Test("a headphone whose source a mixer feeds counts as a mixer-fed destination (the restore is not paced)")

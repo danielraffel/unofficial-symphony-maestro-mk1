@@ -231,16 +231,18 @@ extension AppState {
             }
             guard isCurrent() else { return }
         }
-        // Not on a unit whose cards were not read this session: the defaults
-        // depend on them (the routing ones most of all), and a reset of the
-        // wrong layout is not undone. 0xDB stays as it is, so the reset is
-        // applied by the restore of a later connection (or a later restore
-        // of this one) that finds the cards read; this restore asks the unit
-        // before each write, as on a replug.
+        // Not on a unit whose cards were not read on this connection: the
+        // defaults depend on them (the routing ones most of all), and a reset
+        // of the wrong layout is not undone. A slot seen empty counts as
+        // read (`frontPanelResetCardRefusal`); one read on an earlier
+        // connection does not. 0xDB stays as it is, so the reset is applied
+        // by the restore of a later connection (or a later restore of this
+        // one) that finds the cards read; this restore asks the unit before
+        // each write, as on a replug.
         var frontPanelReset = reset?.isFrontPanelReset == true
         if frontPanelReset {
             let refusal = !isHardwareInitialized ? "the unit is not ready yet"
-                : RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading)
+                : frontPanelResetCardRefusal(connection: connection, generation: generation)
             if let refusal {
                 print("[Maestro] USB front panel reset (\(reset!)): not applied in this restore; \(refusal)")
                 frontPanelReset = false
@@ -325,13 +327,22 @@ extension AppState {
         // routing and the mixers written below are then heard at the lowered
         // level, never at the old one. Once per reset (not again on a retry,
         // a replug or a relaunch before 0xDB is cleared): a level raised
-        // since stays where it was put.
+        // since stays where it was put. "Once" is noted only after the
+        // lowering went through: one that was superseded or whose write
+        // failed is tried again (by a later restore, connection or launch;
+        // 0xDB is not cleared until it has been), and a repeat can only go
+        // quieter. A level the unit does not answer is left alone.
+        var levelsOwed = false
         if frontPanelReset, connectedUnit == nil, usbFrontPanelResetLevelsGeneration != generation,
            identity.map({ FrontPanelResetMarker.stage(for: $0) != .levelsLowered }) ?? true {
-            usbFrontPanelResetLevelsGeneration = generation
-            if let identity { FrontPanelResetMarker.set(.levelsLowered, for: identity) }
-            await applyFrontPanelResetLevels(connection)
+            let lowered = await applyFrontPanelResetLevels(connection)
             guard isCurrent() else { return }
+            if lowered {
+                usbFrontPanelResetLevelsGeneration = generation
+                if let identity { FrontPanelResetMarker.set(.levelsLowered, for: identity) }
+            } else {
+                levelsOwed = true
+            }
             phase("front panel reset levels")
         }
         // Mixers this connection already holds in full (a retry of something
@@ -430,7 +441,9 @@ extension AppState {
         usbRestoredHelperEpoch = helperEpoch
         usbRestoredHelperConfigures = connection.restoreHelperConfigures
         usbRestoreRetryAttempts = 0
-        if frontPanelReset {
+        if frontPanelReset, levelsOwed {
+            print("[Maestro] USB restore: front panel reset not acknowledged yet; a speaker or headphone level was not written, the lowering is tried again by the next restore")
+        } else if frontPanelReset {
             if await connection.clearResetRequest() {
                 if let identity { FrontPanelResetMarker.clear(for: identity) }
                 print("[Maestro] USB restore: front panel reset acknowledged")
