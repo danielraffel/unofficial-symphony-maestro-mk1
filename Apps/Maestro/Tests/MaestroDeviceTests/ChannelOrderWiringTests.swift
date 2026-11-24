@@ -71,7 +71,9 @@ struct ChannelOrderWiringTests {
     @Test("Channels move only where a card's digital channels sat before the other card's analog ones")
     func differs() {
         #expect(!ThunderboltChannelOrder.differs(slot1: .optical, slot2: .none))
-        #expect(!ThunderboltChannelOrder.differs(slot1: .none, slot2: .optical))
+        // An empty slot 1 (`IOCardType.none`; a bare `.none` would be nil
+        // here): slot 2's channels move down to Mac 1.
+        #expect(ThunderboltChannelOrder.differs(slot1: IOCardType.none, slot2: .optical))
         #expect(!ThunderboltChannelOrder.differs(slot1: .analogADDA16, slot2: .analogADDA16))
         #expect(!ThunderboltChannelOrder.differs(slot1: .twoBySix, slot2: .none))
         #expect(!ThunderboltChannelOrder.differs(slot1: .analogADDA16, slot2: .micPre8))
@@ -171,6 +173,7 @@ struct ChannelOrderWiringTests {
         #expect(moves(.optical, .optical) == (true, true))
         #expect(moves(.analogADDA16, .analogADDA16) == (false, false))
         #expect(moves(.optical, .none) == (false, false))
+        #expect(moves(.none, .optical) == (true, true))
         #expect(moves(.analogADDA16, .micPre8) == (false, false))
         let rig = ThunderboltUnitChannelOrder(order: .analogFirst, slot1: .optical, slot2: .analogAD16)
         #expect(rig.movesInputs && !rig.movesOutputs && rig.movesChannels)
