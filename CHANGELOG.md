@@ -13,6 +13,10 @@ This beta puts the Mac's channels on ThunderBridge and the Symphony 64 PCIe card
 - **Setup files saved before this update restore without their routing** on a setup whose channels moved. Everything else in them is restored, and Maestro says the routing was skipped.
 - **The update replaces the ThunderBridge driver (0.11.19, build 150).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running. Until then the old driver keeps the old order, and Maestro keeps using it.
 
+### Fixed
+
+- **Use Loop Sync no longer flashes in Device Settings.** Its switch and info button greyed out and came back every two seconds while Maestro checked the clock; they now stay steady and only grey out while a change you made is being applied.
+
 ## 0.9.24 (beta)
 
 This beta makes the Mixer on ThunderBridge and the Symphony 64 PCIe card sound as it did in Apogee's software, fixes the meters, cuts Maestro USB's latency from about 39 ms to about 13 ms, and adds Use Loop Sync with one Symphony I/O. It contains everything in 0.9.21; 0.9.22 and 0.9.23 were never released, and their changes are listed here.
