@@ -42,7 +42,11 @@
 // Selector 16 (dext 143+): VBus, Apogee's loopback channels. input:
 // SymphonyVBusInput; output: SymphonyVBusStateOutput. No bus access.
 #define kSelectorVBus           16
-#define kSelectorCount          17
+// Selector 17 (dext 150+): the host channel order each unit's routing tables
+// were last programmed with, and the board types they were built from.
+// output: SymphonyChannelOrderOutput. No bus access.
+#define kSelectorReadChannelOrder 17
+#define kSelectorCount          18
 
 // ── VBus ────────────────────────────────────────────────────────────────────
 // The original's "virtual buses": N extra output channels and N extra input
@@ -376,6 +380,34 @@ typedef struct {
     uint32_t txErrors;
     uint32_t reserved2[4]; // reserved2[0] is the driver-visible unit-B generation
 } SymphonyUnitBStateOutput; // 40 bytes
+
+// ── Applied host channel order (kSelectorReadChannelOrder, dext 150+) ───────
+// What the driver last programmed into each unit's routing layer (0x31): the
+// capture table (step 19b-2 / ConfigureUnitB) and the board-output playback
+// table (19b-1 / 19b-1b), and the board types and known flags it built them
+// from. Latched only when every 0x31 send of that configuration succeeded; a
+// configuration with a failed send keeps reporting the previous one. Input and
+// output channel names are published from the same latched values, so names,
+// tables and this answer cannot disagree. Unit A: None until a configuration
+// reaches step 19b with all four sends out, and again while port 1 carries
+// converters. Unit B: None whenever it is not configured (32 channels, set-up
+// failed, left two-unit mode). `generation` moves each time either unit's
+// latched values change (a link recovery that read other types, unit B set up
+// or left), and not for a configuration that latched the same values again.
+#define kSymphonyChannelOrderNone        0u  // not programmed (no Symphony answering, converters on port 1, unit B absent)
+#define kSymphonyChannelOrderCardByCard  1u  // build-149 tables (a type unknown)
+#define kSymphonyChannelOrderAnalogFirst 2u  // SymphonyHostChannelOrder
+typedef struct {
+    uint32_t order;          // kSymphonyChannelOrder*
+    uint8_t  boardType[2];   // raw 0xA1 types the tables were built from
+    uint8_t  boardKnown[2];  // 1 when that type was read (boardType 0 when not)
+} SymphonyChannelOrderUnit; // 8 bytes
+
+typedef struct {
+    uint32_t status;
+    uint32_t generation;
+    SymphonyChannelOrderUnit unit[2];  // [0] unit A (port 1), [1] unit B (port 2)
+} SymphonyChannelOrderOutput; // 24 bytes
 
 
 // ── The older XLink converters (dext 131+) ──────────────────────────────────

@@ -44,7 +44,8 @@ cat > "$TMP/t.cpp" <<'CPP'
 static_assert(kSelectorReadDriverBuild == 6, "app asks selector 6");
 static_assert(kSelectorRetireForUpgrade == 7, "7 is the released retire selector");
 static_assert(kSelectorReadPort2State == 8, "app asks selector 8 for port 2");
-static_assert(kSelectorReadUnitB == 11 && kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13 && kSelectorPublishMicGain == 14 && kSelectorSetMonitorOutput == 15 && kSelectorVBus == 16 && kSelectorCount == 17, "old selectors unchanged; 12 monitor device, 13 Loop Sync, 15 monitor output, 16 VBus");
+static_assert(kSelectorReadUnitB == 11 && kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13 && kSelectorPublishMicGain == 14 && kSelectorSetMonitorOutput == 15 && kSelectorVBus == 16 && kSelectorReadChannelOrder == 17 && kSelectorCount == 18, "old selectors unchanged; 12 monitor device, 13 Loop Sync, 15 monitor output, 16 VBus, 17 channel order");
+static_assert(sizeof(SymphonyChannelOrderOutput) == 24 && sizeof(SymphonyChannelOrderUnit) == 8 && kSymphonyChannelOrderNone == 0 && kSymphonyChannelOrderCardByCard == 1 && kSymphonyChannelOrderAnalogFirst == 2, "channel order reply is six words");
 static_assert(sizeof(SymphonyVBusInput) == 12 && sizeof(SymphonyVBusStateOutput) == 16, "VBus is three words in, four out");
 static_assert(sizeof(SymphonyMonitorDeviceInput) == 8 && sizeof(SymphonyMonitorOutputInput) == 12, "monitor device is two words, monitor output three");
 static_assert(sizeof(SymphonyObservedGainInput) == 24, "observed gain ABI v1 is six words");

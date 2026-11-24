@@ -23,6 +23,9 @@
 #include "SymphonyMixerCoef.h"
 #include "SymphonyCardMixerRouting.h"
 #include "SymphonyThunderbridgeShared.h"
+#ifdef kSelectorReadChannelOrder
+#include "SymphonyChannelNames.h"
+#endif
 #ifdef TRACE_HAVE_CONVERTER_PARITY
 #include "SymphonyConverters.h"
 #endif
@@ -52,7 +55,10 @@ static_assert(kSelectorReadConverters == 9 && kSelectorSetConverterConfig == 10 
 static_assert(kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13, "existing selectors unchanged");
 #ifdef kSelectorPublishMicGain
 #ifdef kSelectorSetMonitorOutput
-#ifdef kSelectorVBus
+#if defined(kSelectorReadChannelOrder)
+static_assert(kSelectorVBus == 16 && kSelectorReadChannelOrder == 17 && kSelectorCount == 18 &&
+              sizeof(SymphonyChannelOrderOutput) == 24, "channel order is the 18th selector");
+#elif defined(kSelectorVBus)
 static_assert(kSelectorCount == 17, "VBus is the 17th selector");
 #else
 static_assert(kSelectorCount == 16, "selector count before VBus");
@@ -208,13 +214,25 @@ struct Port {
     uint8_t  devSeq = 0;
     std::map<uint64_t, std::vector<uint8_t>> stored;   // Symphony: written values
     std::vector<uint8_t> vendorWrites;                // command IDs, for fault-path assertions
+    // dext 150 (selector 17 checks; no golden uses these): every AudioRouting
+    // (0x31) payload received, in order (stored keeps only the last, as every
+    // 0x31 has nValue 0); the next OptionBoardType (0xA1) reads, one entry
+    // each: -1 no reply (the read fails), -2 the usual answer, else that type;
+    // and a write that fails: the (failWriteSkip + 1)-th write of command
+    // failWriteCmd goes busy at its command byte for one byte's whole wait, so
+    // the driver's send fails there, and the unit drops the partial frame.
+    std::vector<std::vector<uint8_t>> routingWrites;
+    std::deque<int> boardTypeScript;
+    uint8_t  failWriteCmd = 0;
+    uint32_t failWriteSkip = 0;
+    uint32_t busyPolls = 0;
     std::vector<uint8_t> vendorReads;
     std::vector<uint8_t> clockModes;                  // source byte of every ClockMode (0x50) written
     uint64_t commandsSeen = 0;        // anything written to the TX register
 
     bool present() const { return kind != Empty; }
     bool busy() const {
-        return txBusy || (busyAfterWrites >= 0 && (long)vendorWrites.size() >= busyAfterWrites);
+        return txBusy || busyPolls || (busyAfterWrites >= 0 && (long)vendorWrites.size() >= busyAfterWrites);
     }
 
     uint32_t detectBit() const {
@@ -311,6 +329,10 @@ struct Port {
     void vendorFrameByte(uint8_t b) {
         if (frame.empty() && b != 0x80) return;
         frame.push_back(b);
+        if (failWriteCmd && frame.size() == 5 && frame[3] == 0x40 && frame[4] == failWriteCmd) {
+            if (failWriteSkip) failWriteSkip--;
+            else { failWriteCmd = 0; frame.clear(); busyPolls = 100; return; }   // SendXLinkCommandOn waits 100 polls
+        }
         if (frame.size() < 2) return;
         const size_t want = 3 + frame[1] + 1;
         if (frame.size() < want) return;
@@ -328,12 +350,19 @@ struct Port {
                 if (m != stored.end() && !m->second.empty() && m->second[0] == 0) return;
             }
             if (cmd == 0x50 && len >= 1) clockModes.push_back(c[8]);
+            if (cmd == 0x31) routingWrites.emplace_back(c + 8, c + 8 + len);
             stored[((uint64_t)cmd << 32) | nValue] = std::vector<uint8_t>(c + 8, c + 8 + len);
             return;
         }
         if (c[0] != 0xC0) return;
         vendorReads.push_back(cmd);
         if (dropVendorReads) { dropVendorReads--; return; }
+        int scriptedType = -2;
+        if (cmd == 0xA1 && !boardTypeScript.empty()) {
+            scriptedType = boardTypeScript.front();
+            boardTypeScript.pop_front();
+            if (scriptedType == -1) return;
+        }
         for (const StaleReply &st : staleReplies) {
             std::vector<uint8_t> o = { 0xC3, (uint8_t)(8 + st.len), devSeq++, f[2],
                 0x01, st.cmd, (uint8_t)st.nValue, (uint8_t)(st.nValue >> 8),
@@ -348,6 +377,7 @@ struct Port {
         out.insert(out.end(), c, c + 8);
         if (noEcho) { out[5] = 0x00; out[6] = out[7] = out[8] = out[9] = 0x00; }
         auto v = vendorValue(cmd, nValue, len);
+        if (scriptedType >= 0 && !v.empty()) v[0] = (uint8_t)scriptedType;
         out.insert(out.end(), v.begin(), v.end());
         out.push_back(Crc8(out.data(), out.size()));
         for (uint8_t byte : out) reply(1, 0x10, byte);
@@ -536,8 +566,8 @@ struct FakeCard : HostBackend {
         switch (off) {
         case kRegIDReg:         *v = idReg; break;
         case kRegIntStatus:     *v = intPending; break;
-        case kRegXLink1TX:      *v = port[0].busy() ? 0x80000000u : 0; break;   // busy only when a test says so
-        case kRegXLink2TX:      *v = port[1].busy() ? 0x80000000u : 0; break;
+        case kRegXLink1TX:      *v = port[0].busy() ? 0x80000000u : 0; if (port[0].busyPolls) port[0].busyPolls--; break;   // busy only when a test says so
+        case kRegXLink2TX:      *v = port[1].busy() ? 0x80000000u : 0; if (port[1].busyPolls) port[1].busyPolls--; break;
         case kRegXLink1RX:      *v = port[0].readRX(pcieOrder()); break;
         case kRegXLink2RX:      *v = port[1].readRX(pcieOrder()); break;
         case kRegXLink1Status:  *v = port[0].status(); break;
@@ -703,6 +733,8 @@ struct Options {
     uint8_t     symphonyInquire = 0;      // port 1 Symphony: INQUIRE reply (0 = none)
     std::vector<Unit> port1Units;         // converters on port 1 other than the default AD,DA
     std::vector<Unit> port2Units;         // converters on port 2 other than the default AD,DA
+    int         slotType[2] = { -1, -1 }; // port 1 Symphony: 0xA1 answers (-1: the fake's default)
+    std::deque<int> boardTypeScript;      // port 1 Symphony: Port::boardTypeScript from Start
 };
 
 static void Attach(Port &p, Port::Kind kind)
@@ -762,6 +794,9 @@ static void RunScenario(const Options &o, Run &r)
             card.port[0].stored[(uint64_t(0xCA) << 32) | 1] = {1};
         }
     }
+    for (uint32_t b = 0; b < 2; b++)
+        if (o.slotType[b] >= 0) card.port[0].stored[(uint64_t(0xA1) << 32) | b] = { (uint8_t)o.slotType[b] };
+    card.port[0].boardTypeScript = o.boardTypeScript;
     if (!o.latePort2) Attach(card.port[1], o.port2);
     if (!o.latePort2 && o.port2 == Port::Converters && !o.port2Units.empty()) card.port[1].units = o.port2Units;
     if (o.port2 == Port::Symphony) {
@@ -1936,6 +1971,12 @@ static std::vector<Options> SinglePortScenarios()
     // dext 130: the PCIe card through the full flow, so the expansion write in
     // the card re-init after an FPGA reset is pinned too.
     { Options o; o.name = "p1-legacy-2100-full"; o.legacy2100 = true; v.push_back(o); }
+    // dext 150 review m1: the fake's default rig has its 8MicPre in slot 1,
+    // where it has no preamps to offer (MicPreChannelsForSlots), so since the
+    // analog-first tables no other golden has a mic gain or phantom write
+    // reaching the unit. This one is a 16x16 with the 8MicPre in slot 2
+    // (MicPre 1 Mic, 2 Instrument, 3 unknown), through the full flow.
+    { Options o; o.name = "p1-symphony-micpre"; o.micPreInstrument = true; v.push_back(o); }
     return v;
 }
 
@@ -4476,8 +4517,9 @@ static void RunPreampHostRoutes()
 
 #ifdef TRACE_HAVE_MIC_PRE_DAW
 // B12: the DAW-facing MicPre controls (polarity, high-pass, input type).
-// Assertions only: no golden trace has an 8MicPre, so the shipped traces stay
-// as they are. The controls' own sources are compiled here (run-tests.sh), so
+// Assertions only: the one golden with a usable 8MicPre (p1-symphony-micpre,
+// dext 150) never edits these controls, so the traces stay as they are. The
+// controls' own sources are compiled here (run-tests.sh), so
 // their HandleChange paths are the real ones.
 static std::vector<uint8_t> WritesSince(const Port &p, size_t mark)
 {
@@ -4941,7 +4983,7 @@ static void RunMicPreDAWControls()
 // ── dext 143: VBus ──────────────────────────────────────────────────────────
 // Assertions only: VBus writes no register, so there is no trace to record,
 // and every existing golden trace is produced with VBus off.
-static_assert(kSelectorVBus == 16 && kSelectorCount == 17 && sizeof(SymphonyVBusInput) == 12 &&
+static_assert(kSelectorVBus == 16 && (kSelectorCount == 17 || kSelectorCount == 18) && sizeof(SymphonyVBusInput) == 12 &&
               sizeof(SymphonyVBusStateOutput) == 16, "VBus is selector 16: three words in, four out");
 
 static kern_return_t CallVBusRaw(Run &r, const void *bytes, size_t length, SymphonyVBusStateOutput *out = nullptr,
@@ -5645,6 +5687,299 @@ static void RunMixerMaths()
     CHECK(r.card.reg[retL] == 0x20000000u && r.card.reg[retR] == 0x20000000u, "the return has no pan");
 }
 
+#ifdef kSelectorReadChannelOrder
+// ── dext 150: the applied host channel order (selector 17) ──────────────────
+// Review M1: unit A's tables are built from the 0xA1 read at step 19b, and
+// Start and link recovery read the types again afterwards (optionBoardType,
+// ReadBoardTypes). When one of those reads fails and the other answers, the
+// names must still describe the tables programmed; both follow the latch
+// selector 17 reports. Review m5: a configuration with a failed 0x31 send
+// keeps the previous latch, and the names with it. Unit B is latched at its
+// set-up and None otherwise. Assertions only: in every recorded trace both
+// reads answer the same types, and there nothing changes.
+static SymphonyChannelOrderOutput ChannelOrder(Run &r)
+{
+    SymphonyChannelOrderOutput o = {};
+    CHECK(r.drv->ReadChannelOrder(reinterpret_cast<uint32_t *>(&o)) == kIOReturnSuccess, "ReadChannelOrder failed");
+    return o;
+}
+
+// The four 0x31 payloads a unit's configuration sends for these types:
+// playback board 0, playback board 1, capture P2P 0-15, capture P2P 16-31.
+static std::vector<std::vector<uint8_t>> ExpectedRouting(const uint8_t type[2], const bool known[2])
+{
+    std::vector<std::vector<uint8_t>> v;
+    for (unsigned board = 0; board < 2; board++) {
+        std::vector<uint8_t> w;
+        for (unsigned n = 0; n < 16; n++) {
+            w.push_back((uint8_t)((board ? kSymphonyRoutingDestIOBoard1 : kSymphonyRoutingDestIOBoard0) + n));
+            w.push_back(SymphonyPlaybackSource(type, known, board, n));
+        }
+        v.push_back(w);
+    }
+    for (unsigned half = 0; half < 2; half++) {
+        std::vector<uint8_t> w;
+        for (unsigned n = 0; n < 16; n++) {
+            w.push_back((uint8_t)(kSymphonyRoutingDestP2P0 + half * 16 + n));
+            w.push_back(SymphonyCaptureSource(type, known, half * 16 + n));
+        }
+        v.push_back(w);
+    }
+    return v;
+}
+
+static std::string NameNow(const FakeCard &c, const char *dir, unsigned ch)
+{
+    const std::string n = LastElementName(c, 0, dir, ch);
+    return n == "(none)" ? std::string() : n;
+}
+
+// Selector 17's answer for one unit agrees with itself and with what the
+// driver did: the order follows from the types; the unit's last four 0x31
+// payloads (when `tables`) are the ones those types build; and each of its
+// 32 input and output names is what those types name (44.1 kHz ADAT, no
+// Replaces, the unit's prefix letter).
+static void CheckOrderAgrees(Run &r, unsigned unit, const char *what, bool tables, char prefix)
+{
+    const SymphonyChannelOrderOutput o = ChannelOrder(r);
+    const SymphonyChannelOrderUnit &u = o.unit[unit];
+    const uint8_t type[2] = { u.boardType[0], u.boardType[1] };
+    const bool known[2] = { u.boardKnown[0] != 0, u.boardKnown[1] != 0 };
+    CHECK(o.status == 0, "%s: status %u", what, o.status);
+    CHECK(u.order == (SymphonyAnalogFirstApplies(type, known) ? kSymphonyChannelOrderAnalogFirst
+                                                              : kSymphonyChannelOrderCardByCard),
+          "%s: order %u does not follow from types %u/%u known %u/%u", what, u.order, type[0], type[1],
+          known[0], known[1]);
+    if (tables) {
+        const auto &w = r.card.port[unit].routingWrites;
+        const auto want = ExpectedRouting(type, known);
+        CHECK(w.size() >= 4 && std::equal(want.begin(), want.end(), w.end() - 4),
+              "%s: the last four 0x31 payloads are not the tables of types %u/%u known %u/%u (%zu sent)",
+              what, type[0], type[1], known[0], known[1], w.size());
+    }
+    SymphonyNamingState s = {};
+    for (unsigned b = 0; b < 2; b++) { s.boardType[b] = type[b]; s.boardKnown[b] = known[b]; }
+    s.sampleRate = 44100;
+    s.prefix = (uint8_t)prefix;
+    for (unsigned n = 0; n < 32; n++) {
+        const unsigned ch = unit * 32 + n + 1;
+        char want[24] = {};
+        if (!SymphonyHostOutputName(s, n, want, sizeof(want))) want[0] = 0;
+        CHECK(NameNow(r.card, "out", ch) == want, "%s: output %u is \"%s\", its table entry is \"%s\"",
+              what, ch, NameNow(r.card, "out", ch).c_str(), want);
+        if (!SymphonyHostInputName(s, SymphonyCaptureSource(type, known, n), want, sizeof(want))) want[0] = 0;
+        CHECK(NameNow(r.card, "in", ch) == want, "%s: input %u is \"%s\", its table entry is \"%s\"",
+              what, ch, NameNow(r.card, "in", ch).c_str(), want);
+    }
+}
+
+static size_t BoardTypeReads(const Port &p)
+{
+    return (size_t)std::count(p.vendorReads.begin(), p.vendorReads.end(), (uint8_t)0xA1);
+}
+
+// The unit on port 1 is switched off and on again (link recovery), with the
+// 0xA1 reads and 0x31 failure given, and `edit` applied to it first.
+static void PowerCycleUnitA(Run &r, std::deque<int> script, uint8_t failCmd = 0, uint32_t failSkip = 0,
+                            const std::function<void(Port &)> &edit = nullptr)
+{
+    Port saved = r.card.port[0];
+    r.card.port[0] = Port();
+    r.drv->LinkWatchTimerOccurred(nullptr, 0);
+    HostPump();
+    if (edit) edit(saved);
+    saved.boardTypeScript = script;
+    saved.failWriteCmd = failCmd;
+    saved.failWriteSkip = failSkip;
+    saved.routingWrites.clear();
+    saved.vendorReads.clear();
+    r.card.port[0] = saved;
+    r.drv->LinkWatchTimerOccurred(nullptr, 0);
+    HostPump();
+}
+
+static void RunChannelOrderChecks()
+{
+    const char *name = "channel order";
+    Options o; o.name = "channel order (two 8x8s)"; o.shortFlow = true;
+    o.slotType[0] = kSIOOptionBoard_Optical; o.slotType[1] = kSIOOptionBoard_Optical;
+    // Step 19b reads slot 1, then slot 2's read goes unanswered; Start's own
+    // reads afterwards answer both.
+    o.boardTypeScript = { -2, -1 };
+    Run r;
+    RunScenario(o, r);
+    uint8_t fitted[2] = {}, fittedValid[2] = {};
+    r.drv->ReadBoardTypes(fitted, fittedValid);
+    SymphonyChannelOrderOutput sel = ChannelOrder(r);
+    CHECK(r.card.port[0].boardTypeScript.empty() && BoardTypeReads(r.card.port[0]) == 4,
+          "%s: Start made %zu 0xA1 reads (want 19b's two, then Start's two)", name, BoardTypeReads(r.card.port[0]));
+    // The two reads disagree: the tables saw slot 2 unread, the app sees it.
+    CHECK(fittedValid[0] && fittedValid[1] && fitted[1] == kSIOOptionBoard_Optical,
+          "%s: Start's own read of slot 2 did not answer", name);
+    CHECK(sel.unit[0].order == kSymphonyChannelOrderCardByCard && sel.unit[0].boardKnown[0] == 1 &&
+          sel.unit[0].boardKnown[1] == 0 && sel.unit[0].boardType[0] == kSIOOptionBoard_Optical &&
+          sel.unit[0].boardType[1] == 0,
+          "%s: selector 17 after a failed 19b read: order %u types %u/%u known %u/%u", name, sel.unit[0].order,
+          sel.unit[0].boardType[0], sel.unit[0].boardType[1], sel.unit[0].boardKnown[0], sel.unit[0].boardKnown[1]);
+    CHECK(sel.unit[1].order == kSymphonyChannelOrderNone && sel.generation != 0,
+          "%s: unit B %u, generation %u after Start", name, sel.unit[1].order, sel.generation);
+    CheckOrderAgrees(r, 0, "channel order: 19b's read of slot 2 failed", true, 'A');
+    // The finding itself: by position, host outputs 9-16 play slot 1's ADAT.
+    CHECK(NameNow(r.card, "out", 9) == "A ADAT 1" && NameNow(r.card, "out", 17).empty(),
+          "%s: outputs 9/17 are \"%s\"/\"%s\" (want \"A ADAT 1\" and no name)", name,
+          NameNow(r.card, "out", 9).c_str(), NameNow(r.card, "out", 17).c_str());
+    uint32_t generation = sel.generation;
+
+    // The reverse: the recovery's 19b reads answer, its later read of slot 2 does not.
+    PowerCycleUnitA(r, { -2, -2, -2, -1 });
+    r.drv->ReadBoardTypes(fitted, fittedValid);
+    sel = ChannelOrder(r);
+    CHECK(r.card.port[0].boardTypeScript.empty() && BoardTypeReads(r.card.port[0]) == 4,
+          "%s: the recovery made %zu 0xA1 reads", name, BoardTypeReads(r.card.port[0]));
+    CHECK(fittedValid[0] && !fittedValid[1], "%s: the recovery's own read of slot 2 answered", name);
+    CHECK(sel.unit[0].order == kSymphonyChannelOrderAnalogFirst && sel.unit[0].boardKnown[1] == 1 &&
+          sel.unit[0].boardType[1] == kSIOOptionBoard_Optical && sel.generation == generation + 1,
+          "%s: recovery with both 19b reads: order %u, generation %u (was %u)", name, sel.unit[0].order,
+          sel.generation, generation);
+    CheckOrderAgrees(r, 0, "channel order: the recovery's own read of slot 2 failed", true, 'A');
+    CHECK(NameNow(r.card, "out", 9) == "A Line 9" && NameNow(r.card, "out", 17) == "A ADAT 1",
+          "%s: analog first, outputs 9/17 are \"%s\"/\"%s\"", name,
+          NameNow(r.card, "out", 9).c_str(), NameNow(r.card, "out", 17).c_str());
+    generation = sel.generation;
+
+    // The same types again: nothing moves.
+    PowerCycleUnitA(r, {});
+    sel = ChannelOrder(r);
+    CHECK(sel.generation == generation && sel.unit[0].order == kSymphonyChannelOrderAnalogFirst,
+          "%s: the same types moved the generation (%u, was %u)", name, sel.generation, generation);
+    CHECK(r.card.port[0].routingWrites.size() == 4, "%s: the recovery sent %zu 0x31", name,
+          r.card.port[0].routingWrites.size());
+
+    // m5: slot 2 is now a 16x16, and the first capture send (the third 0x31)
+    // fails. The previous order, types and names stand.
+    auto sixteen = [](Port &p) { p.stored[(uint64_t(0xA1) << 32) | 1] = { kSIOOptionBoard_AnalogADDA16 }; };
+    PowerCycleUnitA(r, {}, 0x31, 2, sixteen);
+    r.drv->ReadBoardTypes(fitted, fittedValid);
+    sel = ChannelOrder(r);
+    CHECK(r.card.port[0].routingWrites.size() == 3 && r.card.port[0].failWriteCmd == 0,
+          "%s: the failing 0x31 went out (%zu received)", name, r.card.port[0].routingWrites.size());
+    CHECK(fittedValid[1] && fitted[1] == kSIOOptionBoard_AnalogADDA16, "%s: the 16x16 was not read", name);
+    CHECK(sel.generation == generation && sel.unit[0].order == kSymphonyChannelOrderAnalogFirst &&
+          sel.unit[0].boardType[1] == kSIOOptionBoard_Optical,
+          "%s: a failed 0x31 latched types %u/%u (generation %u, was %u)", name, sel.unit[0].boardType[0],
+          sel.unit[0].boardType[1], sel.generation, generation);
+    CheckOrderAgrees(r, 0, "channel order: a 0x31 send failed", false, 'A');
+    // With the 16x16 latched, host output and input 17 would be "A Line 17".
+    CHECK(NameNow(r.card, "out", 17) == "A ADAT 1" && NameNow(r.card, "in", 17) == "A ADAT 1",
+          "%s: after the failed send output/input 17 are \"%s\"/\"%s\"", name,
+          NameNow(r.card, "out", 17).c_str(), NameNow(r.card, "in", 17).c_str());
+
+    // The next configuration with every send out latches the 16x16.
+    PowerCycleUnitA(r, {});
+    sel = ChannelOrder(r);
+    CHECK(sel.generation == generation + 1 && sel.unit[0].order == kSymphonyChannelOrderAnalogFirst &&
+          sel.unit[0].boardType[1] == kSIOOptionBoard_AnalogADDA16,
+          "%s: the good configuration after the failure: types %u/%u generation %u (was %u)", name,
+          sel.unit[0].boardType[0], sel.unit[0].boardType[1], sel.generation, generation);
+    CheckOrderAgrees(r, 0, "channel order: the configuration after the failure", true, 'A');
+    CHECK(NameNow(r.card, "out", 17) == "A Line 17" && NameNow(r.card, "in", 17) == "A Line 17",
+          "%s: with the 16x16 output/input 17 are \"%s\"/\"%s\"", name,
+          NameNow(r.card, "out", 17).c_str(), NameNow(r.card, "in", 17).c_str());
+#ifdef TRACE_HAVE_USERCLIENT
+    // Selector 17 through the user client: no input, exactly six words out,
+    // the same answer as the driver's; nothing reaches the card.
+    {
+        const size_t mark = r.card.lines.size();
+        auto call = [&](const void *in, size_t inLength, uint64_t outSize, SymphonyChannelOrderOutput *out) {
+            auto *client = new SymphonyUserClient;
+            client->init();
+            client->SetDriver(r.drv);
+            IOUserClientMethodArguments arguments;
+            arguments.selector = kSelectorReadChannelOrder;
+            arguments.structureInput = inLength ? OSData::withBytes(in, inLength) : nullptr;
+            arguments.structureOutputMaximumSize = outSize;
+            const kern_return_t result = client->ExternalMethod(kSelectorReadChannelOrder, &arguments, nullptr, nullptr, nullptr);
+            if (out && arguments.structureOutput && arguments.structureOutput->getLength() == sizeof(*out))
+                memcpy(out, arguments.structureOutput->getBytesNoCopy(), sizeof(*out));
+            if (arguments.structureInput) arguments.structureInput->release();
+            if (arguments.structureOutput) arguments.structureOutput->release();
+            client->release();
+            return result;
+        };
+        SymphonyChannelOrderOutput viaClient = {};
+        memset(&viaClient, 0xEE, sizeof(viaClient));
+        const SymphonyChannelOrderOutput direct = ChannelOrder(r);
+        CHECK(call(nullptr, 0, sizeof(SymphonyChannelOrderOutput), &viaClient) == kIOReturnSuccess &&
+              memcmp(&viaClient, &direct, sizeof(direct)) == 0, "%s: selector 17 answered differently", name);
+        const uint32_t word = kSymphonyUCMagic;
+        CHECK(call(&word, sizeof(word), sizeof(SymphonyChannelOrderOutput), nullptr) == kIOReturnBadArgument,
+              "%s: selector 17 took an input", name);
+        CHECK(call(nullptr, 0, 16, nullptr) == kIOReturnBadArgument && call(nullptr, 0, 40, nullptr) == kIOReturnBadArgument,
+              "%s: selector 17 took a wrong output size", name);
+        CHECK(CardAccessesSince(r.card, mark) == 0, "%s: selector 17 touched the card", name);
+    }
+#endif
+    Finish(o, r);
+
+    // A cable of converters on port 1: no unit A tables.
+    {
+        Options c; c.name = "channel order (converters)"; c.port1 = Port::Converters; c.shortFlow = true;
+        Run rc;
+        RunScenario(c, rc);
+        const SymphonyChannelOrderOutput co = ChannelOrder(rc);
+        CHECK(co.unit[0].order == kSymphonyChannelOrderNone && co.unit[1].order == kSymphonyChannelOrderNone &&
+              co.generation == 0, "%s: converters on port 1 report order %u/%u generation %u", name,
+              co.unit[0].order, co.unit[1].order, co.generation);
+        Finish(c, rc);
+    }
+
+#if defined(TRACE_HAVE_PORT2_AUDIO) && defined(TRACE_HAVE_UNITB_CONFIG)
+    // Unit B: None at 32, its own types once set up at 64, None again at 32;
+    // a set-up whose 0x31 send fails stays None.
+    {
+        Options b; b.name = "channel order (unit B)"; b.port2 = Port::Symphony; b.portCountProperty = 2;
+        b.shortFlow = true;
+        Run rb;
+        RunScenario(b, rb);
+        rb.drv->StopDevice(1, IOUserAudioStartStopFlags::None);
+        SymphonyChannelOrderOutput bo = ChannelOrder(rb);
+        CHECK(bo.unit[1].order == kSymphonyChannelOrderNone, "%s: unit B order %u at 32", name, bo.unit[1].order);
+        const uint32_t g0 = bo.generation;
+        Select(rb, 1, "channel order: unit B at 64");
+        HostPump();   // the names Perform queued
+        bo = ChannelOrder(rb);
+        SymphonyUnitBStateOutput st = {};
+        rb.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        CHECK(st.present == 1 && bo.generation == g0 + 1 &&
+              bo.unit[1].order == kSymphonyChannelOrderAnalogFirst &&
+              bo.unit[1].boardType[0] == st.boardType[0] && bo.unit[1].boardType[1] == st.boardType[1] &&
+              bo.unit[1].boardKnown[0] == 1 && bo.unit[1].boardKnown[1] == 1,
+              "%s: unit B at 64: present %u order %u types %u/%u generation %u (was %u)", name, st.present,
+              bo.unit[1].order, bo.unit[1].boardType[0], bo.unit[1].boardType[1], bo.generation, g0);
+        CheckOrderAgrees(rb, 1, "channel order: unit B", true, 'B');
+        CheckOrderAgrees(rb, 0, "channel order: unit A beside unit B", true, 'A');
+        Select(rb, 0, "channel order: back to 32");
+        HostPump();   // the names Perform queued
+        bo = ChannelOrder(rb);
+        CHECK(bo.unit[1].order == kSymphonyChannelOrderNone && bo.unit[1].boardKnown[0] == 0 &&
+              bo.generation == g0 + 2, "%s: unit B back at 32: order %u generation %u", name,
+              bo.unit[1].order, bo.generation);
+        rb.card.port[1].failWriteCmd = 0x31;
+        rb.card.port[1].failWriteSkip = 3;   // unit B's second capture send
+        Select(rb, 1, "channel order: unit B whose capture send fails");
+        HostPump();   // the names Perform queued
+        rb.drv->ReadUnitBState(reinterpret_cast<uint32_t *>(&st));
+        bo = ChannelOrder(rb);
+        CHECK(rb.card.port[1].failWriteCmd == 0 && st.present == 0 &&
+              bo.unit[1].order == kSymphonyChannelOrderNone && bo.generation == g0 + 2,
+              "%s: unit B with a failed 0x31: present %u order %u generation %u", name, st.present,
+              bo.unit[1].order, bo.generation);
+        Finish(b, rb);
+    }
+#endif
+}
+#endif
+
 int main(int argc, char **argv)
 {
     std::string outDir;
@@ -5773,6 +6108,9 @@ int main(int argc, char **argv)
     }
 
     RunNominalRateNames();
+#ifdef kSelectorReadChannelOrder
+    RunChannelOrderChecks();
+#endif
 #ifdef TRACE_HAVE_CONVERTER_VOLUME
     RunVolumeKeyChecks();
     RunClockReapplyChecks();
@@ -5809,6 +6147,24 @@ int main(int argc, char **argv)
         if (!WriteFile(outDir, o.name, r.card.lines)) return 2;
     }
 #endif
+    // Review m1: the 8MicPre golden really carries a preamp write from the
+    // app commands to the unit: RequestMicGain(1, 30) on MicPre 2, which is
+    // in Instrument, as InstrumentGain (0xC4) 30 for channel 1. (Its
+    // RequestPhantom(0, on) comes inside the settle window after Start and is
+    // refused, so the golden pins that no +48V goes out then.)
+    for (const Options &o : SinglePortScenarios()) {
+        if (strcmp(o.name, "p1-symphony-micpre") != 0) continue;
+        Run r;
+        RunScenario(o, r);
+        const Port &p = r.card.port[0];
+        const auto gain = p.stored.find(((uint64_t)0xC4 << 32) | 1);
+        CHECK(std::count(p.vendorWrites.begin(), p.vendorWrites.end(), (uint8_t)0xC4) == 1 &&
+              gain != p.stored.end() && gain->second == std::vector<uint8_t>({30}),
+              "%s: RequestMicGain(1, 30) did not reach MicPre 2", o.name);
+        CHECK(std::count(p.vendorWrites.begin(), p.vendorWrites.end(), (uint8_t)0xC6) == 0,
+              "%s: phantom went out inside the settle window", o.name);
+        Finish(o, r);
+    }
     for (const Options &o : SinglePortScenarios()) {
         std::vector<std::string> base = Trace(o);
         accesses += base.size();

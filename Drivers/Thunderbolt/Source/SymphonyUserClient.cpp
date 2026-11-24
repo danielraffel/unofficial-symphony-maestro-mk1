@@ -161,6 +161,14 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount = 0,
         .checkStructureOutputSize = sizeof(SymphonyVBusStateOutput),
     },
+    [kSelectorReadChannelOrder] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = 0,
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyChannelOrderOutput),
+    },
 };
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
@@ -452,6 +460,17 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         if (!ivars->driver) return kIOReturnNotReady;
         SymphonyUnitBStateOutput output = {};
         kern_return_t r = ivars->driver->ReadUnitBState(reinterpret_cast<uint32_t *>(&output));
+        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadChannelOrder) {
+        // dext 150: driver state only, as selector 11.
+        if (!ivars->driver) return kIOReturnNotReady;
+        SymphonyChannelOrderOutput output = {};
+        kern_return_t r = ivars->driver->ReadChannelOrder(reinterpret_cast<uint32_t *>(&output));
         output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;

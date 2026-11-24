@@ -81,6 +81,10 @@ public:
     virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
     virtual kern_return_t LoopSyncConfig(uint32_t operation, uint32_t config, uint32_t *outWords) LOCALONLY;
     virtual kern_return_t ReadUnitBState(uint32_t *outWords) LOCALONLY;
+    // dext 150: the host channel order each unit's routing tables were last
+    // programmed with and the board types they were built from
+    // (SymphonyChannelOrderOutput, 6 words; no bus access).
+    virtual kern_return_t ReadChannelOrder(uint32_t *outWords) LOCALONLY;
     virtual kern_return_t PublishObservedMicGain(uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain) LOCALONLY;
     virtual kern_return_t SetMonitorDevice(uint32_t unit) LOCALONLY;
     virtual kern_return_t SetMonitorOutput(uint32_t unit, uint32_t output) LOCALONLY;

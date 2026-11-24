@@ -567,6 +567,20 @@ struct SymphonyThunderbridge_IVars {
     uint32_t  unitBTxErrors;
     uint32_t  unitBGeneration;
     bool      unitBConfigured;
+    // dext 150 (kSelectorReadChannelOrder): per unit ([0] A, [1] B) the host
+    // channel order its routing tables (0x31) were last programmed with and
+    // the board types they were built from, packed in one word so a reader
+    // never sees a torn pair (PackChannelOrder). Latched only when every 0x31
+    // send of that configuration succeeded (unit A at step 19b, unit B at the
+    // end of ConfigureUnitB); 0 (kSymphonyChannelOrderNone) before that, for
+    // unit B whenever it is not configured, and for unit A while port 1
+    // carries converters. The channel names are built from these, never from
+    // optionBoardType / unitBBoardType directly, so names and tables cannot
+    // disagree. channelOrderGeneration moves when either word changes.
+    // __atomic_* on both: written on xlinkQueue (or in Start), read on the
+    // default queue and by the user client.
+    uint32_t  channelOrderLatch[2];
+    uint32_t  channelOrderGeneration;
     // Default enabled: og_source/maestrolink/Software/SymphonyController.cpp:2708.
     uint32_t  loopSyncConfig; // xlinkQueue only, default 0 = enabled, master A
     // B7: Loop Sync output with one unit, as the app last applied it in this
@@ -2066,6 +2080,48 @@ struct SymphonyLinkInitResult {
 static void ResetInputRouteSources(SymphonyThunderbridge_IVars *ivars,
                                    const uint8_t slotType[2], const bool slotKnown[2]);
 
+// ── dext 150: the host channel order each unit was programmed with ──────────
+// (kSelectorReadChannelOrder, SymphonyChannelOrderOutput.) One word per unit
+// in channelOrderLatch: bits 0-7 the order (kSymphonyChannelOrder*), 8-15 and
+// 16-23 slot 1's and slot 2's board type (0 when not read), bit 24 / 25 their
+// known flags. 0 is kSymphonyChannelOrderNone with nothing known. The order
+// follows from the types exactly as the tables do (SymphonyAnalogFirstApplies),
+// so a latched word always describes tables SymphonyCaptureSource /
+// SymphonyPlaybackSource build from its own types.
+static uint32_t PackChannelOrder(const uint8_t type[2], const bool known[2])
+{
+    const uint8_t t[2] = { known[0] ? type[0] : (uint8_t)0, known[1] ? type[1] : (uint8_t)0 };
+    const bool k[2] = { known[0], known[1] };
+    const uint32_t order = SymphonyAnalogFirstApplies(t, k) ? kSymphonyChannelOrderAnalogFirst
+                                                            : kSymphonyChannelOrderCardByCard;
+    return order | ((uint32_t)t[0] << 8) | ((uint32_t)t[1] << 16) |
+           (k[0] ? 1u << 24 : 0u) | (k[1] ? 1u << 25 : 0u);
+}
+
+static uint32_t UnpackChannelOrder(uint32_t word, uint8_t type[2], bool known[2])
+{
+    type[0] = (uint8_t)(word >> 8);
+    type[1] = (uint8_t)(word >> 16);
+    known[0] = (word & (1u << 24)) != 0;
+    known[1] = (word & (1u << 25)) != 0;
+    return word & 0xFFu;
+}
+
+// The order, types and known flags unit `unit`'s tables were last built from.
+static uint32_t LatchedChannelOrder(SymphonyThunderbridge_IVars *ivars, uint32_t unit,
+                                    uint8_t type[2], bool known[2])
+{
+    return UnpackChannelOrder(__atomic_load_n(&ivars->channelOrderLatch[unit & 1], __ATOMIC_ACQUIRE),
+                              type, known);
+}
+
+// Latch a unit's word (0 = None); the generation moves only on a change.
+static void LatchChannelOrder(SymphonyThunderbridge_IVars *ivars, uint32_t unit, uint32_t word)
+{
+    if (__atomic_exchange_n(&ivars->channelOrderLatch[unit & 1], word, __ATOMIC_ACQ_REL) != word)
+        __atomic_add_fetch(&ivars->channelOrderGeneration, 1u, __ATOMIC_ACQ_REL);
+}
+
 static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv,
                                IOPCIDevice *dev, uint8_t mi,
                                uint16_t mixerID);
@@ -2425,12 +2481,18 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                                   SymphonyLinkInitResult *out)
 {
     // The capture routes below put every host input back on its board
-    // channel (step 19b-2); until the card types are read there, assume the
-    // fixed 16 + 16. The coax replacement is the unit's, read back by the app.
+    // channel (step 19b-2). Until then the tracked sources are the table the
+    // driver last programmed into unit A (channelOrderLatch: the fixed
+    // 16 + 16 before any configuration succeeded), so an app edit of the
+    // capture routes is forgotten here as before, and a configuration that
+    // fails before or at 19b leaves sources, names and selector 17 on the
+    // same, previous, table. The coax replacement is the unit's, read back
+    // by the app.
     {
-        const uint8_t unreadType[2] = { kSIOOptionBoard_None, kSIOOptionBoard_None };
-        const bool unread[2] = { false, false };
-        ResetInputRouteSources(ivars, unreadType, unread);
+        uint8_t latchedType[2];
+        bool latchedKnown[2];
+        LatchedChannelOrder(ivars, 0, latchedType, latchedKnown);
+        ResetInputRouteSources(ivars, latchedType, latchedKnown);
     }
     uint8_t rateCode = SampleRateToXLinkCode(rate);
     if (rateCode == 0xFF) {
@@ -2938,6 +3000,16 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
             ConvSetPort(ivars, 0, true, unitCount, units);
             __atomic_or_fetch(&ivars->convFlags, kSymphonyConvPort1Converters, __ATOMIC_RELEASE);
             STLOG("Converter: port 1 carries %u converter unit(s); Symphony I/O set-up skipped", unitCount);
+            // No Symphony I/O on port 1, so no unit A tables (selector 17
+            // reports None) and the tracked sources go back to the fixed
+            // 16 + 16 a later Symphony I/O starts from.
+            LatchChannelOrder(ivars, 0, 0);
+            {
+                uint8_t noneType[2];
+                bool noneKnown[2];
+                UnpackChannelOrder(0, noneType, noneKnown);
+                ResetInputRouteSources(ivars, noneType, noneKnown);
+            }
             // A Symphony I/O's clock choice does not outlive the unit: one
             // plugged in after these converters starts on Internal again.
             ivars->unitAClockKnown = false;
@@ -3256,6 +3328,9 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
         // (MAX_SYMPHONY_CHANNELS_ON_BUS), so XLink 0-31 reach both boards
         // between them. Builds ≤110 mirrored XLink 0-15 onto both boards,
         // which made board 1 unaddressable.
+        // Whether every 0x31 send of 19b-1, 19b-1b, 19b-2 and 19b-2b went
+        // out; only then is the new order latched (after 19b-2b).
+        bool routingSent = true;
         {
             for (uint32_t board = 0; board < 2; board++) {
                 uint8_t playbackRoutes[32];
@@ -3266,6 +3341,7 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                 bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                              symphonyAddr, kSIOCmd_AudioRouting,
                                              0, playbackRoutes, sizeof(playbackRoutes), txSeq);
+                routingSent = routingSent && ok;
                 STLOG("SymphonyIO: Playback routing (board %u outputs, %{public}s): %{public}s", board,
                       SymphonyAnalogFirstApplies(slotType, slotTypeOK) ? "analog first" : "by position",
                       ok ? "OK" : "FAILED");
@@ -3301,13 +3377,33 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
                 bool ok = SendVendorRequest(ivars->pciDevice, ivars->barMemoryIndex,
                                              symphonyAddr, kSIOCmd_AudioRouting,
                                              0, captureRoutes, sizeof(captureRoutes), txSeq);
+                routingSent = routingSent && ok;
                 STLOG("SymphonyIO: Capture routing (P2P %d-%d, %{public}s): %{public}s",
                       half * 16, half * 16 + 15,
                       SymphonyAnalogFirstApplies(slotType, slotTypeOK) ? "analog first" : "card by card",
                       ok ? "OK" : "FAILED");
                 IOSleep(20);
             }
-            ResetInputRouteSources(ivars, slotType, slotTypeOK);
+            // dext 150: latch the order and types these four sends built
+            // (selector 17; the channel names are published from them), but
+            // only when all four went out. After a failed send the unit's
+            // tables are not known to be the new ones, so the previous latch
+            // stands, and the tracked sources stay those of the previous
+            // table to match it. Sources first, then the latch: a names pass
+            // that runs in between sees the new sources with the previous
+            // types once, and the republish after the configuration
+            // (Start, link recovery) puts it right.
+            const uint32_t applied = routingSent
+                ? PackChannelOrder(slotType, slotTypeOK)
+                : __atomic_load_n(&ivars->channelOrderLatch[0], __ATOMIC_ACQUIRE);
+            uint8_t appliedType[2];
+            bool appliedKnown[2];
+            UnpackChannelOrder(applied, appliedType, appliedKnown);
+            ResetInputRouteSources(ivars, appliedType, appliedKnown);
+            LatchChannelOrder(ivars, 0, applied);
+            if (!routingSent)
+                STERR("SymphonyIO: a routing (0x31) send failed; names and selector 17 keep the previous order (%u)",
+                      applied & 0xFFu);
         }
 
         // ── 19b-3. (dext 142) No mixer strip of the unit is muted here ──
@@ -4460,6 +4556,7 @@ static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)
     ++ivars->unitBGeneration;
     const bool was = ivars->unitBConfigured;
     ivars->unitBConfigured = false;
+    LatchChannelOrder(ivars, 1, 0);   // no unit B tables in use: selector 17 reports None
     for (uint32_t ch = 0; ch < 8; ++ch)
         __atomic_store_n(&ivars->unitBMicPreTypeKnown[ch], false, __ATOMIC_RELEASE);
     memset(ivars->unitBMicPreGainKnown, 0, sizeof(ivars->unitBMicPreGainKnown));
@@ -4528,6 +4625,7 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
         return ok;
     };
     ivars->unitBConfigured = false;
+    LatchChannelOrder(ivars, 1, 0);   // latched again below once the set-up succeeds
     for (uint32_t ch = 0; ch < 8; ++ch)
         __atomic_store_n(&ivars->unitBMicPreTypeKnown[ch], false, __ATOMIC_RELEASE);
     memset(ivars->unitBMicPreGainKnown, 0, sizeof(ivars->unitBMicPreGainKnown));
@@ -4601,12 +4699,15 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     // SymphonyCaptureSource): by position / card by card while a type is
     // unknown.
     uint8_t routes[32];
+    bool routingSent = true;   // every 0x31 send below went out (selector 17's latch)
     for (uint32_t board = 0; board < 2; board++) {
         for (int n = 0; n < 16; n++) {
             routes[n * 2] = (uint8_t)((board ? kSIODest_IOBoard1Ch0 : kSIODest_IOBoard0Ch0) + n);
             routes[n * 2 + 1] = SymphonyPlaybackSource(ivars->unitBBoardType, ivars->unitBBoardValid, board, (unsigned)n);
         }
-        require(send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes)), kUnitBFailRouting,
+        const bool playbackOK = send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+        routingSent = routingSent && playbackOK;
+        require(playbackOK, kUnitBFailRouting,
                 board ? "playback routing (board 1)" : "playback routing (board 0)");
         IOSleep(20);
     }
@@ -4617,6 +4718,7 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
             routes[n * 2 + 1] = SymphonyCaptureSource(ivars->unitBBoardType, ivars->unitBBoardValid, host);
         }
         const bool captureOK = send(kSIOCmd_AudioRouting, 0, routes, sizeof(routes));
+        routingSent = routingSent && captureOK;
         require(captureOK, kUnitBFailRouting, "capture routing");
         if (captureOK) {
             for (uint32_t n = 0; n < 16; n++)
@@ -4643,6 +4745,12 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     require(unlocked, kUnitBFailUnlock, "preference unlock/read-back");
     ivars->unitBSetupFlags = unlocked && mandatoryOK ? kUnitBSetupOK : failures;
     ivars->unitBConfigured = unlocked && mandatoryOK;
+    // dext 150: the order and types unit B's four 0x31 sends built, for
+    // selector 17 and unit B's channel names. Only for a configured unit B
+    // (routing is mandatory, so that already means every send went out); an
+    // unconfigured one stays None, as LeaveTwoUnit leaves it.
+    if (ivars->unitBConfigured && routingSent)
+        LatchChannelOrder(ivars, 1, PackChannelOrder(ivars->unitBBoardType, ivars->unitBBoardValid));
     // A MicPre companion owns its selector state on unit B.  Read it once at
     // configuration so the published selectors and gain lane start from the
     // hardware value; rigs without the option board take no extra traffic.
@@ -4914,6 +5022,8 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev
 // never after the card's output
 // routes or mixer (SymphonyHostOutputName). Both are republished on the same
 // events: rate, optical format, prefix, Replaces and a card read or recovery.
+// dext 150: the board types both units are named from are the ones their
+// tables were built from (channelOrderLatch, selector 17), see below.
 //
 // Inputs first resolve the card host-to-RX route, then that port's P2P table.
 // This also handles duplicate sources and cross-port routes; disabled routes
@@ -4926,12 +5036,25 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
 {
     if (!ivars || !ivars->audioDevice || __atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE))
         return;
+    // dext 150: each unit's names are built from the board types its routing
+    // tables were last programmed with (channelOrderLatch, selector 17), not
+    // from a separate 0xA1 read: output n is named after the board output
+    // the playback table plays it through, and that depends on the types the
+    // table was built from. Start and link recovery read the types again
+    // after the configuration (optionBoardType, for the app's card detection
+    // and the MicPre), and one of the two reads can fail while the other
+    // answers; names from that read named outputs 9-16 of two 8x8s "Line
+    // 9-16" while they played slot 1's ADAT. A slot whose type was not read
+    // for the tables (no Symphony answering) is not named at all; see
+    // SymphonyHostInputName.
+    uint8_t latchedType[2][2];
+    bool latchedKnown[2][2];
+    LatchedChannelOrder(ivars, 0, latchedType[0], latchedKnown[0]);
+    LatchedChannelOrder(ivars, 1, latchedType[1], latchedKnown[1]);
     SymphonyNamingState s = {};
     for (uint32_t b = 0; b < 2; b++) {
-        // A slot whose type was never read (no Symphony answering) is not
-        // named at all; see SymphonyHostInputName.
-        s.boardKnown[b] = ivars->optionBoardTypeValid[b];
-        s.boardType[b] = ivars->optionBoardTypeValid[b] ? ivars->optionBoardType[b] : 0;
+        s.boardKnown[b] = latchedKnown[0][b];
+        s.boardType[b] = latchedType[0][b];
         s.opticalIsSPDIF[b] = __atomic_load_n(&ivars->pendingOpticalFmt[b], __ATOMIC_ACQUIRE) != 0;
         s.coaxReplace[b] = __atomic_load_n(&ivars->namingCoaxReplace[b], __ATOMIC_ACQUIRE);
     }
@@ -4939,8 +5062,11 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     s.prefix = __atomic_load_n(&ivars->namingPrefix, __ATOMIC_ACQUIRE);
     SymphonyNamingState sB = {};
     for (uint32_t b = 0; b < 2; b++) {
-        sB.boardKnown[b] = ivars->unitBBoardValid[b] && ivars->unitBConfigured;
-        sB.boardType[b] = ivars->unitBBoardType[b];
+        // Unit B's latch is None unless unit B is configured, and is built
+        // from unitBBoardType (dext 149 named from unitBBoardValid &&
+        // unitBConfigured, the same values).
+        sB.boardKnown[b] = latchedKnown[1][b];
+        sB.boardType[b] = latchedType[1][b];
         sB.opticalIsSPDIF[b] = ivars->unitBOptical[b] != 0;   // unit B's own format
         sB.coaxReplace[b] = ivars->unitBCoaxReplace[b];
     }
@@ -6176,6 +6302,38 @@ kern_return_t SymphonyThunderbridge::ReadUnitBState(uint32_t *outWords)
     o.setupFlags = ivars->unitBSetupFlags;
     o.txErrors = ivars->unitBTxErrors;
     o.reserved2[0] = ivars->unitBGeneration;
+    memcpy(outWords, &o, sizeof(o));
+    return kIOReturnSuccess;
+}
+
+// dext 150: kSelectorReadChannelOrder. Driver state only, no bus access: the
+// order and board types each unit's routing tables were last programmed with
+// (channelOrderLatch), which the channel names are built from. The two words
+// and the generation are read until the generation is the same on both sides
+// of them, so the reply is one moment's state.
+kern_return_t SymphonyThunderbridge::ReadChannelOrder(uint32_t *outWords)
+{
+    if (!ivars || !outWords) return kIOReturnBadArgument;
+    SymphonyChannelOrderOutput o = {};
+    uint32_t words[2] = {};
+    uint32_t generation = 0;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        generation = __atomic_load_n(&ivars->channelOrderGeneration, __ATOMIC_ACQUIRE);
+        words[0] = __atomic_load_n(&ivars->channelOrderLatch[0], __ATOMIC_ACQUIRE);
+        words[1] = __atomic_load_n(&ivars->channelOrderLatch[1], __ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&ivars->channelOrderGeneration, __ATOMIC_ACQUIRE) == generation) break;
+    }
+    o.status = 0;
+    o.generation = generation;
+    for (uint32_t u = 0; u < 2; u++) {
+        uint8_t type[2];
+        bool known[2];
+        o.unit[u].order = UnpackChannelOrder(words[u], type, known);
+        for (uint32_t b = 0; b < 2; b++) {
+            o.unit[u].boardType[b] = type[b];
+            o.unit[u].boardKnown[b] = known[b] ? 1 : 0;
+        }
+    }
     memcpy(outWords, &o, sizeof(o));
     return kIOReturnSuccess;
 }
@@ -10633,6 +10791,11 @@ static bool ResolveMicPreRoute(SymphonyThunderbridge_IVars *iv, uint32_t host,
     // the analog check too (SymphonyMicPreChannelForSource), skipping only
     // the card route. With slot 1's type unread the table is the fixed
     // 16 + 16, so this is still channel n then.
+    // The source comes from the table actually programmed (inputRouteSource
+    // follows channelOrderLatch); whether that board channel is an analog
+    // input is a property of the card fitted, so the check below uses the
+    // fitted type (optionBoardType, read after the configuration), as does
+    // numMicChannels, rather than the type the table was built from.
     if (!iv->numMicChannels && !__atomic_load_n(&iv->preampRoutingEdited, __ATOMIC_ACQUIRE) && host < 8)
         return SymphonyMicPreChannelForSource(__atomic_load_n(&iv->inputRouteSource[host], __ATOMIC_ACQUIRE),
                                               iv->optionBoardType[0], iv->optionBoardTypeValid[0],

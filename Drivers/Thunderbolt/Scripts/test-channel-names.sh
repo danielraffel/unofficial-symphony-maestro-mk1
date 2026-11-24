@@ -729,7 +729,16 @@ assert gate < boot.index("kSIOCmd_SPDIFCoaxMirrorOutput, b, &mirror")
 assert src.count("NoteCoaxBoardType(ivars, value);") == 3   # 0x35 write, 0x36 write, 0x35 read
 # A channel is renamed only when its name changes, and an unread slot is not named.
 publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
-assert "s.boardKnown[b] = ivars->optionBoardTypeValid[b];" in publish
+# dext 150: both units are named from the types their tables were built from
+# (channelOrderLatch, selector 17), never from a separate 0xA1 read, so names
+# and tables cannot disagree (review M1).
+import re
+code = re.sub(r"//[^\n]*", "", publish)
+assert "LatchedChannelOrder(ivars, 0, latchedType[0], latchedKnown[0]);" in code
+assert "LatchedChannelOrder(ivars, 1, latchedType[1], latchedKnown[1]);" in code
+assert "s.boardKnown[b] = latchedKnown[0][b];" in code and "s.boardType[b] = latchedType[0][b];" in code
+assert "sB.boardKnown[b] = latchedKnown[1][b];" in code and "sB.boardType[b] = latchedType[1][b];" in code
+assert "optionBoardType" not in code and "unitBBoardType" not in code and "unitBBoardValid" not in code
 assert publish.index("strncmp(name, ivars->publishedInputName[n]") < publish.index("SetElementName(")
 out = publish[publish.index("SymphonyHostOutputName(s, n"):]
 # dext 131: the clean-up of names 33-64 from an earlier 64-channel session
@@ -750,20 +759,39 @@ cap = link.index("19b-2. Capture")
 assert read < play < cap
 playback = link[play:cap]
 assert "SymphonyPlaybackSource(slotType, slotTypeOK, board, (unsigned)n)" in playback
+assert "routingSent = routingSent && ok;" in playback
 assert "for (uint32_t board = 0; board < 2; board++)" in playback and "for (int n = 0; n < 16; n++)" in playback
 assert "kSIOSrc_XLinkCh0 + n" not in playback and "kSIOSrc_XLinkCh0 + 16 + n" not in playback
 capture = link[cap:link.index("19b-3. (dext 142) No mixer strip")]
 assert "SymphonyCaptureSource(slotType, slotTypeOK, host)" in capture
 assert "for (int half = 0; half < 2; half++)" in capture and "for (int n = 0; n < 16; n++)" in capture
 assert "kSIOSrc_IOBoard0Ch0 + n" not in capture and "kSIOSrc_IOBoard1Ch0 + n" not in capture
-assert capture.index("SendVendorRequest") < capture.index("ResetInputRouteSources(ivars, slotType, slotTypeOK);")
-assert link.index("ResetInputRouteSources(ivars, unreadType, unread);") < read
+# The order and types are latched only when all four 0x31 sends went out
+# (review m5); otherwise the previous latch stands, and the tracked sources
+# follow whichever table is latched.
+assert capture.count("routingSent = routingSent && ok;") == 1
+latch = capture.index("LatchChannelOrder(ivars, 0, applied);")
+assert capture.index("SendVendorRequest") < capture.index("routingSent = routingSent && ok;") < latch
+assert "routingSent\n                ? PackChannelOrder(slotType, slotTypeOK)\n                : __atomic_load_n(&ivars->channelOrderLatch[0], __ATOMIC_ACQUIRE);" in capture
+assert capture.index("ResetInputRouteSources(ivars, appliedType, appliedKnown);") < latch
+assert "ResetInputRouteSources(ivars, slotType, slotTypeOK);" not in link
+assert link.index("LatchedChannelOrder(ivars, 0, latchedType, latchedKnown);") < link.index("ResetInputRouteSources(ivars, latchedType, latchedKnown);") < read
 # Unit B: the same rule from its own two board types, read first.
 unitb = src[src.index("static void ConfigureUnitB"):]
 unitb = unitb[:unitb.index("\n}\n")]
 assert unitb.index("kSIOCmd_OptionBoardType") < unitb.index("SymphonyPlaybackSource(ivars->unitBBoardType, ivars->unitBBoardValid, board, (unsigned)n)")
 assert "SymphonyCaptureSource(ivars->unitBBoardType, ivars->unitBBoardValid, host)" in unitb
 assert "kSIOSrc_XLinkCh0 + n" not in unitb and "kSIOSrc_XLinkCh0 + 16 + n" not in unitb
+# Unit B's latch: None from the start of a set-up and whenever unit B leaves,
+# its types once the set-up succeeded with every routing send out.
+assert unitb.count("routingSent = routingSent && ") == 2
+assert unitb.index("LatchChannelOrder(ivars, 1, 0);") < unitb.index("kSIOCmd_OptionBoardType")
+final = unitb.index("LatchChannelOrder(ivars, 1, PackChannelOrder(ivars->unitBBoardType, ivars->unitBBoardValid));")
+assert unitb.index("ivars->unitBConfigured = unlocked && mandatoryOK;") < unitb.index("if (ivars->unitBConfigured && routingSent)") < final
+leave = src[src.index("static void LeaveTwoUnit(SymphonyThunderbridge_IVars *ivars, bool touchHardware)\n{"):]
+leave = leave[:leave.index("\n}\n")]
+assert leave.index("ivars->unitBConfigured = false;") < leave.index("LatchChannelOrder(ivars, 1, 0);")
+assert src.count("ivars->unitBConfigured = false;") == 2   # LeaveTwoUnit and ConfigureUnitB, both clear the latch
 # MicPre routes resolve through the capture table and slot 1's analog inputs,
 # the direct entry point (no HAL controls) included.
 mic = src[src.index("static bool ResolveMicPreRoute"):]

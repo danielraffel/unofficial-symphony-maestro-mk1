@@ -60,6 +60,7 @@ public:
     kern_return_t ReadPort2State(uint32_t *outWords);   // experiment/64ch-port2 only
     kern_return_t LoopSyncConfig(uint32_t operation, uint32_t config, uint32_t *outWords);
     kern_return_t ReadUnitBState(uint32_t *outWords);
+    kern_return_t ReadChannelOrder(uint32_t *outWords);
     kern_return_t PublishObservedMicGain(uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain);
     kern_return_t SetMonitorDevice(uint32_t unit);
     kern_return_t SetMonitorOutput(uint32_t unit, uint32_t output);
