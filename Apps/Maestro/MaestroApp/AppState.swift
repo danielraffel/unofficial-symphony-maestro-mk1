@@ -3224,9 +3224,12 @@ final class AppState: @unchecked Sendable {
             // connect and after a recovery the restore that follows covers
             // it; after a retry here it runs at once. Not when a replay that
             // had failed fails again (nothing changed, and the health loop
-            // retries it every cycle), nor when the same table was written
-            // again and every strip keeps its card input.
-            let moved = !thunderboltInputRoutingWritten || thunderboltStripInputNumbers() != stripsBefore
+            // retries it every cycle), nor when the saved table was on the
+            // unit already, was written again and every strip keeps its card
+            // input. With the table not known to be the saved one before
+            // (connect, recovery, a reset), the mixers are always owed.
+            let moved = !wasWritten || !thunderboltInputRoutingWritten
+                || thunderboltStripInputNumbers() != stripsBefore
             if thunderboltInputRoutingWritten || wasWritten, moved {
                 thunderboltCaptureTableDidChange(startRestore: !restoreFollows)
             } else {

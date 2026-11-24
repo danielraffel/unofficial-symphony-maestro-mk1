@@ -234,6 +234,11 @@ struct CardOutputTableGuardTests {
         defer { restore() }
         let (state, tb, driver) = await connected(identity: 0xF2C0_0101)
         #expect(wholeMixerWrites(state, driver) == [1, 1])
+        // The next health cycle finds nothing owed ("Restoring" does not come back).
+        let mark = driver.log.count
+        await state.serviceCardOutputTable(tb)
+        await drain(state)
+        #expect(driver.log.count == mark)
         #expect(!tb.cardMixers.needsRestore)
         #expect(!state.cardOutputTableReplayNeeded)
         #expect(state.restoreStatusNote == nil)
@@ -266,6 +271,37 @@ struct CardOutputTableGuardTests {
         #expect(!driver.log[mark...].contains { if case .route = $0 { true } else { false } })
     }
 
+    @Test("the input routing put back on the defaults (the channel-order reset): the mixers are written again, in order")
+    func inputResetToDefaultsOwesMixers() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = await connected(identity: 0xF2C0_0105)
+        // As `runChannelOrderResetIfNeeded` does when the inputs moved: the
+        // unit still has the saved table, the strips are numbered from it.
+        state.peripheralRoutingCache(direction: "input").save([Int: Int]())
+        RoutingMixerReset.setPending(.thunderboltInputRouting)
+        state.thunderboltInputRoutingWritten = false
+        state.invalidateThunderboltInputMeterMap()
+        let mark = driver.log.count
+        await state.syncInputRoutingToHardware()
+        await drain(state)
+        #expect(wholeMixerWrites(state, driver, from: mark) == [1, 1])
+        #expect(!tb.cardMixers.needsRestore)
+        // Every control of both mixers in the new numbering went out again. (The
+        // log checker takes one numbering for the whole log, so it cannot
+        // judge the writes made before the table changed.)
+        let required = CardWriteLogChecker.required(layout: layout, routes: state.thunderboltCaptureRoutes(unit: .a))
+        for mixer in 0..<2 {
+            let sent = Set(driver.log[mark...].compactMap { event -> CardWriteLogChecker.Control? in
+                if case .mixer(mixer, let command, let channel, _) = event {
+                    return CardWriteLogChecker.Control(command: command, channel: channel)
+                }
+                return nil
+            })
+            #expect(required[mixer]?.isSubset(of: sent) == true, "mixer \(mixer + 1)")
+        }
+    }
+
     @Test("a link recovery: one restore of the routes and both mixers")
     func recoveryRestoresOnce() async {
         let restore = restoringDefaults()
@@ -277,6 +313,10 @@ struct CardOutputTableGuardTests {
         await state.restoreAfterLinkRecovery(tb)
         await drain(state)
         #expect(wholeMixerWrites(state, driver, from: mark) == [1, 1])
+        let after = driver.log.count
+        await state.serviceCardOutputTable(tb)
+        await drain(state)
+        #expect(driver.log.count == after)
         #expect(!tb.cardMixers.needsRestore)
         #expect(!state.cardOutputTableReplayNeeded)
         #expect(violations(state, driver).isEmpty)
