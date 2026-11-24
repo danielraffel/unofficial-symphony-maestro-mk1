@@ -198,6 +198,8 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
                 }
             }
             commands.append(sent)
+            let readKey = Self.readKey(command: command, value: value, port: port)
+            if readReplies[readKey] != nil, !sent.payload.isEmpty { readReplies[readKey] = sent.payload }
             var event: Event?
             switch command {
             case ThunderboltCardRouting.outputRouteCommand where payload.count == 3 && port == 0:
@@ -224,8 +226,43 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
 
     public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) throws -> Data {
         guard isConnected else { throw DeviceConnectionError.notConnected }
-        return Data(count: responseLength)
+        return try lock.withLock {
+            let key = Self.readKey(command: command, value: value, port: port)
+            if refusedReads.contains(key) {
+                throw DeviceConnectionError.transportError("fake driver: read refused")
+            }
+            if let reply = readReplies[key] {
+                var data = Data(reply.prefix(responseLength))
+                if data.count < responseLength { data.append(Data(count: responseLength - data.count)) }
+                return data
+            }
+            return Data(count: responseLength)
+        }
     }
+
+    // MARK: Unit reads (tests)
+
+    private var readReplies: [UInt64: [UInt8]] = [:]
+    private var refusedReads: Set<UInt64> = []
+
+    private static func readKey(command: UInt8, value: UInt32, port: UInt8) -> UInt64 {
+        UInt64(command) << 40 | UInt64(port) << 32 | UInt64(value)
+    }
+
+    /// What the unit answers to one vendor read. Unseeded reads answer zeros,
+    /// as before. A seeded value is also what a later write of the same
+    /// command and value leaves there, so a level written reads back.
+    public func seedRead(command: UInt8, value: UInt32 = 0, port: UInt8 = 0, reply: [UInt8]) {
+        lock.withLock { readReplies[Self.readKey(command: command, value: value, port: port)] = reply }
+    }
+
+    /// The read throws, as when the unit does not answer.
+    public func refuseRead(command: UInt8, value: UInt32 = 0, port: UInt8 = 0) {
+        lock.withLock { _ = refusedReads.insert(Self.readKey(command: command, value: value, port: port)) }
+    }
+
+    /// The converter flags `readConverterState` reports (0: a Symphony I/O).
+    public var converterFlags: UInt32 = 0
 
     public func readLinkState() -> LinkState? {
         lock.withLock {
@@ -271,7 +308,11 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     public func probeHardwareResponse() -> Bool { isConnected }
     public func readDriverBuild() -> UInt32? { driverBuild }
     public func readPort2State() -> SecondPortState? { port2 }
-    public func readConverterState() -> ConverterState? { ConverterState.decode(Array(repeating: 0, count: ConverterState.wordCount)) }
+    public func readConverterState() -> ConverterState? {
+        var words = Array(repeating: UInt32(0), count: ConverterState.wordCount)
+        words[2] = converterFlags
+        return ConverterState.decode(words)
+    }
     public func setConverterConfig(_ config: UInt32) -> Bool { false }
     public func retireForUpgrade(replacementBuild: UInt32) -> DextUserClient.RetireReply { .refused(0) }
     public func readTimingHealth() -> TimingHealth? { nil }

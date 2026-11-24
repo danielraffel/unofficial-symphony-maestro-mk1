@@ -148,9 +148,14 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     ///
     /// Left out on purpose, although the original pushed them:
     /// - Volume, mute and headphone levels. The original kept its copy in step
-    ///   with the front panel encoder by polling. This app does not poll yet, so
-    ///   a saved level could be louder than the one dialled in on the unit.
-    ///   They are read from the hardware instead.
+    ///   with the front panel encoder by polling and wrote it back as it was.
+    ///   Over ThunderBridge/PCIe the levels are saved here too, outside this
+    ///   list, and at connect each output is put at the QUIETER of the saved
+    ///   level and the unit's (A4, `MonitorLevelsAtConnect`,
+    ///   `ThunderboltDeviceConnection.applySavedMonitorLevels`), so a connect
+    ///   never makes anything louder than either. Mutes are read from the
+    ///   unit (`SpeakerMuteAdoption`). Over USB the helper keeps the speaker
+    ///   level itself.
     /// - Clock source, which can also change on the unit, and where a saved
     ///   external clock could unlock a unit whose word clock is gone.
     /// - Built-in defaults for settings nobody has set. Pushing those would

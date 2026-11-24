@@ -151,6 +151,113 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         return replay
     }
 
+    // MARK: - Levels at connect (A4)
+
+    /// Where each output's saved level lives in `settingsStore`. These are
+    /// not in ``DeviceSettingsStore/ownedSettings``: they are never replayed
+    /// as they are, nor answered for reads; `applySavedMonitorLevels()` is
+    /// their only reader.
+    public static func savedLevelAddress(_ output: MonitorLevelsAtConnect.Output) -> PropertyAddress {
+        switch output {
+        case .speakers: PropertyAddress(selector: .outputLevel)
+        case .headphone1: PropertyAddress(selector: .headphone1Level)
+        case .headphone2: PropertyAddress(selector: .headphone2Level)
+        }
+    }
+
+    /// What the connect step found and did.
+    public struct MonitorLevelsResult: Sendable, Equatable {
+        /// The unit's speaker mode is Line, or could not be read: the
+        /// speakers were not read, written or saved.
+        public var speakersInLine: Bool
+        /// The unit's speaker mode as read, nil when it could not be.
+        public var speakerMode: UInt32?
+        /// Each output whose level is known now, as attenuation (0 loudest).
+        public var settled: [MonitorLevelsAtConnect.Output: UInt32]
+        /// The outputs turned down to the saved level.
+        public var written: [MonitorLevelsAtConnect.Output]
+
+        public init(speakersInLine: Bool, speakerMode: UInt32?,
+                    settled: [MonitorLevelsAtConnect.Output: UInt32],
+                    written: [MonitorLevelsAtConnect.Output]) {
+            self.speakersInLine = speakersInLine
+            self.speakerMode = speakerMode
+            self.settled = settled
+            self.written = written
+        }
+    }
+
+    /// The level this Mac last saw on an output, as attenuation.
+    public func savedMonitorLevel(_ output: MonitorLevelsAtConnect.Output) -> UInt32? {
+        settingsStore.value(for: Self.savedLevelAddress(output))?.asUInt32
+    }
+
+    /// Save the level an output is at now. Unchanged values are not written
+    /// again (a knob drag sets the level many times a second).
+    public func recordSavedMonitorLevel(_ output: MonitorLevelsAtConnect.Output, attenuation: UInt32) {
+        guard attenuation <= MonitorLevelsAtConnect.maximumAttenuation,
+              savedMonitorLevel(output) != attenuation else { return }
+        settingsStore.record(.uint32(attenuation), for: Self.savedLevelAddress(output))
+    }
+
+    /// A4: put unit A's speaker and headphone levels at the quieter of what
+    /// is saved on this Mac and what the unit reports
+    /// (``MonitorLevelsAtConnect``), and save the result. Mutes are not
+    /// touched. Nothing is sent to converters; nil then, and when the
+    /// connection is gone.
+    ///
+    /// The speaker mode and every level are read from the unit itself
+    /// (`.speakerOutputMode` reads answer from the store on this transport).
+    /// The writes go through the driver's vendor path, which keeps its
+    /// per-output levels and the Mac's volume control in step with them.
+    public func applySavedMonitorLevels() async -> MonitorLevelsResult? {
+        await Task.detached { self.applySavedMonitorLevelsNow() }.value
+    }
+
+    private func readUnitByte(_ address: PropertyAddress) -> UInt32? {
+        guard let request = try? SymphonyIOPropertyMapper.buildReadRequest(for: address),
+              let data = try? dextClient.readVendorCommand(command: request.request,
+                                                           value: DextUserClient.nValue(for: request),
+                                                           responseLength: 1),
+              data.count == 1 else { return nil }
+        return UInt32(data[0])
+    }
+
+    private func applySavedMonitorLevelsNow() -> MonitorLevelsResult? {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected,
+              let converters = converterState(), converters.flags & ConverterState.flagPort1Converters == 0
+        else { return nil }
+        let mode = readUnitByte(PropertyAddress(selector: .speakerOutputMode))
+            .flatMap { raw in SymphonyIOSpeakerMode(rawValue: UInt8(truncatingIfNeeded: raw)).map { _ in raw } }
+        let inLine = mode.map { $0 == SpeakerOutputLogic.line } ?? true
+        var result = MonitorLevelsResult(speakersInLine: inLine, speakerMode: mode, settled: [:], written: [])
+        for output in MonitorLevelsAtConnect.Output.allCases {
+            if output == .speakers && inLine { continue }
+            let address = Self.savedLevelAddress(output)
+            let saved = savedMonitorLevel(output)
+            let unit = readUnitByte(address)
+            var written = false
+            if let level = MonitorLevelsAtConnect.write(output: output, saved: saved, unit: unit,
+                                                        speakersInLine: inLine) {
+                do {
+                    try writeProperty(address, value: .uint32(level))
+                    written = true
+                    result.written.append(output)
+                } catch {
+                    print("[Maestro] Levels at connect: \(output) could not be set to -\(level) dB: \(error)")
+                }
+            }
+            if let settled = MonitorLevelsAtConnect.settled(output: output, saved: saved, unit: unit,
+                                                            speakersInLine: inLine, written: written) {
+                result.settled[output] = settled
+                recordSavedMonitorLevel(output, attenuation: settled)
+            }
+        }
+        return result
+    }
+
     /// All supported selectors (union of CoreAudio + dext paths).
     private static let supportedSelectors: Set<AudioPropertySelector> = {
         var s = coreAudioSelectors
