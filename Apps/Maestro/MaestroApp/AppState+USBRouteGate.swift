@@ -37,12 +37,19 @@ extension AppState {
         return .written
     }
 
-    /// Whether the Mixer page may send a mixer's strips to the unit: always
-    /// on ThunderBridge and PCIe (and in simulation); over USB never for a
-    /// recall (the page opening, Mix 1/2, a card layout change), and for a
-    /// reset only once the connection's restore has written that mixer.
+    /// Whether the Mixer page may send a mixer's strips to the unit. Over
+    /// USB never for a recall (the page opening, Mix 1/2, a card layout
+    /// change), and for a reset only once the connection's restore has
+    /// written that mixer. On ThunderBridge and PCIe not for a recall once
+    /// the card restore is complete for the driver state now serving: it
+    /// wrote both mixers in full, and a layout change owes it again
+    /// (`serviceCardOutputTable`). A reset is always written there, and in
+    /// simulation everything is.
     @MainActor
     func mixerPageMayWriteStrips(mixer: Int, recalling: Bool) -> Bool {
+        if let tb = device as? ThunderboltDeviceConnection {
+            return !(recalling && !tb.cardMixers.isBypassed && tb.cardMixers.isRestored)
+        }
         guard device is XPCDeviceConnection else { return true }
         return !recalling && usbMixerIsWritten(mixer)
     }

@@ -298,6 +298,11 @@ extension AppState {
         return ThunderboltInputMeterMap.mixerInputs(layout: layout, routes: thunderboltCaptureRoutes(unit: unit))
     }
 
+    /// Every Mixer strip's card input, unit A's and (on the card) unit B's.
+    func thunderboltStripInputNumbers() -> [[Int?]] {
+        [thunderboltMixerInputNumbers(unit: .a), unitBOnCard ? thunderboltMixerInputNumbers(unit: .b) : []]
+    }
+
     func thunderboltCaptureRoutes(unit: DeviceUnit = .a) -> [ThunderboltInputMeterMap.Route] {
         let layout = unit == .a ? cardLayout : unitBLayout
         guard let layout else { return [] }

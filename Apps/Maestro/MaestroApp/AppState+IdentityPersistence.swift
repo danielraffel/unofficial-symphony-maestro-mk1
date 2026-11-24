@@ -97,8 +97,12 @@ extension AppState {
         // identity was pending.
         if unit == .a, let tb = connection as? ThunderboltDeviceConnection {
             rearmCardMixerRestoreAfterIdentity()
-            // The restore was waiting for this identity: no backoff left.
-            invalidateCardOutputTable(tb)
+            // The restore was waiting for this identity: no backoff left. A
+            // restore already complete with this unit's saved state is not
+            // run again.
+            if cardOutputTableReplayNeeded || tb.cardMixers.needsRestore || cardRestoreOwnerChanged(tb) {
+                invalidateCardOutputTable(tb)
+            }
         }
         viewReloadToken = UUID()
         let preferences = mixerPreferences
@@ -134,7 +138,7 @@ extension AppState {
             await restoreUSBUnit(usb, helperMixer: lastSelectedMixer)
             return
         }
-        await syncInputRoutingToHardware()
+        await syncInputRoutingToHardware(restoreFollows: true)
         await syncOutputRoutingToHardware()
         await syncDeviceSettingsToHardware()
     }

@@ -65,6 +65,9 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     public var shouldFail: (@Sendable (Command) -> Bool)?
     /// Called after each write that landed, outside the driver's lock.
     public var onWrite: (@Sendable (Event) -> Void)?
+    /// Called before each vendor read with its command, outside the lock
+    /// (a test can make a read slow).
+    public var onRead: (@Sendable (UInt8) -> Void)?
     public var boards: (primary: UInt8?, secondary: UInt8?)?
     public var unitB: UnitBState?
     public var port2: SecondPortState?
@@ -226,6 +229,7 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
 
     public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) throws -> Data {
         guard isConnected else { throw DeviceConnectionError.notConnected }
+        onRead?(command)
         return try lock.withLock {
             let key = Self.readKey(command: command, value: value, port: port)
             if refusedReads.contains(key) {

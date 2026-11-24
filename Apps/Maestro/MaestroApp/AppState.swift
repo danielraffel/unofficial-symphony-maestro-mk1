@@ -850,44 +850,7 @@ final class AppState: @unchecked Sendable {
                         if let seen = self.thunderboltSeenRecoveryCount, count != seen,
                            self.connectionMode == .hardware {
                             print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying output table, mixers and input routing")
-                            // D5 never runs across an in-place recovery.
-                            self.cancelCardMixerRestore()
-                            // The recovery itself put the driver's table on
-                            // the unit, whether or not the replay below can
-                            // run (cards unread, identity unknown): until a
-                            // replay lands, strips and meters are numbered
-                            // from the driver's table, not the saved one.
-                            self.thunderboltInputRoutingWritten = false
-                            self.invalidateThunderboltInputMeterMap()
-                            // The strips have just been renumbered: the
-                            // mixers are owed a complete write whether or
-                            // not the input replay below succeeds.
-                            tb.cardMixers.noteOwed()
-                            // The driver lays its capture table out from the
-                            // cards it read during the recovery (a Symphony off
-                            // at Start, or a card swapped while off): read them
-                            // too, so the grid and the replay use the same table.
-                            self.retryFailedIdentityOnRecovery()
-                            await self.readCardTypes()
-                            // The whole ordered sequence, not the input
-                            // routing alone: the output table, the card
-                            // mixers, the routes they feed, then the input
-                            // routing.
-                            self.invalidateCardOutputTable(tb)
-                            if self.recallInFlight {
-                                self.replayDeferral.request()
-                            } else if self.usesTwoUnitReplay {
-                                self.twoUnitReplayNeeded = true
-                            } else {
-                                await self.syncInputRoutingToHardware()
-                                await self.syncOutputRoutingToHardware()
-                            }
-                            // A4: the unit may have come back at its own
-                            // start-up levels (a power cycle): the quieter of
-                            // those and the saved ones. The device settings
-                            // are not replayed on a recovery, so this is the
-                            // only place it runs then.
-                            if self.device === tb { await self.applyMonitorLevelsAtConnect(tb) }
+                            await self.restoreAfterLinkRecovery(tb)
                         }
                         self.thunderboltSeenRecoveryCount = count
                     }
@@ -3007,6 +2970,51 @@ final class AppState: @unchecked Sendable {
         await readUnitAIdentityAfterCapabilities()
     }
 
+    /// A ThunderBridge link recovery in place (no disconnect, so no connect
+    /// replay): the driver has put its board-order capture table back on the
+    /// unit. Everything the Mac owns goes back in the connect order.
+    @MainActor
+    func restoreAfterLinkRecovery(_ tb: ThunderboltDeviceConnection) async {
+        // D5 never runs across an in-place recovery.
+        cancelCardMixerRestore()
+        // The recovery itself put the driver's table on
+        // the unit, whether or not the replay below can
+        // run (cards unread, identity unknown): until a
+        // replay lands, strips and meters are numbered
+        // from the driver's table, not the saved one.
+        thunderboltInputRoutingWritten = false
+        invalidateThunderboltInputMeterMap()
+        // The strips have just been renumbered: the
+        // mixers are owed a complete write whether or
+        // not the input replay below succeeds.
+        tb.cardMixers.noteOwed()
+        // The driver lays its capture table out from the
+        // cards it read during the recovery (a Symphony off
+        // at Start, or a card swapped while off): read them
+        // too, so the grid and the replay use the same table.
+        retryFailedIdentityOnRecovery()
+        await readCardTypes()
+        // The whole ordered sequence, not the input
+        // routing alone: the output table, the card
+        // mixers, the routes they feed, then the input
+        // routing.
+        invalidateCardOutputTable(tb)
+        if recallInFlight {
+            replayDeferral.request()
+        } else if usesTwoUnitReplay {
+            twoUnitReplayNeeded = true
+        } else {
+            await syncInputRoutingToHardware(restoreFollows: true)
+            await syncOutputRoutingToHardware()
+        }
+        // A4: the unit may have come back at its own
+        // start-up levels (a power cycle): the quieter of
+        // those and the saved ones. The device settings
+        // are not replayed on a recovery, so this is the
+        // only place it runs then.
+        if device === tb { await applyMonitorLevelsAtConnect(tb) }
+    }
+
     /// Sync persisted output routing to hardware on connect/reconnect.
     /// Reads cached dual routing state and writes each (row, col) pair to USB.
     /// Called after readCardTypes() so board types are available for byte mapping.
@@ -3045,6 +3053,10 @@ final class AppState: @unchecked Sendable {
             // The ordered restore: the table, the card mixers it routes, then
             // the routes they feed (`restoreThunderboltOutputTable`).
             tb.cardMixers.isBypassed = false
+            // Nothing owed for the driver state now serving: the restore has
+            // already put every route and both mixers on the card. A second
+            // one would rewrite them all and show "Restoring" again.
+            guard cardOutputTableReplayNeeded || tb.cardMixers.needsRestore else { return }
             await restoreThunderboltOutputTable(tb)
             return
         }
@@ -3134,8 +3146,12 @@ final class AppState: @unchecked Sendable {
     /// provenance rule), since a column means a different routing byte on
     /// other cards. Then the unit's 32 capture routes are read back and logged
     /// once, as evidence of what it really carries.
+    ///
+    /// `restoreFollows`: connect and link recovery, where the output sync
+    /// runs next; the mixers are only marked owed for it (see
+    /// `thunderboltCaptureTableDidChange`).
     @MainActor
-    func syncInputRoutingToHardware() async {
+    func syncInputRoutingToHardware(restoreFollows: Bool = false) async {
         guard !hardwareWritesSuspended, connectionMode != .hardware || unitAIdentity != nil else { return }
         if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return await syncUSBInputRoutingToHardware() }
@@ -3171,6 +3187,9 @@ final class AppState: @unchecked Sendable {
             // routes the reset removed from this Mac.
             let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
             let wasWritten = thunderboltInputRoutingWritten
+            // The card input of every strip as the table on the unit numbers
+            // them now: the mixers were written, or are owed, with these.
+            let stripsBefore = thunderboltStripInputNumbers()
             thunderboltInputRoutingWritten = false
             var writes = resetPending ? thunderboltDefaultInputRoutes(unit: .a) : []
             writes += InputRoutingReplay.writes(
@@ -3202,11 +3221,14 @@ final class AppState: @unchecked Sendable {
             // The table on the unit is now the saved one, or (after a failed
             // write) not known to be: the strips' card inputs may have moved,
             // so the mixers are owed a complete write with the new numbers. At
-            // connect the restore that follows covers it; after a retry here
-            // it runs at once. Not when a replay that had failed fails again:
-            // nothing changed, and the health loop retries it every cycle.
-            if thunderboltInputRoutingWritten || wasWritten {
-                thunderboltCaptureTableDidChange()
+            // connect and after a recovery the restore that follows covers
+            // it; after a retry here it runs at once. Not when a replay that
+            // had failed fails again (nothing changed, and the health loop
+            // retries it every cycle), nor when the same table was written
+            // again and every strip keeps its card input.
+            let moved = !thunderboltInputRoutingWritten || thunderboltStripInputNumbers() != stripsBefore
+            if thunderboltInputRoutingWritten || wasWritten, moved {
+                thunderboltCaptureTableDidChange(startRestore: !restoreFollows)
             } else {
                 invalidateThunderboltInputMeterMap()
             }

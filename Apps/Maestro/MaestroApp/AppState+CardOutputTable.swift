@@ -399,6 +399,10 @@ extension AppState {
         tb.cardMixers.isBypassed = converterRoutingSurface
         updateRestoreStatus()
         guard !hardwareWritesSuspended, !converterRoutingSurface else { return }
+        // The cards or the unit's saved state changed since the mixers were
+        // written: the strips' card inputs differ, so the restore owes them
+        // again (the Mixer page does not re-send them).
+        if cardRestoreOwnerChanged(tb) { invalidateCardOutputTable(tb) }
         guard cardOutputTableReplayNeeded || tb.cardMixers.needsRestore,
               !recallInFlight, !cardOutputRestoreRunning else { return }
         if usesTwoUnitReplay {
@@ -418,6 +422,14 @@ extension AppState {
         }
         guard Date() >= cardOutputRetryAfter else { return }
         await syncOutputRoutingToHardware()
+    }
+
+    /// Whether the card mixers on this connection were written from another
+    /// card layout or another unit's saved state than the current ones.
+    @MainActor
+    func cardRestoreOwnerChanged(_ tb: ThunderboltDeviceConnection) -> Bool {
+        guard let known = cardRestoreOwner, known.connection == ObjectIdentifier(tb) else { return false }
+        return known.owner != CardRestoreOwner(storageKey: mixerPreferences.storageKey, layout: cardLayout)
     }
 
     /// A two-unit replay ran to the end: the tables, the whole output table

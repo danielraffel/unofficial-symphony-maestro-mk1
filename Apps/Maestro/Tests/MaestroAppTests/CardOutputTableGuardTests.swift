@@ -181,6 +181,128 @@ struct CardOutputTableGuardTests {
         #expect(violations(driver).isEmpty)
     }
 
+    // MARK: One restore per connect
+
+    /// Lets every task the sequence spawned run: a restore started from a
+    /// spawned task finishes before anything is counted.
+    private func drain(_ state: AppState) async {
+        var quiet = 0
+        for _ in 0..<400 where quiet < 20 {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+            quiet = state.cardOutputRestoreRunning ? 0 : quiet + 1
+        }
+    }
+
+    /// How many times each mixer was written in full since `from`: every
+    /// complete write sends strip 1's mute once.
+    private func wholeMixerWrites(_ state: AppState, _ driver: FakeThunderboltDriver, from: Int = 0) -> [Int] {
+        let required = CardWriteLogChecker.required(layout: layout, routes: state.thunderboltCaptureRoutes(unit: .a))
+        return (0..<2).map { mixer in
+            guard let channel = required[mixer]?.filter({ $0.command == 0xB3 }).map(\.channel).min() else { return -1 }
+            return driver.log[from...].filter {
+                if case .mixer(mixer, 0xB3, channel, _) = $0 { true } else { false }
+            }.count
+        }
+    }
+
+    private func violations(_ state: AppState, _ driver: FakeThunderboltDriver) -> [String] {
+        CardWriteLogChecker.violations(driver.log, required: CardWriteLogChecker.required(
+            layout: layout, routes: state.thunderboltCaptureRoutes(unit: .a)), settled: true)
+    }
+
+    /// The connect sequence with a saved input route that renumbers the
+    /// strips, Mixer 1 on Line 1/2.
+    private func connected(identity: UInt64) async -> (AppState, ThunderboltDeviceConnection, FakeThunderboltDriver) {
+        let (state, tb, driver) = makeState(identity: identity, mixer1ToLine12: true)
+        driver.boards = (layout.slot1.rawValue, layout.slot2.rawValue)
+        // Reading the capture table back after the input routing is slow on
+        // a real unit: long enough for a restore started meanwhile to end.
+        driver.onRead = { if $0 == SymphonyIOCommand.audioRouting.rawValue { usleep(3_000) } }
+        let numbers = state.thunderboltMixerInputNumbers()
+        UserDefaults.standard.set(true, forKey: ThunderboltInputRoutingMigration.doneKey)
+        state.peripheralRoutingCache(direction: "input").save([0: 2])
+        await state.syncSavedStateToHardware()
+        await drain(state)
+        #expect(state.thunderboltMixerInputNumbers() != numbers, "the saved input route renumbers the strips")
+        return (state, tb, driver)
+    }
+
+    @Test("connect: the input routing, then one restore of the routes and both mixers, in order")
+    func connectRestoresOnce() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = await connected(identity: 0xF2C0_0101)
+        #expect(wholeMixerWrites(state, driver) == [1, 1])
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(!state.cardOutputTableReplayNeeded)
+        #expect(state.restoreStatusNote == nil)
+        // A fresh connection: Line 1/2 disabled until Mixer 1 is written, then routed.
+        #expect(violations(state, driver).isEmpty)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    @Test("with nothing owed the output sync writes nothing, and the same input table written again owes nothing")
+    func nothingOwedWritesNothing() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = await connected(identity: 0xF2C0_0102)
+        let mark = driver.log.count
+        let owed = tb.cardMixers.owed
+        await state.syncOutputRoutingToHardware()
+        await drain(state)
+        #expect(driver.log.count == mark)
+        await state.syncInputRoutingToHardware()
+        await drain(state)
+        #expect(tb.cardMixers.owed == owed)
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(driver.log.count == mark)
+        // The whole sequence again on the same connection (launch and
+        // reconnect both ask for it): nothing is restored again.
+        await state.syncSavedStateToHardware()
+        await drain(state)
+        #expect(wholeMixerWrites(state, driver, from: mark) == [0, 0])
+        #expect(!driver.log[mark...].contains { if case .route = $0 { true } else { false } })
+    }
+
+    @Test("a link recovery: one restore of the routes and both mixers")
+    func recoveryRestoresOnce() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = await connected(identity: 0xF2C0_0103)
+        driver.simulateLinkRecovery()
+        _ = tb.probeEndpoint()
+        let mark = driver.log.count
+        await state.restoreAfterLinkRecovery(tb)
+        await drain(state)
+        #expect(wholeMixerWrites(state, driver, from: mark) == [1, 1])
+        #expect(!tb.cardMixers.needsRestore)
+        #expect(!state.cardOutputTableReplayNeeded)
+        #expect(violations(state, driver).isEmpty)
+        #expect(driver.mixerFeeds == [0: 0, 1: 0])
+        expectUnitEqualsTable(state, tb, driver)
+    }
+
+    @Test("the Mixer page re-sends no strip on ThunderBridge once the restore is complete; a reset still writes")
+    func mixerPageAfterRestore() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = await connected(identity: 0xF2C0_0104)
+        #expect(tb.cardMixers.isRestored)
+        #expect(!state.mixerPageMayWriteStrips(mixer: 0, recalling: true))
+        #expect(!state.mixerPageMayWriteStrips(mixer: 1, recalling: true))
+        #expect(state.mixerPageMayWriteStrips(mixer: 0, recalling: false))
+        // A card layout change: the restore writes the mixers again, not the page.
+        let mark = driver.log.count
+        state.secondaryBoardType = .analogAD16
+        driver.boards = (layout.slot1.rawValue, IOCardType.analogAD16.rawValue)
+        await state.serviceCardOutputTable(tb)
+        await drain(state)
+        #expect(mixerEvents(Array(driver.log[mark...])) > 0)
+        #expect(state.cardRestoreOwner?.owner.layout == state.cardLayout)
+    }
+
     // MARK: Driver state changes
 
     @Test("a link recovery, a card re-init and a driver restart: the health loop puts everything back in order",

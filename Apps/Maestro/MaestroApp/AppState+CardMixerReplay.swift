@@ -42,17 +42,21 @@ extension AppState {
     /// output fed from a mixer is switched off meanwhile. It also works after
     /// a link recovery or card re-init, which the Mixer page's own one-time
     /// restore does not follow.
+    ///
+    /// `startRestore` false: connect and link recovery, whose output sync
+    /// runs next and does the one restore in order. Only the debt is noted;
+    /// a restore started from here raced that sync, which then ran a second.
     @MainActor
-    func thunderboltCaptureTableDidChange() {
+    func thunderboltCaptureTableDidChange(startRestore: Bool = true) {
         invalidateThunderboltInputMeterMap()
         if usesTwoUnitReplay {
             twoUnitReplayNeeded = true
-            Task { await replayUnitBSettings() }
+            if startRestore { Task { await replayUnitBSettings() } }
             return
         }
         guard let tb = device as? ThunderboltDeviceConnection else { return }
         tb.cardMixers.noteOwed()
-        Task { await serviceCardOutputTable(tb) }
+        if startRestore { Task { await serviceCardOutputTable(tb) } }
     }
 
     /// D5: restore the saved card mixer once on a driver instance that holds no
