@@ -1000,6 +1000,14 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         switch request.request {
         case 0x21, 0x22, 0x25, 0xE7, 0xE8, 0xE9, 0xB0, 0xB1, 0xB2, 0xB3:
             guard data.count == 1 else { return nil }
+            // The firmware answers a mixer read only for a mixer 1-2 and a
+            // strip it has (0-33 for the level, 0-32 otherwise;
+            // kSymphonyIOMixer_FaderCount / _InputChanelCount); a read it does
+            // not answer is never sent.
+            if (0xB0...0xB3).contains(request.request) {
+                let strips: UInt16 = request.request == 0xB0 ? 34 : 33
+                guard (1...2).contains(request.value), request.index < strips else { return nil }
+            }
             let read = USBControlRequest(direction: .read, request: request.request,
                                          value: request.value, index: request.index, data: Data(count: 1))
             return ([read], { $0.count == 1 && $0[0].first == data.first })
@@ -1070,8 +1078,10 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         }
     }
 
-    /// The unit's reset request (0xDB, `SymphonyIOResetRequestType`):
-    /// nil when it cannot be read.
+    /// The unit's reset request (0xDB, `SymphonyIOResetRequestType`), read
+    /// as the original's getResetRequest did (og_source/eecontrol/generic/
+    /// Products/SymphonyIO/SymphonyIOControl.cpp:1146-1165): nil when it
+    /// cannot be read.
     public func readResetRequest() async -> SymphonyIOResetRequest? {
         guard transport.isConnected,
               let reply = try? await transport.sendGetProperty(bRequest: SymphonyIOResetRequest.command,
@@ -1082,8 +1092,8 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
 
     /// Acknowledge a front-panel reset once the settings are on the unit:
     /// write None, as the original's clearResetRequest did
-    /// (eecontrol/generic/Products/SymphonyIO/SymphonyIOControl.cpp,
-    /// SymphonyIO.cpp:6427).
+    /// (og_source/eecontrol/generic/Products/SymphonyIO/SymphonyIOControl.cpp:1167-1180,
+    /// called at og_source/maestrolink/Software/SymphonyIO.cpp:6427).
     @discardableResult
     public func clearResetRequest() async -> Bool {
         guard writeGate.allowsWrites, transport.isConnected else { return false }

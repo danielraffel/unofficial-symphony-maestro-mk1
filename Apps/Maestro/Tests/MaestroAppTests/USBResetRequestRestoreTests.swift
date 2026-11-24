@@ -18,6 +18,7 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
     private var analog: [Key: (type: UInt8, trim: UInt8)] = [:]
     private var recorded: [Write] = []
     private var resetReads = 0
+    private var readCount = 0
 
     /// 0xDB; nil: the read fails (older firmware).
     var resetRequest: UInt8? = SymphonyIOResetRequest.none.rawValue
@@ -31,7 +32,8 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
 
     var writes: [Write] { lock.withLock { recorded } }
     var resetRequestReads: Int { lock.withLock { resetReads } }
-    func clearWrites() { lock.withLock { recorded.removeAll() } }
+    var reads: Int { lock.withLock { readCount } }
+    func clearWrites() { lock.withLock { recorded.removeAll(); readCount = 0 } }
     func value(_ request: UInt8, _ value: UInt16 = 0, _ index: UInt16 = 0) -> [UInt8]? {
         lock.withLock { held[Key(request: request, value: value, index: index)] }
     }
@@ -72,6 +74,7 @@ private final class HoldingUnit: XPCTransport, @unchecked Sendable {
 
     func sendGetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, dataLength: UInt16) async throws -> XPCPropertyReply {
         try lock.withLock {
+            readCount += 1
             if readsFail { throw DeviceConnectionError.transportError("no reads") }
             let length = Int(dataLength)
             func reply(_ bytes: [UInt8]) -> XPCPropertyReply {
@@ -195,7 +198,9 @@ struct USBResetRequestRestoreTests {
         try await firstRestore(state, usb, unit)
         // Unplugged and plugged back in: the helper configures it again.
         replug(state, unit)
+        let started = Date()
         await state.restoreUSBMixerAfterRecovery(usb, helperMixer: 0)
+        print("[test] plain replug restore: \(unit.reads) reads, \(unit.writes.count) writes, \(String(format: "%.2f", Date().timeIntervalSince(started))) s")
         #expect(unit.writes == [], "\(unit.writes)")
         #expect(usb.restoreReadComparedSkips > 0)
         #expect(!state.usbRestoreOwed)
@@ -368,6 +373,9 @@ struct USBReadCompareRequestTests {
             #expect(read.request == write.request && read.value == write.value && read.index == write.index)
             #expect(matches([write.data]))
         }
+        // A strip the firmware has no read for is not asked.
+        #expect(XPCDeviceConnection.readCompareRequest(
+            for: USBControlRequest(direction: .write, request: 0xB3, value: 1, index: 33, data: Data([0]))).map { _ in true } == nil)
         // Write-only and unreadable commands are always sent.
         #expect(XPCDeviceConnection.readCompareRequest(
             for: USBControlRequest(direction: .write, request: 0x50, data: Data([1, 1, 0, 0]))).map { _ in true } == nil)

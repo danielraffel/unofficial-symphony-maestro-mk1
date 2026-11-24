@@ -6,7 +6,7 @@
 
 - **Maestro USB audio no longer cuts out while Maestro is open.** Maestro now reads the Symphony's meters only while a meter is on screen, and no longer rewrites the mixer when you open the Mixer page or after a single failed read. The USB helper no longer writes its log from the audio thread, which made macOS skip a cycle of Maestro USB audio now and then, with Maestro open or closed.
 - **Over USB, audio no longer stops for a moment when you plug the Symphony in with Maestro open.** Maestro no longer sends routes and the optical format that the unit already has while audio is playing.
-- **Over USB, Maestro no longer re-sends your settings when you unplug and replug the Symphony.** It checks what the unit still holds and sends only what it lost, so a Symphony that was switched off and on gets its settings back and a plain replug gets nothing.
+- **Over USB, Maestro no longer re-sends your settings when you unplug and replug the Symphony.** It checks what the unit still holds and sends only what it lost, so a Symphony that was switched off and on still gets its settings back.
 
 ## 0.9.25 (beta)
 
