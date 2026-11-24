@@ -78,6 +78,42 @@ struct SleepWakeTests {
         #expect(runs == 2)
     }
 
+    /// 1142, 2026-11-23: a USB unit appears as "USB Audio", then "Maestro
+    /// USB" a moment later. The first reconnect's discovery found both, yet
+    /// the second appearance queued another full reconnect: the same unit
+    /// was disconnected, found again and restored again (~300 reads).
+    @Test(arguments: [
+        // (seen by the first reconnect, queued appearances, other reason, connected) -> second runs
+        (Set<UInt32>([718, 637]), Set<UInt32>([637]), false, true, false),
+        (Set<UInt32>([718]), Set<UInt32>([637]), false, true, true),
+        (Set<UInt32>([718, 637]), Set<UInt32>([637]), true, true, true),
+        (Set<UInt32>([718, 637]), Set<UInt32>([637]), false, false, true),
+    ])
+    func appearanceAlreadyFoundDoesNotReconnectAgain(
+        seen: Set<UInt32>, appeared: Set<UInt32>, otherReason: Bool, connected: Bool, runsAgain: Bool
+    ) async {
+        let state = state(WakeConnection(failSupportedRead: false))
+        var runs = 0
+        var release: CheckedContinuation<Void, Never>?
+        state.reconnectOperation = {
+            runs += 1
+            if runs == 1 {
+                await withCheckedContinuation { release = $0 }
+                state.lastReconnectDiscoveredIDs = seen
+                state.connectionMode = connected ? .hardware : .disconnected
+            }
+        }
+        let first = Task { @MainActor in await state.reconnectHardware(appeared: [718]) }
+        while release == nil { await Task.yield() }
+        await state.reconnectHardware(appeared: appeared)
+        if otherReason { await state.reconnectHardware() }
+        release?.resume()
+        await first.value
+        for _ in 0..<50 where runs < 2 { await Task.yield() }
+        #expect(runs == (runsAgain ? 2 : 1))
+        #expect(state.reconnectQueuedAppearedIDs.isEmpty && !state.reconnectQueuedForOtherReason)
+    }
+
     @Test func failedWakeReadExhaustsAndReconnectsWithDisconnectBookkeeping() async {
         let connection = WakeConnection(failSupportedRead: true)
         let state = state(connection)

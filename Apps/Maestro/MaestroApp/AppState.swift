@@ -2351,7 +2351,7 @@ final class AppState: @unchecked Sendable {
         guard newlyAppeared else { return }
 
         // Reconnect the app's own control connection to the best (Thunderbolt-preferred) device.
-        Task { await reconnectHardware() }
+        Task { await reconnectHardware(appeared: newlyAppearedIDs) }
 
         // Then, if enabled, switch the macOS default OUTPUT device — only on a genuine plug-in.
         guard !looksLikeCoreAudioRestart else { return }
@@ -3549,6 +3549,30 @@ final class AppState: @unchecked Sendable {
     /// one ends. Dropping it once left Maestro "Disconnected" on the old USB
     /// connection after a switch from USB to ThunderBridge (2026-11-22).
     @ObservationIgnored var reconnectRequestedWhileReconnecting = false
+    /// Of those requests, the Symphony devices whose appearance asked for
+    /// them, and whether any asked for another reason (a device went away, a
+    /// switch to ThunderBridge, a wake): only appearances can be already
+    /// covered (`reconnectStillNeeded`).
+    @ObservationIgnored var reconnectQueuedAppearedIDs: Set<AudioObjectID> = []
+    @ObservationIgnored var reconnectQueuedForOtherReason = false
+    /// The Symphony devices the running (or last) reconnect's discovery
+    /// found, when it found one to connect to.
+    @ObservationIgnored var lastReconnectDiscoveredIDs: Set<AudioObjectID>?
+
+    /// Whether the reconnect asked for while the last one ran still has
+    /// anything to do. Not when every request came from a device appearing
+    /// that the reconnect just finished had already found, and it ended
+    /// connected: a USB unit appears in two steps (its "USB Audio" device,
+    /// then "Maestro USB" a moment later), the first reconnect's discovery
+    /// sees both, and a second one only disconnected the same unit, found it
+    /// again and ran a full restore of ~300 reads (1142, 2026-11-23).
+    @MainActor
+    func reconnectStillNeeded() -> Bool {
+        guard !reconnectQueuedForOtherReason, connectionMode == .hardware,
+              let seen = lastReconnectDiscoveredIDs,
+              reconnectQueuedAppearedIDs.isSubset(of: seen) else { return true }
+        return false
+    }
 
     struct PreferredDevice: Sendable {
         let device: CoreAudioDeviceConnection.DiscoveredSymphonyIO
@@ -3587,8 +3611,11 @@ final class AppState: @unchecked Sendable {
     }
 
     /// Reconnect to hardware (called after toggle-driver.sh, plug-in, or USB reset).
+    ///
+    /// `appeared`: the Symphony devices whose appearance asked for this
+    /// (`handleHardwareDeviceListChanged`); nil for any other reason.
     @MainActor
-    func reconnectHardware() async {
+    func reconnectHardware(appeared: Set<AudioObjectID>? = nil) async {
         if hardwareSleepState == .validating, connectionMode == .disconnected {
             endWakeValidationForReconnect()
         }
@@ -3597,18 +3624,31 @@ final class AppState: @unchecked Sendable {
             print("[Maestro] CARD SIMULATION: reconnect ignored — session pinned to the simulated unit")
             return
         }
-        if isReconnecting { reconnectRequestedWhileReconnecting = true; return }
+        if isReconnecting {
+            reconnectRequestedWhileReconnecting = true
+            if let appeared { reconnectQueuedAppearedIDs.formUnion(appeared) } else { reconnectQueuedForOtherReason = true }
+            return
+        }
         isReconnecting = true
+        lastReconnectDiscoveredIDs = nil
         let reconnectGeneration = wakeValidationGeneration
         defer {
             isReconnecting = false
+            let stillNeeded = reconnectStillNeeded()
+            let queuedIDs = reconnectQueuedAppearedIDs
+            reconnectQueuedAppearedIDs = []
+            reconnectQueuedForOtherReason = false
             if reconnectGeneration != wakeValidationGeneration {
                 reconnectRequestedWhileReconnecting = false
                 reconnectRequestedWhileSuspended = true
                 replaySuspendedReconnectIfNeeded()
             } else if reconnectRequestedWhileReconnecting {
                 reconnectRequestedWhileReconnecting = false
-                Task { @MainActor [weak self] in await self?.reconnectHardware() }
+                if stillNeeded {
+                    Task { @MainActor [weak self] in await self?.reconnectHardware() }
+                } else {
+                    print("[Maestro] reconnect: device(s) \(queuedIDs.sorted()) appeared during the reconnect, which already found them; not reconnecting again")
+                }
             }
         }
         stopThunderboltHealthCheck()
@@ -3682,6 +3722,7 @@ final class AppState: @unchecked Sendable {
             let preferred = await Task.detached(priority: .utility) { Self.preferredDevice(in: discovered) }.value
             guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
             if let pref = preferred {
+                lastReconnectDiscoveredIDs = Set(discovered.map(\.audioDeviceID))
         let best = pref.device
                 let audioDeviceID = best.audioDeviceID
                 let identifier = best.identifier
