@@ -411,6 +411,14 @@ struct SymphonyThunderbridge_IVars {
     // This is only armed by Start(), never by in-place link recovery.
     bool      startupOutputMuteHeld;
     uint64_t  startupOutputMuteDeadlineNs;
+    // dext 151: Start() programs 44.1 kHz and Core Audio puts back the
+    // device's saved rate about a second and a half later. The output gate
+    // also waits for that: it opens once Core Audio has restored a control
+    // AND the hardware runs at Core Audio's rate (or the deadline passes,
+    // which is the behaviour before this). Both armed with the gate, by
+    // Start() only; set and cleared on any thread, read on xlinkQueue.
+    bool      startupControlSeen;
+    bool      startupRatePending;
     double    lastSampleRate;  // Last SUCCESSFULLY programmed hardware sample rate
     uint32_t  namingSampleRate; // Hz the channel names follow: Core Audio's nominal rate
                                // (SymphonyNamingRateHz), updated on every HandleChangeSampleRate
@@ -2668,6 +2676,9 @@ static bool ConfigureSymphonyLink(SymphonyThunderbridge_IVars *ivars, double rat
 
     // Set DDS first (legacy: SetDDSSampleRate before SetSampleRate). Start()
     // passes 44100; in-place recovery passes the rate the units last ran at.
+    // dext 151: the rest of Start runs on the link at this rate, so it is not
+    // deferred; Start's output gate instead stays closed until Core Audio's
+    // saved rate is on the hardware (MaybeReleaseStartupOutputMute).
     SetDDSSampleRate(ivars->pciDevice, ivars->barMemoryIndex, rate, ivars->isLegacyPCIe2100);
 
     if (!SendXLinkCommand(ivars->pciDevice, ivars->barMemoryIndex,
@@ -4521,12 +4532,19 @@ static uint32_t ClkCtrlUnmuteBits(const SymphonyThunderbridge_IVars *ivars)
     return bits;
 }
 
+// dext 151: the gate opens when Core Audio has restored a control and the
+// hardware runs at Core Audio's rate, or at the deadline. `controlSet` is
+// true when called for a Core Audio control set.
 static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
                                           bool controlSet)
 {
     if (!ivars || !ivars->startupOutputMuteHeld) return;
+    if (controlSet) __atomic_store_n(&ivars->startupControlSeen, true, __ATOMIC_RELEASE);
     const uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
-    if (!controlSet && now < ivars->startupOutputMuteDeadlineNs) return;
+    const bool timedOut = now >= ivars->startupOutputMuteDeadlineNs;
+    const bool controlSeen = __atomic_load_n(&ivars->startupControlSeen, __ATOMIC_ACQUIRE);
+    const bool ratePending = __atomic_load_n(&ivars->startupRatePending, __ATOMIC_ACQUIRE);
+    if (!timedOut && (!controlSeen || ratePending)) return;
     // ModifyRegister reads the BAR: never with the endpoint gone (asleep,
     // powered off, link down). Stay held; a later tick retries, and every
     // reprogram after recovery or wake goes through ClkCtrlUnmuteBits.
@@ -4544,9 +4562,26 @@ static void MaybeReleaseStartupOutputMute(SymphonyThunderbridge_IVars *ivars,
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_OutputUnmute, 0);
         STLOG("ClkCtrl: startup output unmuted after %{public}s",
-              controlSet ? "Core Audio control set" : "3 s timeout");
+              !timedOut ? "Core Audio's control set and rate" :
+              ratePending ? "3 s timeout (Core Audio set no rate)" :
+              controlSeen ? "3 s timeout" : "3 s timeout (Core Audio set no control)");
     }
     ivars->startupOutputMuteHeld = false;
+    __atomic_store_n(&ivars->startupRatePending, false, __ATOMIC_RELEASE);
+}
+
+// dext 151: the hardware now runs at a rate Core Audio set (it was
+// programmed, or it is the rate the hardware already runs at). Clears the
+// start-up gate's rate wait and tries the release on xlinkQueue, which owns
+// the gate; a no-op once the gate has opened. An IO start does not count:
+// a client can start IO at 44.1 kHz before Core Audio restores the saved
+// rate, and the deadline covers a saved rate of 44.1 kHz.
+static void NoteStartupRateSettled(SymphonyThunderbridge_IVars *ivars, double rate)
+{
+    if (!ivars || !__atomic_exchange_n(&ivars->startupRatePending, false, __ATOMIC_ACQ_REL)) return;
+    STLOG("ClkCtrl: startup rate settled at %.0f Hz (Core Audio's rate)", rate);
+    if (ivars->xlinkQueue)
+        ivars->xlinkQueue->DispatchAsync(^{ MaybeReleaseStartupOutputMute(ivars, false); });
 }
 
 static bool ReadUnitAMonitorLevel(SymphonyThunderbridge_IVars *ivars, uint32_t output);
@@ -8179,10 +8214,12 @@ kern_return_t IMPL(SymphonyThunderbridge, Start)
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_Unmute | kClkCtrl_InputUnmute,
                        kClkCtrl_OutputUnmute);
+        __atomic_store_n(&ivars->startupControlSeen, false, __ATOMIC_RELEASE);
+        __atomic_store_n(&ivars->startupRatePending, true, __ATOMIC_RELEASE);
         ivars->startupOutputMuteHeld = true;
         ivars->startupOutputMuteDeadlineNs =
             clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + SYMPHONY_STARTUP_OUTPUT_HOLD_NS();
-        STLOG("ClkCtrl: global + input unmuted AFTER DMA start; output held for Core Audio restore");
+        STLOG("ClkCtrl: global + input unmuted AFTER DMA start; output held for Core Audio's controls and rate");
     } else {
         ModifyRegister(ivars->pciDevice, ivars->barMemoryIndex, kRegClkCtrl,
                        kClkCtrl_Unmute | kClkCtrl_InputUnmute | kClkCtrl_OutputUnmute, 0);
@@ -9857,6 +9894,7 @@ static kern_return_t ApplyRequestedSampleRate(SymphonyThunderbridge_IVars *ivars
     ivars->lastSampleRate = requestedRate;
     __atomic_store_n(&ivars->namingSampleRate, SymphonyNamingRateHz(requestedRate), __ATOMIC_RELEASE);
     STLOG("StartDevice: hardware now at %.0f Hz", requestedRate);
+    NoteStartupRateSettled(ivars, requestedRate);
     // Optical channel names follow the rate (ADAT / SMUX / N.A.).
     ScheduleChannelNames(ivars, self);
     return kIOReturnSuccess;
@@ -9896,6 +9934,9 @@ void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t c
     IOLockUnlock(lock);
     if (!driver) return;
     const double requestedRate = rate > 0.0 ? rate : device->GetSampleRate();
+    // dext 151: Core Audio set the rate the hardware already runs at.
+    if (rate > 0.0 && requestedRate == ivars->lastSampleRate)
+        NoteStartupRateSettled(ivars, requestedRate);
     if (requestedRate != ivars->lastSampleRate) {
         // No "recovery in flight" gate: the transaction waits its turn behind
         // a recovery on xlinkQueue, as StartDevice's does.
@@ -10133,6 +10174,7 @@ kern_return_t IMPL(SymphonyThunderbridge, Stop)
         __atomic_store_n(&ivars->ioRunning, false, __ATOMIC_RELEASE);  // M2
         __atomic_store_n(&ivars->txShutdown, true, __ATOMIC_RELEASE);
         ivars->startupOutputMuteHeld = false;
+        __atomic_store_n(&ivars->startupRatePending, false, __ATOMIC_RELEASE);
         // No more nominal-rate renames: the device is about to be released.
         UnregisterNominalRateObserver(this);
 
