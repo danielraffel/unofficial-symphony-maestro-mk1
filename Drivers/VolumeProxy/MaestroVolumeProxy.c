@@ -749,9 +749,31 @@ extern dispatch_queue_t gQueue;
 static MaestroAudioShm* gAudioRing = NULL;
 static AudioUnit     gOutputUnit = NULL;
 /* Set only by the render thread, consumed by the serial queue. */
+/* 0: nothing asked; 1: the render callback saw a producer stall and asks
+   for an AudioUnit rebuild; 2: render_monitor_tick is doing it. */
 static _Atomic int gProducerRecoveryPending = 0;
 static uint64_t gLastProducerRecoveryHost = 0;
 static uint64_t gLastRecoveryProducerWriteHost = 0;
+
+/* The render callback runs on the device's real-time IO thread with a 32-frame
+   (0.67 ms) budget. Nothing there may log, allocate, lock, flush a file or
+   call into dispatch/XPC: LOG() is os_log plus fprintf and fflush on a log
+   file, and on 2026-11-23 Core Audio skipped about two IO cycles a minute on
+   this thread for running over its budget, each one an audible cut-out.
+   So the callback only stores numbers here; render_monitor_tick (a timer on
+   gQueue) writes the "render #" line and runs the stall recovery.
+   Tools: MaestroVolumeProxyTests.c checks the callback's source for calls
+   that must not be there. */
+static _Atomic uint64_t gRenderStatCount = 0;
+static _Atomic uint32_t gRenderStatFrames = 0;
+static _Atomic int64_t  gRenderStatDepth = 0;
+static _Atomic int64_t  gRenderStatMinHeadroom = 0;
+static _Atomic uint32_t gRenderStatDelay = 0;
+static _Atomic uint32_t gRenderStatLate = 0;
+static _Atomic uint64_t gRenderStatRateBits = 0;   /* double rateScalar, as bits */
+static _Atomic uint32_t gRenderStatGen = 0;
+static _Atomic uint64_t gRenderStatDataCallbacks = 0;
+static _Atomic uint64_t gRenderStatSeq = 0;        /* bumped after each snapshot */
 static void start_audio_output(MaestroAudioShm* shm);
 static void stop_audio_output(void);
 
@@ -870,20 +892,15 @@ static OSStatus render_callback(
            callback after each recovery before arming the next one. */
         const int newProducerActivity = maestro_shm_producer_activity_changed(
             shm, gLastRecoveryProducerWriteHost);
+        int idle = 0;
         if (stalled && newProducerActivity && !cooldown &&
-            atomic_exchange_explicit(&gProducerRecoveryPending, 1, memory_order_acq_rel) == 0) {
-            LOG("producer stall detected while I/O active — scheduling AudioUnit recovery");
+            atomic_compare_exchange_strong_explicit(&gProducerRecoveryPending, &idle, 1,
+                                                    memory_order_acq_rel, memory_order_relaxed)) {
+            /* Asked here, done by render_monitor_tick on gQueue (no dispatch,
+               no log on this thread). */
             gLastProducerRecoveryHost = now;
             gLastRecoveryProducerWriteHost =
                 __atomic_load_n(&shm->producerLastHostTime, __ATOMIC_ACQUIRE);
-            dispatch_async(gQueue, ^{
-                if (gOutputUnit && gAudioRing) {
-                    LOG("producer stall recovery: rebuilding AudioUnit");
-                    stop_audio_output();
-                    start_audio_output(gAudioRing);
-                }
-                atomic_store_explicit(&gProducerRecoveryPending, 0, memory_order_release);
-            });
         }
     }
 
@@ -926,14 +943,25 @@ static OSStatus render_callback(
     if (sVerbose && sRenderCount % interval == 0) {
         const int64_t readFrame = stampOK ? (int64_t)llrint(inTimeStamp->mSampleTime) : 0;
         const int64_t lastWrite = shm ? __atomic_load_n(&shm->lastWriteFrame, __ATOMIC_RELAXED) : 0;
-        const double  rs = (stampOK && (inTimeStamp->mFlags & kAudioTimeStampRateScalarValid))
-                         ? inTimeStamp->mRateScalar : 0.0;
-        LOG("render #%llu: frames=%u depth=%lld minHeadroom=%lld D=%u late=%u rateScalar=%.9f gen=%u data_cb=%llu",
-            sRenderCount, inNumberFrames, (long long)(lastWrite - readFrame),
-            (long long)(sMinHeadroom == INT64_MAX ? -1 : sMinHeadroom),
-            shm ? __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED) : 0u,
-            shm ? __atomic_load_n(&shm->lateWrites, __ATOMIC_RELAXED) : 0u,
-            rs, gClockGeneration, sNonZeroCount);
+        double rs = (stampOK && (inTimeStamp->mFlags & kAudioTimeStampRateScalarValid))
+                  ? inTimeStamp->mRateScalar : 0.0;
+        uint64_t rsBits; memcpy(&rsBits, &rs, sizeof rsBits);
+        /* Published for render_monitor_tick, which logs it. */
+        atomic_store_explicit(&gRenderStatCount, sRenderCount, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatFrames, inNumberFrames, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatDepth, lastWrite - readFrame, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatMinHeadroom,
+                              sMinHeadroom == INT64_MAX ? -1 : sMinHeadroom, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatDelay,
+                              shm ? __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED) : 0u,
+                              memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatLate,
+                              shm ? __atomic_load_n(&shm->lateWrites, __ATOMIC_RELAXED) : 0u,
+                              memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatRateBits, rsBits, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatGen, gClockGeneration, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatDataCallbacks, sNonZeroCount, memory_order_relaxed);
+        atomic_fetch_add_explicit(&gRenderStatSeq, 1, memory_order_release);
         sMinHeadroom = INT64_MAX;
     }
 
@@ -1577,6 +1605,52 @@ static void reconcile_audio_binding(void)
     unregister_rate_listener();
     stop_audio_output();
     start_audio_output(gAudioRing);
+}
+
+/* gQueue, every 100 ms: what the render callback published (see
+   gRenderStatSeq) is logged here, and a producer stall it saw is put right
+   here, so the audio thread itself never logs or dispatches. */
+static void render_monitor_tick(void)
+{
+    static uint64_t sLoggedSeq = 0;
+    const uint64_t seq = atomic_load_explicit(&gRenderStatSeq, memory_order_acquire);
+    if (seq != sLoggedSeq) {
+        sLoggedSeq = seq;
+        uint64_t rsBits = atomic_load_explicit(&gRenderStatRateBits, memory_order_relaxed);
+        double rs; memcpy(&rs, &rsBits, sizeof rs);
+        LOG("render #%llu: frames=%u depth=%lld minHeadroom=%lld D=%u late=%u rateScalar=%.9f gen=%u data_cb=%llu",
+            (unsigned long long)atomic_load_explicit(&gRenderStatCount, memory_order_relaxed),
+            atomic_load_explicit(&gRenderStatFrames, memory_order_relaxed),
+            (long long)atomic_load_explicit(&gRenderStatDepth, memory_order_relaxed),
+            (long long)atomic_load_explicit(&gRenderStatMinHeadroom, memory_order_relaxed),
+            atomic_load_explicit(&gRenderStatDelay, memory_order_relaxed),
+            atomic_load_explicit(&gRenderStatLate, memory_order_relaxed),
+            rs, atomic_load_explicit(&gRenderStatGen, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&gRenderStatDataCallbacks, memory_order_relaxed));
+    }
+    int asked = 1;
+    if (atomic_compare_exchange_strong_explicit(&gProducerRecoveryPending, &asked, 2,
+                                                memory_order_acq_rel, memory_order_relaxed)) {
+        LOG("producer stall detected while I/O active — rebuilding AudioUnit");
+        if (gOutputUnit && gAudioRing) {
+            stop_audio_output();
+            start_audio_output(gAudioRing);
+        }
+        atomic_store_explicit(&gProducerRecoveryPending, 0, memory_order_release);
+    }
+}
+
+static dispatch_source_t gRenderMonitorTimer = NULL;
+
+static void start_render_monitor_timer(void)
+{
+    if (gRenderMonitorTimer) return;
+    gRenderMonitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gQueue);
+    if (!gRenderMonitorTimer) return;
+    dispatch_source_set_timer(gRenderMonitorTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                              100 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(gRenderMonitorTimer, ^{ render_monitor_tick(); });
+    dispatch_resume(gRenderMonitorTimer);
 }
 
 static void start_reconcile_timer(void)
@@ -3717,6 +3791,7 @@ int main(void) {
         ensure_audio_ring();
         register_device_listener();
         start_reconcile_timer();
+        start_render_monitor_timer();
         start_log_cap_timer();
     });
 
