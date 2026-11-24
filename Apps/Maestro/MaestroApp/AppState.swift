@@ -3225,15 +3225,19 @@ final class AppState: @unchecked Sendable {
     /// (SymphonyIOUSBAudioRoutingController::ResetInputRouting) goes first so a
     /// unit that was never power-cycled does not keep the removed routes.
     /// Card types must have been read this session, as for Reset Routing.
+    /// The default table after a front-panel reset is also written when both
+    /// slots were read on this connection, one of them seen empty
+    /// (`frontPanelResetCardRefusal`): the reset was applied on that reading.
     @MainActor
     private func syncUSBInputRoutingToHardware() async {
         guard let usb = device as? XPCDeviceConnection, connectedUnit == nil else { return }
-        if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
+        let resetPending = RoutingMixerReset.isPending(.usbInputRouting)
+        if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading),
+           !resetPending || frontPanelResetCardRefusal(connection: usb, generation: unitAGeneration) != nil {
             print("[Maestro] syncInputRouting: skipped over USB — \(reason)")
             return
         }
         let channels = usb.identifier.mode.channelCount
-        let resetPending = RoutingMixerReset.isPending(.usbInputRouting)
         var writes = resetPending
             ? SymphonyIODefaultRouting.inputRoutes(
                 board0: .init(analog: primaryBoardType.analogInputChannels,

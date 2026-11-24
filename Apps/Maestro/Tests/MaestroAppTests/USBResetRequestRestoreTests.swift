@@ -874,6 +874,8 @@ struct USBResetRequestRestoreTests {
         #expect(state.peripheralRoutingCache(direction: "output").loadMulti() == nil)
         #expect(unit.writes.contains { $0.request == SymphonyIOResetRequest.command })
         #expect(unit.resetRequest == SymphonyIOResetRequest.none.rawValue, "0xDB cleared")
+        #expect(!RoutingMixerReset.isPending(.usbOutputRouting), "the default output table written")
+        #expect(!RoutingMixerReset.isPending(.usbInputRouting), "the default input table written")
     }
 
     @Test("an empty slot is not recorded from a 0xA1 reply the unit is not seen to answer")
