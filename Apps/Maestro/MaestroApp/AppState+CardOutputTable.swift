@@ -251,6 +251,7 @@ extension AppState {
             ledger.clear()
         }
         cardRestoreOwner = (ObjectIdentifier(tb), owner)
+        cardRestoreStripInputs = thunderboltStripInputNumbers()
         migrateMixerHeadroomIfNeeded()
         func isCurrent() -> Bool {
             device === tb && !hardwareWritesSuspended && cardLayout == layout && connectedUnit == nil
@@ -398,13 +399,12 @@ extension AppState {
         // Converters: their own routes; the Symphony I/O rule does not apply.
         tb.cardMixers.isBypassed = converterRoutingSurface
         updateRestoreStatus()
-        guard !hardwareWritesSuspended, !converterRoutingSurface else { return }
-        // The cards or the unit's saved state changed since the mixers were
-        // written: the strips' card inputs differ, so the restore owes them
-        // again (the Mixer page does not re-send them).
+        guard !hardwareWritesSuspended, !converterRoutingSurface, !recallInFlight, !cardOutputRestoreRunning else { return }
+        // The cards, the strips' card inputs or the unit's saved state changed
+        // since the mixers were written: the restore owes them again (the
+        // Mixer page does not re-send them).
         if cardRestoreOwnerChanged(tb) { invalidateCardOutputTable(tb) }
-        guard cardOutputTableReplayNeeded || tb.cardMixers.needsRestore,
-              !recallInFlight, !cardOutputRestoreRunning else { return }
+        guard cardOutputTableReplayNeeded || tb.cardMixers.needsRestore else { return }
         if usesTwoUnitReplay {
             // The two-unit replay writes the table and the mixers in the same
             // order through the same chokepoint (`finishTwoUnitReplay`).
@@ -424,12 +424,18 @@ extension AppState {
         await syncOutputRoutingToHardware()
     }
 
-    /// Whether the card mixers on this connection were written from another
-    /// card layout or another unit's saved state than the current ones.
+    /// Whether the single-unit restore on this connection wrote the card
+    /// mixers for other cards, other strip card inputs or another unit's
+    /// saved state than the current ones. Channel naming (sample rate,
+    /// optical format, Replaces) is not compared: it moves no strip. Not at
+    /// 64 channels, where the two-unit replay owns the mixers.
     @MainActor
     func cardRestoreOwnerChanged(_ tb: ThunderboltDeviceConnection) -> Bool {
-        guard let known = cardRestoreOwner, known.connection == ObjectIdentifier(tb) else { return false }
-        return known.owner != CardRestoreOwner(storageKey: mixerPreferences.storageKey, layout: cardLayout)
+        guard !usesTwoUnitReplay, let known = cardRestoreOwner, known.connection == ObjectIdentifier(tb) else { return false }
+        let layout = cardLayout
+        return known.owner.storageKey != mixerPreferences.storageKey
+            || known.owner.layout.slot1 != layout.slot1 || known.owner.layout.slot2 != layout.slot2
+            || cardRestoreStripInputs.map { $0 != thunderboltStripInputNumbers() } ?? false
     }
 
     /// A two-unit replay ran to the end: the tables, the whole output table

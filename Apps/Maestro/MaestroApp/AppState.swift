@@ -221,6 +221,8 @@ final class AppState: @unchecked Sendable {
     @ObservationIgnored var twoUnitResetDefaultsSent: (a: ObjectIdentifier, b: ObjectIdentifier)?
     /// Whose saved state the connection's card mixer marks were written from.
     @ObservationIgnored var cardRestoreOwner: (connection: ObjectIdentifier, owner: CardRestoreOwner)?
+    /// The strips' card inputs when `cardRestoreOwner` was recorded.
+    @ObservationIgnored var cardRestoreStripInputs: [[Int?]]?
     /// Counts Output Routing edits, so a restore can tell one happened under it.
     @ObservationIgnored var outputRouteEdits: UInt64 = 0
     @ObservationIgnored var outputRouteDeferredSinceSave = false

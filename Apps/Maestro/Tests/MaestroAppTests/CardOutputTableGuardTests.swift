@@ -271,6 +271,27 @@ struct CardOutputTableGuardTests {
         #expect(!driver.log[mark...].contains { if case .route = $0 { true } else { false } })
     }
 
+    @Test("channel naming (sample rate, optical format, Replaces) changing after the restore writes nothing")
+    func namingChangeOwesNothing() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, driver) = await connected(identity: 0xF2C0_0106)
+        let mark = driver.log.count
+        let epoch = tb.cardMixers.epoch
+        state.channelNaming.sampleRate = 96_000
+        state.channelNaming.opticalIsSPDIF = [true, nil]
+        state.channelNaming.spdifReplace = [1, 0]
+        #expect(state.cardLayout != state.cardRestoreOwner?.owner.layout, "the naming is part of the layout")
+        for _ in 0..<3 {
+            await state.serviceCardOutputTable(tb)
+            await drain(state)
+        }
+        #expect(driver.log.count == mark)
+        #expect(tb.cardMixers.epoch == epoch)
+        #expect(tb.cardMixers.writtenMixers == [0, 1])
+        #expect(!state.cardOutputTableReplayNeeded)
+    }
+
     @Test("the input routing put back on the defaults (the channel-order reset): the mixers are written again, in order")
     func inputResetToDefaultsOwesMixers() async {
         let restore = restoringDefaults()
@@ -801,6 +822,27 @@ struct CardOutputTableGuardTests {
         // their numbering (16 is Mixer 1). Column 0 is Line 1/2.
         state.peripheralRoutingCache(direction: "output").save([16: Set([0])])
         return (state, tb, b, driver)
+    }
+
+    @Test("64 channels: an owner recorded by an earlier single-unit restore does not make every cycle ask for the replay")
+    func twoUnitIgnoresSingleUnitOwner() async {
+        let restore = restoringDefaults()
+        defer { restore() }
+        let (state, tb, _, driver) = makeTwoUnitState(identity: 0xF2C0_0031)
+        #expect(state.usesTwoUnitReplay)
+        state.twoUnitReplayNeeded = true
+        await state.replayUnitBSettings()
+        #expect(!state.twoUnitReplayNeeded)
+        #expect(!tb.cardMixers.needsRestore)
+        // Written by a single-unit restore before unit B came up, for another layout.
+        state.cardRestoreOwner = (ObjectIdentifier(tb), CardRestoreOwner(storageKey: "earlier", layout: CardLayout()))
+        let mark = driver.sent.count
+        for _ in 0..<3 {
+            await state.serviceCardOutputTable(tb)
+            #expect(!state.twoUnitReplayNeeded)
+            #expect(!state.cardOutputTableReplayNeeded)
+        }
+        #expect(driver.sent.count == mark)
     }
 
     @Test("64 channels: a replay that keeps failing waits longer each time, sends the reset's default tables once, and consumes the flags when it completes")
