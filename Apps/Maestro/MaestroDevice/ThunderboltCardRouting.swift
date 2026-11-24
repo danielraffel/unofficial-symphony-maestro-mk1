@@ -105,6 +105,39 @@ public enum ThunderboltCardRouting {
     ///   defaults to one.
     public static func route(destination: UInt8, source: UInt8, unitBActive: Bool = false) -> Route? {
         guard let channel = channel(forDestination: destination) else { return nil }
+        return route(channel: channel, source: source, unitBActive: unitBActive)
+    }
+
+    /// ``route(destination:source:unitBActive:)`` under the serving driver's
+    /// `order`: the XLink channel is the one the unit's playback table plays
+    /// on `destination` (``channel(forDestination:slot1:slot2:order:)``);
+    /// nil for a board output no XLink channel reaches.
+    public static func route(destination: UInt8, source: UInt8, unitBActive: Bool = false,
+                             slot1: IOCardType?, slot2: IOCardType?, order: ThunderboltChannelOrder) -> Route? {
+        guard let channel = channel(forDestination: destination, slot1: slot1, slot2: slot2, order: order) else { return nil }
+        return route(channel: channel, source: source, unitBActive: unitBActive)
+    }
+
+    /// The XLink TX channels (0-31 of one unit) that no board output
+    /// destination reaches under `order`: analog first, the channels past the
+    /// unit's outputs. Nothing plays them, but the card keeps whatever route
+    /// it last had on them, so a whole-table write sends them disabled.
+    public static func unreachedChannels(slot1: IOCardType?, slot2: IOCardType?,
+                                         order: ThunderboltChannelOrder) -> [UInt8] {
+        let reached = Set((SymphonyIORoutingAddress.ioBoard0Base..<(SymphonyIORoutingAddress.ioBoard1Base
+            &+ UInt8(SymphonyIORoutingAddress.channelsPerIOBoard))).compactMap {
+            channel(forDestination: $0, slot1: slot1, slot2: slot2, order: order)
+        })
+        return (0..<channelCount).filter { !reached.contains($0) }
+    }
+
+    /// A disabled card route for XLink TX `channel`, left on its straight
+    /// `PCI_OUT` slot.
+    public static func disabled(channel: UInt8) -> Route {
+        Route(channel: channel, slot: pciOutBase &+ channel, enabled: false)
+    }
+
+    private static func route(channel: UInt8, source: UInt8, unitBActive: Bool) -> Route? {
         if source == SymphonyIORoutingAddress.clearRoute || source == SymphonyIORoutingAddress.none {
             return Route(channel: channel, slot: pciOutBase &+ channel, enabled: false)
         }
@@ -134,7 +167,14 @@ public enum ThunderboltCardRouting {
     /// slot to play (nil clears the route: the channel is disabled and left on
     /// its straight `PCI_OUT 32 + c` slot, as the driver starts it).
     public static func unitBRoute(destination: UInt8, slot: UInt8?) -> Route? {
-        guard let local = channel(forDestination: destination) else { return nil }
+        unitBRoute(destination: destination, slot: slot, slot1: nil, slot2: nil, order: .cardByCard)
+    }
+
+    /// ``unitBRoute(destination:slot:)`` under unit B's `order`: the XLink
+    /// channel unit B's playback table plays on `destination`, plus 32.
+    public static func unitBRoute(destination: UInt8, slot: UInt8?, slot1: IOCardType?, slot2: IOCardType?,
+                                  order: ThunderboltChannelOrder) -> Route? {
+        guard let local = channel(forDestination: destination, slot1: slot1, slot2: slot2, order: order) else { return nil }
         let channel = unitBChannelBase &+ local
         guard let slot else { return Route(channel: channel, slot: pciOutBase &+ channel, enabled: false) }
         return Route(channel: channel, slot: slot, enabled: true)

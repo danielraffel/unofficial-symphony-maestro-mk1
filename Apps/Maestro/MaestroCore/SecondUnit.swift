@@ -43,6 +43,11 @@ public struct SecondUnitInfo: Sendable, Equatable {
     public let slot2: IOCardType
     /// Whether each slot's type was read from the unit.
     public let slotValid: [Bool]
+    /// Whether each read slot's raw type is one the app knows. A type it does
+    /// not know is shown as no board (`slot1`/`slot2` `.none`), but it is not
+    /// knowledge of an empty slot: the driver keeps its card-by-card tables
+    /// for it (`SymphonyAnalogFirstApplies`), see ``channelOrderSlot1``.
+    public let slotTypeKnown: [Bool]
     /// The letter the unit keeps (0x37), raw. 0 or 0xFF when it has none.
     public let prefixByte: UInt8
     /// The clock source the driver set (3 = Loop Sync; 2 = Word Clock from older builds).
@@ -57,11 +62,13 @@ public struct SecondUnitInfo: Sendable, Equatable {
     public static let clockSourceLoopSync: UInt8 = 3
 
     public init(slot1: IOCardType, slot2: IOCardType, slotValid: [Bool] = [true, true],
+                slotTypeKnown: [Bool] = [true, true],
                 prefixByte: UInt8 = 0, clockSource: UInt8 = SecondUnitInfo.clockSourceLoopSync,
                 setupFlags: UInt32 = 1, txErrors: UInt32 = 0) {
         self.slot1 = slot1
         self.slot2 = slot2
         self.slotValid = slotValid.count == 2 ? slotValid : [true, true]
+        self.slotTypeKnown = slotTypeKnown.count == 2 ? slotTypeKnown : [true, true]
         self.prefixByte = prefixByte
         self.clockSource = clockSource
         self.setupFlags = setupFlags
@@ -78,9 +85,17 @@ public struct SecondUnitInfo: Sendable, Equatable {
         }
         self.init(slot1: card(0), slot2: card(1),
                   slotValid: [0, 1].map { $0 < boardValid.count && boardValid[$0] != 0 },
+                  slotTypeKnown: [0, 1].map { $0 < boardType.count && IOCardType(rawValue: boardType[$0]) != nil },
                   prefixByte: prefix, clockSource: clockSource,
                   setupFlags: setupFlags, txErrors: txErrors)
     }
+
+    /// Slot 1's card as the driver orders unit B's host channels from it:
+    /// nil while the slot is unread or its raw type is unknown, where the
+    /// driver keeps the card-by-card tables (`SymphonyAnalogFirstApplies`).
+    public var channelOrderSlot1: IOCardType? { slotValid[0] && slotTypeKnown[0] ? slot1 : nil }
+    /// Slot 2's counterpart of ``channelOrderSlot1``.
+    public var channelOrderSlot2: IOCardType? { slotValid[1] && slotTypeKnown[1] ? slot2 : nil }
 
     /// The set-up the driver sends when 64 channels start went through.
     public var setupComplete: Bool { setupFlags & 1 != 0 }

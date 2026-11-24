@@ -621,6 +621,21 @@ public final class DextUserClient: @unchecked Sendable {
         return UnitBState.decode(out)
     }
 
+    /// What the driver last programmed into each unit's routing layer
+    /// (selector 17, dext 150+), without bus traffic. Nil from an older
+    /// driver ("no such selector") or a failed read.
+    public func readChannelOrder() -> ThunderboltAppliedChannelOrder? {
+        lock.lock(); let conn = connection; lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        var out = [UInt8](repeating: 0, count: 24)
+        var outSize = out.count
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, 17, nil, 0, p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == 24 else { return nil }
+        return ThunderboltAppliedChannelOrder.decode(out)
+    }
+
     /// Selector 14 v1 updates host controls only. Unsupported drivers fail closed:
     /// never substitute a vendor write or AudioObjectSetPropertyData gain write.
     public func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool {
@@ -745,6 +760,9 @@ public protocol ThunderboltDriverClient: VendorTransport {
     func readTimingHealth() -> TimingHealth?
     func readBoardTypes() -> (primary: UInt8?, secondary: UInt8?)?
     func readUnitBState() -> UnitBState?
+    /// Selector 17 (dext 150+): the order each unit's tables were programmed
+    /// in. Nil from an older driver.
+    func readChannelOrder() -> ThunderboltAppliedChannelOrder?
     func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool
     func loopSync(_ settings: LoopSyncSettings?) throws -> LoopSyncState
     /// The port selector (32 or 64 channels) when it does not come from Core

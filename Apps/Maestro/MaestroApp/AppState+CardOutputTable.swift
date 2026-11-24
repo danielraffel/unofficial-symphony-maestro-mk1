@@ -36,9 +36,10 @@ extension AppState {
         // no source and is written disabled. Left out, such a channel kept
         // whatever the card had (a mixer route of an earlier session or of
         // other cards), while the ledger believed that mixer fed nothing.
-        let defaults = SymphonyIODefaultRouting.thunderboltOutputRoutes(
-            board0Outputs: primaryBoardType.totalOutputChannels,
-            board1Outputs: secondaryBoardType.totalOutputChannels)
+        // The default is the driver's own table in its channel order (analog
+        // first from driver 150): written by position under it, it would put
+        // the unit's outputs back card by card on every connect.
+        let defaults = thunderboltDefaultOutputRoutes(unit: .a)
         let rowCount = device.identifier.mode.channelCount / 2 + 2
         let table = Self.replayOutputSources(
             defaults: Dictionary(uniqueKeysWithValues: defaults.map { ($0.destination, $0.source) }),
@@ -46,8 +47,8 @@ extension AppState {
             complete: (0..<rowCount).allSatisfy { routes[$0] != nil },
             destinations: defaults.map(\.destination))
         var playable: [UInt8: UInt8] = [:]
-        for (destination, source) in table where ThunderboltCardRouting.channel(forDestination: destination) != nil {
-            if ThunderboltCardRouting.route(destination: destination, source: source, unitBActive: unitBOnCard) != nil {
+        for (destination, source) in table where thunderboltXLinkChannel(forDestination: destination) != nil {
+            if thunderboltCardRoute(destination: destination, source: source, unitBActive: unitBOnCard) != nil {
                 playable[destination] = source
             } else {
                 if !quiet {
@@ -109,6 +110,8 @@ extension AppState {
             return "cards not read this session: \(reason.prefix(80))"
         }
         if connectionMode == .hardware, unitAIdentity == nil { return "the unit is not identified yet" }
+        // The table's XLink channels follow the order the driver programmed.
+        if let reason = thunderboltChannelOrderUnknownReason { return reason }
         // 64 channels: the two-unit replay also waits for unit B's cards.
         if usesTwoUnitReplay, !unitBInputRoutingAllowed || unitBLayout == nil
             || unitBBoardSource(slot: 0) != .detected || unitBBoardSource(slot: 1) != .detected {
@@ -265,7 +268,12 @@ extension AppState {
         let epoch = ledger.epoch
         let editsAtStart = outputRouteEdits
         let destinations = thunderboltOutputTable(for: tb).keys.sorted()
-        ledger.declareTable(channels: Set(destinations.compactMap(ThunderboltCardRouting.channel(forDestination:))))
+        // Every XLink channel of the unit is the table's: the ones no board
+        // output reaches (analog first, past the unit's outputs) are written
+        // disabled below, so none keeps a mixer route of an earlier session.
+        let unreached = thunderboltUnreachedChannels
+        ledger.declareTable(channels: Set(destinations.compactMap { thunderboltXLinkChannel(forDestination: $0) })
+            .union(unreached))
         var sent: [UInt8: UInt8] = [:]
         /// Sends what the table says for this destination now. A mixer that
         /// is not marked written is never routed: the destination is disabled.
@@ -292,6 +300,16 @@ extension AppState {
         //    not written disabled.
         for destination in destinations {
             if let stop = await route(destination) { return stop }
+        }
+        for channel in unreached {
+            guard isCurrent() else { return .superseded }
+            do {
+                let route = ThunderboltCardRouting.disabled(channel: channel)
+                guard try await Task.detached(priority: .utility) { try tb.setCardOutputRoute(route) }.value
+                        == .written else { return .failed("the driver state changed during the write") }
+            } catch {
+                return .failed("XLink \(channel) disabled: \(error)")
+            }
         }
         guard mixersAvailable else { return .waiting("saved mixer state is not available for this unit") }
         // Deferrals up to here are in the stores the mixers are read from next.

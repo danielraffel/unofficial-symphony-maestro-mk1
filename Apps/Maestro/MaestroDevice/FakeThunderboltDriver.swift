@@ -277,6 +277,28 @@ public final class FakeThunderboltDriver: ThunderboltDriverClient, @unchecked Se
     public func readTimingHealth() -> TimingHealth? { nil }
     public func readBoardTypes() -> (primary: UInt8?, secondary: UInt8?)? { boards }
     public func readUnitBState() -> UnitBState? { unitB }
+    /// Selector 17. Unless a test sets `channelOrder`, what a build-150
+    /// driver would report from `boards` and `unitB`: analog first where
+    /// both of a unit's types were read and are known, card by card for unit
+    /// A otherwise; nil from a driver older than 150.
+    public var channelOrder: ThunderboltAppliedChannelOrder?
+    public func readChannelOrder() -> ThunderboltAppliedChannelOrder? {
+        if let channelOrder { return channelOrder }
+        guard let build = driverBuild, build == 0 || build >= 150 else { return nil }
+        func unit(_ types: [UInt8?], configured: Bool) -> ThunderboltAppliedChannelOrder.Unit {
+            guard configured else { return .init(order: nil, slot1: nil, slot2: nil) }
+            let cards = types.map { $0.flatMap(IOCardType.init(rawValue:)) }
+            let known = cards.allSatisfy { $0 != nil }
+            return .init(order: known ? .analogFirst : .cardByCard, slot1: cards[0], slot2: cards[1])
+        }
+        let b = unitB
+        return ThunderboltAppliedChannelOrder(
+            unitA: unit([boards?.primary, boards?.secondary], configured: true),
+            unitB: unit((0..<2).map { i in
+                guard let b, b.boardValid.count > i, b.boardValid[i] != 0, b.boardType.count > i else { return nil }
+                return b.boardType[i]
+            }, configured: b?.present == true))
+    }
     public func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool { false }
     public func loopSync(_ settings: LoopSyncSettings?) throws -> LoopSyncState {
         throw DeviceConnectionError.notConnected

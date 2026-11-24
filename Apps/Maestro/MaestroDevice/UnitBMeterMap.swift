@@ -20,9 +20,14 @@ public enum UnitBMeterMap {
 
     /// Unit B's strip words (offset into the 64 input words), in the order of
     /// `layout.mixerChannels`, and its digital strips. Empty for an unknown layout.
-    public static func inputWords(layout: CardLayout, routes: [ThunderboltInputMeterMap.Route]? = nil) -> ThunderboltInputMeterMap.Words {
+    /// `order`: unit B's channel order, for its default capture table when
+    /// `routes` is not given (nil: card by card from the layout's slot 1).
+    public static func inputWords(layout: CardLayout, routes: [ThunderboltInputMeterMap.Route]? = nil,
+                                  order: ThunderboltUnitChannelOrder? = nil) -> ThunderboltInputMeterMap.Words {
         let slot1: IOCardType? = layout.isKnown ? layout.slot1 : nil
-        let capture = routes ?? ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: [])
+        let capture = routes ?? (order.map {
+            ThunderboltInputMeterMap.currentRoutes(slot1: $0.slot1, slot2: $0.slot2, order: $0.order, replayed: [])
+        } ?? ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: []))
         let words = ThunderboltInputMeterMap.words(layout: layout, routes: capture)
         return ThunderboltInputMeterMap.Words(
             channels: words.channels.map { $0.map { $0 + inputWordBase } },
@@ -30,7 +35,10 @@ public enum UnitBMeterMap {
     }
 
     /// The meter word of unit B's output channel `channel` (0-based, as
-    /// playback 33 + channel reaches it by default).
+    /// playback 33 + channel reaches it by default). For an analog output
+    /// strip that is exact under an analog-first driver (150+), whose table
+    /// plays XLink n on the n-th analog output; card by card it was exact for
+    /// slot 1's strips only.
     public static func playbackWord(channel: Int) -> Int { playbackWordBase + channel }
 
     /// Unit B's output levels from the buffer's playback words.

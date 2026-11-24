@@ -56,6 +56,29 @@ extension View {
 ///
 /// Evidence: `og_source/maestro2/App/Controllers/InputRouting/`
 /// Evidence: `og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp`
+/// The one-time notice after the analog-first channel order reset
+/// (`ChannelOrderRoutingReset`), on the Input Routing and Output Routing
+/// pages until dismissed.
+struct ChannelOrderResetNoticeRow: View {
+    let appState: AppState
+
+    var body: some View {
+        if let notice = appState.channelOrderResetNotice {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label(notice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Dismiss") { appState.dismissChannelOrderResetNotice() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+        }
+    }
+}
+
 struct InputRoutingView: View {
     private let appState: AppState
     // AppShell rebuilds per-unit pages on picker changes. Capture the connection
@@ -76,9 +99,14 @@ struct InputRoutingView: View {
         (unit == .a || appState.unitBInputRoutingAllowed) && !appState.hardwareWritesSuspended
     }
     private var unitBResetRoutes: [SymphonyIODefaultRouting.Route] {
-        // Original ResetInputRouting: analog across boards, then AES/optical.
-        // Evidence: og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:714-792.
-        SymphonyIODefaultRouting.inputRoutes(
+        // The table the driver programs for unit B in its channel order:
+        // analog across boards, then AES/optical (driver 150+, the
+        // original's ResetInputRouting,
+        // og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:714-792).
+        if appState.transportType == .thunderbolt, appState.thunderboltDisplayOrder(unit: .b).order == .analogFirst {
+            return appState.thunderboltDefaultInputRoutes(unit: .b)
+        }
+        return SymphonyIODefaultRouting.inputRoutes(
             board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
             board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
             usbChannelCount: 32)
@@ -172,6 +200,7 @@ struct InputRoutingView: View {
                 // two Symphony I/Os the combined card grid owns the whole
                 // surface; the per-unit grid remains the single-unit page.
                 if appState.showsSymphonyCardInputGrid {
+                    ChannelOrderResetNoticeRow(appState: appState)
                     SymphonyCardInputRoutingView(appState: appState)
                 } else {
                     routingGrid
@@ -185,6 +214,7 @@ struct InputRoutingView: View {
 
     private var routingGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
+            ChannelOrderResetNoticeRow(appState: appState)
             HStack {
                 Button("Reset Routing") {
                     requestRoutingReset()
@@ -331,15 +361,12 @@ struct InputRoutingView: View {
     }
 
     private func defaultRouteGrid() -> [Int: Int] {
-        // ThunderBridge: what the driver actually programs, card by card
-        // (host input n from slot 1 channel n, then slot 2 from where slot
-        // 1's inputs end: 12 behind a 2x6, 16 otherwise).
-        // The USB table below put every analog channel first, so this grid
-        // showed Line 9-24 on inputs 9-24 while the unit had slot 1's
-        // digital channels there.
+        // ThunderBridge: what the driver actually programs, in its channel
+        // order (analog first from driver 150; card by card before: host
+        // input n from slot 1 channel n, then slot 2 from where slot 1's
+        // inputs end, 12 behind a 2x6, 16 otherwise).
         if appState.transportType == .thunderbolt {
-            return SymphonyIODefaultRouting.inputGrid(
-                SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: unit == .b ? appState.unitB?.slot1 : appState.thunderboltCaptureSlot1), columns: columns)
+            return SymphonyIODefaultRouting.inputGrid(appState.thunderboltDefaultInputRoutes(unit: unit), columns: columns)
         }
         let board1 = self.board1
         let board2 = self.board2
@@ -469,7 +496,7 @@ struct InputRoutingView: View {
                 board1: b1.card, board2: b2.card,
                 usbChannelCount: device.identifier.mode.channelCount,
                 routes: unit == .b ? unitBResetRoutes : appState.transportType == .thunderbolt
-                    ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1) : nil,
+                    ? appState.thunderboltDefaultInputRoutes(unit: .a) : nil,
                 hostChannelOffset: unit == .b ? 32 : 0,
                 alsoResetsCardMapping: appState.showsSymphonyCardInputGrid),
             isRefusal: false)
@@ -524,7 +551,7 @@ struct InputRoutingView: View {
 
         // Preserve unit A's ThunderBridge startup table; B uses the original reset order.
         let routeList = unit == .b ? unitBResetRoutes : appState.transportType == .thunderbolt
-            ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: appState.thunderboltCaptureSlot1)
+            ? appState.thunderboltDefaultInputRoutes(unit: .a)
             : SymphonyIODefaultRouting.inputRoutes(
                 board0: .init(analog: board1.analogInputChannels, digital: board1.digitalInputChannels),
                 board1: .init(analog: board2.analogInputChannels, digital: board2.digitalInputChannels),
@@ -619,7 +646,8 @@ struct OutputRoutingView: View {
     // Output routing row labels: board-aware "A Line"/"A ADAT" + Mixer buses.
     // Over USB, row i is named after hardware column i (analog of both slots
     // first, as the USB default table routes them); over ThunderBridge, after
-    // the board outputs at the same position (CardLayout.thunderboltOutputPairName).
+    // the board outputs at the same position in the driver's channel order
+    // (CardLayout.thunderboltOutputPairName).
     // Evidence: original Maestro 2 shows "A Line 1/2", "A ADAT 1/2" etc.
     // The hardware part is the output column's name, so it is named by the
     // card that has it (an 8x8 in AES mode is "AES", not "ADAT") and follows
@@ -642,11 +670,15 @@ struct OutputRoutingView: View {
             }
             // The unit's prefix letter, and a bare "N.A." for a pair with no
             // channel the rate or format carries (`APUtilities.m:323-400`).
-            // ThunderBridge: the board outputs at the same position (Mac 1-16
-            // on slot 1, 17-32 on slot 2), which is where the driver plays
-            // them and the names it gives them in Core Audio.
+            // ThunderBridge: the board outputs at the same position in the
+            // driver's channel order (analog first from driver 150: Mac 1-2
+            // is the first two analog outputs, then the rest of the analog
+            // outputs of both slots, then the digital ones; by position
+            // before), which is where the driver plays them and the names it
+            // gives them in Core Audio.
             if appState.transportType == .thunderbolt,
-               let positional = layout.thunderboltOutputPairName(pair: i, prefix: appState.peripheralPrefix) {
+               let positional = layout.thunderboltOutputPairName(pair: i, prefix: appState.peripheralPrefix,
+                                                                 order: appState.thunderboltDisplayOrder(unit: .a).order) {
                 name = positional
             } else if i < hardware.count {
                 name = CardLayout.softwarePairName(hardwarePair: hardware[i].stereoName,
@@ -713,6 +745,7 @@ struct OutputRoutingView: View {
 
     private var routingGrid: some View {
         VStack(alignment: .leading, spacing: 0) {
+            ChannelOrderResetNoticeRow(appState: appState)
             HStack {
                 Button("Reset Routing") { requestRoutingReset() }
                 .buttonStyle(.bordered)
@@ -969,7 +1002,8 @@ struct OutputRoutingView: View {
         var labels: [(number: String, name: String)] = Array(single.prefix(pairs))
         for p in pairs..<TwoUnitOutputRouting.dawPairCount {
             let number = "\(p * 2 + 1)-\(p * 2 + 2)"
-            let name = unitB.thunderboltOutputPairName(pair: p - TwoUnitOutputRouting.unitBChannelBaseDAW / 2, prefix: appState.unitBPeripheralPrefix)
+            let name = unitB.thunderboltOutputPairName(pair: p - TwoUnitOutputRouting.unitBChannelBaseDAW / 2, prefix: appState.unitBPeripheralPrefix,
+                                                       order: appState.thunderboltDisplayOrder(unit: .b).order)
                 ?? CardLayout.softwarePairName(hardwarePair: "Digital \(p * 2 + 1)/\(p * 2 + 2)",
                                                prefix: appState.unitBPeripheralPrefix)
             labels.append((number: number, name: name))
@@ -982,8 +1016,9 @@ struct OutputRoutingView: View {
         return labels
     }
 
-    /// The card's start-up routes for unit B (output c plays DAW 33 + c) with
-    /// the saved choices laid over them.
+    /// The card's start-up routes for unit B (the output unit B's playback
+    /// table plays XLink c on plays DAW 33 + c) with the saved choices laid
+    /// over them.
     private func loadUnitBRoutes() {
         guard appState.unitBOnCard else {
             unitBRoutes = [:]
@@ -992,7 +1027,7 @@ struct OutputRoutingView: View {
         }
         var grid: [Int: Set<Int>] = [:]
         for (col, column) in unitBColumns.enumerated() {
-            guard let channel = ThunderboltCardRouting.channel(forDestination: column.routingByte) else { continue }
+            guard let channel = appState.thunderboltXLinkChannel(forDestination: column.routingByte, unit: .b) else { continue }
             grid[TwoUnitOutputRouting.defaultRow(unitBChannel: Int(channel)), default: []].insert(col)
         }
         let saved = appState.unitBOutputRoutingCache?.loadMulti() ?? [:]
@@ -1081,13 +1116,15 @@ struct OutputRoutingView: View {
     /// `SymphonyIODefaultRouting.usbChannelCount`); ThunderBridge carries 32,
     /// board 1 ← playback 17-32, as XLink sources.
     private func defaultOutputRouteList(board1: IOCardType, board2: IOCardType) -> [SymphonyIODefaultRouting.Route] {
-        // On ThunderBridge: Mac output n on slot 1 output n (1-16) and slot 2
-        // output n-16 (17-32), every output direct and no mixer routed, as in
-        // the original. The grid shows it, Maestro writes it on connect and
-        // Reset Routing writes it, so the picture matches the sound.
+        // On ThunderBridge: the driver's playback table in its channel order
+        // (driver 150+: Mac output n on the n-th board output, every analog
+        // output of both slots first, then the digital ones; before, slot 1
+        // output n for 1-16 and slot 2 output n-16 for 17-32), every output
+        // direct and no mixer routed, as in the original. The grid shows it,
+        // Maestro writes it on connect and Reset Routing writes it, so the
+        // picture matches the sound.
         if appState.transportType == .thunderbolt {
-            return SymphonyIODefaultRouting.thunderboltOutputRoutes(
-                board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
+            return appState.thunderboltDefaultOutputRoutes(unit: .a)
         }
         return SymphonyIODefaultRouting.outputRoutes(
             board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
@@ -1275,7 +1312,8 @@ struct OutputRoutingView: View {
         resetPrompt = RoutingResetPrompt(
             title: "Reset Output Routing",
             message: RoutingResetGuard.outputResetMessage(
-                board1: b1.card, board2: b2.card, transport: appState.transportType ?? .usb),
+                board1: b1.card, board2: b2.card, transport: appState.transportType ?? .usb,
+                routes: appState.transportType == .thunderbolt ? appState.thunderboltDefaultOutputRoutes(unit: .a) : nil),
             isRefusal: false)
     }
 
@@ -1684,10 +1722,13 @@ enum HeadphoneCrosspoint {
         }
         remember(headphone, sourceID)
 
+        let order = transport == .thunderbolt ? state.thunderboltDisplayOrder(unit: .a) : nil
         guard let srcLeft = SymphonyIOHeadphoneRouting.inheritedSource(
-                forDestination: pair.left, cachedRoutes: cachedRoutes, transport: transport),
+                forDestination: pair.left, cachedRoutes: cachedRoutes, transport: transport,
+                thunderboltOrder: order),
               let srcRight = SymphonyIOHeadphoneRouting.inheritedSource(
-                forDestination: pair.right, cachedRoutes: cachedRoutes, transport: transport)
+                forDestination: pair.right, cachedRoutes: cachedRoutes, transport: transport,
+                thunderboltOrder: order)
         else {
             print("""
                 [Maestro] HP\(headphone.rawValue + 1) crosspoint: no source known for outputs \

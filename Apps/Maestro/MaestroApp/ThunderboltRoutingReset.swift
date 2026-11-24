@@ -20,8 +20,13 @@ extension AppState {
         let aLayout = cardLayout
         let inputStore = symphonyCardInputStore
         // Older serving drivers still reset the peripheral input tables.
+        // Both units' tables in the order the driver programmed them; none
+        // is written while either is not known.
+        guard let aOrder = thunderboltUnitOrder(unit: .a), let bOrder = thunderboltUnitOrder(unit: .b) else {
+            throw DeviceConnectionError.notConnected
+        }
         let cardWrites = input && symphonyCardInputs.channelCount == 0 ? []
-            : ThunderboltPreset.cardReset(input: input, layouts: [aLayout, bLayout])
+            : ThunderboltPreset.cardReset(input: input, layouts: [aLayout, bLayout], orders: [aOrder, bOrder])
         let aInputCache = peripheralRoutingCache(direction: "input")
         let aOutputCache = peripheralRoutingCache(direction: "output")
         let bInputCache = unitBInputRoutingCache, bOutputCache = unitBOutputRoutingCache
@@ -38,8 +43,8 @@ extension AppState {
           try await Task.detached {
             try a.withPresetLock {
                 try b.withPresetLock {
-                    let aWrites = try a.routingResetWrites(layout: aLayout, input: input)
-                    let bWrites = try b.routingResetWrites(layout: bLayout, input: input)
+                    let aWrites = try a.routingResetWrites(layout: aLayout, input: input, order: aOrder)
+                    let bWrites = try b.routingResetWrites(layout: bLayout, input: input, order: bOrder)
                     do {
                         try a.applyPresetWrites(cardWrites + aWrites, layout: aLayout)
                     } catch {
@@ -68,15 +73,20 @@ extension AppState {
                 inputStore?.save(symphonyCardInputEdits)
             }
         } else {
-            func grid(_ layout: CardLayout, base: Int) -> [Int: Set<Int>] {
+            // Each output on the row of the DAW pair its XLink channel plays
+            // (the unit's playback table in its channel order).
+            func grid(_ layout: CardLayout, base: Int, order: ThunderboltUnitChannelOrder) -> [Int: Set<Int>] {
                 var rows = Dictionary(uniqueKeysWithValues: (0..<34).map { ($0, Set<Int>()) })
                 for (col, destination) in layout.outputRoutingColumns.enumerated() {
-                    rows[(Int(destination.routingByte) - 32 + base) / 2, default: []].insert(col)
+                    guard let channel = ThunderboltCardRouting.channel(
+                        forDestination: destination.routingByte, slot1: order.slot1, slot2: order.slot2,
+                        order: order.order) else { continue }
+                    rows[(Int(channel) + base) / 2, default: []].insert(col)
                 }
                 return rows
             }
-            aOutputCache.save(grid(aLayout, base: 0))
-            bOutputCache?.save(grid(bLayout, base: 32))
+            aOutputCache.save(grid(aLayout, base: 0, order: aOrder))
+            bOutputCache?.save(grid(bLayout, base: 32, order: bOrder))
             invalidateThunderboltOutputMeterMap()
         }
         symphonyCardInputNamingRevision += 1

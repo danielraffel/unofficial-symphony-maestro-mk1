@@ -206,6 +206,10 @@ final class AppState: @unchecked Sendable {
     var restoreStatusNote: String?
     /// One-time explanation shown after the driver-144 fader migration.
     var mixerHeadroomNotice: String?
+    /// One-time explanation shown on the routing pages after the analog-first
+    /// channel order reset (`ChannelOrderRoutingReset`), until dismissed.
+    var channelOrderResetNotice: String? = UserDefaults.standard.bool(forKey: ChannelOrderRoutingReset.noticePendingKey)
+        ? ChannelOrderRoutingReset.noticeText : nil
     /// Observation token for per-unit preferences stored outside the model.
     var unitPreferenceRevision = 0
     /// Pause between the strip writes of a USB mixer restore (tests set zero).
@@ -760,6 +764,10 @@ final class AppState: @unchecked Sendable {
                 if healthy {
                     self.thunderboltHasHealthyProbe = true
                     self.thunderboltControlReconnectAttempted = false
+                    // The order each unit's tables are in (it can change on a
+                    // link recovery or when unit B is set up), before anything
+                    // below writes routing in it.
+                    await self.refreshThunderboltChannelOrder(tb)
                     // A link recovery in place (no disconnect, so no connect
                     // replay) puts the driver's board-order capture table back
                     // on the unit: put the saved input routing back over it.
@@ -1065,6 +1073,46 @@ final class AppState: @unchecked Sendable {
     var thunderboltCaptureSlot1: IOCardType? {
         SymphonyIODefaultRouting.thunderboltCaptureSlot1(
             card: primaryBoardType, source: primaryBoardSource, serving: servingDextBuild)
+    }
+    /// Slot 2's counterpart of `thunderboltCaptureSlot1`, by the same trust
+    /// rule: nil until slot 2's type has been read from the unit this session
+    /// by a driver that reports its build.
+    var thunderboltCaptureSlot2: IOCardType? {
+        SymphonyIODefaultRouting.thunderboltCaptureSlot1(
+            card: secondaryBoardType, source: secondaryBoardSource, serving: servingDextBuild)
+    }
+    /// What the serving driver (build 150+) reports it programmed into each
+    /// unit's routing layer (selector 17): read at connect, after each link
+    /// recovery and on every healthy probe (`refreshThunderboltChannelOrder`).
+    /// Nil from an older driver and off ThunderBridge.
+    var thunderboltAppliedChannelOrder: ThunderboltAppliedChannelOrder?
+    /// How `unit`'s host channels are laid out on ThunderBridge, and the slot
+    /// types to build its tables and names from
+    /// (`ThunderboltUnitChannelOrder.resolve`): what a build-150 driver
+    /// reports it applied, card by card under an older one (from the app's
+    /// own trusted slot types). Nil while a build-150 driver has not
+    /// reported it: no routing is written then. Card by card off ThunderBridge.
+    func thunderboltUnitOrder(unit: DeviceUnit = .a) -> ThunderboltUnitChannelOrder? {
+        guard transportType == .thunderbolt else {
+            return ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: nil)
+        }
+        let fallback: (slot1: IOCardType?, slot2: IOCardType?) = unit == .a
+            ? (thunderboltCaptureSlot1, thunderboltCaptureSlot2)
+            : (unitB?.channelOrderSlot1, unitB?.channelOrderSlot2)
+        // Simulated cards and units: no driver to ask, the order the build
+        // would serve from the simulated types.
+        if unit == .a ? primaryBoardSource == .simulated : simulatedUnitB != nil {
+            return ThunderboltUnitChannelOrder(order: .serving(servingDextBuild),
+                                               slot1: fallback.slot1, slot2: fallback.slot2)
+        }
+        return ThunderboltUnitChannelOrder.resolve(serving: servingDextBuild,
+                                                   applied: thunderboltAppliedChannelOrder?.unit(unit),
+                                                   fallback: fallback)
+    }
+    /// `thunderboltUnitOrder` for drawing: while the order is not known,
+    /// the tables the driver keeps for unknown types (card by card).
+    func thunderboltDisplayOrder(unit: DeviceUnit = .a) -> ThunderboltUnitChannelOrder {
+        thunderboltUnitOrder(unit: unit) ?? ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: nil)
     }
     /// Slot 1 board type WITH provenance.
     var secondaryBoardReading: BoardTypeReading {
@@ -2766,8 +2814,13 @@ final class AppState: @unchecked Sendable {
             let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
             guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             if (self.device as? ThunderboltDeviceConnection) === tb { servingDextBuild = build }
+            // Which order the driver programmed the tables in, before anything
+            // reads the saved routing (and the one-time reset that may follow).
+            await refreshThunderboltChannelOrder(tb)
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         } else {
             servingDextBuild = nil
+            thunderboltAppliedChannelOrder = nil
         }
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
@@ -2993,6 +3046,11 @@ final class AppState: @unchecked Sendable {
         defer { if let recoveryCountAtStart { thunderboltSeenRecoveryCount = recoveryCountAtStart } }
         if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
             print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
+        } else if let reason = thunderboltChannelOrderUnknownReason {
+            // The rows mean other inputs in the other order: nothing is sent
+            // until the driver says which one it programmed.
+            print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
+            inputRoutingReplayNeeded = true
         } else {
             let cache = peripheralRoutingCache(direction: "input")
             if ThunderboltInputRoutingMigration.run(routingKey: cache.key) {
@@ -3004,8 +3062,7 @@ final class AppState: @unchecked Sendable {
             let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
             let wasWritten = thunderboltInputRoutingWritten
             thunderboltInputRoutingWritten = false
-            var writes = resetPending
-                ? SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: thunderboltCaptureSlot1) : []
+            var writes = resetPending ? thunderboltDefaultInputRoutes(unit: .a) : []
             writes += InputRoutingReplay.writes(
                 saved: cache.load() ?? [:], columns: cardLayout.inputRoutingColumns,
                 pairCount: tb.identifier.mode.channelCount / 2)
@@ -3114,7 +3171,7 @@ final class AppState: @unchecked Sendable {
         if let thunderbolt = device as? ThunderboltDeviceConnection {
             // Converters route through `applyConverterRouting` (their own
             // grid and channels); this path is the Symphony I/O table.
-            guard let route = ThunderboltCardRouting.route(destination: destination, source: source, unitBActive: unitBOnCard) else {
+            guard let route = thunderboltCardRoute(destination: destination, source: source, unitBActive: unitBOnCard) else {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
             }
@@ -3165,7 +3222,14 @@ final class AppState: @unchecked Sendable {
         let hostBase = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb)
         let firstDestination = analogColumns[0].routingByte
         let cached = cachedOutputRouteMap()
+        // ThunderBridge: the software output the driver's playback table
+        // plays there (analog first from driver 150, by position before).
+        let thunderboltDefaults = transportType == .thunderbolt
+            ? Dictionary(thunderboltDefaultOutputRoutes(unit: .a).map { ($0.destination, $0.source) },
+                         uniquingKeysWith: { first, _ in first })
+            : [:]
         func defaultPlaybackSource(for destination: UInt8) -> UInt8 {
+            if let source = thunderboltDefaults[destination], source != SymphonyIORoutingAddress.none { return source }
             let boardBase = destination >= SymphonyIORoutingAddress.ioBoard1Base
                 ? SymphonyIORoutingAddress.ioBoard1Base : SymphonyIORoutingAddress.ioBoard0Base
             let channel = (destination >= SymphonyIORoutingAddress.ioBoard1Base ? 16 : 0)
@@ -5299,7 +5363,8 @@ final class AppState: @unchecked Sendable {
             return
         }
         thunderboltOutputMeterWords = ThunderboltOutputMeterMap.words(
-            layout: layout, table: thunderboltOutputTable(for: tb, quiet: true), unitBActive: unitBOnCard)
+            layout: layout, table: thunderboltOutputTable(for: tb, quiet: true), unitBActive: unitBOnCard,
+            order: thunderboltDisplayOrder(unit: .a))
     }
 
     /// A level per meter word from Core Audio's playback peaks, for when the

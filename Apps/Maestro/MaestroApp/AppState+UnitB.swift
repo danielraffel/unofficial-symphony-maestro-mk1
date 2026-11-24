@@ -295,15 +295,16 @@ extension AppState {
     func thunderboltCaptureRoutes(unit: DeviceUnit = .a) -> [ThunderboltInputMeterMap.Route] {
         let layout = unit == .a ? cardLayout : unitBLayout
         guard let layout else { return [] }
-        let slot1 = unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1
+        let order = thunderboltDisplayOrder(unit: unit)
         // The saved routing is the other input; whatever changes it calls
         // `invalidateThunderboltInputMeterMap`, which empties this cache.
-        let key = ThunderboltCaptureRoutesKey(layout: layout, slot1: slot1, written: thunderboltInputRoutingWritten)
+        let key = ThunderboltCaptureRoutesKey(layout: layout, order: order, written: thunderboltInputRoutingWritten)
         if let cached = thunderboltCaptureRoutesCache[unit], cached.key == key { return cached.routes }
         let cache = unit == .a ? peripheralRoutingCache(direction: "input") : unitBInputRoutingCache
         let replayed = thunderboltInputRoutingWritten ? InputRoutingReplay.writes(
             saved: cache?.load() ?? [:], columns: layout.inputRoutingColumns, pairCount: 16) : []
-        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: replayed)
+        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: order.slot1, slot2: order.slot2,
+                                                            order: order.order, replayed: replayed)
         thunderboltCaptureRoutesCache[unit] = (key, routes)
         return routes
     }
@@ -314,11 +315,12 @@ extension AppState {
     func savedThunderboltCaptureRoutes(unit: DeviceUnit) -> [ThunderboltInputMeterMap.Route] {
         let layout = unit == .a ? cardLayout : unitBLayout
         guard let layout else { return [] }
-        let slot1 = unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1
+        let order = thunderboltDisplayOrder(unit: unit)
         let cache = unit == .a ? peripheralRoutingCache(direction: "input") : unitBInputRoutingCache
         let replayed = InputRoutingReplay.writes(saved: cache?.load() ?? [:],
                                                  columns: layout.inputRoutingColumns, pairCount: 16)
-        return ThunderboltInputMeterMap.currentRoutes(slot1: slot1, replayed: replayed)
+        return ThunderboltInputMeterMap.currentRoutes(slot1: order.slot1, slot2: order.slot2,
+                                                      order: order.order, replayed: replayed)
     }
 
     /// Unit B cannot be there: USB, or a port selection that is not 64
@@ -415,12 +417,18 @@ extension AppState {
     }
 
     /// The two card routes for a unit B output pair: `row` nil clears it.
-    static func unitBRoutePair(destLeft: UInt8, gridRow row: Int?) -> [ThunderboltCardRouting.Route]? {
+    /// `order`: unit B's channel order, which decides the XLink channel each
+    /// output plays (nil: card by card, by position).
+    static func unitBRoutePair(destLeft: UInt8, gridRow row: Int?,
+                               order: ThunderboltUnitChannelOrder? = nil) -> [ThunderboltCardRouting.Route]? {
+        let order = order ?? ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: nil)
         var routes: [ThunderboltCardRouting.Route] = []
         for side in 0..<2 {
             let slot = row.flatMap { unitBSlot(gridRow: $0, side: side) }
             if row != nil && slot == nil { return nil }
-            guard let route = ThunderboltCardRouting.unitBRoute(destination: destLeft &+ UInt8(side), slot: slot) else {
+            guard let route = ThunderboltCardRouting.unitBRoute(destination: destLeft &+ UInt8(side), slot: slot,
+                                                                slot1: order.slot1, slot2: order.slot2,
+                                                                order: order.order) else {
                 return nil
             }
             routes.append(route)
@@ -432,7 +440,8 @@ extension AppState {
     /// 32-63), through unit A's connection: the card's routing is not a unit's.
     @MainActor
     func writeUnitBOutputRoutePair(destLeft: UInt8, gridRow row: Int?) async throws {
-        guard let routes = Self.unitBRoutePair(destLeft: destLeft, gridRow: row) else {
+        guard let routes = Self.unitBRoutePair(destLeft: destLeft, gridRow: row,
+                                               order: thunderboltDisplayOrder(unit: .b)) else {
             throw DeviceConnectionError.transportError("No unit B card route for output \(destLeft)")
         }
         guard let tb = device as? ThunderboltDeviceConnection else {
@@ -500,7 +509,8 @@ extension AppState {
         for (col, column) in columns.enumerated() {
             let owners = rows.filter { $0.value.contains(col) }.map(\.key)
             guard owners.count <= 1,
-                  let pair = Self.unitBRoutePair(destLeft: column.routingByte, gridRow: owners.first) else {
+                  let pair = Self.unitBRoutePair(destLeft: column.routingByte, gridRow: owners.first,
+                                                 order: thunderboltDisplayOrder(unit: .b)) else {
                 throw DeviceConnectionError.transportError("Invalid unit B output route")
             }
             writes += pair
@@ -600,7 +610,8 @@ extension AppState {
         unitBOutputMeterWordsPollStamp = pollCount
         unitBOutputMeterLayout = layout
         unitBOutputMeterWords = unitBOutputTable(layout: layout).map {
-            ThunderboltOutputMeterMap.words(layout: layout, table: $0, unitBActive: true, unitB: true)
+            ThunderboltOutputMeterMap.words(layout: layout, table: $0, unitBActive: true, unitB: true,
+                                            order: thunderboltDisplayOrder(unit: .b))
         } ?? nil
     }
 
@@ -795,6 +806,7 @@ final class DeferredFlag: @unchecked Sendable {
 /// Input Routing: a cached answer is used only while these are unchanged.
 struct ThunderboltCaptureRoutesKey: Equatable {
     let layout: CardLayout
-    let slot1: IOCardType?
+    /// The driver's channel order and the slot types its table follows.
+    let order: ThunderboltUnitChannelOrder
     let written: Bool
 }

@@ -173,9 +173,10 @@ public final class ThunderboltUnitBConnection: DeviceConnection, @unchecked Send
         }
     }
 
-    public func routingResetWrites(layout: CardLayout, input: Bool) throws -> [ThunderboltPreset.Write] {
+    public func routingResetWrites(layout: CardLayout, input: Bool,
+                                   order: ThunderboltUnitChannelOrder? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
-        return try ThunderboltPreset.peripheralReset(layout: layout, input: input) { selector in
+        return try ThunderboltPreset.peripheralReset(layout: layout, input: input, order: order) { selector in
             try self.readProperty(PropertyAddress(selector: selector)).asUInt32
         }
     }

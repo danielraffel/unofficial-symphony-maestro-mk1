@@ -536,6 +536,21 @@ public enum SymphonyIOHeadphoneRouting {
         }
     }
 
+    /// ThunderBridge: the XLink source the driver's playback table plays on
+    /// board output `destination` in the unit's channel `order`
+    /// (`SymphonyPlaybackSource`): analog first (driver 150+), XLink n on the
+    /// n-th board output and None on an output no host channel reaches; card
+    /// by card (and for a nil `order`), ``bootTableSource(forDestination:transport:)``.
+    /// Nil for anything that is not a hardware output destination.
+    public static func thunderboltBootTableSource(forDestination destination: UInt8,
+                                                  order: ThunderboltUnitChannelOrder?) -> UInt8? {
+        guard let order, order.order == .analogFirst, order.slot1 != nil, order.slot2 != nil else {
+            return bootTableSource(forDestination: destination, transport: .thunderbolt)
+        }
+        return SymphonyIODefaultRouting.thunderboltOutputRoutes(slot1: order.slot1, slot2: order.slot2, order: order.order)
+            .first { $0.destination == destination }?.source
+    }
+
     /// Resolve what feeds a hardware output destination **without touching the
     /// wire**, so a headphone crosspoint can inherit it.
     ///
@@ -553,14 +568,16 @@ public enum SymphonyIOHeadphoneRouting {
     public static func inheritedSource(
         forDestination destination: UInt8,
         cachedRoutes: [UInt8: UInt8],
-        transport: TransportType = .usb
+        transport: TransportType = .usb,
+        thunderboltOrder: ThunderboltUnitChannelOrder? = nil
     ) -> UInt8? {
         // On ThunderBridge host playback is routed on the card (see
-        // `ThunderboltCardRouting`); the Symphony's table stays at the driver's
-        // fixed XLink n → output n, so a headphone following output n always
-        // inherits XLink n, whatever the user routed onto it.
+        // `ThunderboltCardRouting`); the Symphony's table stays at the
+        // driver's playback table, so a headphone following an output always
+        // inherits the XLink channel that table plays there, whatever the
+        // user routed onto it.
         if transport == .thunderbolt {
-            return bootTableSource(forDestination: destination, transport: .thunderbolt)
+            return thunderboltBootTableSource(forDestination: destination, order: thunderboltOrder)
         }
         if let cached = cachedRoutes[destination], isPlausibleOutputSource(cached) {
             return cached
@@ -2374,8 +2391,9 @@ public enum RoutingResetGuard {
     /// for each block of hardware outputs, and, after a blank line, the
     /// closing sentence (left out if a mixer does feed an output).
     public static func outputResetMessage(board1: IOCardType, board2: IOCardType,
-                                          transport: TransportType = .usb) -> String {
-        let lines = outputPlanLines(board1: board1, board2: board2, transport: transport)
+                                          transport: TransportType = .usb,
+                                          routes table: [SymphonyIODefaultRouting.Route]? = nil) -> String {
+        let lines = outputPlanLines(board1: board1, board2: board2, transport: transport, routes: table)
         var parts = ["Each hardware output goes back to playing its default software output:",
                      lines.joined(separator: "\n")]
         if !lines.contains(where: { $0.contains("Mixer") }) { parts.append(outputResetClosing) }
@@ -2414,17 +2432,21 @@ public enum RoutingResetGuard {
     ///
     /// Derived from the same table the reset writes, so the text cannot drift from
     /// the behaviour.
-    /// Over ThunderBridge it is the position table the reset writes there
+    /// Over ThunderBridge it is the table the reset writes there: `table`
+    /// when given (the driver's playback table in its channel order,
+    /// `AppState.thunderboltDefaultOutputRoutes`), otherwise the
+    /// card-by-card position table
     /// (`SymphonyIODefaultRouting.thunderboltOutputRoutes`).
     public static func outputPlanLines(board1: IOCardType, board2: IOCardType,
-                                       transport: TransportType = .usb) -> [String] {
-        let routes = transport == .thunderbolt
+                                       transport: TransportType = .usb,
+                                       routes table: [SymphonyIODefaultRouting.Route]? = nil) -> [String] {
+        let routes = table ?? (transport == .thunderbolt
             ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
                 board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
             : SymphonyIODefaultRouting.outputRoutes(
                 board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
                 board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),
-                usbChannelCount: SymphonyIODefaultRouting.usbChannelCount)
+                usbChannelCount: SymphonyIODefaultRouting.usbChannelCount))
         var byDestination: [UInt8: UInt8] = [:]
         for route in routes { byDestination[route.destination] = route.source }
 

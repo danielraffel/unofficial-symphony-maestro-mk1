@@ -92,17 +92,17 @@ extension AppState {
     /// numbers. Same default/cache contract as the existing per-unit grids.
     func symphonyCardInputNames() -> [String] {
         _ = symphonyCardInputNamingRevision
-        func names(layout: CardLayout, cache: RoutingStateCache?, slot1: IOCardType?, prefix: String) -> [String] {
-            let defaults = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1)
+        func names(layout: CardLayout, cache: RoutingStateCache?, unit: DeviceUnit, prefix: String) -> [String] {
+            let defaults = thunderboltDefaultInputRoutes(unit: unit)
             var routes = SymphonyIODefaultRouting.inputGrid(defaults, columns: layout.inputRoutingColumns)
             routes.merge(cache?.load() ?? [:]) { _, saved in saved }
             return CardLayout.softwareInputRowNames(rowCount: 16, routes: routes,
                                                     columns: layout.inputRoutingColumns, prefix: prefix)
         }
         let cache = device.map { _ in peripheralRoutingCache(direction: "input") }
-        var result = names(layout: cardLayout, cache: cache, slot1: thunderboltCaptureSlot1, prefix: peripheralPrefix)
+        var result = names(layout: cardLayout, cache: cache, unit: .a, prefix: peripheralPrefix)
         if symphonyCardInputs.channelCount == 64, let layout = unitBLayout {
-            result += names(layout: layout, cache: unitBInputRoutingCache, slot1: unitB?.slot1, prefix: unitBPeripheralPrefix)
+            result += names(layout: layout, cache: unitBInputRoutingCache, unit: .b, prefix: unitBPeripheralPrefix)
         }
         return result
     }

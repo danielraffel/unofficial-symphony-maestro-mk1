@@ -61,7 +61,10 @@ extension AppState {
               let b = unitBDevice as? ThunderboltUnitBConnection,
               let layoutB = unitBLayout, unitBInputRoutingAllowed,
               RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil,
-              unitBBoardSource(slot: 0) == .detected, unitBBoardSource(slot: 1) == .detected else { return }
+              unitBBoardSource(slot: 0) == .detected, unitBBoardSource(slot: 1) == .detected,
+              // Both units' tables are numbered in the order the driver
+              // programmed them; nothing is sent until it has said which.
+              thunderboltChannelOrderUnknownReason == nil else { return }
         twoUnitReplayRunning = true
         defer { twoUnitReplayRunning = false }
         let link = await Task.detached(priority: .utility) { tb.linkState() }.value
@@ -161,10 +164,7 @@ extension AppState {
         let sendDefaults = resetPending && !twoUnitResetDefaultsLanded(tb: tb, b: b)
         if sendDefaults, let cardInputReset { plan.card.append(.card(.cardInput(cardInputReset))) }
         for (unit, layout, cache) in [(DeviceUnit.a, cardLayout, Optional(cacheA)), (.b, layoutB, unitBInputRoutingCache)] {
-            var writes = sendDefaults
-                ? SymphonyIODefaultRouting.thunderboltInputRoutes(
-                    slot1: unit == .a ? thunderboltCaptureSlot1 : unitB?.slot1)
-                : []
+            var writes = sendDefaults ? thunderboltDefaultInputRoutes(unit: unit) : []
             writes += InputRoutingReplay.writes(saved: cache?.load() ?? [:],
                                                 columns: layout.inputRoutingColumns, pairCount: 16)
             for write in writes {
@@ -179,9 +179,7 @@ extension AppState {
         let outputCache = peripheralRoutingCache(direction: "output")
         let savedA = outputCache.loadMulti() ?? [:]
         let completeA = (0..<TwoUnitOutputRouting.rowCount).allSatisfy { savedA[$0] != nil }
-        let defaultsA = SymphonyIODefaultRouting.thunderboltOutputRoutes(
-            board0Outputs: primaryBoardType.totalOutputChannels,
-            board1Outputs: secondaryBoardType.totalOutputChannels)
+        let defaultsA = thunderboltDefaultOutputRoutes(unit: .a)
         let defaultSourcesA = Dictionary(uniqueKeysWithValues: defaultsA.map { ($0.destination, $0.source) })
         // Always the whole table, with nothing saved too: the driver starts the
         // card with the main pair on card mixer 1 and keeps an earlier
@@ -194,7 +192,7 @@ extension AppState {
                                                   complete: completeA, destinations: destinations)
             for destination in destinations {
                     let source = merged[destination] ?? SymphonyIORoutingAddress.none
-                    if let route = ThunderboltCardRouting.route(destination: destination, source: source, unitBActive: true) {
+                    if let route = thunderboltCardRoute(destination: destination, source: source, unitBActive: true) {
                         plan.card.append(.card(.output(route)))
                     }
             }
@@ -206,7 +204,8 @@ extension AppState {
                 if let owner = rows.keys.sorted().last(where: { rows[$0]?.contains(index) == true }),
                    !(0..<TwoUnitOutputRouting.rowCount).contains(owner) { continue }
                 let row = resolved[index]
-                if let routes = Self.unitBRoutePair(destLeft: column.routingByte, gridRow: row) {
+                if let routes = Self.unitBRoutePair(destLeft: column.routingByte, gridRow: row,
+                                                    order: thunderboltDisplayOrder(unit: .b)) {
                     plan.card += routes.map { .card(.output($0)) }
                 }
             }

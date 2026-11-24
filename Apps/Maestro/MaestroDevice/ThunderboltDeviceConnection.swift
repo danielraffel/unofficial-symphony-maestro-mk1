@@ -251,9 +251,10 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         try applyPresetWrites(writes, layout: layout)
     }
 
-    public func routingResetWrites(layout: CardLayout, input: Bool) throws -> [ThunderboltPreset.Write] {
+    public func routingResetWrites(layout: CardLayout, input: Bool,
+                                   order: ThunderboltUnitChannelOrder? = nil) throws -> [ThunderboltPreset.Write] {
         try checkPresetLayout(layout)
-        return try ThunderboltPreset.peripheralReset(layout: layout, input: input) { selector in
+        return try ThunderboltPreset.peripheralReset(layout: layout, input: input, order: order) { selector in
             try self.readPresetProperty(PropertyAddress(selector: selector)).asUInt32
         }
     }
@@ -1169,6 +1170,10 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         if let build = dextClient.readDriverBuild() { return .build(build) }
         return dextClient.readLinkState() != nil ? .olderThanBuildReporting : nil
     }
+
+    /// What the serving driver last programmed into each unit's routing
+    /// layer (selector 17, dext 150+); nil from an older driver.
+    public func appliedChannelOrder() -> ThunderboltAppliedChannelOrder? { dextClient.readChannelOrder() }
 
     /// EXPERIMENT (64 channels): what the driver found on its second XLink
     /// port. Nil from a driver without that selector (every released one).
