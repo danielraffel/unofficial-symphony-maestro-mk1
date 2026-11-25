@@ -4986,7 +4986,10 @@ static void RunMicPreDAWControls()
     drv->ReadMicPreEdits(edits);
     CHECK(r.card.lines.size() == readMark, "B12: reading edits has no bus traffic");
     CHECK((edits[0] || edits[1]) &&
-          edits[2] == (kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid) &&
+          // dext 153: the OFF sent in the Start settle window is in the
+          // record too, and the driver now knows A1's phantom (off).
+          edits[2] == (kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid |
+                       kMicPreEditPhantomValid | kMicPreStatePhantomKnown) &&
           (edits[8] & (kMicPreEditPhase | kMicPreEditPhaseValid)) == (kMicPreEditPhase | kMicPreEditPhaseValid) &&
           edits[9 * 3] == 0 && edits[9 * 3 + 2] == 0,
           "B12: A1 and A3 HAL edits recorded, cumulative per channel; others empty");
@@ -5036,8 +5039,13 @@ static void RunMicPreDAWControls()
     phantoms[0]->SetControlValue(true);
     w = pa.vendorWrites.size();
     size_t reads = pa.vendorReads.size();
-    CHECK(types[0]->HandleChangeSelectedValues(&plus4, 1) == kIOReturnSuccess && types[0]->selected == mic,
-          "B12: type not published before the send");
+    // 0.9.28: an accepted type is shown at once, as the original stored it
+    // before the hardware write (SymphonyIOBoard_MicPre8ch.cpp:401), so a DAW
+    // reading it back straight away sees its own choice.
+    const uint32_t typeSets = types[0]->sets;
+    CHECK(types[0]->HandleChangeSelectedValues(&plus4, 1) == kIOReturnSuccess && types[0]->selected == plus4 &&
+              types[0]->sets == typeSets + 1 && WritesSince(pa, w).empty(),
+          "B12: type published at once, before the send");
     HostPump();
     CHECK(WritesSince(pa, w) == std::vector<uint8_t>({0xC6, 0xC8, 0xC9, 0x20}),
           "B12: Mic -> +4 sends phantom OFF, insert release, insert return OFF, then the type");
@@ -5091,6 +5099,125 @@ static void RunMicPreDAWControls()
     CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B12: phantom ON accepted after the arm delay");
     HostPump();
     CHECK(a[key(0xC6, 0)] == std::vector<uint8_t>({1}), "B12: a DAW user can turn +48V on after choosing Mic");
+
+    // 0.9.28 (dext 153): one phantom state per channel, set only when the
+    // unit took a 0xC6, shown (display only) on every host input routed to
+    // the channel, from either side (SymphonyIOBoard_MicPre8ch.cpp:693-718).
+    {
+        const uint32_t phantomBits = kMicPreEditPhantom | kMicPreEditPhantomValid |
+                                     kMicPreStatePhantom | kMicPreStatePhantomKnown;
+        drv->ReadMicPreEdits(edits);
+        CHECK((edits[2] & phantomBits) == phantomBits && phantoms[0]->GetControlValue(),
+              "B12: a HAL phantom ON the unit took: in A1's record, the driver's state, shown on host 1");
+        CHECK(route(4, 0) == kIOReturnSuccess && phantoms[4]->GetControlValue(),
+              "B12: host 5 routed to MicPre 1 shows its phantom");
+        const bool otherBefore = phantoms[1]->GetControlValue();
+        const uint32_t otherPubs = phantoms[1]->valuePublications;
+        // Maestro's own 0xC6: shown to every routed host, the HAL edit dropped.
+        const uint8_t phantomOff[] = {0}, phantomOnByte[] = {1};
+        size_t pw = pa.vendorWrites.size();
+        CHECK(drv->SendVendorCommand(0xC6, 0, phantomOff, 1) == kIOReturnSuccess &&
+              !phantoms[0]->GetControlValue() && !phantoms[4]->GetControlValue(),
+              "B12: Maestro's phantom OFF {0} clears 48V on both inputs routed to MicPre 1");
+        drv->ReadMicPreEdits(edits);
+        CHECK((edits[2] & phantomBits) == kMicPreStatePhantomKnown,
+              "B12: Maestro's 0xC6 clears the HAL phantom edit; the state is known off");
+        CHECK(drv->SendVendorCommand(0xC6, 0, phantomOnByte, 1) == kIOReturnSuccess &&
+              phantoms[0]->GetControlValue() && phantoms[4]->GetControlValue() &&
+              phantoms[1]->GetControlValue() == otherBefore && phantoms[1]->valuePublications == otherPubs,
+              "B12: Maestro's phantom ON lights only the inputs routed to MicPre 1");
+        CHECK(WritesSince(pa, pw) == std::vector<uint8_t>({0xC6, 0xC6}),
+              "B12: publishing phantom sends nothing more");
+        drv->ReadMicPreEdits(edits);
+        CHECK((edits[2] & phantomBits) == (kMicPreStatePhantom | kMicPreStatePhantomKnown),
+              "B12: a Maestro ON is the driver's state, never a HAL edit");
+        // A failed Maestro send publishes nothing and keeps the state.
+        uint32_t pubs0 = phantoms[0]->valuePublications, pubs4 = phantoms[4]->valuePublications;
+        pa.txBusy = true;
+        CHECK(drv->SendVendorCommand(0xC6, 0, phantomOff, 1) != kIOReturnSuccess, "B12: Maestro OFF fails to send");
+        pa.txBusy = false;
+        drv->ReadMicPreEdits(edits);
+        CHECK(phantoms[0]->valuePublications == pubs0 && phantoms[4]->valuePublications == pubs4 &&
+              phantoms[0]->GetControlValue() && (edits[2] & kMicPreStatePhantom),
+              "B12: a failed Maestro 0xC6 publishes nothing and the state stays ON");
+        // Maestro's ON over a channel known not to be Mic (MicPre 2 is
+        // Instrument) is not kept: the unit ignores it (original :684-691).
+        CHECK(drv->SendVendorCommand(0xC6, 1, phantomOnByte, 1) == kIOReturnSuccess &&
+              phantoms[1]->valuePublications == otherPubs, "B12: Maestro ON on an Instrument channel is not shown");
+        drv->ReadMicPreEdits(edits);
+        CHECK(!(edits[5] & (kMicPreStatePhantom | kMicPreStatePhantomKnown)),
+              "B12: ... nor kept as the channel's state");
+        CHECK(route(4, 4) == kIOReturnSuccess, "B12: host 5 back on MicPre 5");
+
+        // HAL requests that do not reach the unit stamp nothing and show
+        // the real state again.
+        CHECK(drv->SendVendorCommand(0xC6, 0, phantomOff, 1) == kIOReturnSuccess, "B12: Maestro OFF, A1 known off");
+        drv->ReadMicPreEdits(edits);
+        uint32_t lo = edits[0], hi = edits[1];
+        // ON on a non-Mic channel, refused at admission.
+        pw = pa.vendorWrites.size();
+        phantoms[1]->SetControlValue(true);   // what the DAW showed
+        CHECK(drv->RequestPhantom(1, true) == kIOReturnNotPermitted, "B12: HAL phantom ON on Instrument refused");
+        HostPump();
+        drv->ReadMicPreEdits(edits);
+        CHECK(WritesSince(pa, pw).empty() && !(edits[5] & (kMicPreEditPhantomValid | kMicPreStatePhantomKnown)),
+              "B12: a refused ON sends and records nothing");
+        // A coreaudiod-style restore of ON just after a wake and after
+        // coreaudiod connects: refused, and host 1 shows OFF again.
+        auto coreaudiodRestore = [&](const char *when) {
+            pw = pa.vendorWrites.size();
+            phantoms[0]->SetControlValue(true);
+            CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted,
+                  "B12: phantom ON refused in the settle window after %s", when);
+            HostPump();
+            drv->ReadMicPreEdits(edits);
+            CHECK(WritesSince(pa, pw).empty() && !phantoms[0]->GetControlValue() &&
+                      edits[0] == lo && edits[1] == hi && !(edits[2] & kMicPreEditPhantomValid),
+                  "B12: the refused ON after %s sends nothing, records nothing, shows OFF again", when);
+            PastMicPreSettle();
+        };
+        drv->SetPowerState(kIOServicePowerCapabilityOn);
+        coreaudiodRestore("a wake");
+        IOUserClient *caClient = nullptr;
+        drv->NewUserClient(0, &caClient);
+        coreaudiodRestore("coreaudiod connects");
+        // Dropped in the drain: host 1 moved to MicPre 2 before it ran.
+        CHECK(drv->SendVendorCommand(0xC6, 1, phantomOff, 1) == kIOReturnSuccess, "B12: MicPre 2 known off");
+        pw = pa.vendorWrites.size();
+        phantoms[0]->SetControlValue(true);
+        CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B12: HAL ON queued");
+        gHostDispatchSyncDrain = false;
+        CHECK(route(0, 1) == kIOReturnSuccess, "B12: host 1 to MicPre 2 before the ON drains");
+        gHostDispatchSyncDrain = true;
+        HostPump();
+        drv->ReadMicPreEdits(edits);
+        CHECK(WritesSince(pa, pw).empty() && !phantoms[0]->GetControlValue() &&
+                  edits[0] == lo && edits[1] == hi && !(edits[2] & kMicPreEditPhantomValid),
+              "B12: a dropped ON sends and records nothing; host 1 shows MicPre 2's phantom");
+        CHECK(route(0, 0) == kIOReturnSuccess && !phantoms[0]->GetControlValue(), "B12: host 1 back on MicPre 1 (off)");
+        // A failed send.
+        pw = pa.vendorWrites.size();
+        phantoms[0]->SetControlValue(true);
+        pa.txBusy = true;
+        CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B12: HAL ON queued before TX failure");
+        HostPump();
+        pa.txBusy = false;
+        drv->ReadMicPreEdits(edits);
+        CHECK(!phantoms[0]->GetControlValue() && edits[0] == lo && edits[1] == hi &&
+                  (edits[2] & phantomBits) == kMicPreStatePhantomKnown,
+              "B12: a failed ON send records nothing and shows the real OFF again");
+        // A HAL OFF that the unit took is recorded too.
+        CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B12: HAL ON again");
+        HostPump();
+        CHECK(drv->RequestPhantom(0, false) == kIOReturnSuccess, "B12: HAL OFF");
+        HostPump();
+        drv->ReadMicPreEdits(edits);
+        CHECK((edits[2] & phantomBits) == (kMicPreEditPhantomValid | kMicPreStatePhantomKnown) &&
+                  !phantoms[0]->GetControlValue() && (edits[0] != lo || edits[1] != hi),
+              "B12: a HAL OFF the unit took is in the record");
+        CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B12: HAL ON for the tests below");
+        HostPump();
+    }
     w = pa.vendorWrites.size();
     drv->ReadMicPreEdits(edits);
     const uint32_t micLo = edits[0], micHi = edits[1];
@@ -5113,9 +5240,15 @@ static void RunMicPreDAWControls()
     HostPump();
 
     // Mic -> Instrument: phantom OFF first, no insert change, group Off.
+    CHECK(phantoms[0]->GetControlValue(), "B12: host 1 shows 48V on before the type change");
     w = pa.vendorWrites.size();
     types[0]->HandleChangeSelectedValues(&instrument, 1);
     HostPump();
+    drv->ReadMicPreEdits(edits);
+    CHECK(!phantoms[0]->GetControlValue() &&
+              (edits[2] & (kMicPreEditPhantom | kMicPreEditPhantomValid | kMicPreStatePhantom |
+                           kMicPreStatePhantomKnown)) == (kMicPreEditPhantomValid | kMicPreStatePhantomKnown),
+          "B12: the type change's phantom OFF is shown and recorded as OFF");
     CHECK(WritesSince(pa, w) == std::vector<uint8_t>({0xC6, 0x20, 0xC7}) &&
           a[key(0x20, 0x80000000u)] == std::vector<uint8_t>({4, 127}),
           "B12: Mic -> Instrument: phantom OFF, type, group Off (no Instrument gain known)");
@@ -5130,14 +5263,16 @@ static void RunMicPreDAWControls()
     pa.txBusy = true;
     w = pa.vendorWrites.size();
     types[0]->HandleChangeSelectedValues(&mic, 1);   // Instrument -> Mic: no OFF, but the type fails
+    CHECK(types[0]->selected == mic, "B12: the requested type shows before the send");
     HostPump();
     pa.txBusy = false;
     CHECK(WritesSince(pa, w).empty() && types[0]->selected == instrument,
-          "B12: failed 0x20 leaves the type control on the real type");
+          "B12: failed 0x20 republishes the real type");
     CHECK(drv->SendVendorCommand(0x20, 0x80000000u, maestroMic, 2) == kIOReturnSuccess, "B12: Maestro back to Mic");
     pa.txBusy = true;
     w = pa.vendorWrites.size();
     types[0]->HandleChangeSelectedValues(&plus4, 1);
+    CHECK(types[0]->selected == plus4, "B12: +4 shows before its phantom OFF is sent");
     HostPump();
     pa.txBusy = false;
     CHECK(WritesSince(pa, w).empty() && types[0]->selected == mic &&
@@ -5148,6 +5283,7 @@ static void RunMicPreDAWControls()
     // Stale route: the request was for MicPre 1; host 1 now reaches MicPre 2.
     w = pa.vendorWrites.size();
     types[0]->HandleChangeSelectedValues(&plus4, 1);
+    CHECK(types[0]->selected == plus4, "B12: stale-route request shows at once");
     gHostDispatchSyncDrain = false;
     CHECK(route(0, 1) == kIOReturnSuccess, "B12: route host 1 to MicPre 2 before the type drains");
     gHostDispatchSyncDrain = true;
@@ -5303,8 +5439,14 @@ static void RunMicPreDAWControls()
     CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted && types[0]->selected == variable,
           "B12: after the recovery a cached Mic does not admit HAL phantom ON");
     drv->ReadMicPreEdits(edits);
-    CHECK(edits[0] == unreadLo && edits[1] == unreadHi && edits[2] == unreadFields,
+    // The phantom state bits are the driver's knowledge of the unit, not
+    // edits: after a recovery (maybe another unit) the state is unknown.
+    const uint32_t stateBits = kMicPreStatePhantom | kMicPreStatePhantomKnown;
+    CHECK(edits[0] == unreadLo && edits[1] == unreadHi &&
+              (edits[2] & ~stateBits) == (unreadFields & ~stateBits),
           "B12: a link recovery keeps the unread DAW edits");
+    CHECK((unreadFields & kMicPreStatePhantomKnown) && !(edits[2] & stateBits),
+          "B12: a link recovery forgets the phantom state of the unit that was there");
     // W2: MicPre 2's type is unknown after the recovery. A DAW gain, then a
     // front-panel gain the driver cannot place on a stage: the DAW gain bit
     // must still go, or the stale gain comes back to the app (N2).

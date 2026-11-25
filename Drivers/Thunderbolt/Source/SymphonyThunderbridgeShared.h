@@ -500,3 +500,15 @@ typedef struct {
 #define kMicPreEditGainValid          (1u << 15)
 #define kMicPreEditGainInstrument     (1u << 16)  // the gain is the Instrument stage's
 #define kMicPreEditInsertOff          (1u << 17)  // the insert was released (and its return off)
+// dext 153: phantom the HAL switched and the unit took (0xC6 sent), ON or OFF.
+// Display only for the app: an ON here never authorises Maestro to send ON.
+// A Maestro 0xC6 clears both bits.
+#define kMicPreEditPhantom            (1u << 18)
+#define kMicPreEditPhantomValid       (1u << 19)
+// dext 153: added to the fields word when it is read, not part of the edit
+// (the stamp does not move for them): the driver's phantom state for the
+// channel, the last 0xC6 the unit took from Maestro or the HAL in this
+// driver instance. Known is clear until one was sent (and after a unit
+// change). For diagnostics and the app's own display checks only.
+#define kMicPreStatePhantom           (1u << 20)
+#define kMicPreStatePhantomKnown      (1u << 21)

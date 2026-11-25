@@ -5,10 +5,13 @@
 // IDs are CoreAudio's order: 0 +4 dBu, 1 -10 dBV, 2 Variable, 3 Mic,
 // 4 Instrument (og_source/maestrolink/Software/mAEstro.h:353-357); the driver
 // maps them to the 0x20 wire enum. coreaudiod delivers the DAW's choice to
-// HandleChangeSelectedValues (on the control's own work queue). The driver
-// turns phantom and the insert off first where needed, sends the type on the
-// serial XLink queue, then publishes the type the unit took. Nothing is
-// published here.
+// HandleChangeSelectedValues (on the control's own work queue). An accepted
+// request shows the new type at once, as the original stored the type before
+// the hardware write (og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:401);
+// the driver then turns phantom and the insert off first where needed, sends
+// the type on the serial XLink queue and publishes the type the unit took. A
+// request dropped or failed there republishes the real type
+// (RepublishMicPreHost), so a client that read the new value is told again.
 
 #include <os/log.h>
 #include <DriverKit/IOLib.h>
@@ -75,5 +78,9 @@ kern_return_t SymphonyInputTypeControl::HandleChangeSelectedValues(
         return kIOReturnBadArgument;
     if (!ivars->driver) return kIOReturnNotReady;
     ITLOG("HandleChangeSelectedValues ch=%u -> %u", ivars->channel, in_selected_values[0]);
-    return ivars->driver->RequestInputType(ivars->channel, in_selected_values[0]);
+    const kern_return_t r = ivars->driver->RequestInputType(ivars->channel, in_selected_values[0]);
+    if (r != kIOReturnSuccess) return r;
+    // Overriding HandleChange skips the base class's set: store the value here
+    // so a client reading it back straight away sees the type it chose.
+    return SetCurrentSelectedValues(in_selected_values, 1);
 }
