@@ -11,14 +11,13 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
       <pubDate>Wed, 25 Nov 2026 10:09:50 GMT</pubDate>
       <sparkle:version>0.9.31</sparkle:version>
       <sparkle:shortVersionString>0.9.31</sparkle:shortVersionString>
-      <sparkle:channel>beta</sparkle:channel>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
       <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.31</sparkle:fullReleaseNotesLink>
       <description sparkle:format="markdown"><![CDATA[
-This beta fixes the Symphony's speaker and headphone level over USB.
+This release fixes the Symphony's speaker and headphone level over USB.
 
-### Fixed
+### What's fixed
 
 - Over USB, setting the speaker or headphone level in Maestro or with the Symphony's knob no longer makes the Symphony louder a moment later; Maestro and macOS now show the level the Symphony is really playing.
 - Over USB, the Mac's volume keys again move Maestro's level, and Maestro's level again reaches the Mac's volume, when Maestro opens right after an install or update. Before, this needed Maestro to be quit and opened again.
@@ -1752,6 +1751,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: vOLSBsMDFq5FCv5ay5qH/tZdcMFC9aXL/bVoPAKgOnVgf3POmGnxcU6g/rENlmV0sMSj4NoVl9KHgYje8nSUDw==
-length: 190320
+edSignature: F71YFFOhhJaM/Cqs4disQYFaXrSOWgMSRtAZt30LZ84uFIjhyscWMOEFFp+bpkx2Ti3iUGzhh20Nf+8bJWSmAQ==
+length: 190284
 -->
