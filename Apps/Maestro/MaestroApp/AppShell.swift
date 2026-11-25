@@ -446,6 +446,28 @@ struct SidebarView: View {
     }
 }
 
+// MARK: - Status pill
+
+/// The small tinted capsule of the sidebar's connection badge, also used for
+/// the "Newer" mark under the update channel picker.
+struct StatusPillStyle: ViewModifier {
+    let color: Color
+
+    func body(content: Content) -> some View {
+        content
+            .font(.system(size: 9, weight: .medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+}
+
+extension View {
+    func statusPill(_ color: Color) -> some View { modifier(StatusPillStyle(color: color)) }
+}
+
 // MARK: - Connection Badge
 
 /// Connection status badge — color reflects actual connection health.
@@ -462,12 +484,7 @@ struct ConnectionBadge: View {
 
     var body: some View {
         Text(label)
-            .font(.system(size: 9, weight: .medium))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15))
-            .foregroundStyle(color)
-            .clipShape(Capsule())
+            .statusPill(color)
     }
 
     private var label: String {

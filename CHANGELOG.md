@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.29 (beta)
+
+### What's new
+
+- App Settings › Updates shows the newest Stable and Beta versions with their dates and release notes, and marks the newer one.
+
 ## 0.9.28 (beta)
 
 This beta makes ThunderBridge connect faster after a replug or after the Symphony is switched off and on, and makes the 8MicPre's input type and 48V show correctly in your DAW and in Maestro. It includes 0.9.27, which was not released separately.

@@ -43,6 +43,9 @@ final class UpdateController: ObservableObject {
     private let channelDelegate: UpdateChannelDelegate
     private let store: ChannelStore
     private var lastFeedRead: Date?
+    /// Set by Check for Updates: when Sparkle's cycle ends, the newest
+    /// versions under the channel picker are read again.
+    private var refreshReleasesAfterCheck = false
     private var subscriptions = Set<AnyCancellable>()
 
     /// `reinstaller` and `startsUpdater` are for tests: a test passes its own
@@ -57,6 +60,7 @@ final class UpdateController: ObservableObject {
         controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: channelDelegate, userDriverDelegate: nil)
         automaticallyChecksForUpdates = false
         channelDelegate.onChange = { [weak self] in self?.refreshChannelState() }
+        channelDelegate.onCycleFinished = { [weak self] in self?.refreshReleasesAfterManualCheck() }
         controller.updater.publisher(for: \.canCheckForUpdates)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.canCheckForUpdates = $0 }
@@ -98,7 +102,18 @@ final class UpdateController: ObservableObject {
     }
 
     func checkForUpdates() {
+        refreshReleasesAfterCheck = true
         controller.checkForUpdates(nil)
+    }
+
+    /// After Check for Updates, re-read the feed (verified, short timeout) so
+    /// the newest versions under the channel picker are current. Only with
+    /// scheduled checks on, as for Preferences appearing. Failures are silent.
+    private func refreshReleasesAfterManualCheck() {
+        guard refreshReleasesAfterCheck else { return }
+        refreshReleasesAfterCheck = false
+        guard automaticallyChecksForUpdates else { return }
+        Task { try? await self.loadFeed(timeout: FeedRefreshPolicy.backgroundTimeout) }
     }
 
     /// True while Sparkle has a check, a dialog, a download or an install
@@ -129,6 +144,27 @@ final class UpdateController: ObservableObject {
         ChannelRule.isRunningBetaOnStable(effective: effectiveChannel, installed: installedVersion, stored: derivedChannel)
     }
 
+    /// The newest Stable and Beta versions under the channel picker: only
+    /// with scheduled checks on and a feed read in this run.
+    var channelReleases: ChannelReleases? {
+        ChannelReleases.make(snapshot: snapshot, automaticChecks: automaticallyChecksForUpdates)
+    }
+
+    /// The feed's date of `version`, when the last feed read has one.
+    func releaseDate(of version: String) -> Date? {
+        snapshot?.item(version: version)?.date
+    }
+
+    /// That date as shown ("25 Nov"), or nil.
+    func releaseDateText(of version: String) -> String? {
+        releaseDate(of: version).map { ChannelReleases.dateText($0) }
+    }
+
+    /// For tests: a feed as if it had been read.
+    func setSnapshotForTesting(_ snapshot: FeedSnapshot?) {
+        self.snapshot = snapshot
+    }
+
     /// The link of "What's in the current beta".
     var currentBetaNotesURL: URL { snapshot?.currentBetaNotesURL ?? UpdateLinks.releasesPage }
     var hasCurrentBeta: Bool { snapshot?.hasCurrentBeta ?? false }
@@ -144,10 +180,10 @@ final class UpdateController: ObservableObject {
     /// verifies its signature with the app's `SUPublicEDKey`, and applies the
     /// channel rule. Does not touch Sparkle's schedule.
     @discardableResult
-    func loadFeed() async throws -> FeedSnapshot {
+    func loadFeed(timeout: TimeInterval = 20) async throws -> FeedSnapshot {
         guard let url = controller.updater.feedURL else { throw FeedError.noFeedURL }
         guard let publicKey else { throw FeedError.noPublicKey }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.setValue("Maestro/\(installedVersion)", forHTTPHeaderField: "User-Agent")
         let data: Data
         do {
@@ -179,7 +215,7 @@ final class UpdateController: ObservableObject {
         refreshChannelState()
         guard FeedRefreshPolicy.shouldRefreshOnPreferences(
             automaticChecks: automaticallyChecksForUpdates, lastRead: lastFeedRead, now: Date()) else { return }
-        Task { try? await self.loadFeed() }
+        Task { try? await self.loadFeed(timeout: FeedRefreshPolicy.backgroundTimeout) }
     }
 
     // MARK: Channel actions
@@ -234,6 +270,8 @@ final class UpdateChannelDelegate: NSObject, SPUUpdaterDelegate {
     private let store: ChannelStore
     private let installedVersion: String
     var onChange: (() -> Void)?
+    /// Called when an update cycle ends, after `onChange`.
+    var onCycleFinished: (() -> Void)?
     /// Whether one of Apogee's kernel drivers for the ThunderBridge or PCIe
     /// card is loaded right now. Asked once per update Sparkle is about to
     /// offer; a test passes its own.
@@ -292,5 +330,6 @@ final class UpdateChannelDelegate: NSObject, SPUUpdaterDelegate {
     @objc(updater:didFinishUpdateCycleForUpdateCheck:error:)
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: (any Error)?) {
         onChange?()
+        onCycleFinished?()
     }
 }

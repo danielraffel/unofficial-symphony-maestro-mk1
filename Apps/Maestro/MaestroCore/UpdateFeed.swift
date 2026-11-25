@@ -169,10 +169,12 @@ public struct FeedItem: Sendable, Equatable {
     public var edSignature: String?
     public var installationType: String?
     public var minimumSystemVersion: String?
+    /// The item's `pubDate`, when present and readable.
+    public var date: Date?
 
     public init(version: String, displayVersion: String? = nil, channel: String? = nil, notesURL: URL? = nil,
                 enclosureURL: URL? = nil, length: Int? = nil, edSignature: String? = nil,
-                installationType: String? = nil, minimumSystemVersion: String? = nil) {
+                installationType: String? = nil, minimumSystemVersion: String? = nil, date: Date? = nil) {
         self.version = version
         self.displayVersion = displayVersion ?? version
         self.channel = channel
@@ -182,6 +184,7 @@ public struct FeedItem: Sendable, Equatable {
         self.edSignature = edSignature
         self.installationType = installationType
         self.minimumSystemVersion = minimumSystemVersion
+        self.date = date
     }
 
     public var parsedVersion: FeedVersion? { FeedVersion(version) }
@@ -283,7 +286,7 @@ private final class FeedXMLReader: NSObject, XMLParserDelegate {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         switch elementName {
         case "sparkle:version", "sparkle:shortVersionString", "sparkle:channel",
-             "sparkle:fullReleaseNotesLink", "sparkle:minimumSystemVersion":
+             "sparkle:fullReleaseNotesLink", "sparkle:minimumSystemVersion", "pubDate":
             if current?[elementName] == nil { current?[elementName] = value }
         default:
             break
@@ -307,8 +310,98 @@ private final class FeedXMLReader: NSObject, XMLParserDelegate {
             length: enclosure["length"].flatMap(Int.init),
             edSignature: enclosure["sparkle:edSignature"],
             installationType: enclosure["sparkle:installationType"],
-            minimumSystemVersion: fields["sparkle:minimumSystemVersion"]
+            minimumSystemVersion: fields["sparkle:minimumSystemVersion"],
+            date: fields["pubDate"].flatMap(FeedDate.parse)
         ))
+    }
+}
+
+/// RSS `pubDate` ("Wed, 25 Nov 2026 02:42:53 GMT"), as `generate_appcast`
+/// writes it. An unreadable date is nil; the item is kept.
+enum FeedDate {
+    static func parse(_ string: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        for format in ["EEE, dd MMM yyyy HH:mm:ss zzz", "EEE, dd MMM yyyy HH:mm:ss Z", "dd MMM yyyy HH:mm:ss zzz"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: string) { return date }
+        }
+        return nil
+    }
+}
+
+// MARK: - Newest release of each channel (App Settings › Updates)
+
+/// The newest release of one channel, as shown under its half of the
+/// Update channel picker.
+public struct ChannelRelease: Sendable, Equatable {
+    public var version: String
+    public var date: Date?
+    public var notesURL: URL?
+    /// True only when this channel's newest version is strictly higher than
+    /// the other channel's.
+    public var isNewer: Bool
+
+    public init(version: String, date: Date? = nil, notesURL: URL? = nil, isNewer: Bool = false) {
+        self.version = version
+        self.date = date
+        self.notesURL = notesURL
+        self.isNewer = isNewer
+    }
+
+    /// "0.9.28 · 25 Nov", or the version alone without a date.
+    public func summary(locale: Locale = .current) -> String {
+        guard let date else { return version }
+        return "\(version) · \(ChannelReleases.dateText(date, locale: locale))"
+    }
+}
+
+/// The newest Stable and Beta releases of a feed. Shown only when scheduled
+/// checks are on and a feed was read; anything else shows nothing extra.
+public struct ChannelReleases: Sendable, Equatable {
+    public var stable: ChannelRelease?
+    public var beta: ChannelRelease?
+
+    public init(stable: ChannelRelease?, beta: ChannelRelease?) {
+        self.stable = stable
+        self.beta = beta
+    }
+
+    /// nil when scheduled checks are off, no feed was read, or the feed has
+    /// no readable item in either channel.
+    public static func make(snapshot: FeedSnapshot?, automaticChecks: Bool) -> ChannelReleases? {
+        guard automaticChecks, let snapshot else { return nil }
+        let stableItem = snapshot.newestStable
+        let betaItem = snapshot.newestBeta
+        guard stableItem != nil || betaItem != nil else { return nil }
+        let stableVersion = stableItem?.parsedVersion
+        let betaVersion = betaItem?.parsedVersion
+        func release(_ item: FeedItem?, newer: Bool) -> ChannelRelease? {
+            guard let item else { return nil }
+            return ChannelRelease(version: item.displayVersion, date: item.date, notesURL: item.notesURL, isNewer: newer)
+        }
+        var stableNewer = false
+        var betaNewer = false
+        if let stableVersion, let betaVersion {
+            stableNewer = betaVersion < stableVersion
+            betaNewer = stableVersion < betaVersion
+        }
+        return ChannelReleases(stable: release(stableItem, newer: stableNewer), beta: release(betaItem, newer: betaNewer))
+    }
+
+    /// From unverified feed text; nil when it is not a readable feed.
+    public static func make(content: Data, automaticChecks: Bool) -> ChannelReleases? {
+        guard let snapshot = try? FeedSnapshot(content: content) else { return nil }
+        return make(snapshot: snapshot, automaticChecks: automaticChecks)
+    }
+
+    /// Short day and month in the user's locale ("16 Nov", or "Nov 16").
+    /// The day is the feed's (UTC), so every Mac shows the release's own date.
+    public static func dateText(_ date: Date, locale: Locale = .current) -> String {
+        var style = Date.FormatStyle(locale: locale, timeZone: TimeZone(secondsFromGMT: 0)!)
+        style = style.day().month(.abbreviated)
+        return date.formatted(style)
     }
 }
 
@@ -604,6 +697,9 @@ public enum StableChoicePlan: Equatable, Sendable {
 /// more than ten minutes old. Never at launch, never on a timer.
 public enum FeedRefreshPolicy {
     public static let minimumInterval: TimeInterval = 600
+    /// Timeout of the reads made in the background (Preferences appearing,
+    /// after Check for Updates), so a slow network never holds them long.
+    public static let backgroundTimeout: TimeInterval = 5
 
     public static func shouldRefreshOnPreferences(automaticChecks: Bool, lastRead: Date?, now: Date) -> Bool {
         guard automaticChecks else { return false }

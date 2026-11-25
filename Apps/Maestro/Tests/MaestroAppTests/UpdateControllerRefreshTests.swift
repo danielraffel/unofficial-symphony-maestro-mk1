@@ -63,3 +63,44 @@ struct UpdateControllerRefreshTests {
         #expect(!controller.reinstaller.isBusy)
     }
 }
+
+/// App Settings › Updates shows the newest Stable and Beta versions only
+/// after a feed was read in this run, with scheduled checks on.
+@MainActor
+@Suite("Update controller channel releases")
+struct UpdateControllerChannelReleasesTests {
+    @Test func shownOnlyAfterAFeedRead() throws {
+        let name = "UpdateControllerChannelReleasesTests.\(UUID().uuidString)"
+        let defaults = ScratchUserDefaults(suiteName: name)!
+        defer { defaults.cleanup() }
+        let controller = UpdateController(store: ChannelStore(defaults: defaults), startsUpdater: false)
+        // The test process has no app bundle, so Sparkle may report checks
+        // off; set the switch for the test and put it back afterwards.
+        let original = controller.automaticallyChecksForUpdates
+        defer { controller.automaticallyChecksForUpdates = original }
+        controller.automaticallyChecksForUpdates = true
+
+        // No read yet, or the read failed: nothing extra is shown.
+        #expect(controller.channelReleases == nil)
+
+        let date = Date(timeIntervalSince1970: 1_795_574_573)  // 25 Nov 2026 02:42:53 GMT
+        controller.setSnapshotForTesting(FeedSnapshot(items: [
+            FeedItem(version: "0.8.40", notesURL: URL(string: "https://example.com/v0.8.40")),
+            FeedItem(version: "0.9.28", channel: "beta", date: date),
+        ]))
+        let releases = try #require(controller.channelReleases)
+        #expect(releases.stable?.version == "0.8.40")
+        #expect(releases.beta?.isNewer == true)
+        #expect(controller.releaseDate(of: "0.9.28") == date)
+        #expect(controller.releaseDate(of: "0.8.40") == nil)
+
+        // Automatically check for updates off: hidden, whatever was read.
+        controller.automaticallyChecksForUpdates = false
+        #expect(controller.channelReleases == nil)
+        controller.automaticallyChecksForUpdates = true
+        #expect(controller.channelReleases != nil)
+
+        controller.setSnapshotForTesting(nil)
+        #expect(controller.channelReleases == nil)
+    }
+}
