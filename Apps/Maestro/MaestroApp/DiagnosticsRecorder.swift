@@ -590,10 +590,13 @@ final class DiagnosticsRecorder {
 
     /// Our own lines only: Maestro's and the USB helper's log subsystems (not
     /// the frameworks inside them, which are mostly window and Spotlight
-    /// chatter), the driver's "SymphonyTB" lines, and what the kernel, system
-    /// extension daemon and Core Audio say about our hardware. The helper's
+    /// chatter), the USB audio plug-in's subsystem (ApogeeDriver.cpp; it runs
+    /// in its own Core Audio driver process, not coreaudiod, so the volume it
+    /// sends the helper was missing), the driver's "SymphonyTB" lines, and
+    /// what the kernel, system extension daemon and Core Audio say about our
+    /// hardware. The helper's
     /// once-a-second meter dump is left out (its own log keeps the changes).
-    nonisolated static let logPredicate = #"(eventMessage CONTAINS "SymphonyTB" OR subsystem BEGINSWITH[c] "com.danielraffel." OR ((process == "kernel" OR process == "sysextd" OR process == "coreaudiod") AND (eventMessage CONTAINS[c] "symphony" OR eventMessage CONTAINS[c] "thunderbridge" OR eventMessage CONTAINS[c] "maestro" OR eventMessage CONTAINS[c] "apogee"))) AND NOT eventMessage BEGINSWITH "METERDUMP" AND NOT eventMessage BEGINSWITH "Sandbox:" AND NOT (eventMessage CONTAINS "cmd=0x30" AND NOT eventMessage CONTAINS "ERROR")"#
+    nonisolated static let logPredicate = #"(eventMessage CONTAINS "SymphonyTB" OR subsystem BEGINSWITH[c] "com.danielraffel." OR subsystem == "com.apogee.audio.symphonyio-asp" OR ((process == "kernel" OR process == "sysextd" OR process == "coreaudiod") AND (eventMessage CONTAINS[c] "symphony" OR eventMessage CONTAINS[c] "thunderbridge" OR eventMessage CONTAINS[c] "maestro" OR eventMessage CONTAINS[c] "apogee"))) AND NOT eventMessage BEGINSWITH "METERDUMP" AND NOT eventMessage BEGINSWITH "Sandbox:" AND NOT (eventMessage CONTAINS "cmd=0x30" AND NOT eventMessage CONTAINS "ERROR")"#
 
     private func startLogStream(since: Date) {
         // Through a small shell that ends `log stream` when Maestro goes away

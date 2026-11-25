@@ -752,6 +752,16 @@ final class AppState: @unchecked Sendable {
     private var pendingAutoSwitchAfterReconnect = false
     /// The USB auto-switch's wait for "Maestro USB"; cancelled by a newer edge.
     private var usbAutoSwitchTask: Task<Void, Never>?
+    /// Looks again for "Maestro USB" when the volume sync started before
+    /// the audio plug-in published it (`startASPVolumeSync`).
+    private var aspVolumeSyncRetryTask: Task<Void, Never>?
+    /// USB: "Maestro USB" was not found at connect; a change of the Mac's
+    /// device list looks for it again too (`linkLateASPDevice`).
+    private var aspVolumeAwaitingDevice = false
+    /// USB: "Maestro USB" turned up after the connection, before the helper
+    /// was told the output the keys move. The settle step then gives the
+    /// Mac's control Maestro's level instead of taking the control's.
+    var macVolumeOwedMaestroLevel = false
     /// Re-probes a present ThunderBridge while the app is connected over USB.
     var thunderboltWatchTask: Task<Void, Never>?
     /// Change detection for the persisted probe log (see `logThunderboltProbe`).
@@ -2267,6 +2277,7 @@ final class AppState: @unchecked Sendable {
     /// app to it and (if the preference is on) make it the macOS default output.
     @MainActor
     func handleHardwareDeviceListChanged() {
+        linkLateASPDevice()
         let discovered = CoreAudioDeviceConnection.discoverAllSymphonyIO()
         let currentIDs = Set(discovered.map { $0.audioDeviceID })
         let previousDefaultOutput = knownDefaultOutputDeviceID == kAudioObjectUnknown
@@ -5228,7 +5239,11 @@ final class AppState: @unchecked Sendable {
     /// listeners for volume and mute changes. When the user presses media volume
     /// keys, the ASP handles them. This listener syncs those changes back to the
     /// Maestro app UI so the volume knob reflects the current hardware state.
-    func startASPVolumeSync() {
+    /// `adoptMacLevel` false: the device turned up after the connection
+    /// was made (`retryASPVolumeSync`). The Mac's control may hold a level
+    /// from before (it read -28 dB with the unit at -52, 2026-11-25), so it is
+    /// given Maestro's level rather than the other way round.
+    func startASPVolumeSync(adoptMacLevel: Bool = true) {
         // Tests never listen to or set a real device's volume.
         guard !TestEnvironment.isRunningTests else { return }
         if transportType == .thunderbolt {
@@ -5240,7 +5255,15 @@ final class AppState: @unchecked Sendable {
             }
             print("[Maestro] TB volume sync: listening to ThunderBridge device \(aspDeviceID)")
         } else {
-            // USB: find the ASP virtual device ("Symphony I/O : Maestro").
+            // USB: find the ASP virtual device ("Symphony I/O : Maestro USB").
+            // An ID from before is not reused: after Core Audio restarts (an
+            // install does that) it names nothing, and listening to it left
+            // the keys and Maestro's knob unlinked (2026-11).
+            aspVolumeSyncRetryTask?.cancel()
+            aspVolumeSyncRetryTask = nil
+            aspVolumeAwaitingDevice = false
+            removeASPListeners()
+            aspDeviceID = kAudioObjectUnknown
             var propAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioHardwarePropertyDevices,
                 mScope: kAudioObjectPropertyScopeGlobal,
@@ -5250,14 +5273,14 @@ final class AppState: @unchecked Sendable {
             guard AudioObjectGetPropertyDataSize(
                 AudioObjectID(kAudioObjectSystemObject),
                 &propAddress, 0, nil, &dataSize
-            ) == noErr, dataSize > 0 else { return }
+            ) == noErr, dataSize > 0 else { retryASPVolumeSync(); return }
 
             let count = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
             var deviceIDs = [AudioDeviceID](repeating: 0, count: count)
             guard AudioObjectGetPropertyData(
                 AudioObjectID(kAudioObjectSystemObject),
                 &propAddress, 0, nil, &dataSize, &deviceIDs
-            ) == noErr else { return }
+            ) == noErr else { retryASPVolumeSync(); return }
 
             for devID in deviceIDs {
                 var nameAddr = AudioObjectPropertyAddress(
@@ -5275,15 +5298,24 @@ final class AppState: @unchecked Sendable {
             }
 
             guard aspDeviceID != kAudioObjectUnknown else {
-                print("[Maestro] ASP volume sync: '\(Self.aspUSBDeviceName)' device not found")
+                print("[Maestro] ASP volume sync: '\(Self.aspUSBDeviceName)' device not found yet; looking again")
+                retryASPVolumeSync()
                 return
             }
             print("[Maestro] ASP volume sync: found device ID \(aspDeviceID)")
         }
 
-        // Read initial volume.
-        readASPVolume()
-        readASPMute()
+        if adoptMacLevel {
+            // Read initial volume.
+            readASPVolume()
+            readASPMute()
+        } else {
+            let sourceDevice = device
+            Task { @MainActor [weak self] in
+                guard let self, self.device === sourceDevice else { return }
+                await self.giveMacVolumeMaestroLevel()
+            }
+        }
 
         // Install volume listener — VolumeDecibels for Thunderbolt, VolumeScalar for USB/ASP.
         let volumeSelector = transportType == .thunderbolt
@@ -5410,8 +5442,9 @@ final class AppState: @unchecked Sendable {
             var scalar: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
             if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &scalar) == noErr {
-                // ASP maps: scalar 0.0 → raw 0 → -64 dB, scalar 1.0 → raw 64 → 0 dB
-                let dB = Double(scalar) * 64.0 - 64.0
+                // The plug-in's control is not linear in dB (libASPL's
+                // pow-2 curve): `USBMacVolume` undoes it exactly.
+                let dB = USBMacVolume.dB(forScalar: scalar)
                 // Whose level the control holds (`macVolumeAdoption`). With
                 // Speaker chosen in Line mode the helper ignored the change:
                 // the Mac's control is put back to the speaker level, so the
@@ -5543,8 +5576,9 @@ final class AppState: @unchecked Sendable {
         guard !hardwareWritesSuspended else { return }
         guard aspDeviceID != kAudioObjectUnknown, transportType != .thunderbolt else { return }
         aspWriteTimestamp = Date()
-        // Convert dB (-64..0) to scalar (0..1): scalar = (dB + 64) / 64
-        let scalar = Float32(max(0, min(1, (dB + 64.0) / 64.0)))
+        // The scalar libASPL turns back into exactly this level (its pow-2
+        // curve; a linear (dB + 64) / 64 was louder: -52 dB played at -36).
+        let scalar = USBMacVolume.scalar(forDB: dB)
         let targetID = aspDeviceID
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
@@ -5555,7 +5589,7 @@ final class AppState: @unchecked Sendable {
         if AudioObjectSetPropertyData(targetID, &addr, 0, nil,
                                       UInt32(MemoryLayout<Float32>.size), &value) == noErr {
             let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
-            rememberMacMonitorWrite(for: output, level: Double(scalar) * 64 - 64)
+            rememberMacMonitorWrite(for: output, level: USBMacVolume.dB(forScalar: scalar))
         }
     }
 
@@ -5611,19 +5645,97 @@ final class AppState: @unchecked Sendable {
         }
     }
 
-    /// Remove volume/mute listeners from the synced audio device.
+    /// USB: "Maestro USB" is not there yet. Maestro can start, or connect,
+    /// before the audio plug-in has published it (an install restarts Core
+    /// Audio and opens Maestro seconds later). Without it the volume keys
+    /// never move Maestro's knob and Maestro's levels never reach the Mac's
+    /// volume, until the next connection. Look again for a while.
+    private func retryASPVolumeSync() {
+        aspVolumeSyncRetryTask?.cancel()
+        aspVolumeAwaitingDevice = true
+        let sourceDevice = device
+        aspVolumeSyncRetryTask = Task { @MainActor [weak self] in
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled, self.device === sourceDevice,
+                      self.transportType != .thunderbolt else { return }
+                if self.linkLateASPDevice() { return }
+            }
+            print("[Maestro] ASP volume sync: '\(Self.aspUSBDeviceName)' still not found after 30 s; waiting for the Mac's device list to change")
+        }
+    }
+
+    /// USB: link "Maestro USB" if the sync is waiting for it and it is there
+    /// now. From the retry and from a change of the Mac's device list (the
+    /// plug-in hides the device while the helper reports no unit).
+    @discardableResult
+    func linkLateASPDevice() -> Bool {
+        guard aspVolumeAwaitingDevice, transportType != .thunderbolt,
+              device is XPCDeviceConnection,
+              CoreAudioDeviceConnection.deviceID(named: Self.aspUSBDeviceName) != nil else { return false }
+        print("[Maestro] ASP volume sync: '\(Self.aspUSBDeviceName)' appeared after the connection")
+        aspVolumeSyncRetryTask?.cancel()
+        aspVolumeSyncRetryTask = nil
+        startASPVolumeSync(adoptMacLevel: false)
+        return true
+    }
+
+    /// USB, "Maestro USB" found late: the Mac's control may hold a level from
+    /// before, so it is given the unit's own level and mute for the output the
+    /// keys move (read from the unit, never a default or older cached value).
+    /// Until the helper has been told that output (`keyboardVolumeSettled`)
+    /// this is left to the settle step (`macVolumeOwedMaestroLevel`).
+    @MainActor
+    func giveMacVolumeMaestroLevel() async {
+        guard transportType != .thunderbolt, aspDeviceID != kAudioObjectUnknown else { return }
+        let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
+        guard usbKeysMoveSpeakerOnly || keyboardVolumeSettled(output) else {
+            macVolumeOwedMaestroLevel = true
+            return
+        }
+        macVolumeOwedMaestroLevel = false
+        let sourceDevice = device
+        await refreshAfterRecall()
+        guard device === sourceDevice, aspDeviceID != kAudioObjectUnknown else { return }
+        showKeyboardVolumeLevelOnMacVolume()
+    }
+
+    /// USB: put the level and mute Maestro shows for the output the keys
+    /// move on the Mac's "Maestro USB" control. Until the helper has been
+    /// told that output (`keyboardVolumeSettled`) nothing is written: that
+    /// step sets the control itself.
+    private func showKeyboardVolumeLevelOnMacVolume() {
+        guard transportType != .thunderbolt else { return }
+        let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
+        guard usbKeysMoveSpeakerOnly || keyboardVolumeSettled(output),
+              let level = keyboardVolumeLevel(of: output) else { return }
+        writeASPVolume(level.dB, output: output)
+        writeASPMute(level.muted, output: output)
+    }
+
     func stopASPVolumeSync() {
+        aspVolumeSyncRetryTask?.cancel()
+        aspVolumeSyncRetryTask = nil
+        aspVolumeAwaitingDevice = false
+        macVolumeOwedMaestroLevel = false
+        removeASPListeners()
+    }
+
+    /// Remove volume/mute listeners from the synced audio device. Both volume
+    /// selectors: the transport may already be cleared when this runs (a
+    /// removal sets it to nil before the reconnect stops the sync), and
+    /// removing one that was never added does nothing.
+    private func removeASPListeners() {
         guard aspDeviceID != kAudioObjectUnknown else { return }
-        let volumeSelector = transportType == .thunderbolt
-            ? kAudioDevicePropertyVolumeDecibels
-            : kAudioDevicePropertyVolumeScalar
-        var volumeAddr = AudioObjectPropertyAddress(
-            mSelector: volumeSelector,
-            mScope: kAudioObjectPropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectRemovePropertyListener(
-            aspDeviceID, &volumeAddr, aspVolumeChanged, Unmanaged.passUnretained(self).toOpaque())
+        for volumeSelector in [kAudioDevicePropertyVolumeDecibels, kAudioDevicePropertyVolumeScalar] {
+            var volumeAddr = AudioObjectPropertyAddress(
+                mSelector: volumeSelector,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListener(
+                aspDeviceID, &volumeAddr, aspVolumeChanged, Unmanaged.passUnretained(self).toOpaque())
+        }
         var muteAddr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioObjectPropertyScopeOutput,

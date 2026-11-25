@@ -448,16 +448,34 @@ static void note_target_level(void)
 static bool note_speaker_level(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
 {
     if (nValue != 0 || !data || len < 1) return false;
+    /* With the speakers chosen for the keys, the kept level IS the speakers':
+       what restore_cached_volume() replays after a recovery and what
+       save_volume_state() copies back over gSpeakerAttenuation. Maestro's
+       write is the level the unit now plays, so it replaces whatever the Mac's
+       control last set (which could be louder, 2026-11: a linear USB volume
+       mirror set -36 dB after Maestro set -52). In Line mode the keys leave
+       the speakers alone and the kept level is left as it was. */
+    const bool speakersChosen = gMonitorOutput == MONITOR_OUTPUT_SPEAKERS && !gSpeakerLineMode;
     if (bRequest == VCMD_SPEAKER_VOL && data[0] <= 64) {
-        if (gHasSpeakerLevel && gSpeakerAttenuation == data[0]) return false;
+        bool changed = !(gHasSpeakerLevel && gSpeakerAttenuation == data[0]);
+        if (speakersChosen && (!gHasReceivedVolume || gCachedAttenuation != data[0])) {
+            gCachedAttenuation = data[0];
+            gHasReceivedVolume = true;
+            changed = true;
+        }
         gSpeakerAttenuation = data[0];
         gHasSpeakerLevel = true;
-        return true;
+        return changed;
     }
     if (bRequest == VCMD_SPEAKER_MUTE) {
-        if (gSpeakerMuted == (data[0] != 0)) return false;
-        gSpeakerMuted = data[0] != 0;
-        return true;
+        const bool muted = data[0] != 0;
+        bool changed = gSpeakerMuted != muted;
+        if (speakersChosen && gCachedMuted != muted) {
+            gCachedMuted = muted;
+            changed = true;
+        }
+        gSpeakerMuted = muted;
+        return changed;
     }
     return false;
 }

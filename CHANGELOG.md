@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.31
+
+This release fixes the Symphony's speaker and headphone level over USB.
+
+### What's fixed
+
+- Over USB, setting the speaker or headphone level in Maestro or with the Symphony's knob no longer makes the Symphony louder a moment later; Maestro and macOS now show the level the Symphony is really playing.
+- Over USB, the Mac's volume keys again move Maestro's level, and Maestro's level again reaches the Mac's volume, when Maestro opens right after an install or update. Before, this needed Maestro to be quit and opened again.
+
+## 0.9.31 (beta)
+
+This beta fixes the Symphony's speaker and headphone level over USB.
+
+### Fixed
+
+- Over USB, setting the speaker or headphone level in Maestro or with the Symphony's knob no longer makes the Symphony louder a moment later; Maestro and macOS now show the level the Symphony is really playing.
+- Over USB, the Mac's volume keys again move Maestro's level, and Maestro's level again reaches the Mac's volume, when Maestro opens right after an install or update. Before, this needed Maestro to be quit and opened again.
+
 ## 0.9.30
 
 This release brings Maestro much closer to Apogee's own software. On ThunderBridge and the Symphony 64 PCIe card, the Mac's channels now come in Apogee's order, the Mixer sounds and behaves as it did in Apogee's software, and the meters and clock status are right. It adds VBus for sending audio between applications, a choice of which output the Mac's volume keys control, two Symphony I/Os at 64 channels, support for Apogee's older converters, the PCIe card, and 8MicPre controls in your DAW. Over USB, latency drops from about 39 ms to about 13 ms and audio no longer cuts out. Several things now work differently from 0.8.40, so please read the first section before you play anything loud.

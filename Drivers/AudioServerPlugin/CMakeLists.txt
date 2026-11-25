@@ -11,7 +11,8 @@ include(FetchContent)
 FetchContent_Declare(
     libASPL
     GIT_REPOSITORY https://github.com/gavv/libASPL.git
-    GIT_TAG main
+    # Pinned: the app inverts this commit's default volume curve (kPow2Over1Curve).
+    GIT_TAG 633e0f70203edd87d320fc5a3cae901e1363aac5
 )
 FetchContent_MakeAvailable(libASPL)
 

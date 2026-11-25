@@ -316,6 +316,37 @@ static void check_monitor_output(void)
     CHECK(!note_speaker_level(0x23, 0, &nine, 1) && !note_speaker_level(0x26, 1, &nine, 1) &&
           !note_speaker_level(0x26, 0, &tooMuch, 1) && gSpeakerAttenuation == 9 && gCachedAttenuation == 44,
           "nothing else is taken for the speaker level");
+
+    /* With the speakers chosen, a level Maestro writes is also the kept level
+       a recovery replays: a louder value the Mac's control set before (the
+       linear USB mirror put -36 dB there after Maestro set -52) is replaced. */
+    gMonitorOutput = MONITOR_OUTPUT_SPEAKERS; gSpeakerLineMode = false;
+    gCachedAttenuation = 36; gCachedMuted = false; gHasReceivedVolume = true;
+    gSpeakerAttenuation = 52; gSpeakerMuted = false; gHasSpeakerLevel = true;
+    uint8_t fiftyTwo = 52, one = 1;
+    CHECK(note_speaker_level(0x26, 0, &fiftyTwo, 1) && gCachedAttenuation == 52 && gSpeakerAttenuation == 52,
+          "Maestro's speaker level replaces a louder kept level even when the speaker copy already matched");
+    note_target_level();
+    CHECK(gSpeakerAttenuation == 52 && gCachedAttenuation == 52 && gHasSpeakerLevel,
+          "saving does not put the louder level back on the speakers");
+    CHECK(!note_speaker_level(0x26, 0, &fiftyTwo, 1), "the same level again changes nothing");
+    gHasReceivedVolume = false; gCachedAttenuation = 20;
+    CHECK(note_speaker_level(0x26, 0, &fiftyTwo, 1) && gCachedAttenuation == 52 && gHasReceivedVolume,
+          "before any key a written level is kept, so a configure uses it and not 20 dB");
+    CHECK(note_speaker_level(0x27, 0, &one, 1) && gCachedMuted && gSpeakerMuted, "a speaker mute is kept for a recovery");
+    note_target_level();
+    CHECK(gSpeakerMuted && gCachedMuted, "and survives a save");
+    CHECK(note_speaker_level(0x27, 0, &zero, 1) && !gCachedMuted && !gSpeakerMuted, "an unmute too");
+    /* What restore_cached_volume() replays is never louder than the level last set. */
+    gStartupVolumeWaitUntilNs = 1000;
+    CHECK(startup_volume_refusal_should_report(10, 36) && !startup_volume_refusal_should_report(10, 52),
+          "the start-up guard refuses anything louder than the level Maestro set");
+    gStartupVolumeWaitUntilNs = 0;
+    /* In Line mode the speakers are not the keys' output: the kept level stays. */
+    gSpeakerLineMode = true; gCachedAttenuation = 30;
+    CHECK(note_speaker_level(0x26, 0, &nine, 1) && gSpeakerAttenuation == 9 && gCachedAttenuation == 30,
+          "in Line mode only the speaker copy follows");
+    gSpeakerLineMode = false;
     gMonitorOutput = MONITOR_OUTPUT_SPEAKERS; gCachedAttenuation = 20; gCachedMuted = false; gHasReceivedVolume = false;
     gSpeakerAttenuation = 20; gSpeakerMuted = false; gHasSpeakerLevel = false;
 
