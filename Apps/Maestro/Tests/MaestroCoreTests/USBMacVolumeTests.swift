@@ -153,6 +153,15 @@ struct USBMacVolumeTests {
         }
     }
 
+    @Test("diagnostics record the USB audio plug-in's own log")
+    func diagnosticsIncludePluginLog() throws {
+        let driver = try Self.repoFile("Drivers/AudioServerPlugin/ApogeeDriver.cpp")
+        #expect(driver.contains(#"os_log_create("com.apogee.audio.symphonyio-asp""#))
+        let recorder = try Self.repoFile("Apps/Maestro/MaestroApp/DiagnosticsRecorder.swift")
+        let line = try #require(recorder.split(separator: "\n").first { $0.contains("static let logPredicate") })
+        #expect(line.contains(#"subsystem == "com.apogee.audio.symphonyio-asp""#))
+    }
+
     @Test("USB reads and writes go through the one conversion; ThunderBridge keeps decibels")
     func appUsesTheConversion() throws {
         let app = try Self.repoFile("Apps/Maestro/MaestroApp/AppState.swift")
