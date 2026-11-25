@@ -50,7 +50,6 @@ enum UpdateChannelCopy {
     private static func dated(_ date: String?) -> String { date.map { " (\($0))" } ?? "" }
     static let seeWhatsNew = "See what's new"
     static let releaseNotes = "Release notes"
-    static let newer = "Newer"
     static func stillOnBeta(_ installed: String) -> String {
         "You're still running beta \(installed). You'll get the next stable version when it is newer than this one."
     }
@@ -235,8 +234,7 @@ struct ChannelSegmentedControl: NSViewRepresentable {
 }
 
 /// The newest Stable and Beta versions, each centred under its half of the
-/// channel picker: "0.9.28 · 25 Nov", a "Newer" pill on the channel whose
-/// newest version is higher, and its release notes link.
+/// channel picker: "0.9.28 · 25 Nov" and its release notes link.
 struct ChannelReleasesRow: View {
     /// The picker's width; each half holds one channel's text.
     static let width: CGFloat = 280
@@ -253,18 +251,12 @@ struct ChannelReleasesRow: View {
     @ViewBuilder private func column(_ release: ChannelRelease?) -> some View {
         VStack(spacing: 2) {
             if let release {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(release.summary())
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    if release.isNewer {
-                        Text(UpdateChannelCopy.newer).statusPill(.accentColor)
-                    }
-                }
-                // The pill is a little taller than the text; both halves
-                // keep one height so the links line up.
-                .frame(height: 16)
+                // Version and date only: the dates show which is newer, and
+                // a "Newer" pill raised "newer than what?" (owner, 2026-11-24).
+                Text(release.summary())
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
                 if let notes = release.notesURL {
                     Link(UpdateChannelCopy.releaseNotes, destination: notes)
                         .font(.caption)

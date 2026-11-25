@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.30 (beta)
+
+This beta simplifies the version lines in App Settings › Updates.
+
+### What's new
+
+- **App Settings › Updates no longer marks one version "Newer".** Each channel shows its newest version, date and release notes; the dates show which is newer.
+
 ## 0.9.29 (beta)
 
 ### What's new
