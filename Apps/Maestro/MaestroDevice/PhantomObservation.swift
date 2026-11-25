@@ -57,3 +57,94 @@ public enum PhantomObservation {
         return changed
     }
 }
+
+/// dext 153: what the 48V buttons show beyond Maestro's own saved phantom.
+/// A DAW's phantom ON is shown (lit) but is never saved, never becomes
+/// `InputChannelState.phantom` or provenance, and so never reaches
+/// `restoresPhantom` or a settings replay.
+public enum PhantomDisplay {
+    public static let minimumDriverBuild = 153
+
+    public static func driverSupports(_ build: ServingDextBuild?) -> Bool {
+        if case .build(let value) = build { return value >= minimumDriverBuild }
+        return false
+    }
+
+    /// A0..7 then B0..7: true where the driver's record says a DAW switched
+    /// phantom on and the unit took it, with nothing from Maestro since.
+    public static func observedOn(_ records: [MicPreEditRecord], servingBuild: ServingDextBuild?) -> [Bool] {
+        guard records.count == 16, driverSupports(servingBuild) else { return Array(repeating: false, count: 16) }
+        return records.map { $0.phantom == true }
+    }
+
+    /// Maestro's own accepted ON, made while the unit's identity was not yet
+    /// known, gets its provenance once the identity is known in the same
+    /// connection: only for a channel still in Mic whose driver state says the
+    /// unit has phantom on. Nothing is sent here; a later replay restores it
+    /// as it does any ON Maestro made with the identity known.
+    /// - Returns: true when a strip changed.
+    @discardableResult
+    public static func finishProvenance(channels: Set<Int>, records: [MicPreEditRecord], unit: DeviceUnit,
+                                        identity: UInt64, servingBuild: ServingDextBuild?,
+                                        states: inout [InputChannelState]) -> Bool {
+        guard records.count == 16, driverSupports(servingBuild), identity != 0, identity != UInt64.max else {
+            return false
+        }
+        let offset = unit == .b ? 8 : 0
+        var changed = false
+        for channel in channels.sorted() where channel >= 0 && channel < 8 && states.indices.contains(channel) {
+            guard records[offset + channel].driverPhantom == true,
+                  states[channel].inputType == AnalogInputLevel.mic.rawValue else { continue }
+            let provenance = PhantomProvenance(unitID: identity, boardSlot: 1, channel: channel)
+            guard !states[channel].phantom || states[channel].phantomProvenance != provenance else { continue }
+            states[channel].phantom = true
+            states[channel].phantomProvenance = provenance
+            changed = true
+        }
+        return changed
+    }
+}
+
+/// Diagnostics: each 8MicPre channel's 48V as the driver, Maestro and the
+/// DAW see it, and whether the unit's identity is known (Maestro's own ON is
+/// restored only with it).
+public enum MicPrePhantomReport {
+    /// - Parameters:
+    ///   - records: the unit's eight driver records, nil when not read.
+    ///   - saved: the unit's saved strips, nil when there are none.
+    ///   - pending: channels whose Maestro ON waits for the identity.
+    public static func lines(unit: String, identityKnown: Bool, servingBuild: ServingDextBuild?,
+                             records: ArraySlice<MicPreEditRecord>?, saved: [InputChannelState]?,
+                             observed: ArraySlice<Bool>, pending: Set<Int>, identity: UInt64?) -> [String] {
+        var lines = ["8MicPre 48V, unit \(unit) (unit identity \(identityKnown ? "known" : "not known")):"]
+        let driverHasState = PhantomDisplay.driverSupports(servingBuild)
+        let records = records.map(Array.init)
+        let observed = Array(observed)
+        for channel in 0..<8 {
+            let driver: String
+            if !driverHasState {
+                driver = "not reported (driver before build \(PhantomDisplay.minimumDriverBuild))"
+            } else if let records, channel < records.count, let on = records[channel].driverPhantom {
+                driver = on ? "on" : "off"
+            } else {
+                driver = "unknown"
+            }
+            let maestro: String
+            if let saved, channel < saved.count {
+                let state = saved[channel]
+                if !state.phantom {
+                    maestro = "off"
+                } else if state.restoresPhantom(identity: identity, boardSlot: 1, channel: channel) {
+                    maestro = "on"
+                } else {
+                    maestro = pending.contains(channel) ? "on (identity pending)" : "on (not restored)"
+                }
+            } else {
+                maestro = "no saved strip"
+            }
+            let daw = channel < observed.count && observed[channel] ? ", shown on (set from a DAW)" : ""
+            lines.append("  Ch \(channel + 1): driver \(driver), Maestro \(maestro)\(daw)")
+        }
+        return lines
+    }
+}

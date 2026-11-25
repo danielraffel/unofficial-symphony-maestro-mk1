@@ -28,6 +28,12 @@ public struct MicPreEditRecord: Sendable, Equatable {
     static let gainValid: UInt32 = 1 << 15
     static let gainInstrument: UInt32 = 1 << 16
     static let insertOff: UInt32 = 1 << 17
+    /// dext 153: a HAL phantom switch the unit took (display only).
+    static let phantomBit: UInt32 = 1 << 18
+    static let phantomValid: UInt32 = 1 << 19
+    /// dext 153: the driver's phantom state, added when the record is read.
+    static let statePhantom: UInt32 = 1 << 20
+    static let statePhantomKnown: UInt32 = 1 << 21
 
     /// The input type in the 0x20 wire enum (the encoding `InputChannelState`
     /// stores), or nil when the record carries no type.
@@ -44,6 +50,16 @@ public struct MicPreEditRecord: Sendable, Equatable {
     /// The driver released this channel's insert and switched its return off
     /// (a type change whose last step then failed).
     public var insertReleased: Bool { fields & Self.insertOff != 0 }
+    /// dext 153: phantom a DAW switched and the unit took, nil when the record
+    /// carries none (or Maestro set phantom since). Display only: never a
+    /// strip's `phantom`, never provenance, never replayed.
+    public var phantom: Bool? { fields & Self.phantomValid != 0 ? fields & Self.phantomBit != 0 : nil }
+    /// dext 153: the driver's phantom state for this channel (the last 0xC6
+    /// the unit took from Maestro or a DAW), nil while the driver does not know it.
+    public var driverPhantom: Bool? {
+        fields & Self.statePhantomKnown != 0 ? fields & Self.statePhantom != 0 : nil
+    }
+    /// Phantom is deliberately not an edit: `apply` never writes it to a strip.
     var hasEdit: Bool { inputType != nil || phase != nil || highPass != nil || gain != nil || insertReleased }
 }
 

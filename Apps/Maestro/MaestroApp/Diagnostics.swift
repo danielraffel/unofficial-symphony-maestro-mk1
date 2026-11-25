@@ -206,6 +206,7 @@ extension AppState {
         } else {
             blocks.append("Device: not connected")
         }
+        if let phantom = micPrePhantomDiagnostics { blocks.append(phantom) }
         blocks.append(softwareInfoReport.clipboardText)
         // Not supported alongside Maestro (issue 31), so every report says
         // whether they are there. Omitted until the launch check has run.

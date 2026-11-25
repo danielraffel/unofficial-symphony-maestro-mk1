@@ -322,6 +322,7 @@ struct InputControlsView: View {
                             meterIndex: i,
                             showTrims: appState.showInputTrims,
                             providesCaptionAnchors: i == 0,
+                            phantomObserved: appState.phantomObserved(unit: appState.activeUnit, channel: i),
                             onPhantomChange: { enabled in
                                 let target = appState.unitWriteTarget
                                 channels[i].recordPhantomRequest(enabled, identity: nil,
@@ -330,15 +331,32 @@ struct InputControlsView: View {
                                 saveChannelStates()
                                 Task {
                                     let accepted = await writeChannelProperty(i, .phantom, value: .bool(enabled), on: target.device)
+                                    let identity = target.channelStore.identity
+                                    if accepted { appState.clearPhantomObserved(unit: target.unit, channel: i) }
+                                    // An ON made before the identity is known keeps showing
+                                    // and gets its provenance when the identity arrives.
+                                    if accepted, requested.phantom, identity == nil {
+                                        appState.notePendingPhantomProvenance(unit: target.unit, channel: i)
+                                    } else {
+                                        appState.dropPendingPhantomProvenance(unit: target.unit, channel: i)
+                                    }
                                     var saved: [InputChannelState] = target.channelStore.load(ChannelStateStore.inputKey) ?? []
                                     if i < saved.count {
                                         saved[i].finishPhantomRequest(requested, accepted: accepted,
-                                            identity: target.channelStore.identity, boardSlot: 1, channel: i)
+                                            identity: identity, boardSlot: 1, channel: i)
                                         target.channelStore.save(saved, for: ChannelStateStore.inputKey)
                                     }
                                     if appState.activeUnit == target.unit, appState.isCurrent(target), i < channels.count {
                                         channels[i].finishPhantomRequest(requested, accepted: accepted,
-                                            identity: target.channelStore.identity, boardSlot: 1, channel: i)
+                                            identity: identity, boardSlot: 1, channel: i)
+                                        // The strips were reloaded during the write (a DAW edit):
+                                        // the reloaded copy predates this ON. Show it as saved.
+                                        if accepted, requested.phantom, i < saved.count, saved[i].phantom,
+                                           !channels[i].phantom,
+                                           channels[i].inputType == AnalogInputLevel.mic.rawValue {
+                                            channels[i].phantom = true
+                                            channels[i].phantomProvenance = saved[i].phantomProvenance
+                                        }
                                     }
                                 }
                             },
@@ -640,7 +658,8 @@ struct InputControlsView: View {
         }
         let identity = appState.unitChannelStateStore.identity
         for index in channels.indices {
-            channels[index] = channels[index].recalled(identity: identity, boardSlot: 1, channel: index)
+            channels[index] = channels[index].recalled(identity: identity, boardSlot: 1, channel: index,
+                keepsUnverifiedOn: appState.pendingPhantomOn(unit: appState.activeUnit, channel: index))
         }
         applySimulatedAnalogLevels()
         syncAppliedGains()
@@ -667,7 +686,8 @@ struct InputControlsView: View {
         let identity = appState.unitChannelStateStore.identity
         for index in channels.indices {
             let state = index < saved.count ? saved[index] : InputChannelState()
-            channels[index] = state.recalled(identity: identity, boardSlot: 1, channel: index)
+            channels[index] = state.recalled(identity: identity, boardSlot: 1, channel: index,
+                keepsUnverifiedOn: appState.pendingPhantomOn(unit: appState.activeUnit, channel: index))
         }
         applySimulatedAnalogLevels()
         syncAppliedGains()
@@ -788,7 +808,11 @@ struct InputControlsView: View {
             }
             // OFF first when leaving Mic; a type failure must not leave power on.
             // Safety departure: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:455-526.
-            if micPreInstalled && channel < 8 && level != .mic { put(.phantom, .bool(false)) }
+            if micPreInstalled && channel < 8 && level != .mic {
+                put(.phantom, .bool(false))
+                appState.clearPhantomObserved(unit: appState.activeUnit, channel: channel)
+                appState.dropPendingPhantomProvenance(unit: appState.activeUnit, channel: channel)
+            }
             put(.analogIOType, .uint32(analogIOTypeWithTrim(channel)), scope: .input)
             if micPreInstalled && channel < 8 {
                 put(.insertReturnEnable, .bool(channels[channel].insertReturn))
@@ -1404,6 +1428,9 @@ struct InputChannelStripView: View {
     var meterPeakHold: Double = -60
     var showTrims: Bool = false
     var providesCaptionAnchors = false
+    /// dext 153: a DAW switched this channel's 48V on (display only; see
+    /// `PhantomDisplay`). The button shows ON when either side has it on.
+    var phantomObserved = false
     let onPhantomChange: (Bool) -> Void
     let onPhaseChange: (Bool) -> Void
     let onHPFChange: (Bool) -> Void
@@ -1509,6 +1536,7 @@ struct InputChannelStripView: View {
     /// +48 V is interlocked to Mic — the daemon silently refuses it at any other
     /// level, so the button is disabled rather than allowed to lie.
     private var phantomEnabled: Bool { InputChannelLogic.phantomAllowed(level: level) }
+    private var phantomShownOn: Bool { channel.phantom || phantomObserved }
 
     /// Whether the strip shows a gain knob (Mic/Instrument) instead of a trim fader.
     private var usesGainKnob: Bool { InputChannelLogic.usesGainKnob(level: level) }
@@ -1870,14 +1898,16 @@ struct InputChannelStripView: View {
 
                 Button {
                     guard phantomEnabled else { return }
-                    channel.phantom.toggle()
-                    onPhantomChange(channel.phantom)
+                    // From what the button shows: a click on a DAW-lit 48V turns it off.
+                    let next = !phantomShownOn
+                    channel.phantom = next
+                    onPhantomChange(next)
                 } label: {
                     Text("48V")
                         .font(.system(size: 7, weight: .bold))
-                        .foregroundStyle(channel.phantom ? .yellow : .secondary)
+                        .foregroundStyle(phantomShownOn ? .yellow : .secondary)
                         .frame(width: 24, height: Self.buttonRowHeight)
-                        .background(channel.phantom ? Color.yellow.opacity(0.2) : Color.clear)
+                        .background(phantomShownOn ? Color.yellow.opacity(0.2) : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 .buttonStyle(.plain)

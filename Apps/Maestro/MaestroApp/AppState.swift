@@ -118,6 +118,13 @@ final class AppState: @unchecked Sendable {
     var frontPanelMicPreUpdate: FrontPanelMicPreUpdate?
     private var frontPanelMicPreRevision = 0
     var phantomObservationRevision = 0
+    /// dext 153, physical A0..7 then B0..7: a DAW switched phantom on and the
+    /// unit took it (`PhantomDisplay.observedOn`). Display only, never saved.
+    var phantomObservedOn: [Bool] = Array(repeating: false, count: 16)
+    /// Maestro's own accepted 48V ON made while the unit's identity was not
+    /// known, per unit, for the connection generation it was made in
+    /// (`PhantomDisplay.finishProvenance`). Session memory only.
+    @ObservationIgnored var pendingPhantomProvenance: [DeviceUnit: (generation: UUID, channels: Set<Int>)] = [:]
     /// Session-only Identify latches, one per unit connection.
     let identifyA = IdentifyState()
     let identifyB = IdentifyState()
@@ -5301,7 +5308,7 @@ final class AppState: @unchecked Sendable {
     }
 
     /// Observe the standard HAL controls that a DAW edits on an installed 8MicPre
-    /// (polarity, high-pass, input type and the input-scope gain). Installed only
+    /// (polarity, high-pass, input type, the input-scope gain and phantom). Installed only
     /// when a unit has the board, so rigs without it add no listeners or reads.
     /// A notification is only a prompt to read the driver's host-edit records
     /// sooner than the next health poll: the HAL element is a host input whose
@@ -5319,6 +5326,8 @@ final class AppState: @unchecked Sendable {
             kAudioDevicePropertyHighPassFilterSetting,
             kAudioDevicePropertyChannelNominalLineLevel,
             kAudioDevicePropertyVolumeDecibels,
+            // dext 153: a DAW's 48V, shown on the button (display only).
+            kAudioDevicePropertyPhantomPower,
         ]
         for element in 1...8 {
             for selector in selectors {

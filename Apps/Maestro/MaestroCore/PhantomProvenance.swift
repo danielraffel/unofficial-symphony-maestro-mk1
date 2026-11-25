@@ -20,10 +20,15 @@ public extension InputChannelState {
         return phantomProvenance == PhantomProvenance(unitID: identity, boardSlot: boardSlot, channel: channel)
     }
 
-    func recalled(identity: UInt64?, boardSlot: Int, channel: Int) -> Self {
+    /// `keepsUnverifiedOn`: Maestro itself switched this channel on in this
+    /// connection and the unit took it, but the identity was not known then.
+    /// The strip keeps showing ON (it is on); without provenance it still never
+    /// restores or replays ON.
+    func recalled(identity: UInt64?, boardSlot: Int, channel: Int, keepsUnverifiedOn: Bool = false) -> Self {
         var state = self
-        state.phantom = restoresPhantom(identity: identity, boardSlot: boardSlot, channel: channel)
-        if !state.phantom { state.phantomProvenance = nil }
+        let restores = restoresPhantom(identity: identity, boardSlot: boardSlot, channel: channel)
+        state.phantom = restores || (keepsUnverifiedOn && phantom && inputType == AnalogInputLevel.mic.rawValue)
+        if !restores { state.phantomProvenance = nil }
         return state
     }
 

@@ -85,6 +85,9 @@ extension AppState {
             }
             let preferences = unit == .a ? mixerPreferences : unitBChannelStateStore.mixerPreferences
             MixerPairLink.migrateSavedPairs(preferences: preferences)
+            // A 48V ON Maestro made before the identity was known keeps its
+            // ON (saved state only; nothing is sent).
+            finishPendingPhantomProvenance(unit: unit, identity: identity)
         }
         await bindIdentity()
         guard isCurrent() else { return }
