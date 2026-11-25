@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.31
+
+This release fixes the Symphony's speaker and headphone level over USB.
+
+### What's fixed
+
+- Over USB, setting the speaker or headphone level in Maestro or with the Symphony's knob no longer makes the Symphony louder a moment later; Maestro and macOS now show the level the Symphony is really playing.
+- Over USB, the Mac's volume keys again move Maestro's level, and Maestro's level again reaches the Mac's volume, when Maestro opens right after an install or update. Before, this needed Maestro to be quit and opened again.
+
 ## 0.9.31 (beta)
 
 This beta fixes the Symphony's speaker and headphone level over USB.
