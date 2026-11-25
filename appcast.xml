@@ -7,6 +7,24 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.29</title>
+      <pubDate>Wed, 25 Nov 2026 03:38:26 GMT</pubDate>
+      <sparkle:version>0.9.29</sparkle:version>
+      <sparkle:shortVersionString>0.9.29</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.29</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta shows the newest Stable and Beta versions in App Settings, so you can see when a newer beta is out and what is in it.
+
+### What's new
+
+- App Settings › Updates shows the newest Stable and Beta versions with their dates and release notes, and marks the newer one.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.29/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="3NAtdMAdPZcsxPwBn72AVtULj49bWdyl6nvP0HMklAJqkQ3tKBBJ3isbWMBqKlWLP+EDSIypqKvA3mVvFEDmBg==" length="6400060" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.28</title>
       <pubDate>Wed, 25 Nov 2026 02:42:53 GMT</pubDate>
       <sparkle:version>0.9.28</sparkle:version>
@@ -1572,6 +1590,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: pkuu9LFOSMC7V+40rIbKit8BPzODcx5z+U6/N5Sr6SrNyg2ZZ+QZy9cSoWej9Rrmapf5DCmTznPP2K6Wpf6QDQ==
-length: 171825
+edSignature: tEFul4GLHSJuEJa7iWfI7L46qEHQMv1BxV1MSQu/fTf40Xy4c6tveAFXSXSKfuu61tc6ODKl3t+FChyw/kQyBg==
+length: 173105
 -->
