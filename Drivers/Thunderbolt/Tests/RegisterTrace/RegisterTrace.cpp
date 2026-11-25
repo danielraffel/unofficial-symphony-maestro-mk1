@@ -4986,10 +4986,14 @@ static void RunMicPreDAWControls()
     drv->ReadMicPreEdits(edits);
     CHECK(r.card.lines.size() == readMark, "B12: reading edits has no bus traffic");
     CHECK((edits[0] || edits[1]) &&
+#ifdef kMicPreStatePhantomKnown
           // dext 153: the OFF sent in the Start settle window is in the
           // record too, and the driver now knows A1's phantom (off).
           edits[2] == (kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid |
                        kMicPreEditPhantomValid | kMicPreStatePhantomKnown) &&
+#else
+          edits[2] == (kMicPreEditPhaseValid | kMicPreEditHighPass | kMicPreEditHighPassValid) &&
+#endif
           (edits[8] & (kMicPreEditPhase | kMicPreEditPhaseValid)) == (kMicPreEditPhase | kMicPreEditPhaseValid) &&
           edits[9 * 3] == 0 && edits[9 * 3 + 2] == 0,
           "B12: A1 and A3 HAL edits recorded, cumulative per channel; others empty");
@@ -5100,6 +5104,7 @@ static void RunMicPreDAWControls()
     HostPump();
     CHECK(a[key(0xC6, 0)] == std::vector<uint8_t>({1}), "B12: a DAW user can turn +48V on after choosing Mic");
 
+#ifdef kMicPreStatePhantomKnown
     // 0.9.28 (dext 153): one phantom state per channel, set only when the
     // unit took a 0xC6, shown (display only) on every host input routed to
     // the channel, from either side (SymphonyIOBoard_MicPre8ch.cpp:693-718).
@@ -5218,6 +5223,7 @@ static void RunMicPreDAWControls()
         CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "B12: HAL ON for the tests below");
         HostPump();
     }
+#endif
     w = pa.vendorWrites.size();
     drv->ReadMicPreEdits(edits);
     const uint32_t micLo = edits[0], micHi = edits[1];
@@ -5240,15 +5246,19 @@ static void RunMicPreDAWControls()
     HostPump();
 
     // Mic -> Instrument: phantom OFF first, no insert change, group Off.
+#ifdef kMicPreStatePhantomKnown
     CHECK(phantoms[0]->GetControlValue(), "B12: host 1 shows 48V on before the type change");
+#endif
     w = pa.vendorWrites.size();
     types[0]->HandleChangeSelectedValues(&instrument, 1);
     HostPump();
+#ifdef kMicPreStatePhantomKnown
     drv->ReadMicPreEdits(edits);
     CHECK(!phantoms[0]->GetControlValue() &&
               (edits[2] & (kMicPreEditPhantom | kMicPreEditPhantomValid | kMicPreStatePhantom |
                            kMicPreStatePhantomKnown)) == (kMicPreEditPhantomValid | kMicPreStatePhantomKnown),
           "B12: the type change's phantom OFF is shown and recorded as OFF");
+#endif
     CHECK(WritesSince(pa, w) == std::vector<uint8_t>({0xC6, 0x20, 0xC7}) &&
           a[key(0x20, 0x80000000u)] == std::vector<uint8_t>({4, 127}),
           "B12: Mic -> Instrument: phantom OFF, type, group Off (no Instrument gain known)");
@@ -5439,6 +5449,7 @@ static void RunMicPreDAWControls()
     CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted && types[0]->selected == variable,
           "B12: after the recovery a cached Mic does not admit HAL phantom ON");
     drv->ReadMicPreEdits(edits);
+#ifdef kMicPreStatePhantomKnown
     // The phantom state bits are the driver's knowledge of the unit, not
     // edits: after a recovery (maybe another unit) the state is unknown.
     const uint32_t stateBits = kMicPreStatePhantom | kMicPreStatePhantomKnown;
@@ -5447,6 +5458,10 @@ static void RunMicPreDAWControls()
           "B12: a link recovery keeps the unread DAW edits");
     CHECK((unreadFields & kMicPreStatePhantomKnown) && !(edits[2] & stateBits),
           "B12: a link recovery forgets the phantom state of the unit that was there");
+#else
+    CHECK(edits[0] == unreadLo && edits[1] == unreadHi && edits[2] == unreadFields,
+          "B12: a link recovery keeps the unread DAW edits");
+#endif
     // W2: MicPre 2's type is unknown after the recovery. A DAW gain, then a
     // front-panel gain the driver cannot place on a stage: the DAW gain bit
     // must still go, or the stale gain comes back to the app (N2).
