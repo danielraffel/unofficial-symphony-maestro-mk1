@@ -7,6 +7,7 @@ This beta makes the 8MicPre's input type and 48V show correctly in your DAW and 
 ### Changes that may affect your setup
 
 - **The update replaces the ThunderBridge driver (0.11.22, build 153).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
+- **After a reconnect, a restart or waking the Mac, the first time you switch 48V on from your DAW for an input it may not take. Wait a few seconds and click it again.** This stops macOS from switching 48V back on by itself.
 
 ### Fixed
 

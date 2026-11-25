@@ -329,6 +329,13 @@ struct SymphonyThunderbridge_IVars {
     // the channel (its known state is not ON), it is refused as a coreaudiod
     // restore, however late it comes. The DAW user's next ON is accepted.
     bool      halPhantomLatch[8];
+    // When the latch refused an ON, further HAL ONs on that input are refused
+    // until this time (kHALPhantomHoldNs): a restore that repeats is still a
+    // restore. OFF is never held. SYMPHONY_MICPRE_NOW_NS.
+    uint64_t  halPhantomHoldUntil[8];
+    // The queued ON was admitted over a latch only because the channel was
+    // known ON (no change): the send block drops it if that no longer holds.
+    bool      pendingPhantomNoChange[2][8];
     // What the host input showed before the queued request (review m1): put
     // back when the request is dropped and the channel's state is unknown.
     bool      pendingPhantomShown[2][8];
@@ -1088,6 +1095,9 @@ static constexpr uint64_t kHALMicArmNs = 2000000000ull;
 // recall arrives as a scalar change, which already only stores the value
 // (SymphonyMicGainControl.cpp; the original refused it at MicPre8ch.cpp:787-809).
 static constexpr uint64_t kHALMicPreSettleNs = 5000000000ull;
+// Review (final) m1: how long a latch refusal keeps refusing HAL phantom ON
+// on the same host input (RequestPhantomShown).
+static constexpr uint64_t kHALPhantomHoldNs = 3000000000ull;
 // Defined with the MicPre request code below; Start and ConfigureUnitB use them.
 static void ReadMicPreSwitches(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch);
 static uint8_t MicPreTypeChoicesForHost(SymphonyThunderbridge_IVars *iv, uint32_t host);
@@ -12855,15 +12865,26 @@ kern_return_t SymphonyThunderbridge::RequestPhantomShown(uint32_t channel, bool 
     // that would switch the channel on is refused; one over a channel the
     // driver knows is already on changes nothing. Any value consumes it, so
     // the DAW user's next click is a real one (see halPhantomLatch).
-    const bool latched = hostChannel < 8 &&
-        __atomic_exchange_n(&ivars->halPhantomLatch[hostChannel], false, __ATOMIC_ACQ_REL);
-    if (on && latched && !(__atomic_load_n(&ivars->micPrePhantomKnown[port][ch], __ATOMIC_ACQUIRE) &&
-                           __atomic_load_n(&ivars->micPrePhantom[port][ch], __ATOMIC_ACQUIRE))) {
-        STERR("RequestPhantom: ON refused, first HAL request on host %u since the controls reappeared "
-              "(coreaudiod restore)", hostChannel);
+    if (on && hostChannel < 8 &&
+        SYMPHONY_MICPRE_NOW_NS() < __atomic_load_n(&ivars->halPhantomHoldUntil[hostChannel], __ATOMIC_ACQUIRE)) {
+        STERR("RequestPhantom: ON refused on host %u, held after a refused restore", hostChannel);
         RefuseHalPhantom(ivars, hostChannel, shownBefore);
         return kIOReturnNotPermitted;
     }
+    const bool latched = hostChannel < 8 &&
+        __atomic_exchange_n(&ivars->halPhantomLatch[hostChannel], false, __ATOMIC_ACQ_REL);
+    const bool knownOn = __atomic_load_n(&ivars->micPrePhantomKnown[port][ch], __ATOMIC_ACQUIRE) &&
+                         __atomic_load_n(&ivars->micPrePhantom[port][ch], __ATOMIC_ACQUIRE);
+    if (on && latched && !knownOn) {
+        STERR("RequestPhantom: ON refused, first HAL request on host %u since the controls reappeared "
+              "(coreaudiod restore)", hostChannel);
+        __atomic_store_n(&ivars->halPhantomHoldUntil[hostChannel], SYMPHONY_MICPRE_NOW_NS() + kHALPhantomHoldNs,
+                         __ATOMIC_RELEASE);
+        RefuseHalPhantom(ivars, hostChannel, shownBefore);
+        return kIOReturnNotPermitted;
+    }
+    // Admitted over the latch only because nothing changes: re-checked at send.
+    const bool admittedNoChange = on && latched;
     const bool admittedTypeKnown = port ? __atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE) :
         __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE);
     const bool admittedInstrument = port ? __atomic_load_n(&ivars->unitBMicPreInstrument[ch], __ATOMIC_ACQUIRE) :
@@ -12907,6 +12928,7 @@ kern_return_t SymphonyThunderbridge::RequestPhantomShown(uint32_t channel, bool 
     __atomic_store_n(&ivars->pendingPhantom[port][ch], on ? 1 : 0, __ATOMIC_RELAXED);
     __atomic_store_n(&ivars->pendingPhantomHost[port][ch], (uint8_t)hostChannel, __ATOMIC_RELAXED);
     __atomic_store_n(&ivars->pendingPhantomShown[port][ch], shownBefore, __ATOMIC_RELAXED);
+    __atomic_store_n(&ivars->pendingPhantomNoChange[port][ch], admittedNoChange, __ATOMIC_RELAXED);
     __atomic_store_n(&ivars->pendingPhantomTypeKnown[port][ch], admittedTypeKnown, __ATOMIC_RELAXED);
     __atomic_store_n(&ivars->pendingPhantomInstrument[port][ch], admittedInstrument, __ATOMIC_RELAXED);
     __atomic_fetch_add(&ivars->pendingPhantomGen[port][ch], 1, __ATOMIC_RELEASE);
@@ -12919,6 +12941,12 @@ kern_return_t SymphonyThunderbridge::RequestPhantomShown(uint32_t channel, bool 
                 uint8_t  val = __atomic_load_n(&ivars->pendingPhantom[port][ch], __ATOMIC_RELAXED);
                 const uint32_t pendingHost = __atomic_load_n(&ivars->pendingPhantomHost[port][ch], __ATOMIC_RELAXED);
                 const bool pendingShown = __atomic_load_n(&ivars->pendingPhantomShown[port][ch], __ATOMIC_RELAXED);
+                // An ON admitted as no change (the channel was known ON): if a
+                // Maestro OFF or a unit change landed since, it would be one.
+                const bool noChangeLapsed = val != 0 &&
+                    __atomic_load_n(&ivars->pendingPhantomNoChange[port][ch], __ATOMIC_RELAXED) &&
+                    !(__atomic_load_n(&ivars->micPrePhantomKnown[port][ch], __ATOMIC_ACQUIRE) &&
+                      __atomic_load_n(&ivars->micPrePhantom[port][ch], __ATOMIC_ACQUIRE));
                 const bool pendingTypeKnown = __atomic_load_n(&ivars->pendingPhantomTypeKnown[port][ch], __ATOMIC_RELAXED);
                 const bool pendingInstrument = __atomic_load_n(&ivars->pendingPhantomInstrument[port][ch], __ATOMIC_RELAXED);
                 uint32_t resolvedPort = 0, resolvedChannel = 0;
@@ -12933,7 +12961,7 @@ kern_return_t SymphonyThunderbridge::RequestPhantomShown(uint32_t channel, bool 
                 // change can never leave +48 V on a channel the user just switched off.
                 bool sent = false;
                 if (XLinkTxAdmissible(ivars) &&
-                    (val == 0 || (routeUnchanged && pendingTypeKnown && MicPreIsMic(ivars, port, ch) &&
+                    (val == 0 || (!noChangeLapsed && routeUnchanged && pendingTypeKnown && MicPreIsMic(ivars, port, ch) &&
                                   HalMicArmed(ivars, port, ch) && !MicPreSettling(ivars))) &&
                     (!port || (ivars->unitBConfigured && CardMixerUnitBActive(ivars)))) {
                     uint8_t pData = val;   // 1=on, 0=off

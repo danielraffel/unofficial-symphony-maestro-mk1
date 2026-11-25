@@ -4666,6 +4666,19 @@ static void RunPreampHostRoutes()
     // unknown it puts back what the input showed before.
     CHECK(havePhantomControls && !phantomControls[0]->GetControlValue(),
           "P1: the refused ON shows the earlier OFF again");
+    // Final review m1: a restore that repeats inside the hold-off is refused
+    // too; OFF is never held (sent into a busy TX here: no receipt is left).
+    if (havePhantomControls) phantomControls[0]->SetControlValue(true);
+    CHECK(drv->RequestPhantomShown(0, true, false) == kIOReturnNotPermitted,
+          "P1: a second ON inside the hold-off after a refused restore is refused");
+    HostPump();
+    CHECK(!a.count(phantom) && havePhantomControls && !phantomControls[0]->GetControlValue(),
+          "P1: ... sends nothing and shows OFF again");
+    r.card.port[0].txBusy = true;
+    CHECK(drv->RequestPhantom(0, false) == kIOReturnSuccess, "P1: OFF is not held");
+    HostPump();
+    r.card.port[0].txBusy = false;
+    gHostMicPreClockOffsetNs += 3500000000ull;   // past the hold-off
     // Review m1: an admitted ON dropped in the drain (failed send) with the
     // state unknown puts back what the input showed before.
     r.card.port[0].txBusy = true;
@@ -4688,6 +4701,20 @@ static void RunPreampHostRoutes()
     PastMicPreSettle();
     CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: after a wake, an ON over a known ON is accepted");
     HostPump();
+    // Final review m2: admitted as no change, but a Maestro OFF lands before
+    // the send: the queued ON is dropped, not sent.
+    drv->SetPowerState(kIOServicePowerCapabilityOn);
+    PastMicPreSettle();
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: an ON over a known ON admitted as no change");
+    {
+        const uint8_t off[] = {0};
+        gHostDispatchSyncDrain = false;
+        CHECK(drv->SendVendorCommand(0xC6, 0, off, 1) == kIOReturnSuccess, "P1: Maestro OFF before the ON drains");
+        gHostDispatchSyncDrain = true;
+    }
+    HostPump();
+    CHECK(a[phantom] == std::vector<uint8_t>({0}) && havePhantomControls && !phantomControls[0]->GetControlValue(),
+          "P1: the no-change ON is dropped once the channel is no longer known ON");
     { const uint8_t off[] = {0}; CHECK(drv->SendVendorCommand(0xC6, 0, off, 1) == kIOReturnSuccess, "P1: Maestro OFF"); }
     drv->SetPowerState(kIOServicePowerCapabilityOn);
     PastMicPreSettle();
@@ -4695,7 +4722,9 @@ static void RunPreampHostRoutes()
     CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted, "P1: after a wake, a late ON over a known OFF is refused");
     HostPump();
     CHECK(!a.count(phantom), "P1: ... and sends nothing");
-    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: the DAW user's next ON is accepted");
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted, "P1: an ON at once after it is held off");
+    gHostMicPreClockOffsetNs += 3500000000ull;
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: the DAW user's next ON after the hold-off is accepted");
     HostPump();
     CHECK(a[phantom] == std::vector<uint8_t>({1}), "P1: ... and sent");
 #endif
