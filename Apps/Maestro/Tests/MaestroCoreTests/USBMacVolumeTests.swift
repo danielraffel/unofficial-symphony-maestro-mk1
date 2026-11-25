@@ -200,13 +200,33 @@ struct USBMacVolumeTests {
         // Not found: look again instead of giving up for the connection.
         let notFound = try #require(body.range(of: "device not found yet; looking again"))
         #expect(body[notFound.upperBound...].prefix(120).contains("retryASPVolumeSync()"))
-        // Found late: the Mac's control gets Maestro's level, it is not adopted.
-        #expect(app.contains("self.startASPVolumeSync(adoptMacLevel: false)"))
-        let late = try #require(body.range(of: "} else {\n            showKeyboardVolumeLevelOnMacVolume()"))
+        // Found late: the Mac's control gets the unit's level, it is not adopted.
+        #expect(app.contains("startASPVolumeSync(adoptMacLevel: false)"))
         let adopt = try #require(body.range(of: "if adoptMacLevel {"))
+        let late = try #require(body.range(of: "await self.giveMacVolumeMaestroLevel()"))
         #expect(adopt.upperBound <= late.lowerBound)
+        let give = try #require(app.range(of: "func giveMacVolumeMaestroLevel() async {"))
+        let giveBody = String(app[give.upperBound...].prefix(900))
+        // Before the helper has the keys' output the settle step owes the write...
+        #expect(giveBody.contains("macVolumeOwedMaestroLevel = true"))
+        // ...and the levels are read from the unit before they are written.
+        let refresh = try #require(giveBody.range(of: "await refreshAfterRecall()"))
+        let write = try #require(giveBody.range(of: "showKeyboardVolumeLevelOnMacVolume()"))
+        #expect(refresh.upperBound <= write.lowerBound)
+        // The settle step pays that debt instead of reading the control.
+        let keys = try Self.repoFile("Apps/Maestro/MaestroApp/AppState+KeyboardVolume.swift")
+        let owed = try #require(keys.range(of: "if macVolumeOwedMaestroLevel {"))
+        let tail = keys[owed.upperBound...].prefix(200)
+        #expect(tail.contains("await giveMacVolumeMaestroLevel()"))
+        let pay = try #require(tail.range(of: "await giveMacVolumeMaestroLevel()"))
+        let read = try #require(tail.range(of: "readASPVolume()"))
+        #expect(pay.upperBound <= read.lowerBound)
+        // A device the plug-in shows later still gets linked from the device list.
+        let list = try #require(app.range(of: "func handleHardwareDeviceListChanged() {"))
+        #expect(app[list.upperBound...].prefix(60).contains("linkLateASPDevice()"))
         // A disconnect stops the search.
         let stop = try #require(app.range(of: "func stopASPVolumeSync() {"))
-        #expect(app[stop.upperBound...].prefix(120).contains("aspVolumeSyncRetryTask?.cancel()"))
+        #expect(app[stop.upperBound...].prefix(200).contains("aspVolumeSyncRetryTask?.cancel()"))
+        #expect(app[stop.upperBound...].prefix(200).contains("macVolumeOwedMaestroLevel = false"))
     }
 }

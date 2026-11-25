@@ -416,10 +416,16 @@ extension AppState {
                                                 converters: wanted.converters, outputs: landed)
         keyboardVolumeRetryAfter = complete ? .distantPast : Date().addingTimeInterval(Self.keyboardVolumeRetryPause)
         // The Mac's control now holds the level of the output Maestro has for
-        // unit A: what was skipped until that was certain is read now.
+        // unit A: what was skipped until that was certain is read now. When
+        // "Maestro USB" turned up late, the control's level is from before
+        // and is replaced with the unit's instead (`giveMacVolumeMaestroLevel`).
         if adopt {
-            readASPVolume()
-            readASPMute()
+            if macVolumeOwedMaestroLevel {
+                await giveMacVolumeMaestroLevel()
+            } else {
+                readASPVolume()
+                readASPMute()
+            }
         }
     }
 
