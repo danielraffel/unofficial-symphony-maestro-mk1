@@ -11,14 +11,13 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
       <pubDate>Wed, 25 Nov 2026 20:06:14 GMT</pubDate>
       <sparkle:version>0.9.32</sparkle:version>
       <sparkle:shortVersionString>0.9.32</sparkle:shortVersionString>
-      <sparkle:channel>beta</sparkle:channel>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
       <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.32</sparkle:fullReleaseNotesLink>
       <description sparkle:format="markdown"><![CDATA[
-This beta makes the warning about Apogee's original drivers clearer.
+This release makes the warning about Apogee's original drivers clearer.
 
-### Changed
+### What's changed
 
 - When Apogee's original Symphony I/O drivers are found alongside Maestro's, the banner at the top of the window now says to remove them before using Maestro, and why, and a Show Steps button opens the removal steps in Device Settings.
       ]]></description>
@@ -1769,6 +1768,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: /i4B4TbYjCX0M7CbdiJiVUT73jUz7N8WIGdS9RXG4zwBveYacs0Qwdlnz6nWku1pg6dtlQXxvxuD6y1t3PeHBw==
-length: 191608
+edSignature: +j3bIfHsG7KwF3IDznYHL3/+ljlIPtMRpurX+81d2qW5RmIqmdaA3Z7NqZg9+pyi4knzh18nW+r1nvf8B+zDAA==
+length: 191572
 -->
