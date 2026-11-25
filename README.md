@@ -111,7 +111,7 @@ The following hardware configurations have been verified by community testers.
 | 16×16 Analog | USB | 26, 27 |
 | 16×16 Analog + ADAT | ThunderBridge | 27 |
 | 16×16 Analog + 8MicPre | USB, ThunderBridge PCIe | 26 |
-| 16 Analog In / 16 Optical Out + 16×16 Analog | ThunderBridge | 2t |
+| 16 Analog In / 16 Optical Out + 16×16 Analog | ThunderBridge | 27 |
 | 8×8 AES | ThunderBridge PCIe | 26 |
 
 ### Legacy Converters
