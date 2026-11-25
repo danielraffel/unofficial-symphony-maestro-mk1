@@ -139,6 +139,10 @@ public:
     // via PhantomPower (0xC6). Called by SymphonyPhantomControl on the control's
     // work queue. Coalesces + async-sends per-channel on the serial XLink queue.
     virtual kern_return_t RequestPhantom(uint32_t channel, bool on) LOCALONLY;
+    // dext 153: the same, with what the control showed before the request, so
+    // a dropped or refused request can put it back while the state is unknown.
+    // The driver alone writes the control's value after this returns.
+    virtual kern_return_t RequestPhantomShown(uint32_t channel, bool on, bool shownBefore) LOCALONLY;
 
     // Push a mic-preamp gain level (dB, clamped 0..85) for a 0-based mic channel
     // to the Symphony IO via MicGain (0xC3). Called by SymphonyMicGainControl on

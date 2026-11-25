@@ -76,13 +76,10 @@ kern_return_t SymphonyPhantomControl::HandleChangeControlValue(bool in_control_v
     if (!ivars->driver) return kIOReturnNotReady;
     // dext 153: show the request before it is queued, so the driver's own
     // publish after the send (or its republish of the real state when the
-    // request is dropped) always lands after it, never before.
+    // request is dropped or refused) always lands after it, never before.
+    // After this call only the driver writes the value: a refusal queues the
+    // real state (or `previous`, while the state is unknown) itself.
     const bool previous = GetControlValue();
     SetControlValue(in_control_value);
-    kern_return_t r = ivars->driver->RequestPhantom(ivars->channel, in_control_value);
-    if (r != kIOReturnSuccess) {
-        SetControlValue(previous);   // refused: nothing is sent
-        return r;
-    }
-    return kIOReturnSuccess;
+    return ivars->driver->RequestPhantomShown(ivars->channel, in_control_value, previous);
 }

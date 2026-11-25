@@ -78,9 +78,15 @@ kern_return_t SymphonyInputTypeControl::HandleChangeSelectedValues(
         return kIOReturnBadArgument;
     if (!ivars->driver) return kIOReturnNotReady;
     ITLOG("HandleChangeSelectedValues ch=%u -> %u", ivars->channel, in_selected_values[0]);
+    // Overriding HandleChange skips the base class's set: store the value
+    // first (as the original did), so a client reading it back straight away
+    // sees the type it chose, and the driver's publish after the send (or its
+    // republish of the real type) always lands after it. Refused: put the
+    // old value back (the driver also republishes the real type where it can).
+    IOUserAudioSelectorValue previous = 0;
+    const bool hadPrevious = GetCurrentSelectedValues(&previous, 1) == 1;
+    SetCurrentSelectedValues(in_selected_values, 1);
     const kern_return_t r = ivars->driver->RequestInputType(ivars->channel, in_selected_values[0]);
-    if (r != kIOReturnSuccess) return r;
-    // Overriding HandleChange skips the base class's set: store the value here
-    // so a client reading it back straight away sees the type it chose.
-    return SetCurrentSelectedValues(in_selected_values, 1);
+    if (r != kIOReturnSuccess && hadPrevious) SetCurrentSelectedValues(&previous, 1);
+    return r;
 }

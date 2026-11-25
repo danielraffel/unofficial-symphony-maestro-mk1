@@ -75,6 +75,7 @@ public:
     kern_return_t ReadVendorCommand(uint8_t command, uint32_t value, uint8_t *outPayload, uint16_t responseLen);
     kern_return_t RequestClockSource(uint32_t source);
     kern_return_t RequestPhantom(uint32_t channel, bool on);
+    kern_return_t RequestPhantomShown(uint32_t channel, bool on, bool shownBefore);
     kern_return_t RequestMicGain(uint32_t channel, float decibels);
     kern_return_t RequestPhaseInvert(uint32_t channel, bool on);
     kern_return_t RequestHighPass(uint32_t channel, bool on);

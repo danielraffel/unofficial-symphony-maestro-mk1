@@ -4647,9 +4647,58 @@ static void RunPreampHostRoutes()
     HostPump();
     CHECK(!a.count(phantom | 1) && a[phantom | 2] == std::vector<uint8_t>({0}), "P1: only the OFF reached the unit");
     a.erase(phantom);
+#ifdef kMicPreStatePhantomKnown
+    // Review M1 (dext 153): MicPre 1 is Mic by the unit's 0x60 read (no HAL
+    // arm stamp) and the 5 s settle window has passed. A late coreaudiod
+    // restore of a saved ON, the first HAL phantom request on host 1 since
+    // Start, is still refused: it would switch the channel on.
+    auto &phantomControls = gHostAudio.phantoms;
+    const bool havePhantomControls = phantomControls.size() == 8;
+    uint32_t p1Edits[48] = {};
+    drv->ReadMicPreEdits(p1Edits);
+    CHECK(!(p1Edits[2] & kMicPreStatePhantomKnown), "P1: A1's phantom state is unknown so far");
+    if (havePhantomControls) phantomControls[0]->SetControlValue(true);   // the control shows the request
+    CHECK(drv->RequestPhantomShown(0, true, false) == kIOReturnNotPermitted,
+          "P1: a late coreaudiod-style ON after the settle window, on a Mic channel with no arm stamp, is refused");
+    HostPump();
+    CHECK(!a.count(phantom), "P1: ... and sends nothing");
+    // Review m2: the refusal's republish is the last write; with the state
+    // unknown it puts back what the input showed before.
+    CHECK(havePhantomControls && !phantomControls[0]->GetControlValue(),
+          "P1: the refused ON shows the earlier OFF again");
+    // Review m1: an admitted ON dropped in the drain (failed send) with the
+    // state unknown puts back what the input showed before.
+    r.card.port[0].txBusy = true;
+    if (havePhantomControls) phantomControls[0]->SetControlValue(true);
+    CHECK(drv->RequestPhantomShown(0, true, false) == kIOReturnSuccess, "P1: ON admitted before a TX failure");
+    HostPump();
+    r.card.port[0].txBusy = false;
+    CHECK(!a.count(phantom) && havePhantomControls && !phantomControls[0]->GetControlValue(),
+          "P1: a dropped ON with the state unknown shows the earlier OFF again");
+    // The DAW user then clicks ON (the button was put back to off).
+#endif
     CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: phantom ON accepted on Mic");
     HostPump();
     CHECK(a[phantom] == std::vector<uint8_t>({1}), "P1: Mic channel phantom ON sent");
+#ifdef kMicPreStatePhantomKnown
+    // The latch is per arm: a wake arms it again. An ON over a channel the
+    // driver knows is already on changes nothing and is accepted; a changing
+    // ON is refused once, and the next click goes through.
+    drv->SetPowerState(kIOServicePowerCapabilityOn);
+    PastMicPreSettle();
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: after a wake, an ON over a known ON is accepted");
+    HostPump();
+    { const uint8_t off[] = {0}; CHECK(drv->SendVendorCommand(0xC6, 0, off, 1) == kIOReturnSuccess, "P1: Maestro OFF"); }
+    drv->SetPowerState(kIOServicePowerCapabilityOn);
+    PastMicPreSettle();
+    a.erase(phantom);
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnNotPermitted, "P1: after a wake, a late ON over a known OFF is refused");
+    HostPump();
+    CHECK(!a.count(phantom), "P1: ... and sends nothing");
+    CHECK(drv->RequestPhantom(0, true) == kIOReturnSuccess, "P1: the DAW user's next ON is accepted");
+    HostPump();
+    CHECK(a[phantom] == std::vector<uint8_t>({1}), "P1: ... and sent");
+#endif
 
     CHECK(route(0, 32) == kIOReturnBadArgument, "B10: B route refused at 32");
 #ifdef kSelectorPublishMicGain
@@ -5334,9 +5383,11 @@ static void RunMicPreDAWControls()
     CHECK(route(4, 0) == kIOReturnSuccess && types[4]->values.size() == 5 &&
           types[4]->HandleChangeSelectedValues(&instrument, 1) == kIOReturnSuccess,
           "B12: host 5 routed to MicPre 1 offers and accepts Instrument");
-    CHECK(route(4, 4) == kIOReturnSuccess && types[4]->values.size() == 4 &&
-          types[4]->HandleChangeSelectedValues(&instrument, 1) == kIOReturnBadArgument,
-          "B12: host 5 back on MicPre 5 drops Instrument");
+    CHECK(route(4, 4) == kIOReturnSuccess && types[4]->values.size() == 4, "B12: host 5 back on MicPre 5");
+    const IOUserAudioSelectorValue host5Type = types[4]->selected;
+    CHECK(types[4]->HandleChangeSelectedValues(&instrument, 1) == kIOReturnBadArgument &&
+              types[4]->selected == host5Type,
+          "B12: host 5 back on MicPre 5 drops Instrument; the refused type is not left shown");
     HostPump();
 
     // Unit B: host 1 routed to B MicPre 1 writes port 2 only.
