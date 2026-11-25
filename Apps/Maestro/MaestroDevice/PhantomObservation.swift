@@ -80,7 +80,8 @@ public enum PhantomDisplay {
     /// Maestro's own accepted ON, made while the unit's identity was not yet
     /// known, gets its provenance once the identity is known in the same
     /// connection: only for a channel still in Mic whose driver state says the
-    /// unit has phantom on. Nothing is sent here; a later replay restores it
+    /// unit has phantom on and whose record shows no DAW phantom edit since
+    /// Maestro's ON. Nothing is sent here; a later replay restores it
     /// as it does any ON Maestro made with the identity known.
     /// - Returns: true when a strip changed.
     @discardableResult
@@ -93,7 +94,10 @@ public enum PhantomDisplay {
         let offset = unit == .b ? 8 : 0
         var changed = false
         for channel in channels.sorted() where channel >= 0 && channel < 8 && states.indices.contains(channel) {
-            guard records[offset + channel].driverPhantom == true,
+            // Review m4: the unit has it on, and no DAW switched phantom on
+            // this channel since Maestro's own 0xC6 (which clears the record's
+            // phantom bits): the ON on the unit is Maestro's.
+            guard records[offset + channel].driverPhantom == true, records[offset + channel].phantom == nil,
                   states[channel].inputType == AnalogInputLevel.mic.rawValue else { continue }
             let provenance = PhantomProvenance(unitID: identity, boardSlot: 1, channel: channel)
             guard !states[channel].phantom || states[channel].phantomProvenance != provenance else { continue }

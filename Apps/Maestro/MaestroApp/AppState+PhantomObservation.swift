@@ -49,8 +49,30 @@ extension AppState {
             let all = PhantomDisplay.observedOn(records, servingBuild: servingDextBuild)
             if cardLayout.slot2 == .micPre8 { for i in 0..<8 { observed[i] = all[i] } }
             if unitBLayout?.slot2 == .micPre8 { for i in 8..<16 { observed[i] = all[i] } }
+            dropPendingPhantomProvenance(after: records)
         }
         if observed != phantomObservedOn { phantomObservedOn = observed }
+    }
+
+    /// Review m4: a DAW switched phantom on a channel after Maestro's own ON
+    /// (Maestro's 0xC6 clears the record's phantom bits, so any phantom bit
+    /// now is later): that ON is no longer Maestro's to finish.
+    func dropPendingPhantomProvenance(after records: [MicPreEditRecord]) {
+        guard records.count == 16 else { return }
+        for unit in [DeviceUnit.a, .b] {
+            guard let channels = pendingPhantomProvenance[unit]?.channels else { continue }
+            let offset = unit == .b ? 8 : 0
+            for channel in channels where channel < 8 && records[offset + channel].phantom != nil {
+                pendingPhantomProvenance[unit]?.channels.remove(channel)
+            }
+        }
+    }
+
+    /// The driver's records read now (nil with nothing pending or no driver).
+    func freshPhantomRecords(for unit: DeviceUnit) async -> [MicPreEditRecord]? {
+        guard pendingPhantomProvenance[unit]?.channels.isEmpty == false,
+              let tb = device as? ThunderboltDeviceConnection else { return nil }
+        return await Task.detached(priority: .utility) { tb.linkState()?.micPreEdits }.value
     }
 
     func phantomObserved(unit: DeviceUnit, channel: Int) -> Bool {
@@ -90,10 +112,12 @@ extension AppState {
     /// The identity is known now, in the connection the ON was made in: give
     /// that ON its provenance where the driver says the unit still has it on
     /// and the strip is still Mic. Saves state only; never writes the unit.
-    func finishPendingPhantomProvenance(unit: DeviceUnit, identity: UInt64) {
+    /// `records`: read just before (`freshPhantomRecords`); nil grants nothing.
+    func finishPendingPhantomProvenance(unit: DeviceUnit, identity: UInt64, records: [MicPreEditRecord]?) {
+        guard let records, records.count == 16 else { pendingPhantomProvenance[unit] = nil; return }
+        dropPendingPhantomProvenance(after: records)
         guard let entry = pendingPhantomProvenance.removeValue(forKey: unit),
-              entry.generation == identityGeneration(unit), !entry.channels.isEmpty,
-              let records = (device as? ThunderboltDeviceConnection)?.lastLinkState?.micPreEdits else { return }
+              entry.generation == identityGeneration(unit), !entry.channels.isEmpty else { return }
         let store = unit == .b ? unitBChannelStateStore : channelStateStore
         guard store.identity == identity,
               var states = store.load(ChannelStateStore.inputKey, as: [InputChannelState].self) else { return }

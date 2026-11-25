@@ -48,7 +48,23 @@ struct PhantomDisplayAppTests {
         state.invalidateUnitAIdentity()   // another connection: maybe another unit
         #expect(!state.pendingPhantomOn(unit: .a, channel: 3))
         // Finishing in the new generation does nothing (and writes nothing).
-        state.finishPendingPhantomProvenance(unit: .a, identity: 42)
+        state.finishPendingPhantomProvenance(unit: .a, identity: 42, records: nil)
         #expect(state.pendingPhantomProvenance[.a] == nil)
+    }
+
+    @Test("review m4: a DAW phantom edit after Maestro's ON drops it; no fresh read grants nothing")
+    func dawEditDropsPendingOwnOn() {
+        let state = AppState()
+        state.notePendingPhantomProvenance(unit: .a, channel: 1)
+        state.notePendingPhantomProvenance(unit: .a, channel: 2)
+        state.notePendingPhantomProvenance(unit: .b, channel: 1)
+        var records = (0..<16).map { _ in MicPreEditRecord(stamp: 0, fields: 0) }
+        records[1] = MicPreEditRecord(stamp: 3, fields: MicPreEditRecord.phantomValid)        // DAW OFF on A2
+        records[9] = MicPreEditRecord(stamp: 4, fields: MicPreEditRecord.phantomValid | MicPreEditRecord.phantomBit) // DAW ON on B2
+        state.dropPendingPhantomProvenance(after: records)
+        #expect(!state.pendingPhantomOn(unit: .a, channel: 1) && state.pendingPhantomOn(unit: .a, channel: 2))
+        #expect(!state.pendingPhantomOn(unit: .b, channel: 1))
+        state.finishPendingPhantomProvenance(unit: .a, identity: 42, records: nil)
+        #expect(!state.pendingPhantomOn(unit: .a, channel: 2))
     }
 }

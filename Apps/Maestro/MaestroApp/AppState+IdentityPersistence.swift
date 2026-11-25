@@ -72,22 +72,26 @@ extension AppState {
             let allowMigration = store != nil && claimLegacyUnitState(unit: unit, identity: identity)
             let prefix = await store?.resolveIdentity(productID: connection.identifier.productID, unit: unit,
                                          identity: identity, allowLegacyMigration: allowMigration)
+            // A 48V ON Maestro made before the identity was known: the
+            // driver's records as they are now, not the last poll's.
+            let phantomRecords = await freshPhantomRecords(for: unit)
             guard !Task.isCancelled, isCurrent() else { return }
             if unit == .a {
                 unitAIdentityState = .known(identity)
                 unitAIdentityTask = nil
+                finishPendingPhantomProvenance(unit: unit, identity: identity, records: phantomRecords)
             } else {
                 unitBIdentityState = .known(identity)
                 unitBIdentityTask = nil
                 unitBPeripheralPrefix = prefix.map(CardLayout.peripheralPrefix) ?? unitBPeripheralPrefix
+                // Before the two-unit replay is asked for: it then builds its
+                // plan from this state after applying a fresh read's OFFs.
+                finishPendingPhantomProvenance(unit: unit, identity: identity, records: phantomRecords)
                 twoUnitReplayNeeded = true
                 twoUnitRetryAfter = .distantPast
             }
             let preferences = unit == .a ? mixerPreferences : unitBChannelStateStore.mixerPreferences
             MixerPairLink.migrateSavedPairs(preferences: preferences)
-            // A 48V ON Maestro made before the identity was known keeps its
-            // ON (saved state only; nothing is sent).
-            finishPendingPhantomProvenance(unit: unit, identity: identity)
         }
         await bindIdentity()
         guard isCurrent() else { return }

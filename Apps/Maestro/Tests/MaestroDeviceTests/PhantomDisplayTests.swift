@@ -121,6 +121,11 @@ import Testing
         #expect(!finish(Self.records([:])))
         // A DAW's ON in the record is not the driver's state.
         #expect(!finish(Self.records([0: Self.dawOn])))
+        // Review m4: Maestro's ON (identity unknown), then a DAW OFF and a DAW
+        // ON: the unit is on, but by the DAW. No provenance, so no replay ON.
+        #expect(!finish(Self.records([0: Self.dawOn | Self.driverOn])))
+        // Any DAW phantom edit since Maestro's ON blocks it.
+        #expect(!finish(Self.records([0: MicPreEditRecord.phantomValid | Self.driverOn])))
         #expect(!finish(Self.records([0: Self.driverOn]), build: .build(152)))
         #expect(!finish(Self.records([0: Self.driverOn]), identity: 0))
         #expect(!finish(Self.records([0: Self.driverOn]), identity: UInt64.max))
