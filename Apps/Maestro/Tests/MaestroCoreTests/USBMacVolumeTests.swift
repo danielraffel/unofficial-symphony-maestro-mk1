@@ -189,4 +189,24 @@ struct USBMacVolumeTests {
         #expect(ret.upperBound <= usbWrite.lowerBound)
         #expect(app.contains("guard aspDeviceID != kAudioObjectUnknown, transportType != .thunderbolt else { return }"))
     }
+
+    @Test("A Maestro USB device that appears late is still linked, with Maestro's level")
+    func lateDeviceIsLinked() throws {
+        let app = try Self.repoFile("Apps/Maestro/MaestroApp/AppState.swift")
+        let start = try #require(app.range(of: "func startASPVolumeSync(adoptMacLevel: Bool = true)"))
+        let body = String(app[start.lowerBound...].prefix(4200))
+        // An ID from before Core Audio restarted is never reused.
+        #expect(body.contains("aspDeviceID = kAudioObjectUnknown"))
+        // Not found: look again instead of giving up for the connection.
+        let notFound = try #require(body.range(of: "device not found yet; looking again"))
+        #expect(body[notFound.upperBound...].prefix(120).contains("retryASPVolumeSync()"))
+        // Found late: the Mac's control gets Maestro's level, it is not adopted.
+        #expect(app.contains("self.startASPVolumeSync(adoptMacLevel: false)"))
+        let late = try #require(body.range(of: "} else {\n            showKeyboardVolumeLevelOnMacVolume()"))
+        let adopt = try #require(body.range(of: "if adoptMacLevel {"))
+        #expect(adopt.upperBound <= late.lowerBound)
+        // A disconnect stops the search.
+        let stop = try #require(app.range(of: "func stopASPVolumeSync() {"))
+        #expect(app[stop.upperBound...].prefix(120).contains("aspVolumeSyncRetryTask?.cancel()"))
+    }
 }
