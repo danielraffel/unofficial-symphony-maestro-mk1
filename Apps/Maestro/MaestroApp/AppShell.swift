@@ -97,10 +97,11 @@ struct ContentView: View {
         // Apogee's kernel driver for the card is loaded: this replaces every
         // other driver banner. Those say to activate the driver, or to unplug
         // the cable to finish an update, and either can crash the Mac in this
-        // state (ApogeeDriverConflict.swift). No button, and it cannot be closed.
+        // state (ApogeeDriverConflict.swift). Its one button only opens Device
+        // Settings, where the steps are; it cannot be closed.
         let card = PortStatusMessage.cardPhrase(pciIdentifier: thunderBridgeReport.pciDeviceIdentifier)
         if let conflict = appState.apogeeDriverConflict?.banner(card: card) {
-            return (ThunderBridgeBanner(title: conflict.title, message: conflict.message, action: .none,
+            return (ThunderBridgeBanner(title: conflict.title, message: conflict.message, action: .showSteps,
                                         dismissible: false, inProgress: false), "apogee-driver")
         }
         guard let banner = thunderBridgeReport.thunderBridgeBanner else { return nil }
@@ -132,6 +133,9 @@ struct ContentView: View {
                             switch banner.action {
                             case .openDriverSettings: openDriverExtensions()
                             case .activate: SystemExtensionInstaller.shared.activate()
+                            // Only navigates: nothing that starts, stops or
+                            // replaces a driver is offered in this state.
+                            case .showSteps: appState.selectedArea = .deviceSettings
                             case .none: break
                             }
                         },
@@ -285,6 +289,7 @@ struct ThunderBridgeActionBanner: View {
         switch banner.action {
         case .openDriverSettings: return "Open Driver Settings…"
         case .activate: return "Set Up Driver…"
+        case .showSteps: return "Show Steps"
         case .none: return nil
         }
     }

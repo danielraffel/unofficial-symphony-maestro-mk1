@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.32 (beta)
+
+This beta makes the warning about Apogee's original drivers clearer.
+
+### Changed
+
+- When Apogee's original Symphony I/O drivers are found alongside Maestro's, the banner at the top of the window now says to remove them before using Maestro, and why, and a Show Steps button opens the removal steps in Device Settings.
+
 ## 0.9.31
 
 This release fixes the Symphony's speaker and headphone level over USB.
