@@ -1153,6 +1153,12 @@ struct ADATStereoPairView: View {
     /// breathing row before their meter. Reuse that top lane so digital
     /// meters share both meter edges with the analog columns.
     var alignInputMeter: Bool = false
+    /// Output analog strips have two fixed setting rows (analog and digital
+    /// reference) before the same 16-point breathing row. Pushing the meters
+    /// to the bottom only lined up while Show Trims was off: the trim
+    /// readout row under the analog meters moved their bottom edge up
+    /// (owner, 2026-11-24). A fixed top lane lines them up either way.
+    var alignOutputMeter: Bool = false
     var showZoneColoring: Bool = false
 
     var leftOver = false
@@ -1183,7 +1189,11 @@ struct ADATStereoPairView: View {
             // Spacer fills the gap where analog strips have pills — pushes meters to bottom
             if matchHeight != nil {
                 if alignInputMeter {
+                    // 3 rows of 18 pt + 2 gaps of 3 pt, + 16 breathing, + 3 gap.
                     Spacer().frame(height: 79)
+                } else if alignOutputMeter {
+                    // 2 rows of 18 pt + 1 gap of 3 pt, + 16 breathing, + 3 gap.
+                    Spacer().frame(height: 58)
                 } else {
                     Spacer(minLength: 0)
                 }
