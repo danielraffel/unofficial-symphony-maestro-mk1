@@ -7,6 +7,36 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.28</title>
+      <pubDate>Wed, 25 Nov 2026 02:42:53 GMT</pubDate>
+      <sparkle:version>0.9.28</sparkle:version>
+      <sparkle:shortVersionString>0.9.28</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.28</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta makes ThunderBridge connect faster after a replug or after the Symphony is switched off and on, and makes the 8MicPre's input type and 48V show correctly in your DAW and in Maestro. It includes 0.9.27, which was not released separately.
+
+### Changes that may affect your setup
+
+- **The update replaces the ThunderBridge driver (0.11.22, build 153).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
+- **After a reconnect, a restart or waking the Mac, the first time you switch 48V on from your DAW for an input it may not take. Wait a few seconds and click it again.** This stops macOS from switching 48V back on by itself.
+
+### Fixed
+
+- **When you change an 8MicPre input type in Logic or another DAW, it shows the new type straight away.** Before, it often kept showing the previous type, although the Symphony had changed.
+- **48V is shown correctly in both Maestro and your DAW, whichever one switches it.** 48V switched on in your DAW now lights the 48V button in Maestro, and 48V switched in Maestro now shows in your DAW. 48V switched on in a DAW is only shown in Maestro: Maestro does not save it or switch it on again later.
+- **After you change an input type in Maestro, your DAW no longer shows 48V on when it is off.**
+- **On the Output page with Show Trims on, the digital output meters line up with the analog ones again.**
+- **After a ThunderBridge replug, sound comes back about two seconds sooner.**
+- **After the Symphony is switched off and on, your speaker and headphone levels come back within a few seconds instead of about ten.** A muted speaker stays muted, as before.
+- **Maestro no longer re-sends the clock and optical format several times when the ThunderBridge connects.** With Use Loop Sync on, it is switched off and back on once when the driver starts, instead of several times.
+- **Mixer 1 and Mixer 2 are restored in under a second after a replug.**
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.28/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="nvcmFFlDcoBWYOuw8retPoRd8ZudCzA1gV61EP1uq89E6I5Bk7RSI4tmWAjxm3na4x3k4hHAo7LB+WXrXaCSCw==" length="6374150" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.26</title>
       <pubDate>Tue, 24 Nov 2026 20:25:14 GMT</pubDate>
       <sparkle:version>0.9.26</sparkle:version>
@@ -1542,6 +1572,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: OESUnN8gP3wKSuFxQ5KpIcRoXHfBE9emOZGpoARe1Y1aRnjsa86zbZq25tEbA1Og7mbNZbeQB2GFtmQDAcxFBA==
-length: 168851
+edSignature: pkuu9LFOSMC7V+40rIbKit8BPzODcx5z+U6/N5Sr6SrNyg2ZZ+QZy9cSoWej9Rrmapf5DCmTznPP2K6Wpf6QDQ==
+length: 171825
 -->
