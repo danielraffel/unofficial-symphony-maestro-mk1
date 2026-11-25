@@ -1232,6 +1232,8 @@ public struct ThunderBridgeBanner: Sendable, Equatable {
         case openDriverSettings
         /// Submit an activation request.
         case activate
+        /// Open Device Settings, where the steps to remove Apogee's drivers are.
+        case showSteps
     }
     public var title: String
     public var message: String

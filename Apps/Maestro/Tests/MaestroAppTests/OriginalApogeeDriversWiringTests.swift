@@ -118,6 +118,9 @@ struct OriginalApogeeDriversWiringTests {
         let ours = try #require(shell.range(of: "appState.apogeeDriverConflict?.banner", range: banner.upperBound..<shell.endIndex))
         let theirs = try #require(shell.range(of: "thunderBridgeReport.thunderBridgeBanner", range: banner.upperBound..<shell.endIndex))
         #expect(ours.lowerBound < theirs.lowerBound)
+        // Its one button only opens Device Settings, never a driver request.
+        #expect(shell.contains("action: .showSteps,"))
+        #expect(shell.contains("case .showSteps: appState.selectedArea = .deviceSettings"))
         #expect(try file("MaestroApp/SettingsViews.swift")
             .contains("OriginalApogeeDriversWarning(finding: found, conflict: appState.apogeeDriverConflict)"))
     }

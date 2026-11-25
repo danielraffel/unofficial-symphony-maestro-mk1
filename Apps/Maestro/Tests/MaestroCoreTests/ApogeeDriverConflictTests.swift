@@ -90,9 +90,12 @@ struct ApogeeDriverConflictTests {
         #expect(held.what == ApogeeDriverConflict.crashRisk)
         #expect(held.updateNote == "You are seeing this after updating because this version now checks for them. "
             + "Earlier versions did not check.")
-        #expect(held.banner?.title == "Apogee's original Symphony I/O drivers were detected")
-        #expect(held.banner?.message == ApogeeDriverConflict.crashRisk + " " + ApogeeDriverConflict.consequence
-            + " Device Settings has the steps.")
+        // The banner says what to do (owner's wording, 2026-11-25); its Show
+        // Steps button opens the steps.
+        #expect(held.banner?.title == "Remove Apogee's original drivers before using Maestro")
+        #expect(held.banner?.message == "Having both drivers installed can cause crashes and audio issues. "
+            + "Follow the removal steps to safely disconnect your ThunderBridge and run the Apogee uninstaller. "
+            + "A restart is required afterward.")
         let both = ApogeeDriverConflict.decide(kextLoaded: true, copyOnDisk: true, maestroDriverActive: true,
                                                updatePending: false)
         #expect(both.what == "Apogee's driver and Maestro's driver are both running now. "
@@ -102,18 +105,17 @@ struct ApogeeDriverConflictTests {
         #expect(both.caution == "Do not unplug the ThunderBridge or PCIe chassis while your Mac is on, and do not "
             + "update Maestro. Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up "
             + "again, before you remove Apogee's drivers.")
-        #expect(both.banner?.title == "Do not unplug the ThunderBridge or update Maestro")
-        // On the PCIe card the title names that card.
+        // One banner whichever driver is on the card.
+        #expect(both.banner?.title == held.banner?.title)
+        #expect(both.banner?.message == held.banner?.message)
+        // On the PCIe card it is the chassis that is disconnected.
         let pcie = PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2100")
-        #expect(both.banner(card: pcie)?.title == "Do not unplug the Symphony 64 PCIe card or update Maestro")
-        #expect(both.banner(card: PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2200"))?.title
-            == both.banner?.title)
-        #expect(both.banner(card: pcie)?.message == both.banner?.message)
-        #expect(held.banner(card: pcie)?.title == held.banner?.title)
-        #expect(both.banner?.message == ApogeeDriverConflict.detected + " One is running alongside Maestro's driver. "
-            + ApogeeDriverConflict.crashRisk + " Shut down your Mac and disconnect the ThunderBridge or PCIe "
-            + "chassis, then start up again. Device Settings has the steps.")
-        #expect(both.banner?.message.contains("uninstaller") == false)
+        #expect(both.banner(card: pcie)?.title == both.banner?.title)
+        #expect(both.banner(card: pcie)?.message.contains("disconnect your PCIe chassis") == true)
+        #expect(both.banner(card: PortStatusMessage.cardPhrase(pciIdentifier: "pci19c2,2200"))?.message
+            == both.banner?.message)
+        // Never "do not unplug" alone: disconnecting is part of the steps.
+        #expect(both.banner?.title.contains("Do not") == false)
         #expect(both.updateNote == nil)
         // Apogee's uninstaller, restart, install again: never a command of ours.
         #expect(ApogeeDriverConflict.fixSteps.count == 4)
@@ -124,7 +126,7 @@ struct ApogeeDriverConflictTests {
         let all = [ApogeeDriverConflict.heldWhat, ApogeeDriverConflict.bothActiveWhat,
                    ApogeeDriverConflict.bothActiveCaution, ApogeeDriverConflict.consequence,
                    ApogeeDriverConflict.updateNote, ApogeeDriverConflict.heldBannerMessage,
-                   ApogeeDriverConflict.bothActiveBannerMessage, ApogeeDriverConflict.updateRefusal]
+                   ApogeeDriverConflict.bannerMessage(card: PortStatusMessage.defaultCard), ApogeeDriverConflict.updateRefusal]
             + ApogeeDriverConflict.fixSteps
         for line in all {
             #expect(!line.contains("kmutil") && !line.contains("sudo") && !line.lowercased().contains("experimental"))

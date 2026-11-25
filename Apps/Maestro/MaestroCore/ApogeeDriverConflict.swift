@@ -91,10 +91,11 @@ public enum ApogeeDriverConflict {
         public func banner(card: String) -> (title: String, message: String)? {
             switch state {
             case .clear, .copyNotLoaded: return nil
-            case .driverHeld: return (ApogeeDriverConflict.heldBannerTitle, ApogeeDriverConflict.heldBannerMessage)
-            case .bothActive:
-                return (ApogeeDriverConflict.bothActiveBannerTitle(card: card),
-                        ApogeeDriverConflict.bothActiveBannerMessage)
+            // One banner whichever driver is on the card: what to do, why,
+            // and the one thing that must be done safely (disconnecting).
+            // Its Show Steps button opens the steps in Device Settings.
+            case .driverHeld, .bothActive:
+                return (ApogeeDriverConflict.bannerTitle, ApogeeDriverConflict.bannerMessage(card: card))
             }
         }
     }
@@ -161,14 +162,21 @@ public enum ApogeeDriverConflict {
         "Install Maestro again (Apogee's Uninstall also removes Maestro; this puts it back)",
     ]
 
+    /// The header banner while one of Apogee's kernel drivers is loaded. The
+    /// title said only what not to do ("Do not unplug the ThunderBridge or
+    /// update Maestro"), and a tester with no sound read past the reason in
+    /// the small text (2026-11-25).
+    public static let bannerTitle = "Remove Apogee's original drivers before using Maestro"
+    /// `card` is "the ThunderBridge" or "the Symphony 64 PCIe card"; what is
+    /// disconnected for the card is its chassis.
+    public static func bannerMessage(card: String) -> String {
+        let disconnect = card == PortStatusMessage.defaultCard ? "your ThunderBridge" : "your PCIe chassis"
+        return "Having both drivers installed can cause crashes and audio issues. Follow the removal steps to "
+            + "safely disconnect \(disconnect) and run the Apogee uninstaller. A restart is required afterward."
+    }
+
     public static let heldBannerTitle = "Apogee's original Symphony I/O drivers were detected"
     public static let heldBannerMessage = crashRisk + " " + consequence + " Device Settings has the steps."
-    public static let bothActiveBannerTitle = bothActiveBannerTitle(card: PortStatusMessage.defaultCard)
-    /// `card` is "the ThunderBridge" or "the Symphony 64 PCIe card".
-    public static func bothActiveBannerTitle(card: String) -> String { "Do not unplug \(card) or update Maestro" }
-    public static let bothActiveBannerMessage = detected + " One is running alongside Maestro's driver. "
-        + crashRisk + " Shut down your Mac and disconnect the ThunderBridge or PCIe chassis, then start up "
-        + "again. Device Settings has the steps."
 
     /// What the updater says when it declines an update (Sparkle shows it for a
     /// check the user started).

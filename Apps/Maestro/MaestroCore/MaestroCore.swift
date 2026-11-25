@@ -10,5 +10,5 @@
 /// It is pure Swift and fully testable without hardware.
 
 public enum MaestroCore {
-    public static let version = "0.9.31"
+    public static let version = "0.9.32"
 }
