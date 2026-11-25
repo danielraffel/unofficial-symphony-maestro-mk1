@@ -441,6 +441,7 @@ struct OutputControlsView: View {
                                 leftPeak: Self.meterLevel(appState.unitDigitalOutputPeakHold, digPair.meterIndex),
                                 rightPeak: Self.meterLevel(appState.unitDigitalOutputPeakHold, digPair.meterIndex, offset: 1),
                                 matchHeight: analogStripHeight > 0 ? analogStripHeight : nil,
+                                alignOutputMeter: true,
                                 showZoneColoring: appState.showMeterZoneColoring,
                                 leftOver: appState.outputMeterIsOver(digPair.meterIndex, digital: true),
                                 rightOver: appState.outputMeterIsOver(digPair.meterIndex, digital: true, offset: 1),

@@ -24,6 +24,7 @@ This beta makes ThunderBridge connect faster after a replug or after the Symphon
 
 ### Fixed
 
+- **On the Output page with Show Trims on, the digital output meters line up with the analog ones again.**
 - **After a ThunderBridge replug, sound comes back about two seconds sooner.**
 - **After the Symphony is switched off and on, your speaker and headphone levels come back within a few seconds instead of about ten.** A muted speaker stays muted, as before.
 - **Maestro no longer re-sends the clock and optical format several times when the ThunderBridge connects.** With Use Loop Sync on, it is switched off and back on once when the driver starts, instead of several times.
