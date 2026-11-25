@@ -87,8 +87,8 @@ struct UpdateChannelSettings: View {
                 // channel's newest version sits centred under its half.
                 ChannelSegmentedControl(selection: channelBinding)
                     .frame(width: ChannelReleasesRow.width)
-                .disabled(pickerDisabled)
-                .maestroHelp(UpdateChannelCopy.pickerHelp)
+                    .disabled(pickerDisabled)
+                    .maestroHelp(UpdateChannelCopy.pickerHelp)
                 // Nothing extra (no space, no spinner) until a feed was read
                 // with scheduled checks on; then it fades in.
                 if let releases = updates.channelReleases {
