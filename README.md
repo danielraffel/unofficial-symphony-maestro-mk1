@@ -10,11 +10,9 @@ Download the latest Installer (.pkg)</a></h1>
 
 For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **App Settings › Updates**.
 
-_This software has had limited real-world testing. Please closely read the setup notes and limitations in the installer before deciding whether you want to use it._
-
 ## Overview
 
-This project restores support for the **Apogee Symphony I/O MK I** on Apple Silicon Macs. It was developed with **Apogee's knowledge and blessing**, but it is **not affiliated with, supported by, or endorsed by Apogee** in any way. Apogee does not provide support for this software.
+This project restores support for the **Apogee Symphony I/O MK I** on Apple Silicon Macs. It was developed with **[Apogee's knowledge and blessing](https://apogeedigital.com/blog/symphony-io-mk1-independent-mac-software/)**, but it is **not affiliated with, supported by, or endorsed by Apogee** in any way. Apogee DOES NOT provide support for this software.
 
 Due to the technical approach used, this software **requires an Apple Silicon Mac running macOS 26 or later**. It will **never support Intel Macs or versions of macOS earlier than macOS 26**.
 
@@ -63,16 +61,15 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 - A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
 - Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
 - Appearance controls with **Auto**, **Light**, and **Dark** modes
+- Support for Apogee Converters with up to four units on each port, in cable order with the nearest first: [AD-16X](https://www.apogeedigital.com/pdf/ad16x_usersguide.pdf), [DA-16X](https://apogeedigital.com/pdf/da16x_usersguide.pdf) and [Rosetta 800](https://apogeedigital.com/pdf/rosetta800_usersguide.pdf) converters.
+- Support for up two Symphony I/O units (64 channels), over [ThunderBridge or the Symphony 64 PCIe card](https://knowledge.apogeedigital.com/symphony64-pcie-thundebridge-users-guide-documentation-and-downloads).
 - Optional in-app updates through Sparkle, with **Stable** and **Beta** channels: stay on a stable build, or choose Beta to get updates before they reach Stable (see [Beta versions](#beta-versions))
-- **In beta, not yet confirmed on real hardware:** Apogee [AD-16X](https://www.apogeedigital.com/pdf/ad16x_usersguide.pdf), [DA-16X](https://apogeedigital.com/pdf/da16x_usersguide.pdf) and [Rosetta 800](https://apogeedigital.com/pdf/rosetta800_usersguide.pdf) converters, and two Symphony I/O units (64 channels), over [ThunderBridge or the Symphony 64 PCIe card](https://knowledge.apogeedigital.com/symphony64-pcie-thundebridge-users-guide-documentation-and-downloads). Reports are welcome.
 
 ### Connecting over USB and ThunderBridge
 
-Both connections can stay plugged in. The Symphony's front-panel mode decides which one Maestro uses: in **Symphony** mode audio and control go through ThunderBridge, and in a **USB** mode they go through USB. Switching modes on the front panel is followed automatically.
+The Symphony's front-panel mode decides which one Maestro uses: in **Symphony** mode audio and control go through ThunderBridge (or PCIe), and in a **USB** mode they go through USB. Switching modes on the front panel is followed automatically.
 
 Over USB the Mac sees two devices. Use **Symphony I/O : Maestro USB** for the Mac’s sound output and volume keys. It has no inputs. For recording, or a DAW that wants one device for inputs and outputs, choose **Symphony I/O : USB Audio**. USB carries 16 channels each way; ThunderBridge carries 32.
-
-Some older AD16 option-board FPGA revisions report a valid 192 kHz clock but may deliver corrupt samples on the secondary 16-channel path. 192 kHz remains available so the behavior can be diagnosed and so systems that do not exhibit the issue are not unnecessarily restricted. If your unit shows full-scale or otherwise corrupt secondary inputs at 192 kHz, use a lower rate while reporting the exact module and FPGA revision in an issue.
 
 ### Mic Pre
 
@@ -80,7 +77,7 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 
 <a href="docs/screenshots/input-micpre.png"><img src="docs/screenshots/input-micpre.png" alt="Mic Pre input channels" width="70%"></a>
 
-> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views. I don't own an 8MicPre and the Mic Pre controls are based on the documented hardware behavior and have been exercised by one tester on real hardware (see [Tested Hardware](#tested-hardware)). If you wish to contribute a PR for integrating the 8MicPre into Logic like the original there's a <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/29">bug with additional info</a>.
+> **The device-control screenshots use Maestro’s built-in card simulator**, with a 16x16 Analog In/Out module and an 8MicPre where shown. The “no hardware” banner identifies simulated views. I don't own an 8MicPre and the Mic Pre controls are based on the documented hardware behavior and have been exercised by one tester on real hardware (see [Tested Hardware](#tested-hardware)). The 8MicPre can be controlled in DAWs like Logic.
 
 ## Requirements
 
@@ -91,30 +88,38 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 ## Known Issues
 _Intel Macs and earlier versions of macOS are not supported._
 
-_The original Symphony 64 PCIe card (in a Thunderbolt chassis): the driver attaches to it as of 0.8.36; it has had little testing on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified; beta 0.9.3 adds the Mac's volume keys for them._
+## Project Status & Roadmap
 
-_Converters work as in Apogee's software: up to four units on each port, in cable order with the nearest first. Port 1's units take the first channels and port 2's continue after them while 64 channels run. Channels are named per unit (A Line 1, C Line 1). Each unit needs X-Symphony firmware 2.7 or later. Device Settings › Info has a Device Type menu for a DD-16X (or an AD-16X or DA-16X in Advanced Routing) and for a Rosetta 200, and the clock can be internal or external word clock. Output Routing and Input Routing edit the card's routing for converters both ways (any DAW output or mixer to any converter output, any converter input to any DAW input), starting from the default placement; Reset Routing returns both to it, and your routes are remembered per chain of units._
+This software is developed and maintained by a single developer. The project is relatively mature in terms of functionality, although there are [some known remaining feature gaps](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues?q=is%3Aissue+state%3Aclosed+label%3A%22feature+gap%22).
 
-_Stable versions work with one Symphony I/O at a time. The 0.9 betas add two units (64 channels) over ThunderBridge, not yet verified on hardware._
+There are currently no plans to actively expand the feature set. As long as the developer has a working Symphony I/O, the intention is to continue maintaining the software, prioritizing bug fixes, stability, and performance over new features.
 
-_As of 0.8.40, option-card features (optical format, S/PDIF coax, AES, per-card clock choices) follow Apogee's original software. They are verified on an 8x8 AES/OPT and an A16 IP; the AES-only 8x8, 2x6, 16x16 and A16 OP are unverified, and reports are welcome._
+If a particular feature is important to you, please express your interest by commenting on the relevant existing (or new) issue. While this does not guarantee implementation, it helps gauge community interest.
 
-## Project status
-
-Maestro is young software developed by one person. It has been tested on a small number of systems, listed below. (This is separate from the optional Beta update channel.) If your Mac is mission-critical, you may prefer to test on a secondary machine first.
+Thoughtfully developed pull requests are welcome and will be considered, provided they align with the project's goals of stability, performance, and maintainability.
 
 ## Tested Hardware
 
-Verified by me, on macOS 26 and macOS 27:
+The following hardware configurations have been verified by community testers.
 
-- Symphony I/O MK I with an **8×8 Analog + Optical** module and a **16 Analog In / 16 Digital Out** module, over **USB** and **ThunderBridge**
+### Symphony I/O MK I
 
-Reported working by testers (thank you):
+| Module configuration | Connection | macOS |
+|---|---|---|
+| 8×8 Analog + Optical | ThunderBridge | 26 |
+| 8×8 Analog + Optical + 16 Analog In / 16 Digital Out | USB, ThunderBridge | 26, 27 |
+| 16×16 Analog | USB | 26, 27 |
+| 16×16 Analog + ADAT | ThunderBridge | 27 |
+| 16×16 Analog + 8MicPre | USB, ThunderBridge PCIe | 26 |
+| 16 Analog In / 16 Optical Out + 16×16 Analog | ThunderBridge | 2t |
+| 8×8 AES | ThunderBridge PCIe | 26 |
 
-- **8×8 Analog + Optical**, single module, over ThunderBridge, macOS 26
-- **16×16 Analog** + ADAT over ThunderBridge, macOS 27
-- **16×16 Analog** over USB, macOS 26 and 27
-- **16×16 Analog** + **8MicPre** over USB, macOS 26
+### Legacy Converters
+
+- **AD-16X** — ThunderBridge PCIe
+- **DA-16X** — ThunderBridge PCIe
+
+Thank you to everyone who has contributed their time, hardware, and feedback to help verify compatibility.
 
 If your configuration differs, it may work, but it has not been verified.
 
@@ -130,7 +135,7 @@ If you have a Symphony I/O MK I and an Apple Silicon Mac, I’d appreciate heari
 
 **The best way to report a problem is Diagnostics.** Turn it on in **App Settings › Diagnostics & Feedback**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
 
-**Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and new hardware support (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **App Settings › Updates** at any time.
+**Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and new hardware support go out on the Beta channel, and move to Stable once testers confirm they work and time has let them soak. You can seamlessly switch channels in **App Settings › Updates** at any time.
 
 If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new?template=bug_report.yml">file an issue</a> and include:
 
@@ -205,7 +210,7 @@ If you have already deleted the app from Applications, the same script is in thi
 
 ## Going back to Apogee's official software
 
-Unofficial Symphony Maestro and Apogee's own Symphony I/O software can't be installed side by side: their drivers interfere with each other. To use Apogee's official software again:
+Unofficial Symphony Maestro and Apogee's own Symphony I/O software can't be installed side by side: their drivers interfere with each other and the installer for this software aims to prevent it so you don't end up with problems. To use Apogee's official software again:
 
 1. Uninstall Unofficial Symphony Maestro with the command above.
 2. Restart your Mac.
