@@ -5410,8 +5410,9 @@ final class AppState: @unchecked Sendable {
             var scalar: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
             if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &scalar) == noErr {
-                // ASP maps: scalar 0.0 → raw 0 → -64 dB, scalar 1.0 → raw 64 → 0 dB
-                let dB = Double(scalar) * 64.0 - 64.0
+                // The plug-in's control is not linear in dB (libASPL's
+                // pow-2 curve): `USBMacVolume` undoes it exactly.
+                let dB = USBMacVolume.dB(forScalar: scalar)
                 // Whose level the control holds (`macVolumeAdoption`). With
                 // Speaker chosen in Line mode the helper ignored the change:
                 // the Mac's control is put back to the speaker level, so the
@@ -5543,8 +5544,9 @@ final class AppState: @unchecked Sendable {
         guard !hardwareWritesSuspended else { return }
         guard aspDeviceID != kAudioObjectUnknown, transportType != .thunderbolt else { return }
         aspWriteTimestamp = Date()
-        // Convert dB (-64..0) to scalar (0..1): scalar = (dB + 64) / 64
-        let scalar = Float32(max(0, min(1, (dB + 64.0) / 64.0)))
+        // The scalar libASPL turns back into exactly this level (its pow-2
+        // curve; a linear (dB + 64) / 64 was louder: -52 dB played at -36).
+        let scalar = USBMacVolume.scalar(forDB: dB)
         let targetID = aspDeviceID
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
@@ -5555,7 +5557,7 @@ final class AppState: @unchecked Sendable {
         if AudioObjectSetPropertyData(targetID, &addr, 0, nil,
                                       UInt32(MemoryLayout<Float32>.size), &value) == noErr {
             let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
-            rememberMacMonitorWrite(for: output, level: Double(scalar) * 64 - 64)
+            rememberMacMonitorWrite(for: output, level: USBMacVolume.dB(forScalar: scalar))
         }
     }
 
