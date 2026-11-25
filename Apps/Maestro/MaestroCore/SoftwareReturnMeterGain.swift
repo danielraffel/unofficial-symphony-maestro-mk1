@@ -1,14 +1,13 @@
 /// Trims applied to the host-playback peaks that drive the Software Return
 /// meters on ThunderBridge.
 ///
-/// On USB the proxy meters SW Return *after* its own level / pan / mute, so
-/// the strip's meters follow the faders and the pan knob (panning hard right
-/// drops the left meter). On ThunderBridge the card FPGA mixer applies those
-/// trims and the app only sees the host playback before the mixer, so the
-/// meters stayed full regardless of pan. Applying the same trims here makes
-/// both transports read the same.
+/// On ThunderBridge the card FPGA mixer applies the Software Return fader and
+/// mute and the app only sees the host playback before the mixer, so the
+/// meters stayed full whatever the strip said. Applying the same trims here
+/// makes the meters follow the strip.
 ///
-/// The pan law mirrors the card mixer's balance law exactly
+/// Software Return has no pan (0.9.21): callers pass centre. The pan law is
+/// kept because the card mixer still has one; it mirrors that balance law exactly
 /// (`Drivers/Thunderbolt/Source/SymphonyMixerPan.h`): the centre and the
 /// favoured side stay at unity, the opposite side fades linearly in dB to a
 /// -48 dB floor. The pan byte is the same `(pan + 1) * 64` encoding the
@@ -16,6 +15,25 @@
 import Foundation
 
 public enum SoftwareReturnMeterGain {
+
+    /// The Mixer page's "Pre-Mute Metering" setting (on unless turned off).
+    public static let preMuteMeteringKey = "mixerPreMuteMetering"
+
+    /// The card meter word of the left side of a Software Return pair: host
+    /// playback is words 64...127, two per pair. An out-of-range choice reads
+    /// pair 1-2, as the menu shows it.
+    public static func playbackWord(source: Int) -> Int {
+        64 + ((0..<32).contains(source) ? source : 0) * 2
+    }
+
+    /// The meter's gains for a Software Return strip: unity with Pre-Mute
+    /// Metering on (what arrives at the strip), the strip's fader and mute
+    /// with it off (what the strip passes on), the same rule as input strips.
+    public static func meterGains(preMuteMetering: Bool, levelDB: Double,
+                                  isMuted: Bool) -> (left: Double, right: Double) {
+        preMuteMetering ? (1.0, 1.0)
+            : gains(leftLevelDB: levelDB, rightLevelDB: levelDB, pan: 0, isMuted: isMuted)
+    }
 
     /// `side` is the 0...128 attenuation-table index for one output side.
     public static func panAttenuationDB(side: Int) -> Int {

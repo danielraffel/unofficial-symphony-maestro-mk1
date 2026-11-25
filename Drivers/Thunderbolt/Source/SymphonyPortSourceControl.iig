@@ -1,0 +1,47 @@
+// SymphonyPortSourceControl.iig — EXPERIMENT (64ch, stage 2): the port selector.
+//
+// Apogee's original published an input and an output data-source selector with
+// the entries "Port 1: 32ch" and "Port 1-2: 64ch"
+// (og_source/symphonymk1/ext/Symphony64/Driver/Symphony64AudioEngine.cpp:38-93);
+// Audio MIDI Setup shows it as "Source". A two-port build of this driver
+// publishes the same two selectors, one instance of this class each, with the
+// same IDs but named "Symphony I/O: ThunderBridge" and "Symphony I/O:
+// ThunderBridge 64" on purpose: the macOS menu-bar Sound menu shows the
+// selected entry's name in place of the device name (Apple names its built-in
+// sources after the device), and Logic shows only the device name, so the
+// default entry keeps the device's name on screen everywhere
+// (kSymphonyPortSourceName32/64). No one-port build creates one.
+//
+// Like the clock and optical selectors, the user's choice only reaches the
+// driver through HandleChangeSelectedValues, so this subclass forwards it to
+// SymphonyThunderbridge::RequestPortMode. The switch itself happens later, in a
+// device configuration change.
+
+#ifndef SymphonyPortSourceControl_h
+#define SymphonyPortSourceControl_h
+
+#include <AudioDriverKit/IOUserAudioSelectorControl.iig>
+
+class SymphonyThunderbridge;
+
+class LOCALONLY SymphonyPortSourceControl : public IOUserAudioSelectorControl
+{
+public:
+    virtual bool init(IOUserAudioDriver* in_driver,
+                      bool in_is_settable,
+                      IOUserAudioObjectPropertyElement in_control_element,
+                      IOUserAudioObjectPropertyScope in_control_scope,
+                      IOUserAudioClassID in_control_class_id) override;
+
+    virtual void free() override;
+
+    // Core Audio's selection (Audio MIDI Setup, Maestro, any HAL client).
+    virtual kern_return_t HandleChangeSelectedValues(
+        const IOUserAudioSelectorValue* in_control_values,
+        size_t in_num_values) override;
+
+    // Back-pointer for the request, as on the other selector controls.
+    virtual void SetDriver(SymphonyThunderbridge* in_driver);
+};
+
+#endif /* SymphonyPortSourceControl_h */

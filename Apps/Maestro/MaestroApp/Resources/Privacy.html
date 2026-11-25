@@ -12,21 +12,22 @@
 </head>
 <body>
 <h1>Privacy Policy</h1>
-<p><strong>Effective date:</strong> February 2026</p>
+<p><strong>Effective date:</strong> November 17, 2026</p>
 
-<h2>Data Collection</h2>
-<p>Maestro does not collect, transmit, or store any personal data. The app communicates exclusively with locally connected Apogee Symphony I/O hardware over USB.</p>
+<h2>Summary</h2>
+<p>Maestro does not collect personal data on its own, and has no analytics, telemetry or automatic crash reporting. The only data that leaves your Mac is diagnostics you choose to send, and the requests Maestro makes to check for updates.</p>
+
+<h2>Diagnostics You Choose to Send</h2>
+<p>Diagnostics is off unless you turn it on (in App Settings › Diagnostics &amp; Feedback). While it is on, Maestro records what the app, its USB helper and its drivers are doing; details of this Mac, such as its model, macOS version and connected audio devices; and what Apogee or Maestro software is installed. When you turn it off, the file is saved to your Desktop. Before saving, Maestro removes your name, account name, the Mac's name, serial numbers, hardware identifiers and network addresses as best it can.</p>
+<p>Nothing is sent unless you agree by pressing <strong>Agree and Send</strong>, which emails the file, attached, together with anything you chose to type (a description, a link to a GitHub issue, your email address), privately to the developer. It travels through a small Cloudflare service that forwards it by email and does not store it. The email is kept in the developer's inbox, used only to investigate the problem you reported, and never posted publicly or shared. To have a report deleted, write to the address below and include the reference Maestro showed you.</p>
 
 <h2>Network Access</h2>
-<p>Maestro does not make any network connections. All communication is local between the app and your audio hardware.</p>
-
-<h2>Analytics</h2>
-<p>Maestro does not include any analytics, telemetry, or crash reporting frameworks.</p>
+<p>Maestro connects to the internet only to check for and download updates from the project's GitHub repository (you can turn automatic checks off in App Settings › Updates), and to send diagnostics when you press Agree and Send. Everything else stays between the app and your audio hardware.</p>
 
 <h2>Local Storage</h2>
-<p>Maestro stores user preferences (presets, window state) locally on your Mac using standard macOS mechanisms (UserDefaults, ~/Library/Application Support). This data never leaves your computer.</p>
+<p>Maestro stores your preferences (presets, window state, update channel, and the email address you last entered for diagnostics, if any) on your Mac using standard macOS mechanisms (UserDefaults, ~/Library/Application Support). While diagnostics is on, it keeps its recording in ~/Library/Logs/Maestro until the file is saved. None of this leaves your Mac unless you send diagnostics.</p>
 
 <h2>Contact</h2>
-<p>For privacy questions, contact the developer via the project repository.</p>
+<p>For privacy questions, write to <a href="mailto:thegenerouscorp@gmail.com">thegenerouscorp@gmail.com</a> or open an issue in the <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1">project repository</a>.</p>
 </body>
 </html>

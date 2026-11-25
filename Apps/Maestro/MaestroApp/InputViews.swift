@@ -7,6 +7,43 @@ import MaestroCore
 import MaestroDevice
 
 
+enum InputRowCaption: String, CaseIterable {
+    case analogLevel = "Analog Level"
+    case digitalRef = "Digital Ref"
+    case softLimit = "Soft Limit"
+    case levelTrim = "Level Trim"
+
+    static func visible(levels: [AnalogInputLevel], showTrims: Bool) -> [Self] {
+        guard !levels.isEmpty else { return [] }
+        // No row carries a caption: the pills say what they hold, and the
+        // controls' tooltips name them (owner, 2026-11-22: the caption column
+        // looked cluttered).
+        return []
+    }
+}
+
+private enum InputRowAnchors: PreferenceKey {
+    static var defaultValue: [InputRowCaption: Anchor<CGRect>] { [:] }
+
+    static func reduce(value: inout [InputRowCaption: Anchor<CGRect>],
+                       nextValue: () -> [InputRowCaption: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { first, _ in first })
+    }
+}
+
+private extension View {
+    func inputCaptionAnchor(_ row: InputRowCaption, enabled: Bool) -> some View {
+        anchorPreference(key: InputRowAnchors.self, value: .bounds) { enabled ? [row: $0] : [:] }
+    }
+}
+
+private func rowCaption(_ text: String) -> some View {
+    Text(text)
+        .font(.system(size: 8, weight: .semibold))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+}
+
 /// Input Controls view — horizontal channel strips matching legacy Maestro 2 layout.
 /// Ref level and soft limit displayed as stacked labels above the meter (like original).
 /// Toolbar provides Show/Hide Trims and Reset Trims buttons.
@@ -15,6 +52,14 @@ import MaestroDevice
 /// Evidence: `og_source/maestro2/App/Controllers/Input/APAnalogInputController.m`
 struct InputControlsView: View {
     private let appState: AppState
+    @State private var loadedScope: PreferenceViewScope
+    private var canEditPreferences: Bool {
+        loadedScope.isWritable && loadedScope == appState.preferenceViewScope(for: appState.activeUnit)
+    }
+    /// Edits also wait while hardware writes are suspended (sleep, wake
+    /// validation): an edit then would be shown and saved but never sent.
+    /// Kept out of `canEditPreferences`, which also gates loading the page.
+    private var canEditHardware: Bool { canEditPreferences && !appState.hardwareWritesSuspended }
     /// Seed the persisted strip state before the first body evaluation. The async task below
     /// still performs migration, simulation, and the normal board-count refresh; this seed only
     /// prevents an empty rack from appearing while that task is scheduled.
@@ -37,7 +82,33 @@ struct InputControlsView: View {
     /// The gain knob mutates `channels[i].gain` through its binding, so this is
     /// the only way to recover the pre-move value a relative group move needs.
     @State private var appliedGains: [Double] = []
+    @State private var gainDragActive = false
+    @State private var micPreDAWReload = MicPreDAWDeferredReload()
+    @State private var lastFrontPanelGainRevision = 0
     @State private var scrollPosition: ScrollPosition
+    /// The strip whose trim value is being typed into, if any — one at a time.
+    @State private var editingTrim: Int?
+    /// Keyboard focus among the trim readouts; Tab moves it along the strips.
+    @FocusState private var focusedTrim: Int?
+
+    /// What strip `index`'s trim readout needs to take part in Tab order. A
+    /// strip with no trim readout (trims hidden, a Mic/Instrument strip with
+    /// its gain knob, or converters where the setting does nothing) is skipped.
+    private func trimEntry(_ index: Int) -> LevelReadoutEntry<Int> {
+        LevelReadoutEntry(id: index, editing: $editingTrim, focus: $focusedTrim) { current, forward in
+            let strips = Array(0..<min(channels.count, analogInputStripCount))
+            return LevelEntry.neighbour(of: current, in: strips, forward: forward) { strip in
+                InputChannelLogic.hasEditableTrimReadout(
+                    level: AnalogInputLevel(rawValue: channels[strip].inputType) ?? .plus4dBu,
+                    showTrims: appState.showInputTrims,
+                    convertersOnly: appState.converterRoutingSurface)
+                // A Mic or Instrument strip's typed gain takes part too.
+                || InputChannelLogic.hasEditableGainReadout(
+                    level: AnalogInputLevel(rawValue: channels[strip].inputType) ?? .plus4dBu,
+                    convertersOnly: appState.converterRoutingSurface)
+            }
+        }
+    }
     @State private var scrollRestorationPending = true
     @State private var scrollObservationEnabled = false
     @State private var scrollRestorationTarget: CGFloat?
@@ -46,6 +117,7 @@ struct InputControlsView: View {
 
     init(appState: AppState) {
         self.appState = appState
+        _loadedScope = State(initialValue: appState.preferenceViewScope(for: appState.activeUnit))
         let channels = Self.seedChannels(appState)
         _channels = State(initialValue: channels)
         _appliedGains = State(initialValue: channels.map(\.gain))
@@ -56,8 +128,8 @@ struct InputControlsView: View {
     }
 
     private static func seedChannels(_ appState: AppState) -> [InputChannelState] {
-        let count = appState.cardLayout.analogInputStripCount
-        guard let saved: [InputChannelState] = appState.channelStateStore.load(ChannelStateStore.inputKey),
+        let count = appState.unitCardLayout.analogInputStripCount
+        guard let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey),
               !saved.isEmpty else {
             return (0..<count).map { _ in InputChannelState() }
         }
@@ -68,12 +140,14 @@ struct InputControlsView: View {
     /// The installed cards' layout — every count on this page comes from here.
     /// See `CardLayout`: the `*PairsPerBoard` counts are the XLink bus slice and
     /// report 8 pairs for an 8MicPre, which has no converters at all.
-    private var layout: CardLayout { appState.cardLayout }
+    private var layout: CardLayout { appState.unitCardLayout }
 
     /// User-editable insert names, edited in Device Settings and shared across
     /// every channel -- see `InsertLabels`. Stored as a plain dictionary so it
     /// lives in UserDefaults without a custom coder.
-    @AppStorage("micPreInsertLabels") private var insertLabelsJSON: String = "{}"
+    private var insertLabelsJSON: String {
+        appState.insertLabelsJSON(for: appState.activeUnit)
+    }
 
     private var insertLabels: InsertLabels {
         guard let data = insertLabelsJSON.data(using: .utf8),
@@ -87,7 +161,7 @@ struct InputControlsView: View {
     /// legacy daemon, `SymphonyIO.cpp:933-948`) but either is accepted here.
     private var micPreInstalled: Bool {
         InputChannelLogic.micPreIsUsable(
-            primary: appState.primaryBoardType, secondary: appState.secondaryBoardType)
+            primary: appState.unitPrimaryBoardType, secondary: appState.unitSecondaryBoardType)
     }
 
     /// Analog INPUT channels contributed by the card the MicPre delegates onto --
@@ -100,8 +174,8 @@ struct InputControlsView: View {
     /// preamps at all, and offering Mic/Instrument there would put eight preamp
     /// strips in front of zero analog inputs.
     private var micPreHostAnalogInputs: Int {
-        let primary = appState.primaryBoardType
-        let secondary = appState.secondaryBoardType
+        let primary = appState.unitPrimaryBoardType
+        let secondary = appState.unitSecondaryBoardType
         let host = primary == .micPre8 ? secondary : primary
         return host.analogInputChannels
     }
@@ -122,13 +196,23 @@ struct InputControlsView: View {
     /// Numbering is continuous across the whole device, not per-card.
     /// Evidence: `SymphonyIOBoard_MicPre8ch.cpp:914-961`, `SymphonyIO_Stream.cpp:653-655`.
     private var inputChannelLabels: [String] {
-        (1...max(analogInputStripCount, 1)).map { number in
-            // A pair the S/PDIF coax replaces carries the coax, and is named so.
-            if let coax = layout.coaxNameForAnalogInputStrip(number - 1) { return coax }
-            let raw = number - 1 < channels.count ? channels[number - 1].inputType : 1
-            return InputChannelLogic.channelLabel(number: number, rawLevel: raw)
+        let named = appState.inputNamingLayout(for: appState.activeUnit, channels: channels)
+        return (0..<analogInputStripCount).map { index in
+            if let name = named.converterChannelName(host: index, isInput: true) { return name }
+            let board = index < named.slot1.analogInputChannels ? 0 : 1
+            let local = board == 0 ? index : index - named.slot1.analogInputChannels
+            return named.analogChannelName(board: board, channelOnCard: local, isInput: true)
         }
     }
+
+    private var visibleRowCaptions: [InputRowCaption] {
+        let levels = channels.prefix(analogInputStripCount).map {
+            AnalogInputLevel(rawValue: $0.inputType) ?? .plus4dBu
+        }
+        return InputRowCaption.visible(levels: levels, showTrims: appState.showInputTrims)
+    }
+
+    private let rowCaptionWidth: CGFloat = 68
 
     /// Board-aware digital input stereo pairs (AES / ADAT meter strips).
     private var digitalInputPairs: [CardLayout.DigitalPair] { layout.digitalInputPairs }
@@ -150,6 +234,7 @@ struct InputControlsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                 // Reset Trims is NOT gated on trims being visible — legacy only
                 // hides the button when no channel supports trim at all
@@ -159,7 +244,8 @@ struct InputControlsView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Reset Trims — sets every analog input trim to 0.0 dB and nothing else")
+                .maestroHelp("Reset Trims — sets every analog input trim to 0.0 dB and nothing else")
+                .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                 // Two scopes, matching SymphonyIOResetRequestType, and the same
                 // shape as the Output page. The default offered first preserves
@@ -175,8 +261,9 @@ struct InputControlsView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Restore the input channel settings to the factory defaults. "
+                .maestroHelp("Restore the input channel settings to the factory defaults. "
                       + "Routing is not touched.")
+                .symphonyOnly(appState.converterRoutingSurface, help: ConverterMonitorText.channelSetting)
 
                 Spacer()
             }
@@ -215,8 +302,13 @@ struct InputControlsView: View {
             // rack scroll vertically instead of imposing its intrinsic height
             // on the NavigationSplitView and displacing the sidebar bottom.
             GeometryReader { viewport in
+            ScrollViewReader { scrollProxy in
             ScrollView(.horizontal) {
+                let captions = visibleRowCaptions
                 HStack(alignment: .top, spacing: 0) {
+                    if !captions.isEmpty {
+                        Color.clear.frame(width: rowCaptionWidth, height: 0)
+                    }
                     ForEach(Array(0..<min(channels.count, analogInputStripCount)), id: \.self) { i in
                         if i > 0 {
                             Divider()
@@ -229,9 +321,44 @@ struct InputControlsView: View {
                             appState: appState,
                             meterIndex: i,
                             showTrims: appState.showInputTrims,
+                            providesCaptionAnchors: i == 0,
+                            phantomObserved: appState.phantomObserved(unit: appState.activeUnit, channel: i),
                             onPhantomChange: { enabled in
-                                Task { await writeChannelProperty(i, .phantom, value: .bool(enabled)) }
+                                let target = appState.unitWriteTarget
+                                channels[i].recordPhantomRequest(enabled, identity: nil,
+                                                                 boardSlot: 1, channel: i)
+                                let requested = channels[i]
                                 saveChannelStates()
+                                Task {
+                                    let accepted = await writeChannelProperty(i, .phantom, value: .bool(enabled), on: target.device)
+                                    let identity = target.channelStore.identity
+                                    if accepted { appState.clearPhantomObserved(unit: target.unit, channel: i) }
+                                    // An ON made before the identity is known keeps showing
+                                    // and gets its provenance when the identity arrives.
+                                    if accepted, requested.phantom, identity == nil {
+                                        appState.notePendingPhantomProvenance(unit: target.unit, channel: i)
+                                    } else {
+                                        appState.dropPendingPhantomProvenance(unit: target.unit, channel: i)
+                                    }
+                                    var saved: [InputChannelState] = target.channelStore.load(ChannelStateStore.inputKey) ?? []
+                                    if i < saved.count {
+                                        saved[i].finishPhantomRequest(requested, accepted: accepted,
+                                            identity: identity, boardSlot: 1, channel: i)
+                                        target.channelStore.save(saved, for: ChannelStateStore.inputKey)
+                                    }
+                                    if appState.activeUnit == target.unit, appState.isCurrent(target), i < channels.count {
+                                        channels[i].finishPhantomRequest(requested, accepted: accepted,
+                                            identity: identity, boardSlot: 1, channel: i)
+                                        // The strips were reloaded during the write (a DAW edit):
+                                        // the reloaded copy predates this ON. Show it as saved.
+                                        if accepted, requested.phantom, i < saved.count, saved[i].phantom,
+                                           !channels[i].phantom,
+                                           channels[i].inputType == AnalogInputLevel.mic.rawValue {
+                                            channels[i].phantom = true
+                                            channels[i].phantomProvenance = saved[i].phantomProvenance
+                                        }
+                                    }
+                                }
                             },
                             onPhaseChange: { enabled in
                                 Task { await writeChannelProperty(i, .phaseReverse, value: .bool(enabled)) }
@@ -247,6 +374,10 @@ struct InputControlsView: View {
                             onGainChange: { gain in
                                 applyGainChange(i, to: gain)
                             },
+                            onGainDragChange: { dragging in
+                                gainDragActive = dragging
+                                if !dragging, micPreDAWReload.dragEnded() { initializeChannels() }
+                            },
                             onInputTypeChange: { _ in
                                 applyInputTypeChange(i)
                             },
@@ -259,6 +390,7 @@ struct InputControlsView: View {
                                 Task { await writeChannelProperty(i, .analogIOType,
                                     value: .uint32(analogIOTypeWithTrim(i))) }
                             },
+                            trimEntry: trimEntry(i),
                             showZoneColoring: appState.showMeterZoneColoring,
                             boardType: cardForStrip(i),
                             channelNumber: i + 1,
@@ -280,6 +412,7 @@ struct InputControlsView: View {
                         .background(GeometryReader { geo in
                             Color.clear.preference(key: AnalogStripHeightKey.self, value: geo.size.height)
                         })
+                        .id(TrimStripID(strip: i))
                     }
 
                     // DIGITAL divider + SPDIF + ADAT — inline after analog strips
@@ -331,11 +464,7 @@ struct InputControlsView: View {
                         Divider()
                             .opacity(0.4)
 
-                        // Digital stereo pair meters — board-aware count and labels.
-                        // The meter arrays are fixed at 24 entries (4 metered
-                        // pairs per board); a DA16 pair supplies 8 digital input
-                        // pairs per board, so the index MUST be checked or the
-                        // page traps on open.
+                        // Digital input pair meters in board order.
                         let digPairs = digitalInputPairs
                         ForEach(Array(digPairs.enumerated()), id: \.offset) { index, digPair in
                             if index > 0 {
@@ -344,17 +473,36 @@ struct InputControlsView: View {
                             }
                             ADATStereoPairView(
                                 label: digPair.label,
-                                leftLevel: Self.meterLevel(appState.digitalInputMeterLevels, digPair.meterIndex),
-                                rightLevel: Self.meterLevel(appState.digitalInputMeterLevels, digPair.meterIndex, offset: 1),
-                                leftPeak: Self.meterLevel(appState.digitalInputPeakHold, digPair.meterIndex),
-                                rightPeak: Self.meterLevel(appState.digitalInputPeakHold, digPair.meterIndex, offset: 1),
+                                leftLevel: Self.meterLevel(appState.unitDigitalInputMeterLevels, digPair.meterIndex),
+                                rightLevel: Self.meterLevel(appState.unitDigitalInputMeterLevels, digPair.meterIndex, offset: 1),
+                                leftPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex),
+                                rightPeak: Self.meterLevel(appState.unitDigitalInputPeakHold, digPair.meterIndex, offset: 1),
                                 matchHeight: analogStripHeight > 0 ? analogStripHeight : nil,
-                                showZoneColoring: appState.showMeterZoneColoring
+                                alignInputMeter: true,
+                                showZoneColoring: appState.showMeterZoneColoring,
+                                leftOver: appState.inputMeterIsOver(digPair.meterIndex, digital: true),
+                                rightOver: appState.inputMeterIsOver(digPair.meterIndex, digital: true, offset: 1),
+                                onClear: appState.clearMeters
                             )
                         }
                     }
                 }
+                .overlayPreferenceValue(InputRowAnchors.self) { anchors in
+                    GeometryReader { geometry in
+                        ForEach(captions, id: \.self) { caption in
+                            if let anchor = anchors[caption] {
+                                let bounds = geometry[anchor]
+                                rowCaption(caption.rawValue)
+                                    .frame(width: rowCaptionWidth - 6, alignment: .trailing)
+                                    .position(x: rowCaptionWidth / 2,
+                                              y: caption == .levelTrim ? bounds.minY + 8 : bounds.midY)
+                            }
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
                 .fixedSize(horizontal: false, vertical: true) // dividers match strip height, not page height
+                .frame(maxHeight: .infinity, alignment: .top) // keep digital columns anchored like Output
                 .frame(minHeight: max(0, viewport.size.height - 16), alignment: .top)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 8)
@@ -390,6 +538,12 @@ struct InputControlsView: View {
                     appState.setControlTabScrollOffset(0, for: .input)
                 }
             }
+            // Tab can move editing to a strip that is scrolled out of view;
+            // bring it in by the smallest amount (no move when already visible).
+            .onChange(of: editingTrim) { _, strip in
+                if let strip { scrollProxy.scrollTo(TrimStripID(strip: strip)) }
+            }
+            }
             }
 
             if let error = errorMessage {
@@ -403,6 +557,8 @@ struct InputControlsView: View {
                 .padding(.bottom, 8)
             }
         }
+        .disabled(!canEditHardware)
+        .allowsHitTesting(canEditHardware)
         .navigationTitle("Input")
         .onAppear {
             scrollRestorationPending = true
@@ -431,6 +587,24 @@ struct InputControlsView: View {
             initializeChannels()
             restoreSessionScrollPosition()
         }
+        .onChange(of: appState.phantomObservationRevision) { _, _ in
+            let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey) ?? []
+            for index in channels.indices where index < saved.count {
+                // Observation is an external OFF authority. It may clear a
+                // visible ON, but must never create one from a stale saved bit.
+                if !saved[index].phantom {
+                    channels[index].phantom = false
+                    channels[index].phantomProvenance = nil
+                }
+            }
+        }
+        .onChange(of: appState.micPreObservationRevision) { _, _ in
+            // A DAW edit landed; a knob the user is dragging here wins until release.
+            if micPreDAWReload.request(dragging: gainDragActive) { initializeChannels() }
+        }
+        .onChange(of: appState.frontPanelMicPreUpdate) { _, update in
+            applyFrontPanelGain(update)
+        }
     }
 
     /// Channel content is populated asynchronously after the view is created.
@@ -457,8 +631,9 @@ struct InputControlsView: View {
     }
 
     private func initializeChannels() {
+        guard canEditPreferences else { return }
         // Keyed by the installed card pair — see `ChannelStateStore`.
-        if let saved: [InputChannelState] = appState.channelStateStore.load(ChannelStateStore.inputKey),
+        if let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey),
            !saved.isEmpty {
             let n = analogInputStripCount
             if saved.count >= n {
@@ -467,11 +642,12 @@ struct InputControlsView: View {
                 channels = saved + (saved.count..<n).map { _ in InputChannelState() }
             }
             // One-time migration: old default was inputType=0 (Variable); new default is 1 (+4 dBu).
-            if !UserDefaults.standard.bool(forKey: "inputTypeDefaultMigrated") {
+            if !appState.hardwareWritesSuspended,
+               !UserDefaults.standard.bool(forKey: "inputTypeDefaultMigrated") {
                 for i in channels.indices where channels[i].inputType == 0 {
                     channels[i].inputType = 1  // +4 dBu
                 }
-                saveChannelStates()
+                appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
                 UserDefaults.standard.set(true, forKey: "inputTypeDefaultMigrated")
                 print("[Maestro] initializeChannels: migrated inputType defaults from Variable to +4 dBu")
             }
@@ -480,14 +656,63 @@ struct InputControlsView: View {
             channels = (0..<analogInputStripCount).map { _ in InputChannelState() }
             print("[Maestro] initializeChannels: no saved state — using defaults (\(analogInputStripCount) strips)")
         }
+        let identity = appState.unitChannelStateStore.identity
+        for index in channels.indices {
+            channels[index] = channels[index].recalled(identity: identity, boardSlot: 1, channel: index,
+                keepsUnverifiedOn: appState.pendingPhantomOn(unit: appState.activeUnit, channel: index))
+        }
         applySimulatedAnalogLevels()
         syncAppliedGains()
         didInitializeChannels = true
+        // Readings from before the page opened are already in the saved state
+        // (AppState applies them); only follow new ones from here on.
+        lastFrontPanelGainRevision = appState.frontPanelMicPreUpdate?.revision ?? 0
         print("[Maestro] initializeChannels: skipping daemon queries (unsupported on Symphony IO MKI)")
     }
 
     private func saveChannelStates() {
-        appState.channelStateStore.save(channels, for: ChannelStateStore.inputKey)
+        guard canEditPreferences else { return }
+        // An edit that slipped in as writes were suspended: the unit did not
+        // take it, so neither save nor show it.
+        guard !appState.hardwareWritesSuspended else { return restoreSavedChannels() }
+        appState.unitChannelStateStore.save(channels, for: ChannelStateStore.inputKey)
+        appState.markSetupEdited(.inputChannelSettings)
+    }
+
+    /// Put the strips back to the saved state (a binding has already changed
+    /// the local copy by the time a handler runs).
+    private func restoreSavedChannels() {
+        let saved: [InputChannelState] = appState.unitChannelStateStore.load(ChannelStateStore.inputKey) ?? []
+        let identity = appState.unitChannelStateStore.identity
+        for index in channels.indices {
+            let state = index < saved.count ? saved[index] : InputChannelState()
+            channels[index] = state.recalled(identity: identity, boardSlot: 1, channel: index,
+                keepsUnverifiedOn: appState.pendingPhantomOn(unit: appState.activeUnit, channel: index))
+        }
+        applySimulatedAnalogLevels()
+        syncAppliedGains()
+    }
+
+    /// Reflect a gain selected on the physical front panel in the saved strip
+    /// state. This deliberately updates state only; writing the same property
+    /// back would create an encoder feedback loop. Evidence: the original
+    /// parameter loop calls `UpdateMicPreGain` for MicPre1…8
+    /// (`og_source/maestrolink/Software/SymphonyIO.cpp:6688-6718`).
+    private func applyFrontPanelGain(_ update: AppState.FrontPanelMicPreUpdate?) {
+        guard let update, update.revision > lastFrontPanelGainRevision,
+              appState.activeUnit == update.unit, update.channel < channels.count else { return }
+        // While the user drags a gain knob here, their value wins: the reading
+        // is dropped, not replayed when the drag ends.
+        if gainDragActive { lastFrontPanelGainRevision = update.revision; return }
+        let index = update.channel
+        let level = AnalogInputLevel(rawValue: channels[index].inputType) ?? .plus4dBu
+        guard level == .mic || level == .instrument else { return }
+        // Group members move by the same limited offset; nothing is written to
+        // the hardware (the firmware groups itself, SymphonyIOBoard_MicPre8ch.cpp:293-299).
+        InputChannelLogic.applyGainChange(&channels, channel: index, to: update.gain)
+        syncAppliedGains()
+        // AppState already persisted the observation and marked real gain changes as edits.
+        lastFrontPanelGainRevision = update.revision
     }
 
     /// Debug: force analog levels from `-MaestroSimulateAnalogLevels` so a Mic or
@@ -516,16 +741,28 @@ struct InputControlsView: View {
         print("[Maestro] CARD SIMULATION: preset analog levels applied to \(presets.compactMap { $0 }.count) channel(s)")
     }
 
-    private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async {
-        guard let device = appState.device else { return }
+    @discardableResult
+    private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue) async -> Bool {
+        await writeChannelProperty(index, selector, value: value, on: appState.unitDevice)
+    }
+
+    /// The same, to a unit taken before an earlier await.
+    @discardableResult
+    private func writeChannelProperty(_ index: Int, _ selector: AudioPropertySelector, value: PropertyValue,
+                                      on device: (any DeviceConnection)?) async -> Bool {
+        guard canEditHardware else { return false }
+        guard let device else { return false }
         do {
             let element = UInt32(index)
             try await device.setProperty(
                 PropertyAddress(selector: selector, scope: .input, element: element),
                 value: value
             )
+            return true
         } catch {
             print("[Maestro] Input channel write \(selector) ch\(index) failed: \(error)")
+            errorMessage = "Could not update input channel \(index + 1)."
+            return false
         }
     }
 
@@ -549,104 +786,71 @@ struct InputControlsView: View {
     /// never read), so `ApplySettingsToHardware` re-pushed +48 V onto a channel now
     /// set to Instrument or Line. We clear it instead.
     private func applyInputTypeChange(_ index: Int) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         let level = AnalogInputLevel(rawValue: channels[index].inputType) ?? .plus4dBu
-        let before = channels[index]
-        let clearedPhantom = InputChannelLogic.applyLevelChange(&channels[index], to: level)
-
-        // Soft limit choices are card-dependent; collapse an illegal carry-over.
-        channels[index].softLimit = InputChannelLogic.coerceSoftLimit(
-            channels[index].softLimit, card: cardForStrip(index))
-
-        // applyLevelChange also drops the channel out of its gain group and, when
-        // the new level is not Mic/Instrument, frees the insert and its return.
-        // Push whichever of those actually moved.
-        let clearedGroup = before.group != channels[index].group
-        let clearedInsert = before.insert != channels[index].insert
-        let clearedInsertReturn = before.insertReturn != channels[index].insertReturn
-
-        let packed = analogIOTypeWithTrim(index)
-        let gain = UInt32(max(0, channels[index].gain.rounded()))
-        let sendsGain = InputChannelLogic.usesGainKnob(level: level)
-        let insertsAfterLevelChange = insertAssignmentWrites()
-        Task {
-            if clearedPhantom {
-                await writeChannelProperty(index, .phantom, value: .bool(false))
+        InputChannelLogic.applyLevelChange(&channels[index], to: level)
+        var changed = [index]
+        if Self.optionKeyIsDown {
+            changed += InputChannelLogic.applyLevelToAll(&channels, to: level,
+                micPreInstalled: micPreInstalled, hostAnalogInputChannels: micPreHostAnalogInputs,
+                excluding: index)
+        }
+        let target = appState.unitWriteTarget
+        let layout = appState.activeUnit == .b ? appState.unitBLayout : appState.cardLayout
+        var writes: [ThunderboltPreset.Write] = []
+        for channel in changed {
+            channels[channel].softLimit = InputChannelLogic.coerceSoftLimit(channels[channel].softLimit,
+                                                                           card: cardForStrip(channel))
+            let element = UInt32(channel)
+            func put(_ selector: AudioPropertySelector, _ value: PropertyValue, scope: PropertyScope = .global) {
+                writes.append(.property(PropertyAddress(selector: selector, scope: scope, element: element), value))
             }
-            await writeChannelProperty(index, .analogIOType, value: .uint32(packed))
-            if sendsGain {
-                // Re-assert gain: Mic (0-85) and Instrument (0-65) are separate
-                // hardware gain stages, so the value must be re-sent after a swap.
-                // TODO(instrument-gain): Instrument gain is opcode 0xC4
-                // (`SymphonyIOCommand.instrumentGain`), but no property selector maps
-                // to it yet — `.micGain` (0xC3) is all we can address today.
-                await writeChannelProperty(index, .micGain, value: .uint32(gain))
+            // OFF first when leaving Mic; a type failure must not leave power on.
+            // Safety departure: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:455-526.
+            if micPreInstalled && channel < 8 && level != .mic {
+                put(.phantom, .bool(false))
+                appState.clearPhantomObserved(unit: appState.activeUnit, channel: channel)
+                appState.dropPendingPhantomProvenance(unit: appState.activeUnit, channel: channel)
             }
-            if clearedGroup {
-                await writeChannelProperty(index, .groupID,
-                                          value: .uint32(InputChannelLogic.groupOff))
-            }
-            if clearedInsert {
-                // 0xC8 is addressed by INSERT and rebuilt whole — releasing this
-                // channel's insert means writing mask 0 to it, which only the full
-                // table does (`SymphonyIOBoard_MicPre8ch.cpp:1790-1810`).
-                await pushInsertAssignments(insertsAfterLevelChange)
-            }
-            if clearedInsertReturn {
-                await writeChannelProperty(index, .insertReturnEnable, value: .bool(false))
+            put(.analogIOType, .uint32(analogIOTypeWithTrim(channel)), scope: .input)
+            if micPreInstalled && channel < 8 {
+                put(.insertReturnEnable, .bool(channels[channel].insertReturn))
+                for assignment in insertAssignmentWrites() {
+                    writes.append(.property(PropertyAddress(selector: .insertID, element: UInt32(assignment.insert)),
+                                            .uint32(UInt32(assignment.mask))))
+                }
+                put(.micGain, .uint32(UInt32(max(0, min(85, channels[channel].micGain.rounded())))))
+                put(.instrumentGain, .uint32(UInt32(max(0, min(65, channels[channel].instrumentGain.rounded())))))
+                put(.groupID, .uint32(channels[channel].group))
             }
         }
+        let sequence = writes
+        let hasPreampWrites = micPreInstalled && changed.contains(where: { $0 < 8 })
         syncAppliedGains()
-
-        // Option-click applies the level to every other channel that offers it.
-        // Evidence: APInputTabRowViewController.m:258-271.
-        if Self.optionKeyIsDown {
-            let snapshot = channels
-            let others = InputChannelLogic.applyLevelToAll(
-                &channels, to: level, micPreInstalled: micPreInstalled,
-                hostAnalogInputChannels: micPreHostAnalogInputs, excluding: index)
-            for i in others {
-                // Each of these ran the same transition, so push the same set of
-                // dependent writes the touched channel gets.
-                let otherPacked = analogIOTypeWithTrim(i)
-                let droppedPhantom = snapshot[i].phantom && !channels[i].phantom
-                let droppedGroup = snapshot[i].group != channels[i].group
-                let droppedReturn = snapshot[i].insertReturn != channels[i].insertReturn
-                let sendsOtherGain = InputChannelLogic.usesGainKnob(level: level)
-                let otherGain = UInt32(max(0, channels[i].gain.rounded()))
-                Task {
-                    if droppedPhantom {
-                        await writeChannelProperty(i, .phantom, value: .bool(false))
-                    }
-                    await writeChannelProperty(i, .analogIOType, value: .uint32(otherPacked))
-                    if sendsOtherGain {
-                        await writeChannelProperty(i, .micGain, value: .uint32(otherGain))
-                    }
-                    if droppedGroup {
-                        await writeChannelProperty(i, .groupID,
-                                                  value: .uint32(InputChannelLogic.groupOff))
-                    }
-                    if droppedReturn {
-                        await writeChannelProperty(i, .insertReturnEnable, value: .bool(false))
+        saveChannelStates()
+        Task {
+            guard let device = target.device else { return }
+            do {
+                if hasPreampWrites {
+                    guard let layout else { throw DeviceConnectionError.notConnected }
+                    try await MicPreSettingsReplay.apply(sequence, layout: layout, device: device)
+                } else {
+                    // Preserve the existing non-MicPre/converter property path.
+                    for write in sequence {
+                        if case .property(let address, let value) = write {
+                            try await device.setProperty(address, value: value)
+                        }
                     }
                 }
-            }
-            // One rebuild covers every insert the option-click released. It is
-            // deliberately outside the per-channel loop: `0xC8` is addressed by
-            // INSERT, so N channels dropping inserts is still ONE eight-write
-            // table, and it must be built from the final state of `channels`.
-            if others.contains(where: { snapshot[$0].insert != channels[$0].insert }) {
-                let rebuilt = insertAssignmentWrites()
-                Task { await pushInsertAssignments(rebuilt) }
-            }
-            syncAppliedGains()
+            } catch { errorMessage = "Could not update input channel \(index + 1)." }
         }
-        saveChannelStates()
     }
 
     /// Digital Ref change, with legacy's option-click "apply to every channel".
     /// Evidence: APInputTabRowViewController.m:275-283.
     private func applyDigitalRefChange(_ index: Int, level: UInt32) {
+        guard canEditPreferences else { return }
         Task { await writeChannelProperty(index, .digitalRefLevel, value: .uint32(level)) }
         if Self.optionKeyIsDown {
             for i in InputChannelLogic.applyDigitalRefToAll(&channels, to: level, excluding: index) {
@@ -661,6 +865,7 @@ struct InputControlsView: View {
     /// legacy bug 9466's fix, which is not the same as `coerceSoftLimit`.
     /// Evidence: APInputTabRowViewController.m:287-330.
     private func applySoftLimitChange(_ index: Int, mode: UInt32) {
+        guard canEditPreferences else { return }
         Task { await writeChannelProperty(index, .softLimit, value: .uint32(mode)) }
         if Self.optionKeyIsDown {
             let cards = (0..<channels.count).map { cardForStrip($0) }
@@ -688,6 +893,7 @@ struct InputControlsView: View {
     /// group gains down to firmware ... The device is also calculating grouped
     /// gain changes").
     private func applyGainChange(_ index: Int, to requested: Double) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         if index < appliedGains.count {
             channels[index].gain = appliedGains[index]
@@ -696,10 +902,15 @@ struct InputControlsView: View {
         syncAppliedGains()
         for i in result.hardwareWrites {
             let value = UInt32(max(0, channels[i].gain.rounded()))
-            // TODO(instrument-gain): Instrument channels need 0xC4, not 0xC3.
-            Task { await writeChannelProperty(i, .micGain, value: .uint32(value)) }
+            let level = AnalogInputLevel(rawValue: channels[i].inputType) ?? .plus4dBu
+            let device = appState.unitDevice
+            Task { await writeChannelProperty(i, InputChannelLogic.gainSelector(for: level), value: .uint32(value), on: device) }
         }
         saveChannelStates()
+        if result.changed.contains(index) {
+            appState.showLevelOverlay(source: .micPre(channel: index, state: channels[index]),
+                                      level: channels[index].gain)
+        }
     }
 
     /// Group assignment. Joining a group does NOT equalise gains — members keep
@@ -710,6 +921,7 @@ struct InputControlsView: View {
     /// Writes `0xC7` for the touched channel only; the firmware derives the rest
     /// of the group from there.
     private func applyGroupChange(_ index: Int, to group: UInt32) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         channels[index].group = group
         Task { await writeChannelProperty(index, .groupID, value: .uint32(group)) }
@@ -719,6 +931,7 @@ struct InputControlsView: View {
     /// Insert assignment. The insert return follows it automatically, so both
     /// are pushed. Evidence: SymphonyIOBoard_MicPre8ch.cpp:608-617.
     private func applyInsertChange(_ index: Int, to insert: UInt32) {
+        guard canEditPreferences else { return }
         guard index < channels.count else { return }
         let returnChanged = InputChannelLogic.applyInsertChange(&channels, channel: index, to: insert)
         let returnEnabled = channels[index].insertReturn
@@ -747,7 +960,12 @@ struct InputControlsView: View {
     /// Push one full insert table. `element` is the INSERT index here — see the
     /// `.insertID` case in `SymphonyIOPropertyMapper`.
     private func pushInsertAssignments(_ assignments: [(insert: Int, mask: UInt8)]) async {
-        guard let device = appState.device else { return }
+        await pushInsertAssignments(assignments, on: appState.unitDevice)
+    }
+
+    private func pushInsertAssignments(_ assignments: [(insert: Int, mask: UInt8)],
+                                       on device: (any DeviceConnection)?) async {
+        guard let device else { return }
         for (insert, mask) in assignments {
             do {
                 try await device.setProperty(
@@ -789,6 +1007,7 @@ struct InputControlsView: View {
     /// (`SymphonyIOBoard_MicPre8ch.cpp:686-696`), so it can only be trusted once
     /// the level has been established.
     private func resetInputDefaults(scope: SymphonyIOResetScope) async {
+        guard canEditHardware else { return }
         let result = InputChannelLogic.resetToDefaults(
             &channels,
             includingCalibration: scope.resetsTrims,
@@ -808,9 +1027,10 @@ struct InputControlsView: View {
                 //    insert rather than channel, so it is one table written once,
                 //    after this loop.
                 await writeChannelProperty(i, .insertReturnEnable, value: .bool(false))
-                // 3. Gain. TODO(instrument-gain): 0xC4 has no selector yet, but
-                //    the default is 0 for both stages, so one write covers it.
+                // 3. Restore both independent MicPre gain stages.
                 await writeChannelProperty(i, .micGain,
+                                           value: .uint32(UInt32(InputResetDefaults.gain)))
+                await writeChannelProperty(i, .instrumentGain,
                                            value: .uint32(UInt32(InputResetDefaults.gain)))
                 // 4. Group.
                 await writeChannelProperty(i, .groupID, value: .uint32(InputResetDefaults.group))
@@ -854,7 +1074,7 @@ struct InputControlsView: View {
     // MARK: - SPDIF Replace Helpers
 
     /// Meter level at `index + offset`, or silence when the payload has no word
-    /// for that pair. The digital meter arrays are fixed at 24 entries.
+    /// for that pair.
     private static func meterLevel(_ levels: [Double], _ index: Int?, offset: Int = 0) -> Double {
         guard let index, index + offset < levels.count else { return -60 }
         return levels[index + offset]
@@ -890,8 +1110,11 @@ struct InputControlsView: View {
                     let optVal = option.id
                     return (option.name, {
                         value.wrappedValue = optVal
+                        // The unit as it is now: unit B's answer must not
+                        // land in unit A's names or saved settings.
+                        let target = appState.unitWriteTarget
                         Task {
-                            guard let device = appState.device else { return }
+                            guard let device = target.device else { return }
                             do {
                                 try await device.setProperty(
                                     PropertyAddress(selector: selector, scope: .input, element: element),
@@ -900,8 +1123,10 @@ struct InputControlsView: View {
                                 // The replaced pair is renamed "SPDIF Cx" in routing
                                 // and mixer labels, as the daemon renamed it.
                                 if element < 2 {
-                                    appState.channelNaming.spdifReplace[Int(element)] = optVal
-                                    appState.rememberDigitalSetting(.spdifReplaceID, slot: Int(element), value: optVal)
+                                    appState.setSPDIFReplaceNaming(slot: Int(element), value: optVal, for: target)
+                                    appState.markSetupEdited(.inputChannelSettings)
+                                    appState.saveDigitalSetting(.spdifReplaceID, slot: Int(element),
+                                                                value: optVal, for: target)
                                 }
                             } catch {
                                 print("[Maestro] SPDIF Replace write failed: \(error)")
@@ -915,12 +1140,13 @@ struct InputControlsView: View {
     }
 
     private func loadDigitalSettings() async {
-        guard let device = appState.device else { return }
+        let target = appState.unitWriteTarget
+        guard let device = target.device else { return }
         do {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input))
             if let u = val.asUInt32 {
                 spdifReplace1 = u
-                if u <= 8 { appState.channelNaming.spdifReplace[0] = u }
+                appState.setSPDIFReplaceNaming(slot: 0, value: u, for: target)
             }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace1: \(error)")
@@ -929,7 +1155,7 @@ struct InputControlsView: View {
             let val = try await device.getProperty(PropertyAddress(selector: .spdifReplaceID, scope: .input, element: 1))
             if let u = val.asUInt32 {
                 spdifReplace2 = u
-                if u <= 8 { appState.channelNaming.spdifReplace[1] = u }
+                appState.setSPDIFReplaceNaming(slot: 1, value: u, for: target)
             }
         } catch {
             print("[Maestro] loadDigitalSettings spdifReplace2: \(error)")
@@ -947,7 +1173,21 @@ struct ADATStereoPairView: View {
     var rightPeak: Double = -60
     /// When set, the strip matches this total height — Spacer fills gap between label and meters.
     var matchHeight: CGFloat? = nil
+    /// Input analog strips have three fixed setting rows and a 16-point
+    /// breathing row before their meter. Reuse that top lane so digital
+    /// meters share both meter edges with the analog columns.
+    var alignInputMeter: Bool = false
+    /// Output analog strips have two fixed setting rows (analog and digital
+    /// reference) before the same 16-point breathing row. Pushing the meters
+    /// to the bottom only lined up while Show Trims was off: the trim
+    /// readout row under the analog meters moved their bottom edge up
+    /// (owner, 2026-11-24). A fixed top lane lines them up either way.
+    var alignOutputMeter: Bool = false
     var showZoneColoring: Bool = false
+
+    var leftOver = false
+    var rightOver = false
+    var onClear: (() -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -968,11 +1208,19 @@ struct ADATStereoPairView: View {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color.primary.opacity(0.08))
                 )
-                .help(label)
+                .maestroHelp(label)
 
             // Spacer fills the gap where analog strips have pills — pushes meters to bottom
             if matchHeight != nil {
-                Spacer(minLength: 0)
+                if alignInputMeter {
+                    // 3 rows of 18 pt + 2 gaps of 3 pt, + 16 breathing, + 3 gap.
+                    Spacer().frame(height: 79)
+                } else if alignOutputMeter {
+                    // 2 rows of 18 pt + 1 gap of 3 pt, + 16 breathing, + 3 gap.
+                    Spacer().frame(height: 58)
+                } else {
+                    Spacer(minLength: 0)
+                }
             }
 
             HStack(alignment: .top, spacing: 1) {
@@ -984,7 +1232,9 @@ struct ADATStereoPairView: View {
                     height: 200,
                     width: 10,
                     rangeDB: 48,
-                    showZoneColoring: showZoneColoring
+                    showZoneColoring: showZoneColoring,
+                    isOver: leftOver,
+                    onClear: onClear
                 )
                 // Center scale between meters — labels centered for readability
                 adatCenterScale
@@ -996,7 +1246,9 @@ struct ADATStereoPairView: View {
                     height: 200,
                     width: 10,
                     rangeDB: 48,
-                    showZoneColoring: showZoneColoring
+                    showZoneColoring: showZoneColoring,
+                    isOver: rightOver,
+                    onClear: onClear
                 )
             }
         }
@@ -1028,7 +1280,8 @@ struct ADATStereoPairView: View {
     private var adatCenterScale: some View {
         let meterHeight: CGFloat = 200
         let scale = MeterScale(rangeDB: 48)
-        let segmentHeight = (meterHeight - 23) / 24
+        let indicatorSpace = LEDMeterView.indicatorSpace(shown: onClear != nil)
+        let segmentHeight = (meterHeight - indicatorSpace - 23) / 24
         let majorMarks: [Int] = [0, 6, 12, 18, 24, 30, 36, 42, 48]
         let minorMarks: [Int] = [3, 9]  // perceptual density near 0 dB
         // Extra height for top/bottom labels (half text height above 0 dB, below -48 dB)
@@ -1036,7 +1289,7 @@ struct ADATStereoPairView: View {
 
         Canvas { context, size in
             // Scale positions inset by labelPad so extreme labels aren't clipped
-            let topY: CGFloat = labelPad + segmentHeight / 2
+            let topY: CGFloat = labelPad + indicatorSpace + segmentHeight / 2
             let bottomY: CGFloat = size.height - labelPad - segmentHeight / 2
 
             // Major marks — labeled with ticks on both sides (perceptual spacing)
@@ -1140,7 +1393,7 @@ private struct DisablablePillMenu: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help(toolTip)
+        .maestroHelp(toolTip)
     }
 
     private func showNativeMenu() {
@@ -1184,15 +1437,32 @@ struct InputChannelStripView: View {
     var meterLevel: Double = -60
     var meterPeakHold: Double = -60
     var showTrims: Bool = false
+    var providesCaptionAnchors = false
+    /// dext 153: a DAW switched this channel's 48V on (display only; see
+    /// `PhantomDisplay`). The button shows ON when either side has it on.
+    var phantomObserved = false
     let onPhantomChange: (Bool) -> Void
     let onPhaseChange: (Bool) -> Void
     let onHPFChange: (Bool) -> Void
     var onSoftLimitChange: ((UInt32) -> Void)?
     /// Mic/Instrument preamp gain in dB — written to 'AEmg' (0xC3).
     var onGainChange: ((Double) -> Void)?
+    /// True while the user drags this strip's gain knob.
+    var onGainDragChange: ((Bool) -> Void)?
     var onInputTypeChange: ((UInt32) -> Void)?
     var onDigitalRefChange: ((UInt32) -> Void)?
     var onTrimChange: ((Double) -> Void)?
+
+    private var trimBinding: Binding<Double> {
+        Binding(get: { channel.trim }, set: { trim in
+            guard channel.trim != trim else { return }
+            channel.trim = trim
+            onTrimChange?(trim)
+        })
+    }
+    /// Ties this strip's trim readout into the page's one-at-a-time editing
+    /// and Tab order.
+    let trimEntry: LevelReadoutEntry<Int>
     var showZoneColoring: Bool = false
     /// The I/O card type for this channel's board — determines the soft limit list.
     var boardType: IOCardType = .none
@@ -1225,6 +1495,9 @@ struct InputChannelStripView: View {
     var onInsertReturnChange: ((Bool) -> Void)?
     @Environment(\.colorScheme) private var colorScheme
 
+    /// Converters on port 1: the Symphony I/O channel settings do nothing.
+    private var convertersOnly: Bool { appState?.converterRoutingSurface ?? false }
+
     /// The channel's current analog reference level (wire enum).
     private var level: AnalogInputLevel {
         AnalogInputLevel(rawValue: channel.inputType) ?? .plus4dBu
@@ -1232,12 +1505,12 @@ struct InputChannelStripView: View {
 
     private var resolvedMeterLevel: Double {
         guard let appState, let meterIndex else { return meterLevel }
-        return meterIndex < appState.inputMeterLevels.count ? appState.inputMeterLevels[meterIndex] : -60
+        return meterIndex < appState.unitInputMeterLevels.count ? appState.unitInputMeterLevels[meterIndex] : -60
     }
 
     private var resolvedMeterPeakHold: Double {
         guard let appState, let meterIndex else { return meterPeakHold }
-        return meterIndex < appState.inputPeakHold.count ? appState.inputPeakHold[meterIndex] : -60
+        return meterIndex < appState.unitInputPeakHold.count ? appState.unitInputPeakHold[meterIndex] : -60
     }
 
     /// Soft limit options for the card that owns this channel.
@@ -1273,9 +1546,16 @@ struct InputChannelStripView: View {
     /// +48 V is interlocked to Mic — the daemon silently refuses it at any other
     /// level, so the button is disabled rather than allowed to lie.
     private var phantomEnabled: Bool { InputChannelLogic.phantomAllowed(level: level) }
+    private var phantomShownOn: Bool { channel.phantom || phantomObserved }
 
     /// Whether the strip shows a gain knob (Mic/Instrument) instead of a trim fader.
     private var usesGainKnob: Bool { InputChannelLogic.usesGainKnob(level: level) }
+
+    /// Trim fader range and step at this channel's level; the trim readout
+    /// accepts exactly the same values.
+    private var trimSpec: (range: ClosedRange<Double>, step: Double) {
+        InputChannelLogic.trimRange(for: level) ?? (-2.0...2.0, 0.1)
+    }
 
     /// Whether anything sits beside the meter (gain knob or trim fader).
     /// The gain knob is always present on preamp channels — it is the channel's
@@ -1308,20 +1588,19 @@ struct InputChannelStripView: View {
                 if let onInputTypeChange {
                     PillMenu(
                         text: inputTypeName(channel.inputType),
-                        toolTip: "Analog Ref — Sets the analog reference level (+4 dBu for pro gear, -10 dBV for consumer)",
+                        toolTip: "Analog Level — Sets the analog reference level (+4 dBu for pro gear, -10 dBV for consumer)",
                         options: inputTypeLabels.map { val, name in
                             // The parent runs the full transition (clamp gain/trim,
                             // clear phantom when leaving Mic, push to hardware).
                             (name, { channel.inputType = val; onInputTypeChange(val) })
                         }
                     )
+                    .inputCaptionAnchor(.analogLevel, enabled: providesCaptionAnchors)
                 }
 
-                // Digital reference level — conditional on the analog level:
-                //   Variable        → hidden (daemon reports the property not implemented)
-                //   Mic/Instrument  → shown but disabled (legacy greys it, never hides it)
-                //   +4 dBu/-10 dBV  → shown and enabled
-                // Evidence: AnalogIn_SymphonyIO_Stream.cpp:768-787, APAnalogInputController.m:854
+                // Digital Ref is available at fixed line levels. The other
+                // levels reserve the lane so the rows stay aligned.
+                // Evidence: APAnalogInputController.m:349-354.
                 let digitalRefState = InputChannelLogic.digitalRefVisibility(for: level)
                 if digitalRefState != .hidden {
                     PillMenu(
@@ -1338,10 +1617,12 @@ struct InputChannelStripView: View {
                     )
                     .disabled(digitalRefState == .disabled)
                     .opacity(digitalRefState == .disabled ? 0.45 : 1)
+                    .inputCaptionAnchor(.digitalRef, enabled: providesCaptionAnchors)
                 } else {
                     // Keep the row height stable so neighbouring strips (and the
                     // ADAT columns that match their height) stay aligned.
                     Color.clear.frame(height: 18)
+                        .inputCaptionAnchor(.digitalRef, enabled: providesCaptionAnchors)
                 }
 
                 // Soft limiter
@@ -1355,8 +1636,11 @@ struct InputChannelStripView: View {
                             (name, { channel.softLimit = val; onSoftLimitChange(val) })
                         }
                     )
+                    .inputCaptionAnchor(.softLimit, enabled: providesCaptionAnchors)
                 }
             }
+            // Analog Ref, Digital Ref and Soft Limit are Symphony I/O settings.
+            .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
 
             // Constant breathing room so toggling trims doesn't shift vertically
             Spacer().frame(height: 16)
@@ -1381,7 +1665,8 @@ struct InputChannelStripView: View {
                             size: 40,
                             defaultValue: 0,
                             externalReadout: true,  // drawn just below, inside this column
-                            onUserChange: { onGainChange?($0) }
+                            onUserChange: { onGainChange?($0) },
+                            onDragStateChange: { onGainDragChange?($0) }
                         )
                         // The Level Trim value belongs to the knob, so it sits
                         // directly beneath it inside the knob's own column —
@@ -1389,25 +1674,24 @@ struct InputChannelStripView: View {
                         // in the readout row below the meter: there it would sit
                         // unlabelled next to the meter-level number, and nothing
                         // would say which was which.
-                        Text(String(format: "%.0f", channel.gain))
-                            .font(.system(size: 9, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 2)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                            .help("Level Trim — gain of the mic pre, currently \(String(format: "%.0f", channel.gain)) dB (\(level == .instrument ? "0–65 dB at Instrument" : "0–85 dB at Mic")).")
+                        EditableLevelReadout(
+                            value: Binding(
+                                get: { InputChannelLogic.clampGain(channel.gain, level: level) },
+                                set: { onGainChange?(InputChannelLogic.clampGain($0, level: level)) }),
+                            range: InputChannelLogic.gainRange(for: level) ?? 0...85,
+                            step: 1,
+                            entry: trimEntry)
+                            .maestroHelp("Gain — type the mic pre gain in dB")
                         Spacer(minLength: 0)
                     }
                     .frame(width: 46, height: 200, alignment: .top)
-                    .help("Level Trim — adjusts the gain of the mic pre. "
+                    .maestroHelp("Level Trim — adjusts the gain of the mic pre. "
                           + (level == .instrument ? "0–65 dB at Instrument level." : "0–85 dB at Mic level.")
                           + " When the channel is in a Group, the whole group moves with it and existing offsets between members are preserved.")
                     .transition(.opacity)
                 } else if showTrims {
-                    let trimSpec = InputChannelLogic.trimRange(for: level) ?? (-2.0...2.0, 0.1)
                     FaderView(
-                        value: $channel.trim,
+                        value: trimBinding,
                         range: trimSpec.range,
                         step: trimSpec.step,
                         defaultValue: 0,  // 0.0 dB is the default at every level
@@ -1417,11 +1701,9 @@ struct InputChannelStripView: View {
                         thumbHeight: 20,
                         thumbWidth: 18
                     )
-                    .help("Trim — precisely trims the A/D conversion level once the reference levels have been chosen.")
+                    .maestroHelp("Trim — precisely trims the A/D conversion level once the reference levels have been chosen.")
+                    .symphonyOnly(convertersOnly, help: ConverterMonitorText.channelSetting)
                     .transition(.opacity)
-                    .onChange(of: channel.trim) { _, newTrim in
-                        onTrimChange?(newTrim)
-                    }
                 }
 
                 // A/D converter meter: -48 to 0 dBFS — scale always on left
@@ -1434,11 +1716,14 @@ struct InputChannelStripView: View {
                     showScale: true,
                     scaleOnLeft: true,
                     rangeDB: 48,
-                    showZoneColoring: showZoneColoring
+                    showZoneColoring: showZoneColoring,
+                    isOver: appState?.inputMeterIsOver(meterIndex) == true,
+                    onClear: appState.map { state in { state.clearMeters() } }
                 )
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .offset(x: hasSideControl ? 0 : -8) // center the group visually within the strip
+            .inputCaptionAnchor(.levelTrim, enabled: providesCaptionAnchors)
             .animation(.easeInOut(duration: 0.15), value: showTrims)
 
             // Trim readout + Meter Level readout — a LINE-strip row (User's Guide
@@ -1449,31 +1734,38 @@ struct InputChannelStripView: View {
             // the whole rack.
             if hasSideControl && !usesGainKnob {
                 HStack(spacing: 3) {
-                    Text(String(format: "%.1f", channel.trim))
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 2)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                        .help("Trim — calibration trim, currently \(String(format: "%.1f", channel.trim)) dB.")
-                    Text(String(format: "%.0f", resolvedMeterLevel))
+                    // The readout and fader use the same edit binding and trim range.
+                    EditableLevelReadout(
+                        value: trimBinding,
+                        range: trimSpec.range,
+                        step: trimSpec.step,
+                        entry: trimEntry,
+                        height: nil)
+                        .disabled(convertersOnly)
+                        .maestroHelp("Trim — calibration trim, currently \(String(format: "%.1f", channel.trim)) dB. Click to type a value; Tab moves to the next channel.")
+                    // Tenths of a dB, as the original: this is the number read
+                    // while calibrating a trim against a tone (User's Guide
+                    // p. 55 item 8). Both boxes share the row equally and the
+                    // digits are monospaced, so the width never changes.
+                    Text(String(format: "%.1f", resolvedMeterLevel))
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 2)
                         .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
-                        .help("Meter Level: \(String(format: "%.1f", resolvedMeterLevel)) dBFS")
+                        .maestroHelp("Meter Level: \(String(format: "%.1f", resolvedMeterLevel)) dBFS")
                 }
                 .offset(x: 0)
                 .padding(.top, 4)
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.15), value: showTrims)
-            } else {
+            } else if rackHasMicPre {
                 // Reserve the readout row so every strip's Group / Insert /
                 // Ø-48-HPF rows sit at the same height across the rack, even
-                // with trims hidden on the line strips.
+                // with trims hidden on the line strips. Without an 8MicPre
+                // there are no such rows, and the strip ends under its meter,
+                // as on the Output page (owner, 2026-11-22).
                 Color.clear.frame(height: Self.readoutRowHeight)
             }
 
@@ -1510,14 +1802,6 @@ struct InputChannelStripView: View {
     private static let captionRowHeight: CGFloat = 16
     private static let pillRowHeight: CGFloat = 18
     private static let buttonRowHeight: CGFloat = 16
-
-    /// Small row caption, standing in for the original's left-edge row labels.
-    private func rowCaption(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-    }
 
     /// **Group** — caption above, value below, exactly as the manual's strip has
     /// it. Grouped channels move by a shared RELATIVE offset; their existing gain
@@ -1574,7 +1858,7 @@ struct InputChannelStripView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 2))
                         }
                         .buttonStyle(.plain)
-                        .help("Insert In — enables the Insert Return. The Insert Send is always active once an insert is selected, so the send can be used as an analog direct out while In is not engaged.")
+                        .maestroHelp("Insert In — enables the Insert Return. The Insert Send is always active once an insert is selected, so the send can be used as an analog direct out while In is not engaged.")
                     } else {
                         Color.clear.frame(width: 20, height: 14)
                     }
@@ -1619,25 +1903,27 @@ struct InputChannelStripView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 .buttonStyle(.plain)
-                .help("Polarity (Ø) — inverts the polarity of the input signal.")
+                .maestroHelp("Polarity (Ø) — inverts the polarity of the input signal.")
                 .accessibilityLabel("Polarity invert")
 
                 Button {
                     guard phantomEnabled else { return }
-                    channel.phantom.toggle()
-                    onPhantomChange(channel.phantom)
+                    // From what the button shows: a click on a DAW-lit 48V turns it off.
+                    let next = !phantomShownOn
+                    channel.phantom = next
+                    onPhantomChange(next)
                 } label: {
                     Text("48V")
                         .font(.system(size: 7, weight: .bold))
-                        .foregroundStyle(channel.phantom ? .yellow : .secondary)
+                        .foregroundStyle(phantomShownOn ? .yellow : .secondary)
                         .frame(width: 24, height: Self.buttonRowHeight)
-                        .background(channel.phantom ? Color.yellow.opacity(0.2) : Color.clear)
+                        .background(phantomShownOn ? Color.yellow.opacity(0.2) : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
                 .buttonStyle(.plain)
                 .disabled(!phantomEnabled)
                 .opacity(phantomEnabled ? 1 : 0.4)
-                .help(phantomEnabled
+                .maestroHelp(phantomEnabled
                       ? "48V — enables 48 volt phantom power on this Analog IN channel. Condenser mics require it."
                       : "48V — Mic level only. The hardware refuses phantom power on a channel set to any other level, so this is unavailable until Analog Ref is Mic.")
 
@@ -1655,7 +1941,7 @@ struct InputChannelStripView: View {
                 .buttonStyle(.plain)
                 // Fixed corner frequency — the firmware never exposes it; the
                 // Symphony I/O user guide specifies 80 Hz.
-                .help("High Pass — engages a fixed \(InputChannelLogic.highPassFrequencyHz) Hz high-pass filter on the input.")
+                .maestroHelp("High Pass — engages a fixed \(InputChannelLogic.highPassFrequencyHz) Hz high-pass filter on the input.")
             }
             .frame(height: Self.buttonRowHeight)
         } else if rackHasMicPre {

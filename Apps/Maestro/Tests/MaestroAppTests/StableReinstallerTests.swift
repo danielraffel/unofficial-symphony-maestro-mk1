@@ -57,6 +57,21 @@ struct StableReinstallerTests {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int) ?? -1
     }
 
+    @Test("Going back to stable is refused while Apogee's kernel driver is loaded: nothing downloaded or opened")
+    func refusedWithApogeeDriverLoaded() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = Recorder()
+        var env = environment(root: root, recorder: recorder)
+        env.apogeeKernelDriverLoaded = { true }
+        let reinstaller = StableReinstaller(publicKey: publicKey, environment: env)
+        await reinstaller.run(item: try item())
+        #expect(reinstaller.phase == .failed(StableReinstaller.apogeeDriverLoadedReason))
+        #expect(recorder.opened.isEmpty && recorder.assessed.isEmpty)
+        #expect(reinstaller.downloadedFile == nil)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+    }
+
     @Test func goodPackageIsHandedToInstaller() async throws {
         let root = tempRoot()
         defer { try? FileManager.default.removeItem(at: root) }

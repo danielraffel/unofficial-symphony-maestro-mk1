@@ -14,8 +14,8 @@ struct DeviceSettingsStoreTests {
     /// read from or left in the real preferences.
     private static func withDefaults<T>(_ body: (UserDefaults) async throws -> T) async rethrows -> T {
         let suite = "maestro.tests.settings.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = ScratchUserDefaults(suiteName: suite)!
+        defer { defaults.cleanup() }
         return try await body(defaults)
     }
 

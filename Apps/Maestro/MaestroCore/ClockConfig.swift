@@ -118,7 +118,40 @@ public enum ClockSourceMenu {
         return (source, UInt8(high - 1))
     }
 
-    /// Over USB: Internal only (see `SystemSetupView.clockSourceChoices`).
+    /// Whether the Symphony I/O counts as locked, as the original decided it
+    /// outside the USB audio mode (`SymphonyIO.cpp:6588-6598`, `IsLocked`
+    /// :1553-1568): on Internal clock always; on any other source, the unit's
+    /// own "external clock locked" flag from its parameter-updates reading
+    /// (`SymphonyIOParameterUpdates.m_cIsExternalClockLocked`).
+    public static func isLocked(sourceKey: UInt32, externalClockLocked: Bool) -> Bool {
+        guard let decoded = decode(sourceKey) else { return externalClockLocked }
+        return UInt32(decoded.source) == internalClock ? true : externalClockLocked
+    }
+
+    /// The short name the status bar shows for a reported clock source key.
+    /// Nil when the key is not a source (0 from a transport that cannot say).
+    public static func statusName(for key: UInt32) -> String? {
+        guard let decoded = decode(key) else { return nil }
+        switch UInt32(decoded.source) {
+        case internalClock: return "Internal"
+        case wordClock: return "Word Clock"
+        case loopSync: return "Loop Sync"
+        case ioBoard1: return "I/O Board 1"
+        case ioBoard2: return "I/O Board 2"
+        default: return nil
+        }
+    }
+
+    /// The older converters (AD-16X, DA-16X, DD-16X, Rosetta) on a
+    /// ThunderBridge: their own clock or word clock, nothing else, as the
+    /// original offered for them. Sent to the driver as the converter config's
+    /// clock bit, never as a Symphony I/O ClockMode.
+    public static let converters: [ClockSourceChoice] = [
+        ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
+        ClockSourceChoice(id: wordClock, name: "External", source: 2, boardInput: nil),
+    ]
+
+    /// Over USB: Internal only (see `DeviceSettingsView.clockSourceChoices`).
     public static let usb: [ClockSourceChoice] = [
         ClockSourceChoice(id: internalClock, name: "Internal", source: 1, boardInput: nil),
     ]
@@ -171,6 +204,26 @@ public enum ClockSourceMenu {
                                 sampleRate: sampleRate, opticalIsSPDIF: spdif(1))
         return choices
     }
+
+    /// Unit A's rows while a second Symphony I/O (unit B, port 2) follows it:
+    /// no Loop Sync. The driver keeps unit A's Loop Sync output on for unit B
+    /// and refuses Loop Sync as unit A's own source then.
+    public static func unitAChoices(_ choices: [ClockSourceChoice], unitBFollows: Bool) -> [ClockSourceChoice] {
+        unitBFollows ? choices.filter { $0.source != UInt8(loopSync) } : choices
+    }
+
+    /// Whether a picker key may be sent to unit A.
+    public static func unitAMaySend(_ key: UInt32, unitBFollows: Bool) -> Bool {
+        !(unitBFollows && decode(key)?.source == UInt8(loopSync))
+    }
+
+    /// Shown under unit A's clock picker while unit B follows it.
+    public static let loopSyncUnavailableNote =
+        "Unit A can't take Loop Sync while unit B follows it."
+
+    /// Shown when the driver refuses a clock choice while unit B follows unit A.
+    public static let refusedWithUnitBNote =
+        "The driver did not accept that clock source while unit B follows unit A through Loop Sync."
 
     /// The board input byte an optical clock row sends. The DA16's optical
     /// receiver has its own index table (`SymphonyIOVendorSpecific.h:903-912`).

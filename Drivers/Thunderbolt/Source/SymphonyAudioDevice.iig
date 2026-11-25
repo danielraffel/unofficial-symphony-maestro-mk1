@@ -8,12 +8,22 @@
 
 #include <AudioDriverKit/IOUserAudioDevice.iig>
 
+class SymphonyThunderbridge;
+
 class LOCALONLY SymphonyAudioDevice : public IOUserAudioDevice
 {
 public:
     virtual kern_return_t PerformDeviceConfigurationChange(uint64_t in_change_action,
                                                             OSObject* in_change_info) override;
     virtual kern_return_t HandleChangeSampleRate(double in_sample_rate) override;
+    // EXPERIMENT (64ch, stage 2): set once by a two-port driver before the
+    // device is published; retained, released in free().
+    // With it set, every configuration change first lets the driver apply a
+    // requested port selection (SymphonyThunderbridge::PerformPortModeChange).
+    // Since dext 143 every build sets it: the same hook then applies a
+    // requested VBus size (SymphonyThunderbridge::PerformVBusChange).
+    virtual void SetPortModeDriver(SymphonyThunderbridge* in_driver);
+    virtual void free() override;
 };
 
 #endif /* SymphonyAudioDevice_h */

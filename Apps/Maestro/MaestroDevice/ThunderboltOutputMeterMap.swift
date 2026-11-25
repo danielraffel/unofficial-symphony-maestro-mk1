@@ -1,0 +1,90 @@
+import Foundation
+import MaestroCore
+
+/// Which ThunderBridge meter word each output strip reads.
+///
+/// The card's meter snapshot is indexed by TDM slot: word 64 + n is host
+/// playback channel n (`PCI_OUT n`) and words 128-131 are the two card mixers'
+/// outputs. It has no word for a hardware output as such. An output plays the
+/// slot its card route selects (`ThunderboltCardRouting`), so its meter is the
+/// word of that slot: the software output, or the mixer, routed to it in
+/// Output Routing, and silence when the output is disabled.
+///
+/// Until 0.9.21 the app read word 64 + i for analog output strip i, which is
+/// right only while output i plays software output i and slot 1 has no digital
+/// outputs before slot 2's analog ones, and it never set the digital output
+/// meters (AES, ADAT/SMUX, S/PDIF) at all on ThunderBridge and PCIe.
+public enum ThunderboltOutputMeterMap {
+    /// The layout of `AppState.digitalOutputMeterLevels`: both boards’ digital channels in slot order.
+    public static let digitalSlots = CardLayout.digitalMeterSlots
+
+    public struct Words: Sendable, Equatable {
+        /// One entry per analog output strip: slot 1's analog outputs, then
+        /// slot 2's, the order of `AppState.outputMeterLevels`.
+        public let analog: [Int?]
+        public let digital: [Int?]
+
+        public init(analog: [Int?], digital: [Int?]) {
+            self.analog = analog
+            self.digital = digital
+        }
+    }
+
+    /// The meter word of the slot that card channel `channel` (board 0:
+    /// 0-15, board 1: 16-31) plays, from the app's output table (destination
+    /// byte to source byte). Nil when the output is disabled or has no route.
+    /// `order`: the unit's channel order, which decides the XLink channel
+    /// that plays on the output (nil: card by card, by position).
+    public static func word(channel: Int, table: [UInt8: UInt8], unitBActive: Bool, unitB: Bool = false,
+                            order: ThunderboltUnitChannelOrder? = nil) -> Int? {
+        let order = order ?? ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: nil)
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        guard channel >= 0, channel < perBoard * 2 else { return nil }
+        let base = channel < perBoard ? SymphonyIORoutingAddress.ioBoard0Base : SymphonyIORoutingAddress.ioBoard1Base
+        let destination = base + UInt8(channel % perBoard)
+        guard let source = table[destination] else { return nil }
+        let route = unitB
+            ? ThunderboltCardRouting.unitBRoute(destination: destination,
+                                                slot: source == SymphonyIORoutingAddress.none ? nil : ThunderboltCardRouting.slot(forSource: source, unitBActive: unitBActive),
+                                                slot1: order.slot1, slot2: order.slot2, order: order.order)
+            : ThunderboltCardRouting.route(destination: destination, source: source,
+                                            unitBActive: unitBActive,
+                                            slot1: order.slot1, slot2: order.slot2, order: order.order)
+        guard let route,
+              route.enabled else { return nil }
+        return Int(route.slot)
+    }
+
+    /// Meter words for one card layout. On a board the analog outputs come
+    /// first, then the digital ones (`SymphonyIO.cpp:7041-7100`). Nil for an
+    /// unknown layout or an empty table: the caller keeps strip i on software
+    /// output i.
+    public static func words(layout: CardLayout, table: [UInt8: UInt8], unitBActive: Bool, unitB: Bool = false,
+                             order: ThunderboltUnitChannelOrder? = nil) -> Words? {
+        guard layout.isKnown, !table.isEmpty else { return nil }
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        var analog: [Int?] = []
+        var digital = [Int?](repeating: nil, count: digitalSlots)
+        let meteredPerBoard = CardLayout.digitalMeterChannelsPerBoard
+        for (board, card) in layout.slots.enumerated() {
+            for channel in 0..<card.analogOutputChannels {
+                analog.append(word(channel: board * perBoard + channel, table: table, unitBActive: unitBActive, unitB: unitB, order: order))
+            }
+            for k in 0..<min(meteredPerBoard, card.digitalOutputChannels) {
+                digital[board * meteredPerBoard + k] = word(
+                    channel: board * perBoard + card.analogOutputChannels + k,
+                    table: table, unitBActive: unitBActive, unitB: unitB, order: order)
+            }
+        }
+        return Words(analog: analog, digital: digital)
+    }
+
+    /// Strip levels from a level per meter word; a strip with no word is silent.
+    public static func levels(_ words: [Int?], count: Int? = nil, level: (Int) -> Double) -> [Double] {
+        (0..<(count ?? words.count)).map { i in
+            guard i < words.count, let word = words[i] else { return -60.0 }
+            return level(word)
+        }
+    }
+
+}

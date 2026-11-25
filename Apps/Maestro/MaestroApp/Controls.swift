@@ -76,7 +76,7 @@ struct PillMenu: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help(toolTip)
+        .maestroHelp(toolTip)
     }
 
     private func showNativeMenu() {
@@ -257,10 +257,14 @@ struct RotaryKnobView: View {
     /// Use this instead of onChange(of: value) to avoid double-writes when the binding
     /// is updated externally (e.g. volume keys changing speakerLevel during a drag).
     var onUserChange: ((Double) -> Void)? = nil
+    var onUserChangeWithOld: ((Double, Double) -> Void)? = nil
+    /// Reports whether the user is actively dragging this control.
+    var onDragStateChange: ((Bool) -> Void)? = nil
     /// Called with delta when Option+Drag (batch pan mode). Parent applies to all targets.
     var onBatchDrag: ((Double) -> Void)? = nil
     /// Called once at drag start when Option is held (for snapshotting start pans).
     var onBatchDragStart: (() -> Void)? = nil
+    var onBatchDragEnd: (() -> Void)? = nil
     /// Called on Option+click. When set, overrides the default reset-to-defaultValue behavior.
     var onOptionClick: (() -> Void)? = nil
 
@@ -370,6 +374,7 @@ struct RotaryKnobView: View {
                     .onChanged { gesture in
                         if !isDragging {
                             isDragging = true
+                            onDragStateChange?(true)
                             dragStartValue = value
                             // Snapshot batch start pans if Option held
                             if NSEvent.modifierFlags.contains(.option) {
@@ -380,21 +385,29 @@ struct RotaryKnobView: View {
                         let delta = -gesture.translation.height * sensitivity
                         let span = range.upperBound - range.lowerBound
                         let newValue = dragStartValue + (delta / 150) * span
+                        let oldValue = value
                         value = (newValue / step).rounded() * step
                         value = min(max(value, range.lowerBound), range.upperBound)
                         onUserChange?(value)
+                        onUserChangeWithOld?(oldValue, value)
                         // Option+Drag: forward delta to batch handler
                         if NSEvent.modifierFlags.contains(.option), let batch = onBatchDrag {
                             batch(value - dragStartValue)
                         }
                     }
-                    .onEnded { _ in isDragging = false }
+                    .onEnded { _ in
+                        isDragging = false
+                        onDragStateChange?(false)
+                        onBatchDragEnd?()
+                    }
             )
             .onTapGesture(count: 2) {
                 // Double-tap knob to reset to default
                 if let def = defaultValue {
+                    let oldValue = value
                     value = def
                     onUserChange?(value)
+                    onUserChangeWithOld?(oldValue, value)
                 }
             }
             .simultaneousGesture(
@@ -518,8 +531,11 @@ struct FaderView: View {
     var onBatchDrag: ((Double) -> Void)? = nil
     /// Called once at drag start when Option is held (for snapshotting start levels).
     var onBatchDragStart: (() -> Void)? = nil
+    var onBatchDragEnd: (() -> Void)? = nil
     /// Called for user-driven changes, including Option-click reset.
     var onUserChange: ((Double) -> Void)? = nil
+    /// Called for user-driven changes with the value before the gesture.
+    var onUserChangeWithOld: ((Double, Double) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -531,10 +547,6 @@ struct FaderView: View {
     @State private var editText = ""
     @State private var dragStartValue: Double = 0
     @State private var dragStartY: CGFloat = 0
-    /// The value on the other side of the last completed fader move. A
-    /// double-click on the fader swaps to it, so a second double-click can
-    /// toggle back without introducing a separate undo control.
-    @State private var previousValue: Double?
 
     private let trackWidth: CGFloat = 5
     var thumbHeight: CGFloat = 24
@@ -552,6 +564,11 @@ struct FaderView: View {
     /// Extra travel beyond the normal range so the thumb center reaches
     /// the very top and bottom of the adjacent LED meter.
     private let overTravel: CGFloat = 11.5
+
+    private func reportUserChange(oldValue: Double, newValue: Double) {
+        onUserChange?(newValue)
+        onUserChangeWithOld?(oldValue, newValue)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -656,8 +673,12 @@ struct FaderView: View {
                             .onChanged { gesture in
                                 if !isDragging {
                                     isDragging = true
-                                    dragStartValue = value
-                                    previousValue = value
+                                    // A whole-step fader holding a fraction
+                                    // (a level saved before it stepped in
+                                    // whole dB) starts from the step below,
+                                    // the level that is playing, so a click
+                                    // without movement changes nothing heard.
+                                    dragStartValue = step >= 1 ? (value / step).rounded(.down) * step : value
                                     dragStartY = gesture.startLocation.y
                                     // Snapshot batch start levels if Option held
                                     if NSEvent.modifierFlags.contains(.option) {
@@ -668,30 +689,47 @@ struct FaderView: View {
                                 let deltaY = (dragStartY - gesture.location.y) * sensitivity
                                 let span = range.upperBound - range.lowerBound
                                 let newValue = dragStartValue + (deltaY / Double(usableHeight)) * span
-                                value = (newValue / step).rounded() * step
-                                value = min(max(value, range.lowerBound), range.upperBound)
-                                onUserChange?(value)
+                                let steppedValue = (newValue / step).rounded() * step
+                                let oldValue = value
+                                value = min(max(steppedValue, range.lowerBound), range.upperBound)
+                                reportUserChange(oldValue: oldValue, newValue: value)
                                 // Option+Drag: forward delta to batch handler
                                 if NSEvent.modifierFlags.contains(.option), let batch = onBatchDrag {
                                     batch(value - dragStartValue)
                                 }
                             }
-                            .onEnded { _ in isDragging = false }
+                            .onEnded { gesture in
+                                isDragging = false
+                                onBatchDragEnd?()
+                                // A double-click that did not move: reset, read
+                                // from the mouse event itself (the drag above
+                                // starts at distance 0 and can swallow taps).
+                                if abs(gesture.translation.height) < 2,
+                                   (NSApp.currentEvent?.clickCount ?? 0) >= 2 {
+                                    let oldValue = value
+                                    value = defaultValue
+                                    reportUserChange(oldValue: oldValue, newValue: value)
+                                }
+                            }
                     )
-                    .onTapGesture(count: 2) {
-                        guard let previousValue else { return }
-                        let currentValue = value
-                        value = previousValue
-                        self.previousValue = currentValue
-                        onUserChange?(value)
-                    }
+                    // Apogee's APFaderCell reset value is zero by default
+                    // (og_source/maestro2/App/Views/APFaderCell.m:35-36, 180-184).
+                    // Simultaneous: the drag above starts at distance 0 and
+                    // otherwise takes every click, so a double-click never fired.
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded {
+                            let oldValue = value
+                            value = defaultValue
+                            reportUserChange(oldValue: oldValue, newValue: value)
+                        }
+                    )
                     .simultaneousGesture(
                         TapGesture()
                             .modifiers(.option)
                             .onEnded { _ in
-                                previousValue = value
+                                let oldValue = value
                                 value = defaultValue
-                                onUserChange?(defaultValue)
+                                reportUserChange(oldValue: oldValue, newValue: defaultValue)
                             }
                     )
                 }
@@ -819,8 +857,18 @@ struct LEDMeterView: View {
     /// Vertical offset for the label text.
     var labelOffsetY: CGFloat = 0
 
+    var isOver: Bool = false
+    var onClear: (() -> Void)?
+
+    private static let overHeight: CGFloat = 7   // about one segment, so it reads as one more light
+    private static let segmentGap: CGFloat = 1
+    /// Clear space between the Over LED and the top meter segment, so the LED
+    /// reads as its own light, as in Apogee's meters.
+    private static let overGap: CGFloat = 4
+    static func indicatorSpace(shown: Bool) -> CGFloat { shown ? overHeight + overGap : 0 }
+    private var indicatorSpace: CGFloat { Self.indicatorSpace(shown: onClear != nil) }
+
     private let segmentCount = 24
-    private let segmentGap: CGFloat = 1
     private var scale: MeterScale { MeterScale(rangeDB: rangeDB, segmentCount: segmentCount) }
 
     /// Major dB marks (labeled) for the scale, computed from rangeDB.
@@ -851,8 +899,25 @@ struct LEDMeterView: View {
 
                 // LED segments
                 if width > 0 {
-                    let peakSegment = scale.peakSegment(forDB: peak)
-                    VStack(spacing: segmentGap) {
+                    let peakSegment = peak > -60 ? scale.peakSegment(forDB: peak) : nil
+                    VStack(spacing: Self.segmentGap) {
+                        if let onClear {
+                            Button(action: onClear) {
+                                // A separate light above the meter, styled like
+                                // its segments: the unlit red zone colour when
+                                // off, bright red when lit (owner, 2026-11-23).
+                                RoundedRectangle(cornerRadius: 1)
+                                    .fill(isOver ? colorForSegment(segmentCount - 1)
+                                          : (showZoneColoring ? colorForSegment(segmentCount - 1).opacity(0.15)
+                                             : Color(.separatorColor).opacity(0.5)))
+                                    .frame(width: width, height: Self.overHeight)
+                            }
+                            .padding(.bottom, Self.overGap - Self.segmentGap)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Clear Meters")
+                            .accessibilityValue(isOver ? "Over" : "No over")
+                            .maestroHelp("Over — click to clear meters")
+                        }
                         ForEach((0..<segmentCount).reversed(), id: \.self) { i in
                             let segmentDB = dBForSegment(i)
                             let isLit = level >= segmentDB
@@ -879,10 +944,13 @@ struct LEDMeterView: View {
 
             // Label
             if !label.isEmpty {
+                // Centred under the LED column, not under column + scale: the
+                // 30 pt scale beside the meter would otherwise pull it over.
+                let scaleShift: CGFloat = showScale ? (scaleOnLeft ? 15 : -15) : 0
                 Text(label)
                     .font(.system(size: 8))
                     .foregroundStyle(.tertiary)
-                    .offset(x: labelOffsetX, y: labelOffsetY)
+                    .offset(x: labelOffsetX + scaleShift, y: labelOffsetY)
             }
         }
     }
@@ -896,11 +964,13 @@ struct LEDMeterView: View {
         Canvas { context, size in
             let h = size.height
             // Inset by scalePad so labels at 0 dB (top) and -rangeDB (bottom) aren't clipped
-            let topY: CGFloat = scalePad + segmentHeight / 2
+            let topY: CGFloat = scalePad + indicatorSpace + segmentHeight / 2
             let bottomY: CGFloat = h - scalePad - segmentHeight / 2
 
             // Major marks — labeled
             for db in majorMarks {
+                // 0 stays on the top meter segment; the Over LED above it is a
+                // separate light (owner, 2026-11-23, after Apogee's meters).
                 let y = scale.perceptualY(db: Double(db), topCenter: Double(topY), bottomCenter: Double(bottomY))
 
                 if leftSide {
@@ -957,7 +1027,7 @@ struct LEDMeterView: View {
     }
 
     private var segmentHeight: CGFloat {
-        (height - CGFloat(segmentCount - 1) * segmentGap) / CGFloat(segmentCount)
+        return (height - indicatorSpace - CGFloat(segmentCount - 1) * Self.segmentGap) / CGFloat(segmentCount)
     }
 
     private func dBForSegment(_ index: Int) -> Double {
@@ -972,4 +1042,133 @@ struct LEDMeterView: View {
         return Color(red: 0.2, green: 0.8, blue: 0.3) // Normal (green)
     }
 
+}
+
+// MARK: - Editable level readout (Mixer fader level, Input/Output trim)
+
+/// What a page hands each of its value readouts so they edit one at a time and
+/// Tab can move between them: which readout this is, which one the page is
+/// editing, the page's keyboard focus, and the page's rule for the next and
+/// previous readout.
+struct LevelReadoutEntry<ID: Hashable> {
+    /// This readout's identity among the page's readouts.
+    let id: ID
+    /// The readout the page is editing, or nil.
+    let editing: Binding<ID?>
+    /// The page's keyboard focus, one value per readout.
+    let focus: FocusState<ID?>.Binding
+    /// The readout Tab (`true`) or Shift-Tab (`false`) moves to from `id`, or
+    /// nil at either end. See `LevelEntry.neighbour`.
+    let neighbour: (_ id: ID, _ forward: Bool) -> ID?
+}
+
+/// Scroll identity of an Input or Output channel strip, so Tab can bring the
+/// strip whose trim value is being edited into view.
+struct TrimStripID: Hashable {
+    let strip: Int
+}
+
+/// Compact legacy-style dB readout. It is display-only until clicked, then
+/// accepts a value clamped to `range` and rounded to `step` — the same limits
+/// as the fader it sits under — and commits with Return (Escape cancels). Tab
+/// commits and moves to the next readout on the page, Shift-Tab to the
+/// previous one. Keeping this outside FaderView also lets the parent align one
+/// readout beneath a stereo fader pair, as the original Maestro did.
+///
+/// Used for the Mixer's fader level and for the Input and Output trim values
+/// (Symphony I/O User's Guide p. 55 item 6). The parsing and the Tab order are
+/// `LevelEntry` in MaestroCore, where they are unit-tested.
+struct EditableLevelReadout<ID: Hashable>: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let entry: LevelReadoutEntry<ID>
+    /// Optional domain parser and formatter for readouts whose text is not a plain number.
+    var parseTypedValue: ((String) -> Double?)? = nil
+    var displayText: ((Double) -> String)? = nil
+    /// Fixed height of the pill, or nil to hug the text with a little padding.
+    var height: CGFloat? = 22
+    @State private var editText = ""
+    @Environment(\.isEnabled) private var isEnabled
+
+    private var isEditing: Bool { entry.editing.wrappedValue == entry.id }
+
+    /// Apply the typed text (unless cancelled or not a number), then either
+    /// hand editing to `next` or stop editing altogether.
+    private func finishEditing(commit: Bool, movingTo next: ID? = nil) {
+        if commit, let typed = (parseTypedValue?(editText) ?? LevelEntry.value(typed: editText, range: range, step: step)),
+           typed != value {
+            value = typed
+        }
+        if let next {
+            // The next readout takes keyboard focus as its field appears.
+            entry.editing.wrappedValue = next
+            return
+        }
+        entry.editing.wrappedValue = nil
+        entry.focus.wrappedValue = nil
+        NSApp.keyWindow?.endEditing(for: nil)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
+    private var field: some View {
+        TextField("", text: $editText)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .multilineTextAlignment(.center)
+            .textFieldStyle(.plain)
+            .focused(entry.focus, equals: entry.id)
+            .onSubmit { finishEditing(commit: true) }
+            .onExitCommand { finishEditing(commit: false) }
+            // Tab arrives as "\t"; Shift-Tab as the back-tab character.
+            .onKeyPress(keys: [.tab, KeyEquivalent("\u{19}")]) { press in
+                let forward = press.key == .tab && !press.modifiers.contains(.shift)
+                finishEditing(commit: true, movingTo: entry.neighbour(entry.id, forward))
+                return .handled
+            }
+            .onAppear {
+                editText = displayText?(value) ?? LevelEntry.text(for: value, step: step)
+                DispatchQueue.main.async {
+                    entry.focus.wrappedValue = entry.id
+                    // Wait for AppKit to install the field editor before
+                    // selecting, so the first keystroke replaces the
+                    // displayed value instead of appending to it.
+                    DispatchQueue.main.async {
+                        NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: nil)
+                    }
+                }
+            }
+    }
+
+    var body: some View {
+        // The value text stays in the layout while editing, so the pill keeps
+        // its size and the strip does not move when the field appears.
+        Text(displayText?(value) ?? LevelEntry.text(for: value, step: step))
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .opacity(isEditing ? 0 : 1)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .padding(.vertical, height == nil ? 2 : 0)
+            .overlay { if isEditing { field } }
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.08)))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if !isEditing { entry.editing.wrappedValue = entry.id }
+            }
+            // Keyboard focus left the field some other way (a click elsewhere):
+            // stop editing and keep the value as it was.
+            .onChange(of: entry.focus.wrappedValue) { old, new in
+                if old == entry.id, new != entry.id, isEditing {
+                    entry.editing.wrappedValue = nil
+                }
+            }
+            // A readout that becomes disabled or hidden is no longer editing.
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled, isEditing { entry.editing.wrappedValue = nil }
+            }
+            .onDisappear {
+                if isEditing { entry.editing.wrappedValue = nil }
+            }
+    }
 }

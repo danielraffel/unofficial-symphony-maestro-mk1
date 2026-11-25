@@ -34,6 +34,9 @@ final class StableReinstaller: ObservableObject {
         /// Opens the package (Installer.app).
         var open: (_ file: URL) -> Bool
         var cacheRoot: URL
+        /// Whether one of Apogee's kernel drivers for the ThunderBridge or PCIe
+        /// card is loaded right now (ApogeeDriverConflict.swift).
+        var apogeeKernelDriverLoaded: () -> Bool = { false }
 
         static var live: Environment {
             Environment(
@@ -42,7 +45,8 @@ final class StableReinstaller: ObservableObject {
                 open: { NSWorkspace.shared.open($0) },
                 cacheRoot: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("com.danielraffel.maestro", isDirectory: true)
-                    .appendingPathComponent("StableReinstall", isDirectory: true)
+                    .appendingPathComponent("StableReinstall", isDirectory: true),
+                apogeeKernelDriverLoaded: { AppState.currentOriginalApogeeDrivers().hasLoadedPCIKernelDriver }
             )
         }
     }
@@ -57,6 +61,10 @@ final class StableReinstaller: ObservableObject {
         self.publicKey = publicKey
         self.environment = environment
     }
+
+    /// Shown in brackets under the failure headline.
+    static let apogeeDriverLoadedReason = "Apogee's original Symphony driver is loaded: run Apogee's own "
+        + "uninstaller and restart your Mac first; Device Settings has the steps"
 
     var isBusy: Bool {
         switch phase {
@@ -86,6 +94,13 @@ final class StableReinstaller: ObservableObject {
     /// The whole sequence; `start` runs it in a task.
     func run(item: FeedItem) async {
         let version = item.displayVersion
+        // Installing another version replaces Maestro's driver, and stopping
+        // it next to Apogee's loaded kernel driver is what crashed a user's
+        // Mac. An older stable package does not check for this itself.
+        guard !environment.apogeeKernelDriverLoaded() else {
+            phase = .failed(Self.apogeeDriverLoadedReason)
+            return
+        }
         guard let url = item.enclosureURL, let length = item.length, let signature = item.edSignature else {
             phase = .failed("the update feed does not describe a package to download")
             return

@@ -17,11 +17,22 @@ import MaestroDevice
 
 // MARK: - App Entry Point
 
-@main
 struct MaestroApp: App {
+    @Environment(\.openWindow) private var openWindow
+    @NSApplicationDelegateAdaptor(MaestroAppDelegate.self) private var appDelegate
     @StateObject private var updates = UpdateController()
-    @State private var appState = AppState()
+    @State private var appState = MaestroApp.makeAppState()
+    @State private var diagnostics = DiagnosticsRecorder()
     @State private var presetLibrary = PresetLibrary.shared
+
+    /// The one-time routing and mixer reset (0.9.21, `RoutingMixerReset`) runs
+    /// before `AppState` exists, so nothing has read the saved state it removes.
+    private static func makeAppState() -> AppState {
+        if RoutingMixerReset.runIfNeeded(defaults: .standard) {
+            print("[Maestro] Output Routing, Input Routing, converter routing and both mixers reset to defaults (one time, 0.9.21)")
+        }
+        return AppState()
+    }
 
     init() {
         // Disable stdout buffering so log output appears immediately when
@@ -52,6 +63,7 @@ struct MaestroApp: App {
             case .activated:           print("[Maestro] Driver extension: activated")
             case .willCompleteAfterReboot: print("[Maestro] Driver extension: reboot to finish activation")
             case .upgradePending:      print("[Maestro] Driver extension: upgrade pending; reconnect ThunderBridge")
+            case .heldForApogeeDriver: print("[Maestro] Driver extension: not requested; Apogee's kernel driver for the card is loaded")
             case .failed(let why):     print("[Maestro] Driver extension: activation failed — \(why)")
             }
         }
@@ -59,14 +71,58 @@ struct MaestroApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(id: "main") {
+        Window("Maestro", id: "main") {
             ContentView()
                 .environment(appState)
                 .environmentObject(updates)
+                .onReceive(updates.$effectiveChannel) { appState.updateChannel = $0 }
+                .environment(diagnostics)
+                .onChange(of: appState.initialSetupRestoreFinished) { _, ready in
+                    if ready { appDelegate.openPendingSetup() }
+                }
+                .onAppear {
+                    appDelegate.showMainWindow = showMainWindow
+                    appDelegate.appState = appState
+                    diagnostics.appState = appState
+                    // Testing only: `-MaestroDiagnosticsSelfTest 20` turns
+                    // diagnostics on, adds a note, runs the checks again and
+                    // saves after that many seconds. It never sends unless
+                    // `-MaestroDiagnosticsSelfTestSend "<note>"` is also given,
+                    // which sends one report (an email to the developer).
+                    let seconds = UserDefaults.standard.integer(forKey: "MaestroDiagnosticsSelfTest")
+                    guard seconds > 0, !diagnostics.isRecording else { return }
+                    diagnostics.start()
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(min(5, seconds / 2)))
+                        diagnostics.addNote("self-test note")
+                        diagnostics.runChecksNow()
+                        try? await Task.sleep(for: .seconds(max(1, seconds - min(5, seconds / 2))))
+                        await diagnostics.stopAndSave()
+                        guard let note = UserDefaults.standard.string(forKey: "MaestroDiagnosticsSelfTestSend"),
+                              let file = diagnostics.lastSaved else { return }
+                        guard let sender = DiagnosticsSender.configured else {
+                            print("[Maestro] Diagnostics self-test send: not configured"); return
+                        }
+                        do {
+                            let ref = try await sender.send(report: file, message: .init(
+                                note: note, issue: "", contact: "",
+                                version: MaestroCore.version, channel: appState.updateChannel?.rawValue.capitalized ?? ""))
+                            print("[Maestro] Diagnostics self-test send: ok reference=\(ref)")
+                        } catch {
+                            print("[Maestro] Diagnostics self-test send: failed \(DiagnosticsSender.userMessage(for: error)) (\(error))")
+                        }
+                    }
+                }
                 .frame(minWidth: 800, minHeight: 500)
         }
+        .handlesExternalEvents(matching: [])
         .defaultSize(width: 1440, height: 700)
         .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("Quit Maestro", action: appDelegate.quitFromMenu)
+                    .keyboardShortcut("q", modifiers: .command)
+            }
+
             // About box
             CommandGroup(replacing: .appInfo) {
                 Button("About Maestro") {
@@ -77,6 +133,34 @@ struct MaestroApp: App {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…", action: updates.checkForUpdates)
                     .disabled(!updates.canCheckForUpdates)
+            }
+
+            // One Select All (⌘A) and one Deselect All (⇧⌘A), replacing the
+            // standard group so the menu does not list Select All twice. In a
+            // text field they act on the text as usual; on the Mixer page they
+            // select strips (owner, 2026-11-23).
+            CommandGroup(replacing: .pasteboard) {
+                Button("Cut") { NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil) }
+                    .keyboardShortcut("x", modifiers: .command)
+                Button("Copy") { NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil) }
+                    .keyboardShortcut("c", modifiers: .command)
+                Button("Paste") { NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil) }
+                    .keyboardShortcut("v", modifiers: .command)
+                Button("Delete") { NSApp.sendAction(#selector(NSText.delete(_:)), to: nil, from: nil) }
+                Button("Select All") {
+                    let responder = NSApp.keyWindow?.firstResponder
+                    if appState.selectedArea == .mixer, !(responder is NSTextField), !(responder is NSTextView) {
+                        NotificationCenter.default.post(name: .mixerSelectAll, object: nil)
+                    } else {
+                        NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: nil)
+                    }
+                }
+                .keyboardShortcut("a", modifiers: .command)
+                Button("Deselect All") {
+                    NotificationCenter.default.post(name: .mixerDeselectAll, object: nil)
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+                .disabled(appState.selectedArea != .mixer)
             }
 
             // View menu — toggle monitor panel, trims, clear meters
@@ -99,39 +183,11 @@ struct MaestroApp: App {
                 Divider()
 
                 Button("Clear Meters") {
-                    Task {
-                        do {
-                            try await appState.device?.setProperty(
-                                PropertyAddress(selector: .peaksClear), value: .uint32(1))
-                        } catch {
-                            print("[Maestro] ERROR: Clear Meters failed: \(error)")
-                        }
-                    }
+                    appState.clearMeters()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
-
-                Divider()
-
-                // Rescan — the original Maestro's Window-menu item, described in
-                // the User's Guide p.73 as re-initialising "the link between
-                // Maestro and Apogee hardware connected to the Mac, in the case
-                // where the hardware is correctly connected and powered on but
-                // not detected by Maestro".
-                //
-                // The underlying capability already existed as
-                // `reconnectHardware()`, but both places it was exposed are
-                // unreachable in precisely that situation: the Settings button
-                // sits inside `if let device`, so it only appears once a device
-                // is ALREADY connected, and the status-bar button only appears
-                // when `hasConnectionIssue` is set. A user whose unit is powered
-                // on but undetected had nothing to press. This is always
-                // available.
-                Button("Rescan") {
-                    Task { await appState.reconnectHardware() }
-                }
-                .keyboardShortcut("r", modifiers: [.command])
-                .help("Re-establish the link to Symphony. Use this when the unit "
-                      + "is connected and powered on but Maestro has not found it.")
+                .disabled(appState.hardwareWritesSuspended)
+                .maestroHelp("Clear all peak hold and over indicators (Cmd+K).")
             }
 
             // File menu — preset save / load (P3F-31, P3F-53)
@@ -148,48 +204,50 @@ struct MaestroApp: App {
 
                 Divider()
 
-                Button("Save Preset...") {
-                    Task { @MainActor in
-                        let panel = NSSavePanel()
-                        panel.title = "Save Maestro Preset"
-                        // .mst2 bundles are macOS packages (directories with .mst2 extension)
-                        panel.allowedContentTypes = [.init(filenameExtension: "mst2")!]
-                        panel.nameFieldStringValue = "Untitled.mst2"
-                        guard panel.runModal() == .OK, let url = panel.url else { return }
-                        do {
-                            // Bundle format: daemon writes full hardware state via 'AESP'
-                            // Evidence: APMaestroFullViewWindow.m:445 — storeMaestroPreferenceFile
-                            try await appState.savePresetBundle(to: url)
-                            print("[Maestro] Preset bundle saved to \(url.lastPathComponent)")
-                        } catch {
-                            print("[Maestro] ERROR: Save preset failed: \(error)")
-                        }
-                    }
+                Button("Save") {
+                    Task { await appState.saveCurrentSetup() }
                 }
                 .keyboardShortcut("s")
 
+                Button("Save As...") {
+                    Task { await appState.saveCurrentSetup(showPanel: true) }
+                }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+
                 Button("Open Preset...") {
-                    Task { @MainActor in
-                        let panel = NSOpenPanel()
-                        panel.title = "Open Maestro Preset"
-                        // Allow both bundles (directories) and legacy flat files
-                        panel.allowedContentTypes = [.init(filenameExtension: "mst2")!]
-                        panel.allowsMultipleSelection = false
-                        panel.canChooseFiles = true
-                        panel.canChooseDirectories = true  // .mst2 bundles are directories
-                        guard panel.runModal() == .OK, let url = panel.urls.first else { return }
-                        do {
-                            // Supports both bundle format (daemon recall via 'AERP')
-                            // and legacy flat format (our old single-file format)
-                            // Evidence: APMaestroFullViewWindow.m:497 — recallMaestroPreferenceFile
-                            try await appState.loadPresetBundle(from: url)
-                            print("[Maestro] Preset loaded from \(url.lastPathComponent)")
-                        } catch {
-                            print("[Maestro] ERROR: Open preset failed: \(error)")
-                        }
-                    }
+                    let panel = NSOpenPanel()
+                    panel.title = "Open Maestro Preset"
+                    panel.allowedContentTypes = [.maestroSetup]
+                    panel.allowsMultipleSelection = false
+                    panel.canChooseFiles = true
+                    panel.canChooseDirectories = true  // .mst2 bundles are directories
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    Task { await appState.openSetupFromUser(url) }
                 }
                 .keyboardShortcut("o")
+                .disabled(appState.hardwareWritesSuspended)
+
+                Divider()
+
+                Button("Rescan") {
+                    Task { await appState.reconnectHardware() }
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+                .maestroHelp("Re-establish the link to Symphony. Use this when the unit "
+                      + "is connected and powered on but Maestro has not found it.")
+            }
+
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appState.selectedArea = .appSettings
+                    showMainWindow()
+                }
+                .keyboardShortcut(",")
+            }
+
+            CommandGroup(after: .windowArrangement) {
+                Button("Maestro", action: showMainWindow)
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
             }
 
             // Presets menu — named preset library (P3F-32)
@@ -211,7 +269,7 @@ struct MaestroApp: App {
                         guard !name.isEmpty else { return }
                         do {
                             // Save full hardware state via daemon bundle format (same as Save Preset...)
-                            try await appState.savePresetBundle(to: presetLibrary.url(for: name))
+                            try await appState.savePresetBundle(to: presetLibrary.url(for: name), associateWithDocument: false)
                             presetLibrary.refresh()
                         } catch {
                             let err = NSAlert()
@@ -221,7 +279,6 @@ struct MaestroApp: App {
                         }
                     }
                 }
-                .keyboardShortcut("s", modifiers: [.command, .shift])
 
                 Divider()
 
@@ -233,12 +290,14 @@ struct MaestroApp: App {
                             Task { @MainActor in
                                 do {
                                     // Supports both bundle format (daemon AERP) and legacy flat format
-                                    try await appState.loadPresetBundle(from: presetLibrary.url(for: name))
+                                    try await appState.loadPresetBundle(from: presetLibrary.url(for: name), associateWithDocument: false)
                                 } catch {
                                     print("[Maestro] Load preset '\(name)' failed: \(error)")
+                                    NSAlert(error: error).runModal()
                                 }
                             }
                         }
+                        .disabled(appState.hardwareWritesSuspended)
                     }
                 }
 
@@ -262,9 +321,16 @@ struct MaestroApp: App {
             // Help menu — user manual + legal pages
             CommandGroup(replacing: .help) {
                 Button("Maestro Help") {
-                    appState.showHelp = true
+                    appState.openHelp()
                 }
                 .keyboardShortcut("?", modifiers: .command)
+
+                Divider()
+
+                // Opens Help's own section, which asks for diagnostics first
+                // and links to the GitHub issue form from there.
+                Button("Report a Bug…") { NSWorkspace.shared.open(appState.reportBugURL) }
+                Button("Discuss on Gearspace…") { NSWorkspace.shared.open(FeedbackLinks.discussion) }
 
                 Divider()
 
@@ -280,6 +346,15 @@ struct MaestroApp: App {
             }
         }
 
+    }
+
+    private func showMainWindow() {
+        if let window = WindowDocumentBridge.currentWindow, window.isVisible || window.isMiniaturized {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "main")
+        }
     }
 
     /// Open a file from the app bundle (deployed builds) or repo (dev builds).

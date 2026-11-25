@@ -51,7 +51,7 @@ import sys
 from pathlib import Path
 
 source = Path(sys.argv[1]).read_text()
-needle = "ApplyAudioTimingProfile(ivars->audioDevice, 44100.0)"
+needle = "ApplyAudioTimingProfile(ivars->audioDevice, 44100.0, convIn, convOut)"
 start = source.index(needle)
 end = source.index("// Preferred stereo pair", start)
 block = source[start:end]

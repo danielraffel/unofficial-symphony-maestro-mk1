@@ -2,10 +2,42 @@
 
 #include <os/log.h>
 
+#include <DriverKit/IOLib.h>
+
 #include "SymphonyAudioDevice.h"
+#include "SymphonyThunderbridge.h"
 #include "SymphonyTimingProfile.h"
 
 #define ADLOG(fmt, ...) os_log(OS_LOG_DEFAULT, "SymphonyTB-AUDIO: " fmt, ##__VA_ARGS__)
+
+// Allocated when the driver calls SetPortModeDriver (every build since dext
+// 143, for VBus; PerformPortModeChange itself does nothing in a one-port build).
+struct SymphonyAudioDevice_IVars {
+    // Retained, set once before the device is published and released in
+    // free(), like the selector controls' back-pointers: it is never cleared
+    // while a configuration change could be reading it. The driver drops its
+    // reference to this device in Stop(), so the pair does not keep itself alive.
+    SymphonyThunderbridge *portModeDriver;
+};
+
+void SymphonyAudioDevice::SetPortModeDriver(SymphonyThunderbridge* in_driver)
+{
+    if (ivars || !in_driver) return;   // set once
+    ivars = IONewZero(SymphonyAudioDevice_IVars, 1);
+    if (!ivars) return;
+    in_driver->retain();
+    ivars->portModeDriver = in_driver;
+}
+
+void SymphonyAudioDevice::free()
+{
+    if (ivars) {
+        OSSafeReleaseNULL(ivars->portModeDriver);
+        IODelete(ivars, SymphonyAudioDevice_IVars, 1);
+        ivars = nullptr;
+    }
+    super::free();
+}
 
 struct TimingTupleState {
     uint32_t inputSafety;
@@ -60,11 +92,21 @@ static kern_return_t SetTimingTuple(IOUserAudioDevice* device,
     return TimingTuplesEqual(readback, tuple) ? kIOReturnSuccess : kIOReturnError;
 }
 
+// dext 131 (SymphonyThunderbridge.cpp): the converters' latency, 0/0 for a Symphony I/O.
+void SymphonyConverterLatencyForDevice(IOUserAudioDevice *device, double rate,
+                                       uint32_t *inLatency, uint32_t *outLatency);
+
 static kern_return_t ApplyTimingTuple(IOUserAudioDevice* device, double rate,
                                       const TimingTupleState* rollback)
 {
     if (!device) return kIOReturnBadArgument;
-    const TimingProfile profile = TimingProfileForRate(rate);
+    TimingProfile profile = TimingProfileForRate(rate);
+    uint32_t convIn = 0, convOut = 0;
+    SymphonyConverterLatencyForDevice(device, rate, &convIn, &convOut);
+    if (convIn || convOut) {
+        profile.inputConverterLatency = convIn;
+        profile.outputConverterLatency = convOut;
+    }
     const kern_return_t inputSafety = device->SetInputSafetyOffset(profile.safetyOffset);
     const kern_return_t outputSafety = device->SetOutputSafetyOffset(profile.safetyOffset);
     const uint32_t inputLatencyFrames = profile.inputConverterLatency + profile.frameSize;
@@ -101,12 +143,32 @@ static kern_return_t ApplyTimingTuple(IOUserAudioDevice* device, double rate,
     return result;
 }
 
+// Defined in SymphonyThunderbridge.cpp: the hardware takes the nominal rate
+// now, as the original's performFormatChange did (see there).
+void SymphonySyncHardwareRate(IOUserAudioDevice *device, double rate, uint64_t changeAction, const char *why);
+
 kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
     uint64_t in_change_action, OSObject* in_change_info)
 {
     ADLOG("PerformDeviceConfigurationChange begin action=%llu rate=%.0f tuple=(%u,%u,%u,%u)",
           in_change_action, GetSampleRate(), GetInputLatency(), GetOutputLatency(),
           GetInputSafetyOffset(), GetOutputSafetyOffset());
+
+    // EXPERIMENT (64ch, stage 2), two-port builds only: IO is stopped here, so
+    // this is where a requested port selection is applied and the streams are
+    // given their 32- or 64-channel formats (Apple's sample driver changes its
+    // stream formats in this same callback). Its result does not fail the
+    // configuration change: a refused request leaves the device at 32 channels.
+    if (ivars && ivars->portModeDriver) {
+        const kern_return_t portResult = ivars->portModeDriver->PerformPortModeChange();
+        ADLOG("PerformDeviceConfigurationChange port selection applied: 0x%x", portResult);
+        // VBus (dext 143), every build: after the port selection, so the VBus
+        // channels follow the hardware channels (33-, or 65- at 64). Its
+        // result does not fail the configuration change either: a size that
+        // could not be published leaves the device without VBus channels.
+        const kern_return_t vbusResult = ivars->portModeDriver->PerformVBusChange();
+        ADLOG("PerformDeviceConfigurationChange VBus applied: 0x%x", vbusResult);
+    }
 
     const kern_return_t result = super::PerformDeviceConfigurationChange(
         in_change_action, in_change_info);
@@ -122,6 +184,8 @@ kern_return_t SymphonyAudioDevice::PerformDeviceConfigurationChange(
     // HandleChangeSampleRate stages the target tuple before SetSampleRate's
     // host notification, and StartDevice applies it again for the hardware
     // restart.
+    // Only acts on the driver's own "link recovered" change (see there).
+    SymphonySyncHardwareRate(this, 0.0, in_change_action, "link recovered");
     const double rate = GetSampleRate();
     ADLOG("PerformDeviceConfigurationChange end action=%llu rate=%.0f "
           "readback=(%u,%u,%u,%u)",
@@ -177,5 +241,6 @@ kern_return_t SymphonyAudioDevice::HandleChangeSampleRate(double in_sample_rate)
     const kern_return_t postResult = ApplyTimingTuple(this, in_sample_rate, &previousTuple);
     ADLOG("HandleChangeSampleRate %.0f completed result=0x%x post=0x%x",
           in_sample_rate, result, postResult);
+    if (postResult == kIOReturnSuccess) SymphonySyncHardwareRate(this, in_sample_rate, 0, "rate change");
     return postResult;
 }

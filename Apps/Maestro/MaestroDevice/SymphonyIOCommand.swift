@@ -69,6 +69,10 @@ public enum SymphonyIOCommand: UInt8, Sendable, CaseIterable {
     case audioRouting = 0x31
     /// Set device channel bank. wValue: usage type enum.
     case deviceChannelBank = 0x32
+    /// Set front-panel identify LEDs. pData: 1=on, 0=off; state stays on until off.
+    /// Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIOVendorSpecific.h:178-182`,
+    /// `og_source/maestrolink/Software/SymphonyIO/SymphonyIOControl.cpp:136-150`.
+    case identifyUnit = 0x33
     /// Get/set optical format. wValue: board index. pData: 0=ADAT, 1=S/PDIF.
     /// Evidence: `SymphonyIOVendorSpecific.h` lines 183-188
     case opticalFormat = 0x34
@@ -485,10 +489,12 @@ public enum SymphonyIOHeadphoneRouting {
     ///
     /// Deterministic, and the only thing that is true about the crosspoint before
     /// the user has routed anything. Evidence:
-    /// `Drivers/VolumeProxy/MaestroVolumeProxy.c:1233-1276` —
+    /// `Drivers/VolumeProxy/MaestroVolumeProxy.c` `configure_fpga_routing`, step 4 —
     ///
-    /// * DAC L/R (dest 32/33) ← Mixer0 out L/R (64/65)
-    /// * IOBoard0 ch2-15 (dest 34-47) ← USB ch2-15 (192 + (dest - 32))
+    /// * IOBoard0 ch0-15 (dest 32-47) ← USB ch0-15 (192 + (dest - 32)), Line 1/2
+    ///   included: every output is direct and no mixer is routed, as the unit
+    ///   powers on and as the original reset it
+    ///   (og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:623-712)
     /// * IOBoard1 ch0-15 (dest 48-63) ← USB ch0-15 (192 + (dest - 48))
     ///
     /// On ThunderBridge the boot table is the dext's, not the proxy's
@@ -517,11 +523,7 @@ public enum SymphonyIOHeadphoneRouting {
         let lastBoard1 = board1 &+ UInt8(SymphonyIORoutingAddress.channelsPerIOBoard - 1) // 63
         let playback = SymphonyIORoutingAddress.hostPlaybackBase(for: transport)
         switch destination {
-        case board0, board0 &+ 1:
-            return transport == .thunderbolt
-                ? playback &+ (destination &- board0)
-                : SymphonyIORoutingAddress.mixer0Base &+ (destination &- board0)
-        case (board0 &+ 2)...(board1 &- 1):
+        case board0...(board1 &- 1):
             return playback &+ (destination &- board0)
         case board1...lastBoard1:
             // USB: the proxy mirrors USB 1-16 onto slot 2. ThunderBridge: the
@@ -532,6 +534,21 @@ public enum SymphonyIOHeadphoneRouting {
         default:
             return nil
         }
+    }
+
+    /// ThunderBridge: the XLink source the driver's playback table plays on
+    /// board output `destination` in the unit's channel `order`
+    /// (`SymphonyPlaybackSource`): analog first (driver 150+), XLink n on the
+    /// n-th board output and None on an output no host channel reaches; card
+    /// by card (and for a nil `order`), ``bootTableSource(forDestination:transport:)``.
+    /// Nil for anything that is not a hardware output destination.
+    public static func thunderboltBootTableSource(forDestination destination: UInt8,
+                                                  order: ThunderboltUnitChannelOrder?) -> UInt8? {
+        guard let order, order.order == .analogFirst, order.slot1 != nil, order.slot2 != nil else {
+            return bootTableSource(forDestination: destination, transport: .thunderbolt)
+        }
+        return SymphonyIODefaultRouting.thunderboltOutputRoutes(slot1: order.slot1, slot2: order.slot2, order: order.order)
+            .first { $0.destination == destination }?.source
     }
 
     /// Resolve what feeds a hardware output destination **without touching the
@@ -551,14 +568,16 @@ public enum SymphonyIOHeadphoneRouting {
     public static func inheritedSource(
         forDestination destination: UInt8,
         cachedRoutes: [UInt8: UInt8],
-        transport: TransportType = .usb
+        transport: TransportType = .usb,
+        thunderboltOrder: ThunderboltUnitChannelOrder? = nil
     ) -> UInt8? {
         // On ThunderBridge host playback is routed on the card (see
-        // `ThunderboltCardRouting`); the Symphony's table stays at the driver's
-        // fixed XLink n → output n, so a headphone following output n always
-        // inherits XLink n, whatever the user routed onto it.
+        // `ThunderboltCardRouting`); the Symphony's table stays at the
+        // driver's playback table, so a headphone following an output always
+        // inherits the XLink channel that table plays there, whatever the
+        // user routed onto it.
         if transport == .thunderbolt {
-            return bootTableSource(forDestination: destination, transport: .thunderbolt)
+            return thunderboltBootTableSource(forDestination: destination, order: thunderboltOrder)
         }
         if let cached = cachedRoutes[destination], isPlausibleOutputSource(cached) {
             return cached
@@ -866,6 +885,34 @@ public enum SymphonyIOConstants {
 
 // MARK: - Reset
 
+/// What the unit says about a reset (0xDB `SymphonyIOResetMode`, one byte,
+/// `SymphonyIOResetRequestType` in SymphonyIOVendorSpecific.h).
+///
+/// The firmware keeps it in RAM: `WaitForInit` from power-on, then
+/// `WaitForUserSelection` while the start-up reset menu is up, then `None`,
+/// or a reset the user picked on the front panel while it started
+/// (SymphonyIOMainController.cpp:75, :1170, :1325-1337,
+/// SymphonyIOFrontPanel.cpp:610-671). Nothing sets it again until the next
+/// power-on, so it does not tell a replug from a power cycle: both read
+/// `None`. The original read it every 200 ms until the unit had started
+/// (og_source/maestrolink/Software/SymphonyIO.cpp:6338-6416) and, after a
+/// front-panel reset, put its settings on the unit and wrote `None` back
+/// (:6417-6432, `clearResetRequest`).
+public enum SymphonyIOResetRequest: UInt8, Sendable, Equatable {
+    case waitForInit = 0
+    case waitForUserSelection = 1
+    case none = 2
+    case resetAll = 3
+    case resetAllButCalibration = 4
+
+    public static let command: UInt8 = 0xDB
+
+    /// The unit is still starting: ask again in a moment.
+    public var isStarting: Bool { self == .waitForInit || self == .waitForUserSelection }
+    /// The user reset the unit from its front panel while it started.
+    public var isFrontPanelReset: Bool { self == .resetAll || self == .resetAllButCalibration }
+}
+
 /// How much of the device a reset touches.
 ///
 /// Evidence: `SymphonyIOResetRequestType` distinguishes `ResetAll` from
@@ -935,6 +982,21 @@ public enum SymphonyIOMonitorDefaults {
 /// Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIOControl.cpp`
 public enum SymphonyIORequestBuilder {
 
+    // MARK: Device identity
+
+    /// Toggle the front-panel identify LEDs.
+    ///
+    /// This is a stateful command rather than a timed pulse: the original
+    /// daemon sends `1` when identify is enabled and keeps the LEDs on until a
+    /// later `0` (`SymphonyIOControl.cpp:136-150`).
+    public static func setIdentify(enabled: Bool) -> USBControlRequest {
+        USBControlRequest(
+            direction: .write,
+            request: SymphonyIOCommand.identifyUnit.rawValue,
+            data: Data([enabled ? 1 : 0])
+        )
+    }
+
     // MARK: Sample Rate
 
     /// Build a "set sample rate" request.
@@ -996,6 +1058,27 @@ public enum SymphonyIORequestBuilder {
             request: SymphonyIOCommand.micGain.rawValue,
             index: channel,
             data: Data([min(gain, SymphonyIOConstants.micGainMaximum)])
+        )
+    }
+
+    /// Build a "set instrument gain" request (0..65 dB).
+    /// Evidence: `og_source/symphonymk1/ext/Symphony64/generic/Products/SymphonyIO/SymphonyIOVendorSpecific.h:409-445`.
+    public static func setInstrumentGain(channel: UInt16, gain: UInt8) -> USBControlRequest {
+        USBControlRequest(
+            direction: .write,
+            request: SymphonyIOCommand.instrumentGain.rawValue,
+            index: channel,
+            data: Data([min(gain, SymphonyIOConstants.instrumentGainMaximum)])
+        )
+    }
+
+    /// Build a "read instrument gain" request.
+    public static func getInstrumentGain(channel: UInt16) -> USBControlRequest {
+        USBControlRequest(
+            direction: .read,
+            request: SymphonyIOCommand.instrumentGain.rawValue,
+            index: channel,
+            data: Data(count: 1)
         )
     }
 
@@ -1881,19 +1964,24 @@ public enum SymphonyIODefaultRouting {
         return routes
     }
 
-    /// Default OUTPUT routing on ThunderBridge: what the driver and the card
-    /// program at start-up, by position. The Symphony side is the driver's
-    /// fixed table, XLink n → board output n (`SymphonyThunderbridge.cpp`
-    /// steps 19b-1 / 19b-1b: XLink 0-15 → slot 1's outputs, 16-31 → slot 2's),
-    /// and the card feeds XLink TX n from playback n (step 21b), so Mac output
-    /// n plays through slot 1 output n for 1-16 and slot 2 output n-16 for
-    /// 17-32. The main pair defaults to card mixer 1
-    /// (`ThunderboltCardRouting.mainPairDefaultSource`). A destination past a
-    /// card's outputs (or in an empty slot) is silent.
+    /// Default OUTPUT routing on ThunderBridge under a card-by-card driver
+    /// (build 149 and earlier; ``thunderboltOutputRoutes(slot1:slot2:order:)``
+    /// takes the order): what the driver and the card program at start-up,
+    /// by position. The Symphony side was the driver's fixed table, XLink n
+    /// → board output n (`SymphonyThunderbridge.cpp` steps 19b-1 / 19b-1b:
+    /// XLink 0-15 → slot 1's outputs, 16-31 → slot 2's), and the card feeds
+    /// XLink TX n from playback n (step 21b), so Mac output n plays through
+    /// slot 1 output n for 1-16 and slot 2 output n-16 for 17-32. A
+    /// destination past a card's outputs (or in an empty slot) is silent.
     ///
-    /// It is NOT the USB table above, which puts every analog output first:
-    /// with two cards that have analog outputs, that table drew Mac 9-10 on
-    /// slot 2's Line 1/2 while the unit played it on slot 1's digital outputs.
+    /// Every output is direct, the main pair included, and no mixer is routed
+    /// to an output: the original's default and its Reset Routing layout
+    /// (`SymphonyPCIeRoutingController::ResetRouting`, output branch: the
+    /// mixers' destinations cleared and every software output routed to the
+    /// matching hardware output; USB the same,
+    /// og_source/maestrolink/Software/SymphonyIOUSBAudioRoutingController.cpp:623-712).
+    /// The driver itself still starts the card with the main pair on card
+    /// mixer 1, so Maestro writes this table on every connect.
     public static func thunderboltOutputRoutes(board0Outputs: Int, board1Outputs: Int) -> [Route] {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         let bases = [SymphonyIORoutingAddress.ioBoard0Base, SymphonyIORoutingAddress.ioBoard1Base]
@@ -1905,26 +1993,63 @@ public enum SymphonyIODefaultRouting {
                 let source = index < outputs[board]
                     ? SymphonyIORoutingAddress.xlinkPlaybackBase + UInt8(board * perBoard + index)
                     : SymphonyIORoutingAddress.none
-                routes.append((destination: destination,
-                               source: ThunderboltCardRouting.mainPairDefaultSource(forDestination: destination)
-                                   ?? source))
+                routes.append((destination: destination, source: source))
             }
         }
         return routes
     }
 
-    /// The capture routing the ThunderBridge driver programs at link
-    /// configuration (`SymphonyThunderbridge.cpp` step 19b-2,
-    /// `SymphonyCaptureSource` in `SymphonyChannelNames.h`): card by card,
-    /// host input n from slot 1 channel n, then slot 2's channels from where
-    /// slot 1's real inputs end. The original laid the Mac's inputs out the
-    /// same way, at each card's real channel count (`SymphonyPCIeRoutingController.cpp:200-217, 849-866`,
-    /// plugs sorted by board then start channel, `NonCAStreamObject.cpp:326-384`).
-    /// Every card has 16 inputs except the 2x6 (12), so slot 2 starts at host
-    /// input 13 behind a 2x6 and 17 otherwise. `slot1` nil (type not read), an
-    /// empty slot 1 and a Mic Pre in slot 1 keep the fixed 16 + 16, as the
-    /// driver does. Host inputs past slot 2's 16 are fed from silence (236).
-    /// It is NOT the USB table below, which puts every analog channel first.
+    /// Default OUTPUT routing on ThunderBridge in the serving driver's
+    /// `order` (``ThunderboltChannelOrder/serving(_:)``), board outputs 32-63
+    /// in order.
+    ///
+    /// - Card by card (driver 149 and earlier):
+    ///   ``thunderboltOutputRoutes(board0Outputs:board1Outputs:)``, a nil
+    ///   slot taken as a full 16.
+    /// - Analog first (driver 150+): exactly the table the driver programs
+    ///   (`SymphonyPlaybackSource`, steps 19b-1 / 19b-1b and ConfigureUnitB):
+    ///   the n-th board output in host order (every analog output of slot 1,
+    ///   then of slot 2, then slot 1's digital, then slot 2's) plays XLink n,
+    ///   any other board output None. It is the USB walk
+    ///   (``outputRoutes(board0:board1:usbChannelCount:playbackBase:)``) over
+    ///   XLink at 32 channels. With a slot nil (type not read) the driver
+    ///   keeps its by-position table, XLink n → board n / 16, channel n % 16,
+    ///   for all 32, and so does this.
+    public static func thunderboltOutputRoutes(slot1: IOCardType?, slot2: IOCardType?,
+                                               order: ThunderboltChannelOrder) -> [Route] {
+        let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
+        switch order {
+        case .cardByCard:
+            return thunderboltOutputRoutes(board0Outputs: slot1?.totalOutputChannels ?? perBoard,
+                                           board1Outputs: slot2?.totalOutputChannels ?? perBoard)
+        case .analogFirst:
+            guard let slot1, let slot2 else {
+                let bases = [SymphonyIORoutingAddress.ioBoard0Base, SymphonyIORoutingAddress.ioBoard1Base]
+                return (0..<2).flatMap { board in
+                    (0..<perBoard).map { index in
+                        (destination: bases[board] + UInt8(index),
+                         source: SymphonyIORoutingAddress.xlinkPlaybackBase + UInt8(board * perBoard + index))
+                    }
+                }
+            }
+            return outputRoutes(
+                board0: .init(analog: slot1.analogOutputChannels, digital: slot1.digitalOutputChannels),
+                board1: .init(analog: slot2.analogOutputChannels, digital: slot2.digitalOutputChannels),
+                usbChannelCount: 2 * perBoard,
+                playbackBase: SymphonyIORoutingAddress.xlinkPlaybackBase)
+        }
+    }
+
+    /// The capture routing a card-by-card ThunderBridge driver (build 149
+    /// and earlier) programs at link configuration; for either order use
+    /// ``thunderboltInputRoutes(slot1:slot2:order:)``. Card by card, host
+    /// input n from slot 1 channel n, then slot 2's channels from where
+    /// slot 1's real inputs end (`SymphonyCardByCardCaptureSource` in
+    /// `SymphonyChannelNames.h`). Every card has 16 inputs except the 2x6
+    /// (12), so slot 2 starts at host input 13 behind a 2x6 and 17
+    /// otherwise. `slot1` nil (type not read), an empty slot 1 and a Mic Pre
+    /// in slot 1 keep the fixed 16 + 16, as the driver does. Host inputs past
+    /// slot 2's 16 are fed from silence (236).
     public static func thunderboltInputRoutes(slot1: IOCardType? = nil) -> [Route] {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         let base = thunderboltSlot2InputBase(slot1: slot1)
@@ -1939,6 +2064,28 @@ public enum SymphonyIODefaultRouting {
             }
             return (destination: SymphonyIORoutingAddress.p2pBase + UInt8(n), source: source)
         }
+    }
+
+    /// The capture routing the serving ThunderBridge driver programs at link
+    /// configuration, in its `order` (``ThunderboltChannelOrder/serving(_:)``):
+    /// P2P 192-223 in order.
+    ///
+    /// - Card by card (driver 149 and earlier): ``thunderboltInputRoutes(slot1:)``.
+    /// - Analog first (driver 150+): exactly what the driver programs
+    ///   (`SymphonyCaptureSource`, step 19b-2 and ConfigureUnitB): host input
+    ///   n from the n-th board input in host order (every analog input of
+    ///   slot 1, then of slot 2, then slot 1's digital, then slot 2's), None
+    ///   past the unit's inputs. It is the USB walk
+    ///   (``inputRoutes(board0:board1:usbChannelCount:)``) at 32 channels.
+    ///   With a slot nil (type not read) the driver keeps the card-by-card
+    ///   table from slot 1's type, and so does this.
+    public static func thunderboltInputRoutes(slot1: IOCardType?, slot2: IOCardType?,
+                                              order: ThunderboltChannelOrder) -> [Route] {
+        guard order == .analogFirst, let slot1, let slot2 else { return thunderboltInputRoutes(slot1: slot1) }
+        return inputRoutes(
+            board0: .init(analog: slot1.analogInputChannels, digital: slot1.digitalInputChannels),
+            board1: .init(analog: slot2.analogInputChannels, digital: slot2.digitalInputChannels),
+            usbChannelCount: 2 * SymphonyIORoutingAddress.channelsPerIOBoard)
     }
 
     /// Slot 1's card as the serving ThunderBridge driver lays its capture
@@ -1956,8 +2103,11 @@ public enum SymphonyIODefaultRouting {
         return card
     }
 
-    /// The host input (0-based) where slot 2's inputs start on ThunderBridge;
-    /// `SymphonySlot2InputBase` in the driver.
+    /// The host input (0-based) where slot 2's inputs start on ThunderBridge
+    /// under a card-by-card driver (build 149 and earlier);
+    /// `SymphonyCardByCardSlot2InputBase` in the driver. An analog-first
+    /// driver (150+) has no such base: slot 2's analog inputs follow slot 1's
+    /// analog inputs and its digital inputs slot 1's digital ones.
     public static func thunderboltSlot2InputBase(slot1: IOCardType?) -> Int {
         let perBoard = SymphonyIORoutingAddress.channelsPerIOBoard
         guard let slot1 else { return perBoard }
@@ -2061,11 +2211,20 @@ public enum ThunderboltInputMeterMap {
     /// Host inputs the meter payload carries (words 0-31).
     public static let hostInputCount = 32
 
-    /// The capture table the unit carries: the driver's board-order table
-    /// with `replayed` (``InputRoutingReplay/writes(saved:columns:pairCount:)``)
+    /// The capture table the unit carries under a card-by-card driver
+    /// (build 149 and earlier): the driver's board-order table with
+    /// `replayed` (``InputRoutingReplay/writes(saved:columns:pairCount:)``)
     /// written over it, as the app sends them at connect.
     public static func currentRoutes(slot1: IOCardType?, replayed: [Route]) -> [Route] {
-        var table = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1)
+        currentRoutes(slot1: slot1, slot2: nil, order: .cardByCard, replayed: replayed)
+    }
+
+    /// The capture table the unit carries: the serving driver's table in its
+    /// `order` (``SymphonyIODefaultRouting/thunderboltInputRoutes(slot1:slot2:order:)``)
+    /// with `replayed` written over it.
+    public static func currentRoutes(slot1: IOCardType?, slot2: IOCardType?, order: ThunderboltChannelOrder,
+                                     replayed: [Route]) -> [Route] {
+        var table = SymphonyIODefaultRouting.thunderboltInputRoutes(slot1: slot1, slot2: slot2, order: order)
         for write in replayed {
             guard write.destination >= SymphonyIORoutingAddress.p2pBase else { continue }
             let n = Int(write.destination - SymphonyIORoutingAddress.p2pBase)
@@ -2099,9 +2258,7 @@ public enum ThunderboltInputMeterMap {
         /// 2, so the Input tab's analog strips are the first entries), then
         /// AES, then optical. Empty for an unknown layout.
         public let channels: [Int?]
-        /// The layout of `AppState.digitalInputMeterLevels` (24 entries):
-        /// board b's digital channel k at `b * 8 + k`, k < 8, as
-        /// ``CardLayout/DigitalPair/meterIndex`` reads it.
+        /// The layout of `AppState.digitalInputMeterLevels`, in board order.
         public let digital: [Int?]
 
         public init(channels: [Int?], digital: [Int?]) {
@@ -2110,7 +2267,7 @@ public enum ThunderboltInputMeterMap {
         }
     }
 
-    public static let digitalSlots = 24
+    public static let digitalSlots = CardLayout.digitalMeterSlots
 
     public static func words(layout: CardLayout, routes: [Route]) -> Words {
         guard layout.isKnown else {
@@ -2121,7 +2278,7 @@ public enum ThunderboltInputMeterMap {
                 .flatMap { word(forSource: $0, routes: routes) }
         }
         var digital = [Int?](repeating: nil, count: digitalSlots)
-        let perBoard = CardLayout.meteredDigitalPairsPerBoard * 2
+        let perBoard = CardLayout.digitalMeterChannelsPerBoard
         for (board, card) in layout.slots.enumerated() {
             for k in 0..<min(perBoard, card.digitalInputChannels) {
                 digital[board * perBoard + k] =
@@ -2130,6 +2287,35 @@ public enum ThunderboltInputMeterMap {
             }
         }
         return Words(channels: channels, digital: digital)
+    }
+
+    /// Card mixer input number for each mixer strip. The capture table is
+    /// supplied by the caller so this never depends on the periodically
+    /// refreshed meter-word cache. Converter and unknown layouts retain their
+    /// existing strip numbers.
+    public static func mixerInputs(layout: CardLayout, routes: [Route]) -> [Int?] {
+        if layout.converterLayout != nil || !layout.isKnown {
+            return layout.mixerChannels.map { $0.hardwareIndex }
+        }
+        return words(layout: layout, routes: routes).channels
+    }
+
+    /// Whether each physical mixer strip still has a host input route. An
+    /// unrouted strip remains in saved state but is omitted from the UI.
+    public static func routedMixerChannels(layout: CardLayout, routes: [Route]) -> [Bool] {
+        mixerInputs(layout: layout, routes: routes).map { $0 != nil }
+    }
+
+    /// Meter words read for converters: both ports' bus slots (port 1 then port 2).
+    public static let converterWordCount = 64
+
+    /// Converters: input strip h (host input h) reads the card's input meter
+    /// word for the bus slot its unit channel is on, `port * 32 + slot`
+    /// (`ConverterRules.hostMap`). Nil for a host channel that carries nothing.
+    public static func converterWords(_ system: ConverterSystem) -> Words {
+        let map = system.inputMap
+        return Words(channels: (0..<system.hostInputCount).map { map[$0]?.meterWord },
+                     digital: Array(repeating: nil, count: digitalSlots))
     }
 
     /// Strip levels from host-input levels (word n = host input n). With no
@@ -2142,7 +2328,7 @@ public enum ThunderboltInputMeterMap {
         }
     }
 
-    /// Digital strip levels (24 entries) from host-input levels.
+    /// Digital strip levels from host-input levels.
     public static func digitalLevels(host: [Double], words: Words) -> [Double] {
         (0..<digitalSlots).map { i in
             guard i < words.digital.count, let n = words.digital[i], n < host.count else { return -60.0 }
@@ -2211,40 +2397,84 @@ public enum RoutingResetGuard {
     ) -> String? {
         var untrusted: [String] = []
         if !board1.source.isTrustworthy {
-            untrusted.append("Slot 1: \(board1.displayText)")
+            untrusted.append("Card 1: \(board1.displayText)")
         }
         if !board2.source.isTrustworthy {
-            untrusted.append("Slot 2: \(board2.displayText)")
+            untrusted.append("Card 2: \(board2.displayText)")
         }
         guard !untrusted.isEmpty else { return nil }
         return """
-            Reset Routing is unavailable because the installed I/O cards were not \
-            detected this session.
+            Reset Routing is not available, because Maestro has not read the installed \
+            cards since it connected.
 
             \(untrusted.joined(separator: "\n"))
 
-            The default routing table is built from the card types, so a wrong card \
-            would re-point real outputs — on a unit with an Optical card, the ADAT \
-            outputs would change which DAW channels they carry. Nothing was written.
+            The default routing depends on which cards are installed. With the wrong \
+            card, hardware outputs would play the wrong software outputs: with an \
+            optical card, the ADAT outputs. Nothing was changed.
             """
     }
 
-    /// Human-readable description of exactly what an OUTPUT reset would do.
+    /// The Reset Output Routing confirmation: the opening sentence, one line
+    /// for each block of hardware outputs, and, after a blank line, the
+    /// closing sentence (left out if a mixer does feed an output).
+    public static func outputResetMessage(board1: IOCardType, board2: IOCardType,
+                                          transport: TransportType = .usb,
+                                          routes table: [SymphonyIODefaultRouting.Route]? = nil) -> String {
+        let lines = outputPlanLines(board1: board1, board2: board2, transport: transport, routes: table)
+        var parts = ["Each hardware output goes back to playing its default software output:",
+                     lines.joined(separator: "\n")]
+        if !lines.contains(where: { $0.contains("Mixer") }) { parts.append(outputResetClosing) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    public static let outputResetClosing = "No mixer will feed an output."
+
+    /// The Reset Input Routing confirmation: the opening sentence, one line
+    /// for each block of software inputs, and, after a blank line, the
+    /// closing sentence. `alsoResetsCardMapping`: with two units on the card,
+    /// the card's own software-input mapping goes back too.
+    public static func inputResetMessage(
+        board1: IOCardType,
+        board2: IOCardType,
+        usbChannelCount: Int,
+        routes table: [SymphonyIODefaultRouting.Route]? = nil,
+        hostChannelOffset: Int = 0,
+        alsoResetsCardMapping: Bool = false
+    ) -> String {
+        let lines = inputPlanLines(board1: board1, board2: board2, usbChannelCount: usbChannelCount,
+                                   routes: table, hostChannelOffset: hostChannelOffset)
+        var parts = ["Each software input goes back to its default hardware input:",
+                     lines.joined(separator: "\n"),
+                     inputResetClosing]
+        if alsoResetsCardMapping { parts.append(inputResetCardMappingNote) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    public static let inputResetClosing = "Only what your Mac records from changes. Outputs are not affected."
+    public static let inputResetCardMappingNote =
+        "The card's software inputs for all connected units also go back to their default."
+
+    /// What an OUTPUT reset would do, one line for each block of outputs:
+    /// "Card 1 analog out 1–8: Software 1–8".
     ///
     /// Derived from the same table the reset writes, so the text cannot drift from
-    /// the behaviour. One line per destination run, naming the card and the DAW
-    /// channels that will feed it.
-    /// Over ThunderBridge it is the position table the reset writes there
+    /// the behaviour.
+    /// Over ThunderBridge it is the table the reset writes there: `table`
+    /// when given (the driver's playback table in its channel order,
+    /// `AppState.thunderboltDefaultOutputRoutes`), otherwise the
+    /// card-by-card position table
     /// (`SymphonyIODefaultRouting.thunderboltOutputRoutes`).
     public static func outputPlanLines(board1: IOCardType, board2: IOCardType,
-                                       transport: TransportType = .usb) -> [String] {
-        let routes = transport == .thunderbolt
+                                       transport: TransportType = .usb,
+                                       routes table: [SymphonyIODefaultRouting.Route]? = nil) -> [String] {
+        let routes = table ?? (transport == .thunderbolt
             ? SymphonyIODefaultRouting.thunderboltOutputRoutes(
                 board0Outputs: board1.totalOutputChannels, board1Outputs: board2.totalOutputChannels)
             : SymphonyIODefaultRouting.outputRoutes(
                 board0: .init(analog: board1.analogOutputChannels, digital: board1.digitalOutputChannels),
                 board1: .init(analog: board2.analogOutputChannels, digital: board2.digitalOutputChannels),
-                usbChannelCount: SymphonyIODefaultRouting.usbChannelCount)
+                usbChannelCount: SymphonyIODefaultRouting.usbChannelCount))
         var byDestination: [UInt8: UInt8] = [:]
         for route in routes { byDestination[route.destination] = route.source }
 
@@ -2255,18 +2485,18 @@ public enum RoutingResetGuard {
                 ? SymphonyIORoutingAddress.ioBoard0Base
                 : SymphonyIORoutingAddress.ioBoard1Base
             guard card != .none else {
-                lines.append("Slot \(slot + 1): no card — nothing written.")
+                lines.append("Card \(slot + 1): no card.")
                 continue
             }
             let analog = card.analogOutputChannels
             let digital = card.digitalOutputChannels
             if analog == 0 && digital == 0 {
-                lines.append("Slot \(slot + 1) (\(card.productName)): no outputs.")
+                lines.append("Card \(slot + 1): no outputs.")
                 continue
             }
             if analog > 0 {
                 let sources = (0..<analog).map { byDestination[base &+ UInt8($0)] ?? SymphonyIORoutingAddress.none }
-                lines.append("Slot \(slot + 1) (\(card.productName)) analog out 1-\(analog) ← \(describe(sources))")
+                lines.append("Card \(slot + 1) analog out \(range((1, analog))): \(describe(sources))")
             }
             if digital > 0 {
                 let start = analog
@@ -2279,7 +2509,8 @@ public enum RoutingResetGuard {
                     let sources = (0..<count).map {
                         byDestination[base &+ UInt8(start + channel + $0)] ?? SymphonyIORoutingAddress.none
                     }
-                    lines.append("Slot \(slot + 1) (\(card.productName)) \(label) out 1-\(count) ← \(describe(sources))")
+                    let first = card.digitalChannelNumber(forChannel: channel)
+                    lines.append("Card \(slot + 1) \(label) out \(range((first, first + count - 1))): \(describe(sources))")
                     channel += count
                 }
             }
@@ -2287,11 +2518,12 @@ public enum RoutingResetGuard {
         return lines
     }
 
-    /// Human-readable description of exactly what an INPUT reset would do.
+    /// What an INPUT reset would do, one line for each block of software
+    /// inputs: "Software 1–8: Card 1 analog in 1–8".
     ///
     /// Input reset writes only P2P (USB record) destinations, so it can never
-    /// touch a hardware output — ADAT included. That fact is stated outright in
-    /// the confirmation so the user is not asked to fear the wrong thing.
+    /// touch a hardware output — ADAT included. The confirmation's closing
+    /// sentence (`inputResetClosing`) says so.
     /// `usbChannelCount` is the number of USB record destinations the current
     /// device mode actually streams — a COUNT here, not the wrapping modulo it is
     /// on the output side.
@@ -2299,7 +2531,8 @@ public enum RoutingResetGuard {
         board1: IOCardType,
         board2: IOCardType,
         usbChannelCount: Int,
-        routes table: [SymphonyIODefaultRouting.Route]? = nil
+        routes table: [SymphonyIODefaultRouting.Route]? = nil,
+        hostChannelOffset: Int = 0
     ) -> [String] {
         // `table` is the routing the reset will write when it is not the USB
         // default (ThunderBridge writes the driver's board-order table).
@@ -2325,13 +2558,13 @@ public enum RoutingResetGuard {
             guard channelOnBoard < card.analogInputChannels + card.digitalInputChannels else { return nil }
             let isDigital = channelOnBoard >= card.analogInputChannels
             let digitalOffset = channelOnBoard - card.analogInputChannels
-            let label = isDigital ? card.digitalLabel(forChannel: digitalOffset) : "Analog"
+            let label = isDigital ? card.digitalLabel(forChannel: digitalOffset) : "analog"
             let number = isDigital ? card.digitalChannelNumber(forChannel: digitalOffset) : channelOnBoard + 1
             return (Group(slot: slot, label: label), number)
         }
 
         // Collapse the per-channel table into contiguous runs so the dialog says
-        // "DAW in 1-8 ← Slot 1 Analog in 1-8", not sixteen separate lines.
+        // "Software 1–8: Card 1 analog in 1–8", not sixteen separate lines.
         var lines: [String] = []
         var silent: [Int] = []
         var runGroup: Group?
@@ -2341,12 +2574,12 @@ public enum RoutingResetGuard {
         func flush() {
             guard let current = runGroup else { return }
             lines.append(
-                "DAW in \(range(runDAW)) ← Slot \(current.slot) \(current.label) in \(range(runSource))")
+                "Software \(range(runDAW)): Card \(current.slot) \(current.label) in \(range(runSource))")
             runGroup = nil
         }
 
         for route in routes {
-            let usbChannel = Int(route.destination &- SymphonyIORoutingAddress.p2pBase) + 1
+            let usbChannel = Int(route.destination &- SymphonyIORoutingAddress.p2pBase) + 1 + hostChannelOffset
             guard let (grouping, channel) = group(for: route.source) else {
                 flush()
                 silent.append(usbChannel)
@@ -2367,7 +2600,7 @@ public enum RoutingResetGuard {
         flush()
 
         if !silent.isEmpty {
-            lines.append("DAW in \(compactRuns(silent)): no hardware input behind them — left silent.")
+            lines.append("Software \(compactRuns(silent)): no hardware input, silent.")
         }
         // What will NOT reach the DAW: hardware inputs the default table never
         // assigns, because the USB record channels ran out before they were
@@ -2378,9 +2611,9 @@ public enum RoutingResetGuard {
             let assigned = routes.compactMap { group(for: $0.source) }
                 .filter { $0.group.slot == slot }
             let analog = card.analogInputChannels
-            let analogAssigned = assigned.filter { $0.group.label == "Analog" }.count
+            let analogAssigned = assigned.filter { $0.group.label == "analog" }.count
             if analog > analogAssigned {
-                lines.append("Slot \(slot) Analog in \(analogAssigned + 1)-\(analog): NOT routed to the DAW.")
+                lines.append("Card \(slot) analog in \(range((analogAssigned + 1, analog))): not recorded by any software input.")
             }
             // Per digital plug type (the 2x6 has AES then optical).
             for label in ["AES", "ADAT"] {
@@ -2388,20 +2621,19 @@ public enum RoutingResetGuard {
                 guard digital > 0 else { continue }
                 let digitalAssigned = assigned.filter { $0.group.label == label }.count
                 if digital > digitalAssigned {
-                    lines.append("Slot \(slot) \(label) in \(digitalAssigned + 1)-\(digital): NOT routed to the DAW.")
+                    lines.append("Card \(slot) \(label) in \(range((digitalAssigned + 1, digital))): not recorded by any software input.")
                 }
             }
         }
-        lines.append("Only the Mac's record channels change. No hardware output is touched — ADAT outputs are unaffected.")
         return lines
     }
 
-    /// "1-8" for a run, "3" for a single channel.
+    /// "1–8" for a run, "3" for a single channel.
     private static func range(_ run: (first: Int, last: Int)) -> String {
-        run.first == run.last ? "\(run.first)" : "\(run.first)-\(run.last)"
+        run.first == run.last ? "\(run.first)" : "\(run.first)–\(run.last)"
     }
 
-    /// Render a list of source bytes as DAW channel numbers, collapsing runs.
+    /// Render a list of source bytes as software output numbers, collapsing runs.
     private static func describe(_ sources: [UInt8]) -> String {
         var daw: [Int] = []
         var hasSilence = false
@@ -2419,13 +2651,13 @@ public enum RoutingResetGuard {
                 daw.append(Int(source &- SymphonyIORoutingAddress.xlinkPlaybackBase) + 1)
             }
         }
-        let parts = mixers + (daw.isEmpty ? [] : ["DAW \(compactRuns(daw))"])
-        if parts.isEmpty { return "silence" }
+        let parts = mixers + (daw.isEmpty ? [] : ["Software \(compactRuns(daw))"])
+        if parts.isEmpty { return "silent" }
         let text = parts.joined(separator: ", ")
-        return hasSilence ? "\(text) (remainder silent)" : text
+        return hasSilence ? "\(text), the rest silent" : text
     }
 
-    /// "1, 2, 3, 5" -> "1-3, 5".
+    /// "1, 2, 3, 5" -> "1–3, 5".
     private static func compactRuns(_ values: [Int]) -> String {
         guard !values.isEmpty else { return "none" }
         var parts: [String] = []
@@ -2433,11 +2665,11 @@ public enum RoutingResetGuard {
         var previous = values[0]
         for value in values.dropFirst() {
             if value == previous + 1 { previous = value; continue }
-            parts.append(runStart == previous ? "\(runStart)" : "\(runStart)-\(previous)")
+            parts.append(runStart == previous ? "\(runStart)" : "\(runStart)–\(previous)")
             runStart = value
             previous = value
         }
-        parts.append(runStart == previous ? "\(runStart)" : "\(runStart)-\(previous)")
+        parts.append(runStart == previous ? "\(runStart)" : "\(runStart)–\(previous)")
         return parts.joined(separator: ", ")
     }
 }

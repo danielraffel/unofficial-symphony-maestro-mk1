@@ -22,15 +22,41 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
     /// Error to throw for setProperty calls (simulates a failed USB write).
     var nextSetError: Error?
 
+    /// Unit and helper calls in the order they were made.
+    var events: [String] = []
+    /// Fail the first N setProperty calls (a failed USB write).
+    var failFirstSets = 0
+    /// Fail every setProperty call at this wIndex.
+    var failWIndex: UInt16?
+
     func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
         setPropertyCalls.append((bRequest, wValue, wIndex, data))
+        events.append("unit:\(String(bRequest, radix: 16)):\(wValue):\(wIndex)")
+        if failFirstSets > 0 { failFirstSets -= 1; throw DeviceConnectionError.transportError("x") }
+        if let f = failWIndex, f == wIndex { throw DeviceConnectionError.transportError("x") }
         if let err = nextSetError { throw err }
     }
 
     func sendGetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, dataLength: UInt16) async throws -> XPCPropertyReply {
         getPropertyCalls.append((bRequest, wValue, wIndex, dataLength))
         if let err = nextError { throw err }
+        if let data = replies[bRequest] { return XPCPropertyReply(status: 0, data: data) }
         return nextReply
+    }
+
+    /// Replies by vendor request, ahead of `nextReply`.
+    var replies: [UInt8: Data] = [:]
+    var monitorOutputCalls: [(output: UInt64, attenuation: UInt64, muted: Bool)] = []
+    var acceptsMonitorOutput = true
+    var monitorOutput: UInt64?
+
+    func helperMonitorOutput() async -> UInt64? { monitorOutput }
+
+    func setMonitorOutput(_ output: UInt64, attenuation: UInt64, muted: Bool) async -> Bool {
+        guard acceptsMonitorOutput else { return false }
+        monitorOutputCalls.append((output, attenuation, muted))
+        monitorOutput = output
+        return true
     }
 
     func getSoftwareMeterLevels() async -> (Float, Float)? {
@@ -40,6 +66,7 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
     var swReturnMuteCalls: [Bool] = []
 
     func setSwReturnMute(_ muted: Bool) {
+        events.append("helperMute:\(muted)")
         swReturnMuteCalls.append(muted)
     }
 
@@ -52,13 +79,14 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
     var swReturnLevelCalls: [Double] = []
 
     func setSwReturnLevel(_ dB: Double) {
+        events.append("helperLevel:\(dB)")
         swReturnLevelCalls.append(dB)
     }
 
-    var swReturnPanCalls: [Double] = []
+    var swReturnChannelLevelCalls: [(channel: Int, dB: Double)] = []
 
-    func setSwReturnPan(_ pan: Double) {
-        swReturnPanCalls.append(pan)
+    func setSwReturnChannelLevel(channel: Int, dB: Double) {
+        swReturnChannelLevelCalls.append((channel, dB))
     }
 
     var swReturnProcessingCalls: [Bool] = []
@@ -71,12 +99,6 @@ final class MockXPCTransport: XPCTransport, @unchecked Sendable {
 
     func setSwReturnSource(_ source: UInt32) {
         swReturnSourceCalls.append(source)
-    }
-
-    var routingModeCalls: [Int] = []
-
-    func setRoutingMode(_ mode: Int) {
-        routingModeCalls.append(mode)
     }
 
     /// Records that the audio path rebuild was requested.
@@ -118,6 +140,23 @@ struct XPCDeviceConnectionTests {
         #expect(transport.getPropertyCalls.count == 1)
         let call = transport.getPropertyCalls[0]
         #expect(call.bRequest == SymphonyIOCommand.speakerOutputVolume.rawValue)
+    }
+
+    @Test("a helper with no unit open (-2) is 'not connected'; any other failed read is a transport error")
+    func getPropertyUnitNotOpen() async throws {
+        let transport = MockXPCTransport()
+        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        let meters = PropertyAddress(selector: .meterData, scope: .input)
+        transport.nextReply = XPCPropertyReply(status: XPCDeviceConnection.helperStatusUnitNotOpen, data: Data())
+        await #expect(throws: DeviceConnectionError.notConnected) { _ = try await conn.getProperty(meters) }
+        transport.nextReply = XPCPropertyReply(status: -1, data: Data())
+        do {
+            _ = try await conn.getProperty(meters)
+            Issue.record("a failed read must throw")
+        } catch DeviceConnectionError.transportError {
+        } catch {
+            Issue.record("unexpected \(error)")
+        }
     }
 
     @Test func setPropertySendsCorrectUSBFields() async throws {
@@ -459,50 +498,62 @@ struct XPCDeviceConnectionTests {
         #expect(cached == .string("B"))
     }
 
-    @Test func keyboardVolumePeripheralIDReturnsCachedDefault() async throws {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+    // MARK: - Volume Keys › Audio Output
 
-        let value = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumePeripheralID))
-        #expect(value == .uint32(0))
-        #expect(transport.getPropertyCalls.isEmpty)
+    @Test("the keys' output is sent to the helper with that output's own level and mute")
+    func keyboardVolumeOutputReachesTheHelper() async throws {
+        for (output, value, levelRequest, muteRequest, index) in [
+            (KeyboardVolumeOutput.speakers, UInt64(1), UInt8(0x26), UInt8(0x27), UInt16(0)),
+            (.headphone1, 2, 0x23, 0x24, 0),
+            (.headphone2, 3, 0x23, 0x24, 1),
+        ] {
+            let transport = MockXPCTransport()
+            transport.replies = [levelRequest: Data([37]), muteRequest: Data([1])]
+            let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+            let state = await conn.setKeyboardVolumeOutput(output)
+            #expect(state == XPCDeviceConnection.KeyboardVolumeState(attenuation: 37, muted: true))
+            #expect(transport.monitorOutputCalls.count == 1)
+            #expect(transport.monitorOutputCalls.first?.output == value)
+            #expect(transport.monitorOutputCalls.first?.attenuation == 37)
+            #expect(transport.monitorOutputCalls.first?.muted == true)
+            // The level and mute were read from that output, by its index.
+            #expect(transport.getPropertyCalls.map(\.bRequest) == [levelRequest, muteRequest])
+            #expect(transport.getPropertyCalls.allSatisfy { $0.wIndex == index })
+            // Choosing an output writes nothing to the unit.
+            #expect(transport.setPropertyCalls.isEmpty)
+        }
     }
 
-    @Test func keyboardVolumePeripheralIDSetDoesNotSendUSB() async throws {
+    @Test("nothing is sent when the output's level cannot be read, or for a converter choice")
+    func keyboardVolumeOutputNeedsItsLevel() async throws {
+        let transport = MockXPCTransport()
+        transport.nextError = DeviceConnectionError.transportError("no answer")
+        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        #expect(await conn.setKeyboardVolumeOutput(.headphone1) == nil)
+        #expect(transport.monitorOutputCalls.isEmpty)
+        transport.nextError = nil
+        #expect(await conn.setKeyboardVolumeOutput(.none) == nil)
+        #expect(await conn.setKeyboardVolumeOutput(.mixer1Level) == nil)
+        #expect(transport.monitorOutputCalls.isEmpty)
+        // A helper that refuses (an older one never answers) changes nothing.
+        transport.acceptsMonitorOutput = false
+        #expect(await conn.setKeyboardVolumeOutput(.headphone2) == nil)
+        // What the helper says it moves now.
+        transport.monitorOutput = 3
+        #expect(await conn.keyboardVolumeOutputInHelper() == .headphone2)
+        transport.monitorOutput = nil
+        #expect(await conn.keyboardVolumeOutputInHelper() == nil)
+    }
+
+    @Test("the saved choice is not a connection property")
+    func keyboardVolumeOutputIsNotAProperty() async throws {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        try await conn.setProperty(
-            PropertyAddress(selector: .keyboardVolumePeripheralID),
-            value: .uint32(5))
-
+        await #expect(throws: (any Error).self) {
+            try await conn.setProperty(PropertyAddress(selector: .keyboardVolumeOutputID), value: .uint32(3))
+        }
         #expect(transport.setPropertyCalls.isEmpty)
-
-        let cached = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumePeripheralID))
-        #expect(cached == .uint32(5))
-    }
-
-    @Test func keyboardVolumeOutputIDReturnsCachedDefault() async throws {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        let value = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumeOutputID))
-        #expect(value == .uint32(0))
-        #expect(transport.getPropertyCalls.isEmpty)
-    }
-
-    @Test func keyboardVolumeOutputIDSetDoesNotSendUSB() async throws {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        try await conn.setProperty(
-            PropertyAddress(selector: .keyboardVolumeOutputID),
-            value: .uint32(3))
-
-        #expect(transport.setPropertyCalls.isEmpty)
-
-        let cached = try await conn.getProperty(PropertyAddress(selector: .keyboardVolumeOutputID))
-        #expect(cached == .uint32(3))
+        #expect(conn.settingsStore.value(for: PropertyAddress(selector: .keyboardVolumeOutputID)) == nil)
     }
 
     // MARK: - USB Health Check Probe
@@ -560,8 +611,8 @@ struct XPCDeviceConnectionTests {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
 
-        conn.sendMixerParam(usbCmd: 0xB0, mixer: 1, channel: 1000, value: 42)
-        conn.sendMixerParam(usbCmd: 0xB1, mixer: 1, channel: 1000, value: 50)
+        conn.sendMixerParam(usbCmd: 0xB0, mixer: 1, channel: 5, value: 42)
+        conn.sendMixerParam(usbCmd: 0xB1, mixer: 1, channel: 5, value: 50)
 
         #expect(transport.mixerParamCalls.count == 2)
         #expect(transport.mixerParamCalls[0].usbCmd == 0xB0)
@@ -622,22 +673,6 @@ struct XPCDeviceConnectionTests {
         #expect(deviceRecoveryCount == 1, "Debounce should prevent duplicate increment")
     }
 
-    /// Verify no recovery when auto-recover is disabled.
-    @Test func noRecoveryWhenAutoRecoverDisabled() {
-        var meterPollWasDisconnected = true
-        var deviceRecoveryCount = 0
-        let autoRecover = false  // User disabled
-
-        if meterPollWasDisconnected {
-            meterPollWasDisconnected = false
-            if autoRecover {
-                deviceRecoveryCount += 1
-            }
-        }
-        #expect(deviceRecoveryCount == 0, "Should not increment when auto-recover is disabled")
-        #expect(meterPollWasDisconnected == false, "Disconnected flag should still clear")
-    }
-
     /// Verify SW Return re-sync sends correct proxy calls during recovery.
     @Test func swReturnResyncedOnRecovery() {
         let transport = MockXPCTransport()
@@ -646,123 +681,139 @@ struct XPCDeviceConnectionTests {
         // Simulate what recovery code does: re-sync SW Return
         conn.setSwReturnMute(true)
         conn.setSwReturnLevel(-6.0)
-        conn.setSwReturnPan(0.5)
 
         #expect(transport.swReturnMuteCalls == [true])
         #expect(transport.swReturnLevelCalls == [-6.0])
-        #expect(transport.swReturnPanCalls == [0.5])
     }
 
-    // MARK: - Routing Mode
+    // MARK: - Mixer strips restore (no forced mutes)
 
-    @Test func setRoutingModeDelegatesToTransport() {
+    /// The connect/recovery restore writes each strip exactly as saved, and an
+    /// unsaved strip at the default: unmuted, 0 dB, centre. Nothing is muted
+    /// that Maestro does not show muted (the removed Input Monitoring setting
+    /// used to force 64 mutes here).
+    @Test func mixerStripsRestoreWritesWhatIsShown() async {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        conn.setRoutingMode(0)  // DAW
-        conn.setRoutingMode(1)  // Direct Monitor
-
-        #expect(transport.routingModeCalls == [0, 1])
+        let muted = MixerChannelState(level: -12, pan: 0.5, isMuted: true, isSoloed: true)
+        let open = MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: false)
+        // Mixer 1: strips 0 and 1 saved. Mixer 2: nothing saved.
+        let result = await conn.restoreMixerStrips(saved: [[muted, open], []], hardwareIndexes: [0, 1, 16],
+                                                   spacing: .zero)
+        #expect(result.applied == 2 * 3 * 4 && result.failed == 0)
+        func byte(_ request: UInt8, mixer: UInt16, channel: UInt16) -> UInt8? {
+            transport.setPropertyCalls.last { $0.bRequest == request && $0.wValue == mixer && $0.wIndex == channel }?.data.first
+        }
+        // 0xB3 mute, 0xB2 solo.
+        #expect(byte(0xB3, mixer: 1, channel: 0) == 1)
+        #expect(byte(0xB2, mixer: 1, channel: 0) == 1)
+        #expect(byte(0xB3, mixer: 1, channel: 1) == 0)
+        #expect(byte(0xB3, mixer: 1, channel: 16) == 0)   // unsaved: default, unmuted
+        for channel: UInt16 in [0, 1, 16] {
+            #expect(byte(0xB3, mixer: 2, channel: channel) == 0)
+            #expect(byte(0xB2, mixer: 2, channel: channel) == 0)
+            // Default level 0 dB and centre pan are written too: the unit may hold anything.
+            #expect(byte(0xB0, mixer: 2, channel: channel) == byte(0xB0, mixer: 1, channel: 16))
+            #expect(byte(0xB1, mixer: 2, channel: channel) == 64)
+        }
+        #expect(byte(0xB0, mixer: 1, channel: 0) != byte(0xB0, mixer: 1, channel: 16))
+        // Never an unmute before its level, and only strips 0-31 (never 32/33 here).
+        let firstMute = transport.setPropertyCalls.firstIndex { $0.bRequest == 0xB3 }!
+        let firstLevel = transport.setPropertyCalls.firstIndex { $0.bRequest == 0xB0 }!
+        #expect(firstLevel < firstMute)
+        #expect(transport.setPropertyCalls.allSatisfy { $0.wIndex < 32 })
+        // The helper is not touched by the strips.
+        #expect(transport.swReturnMuteCalls.isEmpty && transport.swReturnProcessingCalls.isEmpty)
     }
 
-    // MARK: - DAW Force-Mute Pattern
-
-    /// Verify the force-mute batch pattern: 2 mixers x 32 channels = 64 mute commands.
-    /// This is the pattern used by the app in DAW mode to silence all HW mixer inputs.
-    @Test func dawForceMuteBatchPattern() {
+    @Test func mixerStripsRestoreStopsWhenNoLongerCurrent() async {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        let result = await conn.restoreMixerStrips(saved: [], hardwareIndexes: [0, 1], spacing: .zero,
+                                                   isCurrent: { false })
+        #expect(result.applied == 0 && transport.setPropertyCalls.isEmpty)
+    }
+}
 
-        // Simulate the DAW force-mute loop from MaestroApp
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-            }
-        }
-
-        #expect(transport.mixerParamCalls.count == 64)
-        // All calls should be mute command (0xB3) with value 1 (muted)
-        for call in transport.mixerParamCalls {
-            #expect(call.usbCmd == 0xB3)
-            #expect(call.value == 1)
-        }
-        // First 32 calls are mixer 1, next 32 are mixer 2
-        for i in 0..<32 {
-            #expect(transport.mixerParamCalls[i].mixer == 1)
-            #expect(transport.mixerParamCalls[i].channel == UInt16(i))
-        }
-        for i in 32..<64 {
-            #expect(transport.mixerParamCalls[i].mixer == 2)
-            #expect(transport.mixerParamCalls[i].channel == UInt16(i - 32))
-        }
+@Suite("USB write shadow")
+struct USBWriteShadowTests {
+    private func route(_ pairs: [(UInt8, UInt8)]) -> USBControlRequest {
+        SymphonyIORequestBuilder.setAudioRoutes(pairs.map { (destination: $0.0, source: $0.1) })
     }
 
-    /// Verify Direct Monitor restore: unmute all channels (value 0) when no persisted state.
-    @Test func directMonitorRestoreUnmutesAll() {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        // Simulate the Direct Monitor fallback (no persisted state) from MaestroApp
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
-            }
-        }
-
-        #expect(transport.mixerParamCalls.count == 64)
-        for call in transport.mixerParamCalls {
-            #expect(call.usbCmd == 0xB3)
-            #expect(call.value == 0)  // unmuted
-        }
+    @Test("a route of an output or headphone the unit holds is held; anything else is sent")
+    func holds() {
+        var shadow = USBWriteShadow(routes: [32: 192, 33: 193, 224: 192, 228: 192], digital: [0x3401: 1])
+        #expect(shadow.holds(route([(32, 192)])))
+        #expect(shadow.holds(route([(32, 192), (33, 193)])))
+        #expect(!shadow.holds(route([(32, 192), (33, 194)])), "a batch is held only whole")
+        #expect(shadow.holds(route([(224, 192)])))
+        #expect(!shadow.holds(route([(228, 192)])), "a mixer's Software Return source is always sent")
+        #expect(!shadow.holds(route([(34, 194)])), "unknown")
+        #expect(shadow.holds(SymphonyIORequestBuilder.setOpticalFormat(board: 1, format: 1)))
+        #expect(!shadow.holds(SymphonyIORequestBuilder.setOpticalFormat(board: 1, format: 0)))
+        #expect(!shadow.holds(SymphonyIORequestBuilder.setOpticalFormat(board: 0, format: 0)))
+        shadow.note(route([(32, 64)]), ok: true)
+        #expect(shadow.routes[32] == 64)
+        shadow.note(route([(33, 65)]), ok: false)
+        #expect(shadow.routes[33] == nil, "a failed write is unknown")
     }
 
-    /// Verify routing mode + force-mute sequence: setRoutingMode then batch mute.
-    @Test func routingModeAndForceMuteSequence() {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        // DAW mode: set routing then force-mute
-        conn.setRoutingMode(0)
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-            }
-        }
-
-        #expect(transport.routingModeCalls == [0])
-        #expect(transport.mixerParamCalls.count == 64)
-
-        // Switch to Direct Monitor: set routing then unmute
-        conn.setRoutingMode(1)
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
-            }
-        }
-
-        #expect(transport.routingModeCalls == [0, 1])
-        #expect(transport.mixerParamCalls.count == 128)  // 64 mute + 64 unmute
+    @Test("while the restore skips, a held route is not sent and counts as written; afterwards it is sent")
+    func elision() async throws {
+        let transport = ShadowTransport()
+        transport.shadow = USBWriteShadow(routes: [32: 192])
+        let conn = XPCDeviceConnection(identifier: USBDeviceIdentifier(
+            vendorID: ApogeeUSB.vendorID, productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "shadow")!,
+            transport: transport)
+        let line1 = PropertyAddress(selector: .routing, scope: .output, element: 32)
+        #expect(await conn.beginRestoreElision())
+        try await conn.setProperty(line1, value: .uint32(192))
+        #expect(transport.setPropertyCalls.isEmpty)
+        try await conn.setProperty(line1, value: .uint32(64))
+        try await conn.setProperty(line1, value: .uint32(64))
+        #expect(transport.setPropertyCalls.count == 1, "what was just written is held too")
+        #expect(conn.endRestoreElision() == 2)
+        try await conn.setProperty(line1, value: .uint32(64))
+        #expect(transport.setPropertyCalls.count == 2, "outside the restore every write is sent")
     }
 
-    /// SW Return uses separate dedicated function — never part of force-mute batch.
-    @Test func swReturnMuteIndependentOfForceMute() {
-        let transport = MockXPCTransport()
-        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
-
-        // Force-mute all HW inputs
-        for mixerID: UInt16 in 1...2 {
-            for ch: UInt16 in 0..<32 {
-                conn.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-            }
-        }
-        // SW Return mute is a separate path
-        conn.setSwReturnMute(false)
-
-        // mixerParam calls should NOT contain SW Return (channel 1000)
-        for call in transport.mixerParamCalls {
-            #expect(call.channel != 1000, "Force-mute should not touch SW Return channel")
-        }
-        // SW Return mute goes through dedicated function
-        #expect(transport.swReturnMuteCalls == [false])
+    @Test("outside the restore, an optical format the unit already holds is not sent; a change, or no shadow, is")
+    func digitalFormatHeldOutsideRestore() async throws {
+        let transport = ShadowTransport()
+        // What the helper's configure leaves: both boards ADAT/SMUX.
+        transport.shadow = USBWriteShadow(digital: [0x3400: 0, 0x3401: 0])
+        let conn = XPCDeviceConnection(identifier: USBDeviceIdentifier(
+            vendorID: ApogeeUSB.vendorID, productID: ApogeeUSB.SymphonyIO.pid16ch, deviceUID: "shadow")!,
+            transport: transport)
+        let board0 = PropertyAddress(selector: .opticalInFormat, element: 0)
+        let board1 = PropertyAddress(selector: .opticalInFormat, element: 1)
+        try await conn.setProperty(board0, value: .uint32(0))
+        try await conn.setProperty(board1, value: .uint32(0))
+        #expect(transport.setPropertyCalls.isEmpty, "no 0x34 when the unit holds it")
+        try await conn.setProperty(board1, value: .uint32(1))
+        #expect(transport.setPropertyCalls == [0x34], "a different format is sent")
+        transport.shadow = nil
+        try await conn.setProperty(board0, value: .uint32(0))
+        #expect(transport.setPropertyCalls == [0x34, 0x34], "a helper that does not say gets the write")
     }
+}
+
+private final class ShadowTransport: XPCTransport, @unchecked Sendable {
+    var shadow: USBWriteShadow?
+    var setPropertyCalls: [UInt8] = []
+    var isConnected: Bool { true }
+    func writeShadow() async -> USBWriteShadow? { shadow }
+    func sendSetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, data: Data) async throws {
+        setPropertyCalls.append(bRequest)
+    }
+    func sendGetProperty(bRequest: UInt8, wValue: UInt16, wIndex: UInt16, dataLength: UInt16) async throws -> XPCPropertyReply {
+        XPCPropertyReply(status: 0, data: Data(count: Int(dataLength)))
+    }
+    func getSoftwareMeterLevels() async -> (Float, Float)? { nil }
+    func setSwReturnMute(_ muted: Bool) {}
+    func sendMixerParam(usbCmd: UInt8, mixer: UInt16, channel: UInt16, value: UInt8) {}
+    func setSwReturnLevel(_ dB: Double) {}
+    func setSwReturnProcessing(_ enabled: Bool) {}
+    func resetAudioOutput() {}
 }

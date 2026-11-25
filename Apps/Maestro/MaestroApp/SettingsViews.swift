@@ -6,17 +6,31 @@ import CoreGraphics
 import MaestroCore
 import MaestroDevice
 
-/// Device Settings view — optical format, S/PDIF config, meter display, front panel.
+/// Device Settings — everything about the Symphony I/O hardware, on one page.
+///
+/// Sections, in this order: Clock, Connection, Volume Keys,
+/// Front Panel, Cards, Naming, Info (then Status when there is an error).
+/// While Apogee's original Symphony I/O drivers are installed, a warning comes
+/// first (`OriginalApogeeDriversWarning`).
+/// Mode-aware: shows different controls for Symphony/Standalone/Pro Tools HD modes.
+///
+/// This page used to be two pages (Device Settings and System Setup), each with
+/// its own load. Both loads are kept, each on its own trigger, so the hardware is
+/// read exactly as often as before -- see `isLoading` and `loadProperties`.
 ///
 /// Evidence: `og_source/maestro2/App/Controllers/APDeviceSettingsTabRowViewController.m`
+/// Evidence: `og_source/maestro2/App/Controllers/APSystemSetupTabRowViewController.m`
+/// Evidence: `og_source/generic/CoreAudio/mAEstro.h` — clock and sample rate properties
 struct DeviceSettingsView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.scenePhase) private var scenePhase
+
+    // MARK: Read by `loadSettings` (front panel, cards, naming, mode, meter holds)
+
     @State private var opticalFormatCard1: UInt32? // 0=ADAT/SMUX, 1=S/PDIF; nil=unavailable
     @State private var opticalFormatCard2: UInt32?
     @State private var isWritingOpticalFormat = false
     @State private var settingsLoadGeneration = UUID()
-    @State private var peakHoldMode: UInt32 = 0
-    @State private var overHoldMode: UInt32 = 0
     // meterBank picker removed — front panel bank switching is done via physical button.
     // Seeds match the daemon's own initializer: bank 1 shows analog INPUT 1-8,
     // bank 2 shows analog OUTPUT 1-8 -- inputs on the left column, outputs on the
@@ -26,32 +40,111 @@ struct DeviceSettingsView: View {
     @State private var meterBank1Source: UInt32 = 1  // eMetersShowValues_AnalogInput_1_8
     @State private var meterBank2Source: UInt32 = 0  // eMetersShowValues_AnalogOutput_1_8
     @State private var peripheralPrefix: String = "A"
+    /// The unit's Audio Interface Mode. Read once per load, by `loadSettings`, from
+    /// the unit this page shows; also gates the clock controls (`isProToolsMode`).
     @State private var deviceMode: UInt32 = 1        // 1=Symphony
-    @State private var errorMessage: String?
-    @State private var isLoading = true
+    /// Peak Hold and Over Hold. Read once per load, by `loadSettings`.
+    @State private var peakHoldMode: UInt32 = 0   // 0=Off, 1=2sec, 2=Infinite
+    @State private var overHoldMode: UInt32 = 0   // 0=Off, 1=2sec, 2=Infinite
     /// Whether the AIM explainer popover is showing.
     @State private var showAIMInfo = false
+    /// User-editable insert names -- see `InsertLabels`. Shared across channels,
+    /// which is why they are edited here rather than on an individual strip.
+    private var insertLabelsJSON: String {
+        appState.insertLabelsJSON(for: appState.activeUnit)
+    }
+
+    // MARK: Read by `loadProperties` (clock, firmware, boards, word clock)
+
+    @State private var sampleRate: Double = 0
+    @State private var clockSource: UInt32 = 1  // 1 = Internal (legacy eSymphonyIOClockSource enum; 0 = Unknown)
+    /// A source this view put into `clockSource` from a readback, so the picker's
+    /// onChange can tell it from a user selection. Same idea as `programmaticRate`.
+    @State private var programmaticClockSource: UInt32?
+    @State private var propertiesLoadGeneration = UUID()
+    @State private var clockLocked: Bool = false
+    @State private var firmwareVersion: String = "—"
+    @State private var parsedFirmware: FirmwareInfo?
+    /// Slot 1 board type WITH its provenance — detected this session, restored
+    /// from cache, simulated, or genuinely unknown. Card detection (`0xA1`, a
+    /// `0xC0` vendor EP0 read) currently fails on USB, so this is very often
+    /// `.cached`; the panel must say so rather than presenting it as measured.
+    @State private var board1Reading: BoardTypeReading = .unknown
+    /// Slot 2 board type with its provenance. See `board1Reading`.
+    @State private var board2Reading: BoardTypeReading = .unknown
+    @State private var showCopied: Bool = false
+    @State private var showPortsInfo = false
+    @State private var showVBusInfo = false
+    @State private var showClockStatusInfo = false
+    @State private var dextActionInFlight = false
+    @State private var dextActionStatus: String?
+    @State private var showDextActionAlert = false
+    @State private var dextAlertTitle = "ThunderBridge Driver"
+    @State private var dextAlertMessage = ""
+    /// Set for the whole duration of a rate write, including the windows that wait
+    /// for the virtual device to follow and for a DAW to take the rate back, so the
+    /// reconcile loop leaves the picker alone until the write has resolved.
+    @State private var rateWriteInFlight = false
+    /// Set from a rate selection until the Symphony has finished switching. The
+    /// picker is disabled meanwhile: a second selection sent while the device is
+    /// still switching can be dropped, or be judged "already there" against the
+    /// rate the first change is about to leave.
+    ///
+    /// The computer reporting the new rate is not the end of the change: the
+    /// Symphony's clock re-acquires after that (its relays click a moment
+    /// later). Apogee's daemon treated the source as stabilized 5 seconds after
+    /// a rate change (the same window as `AppState.suppressClockLockReporting`),
+    /// so the picker comes back when that window ends. Same rule over USB and
+    /// ThunderBridge.
+    @State private var rateSettling = false
+    /// The in-flight rate write, cancelled when a new selection supersedes it.
+    @State private var rateWriteTask: Task<Void, Never>?
+    /// Which write is the current one.
+    ///
+    /// A write is not instantaneous -- up to about eight seconds across the set,
+    /// the follow window and the DAW watch -- and the picker stays live throughout,
+    /// so a second selection can arrive while the first is still resolving. A Bool
+    /// cannot express "still the current write": the superseded write's own
+    /// `defer` would lower the flag while the new one was mid-flight, and its
+    /// watch windows would report a rate the user had already replaced as though
+    /// something else on the Mac had taken it back. Every write compares its
+    /// generation before touching shared state, so a superseded one stays silent.
+    @State private var rateWriteGeneration = 0
+
+    /// A rate this view put into `sampleRate` itself, so the picker's onChange can
+    /// tell it apart from one the user picked. Without it, reading the hardware's
+    /// rate and showing it writes it straight back -- a pointless hardware write
+    /// on every refresh, and it clears whatever the last error said.
+    @State private var programmaticRate: Double?
+
+    // MARK: Shared
+
+    @State private var errorMessage: String?
+    /// `loadSettings` is in flight. Lowered only by the newest settings load.
+    @State private var settingsLoading = true
+    /// `loadProperties` is in flight. Lowered only by the newest properties load.
+    @State private var propertiesLoading = true
+
+    /// True while either load is in flight.
+    ///
+    /// Two flags, not one: the two loads run concurrently on different triggers,
+    /// and a single shared flag would let the faster one re-enable the controls
+    /// while the slower one is still assigning readbacks -- which would then reach
+    /// the pickers' onChange as user selections and be written to the hardware.
+    private var isLoading: Bool { settingsLoading || propertiesLoading || !appState.routingHardwareAvailable }
+
+    /// Whether the grey placeholder skeleton shows. With no hardware the load
+    /// never finishes, so the page shows its last values (or dashes) with the
+    /// controls disabled instead of looking stuck. Maestro 2 had no device
+    /// settings page without a device
+    /// (`og_source/maestro2/App/Controllers/APSystemSymphonySetupViewController.m:67-70`
+    /// disables the controls rather than redacting them).
+    private var showsPlaceholder: Bool { (settingsLoading || propertiesLoading) && appState.routingHardwareAvailable }
 
     /// Hover text for the AIM info button — the one fact that matters at a glance.
     private static let aimExplainer =
         "The Symphony I/O runs in one of four Audio Interface Modes at a time. "
         + "The mode can only be changed on the unit itself, not from this app."
-
-
-    // Preferences — stored locally
-    @EnvironmentObject private var updates: UpdateController
-    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .auto
-    @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
-    @AppStorage("popupsEnabled") private var popupsEnabled = true
-    @AppStorage("usbHealthCheckEnabled") private var usbHealthCheckEnabled = false
-    @AppStorage("autoRecoverMixerState") private var autoRecoverMixerState = true
-    @AppStorage("routingMode") private var routingMode: Int = 0  // 0=DAW, 1=Direct Monitor
-    @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
-    @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
-    @AppStorage("rememberControlTabScrollPositions") private var rememberControlTabScrollPositions = true
-    /// User-editable insert names -- see `InsertLabels`. Shared across channels,
-    /// which is why they are edited here rather than on an individual strip.
-    @AppStorage("micPreInsertLabels") private var insertLabelsJSON: String = "{}"
 
     private let deviceModeNames: [UInt32: String] = [
         0: "DFU", 1: "Symphony", 2: "Standalone",
@@ -73,7 +166,7 @@ struct DeviceSettingsView: View {
     ]
 
     /// The installed cards' layout — capability gating on this page comes from here.
-    private var layout: CardLayout { appState.cardLayout }
+    private var layout: CardLayout { appState.unitCardLayout }
 
     /// The optical format selector follows the direction provided by the card.
     /// AD16 is output-only, so reading `opticalInFormat` for that slot reports
@@ -88,7 +181,7 @@ struct DeviceSettingsView: View {
     private var settingsLoadID: DeviceSettingsLoadID {
         DeviceSettingsLoadID(reloadToken: appState.viewReloadToken,
                              cardLayoutToken: appState.cardLayoutToken,
-                             deviceID: appState.device.map(ObjectIdentifier.init))
+                             deviceID: appState.unitDevice.map(ObjectIdentifier.init))
     }
 
     /// Meter bank sources the installed cards can actually feed. A 16x16 has no
@@ -99,278 +192,100 @@ struct DeviceSettingsView: View {
         return available.isEmpty ? allMeterSourceOptions : available
     }
 
+    /// The original exposed this popup only when more than one monitor device
+    /// existed (`og_source/maestro2/App/Controllers/
+    /// APSystemKeyboardVolumeControlViewController.m:48-83`).
+    private var hasTwoMonitorDevices: Bool {
+        SymphonyExtendedSelectors.supported(by: appState.servingDextBuild)
+            && appState.transportType == .thunderbolt
+            && appState.portSelection.selection == .ports1And2
+            && appState.unitB?.setupComplete == true
+    }
+
+    /// Two Symphony I/Os are shown (the Unit A / Unit B picker is up), so the
+    /// settings that are not per unit say so in their section footer.
+    private var showsBothUnitsFooter: Bool { appState.unitPickerVisible }
+
+    // Keys 1-5 are the legacy eSymphonyIOClockSource enum values (SymphonyIOVendorSpecific.h:857-865),
+    // sent verbatim as ClockMode pData[0]. The old dict was off-by-one with invented digital
+    // "sources" (AES/EBU, S/PDIF, ADAT, Optical S/PDIF are board sub-sources, not clock sources).
+    // Each board's inputs are listed one by one with their own keys; see `ClockSourceMenu`.
+    //
+    // Over USB the Symphony runs on its internal clock only: Apogee's software
+    // offered no other source in the USB interface mode
+    // (`og_source/maestrolink/Software/SymphonyIO.cpp:1735-1738, 1754-1755`), and
+    // its daemon treated any other reading as Internal (`:6465-6466`). Offering
+    // Word Clock or IO Board here sent the unit choices it does not act on.
+    // Over ThunderBridge each fitted board is offered as its own inputs (coax,
+    // AES pairs, optical), as Apogee's software did in the Symphony mode. The
+    // optical row's name follows the rate and the board's optical format.
+    /// As the status bar's: the unit's own lock state where it reports one.
+    private var shownClockLocked: Bool {
+        if appState.clockLockSuppressed { return true }
+        return ClockStatusRule.shownLocked(isUSB: appState.transportType == .usb,
+                                           reported: appState.reportedClockLocked ?? clockLocked)
+    }
+
+    private var clockSourceChoices: [ClockSourceChoice] {
+        appState.clockSourceChoices(sampleRate: sampleRate > 0 ? sampleRate : nil)
+    }
+
+    /// A second Symphony I/O on port 2 takes its clock from unit A through
+    /// Loop Sync, so unit A cannot take Loop Sync itself.
+    private var unitBFollowsUnitA: Bool { appState.unitBFollowsUnitA }
+
+    /// Fallback rates shown when device doesn't report available rates.
+    private static let defaultRates: [Double] = [
+        44100, 48000, 88200, 96000, 176400, 192000
+    ]
+
+    /// Rates queried from the actual device — updated in loadStatus().
+    @State private var availableRates: [Double] = defaultRates
+
+    /// The original Over Hold popup offered only the three choices below.
+    private var peakHoldOptions: [(UInt32, String)] {
+        MeterDisplaySettings.PeakHoldMode.allCases.map { ($0.wireValue, $0.rawValue) }
+    }
+
+    private var overHoldOptions: [(UInt32, String)] {
+        MeterDisplaySettings.OverHoldMode.userFacingCases.map { ($0.wireValue, $0.rawValue) }
+    }
+
+    /// Port 2's converters are listed with port 1's (from the driver's
+    /// converter report), so the two-port rows leave their unit lines out.
+    private var port2UnitsListedAbove: Bool {
+        appState.converterSystem?.source == .driver && appState.converterSystem?.port2Counted == true
+    }
+
+    /// Volume Keys is shown when there is something to choose: the unit
+    /// (two Symphony I/Os at 64 channels) or the output the keys move.
+    private var showsVolumeKeys: Bool {
+        hasTwoMonitorDevices || appState.keyboardVolumeOutputAvailable || appState.keyboardVolumeUnavailableReason != nil
+    }
+
+    /// The unit whose outputs the Audio Output pop-up lists: the one chosen
+    /// as Peripheral, as in the original; unit A when there is one unit.
+    private var volumeKeysUnit: DeviceUnit { hasTwoMonitorDevices ? appState.monitorDevice : .a }
+
+    /// Is the device in Pro Tools HD mode?
+    private var isProToolsMode: Bool { deviceMode == 3 }
+
     var body: some View {
         Form {
-            // P3F-17: Optical format — per card (matching original Maestro 2)
-            // Per slot, and only for a module that HAS optical ports — a 16x16
-            // has none at all (user guide p. 11), so a format picker for it
-            // writes a setting nothing can act on.
-            if layout.hasOpticalPorts(slot: 0) || layout.hasOpticalPorts(slot: 1) {
-                Section("Optical Format") {
-                    if layout.hasOpticalPorts(slot: 0) {
-                        Picker("Card 1", selection: opticalFormatSelection(card: 0)) {
-                            if opticalFormatCard1 == nil {
-                                Text("Unavailable").tag(nil as UInt32?)
-                            }
-                            // The original's two choices, by name
-                            // (APDeviceOpticalFormatView.xib:126, 149).
-                            Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
-                            Text("SPDIF").tag(UInt32(1) as UInt32?)
-                        }
-                    }
-
-                    if layout.hasOpticalPorts(slot: 1) {
-                        Picker("Card 2", selection: opticalFormatSelection(card: 1)) {
-                            if opticalFormatCard2 == nil {
-                                Text("Unavailable").tag(nil as UInt32?)
-                            }
-                            Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
-                            Text("SPDIF").tag(UInt32(1) as UInt32?)
-                        }
-                    }
-                }
-                .disabled(isLoading || isWritingOpticalFormat)
-            }
-
-            // S/PDIF Coax Replace/Mirror removed from Device Settings — controls are in
-            // Input tab (SPDIF Replace) and Output tab (SPDIF Mirrors) inline with DIGITAL section.
-            // Evidence: og_source APDeviceSettingsTabRowViewController.m has no SPDIF segments.
-
-            // P3F-52: Front panel meter bank source selection
-            Section("Front Panel") {
-                // P3F-52: Per-bank source selection (eMaestroEnum_MetersShowValues).
-                // Element 1 = bank 1, element 2 = bank 2.
-                // Evidence: og_source/generic/mAEstroTypes.h:17-39,
-                //           og_source/maestro2/App/Controllers/APDeviceMetersViewController.m:205-246
-                Picker("Bank 1 Source", selection: $meterBank1Source) {
-                    ForEach(meterSourceOptions, id: \.0) { opt in
-                        Text(opt.1).tag(opt.0)
-                    }
-                }
-                .onChange(of: meterBank1Source) { _, newValue in
-                    guard !isLoading else { return }
-                    Task {
-                        do {
-                            try await appState.device?.setProperty(
-                                PropertyAddress(selector: .metersShowInput, element: 1),
-                                value: .uint32(newValue)
-                            )
-                        } catch {
-                            print("[Maestro] ERROR: meterBank1Source setProperty failed: \(error)")
-                        }
-                    }
-                }
-
-                Picker("Bank 2 Source", selection: $meterBank2Source) {
-                    ForEach(meterSourceOptions, id: \.0) { opt in
-                        Text(opt.1).tag(opt.0)
-                    }
-                }
-                .onChange(of: meterBank2Source) { _, newValue in
-                    guard !isLoading else { return }
-                    Task {
-                        do {
-                            try await appState.device?.setProperty(
-                                PropertyAddress(selector: .metersShowInput, element: 2),
-                                value: .uint32(newValue)
-                            )
-                        } catch {
-                            print("[Maestro] ERROR: meterBank2Source setProperty failed: \(error)")
-                        }
-                    }
-                }
-            }
-            .disabled(isLoading)
-
-            // Peak Hold / Over Hold deliberately DO NOT live here. They used to
-            // appear on this tab and again in System Setup, bound to the same
-            // state -- the issue #1 reporter spotted the duplication ("Meters
-            // settings duplicated on this page"). The User's Guide puts them in
-            // System Setup (p. 77, "found in Maestro's System Setup tab window");
-            // this tab's Meters section is the FRONT PANEL meter view, which is
-            // the "Front Panel" section above (Guide p. 65 item 2).
-            //
-            // Clearing meters is not lost with them: it is on the toolbar as
-            // Clear Meters (Cmd+K), which is also where Apogee puts it.
-
-            Section("Naming") {
-                Picker("Peripheral Prefix", selection: $peripheralPrefix) {
-                    ForEach(Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init), id: \.self) { letter in
-                        Text(letter).tag(letter)
-                    }
-                }
-                .onChange(of: peripheralPrefix) { _, newValue in
-                    guard !isLoading else { return }
-                    appState.peripheralPrefix = CardLayout.peripheralPrefix(newValue)
-                    Task { await writeProperty(.prefix, value: .string(newValue)) }
-                }
-            }
-            .disabled(isLoading)
-
-            // Insert Labels — User's Guide p.65 item 4: "If you have a Mic Pre
-            // module installed, this section lets you customize the Insert
-            // labels." Shown only with a usable MicPre, exactly as the Guide
-            // describes and as the rest of the MicPre surface is gated.
-            //
-            // Names are keyed by INSERT and shared across every channel: the
-            // daemon re-notifies all eight channels after one rename
-            // (SymphonyIOBoard_MicPre8ch.cpp:590-593). Clearing a field restores
-            // the default, matching the daemon's empty-string behaviour.
-            //
-            // These are app-side. Legacy held them in daemon memory as
-            // kmAEstroPropertyInsertNameForID ('AEiv'); with no daemon they live
-            // in UserDefaults, and the user-visible behaviour is the same.
-            if InputChannelLogic.micPreIsUsable(
-                primary: appState.primaryBoardType, secondary: appState.secondaryBoardType) {
-                Section("Insert Labels") {
-                    ForEach(1...InsertLabels.count, id: \.self) { id in
-                        insertLabelField(UInt32(id))
-                    }
-                    if insertLabels.hasAnyCustom {
-                        Button("Reset Insert Labels") {
-                            var labels = insertLabels
-                            labels.resetAll()
-                            saveInsertLabels(labels)
-                        }
-                        .help("Restore the default names, Insert 1 through Insert 8.")
-                    }
-                }
-            }
-
-// P3F-20: Audio Interface Mode display + device info
-            Section("Device") {
-                LabeledContent("Audio Interface Mode") {
-                    HStack(spacing: 5) {
-                        Text(deviceModeNames[deviceMode] ?? "Unknown")
-                        // The mode is read-only here -- it can only be changed on the
-                        // unit itself -- so the how-to is one tap away rather than a
-                        // permanent caption line under a row nobody can act on.
-                        Button { showAIMInfo.toggle() } label: {
-                            Image(systemName: "info.circle")
-                        }
-                        .buttonStyle(.plain)
-                        .help(Self.aimExplainer)
-                        .accessibilityLabel("About Audio Interface Mode")
-                        .popover(isPresented: $showAIMInfo, arrowEdge: .bottom) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(Self.aimExplainer)
-                                Text("Maestro works in Symphony and USB modes. What each "
-                                     + "of the four modes is for is in Help.")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .font(.callout)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(width: 300, alignment: .leading)
-                            .padding(14)
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                }
-
-                if let device = appState.device {
-                    LabeledContent("Model", value: device.identifier.displayName)
-                    LabeledContent("Mode", value: device.identifier.mode.displayName)
-                    LabeledContent("Channels", value: "\(device.identifier.mode.channelCount)")
-                }
-            }
-
-            // Auto-launch and notifications
-            Section("Preferences") {
-                Picker("Appearance", selection: $appearance) {
-                    ForEach(AppAppearance.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .help("Auto follows your Mac’s appearance. Light and Dark apply only to Maestro.")
-                .unredacted()
-
-                Toggle("Automatically check for updates", isOn: $updates.automaticallyChecksForUpdates)
-                    .help(UpdateChannelCopy.automaticCheckHelp)
+            // Above everything, and never greyed out by a load: this is the one
+            // thing on the page that may explain why the rest misbehaves.
+            if let found = appState.originalApogeeDrivers, !found.isEmpty {
+                OriginalApogeeDriversWarning(finding: found, conflict: appState.apogeeDriverConflict)
                     .unredacted()
-                Button("Check for Updates…", action: updates.checkForUpdates)
-                    .disabled(!updates.canCheckForUpdates)
-                    .unredacted()
-                UpdateChannelSettings()
-                Text("Updates download from the [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1). Installing an update may briefly interrupt audio and require an administrator password. Updates are never installed automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Remember Input, Output, and Mixer scroll positions", isOn: $rememberControlTabScrollPositions)
-                    .help("Keep each wide control tab at its current horizontal position until Maestro quits")
-
-                Toggle("Launch Maestro automatically when connecting a device", isOn: $autoLaunchEnabled)
-                    .onChange(of: autoLaunchEnabled) { _, enabled in
-                        AutoLaunchManager.shared.setEnabled(enabled)
-                    }
-                    .help("Install a LaunchAgent that opens Maestro when a Symphony IO is plugged in")
-
-                Toggle("Display pop-ups", isOn: $popupsEnabled)
-                    .help("Show floating volume overlay when adjusting levels via media keys")
-
-                Toggle("USB connection health check", isOn: $usbHealthCheckEnabled)
-                    .onChange(of: usbHealthCheckEnabled) { _, enabled in
-                        if enabled { appState.startUSBHealthCheck() }
-                        else { appState.stopUSBHealthCheck() }
-                    }
-                    .help("Periodically verify USB connectivity and automatically recover stale connections. Enable if your device disconnects during sleep/wake or after cable bumps.")
-
-                Toggle("Auto-recover mixer state on USB reconnect", isOn: $autoRecoverMixerState)
-                    .help("Automatically restore mixer settings when USB connection recovers after power cycle or sleep/wake.")
-
-                Toggle("Automatically switch to Symphony when connected", isOn: $autoSwitchToSymphony)
-                    .help("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
-
-                if autoSwitchToSymphony {
-                    Picker("Preferred USB output", selection: $preferredUSBOutput) {
-                        Text("Maestro USB (Recommended)").tag(0)
-                        Text("USB Audio (No Keyboard Volume)").tag(1)
-                    }
-                    .help("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
-                }
-
-                Picker("Monitoring Mode", selection: $routingMode) {
-                    Text("DAW").tag(0)
-                    Text("Direct Monitor").tag(1)
-                }
-                .pickerStyle(.segmented)
-                // Hardware-backed, unlike the rest of this section, so it carries
-                // the load gate itself rather than inheriting one from the Section.
-                .disabled(isLoading)
-                .onChange(of: routingMode) { _, newMode in
-                    guard !isLoading else { return }
-                    if let xpcDev = appState.device as? XPCDeviceConnection {
-                        xpcDev.setRoutingMode(newMode)
-                        if newMode == 0 {
-                            // DAW: force-mute all HW inputs on both mixers
-                            for mixerID: UInt16 in 1...2 {
-                                for ch: UInt16 in 0..<32 {
-                                    xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                                }
-                            }
-                        } else {
-                            // Direct Monitor: restore persisted mute state
-                            for mixerIdx in 0..<2 {
-                                let key = "mixerState_\(mixerIdx)"
-                                let mixerID = UInt16(mixerIdx + 1)
-                                if let data = UserDefaults.standard.data(forKey: key),
-                                   let saved = try? JSONDecoder().decode([MixerChannelState].self, from: data) {
-                                    for (ch, state) in saved.enumerated() {
-                                        xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: UInt16(ch), value: state.isMuted ? 1 : 0)
-                                    }
-                                } else {
-                                    for ch: UInt16 in 0..<32 {
-                                        xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 0)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    appState.routingModeChangeCount += 1
-                }
-                .help("DAW mode disables hardware input passthrough — your DAW controls what you hear. Direct Monitor enables zero-latency 1:1 input-to-output passthrough for monitoring without a DAW.")
             }
+            clockSection
+            connectionSection
+            vbusSection
+            if showsVolumeKeys { volumeKeysSection }
+            frontPanelSection
+            cardsSection
+            namingSection
+            infoSection
 
             if let error = errorMessage {
                 Section("Status") {
@@ -381,7 +296,7 @@ struct DeviceSettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Device Settings")
-        .redacted(reason: isLoading ? .placeholder : [])
+        .redacted(reason: showsPlaceholder ? .placeholder : [])
         // Redaction is cosmetic -- it greys the content out and still delivers every
         // click. Combined with the `guard !isLoading` in each onChange, that silently
         // THREW AWAY the user's change: the picker moved to the new value, nothing was
@@ -397,8 +312,924 @@ struct DeviceSettingsView: View {
         // that is taking 30 s. Only the controls whose onChange would drop the write
         // need to refuse the click.
         .animation(.easeIn(duration: 0.15), value: isLoading)
+        // Two loads, each on the trigger it always had. `settingsLoadID` includes
+        // `viewReloadToken`, so every read that moved to `loadSettings` still runs
+        // on each trigger it ran on before, and nothing is read twice.
         .task(id: settingsLoadID) {
             await loadSettings()
+        }
+        .task(id: appState.viewReloadToken) {
+            await loadProperties()
+        }
+        .task { await reconcileSampleRate() }
+        // Same reason as the About box: pick up an activation that finished after launch.
+        .onAppear {
+            appState.refreshInstalledDexts()
+            appState.refreshOriginalApogeeDrivers()
+            if let status = SystemExtensionInstaller.shared.lastStatus {
+                presentDextStatus(status, showAlert: true)
+            }
+            SystemExtensionInstaller.shared.onStatusChange = { status in
+                presentDextStatus(status, showAlert: true)
+                dextActionInFlight = false
+                appState.refreshInstalledDexts()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            // The user may have enabled or disabled the extension in System Settings
+            // while Maestro remained open. Refresh the database when we return so the
+            // row and action link never require a relaunch to become accurate.
+            appState.refreshInstalledDexts()
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            // Loop Sync's measured lock has to be asked for: each read is a
+            // ClockRateAndLock query to both units, and it is also the retry for
+            // restoring saved Loop Sync settings. Only with two Symphony I/Os at
+            // 64 channels, and only while this page is in front.
+            // The driver list is not refreshed here: the app-wide loop in
+            // AppShell already does that every two seconds whatever is on
+            // screen, including while System Settings shows its sheet.
+            while !Task.isCancelled {
+                if appState.loopSyncVisible { await appState.refreshLoopSync() }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+        .alert(dextAlertTitle, isPresented: $showDextActionAlert) {
+            switch dextAlertTitle {
+            case "Enable the Maestro ThunderBridge Driver Extension", "Maestro ThunderBridge Driver Extension Setup Failed":
+                Button("Open Driver Extensions…", action: openDriverExtensions)
+                Button("Later", role: .cancel) { }
+            default:
+                Button("OK", role: .cancel) { }
+            }
+        } message: {
+            Text(dextAlertMessage)
+        }
+    }
+
+    // MARK: - Sections, in page order
+
+    // P3F-21: Mode-aware Clock section
+    @ViewBuilder private var clockSection: some View {
+        Section {
+            if appState.activeUnit == .b, let unitB = appState.unitB {
+                if appState.loopSyncVisible {
+                    LoopSyncControls(appState: appState)
+                } else {
+                    LabeledContent("Clock Source", value: unitB.clockSourceName)
+                }
+                LabeledContent("Sample Rate", value: formatSampleRate(sampleRate))
+            } else {
+                Group {
+                    // Sample Rate first, then Clock Source, then Loop Sync.
+                    Picker("Sample Rate", selection: $sampleRate) {
+                        if availableRates.isEmpty {
+                            // Keep the initial 0-valued selection valid while the
+                            // asynchronous device query is still in flight.
+                            Text("Loading…").tag(0.0)
+                        } else {
+                            ForEach(availableRates, id: \.self) { rate in
+                                Text(formatSampleRate(rate)).tag(rate)
+                            }
+                        }
+                    }
+                    .disabled(isLoading || isProToolsMode || rateSettling || appState.hardwareWritesSuspended)
+                    .maestroHelp("Set the Symphony's sample rate. An audio application with a session open, such as a DAW, may set its own rate instead.")
+                    .onChange(of: sampleRate) { _, newRate in
+                        // Our own assignment, not the user's. This is checked BEFORE
+                        // the loading guard and the marker is always consumed: the
+                        // first load sets the rate while `isLoading` is true, and
+                        // returning at that guard first left the marker armed at the
+                        // launch rate, where it swallowed the user's first deliberate
+                        // return to that rate (the pick showed, nothing was sent, and
+                        // the picker snapped back two seconds later).
+                        let mine = programmaticRate
+                        programmaticRate = nil
+                        if let mine, abs(mine - newRate) < 1.0 { return }
+                        guard !isLoading, !appState.hardwareWritesSuspended else { return }
+                        // One writer at a time, and the flag goes up HERE rather than
+                        // inside the task: between this closure and the task's first
+                        // line the reconcile loop could otherwise get a turn, read the
+                        // not-yet-changed hardware, and snap the picker back.
+                        rateWriteTask?.cancel()
+                        rateWriteInFlight = true
+                        rateSettling = true
+                        rateWriteGeneration += 1
+                        let generation = rateWriteGeneration
+                        rateWriteTask = Task {
+                            await writeSampleRate(newRate, generation: generation)
+                        }
+                    }
+
+                    // The non-master's source is dictated by the topology.
+                    if appState.loopSyncState?.settings.effectiveMaster == .b {
+                        LabeledContent("Clock Source", value: "Loop Sync")
+                    } else {
+                        Picker("Clock Source", selection: $clockSource) {
+                            ForEach(clockSourceChoices) { choice in
+                                Text(choice.name).tag(choice.id)
+                            }
+                        }
+                        .disabled(isProToolsMode)
+                        .maestroHelp("Where the Symphony takes its clock from: Internal (its own crystal), Word Clock (the rear-panel BNC input), or a card's digital input.")
+                        .onChange(of: clockSource) { _, newSource in
+                            guard !isLoading else { return }
+                            // A readback, not a selection: do not send the device the
+                            // value it just reported.
+                            if programmaticClockSource == newSource {
+                                programmaticClockSource = nil
+                                return
+                            }
+                            programmaticClockSource = nil
+                            Task { await writeClockSource(newSource) }
+                        }
+                        // The source changed outside this menu (Audio MIDI Setup, a
+                        // DAW, the driver): show it, and do not send it back.
+                        .onChange(of: appState.reportedClockSource) { _, reported in
+                            guard !isLoading, !appState.convertersIdentified, let reported,
+                                  let row = ClockSourceMenu.row(for: reported, in: clockSourceChoices),
+                                  row != clockSource else { return }
+                            programmaticClockSource = row
+                            clockSource = row
+                        }
+                        // The rows change when the board types arrive or a card
+                        // changes. Keep the selection on the row for the same source
+                        // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and
+                        // do not send it: nothing was chosen.
+                        .onChange(of: clockSourceChoices.map(\.id)) { _, ids in
+                            guard !ids.contains(clockSource),
+                                  let row = ClockSourceMenu.row(for: clockSource, in: clockSourceChoices),
+                                  row != clockSource else { return }
+                            programmaticClockSource = row
+                            clockSource = row
+                        }
+                    }
+                    if unitBFollowsUnitA && appState.loopSyncState?.settings.effectiveMaster != .b {
+                        Text(ClockSourceMenu.loopSyncUnavailableNote)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if appState.loopSyncVisible { LoopSyncControls(appState: appState) }
+
+                    if isProToolsMode {
+                        Text("Clock settings are controlled by Pro Tools")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    // Single-unit status keeps its existing read path.
+                    if !appState.loopSyncVisible {
+                        HStack {
+                            Text("Clock Status")
+                            Spacer()
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(!appState.routingHardwareAvailable ? Color.gray : shownClockLocked ? .green : .red)
+                                    .frame(width: 8, height: 8)
+                                Text(!appState.routingHardwareAvailable ? "—" : PortStatusMessage.clock(locked: shownClockLocked))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
+                                    .foregroundStyle(.secondary)
+                                Button { showClockStatusInfo.toggle() } label: {
+                                    Image(systemName: "info.circle")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("About Clock Status")
+                                .maestroHelp("Explain Ready and Clock Mismatch.")
+                                // Same look as the Ports and Audio Interface
+                                // Mode pop-ups: left-aligned (the row's trailing
+                                // alignment would otherwise carry into it).
+                                .popover(isPresented: $showClockStatusInfo, arrowEdge: .bottom) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        ForEach(PortStatusMessage.clockInfoParagraphs, id: \.self) { paragraph in
+                                            Text(LocalizedStringKey(paragraph))
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        SeeHelpLink(section: .clock, appState: appState, popover: $showClockStatusInfo)
+                                    }
+                                    .font(.callout)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(width: 340, alignment: .leading)
+                                    .padding(14)
+                                }
+                            }
+                        }
+                    }
+                }
+                .disabled(isLoading)
+            }
+        } header: {
+            Text("Clock")
+        } footer: {
+            if showsBothUnitsFooter { Text("Applies to both units.") }
+        }
+    }
+
+    @ViewBuilder private var connectionSection: some View {
+        Section("Connection") {
+            if appState.connectionMode == .hardware {
+                if appState.activeUnit == .b {
+                    LabeledContent("Device Name", value: "Symphony I/O")
+                    LabeledContent("Connection", value: appState.connectionLabel)
+                } else if let info = parsedFirmware {
+                    LabeledContent("Device Name",
+                                   value: appState.connectedUnit?.modelName ?? info.deviceName ?? "Symphony I/O")
+                    LabeledContent("Connection", value: appState.connectionLabel)
+                }
+
+                // EXPERIMENT (64 channels): only with a driver that reports
+                // the two-port experiment on.
+                // Stage 2: the same setting Audio MIDI Setup shows as
+                // "Source" (named after the device there, for the Sound
+                // menu), with plain labels here. Shown only when the
+                // device publishes it. Its port-2 detail rows are in Info.
+                if let port2 = appState.secondPortState, appState.portSelection.selection != nil {
+                    let shown = PortsPresentation(model: appState.portSelection, state: port2)
+                    LabeledContent {
+                        HStack(spacing: 6) {
+                            if shown.isChecking {
+                                ProgressView().controlSize(.small)
+                            }
+                            // A menu, not a Picker: a Picker whose value
+                            // stays at 32 while 64 is tried animates
+                            // the pick reverting (garbled label), and
+                            // showing 64 first then snapping back read
+                            // as broken. The label is what runs.
+                            Menu {
+                                ForEach(PortSelection.allCases) { choice in
+                                    Button {
+                                        appState.choosePortSelection(choice)
+                                    } label: {
+                                        if choice == shown.shownSelection {
+                                            Label(choice.pickerLabel, systemImage: "checkmark")
+                                        } else {
+                                            Text(choice.pickerLabel)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Text(shown.shownSelection.pickerLabel)
+                            }
+                            .accessibilityLabel("Symphony Source")
+                            .fixedSize()
+                            .maestroHelp("Choose 32 channels or 64 channels from two Symphony I/Os.")
+                            .disabled(!appState.portSelection.canChoose)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("Symphony Source")
+                                Button { showPortsInfo.toggle() } label: {
+                                    Image(systemName: "info.circle")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("About Ports")
+                                .maestroHelp("Explain the available channel counts.")
+                                // Same look as the Audio Interface Mode popover:
+                                // left-aligned (the row's trailing alignment
+                                // would otherwise carry into the popover).
+                                .popover(isPresented: $showPortsInfo, arrowEdge: .bottom) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(PortSelection.infoText)
+                                        SeeHelpLink(section: .twoUnits, appState: appState, popover: $showPortsInfo)
+                                    }
+                                    .font(.callout)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(width: 340, alignment: .leading)
+                                    .padding(14)
+                                }
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(PortSelection.explanationLines, id: \.self) { Text($0) }
+                        if let status = shown.statusLine {
+                            if shown.statusIsRefusal {
+                                // A refused request: stands apart from the
+                                // grey explanation lines above it.
+                                Label(status, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                                    .padding(.top, 4)
+                            } else {
+                                Text(status).padding(.top, 2)
+                            }
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                // Same action as the File > Rescan menu item; one concept,
+                // one name. This copy is gated on connectionMode == .hardware
+                // so it is only ever visible once a device is ALREADY found,
+                // which is why the menu item exists as well.
+                Button("Rescan") {
+                    Task { await appState.reconnectHardware() }
+                }
+                .maestroHelp("Re-establish the link to Symphony and rebuild the audio "
+                      + "path. Same as File > Rescan (⌘R).")
+            } else if appState.connectionMode == .simulated, let unit = appState.connectedUnit {
+                // Converter simulation: the same rows a real converter gets.
+                LabeledContent("Device Name", value: unit.modelName ?? "Unknown unit")
+                LabeledContent("Connection", value: "Converter simulation — no hardware")
+            } else if appState.connectionMode == .simulated, appState.cardSimulation != nil {
+                // Card-simulation harness: say so, so a screenshot of this
+                // page is self-describing.
+                LabeledContent("Device Name", value: "Symphony I/O (simulated)")
+                LabeledContent("Connection", value: "Card simulation — no hardware")
+            } else {
+                LabeledContent("Connection", value: "Offline")
+            }
+        }
+    }
+
+    // The original's System Setup › "VBus" pop-up
+    // (og_source/symphonymk1/ext/maestro2/App/Views/
+    // APSystemSymphonySetupView.xib:131-230, the label at :283), in its own
+    // section after Connection. ThunderBridge and the PCIe card only.
+    @ViewBuilder private var vbusSection: some View {
+        if appState.vbusShown {
+            let reason = appState.vbusUnavailableReason
+            let choice = appState.vbusChoice
+            let status = reason == nil ? appState.vbusStatusLine : nil
+            let note = reason == nil ? appState.vbusReopenNote : nil
+            Section("VBus") {
+                LabeledContent {
+                    Picker("VBus", selection: Binding(
+                        get: { reason == nil ? choice : VBusChannels.none },
+                        set: { appState.chooseVBus($0) }
+                    )) {
+                        ForEach(VBusChannels.allCases) { entry in
+                            Text(entry.label).tag(entry)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .maestroHelp("Add virtual channels for sending audio between applications.")
+                    .disabled(reason != nil || !appState.vbusDriverSupports)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("VBus")
+                        Button { showVBusInfo.toggle() } label: {
+                            Image(systemName: "info.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(VBusChannels.infoTitle)
+                        .maestroHelp("Explain VBus.")
+                        // Same look as the Ports and Clock Status popovers:
+                        // left-aligned, with Apogee's article as a link.
+                        .popover(isPresented: $showVBusInfo, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(VBusChannels.infoTitle)
+                                    .font(.headline)
+                                ForEach(VBusChannels.infoParagraphs, id: \.self) { paragraph in
+                                    Text(paragraph)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                Link(VBusChannels.apogeeArticleTitle, destination: VBusChannels.apogeeArticleURL)
+                                SeeHelpLink(section: .vbus, appState: appState, popover: $showVBusInfo)
+                            }
+                            .font(.callout)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: 340, alignment: .leading)
+                            .padding(14)
+                        }
+                    }
+                }
+                if let range = appState.vbusDeviceChannels {
+                    LabeledContent("Device channels", value: range)
+                }
+                if reason != nil || status != nil || note != nil {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let reason {
+                            Label(reason, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        }
+                        if let status {
+                            Text(status)
+                        }
+                        // Same caution style as the Ports message for a
+                        // refused 64 channels.
+                        if let note {
+                            Label(note, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .padding(.top, status == nil ? 0 : 4)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    // The original's "Keyboard Volume Control": Peripheral (hidden with one
+    // monitor device or none) and Audio Output
+    // (og_source/symphonymk1/ext/maestro2/App/Controllers/
+    // APSystemKeyboardVolumeControlViewController.m:41-84; the labels are in
+    // Views/APSystemKeyboardVolumeControlView.xib:175, 210, 233).
+    @ViewBuilder private var volumeKeysSection: some View {
+        let unit = volumeKeysUnit
+        let output = appState.keyboardVolumeOutput(for: unit)
+        let speakerMode = appState.keyboardVolumeSpeakerMode(for: unit)
+        Section {
+            if hasTwoMonitorDevices {
+                Picker("Peripheral", selection: Binding(
+                    get: { appState.monitorDevice },
+                    set: { unit in
+                        guard unit != appState.monitorDevice else { return }
+                        appState.chooseMonitorDevice(unit)
+                        appState.markSetupEdited(.deviceSettings)
+                    }
+                )) {
+                    Text(KeyboardVolumeOutput.peripheralName(prefix: appState.peripheralPrefix, name: "Symphony I/O"))
+                        .tag(DeviceUnit.a)
+                    Text(KeyboardVolumeOutput.peripheralName(prefix: appState.unitBPeripheralPrefix, name: "Symphony I/O"))
+                        .tag(DeviceUnit.b)
+                }
+                .pickerStyle(.menu)
+                .maestroHelp("Which Symphony I/O the Mac's volume and mute keys control.")
+            }
+            if appState.keyboardVolumeOutputAvailable {
+                Picker(selection: Binding(
+                    get: { appState.keyboardVolumeOutput(for: unit) },
+                    set: { output in
+                        guard output != appState.keyboardVolumeOutput(for: unit) else { return }
+                        appState.chooseKeyboardVolumeOutput(output, unit: unit)
+                        appState.markSetupEdited(.deviceSettings)
+                    }
+                )) {
+                    ForEach(appState.keyboardVolumeEntries(for: unit), id: \.self) { entry in
+                        Text(entry.label(speakerMode: speakerMode)).tag(entry)
+                    }
+                } label: {
+                    InfoLabel(title: "Audio Output", paragraphs: SettingsInfoText.audioOutput,
+                              helpSection: .volumeKeys, appState: appState)
+                }
+                .pickerStyle(.menu)
+                .maestroHelp(appState.converterVolumeKeys
+                    ? "What the Mac's volume and mute keys control: the level of Mixer 1, or nothing."
+                    : "Which output the Mac's volume and mute keys control.")
+            } else if appState.keyboardVolumeUnavailableReason != nil {
+                // An older USB helper: the keys move the speaker, and that is shown.
+                Picker("Audio Output", selection: .constant(KeyboardVolumeOutput.speakers)) {
+                    Text(KeyboardVolumeOutput.speakers.label(speakerMode: appState.speakerOutputMode))
+                        .tag(KeyboardVolumeOutput.speakers)
+                }
+                .pickerStyle(.menu)
+                .disabled(true)
+            }
+        } header: {
+            Text("Volume Keys")
+        } footer: {
+            if let reason = appState.keyboardVolumeUnavailableReason {
+                Text(reason)
+            } else if appState.keyboardVolumeOutputAvailable {
+                if output == .speakers, output.keysDoNothing(speakerMode: speakerMode) {
+                    Text("With Analog Out Format set to Line on the Output page, the volume keys do not change a level with Speaker chosen; the mute key still mutes the speaker output. Choose Headphone 1 or Headphone 2 to control a headphone.")
+                } else if output == .mixer1Level {
+                    Text("The keys turn Mixer 1 down and up. It is heard only on outputs fed from Mixer 1 in Output Routing.")
+                } else if output == .none {
+                    Text("The volume keys do nothing, and Mixer 1 is not turned down by them.")
+                }
+            }
+        }
+        .task(id: unit) {
+            if unit == .b { await appState.refreshUnitBSpeakerMode() }
+        }
+    }
+
+    // P3F-52: Front panel meter bank sources, and the meter hold times. One
+    // section: the User's Guide's front-panel meter view (p. 65 item 2) and
+    // the Peak/Over hold times (p. 77) used to sit on two different pages.
+    // Clearing meters is on the toolbar as Clear Meters (Cmd+K), which is also
+    // where Apogee puts it.
+    @ViewBuilder private var frontPanelSection: some View {
+        Section("Front Panel") {
+            // P3F-52: Per-bank source selection (eMaestroEnum_MetersShowValues).
+            // Element 1 = bank 1, element 2 = bank 2.
+            // Evidence: og_source/generic/mAEstroTypes.h:17-39,
+            //           og_source/maestro2/App/Controllers/APDeviceMetersViewController.m:205-246
+            Picker("Bank 1 Source", selection: $meterBank1Source) {
+                ForEach(meterSourceOptions, id: \.0) { opt in
+                    Text(opt.1).tag(opt.0)
+                }
+            }
+            .maestroHelp("Choose which inputs or outputs this front-panel meter bank shows.")
+            .onChange(of: meterBank1Source) { _, newValue in
+                guard !isLoading else { return }
+                Task {
+                    await writeProperty(.metersShowInput, element: 1, value: .uint32(newValue))
+                }
+            }
+
+            Picker("Bank 2 Source", selection: $meterBank2Source) {
+                ForEach(meterSourceOptions, id: \.0) { opt in
+                    Text(opt.1).tag(opt.0)
+                }
+            }
+            .maestroHelp("Choose which inputs or outputs this front-panel meter bank shows.")
+            .onChange(of: meterBank2Source) { _, newValue in
+                guard !isLoading else { return }
+                Task {
+                    await writeProperty(.metersShowInput, element: 2, value: .uint32(newValue))
+                }
+            }
+
+            Picker("Peak Hold", selection: $peakHoldMode) {
+                ForEach(peakHoldOptions, id: \.0) { val, name in
+                    Text(name).tag(val)
+                }
+            }
+            .maestroHelp("How long peak indications are held, on Maestro's meters and the Symphony's front panel.")
+            .onChange(of: peakHoldMode) { _, newValue in
+                guard !isLoading else { return }
+                Task {
+                    await writeProperty(.peakHoldMode, value: .uint32(newValue))
+                }
+            }
+
+            Picker("Over Hold", selection: $overHoldMode) {
+                ForEach(overHoldOptions, id: \.0) { val, name in
+                    Text(name).tag(val)
+                }
+            }
+            .maestroHelp("How long over indications are held, on Maestro's meters and the Symphony's front panel.")
+            .onChange(of: overHoldMode) { _, newValue in
+                guard !isLoading else { return }
+                Task {
+                    await writeProperty(.oversHoldMode, value: .uint32(newValue))
+                }
+            }
+        }
+        .disabled(isLoading)
+    }
+
+    // S/PDIF Coax Replace/Mirror are not here — controls are in the Input tab
+    // (SPDIF Replace) and Output tab (SPDIF Mirrors) inline with DIGITAL section.
+    // Evidence: og_source APDeviceSettingsTabRowViewController.m has no SPDIF segments.
+    @ViewBuilder private var cardsSection: some View {
+        // Insert Labels — User's Guide p.65 item 4: "If you have a Mic Pre
+        // module installed, this section lets you customize the Insert
+        // labels." Shown only with a usable MicPre, exactly as the Guide
+        // describes and as the rest of the MicPre surface is gated.
+        //
+        // Names are keyed by INSERT and shared across every channel: the
+        // daemon re-notifies all eight channels after one rename
+        // (SymphonyIOBoard_MicPre8ch.cpp:590-593). Clearing a field restores
+        // the default, matching the daemon's empty-string behaviour.
+        //
+        // These are app-side. Legacy held them in daemon memory as
+        // kmAEstroPropertyInsertNameForID ('AEiv'); with no daemon they live
+        // in UserDefaults, and the user-visible behaviour is the same.
+        let hasOptical = layout.hasOpticalPorts(slot: 0) || layout.hasOpticalPorts(slot: 1)
+        let hasMicPre = InputChannelLogic.micPreIsUsable(
+            primary: appState.unitPrimaryBoardType, secondary: appState.unitSecondaryBoardType)
+        if hasOptical || hasMicPre {
+            Section("Cards") {
+                // P3F-17: Optical format — per card (matching original Maestro 2)
+                // Per slot, and only for a module that HAS optical ports — a 16x16
+                // has none at all (user guide p. 11), so a format picker for it
+                // writes a setting nothing can act on.
+                if hasOptical {
+                    Group {
+                        if layout.hasOpticalPorts(slot: 0) {
+                            Picker("Card 1", selection: opticalFormatSelection(card: 0)) {
+                                if opticalFormatCard1 == nil {
+                                    Text("Unavailable").tag(nil as UInt32?)
+                                }
+                                // The original's two choices, by name
+                                // (APDeviceOpticalFormatView.xib:126, 149).
+                                Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
+                                Text("SPDIF").tag(UInt32(1) as UInt32?)
+                            }
+                            .maestroHelp("Choose whether this card's optical ports use ADAT/SMUX or S/PDIF format.")
+                        }
+
+                        if layout.hasOpticalPorts(slot: 1) {
+                            Picker("Card 2", selection: opticalFormatSelection(card: 1)) {
+                                if opticalFormatCard2 == nil {
+                                    Text("Unavailable").tag(nil as UInt32?)
+                                }
+                                Text("ADAT/SMUX").tag(UInt32(0) as UInt32?)
+                                Text("SPDIF").tag(UInt32(1) as UInt32?)
+                            }
+                            .maestroHelp("Choose whether this card's optical ports use ADAT/SMUX or S/PDIF format.")
+                        }
+                    }
+                    .disabled(isLoading || isWritingOpticalFormat)
+                }
+
+                if hasMicPre {
+                    ForEach(1...InsertLabels.count, id: \.self) { id in
+                        insertLabelField(UInt32(id))
+                    }
+                    if insertLabels.hasAnyCustom {
+                        Button("Reset Insert Labels") {
+                            var labels = insertLabels
+                            labels.resetAll()
+                            saveInsertLabels(labels)
+                        }
+                        .maestroHelp("Restore the default names, Insert 1 through Insert 8.")
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var namingSection: some View {
+        Section("Naming") {
+            Picker("Peripheral Prefix", selection: $peripheralPrefix) {
+                ForEach(Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init), id: \.self) { letter in
+                    Text(letter).tag(letter)
+                }
+            }
+            .onChange(of: peripheralPrefix) { _, newValue in
+                guard !isLoading else { return }
+                appState.unitPeripheralPrefix = CardLayout.peripheralPrefix(newValue)
+                Task { await writeProperty(.prefix, value: .string(newValue)) }
+            }
+        }
+        .disabled(isLoading)
+    }
+
+    /// Read-only facts: what hardware this is, and the driver extension serving it.
+    /// The app's own version lines are in App Settings › About.
+    @ViewBuilder private var infoSection: some View {
+        Section {
+            // P3F-20: Audio Interface Mode (read-only; set on the unit)
+            LabeledContent {
+                Text(deviceModeNames[deviceMode] ?? "Unknown")
+                    .foregroundStyle(.secondary)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Audio Interface Mode")
+                    // The mode is read-only here -- it can only be changed on the
+                    // unit itself -- so the how-to is one tap away rather than a
+                    // permanent caption line under a row nobody can act on.
+                    Button { showAIMInfo.toggle() } label: {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .maestroHelp(Self.aimExplainer)
+                    .accessibilityLabel("About Audio Interface Mode")
+                    .popover(isPresented: $showAIMInfo, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(Self.aimExplainer)
+                            Text("Maestro works in Symphony and USB modes. What each "
+                                 + "of the four modes is for is in Help.")
+                                .foregroundStyle(.secondary)
+                            SeeHelpLink(section: .interfaceMode, appState: appState, popover: $showAIMInfo)
+                        }
+                        .font(.callout)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 300, alignment: .leading)
+                        .padding(14)
+                    }
+                }
+            }
+
+            if appState.connectionMode == .hardware {
+                if appState.activeUnit == .b {
+                    ForEach(appState.unitBDeviceInfo.rows, id: \.label) { row in
+                        LabeledContent(row.label, value: row.value)
+                    }
+                } else {
+                    // Device Name and Connection are in the Connection section.
+                    // Mode and Channel Count only when Device Name does not
+                    // already say them.
+                    let report = currentDeviceReport()
+                    ForEach(Array(report.identityRows.dropFirst(2).enumerated()), id: \.offset) { _, row in
+                        LabeledContent(row.label, value: row.value)
+                    }
+                    if let hw = report.hardwareID { LabeledContent("Hardware ID", value: hw) }
+                    if let info = parsedFirmware {
+                        if let system = appState.converterSystem {
+                            // One row per unit, by port, in the order they are cabled.
+                            ConverterUnitRows(appState: appState, system: system)
+                        } else if let unit = appState.connectedUnit {
+                            // One row per unit, in the order they are cabled.
+                            ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
+                                LabeledContent(row.label, value: row.value)
+                            }
+                        }
+                        if appState.connectedUnit == nil {
+                            LabeledContent("Firmware", value: DeviceInfoReport.versionText(info.firmwareVersion))
+                            LabeledContent("FPGA Version", value: DeviceInfoReport.versionText(info.fpgaVersion))
+                        }
+                        // Board types, with provenance. Never present a cached
+                        // value as a measurement — card detection fails on USB.
+                        if appState.connectedUnit != nil {
+                            // A converter has no option cards. Saying "not
+                            // detected" for them would read as a fault.
+                            Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            LabeledContent("IOBoard 1", value: DeviceInfoReport.boardLine(
+                                board1Reading, version: info.ioBoard1Version,
+                                hardwareVersion: report.board1HardwareVersion))
+                                .maestroHelp(board1Reading.detailedText)
+                            LabeledContent("IOBoard 2", value: DeviceInfoReport.boardLine(
+                                board2Reading, version: info.ioBoard2Version,
+                                hardwareVersion: report.board2HardwareVersion))
+                                .maestroHelp(board2Reading.detailedText)
+                        }
+                        if appState.connectedUnit == nil, let notice = boardDetectionNotice {
+                            Label(notice, systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        // Over ThunderBridge the XMOS version is the Overall
+                        // reading shown as Firmware above (SymphonyIO.cpp:1436-1442).
+                        if appState.connectedUnit == nil, report.showsXMOS {
+                            LabeledContent("XMOS Version", value: DeviceInfoReport.versionText(info.xmosVersion))
+                        }
+                    } else {
+                        LabeledContent("Firmware Version", value: DeviceInfoReport.versionText(firmwareVersion))
+                    }
+                }
+
+                if let system = appState.cardLayout.converterLayout {
+                    // The host channels the converters use, port 1's first.
+                    LabeledContent("Inputs", value: "\(system.hostInputCount)")
+                    LabeledContent("Outputs", value: "\(system.hostOutputCount)")
+                } else if let channels = appState.connectedUnit?.channels {
+                    // The link always carries 32 channels; these are the
+                    // ones the converter itself has.
+                    LabeledContent("Inputs", value: "\(channels.inputs)")
+                    LabeledContent("Outputs", value: "\(channels.outputs)")
+                }
+
+                // The port-2 detail rows; the Ports choice itself is in Connection.
+                // One unit at 32 channels: one line, not five.
+                if let port2 = appState.secondPortState {
+                    if port2.experimentOn {
+                        LabeledContent(SecondPortState.port1Label, value: SecondPortState.port1Value)
+                    }
+                    if port2.isNotInUse(sixtyFourSelected: appState.portSelection.sixtyFourSelected) {
+                        LabeledContent(SecondPortState.notInUseLabel, value: SecondPortState.notInUseValue)
+                    } else if appState.portSelection.selection != nil {
+                        let shown = PortsPresentation(model: appState.portSelection, state: port2)
+                        ForEach(Array(shown.rows.filter { !port2UnitsListedAbove || !$0.label.hasPrefix("Port 2 Unit") }
+                            .enumerated()), id: \.offset) { _, row in
+                            LabeledContent(row.label, value: row.value)
+                        }
+                    } else {
+                        // A stage-1 driver (no selector): its rows as before.
+                        ForEach(Array(port2.deviceInfoRows.filter { !port2UnitsListedAbove || !$0.label.hasPrefix("Port 2 Unit") }
+                            .enumerated()), id: \.offset) { _, row in
+                            LabeledContent(row.label, value: row.value)
+                        }
+                    }
+                }
+            } else if appState.connectionMode == .simulated, let unit = appState.connectedUnit {
+                if let system = appState.converterSystem {
+                    ConverterUnitRows(appState: appState, system: system)
+                } else {
+                    ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
+                        LabeledContent(row.label, value: row.value)
+                    }
+                }
+                Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let system = appState.cardLayout.converterLayout {
+                    LabeledContent("Inputs", value: "\(system.hostInputCount)")
+                    LabeledContent("Outputs", value: "\(system.hostOutputCount)")
+                } else if let channels = unit.channels {
+                    LabeledContent("Inputs", value: "\(channels.inputs)")
+                    LabeledContent("Outputs", value: "\(channels.outputs)")
+                }
+            } else if appState.connectionMode == .simulated, let sim = appState.cardSimulation {
+                // Card-simulation harness: name the forced boards with their
+                // `simulated` provenance so a screenshot of this panel is
+                // self-describing.
+                LabeledContent("IOBoard 1", value: DeviceInfoReport.boardLine(board1Reading, version: nil))
+                    .maestroHelp(board1Reading.detailedText)
+                LabeledContent("IOBoard 2", value: DeviceInfoReport.boardLine(board2Reading, version: nil))
+                    .maestroHelp(board2Reading.detailedText)
+                if let notice = boardDetectionNotice {
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let device = appState.device {
+                    // Device Name is in Connection; the mode says the channel count.
+                    LabeledContent("Mode", value: device.identifier.mode.displayName)
+                }
+                LabeledContent("Simulated Channels",
+                               value: "\(sim.totalInputChannels) in / \(sim.totalOutputChannels) out")
+            }
+
+            // The second Symphony I/O, whichever unit is shown.
+            if let unitB = appState.unitB, appState.unitPickerVisible {
+                Text("Unit B (Port 2)")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                LabeledContent("Model", value: "Symphony I/O")
+                LabeledContent("IOBoard 1", value: unitB.slotValid[0] ? unitB.slot1.productName : "Not read")
+                LabeledContent("IOBoard 2", value: unitB.slotValid[1] ? unitB.slot2.productName : "Not read")
+                LabeledContent("Prefix", value: appState.unitBPeripheralPrefix)
+                LabeledContent("Clock", value: unitB.clockSourceName)
+                LabeledContent("Set-up", value: unitB.setupComplete ? "Complete" : "Incomplete")
+                LabeledContent("Message Errors", value: "\(unitB.txErrors)")
+            }
+
+            // The driver extension serving the ThunderBridge: the other half of
+            // "what is running" for a hardware problem, previously only visible
+            // with `systemextensionsctl list` in a terminal.
+            let info = appState.softwareInfoReport
+            LabeledContent("Maestro ThunderBridge Driver Extension") {
+                HStack(spacing: 8) {
+                    Text(info.dextStatusLine)
+                        .foregroundStyle(info.dextNeedsAction ? .orange : .primary)
+                    if info.dextNeedsAction {
+                        let needsSettings = info.dextActionOpensSettings
+                        let actionTitle = needsSettings
+                            ? "Open Driver Settings…"
+                            : (dextActionInFlight ? "Working…" : "Install / Approve…")
+                        Button(actionTitle) {
+                            UserDefaults.standard.removeObject(forKey: "maestro.thunderbridge.lastPrompt")
+                            if needsSettings {
+                                openDriverExtensions()
+                            } else {
+                                dextActionInFlight = true
+                                dextActionStatus = "Requesting driver activation…"
+                                SystemExtensionInstaller.shared.activate()
+                                Task {
+                                    try? await Task.sleep(for: .seconds(1.5))
+                                    appState.refreshInstalledDexts()
+                                    dextActionInFlight = false
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(dextActionInFlight)
+                        .maestroHelp("Register or request approval for the embedded ThunderBridge driver")
+                    } else {
+                        // Keep the settings shortcut available even when the
+                        // extension is healthy, so users can review its state
+                        // without needing to manufacture an error first.
+                        Button("Open Driver Settings…", action: openDriverExtensions)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .maestroHelp("Open macOS Login Items & Extensions for the Maestro driver")
+                    }
+                }
+            }
+            if info.dextNeedsAction && info.installedDextVersion != nil && !info.driverUpdateUnfinished {
+                Text("To enable or disable: open System Settings → Login Items & Extensions → By App → Maestro → Driver Extension.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let dextActionStatus {
+                Label(dextActionStatus, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let notice = info.dextNotice {
+                Label(notice, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack {
+                Text("Info")
+                Spacer()
+                if appState.connectionMode == .hardware {
+                    Button {
+                        appState.refreshSecondPortState()
+                        // The same text as the About box: this page's device
+                        // report, then the software.
+                        appState.deviceInfoSnapshot = currentDeviceReport()
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(appState.diagnosticsText, forType: .string)
+                        showCopied = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            showCopied = false
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
+                            Text(showCopied ? "Copied!" : "Copy")
+                        }
+                        .foregroundStyle(showCopied ? .green : .secondary)
+                        .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .maestroHelp("Copy device info to clipboard")
+                }
+            }
         }
     }
 
@@ -409,7 +1240,7 @@ struct DeviceSettingsView: View {
             card == 0 ? opticalFormatCard1 : opticalFormatCard2
         } set: { newValue in
             guard !isLoading, !isWritingOpticalFormat, let newValue, newValue <= 1 else { return }
-            guard let device = appState.device, device.isConnected else {
+            guard let device = appState.unitDevice, device.isConnected else {
                 setOpticalReadback(nil, card: card)
                 errorMessage = "Device not connected. Optical format is unavailable."
                 return
@@ -426,7 +1257,7 @@ struct DeviceSettingsView: View {
         else { opticalFormatCard2 = validValue }
         // Optical channel names everywhere follow the confirmed format.
         if let validValue, card < 2 {
-            appState.channelNaming.opticalIsSPDIF[Int(card)] = validValue == 1
+            appState.unitChannelNaming.opticalIsSPDIF[Int(card)] = validValue == 1
         }
     }
 
@@ -460,8 +1291,10 @@ struct DeviceSettingsView: View {
                 throw DeviceConnectionError.transportError("Optical format readback was unavailable")
             }
             guard settingsLoadID == loadID else { return }
+            let previous = card == 0 ? opticalFormatCard1 : opticalFormatCard2
             setOpticalReadback(actual, card: card)
-            appState.rememberDigitalSetting(address.selector, slot: Int(card), value: actual)
+            appState.rememberUnitDigitalSetting(address.selector, slot: Int(card), value: actual)
+            if actual != previous { appState.markSetupEdited(.deviceSettings) }
             errorMessage = actual == format ? nil : "Card \(card + 1) did not confirm the requested optical format."
         } catch {
             guard settingsLoadID == loadID else { return }
@@ -474,7 +1307,7 @@ struct DeviceSettingsView: View {
     private func readSetting(_ selector: AudioPropertySelector, element: UInt32 = 0) async throws -> PropertyValue? {
         try Task.checkCancellation()
         do {
-            let value = try await appState.device?.getProperty(PropertyAddress(selector: selector, element: element))
+            let value = try await appState.unitDevice?.getProperty(PropertyAddress(selector: selector, element: element))
             try Task.checkCancellation()
             return value
         } catch {
@@ -491,13 +1324,13 @@ struct DeviceSettingsView: View {
         // flight, which is what .disabled(isLoading) and the guards below assume.
         let generation = UUID()
         settingsLoadGeneration = generation
-        isLoading = true
+        settingsLoading = true
         opticalFormatCard1 = nil
         opticalFormatCard2 = nil
         defer {
-            if settingsLoadGeneration == generation { isLoading = false }
+            if settingsLoadGeneration == generation { settingsLoading = false }
         }
-        guard appState.device != nil else { return }
+        guard appState.unitDevice != nil else { return }
         // P3G-25 pattern: add 30-second timeout guard to prevent permanent spinner
         // if hardware initialization never completes (daemon crash, device unplugged, etc.).
         let deadline = Date().addingTimeInterval(30)
@@ -584,7 +1417,9 @@ struct DeviceSettingsView: View {
         }
         do {
             if let over = (try await readSetting(.oversHoldMode))?.asUInt32 {
-                overHoldMode = over
+                overHoldMode = MeterDisplaySettings.OverHoldMode.allCases
+                    .first { $0.wireValue == over }?.userFacingValue.wireValue
+                    ?? MeterDisplaySettings.OverHoldMode.infinite.wireValue
             }
         } catch is CancellationError {
             return
@@ -595,7 +1430,7 @@ struct DeviceSettingsView: View {
             if let pfx = (try await readSetting(.prefix))?.asString,
                !pfx.isEmpty {
                 peripheralPrefix = String(pfx.prefix(1))
-                appState.peripheralPrefix = CardLayout.peripheralPrefix(pfx)
+                appState.unitPeripheralPrefix = CardLayout.peripheralPrefix(pfx)
             }
         } catch is CancellationError {
             return
@@ -614,9 +1449,10 @@ struct DeviceSettingsView: View {
     }
 
     private func saveInsertLabels(_ labels: InsertLabels) {
-        guard let data = try? JSONEncoder().encode(labels.storage),
+        guard labels.storage != insertLabels.storage, let data = try? JSONEncoder().encode(labels.storage),
               let json = String(data: data, encoding: .utf8) else { return }
-        insertLabelsJSON = json
+        appState.setInsertLabelsJSON(json, for: appState.activeUnit)
+        appState.markSetupEdited(.deviceSettings)
     }
 
     /// One insert's name field. Binding writes through `InsertLabels`, which
@@ -641,705 +1477,22 @@ struct DeviceSettingsView: View {
                 .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 200)
-                .help("Name for insert \(id). This name is shared by every channel. "
+                .maestroHelp("Name for insert \(id). This name is shared by every channel. "
                       + "Clear the field to go back to \"\(InsertLabels.defaultName(id))\".")
         }
     }
 
-    private func writeProperty(_ selector: AudioPropertySelector, value: PropertyValue) async {
-        guard let device = appState.device else { return }
+    private func writeProperty(_ selector: AudioPropertySelector, element: UInt32 = 0, value: PropertyValue) async {
+        guard let device = appState.unitDevice else { return }
         do {
             try await device.setProperty(
-                PropertyAddress(selector: selector),
+                PropertyAddress(selector: selector, element: element),
                 value: value
             )
+            appState.markSetupEdited(.deviceSettings)
             errorMessage = nil
         } catch {
             errorMessage = "Error: \(error.localizedDescription)"
-        }
-    }
-
-}
-
-/// Parsed firmware/device info from the 'AEt1' (versionString) daemon property.
-/// The daemon returns an XML plist string with nested dicts for USB Daemon and Symphony I/O.
-private struct FirmwareInfo {
-    var deviceName: String?
-    var firmwareVersion: String?
-    var fpgaVersion: String?
-    var hardwareID: String?
-    var ioBoard1Type: String?
-    var ioBoard1Version: String?
-    var ioBoard2Type: String?
-    var ioBoard2Version: String?
-    var xmosVersion: String?
-
-    static func parse(_ xmlString: String) -> FirmwareInfo? {
-        guard let data = xmlString.data(using: .utf8),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) else { return nil }
-
-        // The daemon returns an array of dicts (root is <array>).
-        // Each dict may have a "Children" array of component dicts.
-        // Each component dict has "name" (String) and "info" (dict with properties).
-        // Screenshot confirmed structure: [{ "Children": [{ "name": "USB Daemon", "info": { "version": "1.23.0" } },
-        //   { "name": "Symphony I/O", "info": { "FPGA version": "v73", "Hardware ID": "...",
-        //     "IOBoard1 Type": "8ch Analog-Optical", "IOBoard1 version": "v33", ... } }] }]
-        var info = FirmwareInfo()
-        info.deviceName = "Symphony I/O"
-
-        func processItems(_ items: [[String: Any]]) {
-            for item in items {
-                let name = item["name"] as? String ?? ""
-                let itemInfo = item["info"] as? [String: Any] ?? [:]
-                if name == "USB Daemon" {
-                    info.firmwareVersion = itemInfo["version"] as? String
-                } else {
-                    // Symphony I/O or similar hardware component
-                    if let v = itemInfo["FPGA version"] as? String { info.fpgaVersion = v }
-                    if let v = itemInfo["Hardware ID"] as? String { info.hardwareID = v }
-                    if let v = itemInfo["XMOS version"] as? String { info.xmosVersion = v }
-                    if let v = itemInfo["IOBoard1 Type"] as? String { info.ioBoard1Type = v }
-                    if let v = itemInfo["IOBoard1 version"] as? String { info.ioBoard1Version = v }
-                    if let v = itemInfo["IOBoard2 Type"] as? String { info.ioBoard2Type = v }
-                    if let v = itemInfo["IOBoard2 version"] as? String { info.ioBoard2Version = v }
-                }
-                if let children = item["Children"] as? [[String: Any]] {
-                    processItems(children)
-                }
-            }
-        }
-
-        if let rootArray = plist as? [[String: Any]] {
-            processItems(rootArray)
-        } else if let rootDict = plist as? [String: Any] {
-            processItems([rootDict])
-        }
-
-        guard info.firmwareVersion != nil || info.fpgaVersion != nil || info.hardwareID != nil else { return nil }
-        return info
-    }
-
-    /// Construct FirmwareInfo from static device knowledge when daemon XML is unavailable.
-    /// On macOS 26, the daemon is broken and USB vendor reads fail, so we populate
-    /// what we can from the USBDeviceIdentifier and any firmware version string we got.
-    static func fromDevice(_ device: any DeviceConnection, firmwareVersion: String) -> FirmwareInfo {
-        var info = FirmwareInfo()
-        info.deviceName = device.identifier.displayName
-        if firmwareVersion != "—" {
-            info.firmwareVersion = firmwareVersion
-        }
-        return info
-    }
-
-    /// Board type the daemon's version XML reported for a slot, if it can be
-    /// mapped onto a known module. A value here came off the device, so it counts
-    /// as a live detection.
-    func xmlBoardType(slot: Int) -> IOCardType? {
-        let label = slot == 1 ? ioBoard1Type : ioBoard2Type
-        guard let label, !label.isEmpty else { return nil }
-        return IOCardType.fromLegacyLabel(label)
-    }
-
-    /// Build the Device Info panel's content.
-    ///
-    /// Board types are passed in as `BoardTypeReading`s rather than strings so the
-    /// panel can say whether each slot was actually read back or is a stale cache.
-    func report(
-        connectionMode: String,
-        board1: BoardTypeReading,
-        board2: BoardTypeReading,
-        deviceModel: String? = nil,
-        mode: String? = nil,
-        channelCount: Int? = nil,
-        connectedUnit: String? = nil,
-        connectedUnitModel: String? = nil
-    ) -> DeviceInfoReport {
-        DeviceInfoReport(
-            deviceName: connectedUnitModel ?? deviceName ?? "Symphony I/O",
-            connection: connectionMode,
-            firmwareVersion: firmwareVersion,
-            fpgaVersion: fpgaVersion,
-            hardwareID: hardwareID,
-            xmosVersion: xmosVersion,
-            board1: board1,
-            board1Version: ioBoard1Version,
-            board2: board2,
-            board2Version: ioBoard2Version,
-            deviceModel: deviceModel,
-            mode: mode,
-            channelCount: channelCount,
-            connectedUnit: connectedUnit
-        )
-    }
-}
-
-/// System Setup view — clock, sample rate, word clock, keyboard volume, device info.
-/// Mode-aware: shows different controls for Symphony/Standalone/Pro Tools HD modes.
-///
-/// Evidence: `og_source/maestro2/App/Controllers/APSystemSetupTabRowViewController.m`
-/// Evidence: `og_source/generic/CoreAudio/mAEstro.h` — clock and sample rate properties
-struct SystemSetupView: View {
-    @Environment(AppState.self) private var appState
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var sampleRate: Double = 0
-    @State private var clockSource: UInt32 = 1  // 1 = Internal (legacy eSymphonyIOClockSource enum; 0 = Unknown)
-    /// A source this view put into `clockSource` from a readback, so the picker's
-    /// onChange can tell it from a user selection. Same idea as `programmaticRate`.
-    @State private var programmaticClockSource: UInt32?
-    @State private var propertiesLoadGeneration = UUID()
-    @State private var clockLocked: Bool = false
-    @State private var firmwareVersion: String = "—"
-    @State private var parsedFirmware: FirmwareInfo?
-    /// Slot 1 board type WITH its provenance — detected this session, restored
-    /// from cache, simulated, or genuinely unknown. Card detection (`0xA1`, a
-    /// `0xC0` vendor EP0 read) currently fails on USB, so this is very often
-    /// `.cached`; the panel must say so rather than presenting it as measured.
-    @State private var board1Reading: BoardTypeReading = .unknown
-    /// Slot 2 board type with its provenance. See `board1Reading`.
-    @State private var board2Reading: BoardTypeReading = .unknown
-    @State private var showCopied: Bool = false
-    /// Separate from `showCopied` so the two Copy buttons do not flash each other's
-    /// checkmark.
-    @State private var showSoftwareCopied: Bool = false
-    @State private var dextActionInFlight = false
-    @State private var dextActionStatus: String?
-    @State private var showDextActionAlert = false
-    @State private var dextAlertTitle = "ThunderBridge Driver"
-    @State private var dextAlertMessage = ""
-    @State private var deviceMode: UInt32 = 1  // 1=Symphony
-    @State private var wordClockOut: UInt32 = 0 // P3D-03: 0=normal, 1=divide-by-2
-    // Keyboard Volume Control removed — legacy daemon-only pref, no USB opcode.
-    // Volume keys are now handled by ASP/proxy directly.
-    @State private var peakHoldMode: UInt32 = 0   // 0=Off, 1=2sec, 2=Infinite
-    @State private var overHoldMode: UInt32 = 0   // 0=Off, 1=2sec, 2=Infinite
-    @State private var errorMessage: String?
-    @State private var isLoading = true
-    /// Set for the whole duration of a rate write, including the windows that wait
-    /// for the virtual device to follow and for a DAW to take the rate back, so the
-    /// reconcile loop leaves the picker alone until the write has resolved.
-    @State private var rateWriteInFlight = false
-    /// The in-flight rate write, cancelled when a new selection supersedes it.
-    @State private var rateWriteTask: Task<Void, Never>?
-    /// Which write is the current one.
-    ///
-    /// A write is not instantaneous -- up to about eight seconds across the set,
-    /// the follow window and the DAW watch -- and the picker stays live throughout,
-    /// so a second selection can arrive while the first is still resolving. A Bool
-    /// cannot express "still the current write": the superseded write's own
-    /// `defer` would lower the flag while the new one was mid-flight, and its
-    /// watch windows would report a rate the user had already replaced as though
-    /// something else on the Mac had taken it back. Every write compares its
-    /// generation before touching shared state, so a superseded one stays silent.
-    @State private var rateWriteGeneration = 0
-
-    /// A rate this view put into `sampleRate` itself, so the picker's onChange can
-    /// tell it apart from one the user picked. Without it, reading the hardware's
-    /// rate and showing it writes it straight back -- a pointless hardware write
-    /// on every refresh, and it clears whatever the last error said.
-    @State private var programmaticRate: Double?
-
-    // Keys 1-5 are the legacy eSymphonyIOClockSource enum values (SymphonyIOVendorSpecific.h:857-865),
-    // sent verbatim as ClockMode pData[0]. The old dict was off-by-one with invented digital
-    // "sources" (AES/EBU, S/PDIF, ADAT, Optical S/PDIF are board sub-sources, not clock sources).
-    // Each board's inputs are listed one by one with their own keys; see `ClockSourceMenu`.
-    //
-    // Over USB the Symphony runs on its internal clock only: Apogee's software
-    // offered no other source in the USB interface mode
-    // (`og_source/maestrolink/Software/SymphonyIO.cpp:1735-1738, 1754-1755`), and
-    // its daemon treated any other reading as Internal (`:6465-6466`). Offering
-    // Word Clock or IO Board here sent the unit choices it does not act on.
-    // Over ThunderBridge each fitted board is offered as its own inputs (coax,
-    // AES pairs, optical), as Apogee's software did in the Symphony mode. The
-    // optical row's name follows the rate and the board's optical format.
-    private var clockSourceChoices: [ClockSourceChoice] {
-        appState.transportType == .usb
-            ? ClockSourceMenu.usb
-            : ClockSourceMenu.thunderbolt(slot1: appState.primaryBoardType,
-                                          slot2: appState.secondaryBoardType,
-                                          sampleRate: sampleRate > 0 ? sampleRate : nil,
-                                          opticalIsSPDIF: appState.channelNaming.opticalIsSPDIF)
-    }
-
-    /// Fallback rates shown when device doesn't report available rates.
-    private static let defaultRates: [Double] = [
-        44100, 48000, 88200, 96000, 176400, 192000
-    ]
-
-    /// Rates queried from the actual device — updated in loadStatus().
-    @State private var availableRates: [Double] = defaultRates
-
-    /// Peak Hold and Over Hold are NOT the same list. Over Hold carries a fourth
-    /// mode, Auto Clear (`eSymphonyIOMeteringLEDOverHold_AutoClear` = 3,
-    /// SymphonyIOVendorSpecific.h:706-712), which Peak Hold has no equivalent of.
-    ///
-    /// One shared 3-value list used to drive both pickers here, so Auto Clear was
-    /// unreachable. Both now come from the MaestroCore enums, whose `wireValue`
-    /// is pinned by tests and whose case order IS the wire order -- legacy binds
-    /// the popup's selectedIndex straight to the property
-    /// (APSystemMetersViewController.m:69-74), so order is load-bearing.
-    private var peakHoldOptions: [(UInt32, String)] {
-        MeterDisplaySettings.PeakHoldMode.allCases.map { ($0.wireValue, $0.rawValue) }
-    }
-
-    private var overHoldOptions: [(UInt32, String)] {
-        MeterDisplaySettings.OverHoldMode.allCases.map { ($0.wireValue, $0.rawValue) }
-    }
-
-    /// Is the device in Pro Tools HD mode?
-    private var isProToolsMode: Bool { deviceMode == 3 }
-    /// Is the device in Standalone mode?
-    private var isStandaloneMode: Bool { deviceMode == 2 }
-
-    var body: some View {
-        Form {
-            // P3F-21: Mode-aware Clock section
-            Section("Clock") {
-                // Sample Rate
-                Picker("Sample Rate", selection: $sampleRate) {
-                    if availableRates.isEmpty {
-                        // Keep the initial 0-valued selection valid while the
-                        // asynchronous device query is still in flight.
-                        Text("Loading…").tag(0.0)
-                    } else {
-                        ForEach(availableRates, id: \.self) { rate in
-                            Text(formatSampleRate(rate)).tag(rate)
-                        }
-                    }
-                }
-                .disabled(isLoading || isProToolsMode)
-                .onChange(of: sampleRate) { _, newRate in
-                    guard !isLoading else { return }
-                    if let mine = programmaticRate, abs(mine - newRate) < 1.0 {
-                        programmaticRate = nil
-                        return
-                    }
-                    // One writer at a time, and the flag goes up HERE rather than
-                    // inside the task: between this closure and the task's first
-                    // line the reconcile loop could otherwise get a turn, read the
-                    // not-yet-changed hardware, and snap the picker back.
-                    rateWriteTask?.cancel()
-                    rateWriteInFlight = true
-                    rateWriteGeneration += 1
-                    let generation = rateWriteGeneration
-                    rateWriteTask = Task {
-                        await writeSampleRate(newRate, generation: generation)
-                    }
-                }
-
-                // Clock Source
-                Picker("Clock Source", selection: $clockSource) {
-                    ForEach(clockSourceChoices) { choice in
-                        Text(choice.name).tag(choice.id)
-                    }
-                }
-                .disabled(isProToolsMode)
-                .onChange(of: clockSource) { _, newSource in
-                    guard !isLoading else { return }
-                    // A readback, not a selection: do not send the device the
-                    // value it just reported.
-                    if programmaticClockSource == newSource {
-                        programmaticClockSource = nil
-                        return
-                    }
-                    programmaticClockSource = nil
-                    Task { await writeClockSource(newSource) }
-                }
-                // The rows change when the board types arrive or a card
-                // changes. Keep the selection on the row for the same source
-                // (IO Board 1 <-> AES 1-2) instead of a tag with no row, and
-                // do not send it: nothing was chosen.
-                .onChange(of: clockSourceChoices.map(\.id)) { _, ids in
-                    guard !ids.contains(clockSource),
-                          let row = ClockSourceMenu.row(for: clockSource, in: clockSourceChoices),
-                          row != clockSource else { return }
-                    programmaticClockSource = row
-                    clockSource = row
-                }
-
-                if isProToolsMode {
-                    Text("Clock settings are controlled by Pro Tools")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-
-                // Clock Lock Status
-                HStack {
-                    Text("Clock Status")
-                    Spacer()
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(clockLocked ? .green : .red)
-                            .frame(width: 8, height: 8)
-                        Text(clockLocked ? "Locked" : "Unlocked")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .disabled(isLoading)
-
-            // P3D-03: Word clock output config
-            if !isProToolsMode {
-                Section("Word Clock Output") {
-                    Picker("Word Clock Divide", selection: $wordClockOut) {
-                        Text("1:1 (Normal)").tag(UInt32(0))
-                        Text("1:2 (Divide)").tag(UInt32(1))
-                    }
-                    .pickerStyle(.menu)
-                    // Disabled: 'AEwd' word-clock divide was an Ensemble-only HAL property
-                    // (mAEstro.h:1036-1039); there is no vendor EP0 opcode for it on Symphony IO
-                    // MKI, so setProperty(.wordClockDivide) throws .unsupportedProperty and the
-                    // control never reaches hardware. Inert until a real mechanism is found.
-                    .disabled(true)
-                    .onChange(of: wordClockOut) { _, newValue in
-                        guard !isLoading else { return }
-                        Task {
-                            do {
-                                try await appState.device?.setProperty(
-                                    PropertyAddress(selector: .wordClockDivide),
-                                    value: .uint32(newValue)
-                                )
-                            } catch {
-                                print("[Maestro] ERROR: wordClockDivide setProperty failed: \(error)")
-                            }
-                        }
-                    }
-                }
-                .disabled(isLoading)
-            }
-
-            // Meters — Peak Hold and Over Hold (matching original Maestro 2 System Setup)
-            Section("Meters") {
-                Picker("Peak Hold", selection: $peakHoldMode) {
-                    ForEach(peakHoldOptions, id: \.0) { val, name in
-                        Text(name).tag(val)
-                    }
-                }
-                .onChange(of: peakHoldMode) { _, newValue in
-                    guard !isLoading else { return }
-                    Task {
-                        do {
-                            try await appState.device?.setProperty(
-                                PropertyAddress(selector: .peakHoldMode),
-                                value: .uint32(newValue)
-                            )
-                        } catch {
-                            print("[Maestro] ERROR: peakHoldMode setProperty failed: \(error)")
-                        }
-                    }
-                }
-
-                Picker("Over Hold", selection: $overHoldMode) {
-                    ForEach(overHoldOptions, id: \.0) { val, name in
-                        Text(name).tag(val)
-                    }
-                }
-                .onChange(of: overHoldMode) { _, newValue in
-                    guard !isLoading else { return }
-                    Task {
-                        do {
-                            try await appState.device?.setProperty(
-                                PropertyAddress(selector: .oversHoldMode),
-                                value: .uint32(newValue)
-                            )
-                        } catch {
-                            print("[Maestro] ERROR: oversHoldMode setProperty failed: \(error)")
-                        }
-                    }
-                }
-
-                @Bindable var mutableAppState = appState
-                Toggle("Meter Zone Coloring", isOn: $mutableAppState.showMeterZoneColoring)
-                    .help("When enabled, idle meter segments show a muted green/yellow/red gradient indicating their dB zone. When disabled, idle segments are a uniform gray.")
-            }
-            .disabled(isLoading)
-
-            Section {
-                if appState.connectionMode == .hardware {
-                    if let info = parsedFirmware {
-                        LabeledContent("Device Name",
-                                       value: appState.connectedUnit?.modelName ?? info.deviceName ?? "Symphony I/O")
-                        LabeledContent("Connection", value: appState.connectionLabel)
-                        if let unit = appState.connectedUnit {
-                            // One row per unit, in the order they are cabled.
-                            ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
-                                LabeledContent(row.label, value: row.value)
-                            }
-                        }
-                        if let fw = info.firmwareVersion { LabeledContent("Firmware", value: fw) }
-                        if let fpga = info.fpgaVersion { LabeledContent("FPGA Version", value: fpga) }
-                        if let hw = info.hardwareID { LabeledContent("Hardware ID", value: hw) }
-                        // Board types, with provenance. Never present a cached
-                        // value as a measurement — card detection fails on USB.
-                        if appState.connectedUnit != nil {
-                            // A converter has no option cards. Saying "not
-                            // detected" for them would read as a fault.
-                            Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                        LabeledContent("IOBoard 1",
-                                       value: DeviceInfoReport.boardLine(board1Reading, version: info.ioBoard1Version))
-                            .help(board1Reading.detailedText)
-                        LabeledContent("IOBoard 2",
-                                       value: DeviceInfoReport.boardLine(board2Reading, version: info.ioBoard2Version))
-                            .help(board2Reading.detailedText)
-                        }
-                        if appState.connectedUnit == nil, let notice = boardDetectionNotice {
-                            Label(notice, systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let xmos = info.xmosVersion { LabeledContent("XMOS Version", value: xmos) }
-                    } else {
-                        LabeledContent("Firmware Version", value: firmwareVersion)
-                    }
-
-                    if let channels = appState.connectedUnit?.channels {
-                        // The link always carries 32 channels; these are the
-                        // ones the converter itself has.
-                        LabeledContent("Inputs", value: "\(channels.inputs)")
-                        LabeledContent("Outputs", value: "\(channels.outputs)")
-                    } else if let device = appState.device {
-                        LabeledContent("Device Model", value: device.identifier.displayName)
-                        LabeledContent("Mode", value: device.identifier.mode.displayName)
-                        LabeledContent("Channel Count", value: "\(device.identifier.mode.channelCount)")
-                    }
-
-                    // Same action as the View > Rescan menu item; one concept,
-                    // one name. This copy is gated on connectionMode == .hardware
-                    // so it is only ever visible once a device is ALREADY found,
-                    // which is why the menu item exists as well.
-                    Button("Rescan") {
-                        Task { await appState.reconnectHardware() }
-                    }
-                    .help("Re-establish the link to Symphony and rebuild the audio "
-                          + "path. Same as View > Rescan (⌘R).")
-                } else if appState.connectionMode == .simulated, let unit = appState.connectedUnit {
-                    // Converter simulation: the same rows a real converter gets.
-                    LabeledContent("Device Name", value: unit.modelName ?? "Unknown unit")
-                    LabeledContent("Connection", value: "Converter simulation — no hardware")
-                    ForEach(Array(unit.unitRows.enumerated()), id: \.offset) { _, row in
-                        LabeledContent(row.label, value: row.value)
-                    }
-                    Label(ConnectedUnit.deviceInfoNotice, systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let channels = unit.channels {
-                        LabeledContent("Inputs", value: "\(channels.inputs)")
-                        LabeledContent("Outputs", value: "\(channels.outputs)")
-                    }
-                } else if appState.connectionMode == .simulated, let sim = appState.cardSimulation {
-                    // Card-simulation harness: say so, and name the forced boards
-                    // with their `simulated` provenance so a screenshot of this
-                    // panel is self-describing.
-                    LabeledContent("Device Name", value: "Symphony I/O (simulated)")
-                    LabeledContent("Connection", value: "Card simulation — no hardware")
-                    LabeledContent("IOBoard 1", value: DeviceInfoReport.boardLine(board1Reading, version: nil))
-                        .help(board1Reading.detailedText)
-                    LabeledContent("IOBoard 2", value: DeviceInfoReport.boardLine(board2Reading, version: nil))
-                        .help(board2Reading.detailedText)
-                    if let notice = boardDetectionNotice {
-                        Label(notice, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let device = appState.device {
-                        LabeledContent("Device Model", value: device.identifier.displayName)
-                        LabeledContent("Mode", value: device.identifier.mode.displayName)
-                        LabeledContent("Channel Count", value: "\(device.identifier.mode.channelCount)")
-                    }
-                    LabeledContent("Simulated Channels",
-                                   value: "\(sim.totalInputChannels) in / \(sim.totalOutputChannels) out")
-                } else {
-                    LabeledContent("Connection", value: "Offline")
-                }
-            } header: {
-                HStack {
-                    Text("Device Info")
-                    Spacer()
-                    if appState.connectionMode == .hardware {
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(currentDeviceReport().clipboardText, forType: .string)
-                            showCopied = true
-                            Task {
-                                try? await Task.sleep(for: .seconds(1.5))
-                                showCopied = false
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
-                                Text(showCopied ? "Copied!" : "Copy")
-                            }
-                            .foregroundStyle(showCopied ? .green : .secondary)
-                            .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Copy device info to clipboard")
-                    }
-                }
-            }
-
-            // Device Info answers "what hardware is this". This answers "what code is
-            // running", which is the other half of any bug report and was previously
-            // spread across the About box and `systemextensionsctl list` in a terminal.
-            Section {
-                let info = appState.softwareInfoReport
-                LabeledContent("Maestro", value: info.versionLine)
-                LabeledContent("macOS", value: info.osVersion)
-                LabeledContent("Audio Path", value: info.audioPath)
-                if let pciDeviceIdentifier = info.pciDeviceIdentifier {
-                    LabeledContent("PCI Device", value: pciDeviceIdentifier)
-                }
-                LabeledContent("Maestro ThunderBridge Driver Extension") {
-                    HStack(spacing: 8) {
-                        Text(info.dextStatusLine)
-                            .foregroundStyle(info.dextNeedsAction ? .orange : .primary)
-                        if info.dextNeedsAction {
-                            let needsSettings = info.dextActionOpensSettings
-                            let actionTitle = needsSettings
-                                ? "Open Driver Settings…"
-                                : (dextActionInFlight ? "Working…" : "Install / Approve…")
-                            Button(actionTitle) {
-                                UserDefaults.standard.removeObject(forKey: "maestro.thunderbridge.lastPrompt")
-                                if needsSettings {
-                                    openDriverExtensions()
-                                } else {
-                                    dextActionInFlight = true
-                                    dextActionStatus = "Requesting driver activation…"
-                                    SystemExtensionInstaller.shared.activate()
-                                    Task {
-                                        try? await Task.sleep(for: .seconds(1.5))
-                                        appState.refreshInstalledDexts()
-                                        dextActionInFlight = false
-                                    }
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(dextActionInFlight)
-                            .help("Register or request approval for the embedded ThunderBridge driver")
-                        } else {
-                            // Keep the settings shortcut available even when the
-                            // extension is healthy, so users can review its state
-                            // without needing to manufacture an error first.
-                            Button("Open Driver Settings…", action: openDriverExtensions)
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .help("Open macOS Login Items & Extensions for the Maestro driver")
-                        }
-                    }
-                }
-                if info.dextNeedsAction && info.installedDextVersion != nil && !info.driverUpdateUnfinished {
-                    Text("To enable or disable: open System Settings → Login Items & Extensions → By App → Maestro → Driver Extension.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let dextActionStatus {
-                    Label(dextActionStatus, systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let notice = info.dextNotice {
-                    Label(notice, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                LabeledContent("App Path", value: info.appPath)
-                    .help(info.appPath)
-            } header: {
-                HStack {
-                    Text("Software Info")
-                    Spacer()
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(appState.softwareInfoReport.clipboardText, forType: .string)
-                        showSoftwareCopied = true
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.5))
-                            showSoftwareCopied = false
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: showSoftwareCopied ? "checkmark" : "doc.on.doc")
-                            Text(showSoftwareCopied ? "Copied!" : "Copy")
-                        }
-                        .foregroundStyle(showSoftwareCopied ? .green : .secondary)
-                        .font(.caption)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Copy software info to clipboard")
-                }
-            }
-
-            if let error = errorMessage {
-                Section("Status") {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("System Setup")
-        .redacted(reason: isLoading ? .placeholder : [])
-        // Redaction is cosmetic -- it greys the content out and still delivers every
-        // click. Combined with the `guard !isLoading` in each onChange, that silently
-        // THREW AWAY the user's change: the picker moved to the new value, nothing was
-        // written, and the load had already taken its reading so nothing corrected the
-        // picker back. Reported as "sometimes it doesn't fire and the app shows the new
-        // rate while the device stays on the old one". The window is not small -- the
-        // loaders wait up to 30 s for hardware init and then do USB reads that fail
-        // slowly. Placeholder content must not be operable.
-        //
-        // .disabled is therefore on the hardware-backed Sections individually rather
-        // than on the Form: disabling the Form also inerts the app-side preferences
-        // and Rescan, and Rescan is exactly what someone reaches for during a load
-        // that is taking 30 s. Only the controls whose onChange would drop the write
-        // need to refuse the click.
-        .animation(.easeIn(duration: 0.15), value: isLoading)
-        .task(id: appState.viewReloadToken) {
-            await loadProperties()
-        }
-        .task { await reconcileSampleRate() }
-        // Same reason as the About box: pick up an activation that finished after launch.
-        .onAppear {
-            appState.refreshInstalledDexts()
-            if let status = SystemExtensionInstaller.shared.lastStatus {
-                presentDextStatus(status, showAlert: true)
-            }
-            SystemExtensionInstaller.shared.onStatusChange = { status in
-                presentDextStatus(status, showAlert: true)
-                dextActionInFlight = false
-                appState.refreshInstalledDexts()
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            // The user may have enabled or disabled the extension in System Settings
-            // while Maestro remained open. Refresh the database when we return so the
-            // row and action link never require a relaunch to become accurate.
-            appState.refreshInstalledDexts()
-        }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            // System Settings can present Driver Extensions as a sheet without
-            // deactivating this window. Keep the foreground status live with a tiny
-            // plist read, and stop immediately when Maestro is no longer active.
-            while !Task.isCancelled {
-                appState.refreshInstalledDexts()
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
-        .alert(dextAlertTitle, isPresented: $showDextActionAlert) {
-            switch dextAlertTitle {
-            case "Enable the Maestro ThunderBridge Driver Extension", "Maestro ThunderBridge Driver Extension Setup Failed":
-                Button("Open Driver Extensions…", action: openDriverExtensions)
-                Button("Later", role: .cancel) { }
-            default:
-                Button("OK", role: .cancel) { }
-            }
-        } message: {
-            Text(dextAlertMessage)
         }
     }
 
@@ -1365,6 +1518,10 @@ struct SystemSetupView: View {
             dextActionStatus = "Maestro ThunderBridge driver extension update is pending; reconnect ThunderBridge after closing audio applications."
             dextAlertTitle = "Driver Update Pending"
             dextAlertMessage = "macOS already has a Maestro ThunderBridge driver extension activation in progress. Close audio applications, then disconnect and reconnect the ThunderBridge to finish the update."
+        case .heldForApogeeDriver:
+            dextActionStatus = ApogeeDriverConflict.consequence
+            dextAlertTitle = ApogeeDriverConflict.heldBannerTitle
+            dextAlertMessage = ApogeeDriverConflict.heldBannerMessage
         case .failed(let message):
             dextActionStatus = "Maestro ThunderBridge driver extension setup failed: \(message)"
             dextAlertTitle = "Maestro ThunderBridge Driver Extension Setup Failed"
@@ -1381,12 +1538,14 @@ struct SystemSetupView: View {
         }
         if showAlert {
             switch status {
-            case .needsUserApproval, .willCompleteAfterReboot, .upgradePending, .failed, .notBundled:
+            case .needsUserApproval, .willCompleteAfterReboot, .upgradePending, .heldForApogeeDriver, .failed,
+                 .notBundled:
                 let token: String
                 switch status {
                 case .needsUserApproval: token = "approval"
                 case .willCompleteAfterReboot: token = "reboot"
                 case .upgradePending: token = "upgrade"
+                case .heldForApogeeDriver: token = "apogee-driver"
                 case .failed: token = "failed"
                 case .notBundled: token = "missing"
                 default: token = ""
@@ -1403,25 +1562,53 @@ struct SystemSetupView: View {
 
     // MARK: - Device Info report
 
-    /// The Device Info panel's content as one value.
+    /// The Device Settings › Info panel's content as one value.
     ///
     /// This page is the only place that knows all of it: the firmware XML it parsed, and
     /// the board readings it resolved against that XML. The About box copies the same
     /// report via `appState.deviceInfoSnapshot`, which `loadProperties` publishes.
     private func currentDeviceReport() -> DeviceInfoReport {
-        let device = appState.device
         var report = (parsedFirmware ?? FirmwareInfo()).report(
             connectionMode: appState.connectionLabel,
             board1: board1Reading,
             board2: board2Reading,
-            deviceModel: device?.identifier.displayName,
-            mode: device?.identifier.mode.displayName,
-            channelCount: device?.identifier.mode.channelCount,
+            deviceModel: appState.device?.identifier.displayName,
+            mode: identityMode,
+            channelCount: identityChannelCount,
             connectedUnit: appState.connectedUnit?.displayName,
             connectedUnitModel: appState.connectedUnit?.modelName
         )
-        report.connectedUnitLines = appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
+        report.hardwareID = appState.unitAHardwareIDText ?? report.hardwareID
+        if appState.transportType == .thunderbolt {
+            report.showsXMOS = false
+            report.board1HardwareVersion = DeviceInfoReport.hardwareVersionText(board1Reading)
+            report.board2HardwareVersion = DeviceInfoReport.hardwareVersionText(board2Reading)
+        }
+        report.connectedUnitLines = appState.converterSystem?.reportLines(
+                twoPortDriver: appState.secondPortState != nil)
+            ?? appState.connectedUnit?.unitRows.map { "\($0.label): \($0.value)" } ?? []
+        if appState.connectedUnit != nil, let raw = ConnectedUnit.rawProbeLine(appState.connectedUnitProbeWord) {
+            report.connectedUnitLines.append(raw)
+        }
+        report.port2Lines = appState.secondPortState?.reportLines(
+            sixtyFourSelected: appState.portSelection.sixtyFourSelected) ?? []
+        report.vbusLine = appState.vbusReportLine
+        report.unitBLines = appState.unitBDeviceInfoReportLines
         return report
+    }
+
+    /// The USB channel mode, over USB only: the ThunderBridge driver's device
+    /// carries a USB product ID that does not say how many channels run.
+    private var identityMode: String? {
+        guard appState.transportType != .thunderbolt else { return nil }
+        return appState.device?.identifier.mode.displayName
+    }
+
+    /// Over ThunderBridge, what the Ports selection runs (32 or 64).
+    private var identityChannelCount: Int? {
+        guard let device = appState.device else { return nil }
+        guard appState.transportType == .thunderbolt else { return device.identifier.mode.channelCount }
+        return appState.portSelection.selection?.channelCount ?? 32
     }
 
     // MARK: - Board Detection Provenance
@@ -1487,15 +1674,22 @@ struct SystemSetupView: View {
     }
 
     private func loadProperties() async {
-        // See loadSettings: .task(id:) re-runs per preset load and isLoading is false
+        // See loadSettings: .task(id:) re-runs per preset load and the flag is false
         // by then, so it has to be re-asserted here rather than left to @State.
         // Only the newest load may lower the flag. A reload that supersedes this
-        // one would otherwise have its `isLoading` cleared underneath it, and the
+        // one would otherwise have its flag cleared underneath it, and the
         // values it then assigns would reach the pickers' onChange as user input.
+        //
+        // Audio Interface Mode, Peak Hold and Over Hold are NOT read here: they
+        // were read by both pages' loads when this page was two pages, and are
+        // now read once, by `loadSettings`, whose trigger (`settingsLoadID`)
+        // includes this one's (`viewReloadToken`). Do not add them back.
         let generation = UUID()
         propertiesLoadGeneration = generation
-        isLoading = true
-        defer { if propertiesLoadGeneration == generation { isLoading = false } }
+        firmwareVersion = "—"
+        parsedFirmware = nil
+        propertiesLoading = true
+        defer { if propertiesLoadGeneration == generation { propertiesLoading = false } }
         guard let device = appState.device else {
             errorMessage = "No device connected"
             return
@@ -1522,7 +1716,17 @@ struct SystemSetupView: View {
         // Each slot's optical format names the optical clock row and, on a
         // DA16, picks the input byte that row sends.
         if appState.transportType != .usb { await appState.refreshChannelNaming() }
-        if let reported = (try? await device.getProperty(
+        if appState.convertersIdentified {
+            // Converters: the driver's report says which clock runs. The
+            // Symphony I/O clock control is not asked.
+            appState.refreshConverterSystem()
+            let source = (appState.converterSystem?.clockExternal ?? false)
+                ? ClockSourceMenu.wordClock : ClockSourceMenu.internalClock
+            if source != clockSource {
+                programmaticClockSource = source
+                clockSource = source
+            }
+        } else if let reported = (try? await device.getProperty(
                 PropertyAddress(selector: .clockSource)))?.asUInt32,
            let source = ClockSourceMenu.row(for: reported, in: clockSourceChoices),
            source != clockSource {
@@ -1571,7 +1775,6 @@ struct SystemSetupView: View {
         do {
             if let ver = (try await device.getProperty(PropertyAddress(selector: .versionString))).asString,
                !ver.isEmpty {
-                firmwareVersion = ver
                 parsedFirmware = FirmwareInfo.parse(ver)
             }
         } catch {
@@ -1590,39 +1793,36 @@ struct SystemSetupView: View {
             parsedFirmware = FirmwareInfo.fromDevice(device, firmwareVersion: firmwareVersion)
         }
         await loadBoardReadings(device: device)
+        // ThunderBridge has no daemon XML and no `.version` property: read the
+        // components with 0xA0 as the original did (SymphonyIO.cpp:756, 807,
+        // 981, 990), here and nowhere else. 2-4 bounded reads, skipped for
+        // converters and while hardware access is suspended. A component that
+        // was not read stays nil and shows "Unknown".
+        if appState.transportType == .thunderbolt {
+            func installed(_ reading: BoardTypeReading) -> IOCardType? {
+                reading.source == .detected || reading.source == .cached ? reading.card : nil
+            }
+            let versions = await appState.loadThunderboltVersions(
+                slot1: installed(board1Reading), slot2: installed(board2Reading))
+            guard propertiesLoadGeneration == generation, appState.device === device else { return }
+            var info = parsedFirmware ?? FirmwareInfo()
+            info.deviceName = "Symphony I/O"
+            info.firmwareVersion = versions?.text(.overall)
+            info.fpgaVersion = versions?.text(.mainFPGA)
+            info.ioBoard1Version = versions?.text(.primaryFPGA)
+            info.ioBoard2Version = versions?.text(.secondaryFPGA)
+            parsedFirmware = info
+        }
         // Hand the assembled report to AppState so the About box can copy hardware and
         // software in one button without duplicating the provenance logic above.
+        appState.refreshSecondPortState()
+        await appState.refreshLoopSync()
         appState.deviceInfoSnapshot = currentDeviceReport()
-        do {
-            if let mode = (try await device.getProperty(PropertyAddress(selector: .deviceMode))).asUInt32 {
-                deviceMode = mode
-            }
-        } catch {
-            print("[Maestro] ERROR: loadProperties deviceMode failed: \(error)")
-        }
-        do {
-            if let wc = (try await device.getProperty(PropertyAddress(selector: .wordClockDivide))).asUInt32 {
-                wordClockOut = min(wc, 1) // Clamp to 0=normal, 1=divide
-                print("[Maestro] loadProperties: wordClockDivide raw=\(wc) → \(wordClockOut)")
-            }
-        } catch {
-            print("[Maestro] ERROR: loadProperties wordClockDivide failed: \(error)")
-        }
-        // Peak Hold and Over Hold mode
-        do {
-            if let ph = (try await device.getProperty(PropertyAddress(selector: .peakHoldMode))).asUInt32 {
-                peakHoldMode = ph
-            }
-        } catch {
-            print("[Maestro] ERROR: loadProperties peakHoldMode failed: \(error)")
-        }
-        do {
-            if let oh = (try await device.getProperty(PropertyAddress(selector: .oversHoldMode))).asUInt32 {
-                overHoldMode = oh
-            }
-        } catch {
-            print("[Maestro] ERROR: loadProperties oversHoldMode failed: \(error)")
-        }
+        // No word clock divide control: 'AEwd' was an Ensemble setting (mAEstro.h, "exists
+        // for Ensemble"; handled only by ensembleController.cpp). The Symphony
+        // I/O has no command for it, its firmware sets the Loop Sync divider
+        // from the sample rate by itself (SymphonyIOMainBoard.cpp
+        // applyCorrespondingWordClockDivider), and the converters have none.
         errorMessage = nil
     }
 
@@ -1670,15 +1870,26 @@ struct SystemSetupView: View {
         func isCurrent() -> Bool { generation == rateWriteGeneration }
         // meterDevice is a CoreAudioDeviceConnection to the real USB device even when
         // the primary device connection is XPC.
-        guard let conn = (appState.device as? CoreAudioDeviceConnection) ?? appState.meterDevice else {
+        guard !appState.hardwareWritesSuspended,
+              let conn = (appState.device as? CoreAudioDeviceConnection) ?? appState.meterDevice else {
             errorMessage = "Cannot set the sample rate: no CoreAudio connection to the hardware."
             rateWriteInFlight = false
+            rateSettling = false
             return
         }
         // Only the current write may lower the flag; a superseded one leaving would
         // re-open the reconcile loop on top of the write that replaced it.
-        defer { if isCurrent() { rateWriteInFlight = false } }
+        // A change the hardware accepted keeps the picker disabled until the
+        // settle window ends; every other way out releases it at once.
+        var holdForSettle = false
+        defer {
+            if isCurrent() {
+                rateWriteInFlight = false
+                if !holdForSettle { rateSettling = false }
+            }
+        }
         do {
+            guard !appState.hardwareWritesSuspended else { return }
             let settled = try await conn.setNominalSampleRateAndWait(rate)
             guard isCurrent() else { return }
             // Ours, not the user's: without the sentinel this assignment re-enters
@@ -1703,6 +1914,19 @@ struct SystemSetupView: View {
             // The PLL re-acquires over the next few seconds; do not let a refresh
             // in that window report the clock as unlocked.
             appState.suppressClockLockReporting()
+            // The picker comes back once the clock has re-locked (at least
+            // 1.5 s, at most 3 s); see SampleRatePickerHold.
+            holdForSettle = true
+            Task { @MainActor in
+                let clock = ContinuousClock()
+                let start = clock.now
+                while isCurrent() {
+                    try? await Task.sleep(for: SampleRatePickerHold.pollInterval)
+                    if SampleRatePickerHold.shouldRelease(elapsed: clock.now - start,
+                                                          clockLocked: conn.isClockLocked) { break }
+                }
+                if isCurrent() { rateSettling = false }
+            }
             clockLocked = true
             await confirmVirtualDeviceFollowed(rate, isCurrent: isCurrent)
             guard isCurrent() else { return }
@@ -1812,22 +2036,244 @@ struct SystemSetupView: View {
     }
 
     private func writeClockSource(_ source: UInt32) async {
+        // Converters take their clock from the converter config (bit 0). The
+        // Symphony I/O clock control would send them a ClockMode command.
+        if appState.convertersIdentified {
+            errorMessage = appState.setConverterClock(external: source == ClockSourceMenu.wordClock)
+                ? nil : "The driver did not accept the clock source. It needs the driver from this version of Maestro."
+            return
+        }
         guard let device = appState.device else { return }
+        let unitBFollows = unitBFollowsUnitA
+        guard ClockSourceMenu.unitAMaySend(source, unitBFollows: unitBFollows) else {
+            errorMessage = ClockSourceMenu.loopSyncUnavailableNote
+            return
+        }
         do {
             try await device.setProperty(
                 PropertyAddress(selector: .clockSource),
                 value: .uint32(source)
             )
+            // The status bar shows this; a board input and USB send no Core
+            // Audio notification of their own.
+            if ClockSourceMenu.decode(source) != nil { appState.reportedClockSource = source }
+            appState.rememberClockSourceChoice(source)
             errorMessage = nil
         } catch {
-            errorMessage = "Error setting clock source: \(error.localizedDescription)"
+            errorMessage = unitBFollows
+                ? ClockSourceMenu.refusedWithUnitBNote
+                : "Error setting clock source: \(error.localizedDescription)"
         }
     }
 
-    private func formatSampleRate(_ rate: Double) -> String {
-        if rate >= 1000 {
-            return "\(String(format: "%.1f", rate / 1000)) kHz"
+    private func formatSampleRate(_ rate: Double) -> String { SampleRateText.format(rate) }
+}
+
+/// Device Info rows for the older converters: one per unit, by port, with
+/// its X-Symphony firmware; a Device Type picker for a unit whose routing does
+/// not say what it is; and the firmware notice, once, when a unit needs 2.7.
+/// The authentication result is only in the copied details.
+struct ConverterUnitRows: View {
+    let appState: AppState
+    let system: ConverterSystem
+
+    var body: some View {
+        let rows = system.deviceInfoRows(twoPortDriver: appState.secondPortState != nil)
+        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+            LabeledContent(row.label, value: row.value)
         }
-        return "\(Int(rate)) Hz"
+        // An older driver (the probe word) cannot take a Device Type.
+        if !system.driverSupportsConverterControls,
+           (system.ports[0] + system.ports[1]).contains(where: { !$0.deviceTypeChoices.isEmpty }) {
+            Text(ConverterDriverText.update)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        ForEach(system.driverSupportsConverterControls
+                ? system.ports[0] + (system.port2Counted ? system.ports[1] : []) : [], id: \.rowID) { unit in
+            if let current = unit.deviceType, !unit.deviceTypeChoices.isEmpty {
+                Picker("Device Type, port \(unit.port + 1) unit \(unit.address)", selection: Binding(
+                    get: { current },
+                    set: { appState.setConverterDeviceType($0, port: unit.port, address: unit.address) })) {
+                    ForEach(unit.deviceTypeChoices) { Text($0.label).tag($0) }
+                }
+                .maestroHelp("Routing 0x0" + String(unit.routing, radix: 16, uppercase: true)
+                      + " can be more than one unit. Choose the one that is connected.")
+            }
+        }
+        ForEach(system.firmwareNotices, id: \.self) { notice in
+            Label(notice, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+}
+
+private extension ConverterUnit {
+    var rowID: Int { port * 4 + address }
+}
+
+/// App Settings — Maestro itself, not the hardware: General, When a Device
+/// Connects, Updates, Diagnostics & Feedback and About. Everything here is
+/// stored on the Mac; nothing on this page reads or writes the Symphony I/O.
+struct AppSettingsView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(DiagnosticsRecorder.self) private var diagnostics
+    @EnvironmentObject private var updates: UpdateController
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .auto
+    @AppStorage(MaestroHelpModifier.preferenceKey) private var showTooltips = true
+    @AppStorage("rememberControlTabScrollPositions") private var rememberControlTabScrollPositions = true
+    @AppStorage("autoLaunchEnabled") private var autoLaunchEnabled = false
+    @AppStorage("autoSwitchToSymphony") private var autoSwitchToSymphony = true
+    @AppStorage("preferredUSBOutput") private var preferredUSBOutput = 0  // 0=Maestro USB, 1=USB Audio (Apple)
+    @AppStorage("openMostRecentSetupAtLaunch") private var openMostRecentSetupAtLaunch = false
+    @AppStorage("showLevelOverlay") private var showLevelOverlay = false
+    /// Separate from Device Settings › Info's Copy so the two buttons never flash
+    /// each other's checkmark.
+    @State private var showSoftwareCopied: Bool = false
+
+    var body: some View {
+        Form {
+            Section("General") {
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(AppAppearance.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .maestroHelp("Auto follows your Mac’s appearance. Light and Dark apply only to Maestro.")
+                .unredacted()
+
+                Toggle("Show tooltips", isOn: $showTooltips)
+                    .maestroHelp("Show short explanations when you hold the pointer over controls.")
+
+                @Bindable var mutableAppState = appState
+                Toggle("Meter Zone Coloring", isOn: $mutableAppState.showMeterZoneColoring)
+                    .maestroHelp("When enabled, idle meter segments show a muted green/yellow/red gradient indicating their dB zone. When disabled, idle segments are a uniform gray.")
+
+                Toggle("Remember Input, Output, and Mixer scroll positions", isOn: $rememberControlTabScrollPositions)
+                    .maestroHelp("Keep each wide control tab at its current horizontal position until Maestro quits")
+
+                Toggle("Open the most recent setup file at launch", isOn: $openMostRecentSetupAtLaunch)
+                    .maestroHelp("Recall the setup file remembered by Save Preset or Open Preset after the unit finishes restoring. Speaker and headphone level and mute are left as they are; File › Open applies them")
+
+                Toggle(isOn: $showLevelOverlay) {
+                    InfoLabel(title: "Show level overlay", paragraphs: SettingsInfoText.levelOverlay,
+                              helpSection: .settings, appState: appState)
+                }
+                    .maestroHelp("Show a HUD on screen when a speaker or headphone level, mute or 8MicPre gain changes")
+            }
+
+            Section("When a Device Connects") {
+                Toggle("Launch Maestro automatically when connecting a device", isOn: $autoLaunchEnabled)
+                    .onChange(of: autoLaunchEnabled) { _, enabled in
+                        AutoLaunchManager.shared.setEnabled(enabled)
+                    }
+                    .maestroHelp("Install a LaunchAgent that opens Maestro when a Symphony IO is plugged in")
+
+                Toggle(isOn: $autoSwitchToSymphony) {
+                    InfoLabel(title: "Automatically switch to Symphony when connected",
+                              paragraphs: SettingsInfoText.autoSwitch, helpSection: .usbOutput, appState: appState)
+                }
+                    .maestroHelp("When you plug in the Symphony I/O, make it your Mac's output device automatically instead of having to pick it in the Sound menu.")
+
+                if autoSwitchToSymphony {
+                    Picker(selection: $preferredUSBOutput) {
+                        Text("Maestro USB (Recommended)").tag(0)
+                        Text("USB Audio (No Keyboard Volume)").tag(1)
+                    } label: {
+                        InfoLabel(title: "Preferred USB output", paragraphs: SettingsInfoText.preferredUSBOutput,
+                                  helpSection: .usbOutput, appState: appState)
+                    }
+                    .maestroHelp("Which device to select when the Symphony is connected over USB. 'Maestro USB' is recommended — it has working volume keys/slider. 'USB Audio' is Apple's raw device (lowest-latency recording, but no keyboard volume control).")
+                }
+            }
+
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: $updates.automaticallyChecksForUpdates)
+                    .maestroHelp(UpdateChannelCopy.automaticCheckHelp)
+                    .unredacted()
+                Button("Check for Updates…", action: updates.checkForUpdates)
+                    .disabled(!updates.canCheckForUpdates)
+                    .unredacted()
+                UpdateChannelSettings()
+                Text("Updates download from the [Unofficial Symphony Maestro GitHub repository](https://github.com/danielraffel/unofficial-symphony-maestro-mk1). Installing an update may briefly interrupt audio and require an administrator password. Updates are never installed automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Diagnostics & Feedback") {
+                // Diagnostics is offered on Stable and Beta
+                // (DiagnosticsAvailability.showOnStable).
+                if DiagnosticsAvailability.showsSwitch(betaChannel: updates.effectiveChannel == .beta,
+                                                       recording: diagnostics.isRecording) {
+                    DiagnosticsSettingsRow()
+                        .unredacted()
+                }
+                // One row each, so the form draws a separator between them.
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Report a Bug ↗") { NSWorkspace.shared.open(appState.reportBugURL) }
+                        .maestroHelp("Open a new issue in the project's GitHub repository in your browser.")
+                    HStack(spacing: 4) {
+                        Text("Then send diagnostics with the issue link, so we can investigate.")
+                            .foregroundStyle(.secondary)
+                        SeeHelpLink(section: .feedback, appState: appState, popover: .constant(false))
+                    }
+                    .font(.caption)
+                }
+                .unredacted()
+                VStack(alignment: .leading, spacing: 4) {
+                    Link("Discuss on Gearspace ↗", destination: FeedbackLinks.discussion)
+                        .maestroHelp("Open the Symphony I/O thread on Gearspace in your browser to ask questions and share tips.")
+                    Text("Community support from fellow Apogee users.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .unredacted()
+                Text("This is a community project. Please don't contact Apogee for support with it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Device Settings › Info answers "what hardware is this". This answers
+            // "what code is running", which is the other half of any bug report.
+            // The driver extension's row stays with the hardware in Device Settings › Info.
+            Section {
+                let info = appState.softwareInfoReport
+                LabeledContent("Maestro", value: info.versionLine)
+                LabeledContent("macOS", value: info.osVersion)
+                LabeledContent("Audio Path", value: info.audioPath)
+                if let pciDeviceIdentifier = info.pciDeviceIdentifier {
+                    LabeledContent("PCI Device", value: pciDeviceIdentifier)
+                }
+                LabeledContent("App Path", value: info.appPath)
+                    .maestroHelp(info.appPath)
+            } header: {
+                HStack {
+                    Text("About")
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(appState.softwareInfoReport.clipboardText, forType: .string)
+                        showSoftwareCopied = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            showSoftwareCopied = false
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: showSoftwareCopied ? "checkmark" : "doc.on.doc")
+                            Text(showSoftwareCopied ? "Copied!" : "Copy")
+                        }
+                        .foregroundStyle(showSoftwareCopied ? .green : .secondary)
+                        .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .maestroHelp("Copy software info to clipboard")
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("App Settings")
     }
 }

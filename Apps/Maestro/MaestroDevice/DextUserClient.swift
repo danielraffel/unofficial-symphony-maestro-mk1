@@ -6,11 +6,12 @@
 /// to SendVendorCommand() → XLink → Symphony IO hardware.
 ///
 /// Wire format matches SymphonyThunderbridgeShared.h:
-///   {magic:4, command:1, reserved:3, value:4, payloadLen:2, payload:64} = 78 bytes
+///   {magic:4, command:1, port:1, reserved:2, value:4, payloadLen:2, payload:64} = 78 bytes
 
 import Foundation
 import IOKit
 import CoreAudio  // for AudioDeviceID type in connect() signature
+import MaestroCore
 
 // MARK: - DextUserClient
 
@@ -20,6 +21,7 @@ public final class DextUserClient: @unchecked Sendable {
     // Constants matching SymphonyThunderbridgeShared.h
     private static let magic: UInt32 = 0x53594D50  // 'SYMP'
     private static let selectorSendVendor: UInt32 = 0
+    private static let selectorSetMonitorDevice: UInt32 = 12
     // kSymphonyUserClientType ('SYMC'). The dext's NewUserClient routes only this
     // type to SymphonyUserClient; all other types (incl. 0, used by coreaudiod) go
     // to IOUserAudioDriver. Must match SymphonyThunderbridgeShared.h.
@@ -30,6 +32,11 @@ public final class DextUserClient: @unchecked Sendable {
     /// IOKit connection to the dext's SymphonyUserClient.
     private var connection: io_connect_t = IO_OBJECT_NULL
     private let lock = NSLock()
+    private var cachedDriverBuild: UInt32?
+    private var driverBuildRead = false
+    private var connectionGeneration: UInt64 = 0
+
+    public let hardwareWriteGate = HardwareWriteGate()
 
     public init() {}
 
@@ -39,13 +46,19 @@ public final class DextUserClient: @unchecked Sendable {
     /// Uses IOServiceNameMatching (Apple's recommended pattern from the
     /// "Communicating between a DriverKit extension and a client app" sample).
     public func connect(audioDeviceID: AudioDeviceID) {
+        // Tests never open the real ThunderBridge driver.
+        if TestEnvironment.isRunningTests { return }
         lock.lock()
         defer { lock.unlock() }
 
+        connectionGeneration &+= 1
+        cachedDriverBuild = nil
+        driverBuildRead = false
         // Close any existing connection
         if connection != IO_OBJECT_NULL {
             IOServiceClose(connection)
             connection = IO_OBJECT_NULL
+            linkStateWordCount = nil
         }
 
         // Find the ThunderBridge dext using IOServiceNameMatching
@@ -71,6 +84,7 @@ public final class DextUserClient: @unchecked Sendable {
             return
         }
 
+        linkStateWordCount = nil
         connection = conn
         print("[DextUserClient] Connected to dext via IOUserClient (connection=\(conn))")
     }
@@ -79,9 +93,13 @@ public final class DextUserClient: @unchecked Sendable {
     public func disconnect() {
         lock.lock()
         defer { lock.unlock() }
+        connectionGeneration &+= 1
+        cachedDriverBuild = nil
+        driverBuildRead = false
         if connection != IO_OBJECT_NULL {
             IOServiceClose(connection)
             connection = IO_OBJECT_NULL
+            linkStateWordCount = nil
             print("[DextUserClient] Disconnected")
         }
     }
@@ -105,8 +123,10 @@ public final class DextUserClient: @unchecked Sendable {
     public func sendVendorCommand(
         command: UInt8,
         value: UInt32,
-        payload: Data = Data()
+        payload: Data = Data(),
+        port: UInt8 = 0
     ) throws {
+        try hardwareWriteGate.check()
         guard payload.count <= 64 else {
             throw DextUserClientError.payloadTooLarge(payload.count)
         }
@@ -120,21 +140,7 @@ public final class DextUserClient: @unchecked Sendable {
         lock.unlock()
 
         // Pack the input struct (matches SymphonyVendorCommandInput layout)
-        var input = Data(count: Self.inputSize)
-        input.withUnsafeMutableBytes { buf in
-            let ptr = buf.baseAddress!
-            ptr.storeBytes(of: Self.magic, as: UInt32.self)
-            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
-            // reserved[3] at offsets 5-7 (zeroed by Data init)
-            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
-            let payloadLen = UInt16(payload.count)
-            ptr.storeBytes(of: payloadLen, toByteOffset: 12, as: UInt16.self)
-            if !payload.isEmpty {
-                payload.withUnsafeBytes { payloadPtr in
-                    (ptr + 14).copyMemory(from: payloadPtr.baseAddress!, byteCount: payload.count)
-                }
-            }
-        }
+        let input = Self.packVendorCommand(command: command, value: value, payload: payload, port: port)
 
         // Call the dext's ExternalMethod via IOKit IPC
         var outputData = Data(count: 4)  // SymphonyVendorCommandOutput = 4 bytes
@@ -164,6 +170,91 @@ public final class DextUserClient: @unchecked Sendable {
             print("[DextUserClient] Dext returned error: 0x\(String(status, radix: 16)) cmd=0x\(String(command, radix: 16))")
             throw DextUserClientError.dextError(status)
         }
+    }
+
+    /// Select the Symphony I/O that owns the single Core Audio volume/mute
+    /// control. Unit B is accepted only while the driver has configured 64
+    /// channels; older/unknown dexts never receive this selector.
+    @discardableResult
+    public func setMonitorDevice(_ unit: DeviceUnit) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
+        lock.lock()
+        let conn = extendedSelectorConnectionLocked()
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        var input = [UInt32](repeating: 0, count: 2)
+        input[0] = Self.magic
+        input[1] = UInt32(unit.rawValue)
+        var outSize = 0
+        let kr = input.withUnsafeBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorSetMonitorDevice,
+                                      p.baseAddress, input.count * MemoryLayout<UInt32>.size,
+                                      nil, &outSize)
+        }
+        return kr == KERN_SUCCESS
+    }
+
+    private static let selectorSetMonitorOutput: UInt32 = 15
+
+    /// The input of selector 15 (`SymphonyMonitorOutputInput`): magic, unit,
+    /// output.
+    static func monitorOutputInput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> [UInt32] {
+        [magic, UInt32(unit.rawValue), output.driverValue]
+    }
+
+    /// Tell the driver which output of a unit the Core Audio volume and mute
+    /// controls move (Volume Keys › Audio Output). Only a driver from build
+    /// 142 on is asked; an older or unknown one never receives the selector.
+    @discardableResult
+    public func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
+        lock.lock()
+        let supported = KeyboardVolumeOutput.driverSupports(cachedDriverBuild.map { ServingDextBuild.build($0) })
+        let conn = supported ? connection : IO_OBJECT_NULL
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        let input = Self.monitorOutputInput(output, unit: unit)
+        var outSize = 0
+        let kr = input.withUnsafeBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorSetMonitorOutput,
+                                      p.baseAddress, input.count * MemoryLayout<UInt32>.size,
+                                      nil, &outSize)
+        }
+        return kr == KERN_SUCCESS
+    }
+
+    private static let selectorVBus: UInt32 = 16
+
+    /// The input of selector 16 (`SymphonyVBusInput`): magic, operation
+    /// (0 read, 1 set), channels.
+    static func vbusInput(_ channels: VBusChannels?) -> [UInt32] {
+        [magic, channels == nil ? 0 : 1, channels?.rawValue ?? 0]
+    }
+
+    /// VBus (selector 16): with `channels`, ask the driver for that many VBus
+    /// channels (None turns them off); with nil, only read. Returns the
+    /// driver's state. Only a driver from build 143 on is asked; an older or
+    /// unknown one never receives the selector. Setting touches no hardware,
+    /// but is still held back while hardware writes are suspended.
+    public func vbus(_ channels: VBusChannels?) -> VBusState? {
+        if channels != nil, !hardwareWriteGate.allowsWrites { return nil }
+        lock.lock()
+        let supported = VBusChannels.driverSupports(cachedDriverBuild.map { ServingDextBuild.build($0) })
+        let conn = supported ? connection : IO_OBJECT_NULL
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        let input = Self.vbusInput(channels)
+        var out = [UInt32](repeating: 0, count: VBusState.wordCount)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = input.withUnsafeBytes { inBytes in
+            out.withUnsafeMutableBytes { outBytes in
+                IOConnectCallStructMethod(conn, Self.selectorVBus,
+                                          inBytes.baseAddress, input.count * MemoryLayout<UInt32>.size,
+                                          outBytes.baseAddress, &outSize)
+            }
+        }
+        guard kr == KERN_SUCCESS, outSize == out.count * MemoryLayout<UInt32>.size else { return nil }
+        return VBusState(words: out)
     }
 
     // kSelectorReadMeters — snapshot the card FPGA meter DMA buffer (256 words).
@@ -222,25 +313,39 @@ public final class DextUserClient: @unchecked Sendable {
         return false
     }
 
+    private var linkStateWordCount: Int?
+
     /// Read the dext's link-watch state (selector 5). No PCI transaction: this is
     /// what the app's 2 s presence loop calls. `nil` = the user client did not answer.
     public func readLinkState() -> LinkState? {
         lock.lock()
         let conn = connection
+        let generation = connectionGeneration
+        let knownCount = linkStateWordCount
         lock.unlock()
         guard conn != IO_OBJECT_NULL else { return nil }
-        // The dext checks the output size exactly: 16 words from dext 117 on, 12
-        // before. Try the current size first, then the older one.
-        for count in [16, 12] {
+        // Negotiate once per connection. The optional tails piggyback on the
+        // existing health read; old drivers still receive their exact ABI.
+        guard let (decoded, count) = LinkState.negotiate(known: knownCount, read: { count in
             var out = [UInt32](repeating: 0, count: count)
             var outSize = out.count * MemoryLayout<UInt32>.size
             let kr = out.withUnsafeMutableBytes { p in
                 IOConnectCallStructMethod(conn, 5, nil, 0, p.baseAddress, &outSize)
             }
-            if kr == KERN_SUCCESS { return LinkState.decode(out) }
-        }
-        return nil
+            return kr == KERN_SUCCESS && outSize == count * MemoryLayout<UInt32>.size ? out : nil
+        }) else { return nil }
+        lock.lock()
+        let current = connection == conn && connectionGeneration == generation
+        if current { linkStateWordCount = count }
+        lock.unlock()
+        // A reconnect can race this read. The decoded answer is still
+        // the selector-5 result; only cache negotiation for the live
+        // connection, and let the caller's identity guard discard stale use.
+        return decoded
     }
+
+    // kSelectorReadDriverBuild — the serving dext's CFBundleVersion (dext 123+).
+    private static let selectorReadDriverBuild: UInt32 = 6
 
     /// The CFBundleVersion of the dext binary serving this user client
     /// (selector 6, dext 123+). This is the copy macOS actually runs for the
@@ -249,16 +354,122 @@ public final class DextUserClient: @unchecked Sendable {
     /// or a dext older than 123, which rejects the selector.
     public func readDriverBuild() -> UInt32? {
         lock.lock()
+        guard connection != IO_OBJECT_NULL else { lock.unlock(); return nil }
+        // Only a successful read is cached; a transient failure is retried.
+        if driverBuildRead {
+            let cached = cachedDriverBuild
+            lock.unlock()
+            return cached
+        }
         let conn = connection
+        let generation = connectionGeneration
         lock.unlock()
-        guard conn != IO_OBJECT_NULL else { return nil }
         var out = [UInt32](repeating: 0, count: 2)
         var outSize = out.count * MemoryLayout<UInt32>.size
         let kr = out.withUnsafeMutableBytes { p in
-            IOConnectCallStructMethod(conn, 6, nil, 0, p.baseAddress, &outSize)
+            IOConnectCallStructMethod(conn, Self.selectorReadDriverBuild, nil, 0, p.baseAddress, &outSize)
         }
-        guard kr == KERN_SUCCESS, outSize == 8, out[0] == 0 else { return nil }
-        return out[1]
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == connectionGeneration, kr == KERN_SUCCESS,
+              outSize == 8, out[0] == 0 else { return nil }
+        cachedDriverBuild = out[1]
+        driverBuildRead = true
+        return cachedDriverBuild
+    }
+
+    /// Caller holds lock. Unknown capability never initiates a selector call.
+    private func extendedSelectorConnectionLocked() -> io_connect_t {
+        let build = cachedDriverBuild.map { ServingDextBuild.build($0) }
+        return SymphonyExtendedSelectors.supported(by: build) ? connection : IO_OBJECT_NULL
+    }
+
+    // kSelectorReadPort2State — EXPERIMENT (64 channels): what is on XLink port 2.
+    private static let selectorReadPort2State: UInt32 = 8
+
+    /// What the driver found on its second XLink port (selector 8). Exp64
+    /// builds 9001-9003 used 6 and 9004 used 7, now the released
+    /// driver-build and retire selectors; each selector checks its exact input
+    /// and output sizes, so a mismatched pair rejects the call and the read
+    /// comes back nil (no port 2 shown until the driver is updated). No PCI
+    /// transaction. `nil` when the driver has no such selector, which is every
+    /// released driver: that is the normal case, so it is not logged.
+    public func readPort2State() -> SecondPortState? {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        // SymphonyPort2StateOutput is exactly 16 words (64 bytes); the driver
+        // rejects any other output size.
+        var out = [UInt32](repeating: 0, count: SecondPortState.wordCount)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorReadPort2State, nil, 0,
+                                      p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == SecondPortState.wordCount * MemoryLayout<UInt32>.size else {
+            return nil
+        }
+        return SecondPortState.decode(out)
+    }
+
+    private static let selectorReadConverters: UInt32 = 9
+    private static let selectorSetConverterConfig: UInt32 = 10
+    /// sizeof(SymphonyConverterConfigInput): {magic, config}.
+    static let converterConfigInputSize = 8
+
+    /// The older XLink converters on ports 1 and 2 (selector 9, dext 131+):
+    /// identity, addressing, authentication, Device Type, phase, health,
+    /// latency and host channel counts. No bus access. `nil` when the driver
+    /// has no such selector (every driver before 131): use the link state's
+    /// probe word and `readPort2State` instead.
+    public func readConverterState() -> ConverterState? {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        // SymphonyConverterStateOutput is exactly 28 words (112 bytes); the
+        // driver rejects any other output size.
+        var out = [UInt32](repeating: 0, count: ConverterState.wordCount)
+        var outSize = out.count * MemoryLayout<UInt32>.size
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, Self.selectorReadConverters, nil, 0,
+                                      p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == ConverterState.wordCount * MemoryLayout<UInt32>.size else {
+            return nil
+        }
+        return ConverterState.decode(out)
+    }
+
+    /// The input of selector 10: `{magic 'SYMP', config}`, 8 bytes.
+    static func converterConfigInput(_ config: UInt32) -> Data {
+        var input = Data(count: converterConfigInputSize)
+        input.withUnsafeMutableBytes { p in
+            p.storeBytes(of: Self.magic, as: UInt32.self)
+            p.storeBytes(of: config, toByteOffset: 4, as: UInt32.self)
+        }
+        return input
+    }
+
+    /// The user's converter choices (selector 10, dext 131+): word clock
+    /// source and Device Type, as `SymphonyConverterConfigInput.config`
+    /// (`ConverterConfig.word`). No output. False when not connected or the
+    /// driver has no such selector.
+    @discardableResult
+    public func setConverterConfig(_ config: UInt32) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        let input = Self.converterConfigInput(config)
+        var outSize = 0
+        let kr = input.withUnsafeBytes { inPtr in
+            IOConnectCallStructMethod(conn, Self.selectorSetConverterConfig, inPtr.baseAddress, input.count,
+                                      nil, &outSize)
+        }
+        return kr == KERN_SUCCESS
     }
 
     /// kSelectorRetireForUpgrade (dext 123+): ask the dext serving the card to
@@ -351,9 +562,16 @@ public final class DextUserClient: @unchecked Sendable {
     /// views to distinguish live hardware state from cached/default state.
     static let vendorReadInputSize = 14
 
-    public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int) throws -> Data {
+    public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8 = 0) throws -> Data {
         guard (1...64).contains(responseLength) else { throw DextUserClientError.payloadTooLarge(responseLength) }
         lock.lock()
+        if command == SymphonyIOCommand.tdmMeterData.rawValue {
+            let build = cachedDriverBuild.map { ServingDextBuild.build($0) }
+            guard UnitOutputMeters.driverSupports(build) else {
+                lock.unlock()
+                throw DextUserClientError.unsupported
+            }
+        }
         let conn = connection
         lock.unlock()
         guard conn != IO_OBJECT_NULL else { throw DextUserClientError.notConnected }
@@ -363,14 +581,7 @@ public final class DextUserClient: @unchecked Sendable {
         // driver rejects any other size before the request reaches it. This
         // sent 16 until 2026-11-13, so every read through here failed with
         // kIOReturnBadArgument, routing readback included.
-        var input = Data(count: Self.vendorReadInputSize)
-        input.withUnsafeMutableBytes { p in
-            let ptr = p.baseAddress!
-            ptr.storeBytes(of: Self.magic, as: UInt32.self)
-            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
-            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
-            ptr.storeBytes(of: UInt16(responseLength), toByteOffset: 12, as: UInt16.self)
-        }
+        let input = Self.packVendorRead(command: command, value: value, responseLength: responseLength, port: port)
         var output = Data(count: 72)
         var outputSize = output.count
         let kr = input.withUnsafeBytes { inPtr in
@@ -380,19 +591,240 @@ public final class DextUserClient: @unchecked Sendable {
             }
         }
         guard kr == KERN_SUCCESS else { throw DextUserClientError.ipcFailed(kr) }
+        return try Self.decodeVendorReadOutput(output, outputSize: outputSize, responseLength: responseLength)
+    }
+
+    /// Do not turn a short user-client reply into zero-filled version/identity bytes.
+    static func decodeVendorReadOutput(_ output: Data, outputSize: Int, responseLength: Int) throws -> Data {
+        guard outputSize >= 8, outputSize <= output.count else {
+            throw DeviceConnectionError.transportError("Short vendor read header")
+        }
         let status = output.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         guard status == 0 else { throw DextUserClientError.dextError(status) }
-        return output.subdata(in: 8..<(8 + responseLength))
+        let length = output.withUnsafeBytes { Int($0.loadUnaligned(fromByteOffset: 4, as: UInt16.self)) }
+        guard length == responseLength, outputSize >= 8 + length else {
+            throw DeviceConnectionError.transportError("Short vendor read payload")
+        }
+        return output.subdata(in: 8..<(8 + length))
+    }
+
+    /// Read the configured second Symphony I/O (selector 11), without bus traffic.
+    public func readUnitBState() -> UnitBState? {
+        lock.lock(); let conn = connection; lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        var out = [UInt8](repeating: 0, count: 40)
+        var outSize = out.count
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, 11, nil, 0, p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == 40 else { return nil }
+        return UnitBState.decode(out)
+    }
+
+    /// What the driver last programmed into each unit's routing layer
+    /// (selector 17, dext 150+), without bus traffic. Nil from an older
+    /// driver ("no such selector") or a failed read.
+    public func readChannelOrder() -> ThunderboltAppliedChannelOrder? {
+        lock.lock(); let conn = connection; lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return nil }
+        var out = [UInt8](repeating: 0, count: 24)
+        var outSize = out.count
+        let kr = out.withUnsafeMutableBytes { p in
+            IOConnectCallStructMethod(conn, 17, nil, 0, p.baseAddress, &outSize)
+        }
+        guard kr == KERN_SUCCESS, outSize == 24 else { return nil }
+        return ThunderboltAppliedChannelOrder.decode(out)
+    }
+
+    /// Selector 14 v1 updates host controls only. Unsupported drivers fail closed:
+    /// never substitute a vendor write or AudioObjectSetPropertyData gain write.
+    public func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool {
+        guard hardwareWriteGate.allowsWrites else { return false }
+        guard port < 2, (0..<8).contains(channel), lane < 2, gain.isFinite,
+              gain >= 0, gain <= (lane == 1 ? 65 : 85) else { return false }
+        lock.lock(); let conn = extendedSelectorConnectionLocked(); lock.unlock()
+        guard conn != IO_OBJECT_NULL else { return false }
+        let input: [UInt32] = [Self.magic, 1, UInt32(port), UInt32(channel), lane, UInt32(gain.rounded())]
+        var size = 0
+        return input.withUnsafeBytes {
+            IOConnectCallStructMethod(conn, 14, $0.baseAddress, $0.count, nil, &size)
+        } == KERN_SUCCESS
+    }
+
+    /// Versioned selector 13; old drivers return unsupported (never emulate writes).
+    public func loopSync(_ settings: LoopSyncSettings? = nil) throws -> LoopSyncState {
+        if settings != nil { try hardwareWriteGate.check() }
+        lock.lock(); let conn = extendedSelectorConnectionLocked(); lock.unlock()
+        guard conn != IO_OBJECT_NULL else { throw DextUserClientError.notConnected }
+        let input: [UInt32] = [Self.magic, 1, settings == nil ? 0 : 1, settings?.word ?? 0]
+        var output = [UInt32](repeating: 0, count: 6)
+        var size = 24
+        let result = input.withUnsafeBytes { i in
+            output.withUnsafeMutableBytes { o in
+                IOConnectCallStructMethod(conn, 13, i.baseAddress, i.count, o.baseAddress, &size)
+            }
+        }
+        guard result == KERN_SUCCESS else { throw DextUserClientError.ipcFailed(result) }
+        guard size == 24, let state = LoopSyncState.decode(output) else {
+            throw DeviceConnectionError.transportError("Invalid Loop Sync reply")
+        }
+        return state
+    }
+
+    // MARK: - Packing (pure, so the exact bytes can be tested)
+
+    /// The 78-byte `SymphonyVendorCommandInput`: magic, command, port, two
+    /// reserved bytes, value, payload length, payload. `port` 0 is unit A on
+    /// ThunderBridge port 1, 1 is unit B on port 2.
+    public static func packVendorCommand(command: UInt8, value: UInt32, payload: Data, port: UInt8) -> Data {
+        var input = Data(count: inputSize)
+        input.withUnsafeMutableBytes { buf in
+            let ptr = buf.baseAddress!
+            ptr.storeBytes(of: magic, as: UInt32.self)
+            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
+            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
+            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
+            let payloadLen = UInt16(payload.count)
+            ptr.storeBytes(of: payloadLen, toByteOffset: 12, as: UInt16.self)
+            if !payload.isEmpty {
+                payload.withUnsafeBytes { payloadPtr in
+                    (ptr + 14).copyMemory(from: payloadPtr.baseAddress!, byteCount: payload.count)
+                }
+            }
+        }
+        return input
+    }
+
+    /// The 14-byte packed `SymphonyVendorReadInput`: magic, command, port, two
+    /// reserved bytes, value, response length.
+    public static func packVendorRead(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) -> Data {
+        var input = Data(count: vendorReadInputSize)
+        input.withUnsafeMutableBytes { p in
+            let ptr = p.baseAddress!
+            ptr.storeBytes(of: magic, as: UInt32.self)
+            ptr.storeBytes(of: command, toByteOffset: 4, as: UInt8.self)
+            ptr.storeBytes(of: port, toByteOffset: 5, as: UInt8.self)
+            ptr.storeBytes(of: value, toByteOffset: 8, as: UInt32.self)
+            ptr.storeBytes(of: UInt16(responseLength), toByteOffset: 12, as: UInt16.self)
+        }
+        return input
+    }
+
+    /// The driver's logical nValue for a request: mixer ID in the high word,
+    /// channel in the low word.
+    static func nValue(for request: USBControlRequest) -> UInt32 {
+        (UInt32(request.value) << 16) | UInt32(request.index)
     }
 
     /// Convenience: send a command from a USBControlRequest.
-    public func sendFromUSBRequest(_ request: USBControlRequest) throws {
-        let nValue = (UInt32(request.value) << 16) | UInt32(request.index)
+    public func sendFromUSBRequest(_ request: USBControlRequest, port: UInt8 = 0) throws {
         try sendVendorCommand(
             command: request.request,
-            value: nValue,
-            payload: request.data
+            value: Self.nValue(for: request),
+            payload: request.data,
+            port: port
         )
+    }
+}
+
+/// The two vendor calls a Symphony I/O connection needs, so a unit's
+/// connection can be tested without the driver. `DextUserClient` is the real one.
+public protocol VendorTransport: AnyObject, Sendable {
+    var isConnected: Bool { get }
+    func sendVendorCommand(command: UInt8, value: UInt32, payload: Data, port: UInt8) throws
+    func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int, port: UInt8) throws -> Data
+}
+
+extension DextUserClient: VendorTransport {}
+
+/// Everything `ThunderboltDeviceConnection` asks of the driver's user client,
+/// so the connection (its routing and mixer chokepoint, the restore, preset
+/// recall) can run in tests against an in-memory driver
+/// (`FakeThunderboltDriver`). `DextUserClient` is the real one.
+public protocol ThunderboltDriverClient: VendorTransport {
+    var hardwareWriteGate: HardwareWriteGate { get }
+    func connect(audioDeviceID: AudioDeviceID)
+    func disconnect()
+    func setMonitorDevice(_ unit: DeviceUnit) -> Bool
+    func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool
+    /// VBus (selector 16): set when `channels` is given, then read the state.
+    func vbus(_ channels: VBusChannels?) -> VBusState?
+    func readMeters() -> [UInt32]?
+    func probeHardwareResponse() -> Bool
+    func readLinkState() -> LinkState?
+    func readDriverBuild() -> UInt32?
+    func readPort2State() -> SecondPortState?
+    func readConverterState() -> ConverterState?
+    func setConverterConfig(_ config: UInt32) -> Bool
+    func retireForUpgrade(replacementBuild: UInt32) -> DextUserClient.RetireReply
+    func readTimingHealth() -> TimingHealth?
+    func readBoardTypes() -> (primary: UInt8?, secondary: UInt8?)?
+    func readUnitBState() -> UnitBState?
+    /// Selector 17 (dext 150+): the order each unit's tables were programmed
+    /// in. Nil from an older driver.
+    func readChannelOrder() -> ThunderboltAppliedChannelOrder?
+    func publishObservedMicGain(port: UInt8, channel: Int, lane: UInt32, gain: Double) -> Bool
+    func loopSync(_ settings: LoopSyncSettings?) throws -> LoopSyncState
+    /// The port selector (32 or 64 channels) when it does not come from Core
+    /// Audio: nil from the real driver client.
+    var portSelectionOverride: UInt32? { get }
+}
+
+extension ThunderboltDriverClient {
+    public var portSelectionOverride: UInt32? { nil }
+
+    public func sendVendorCommand(command: UInt8, value: UInt32, payload: Data) throws {
+        try sendVendorCommand(command: command, value: value, payload: payload, port: 0)
+    }
+
+    public func readVendorCommand(command: UInt8, value: UInt32, responseLength: Int) throws -> Data {
+        try readVendorCommand(command: command, value: value, responseLength: responseLength, port: 0)
+    }
+
+    public func loopSync() throws -> LoopSyncState { try loopSync(nil) }
+
+    /// Send a command built as a USB control request (mixer ID in the high
+    /// word of the value, channel in the low word).
+    public func sendUSBRequest(_ request: USBControlRequest) throws {
+        try sendVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
+                              payload: request.data, port: 0)
+    }
+}
+
+extension DextUserClient: ThunderboltDriverClient {}
+
+/// Selector 11: the second Symphony I/O (unit B) as the driver configured it.
+public struct UnitBState: Sendable, Equatable {
+    public let present: Bool
+    public let boardType: [UInt8]
+    public let boardValid: [UInt8]
+    public let prefix: UInt8
+    public let clockSource: UInt8
+    public let setupFlags: UInt32
+    public let txErrors: UInt32
+    public let generation: UInt32
+    public init(present: Bool, boardType: [UInt8], boardValid: [UInt8], prefix: UInt8,
+                clockSource: UInt8, setupFlags: UInt32, txErrors: UInt32, generation: UInt32 = 0) {
+        self.present = present; self.boardType = boardType; self.boardValid = boardValid
+        self.prefix = prefix; self.clockSource = clockSource; self.setupFlags = setupFlags; self.txErrors = txErrors; self.generation = generation
+    }
+
+    /// Decode `SymphonyUnitBStateOutput` (40 bytes): status, present, board
+    /// types, board valid, prefix, clock source, set-up flags, errors. Nil for
+    /// a short buffer or a non-zero status.
+    public static func decode(_ bytes: [UInt8]) -> UnitBState? {
+        guard bytes.count >= 40 else { return nil }
+        func u32(_ off: Int) -> UInt32 { bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: off, as: UInt32.self) } }
+        guard u32(0) == 0 else { return nil }
+        return UnitBState(present: u32(4) != 0, boardType: [bytes[8], bytes[9]], boardValid: [bytes[10], bytes[11]],
+                          prefix: bytes[12], clockSource: bytes[13], setupFlags: u32(16), txErrors: u32(20), generation: u32(24))
+    }
+
+    /// The transport-free view the app works with; nil unless unit B is configured.
+    public var info: SecondUnitInfo? {
+        guard present else { return nil }
+        return SecondUnitInfo(boardType: boardType, boardValid: boardValid, prefix: prefix,
+                              clockSource: clockSource, setupFlags: setupFlags, txErrors: txErrors)
     }
 }
 
@@ -420,12 +852,25 @@ public struct LinkState: Sendable, Equatable {
     /// dext 120+: identification of a unit that did not answer as a Symphony
     /// I/O; decode with `ConnectedUnit(probeWord:)`. Zero when not probed.
     public let unitProbe: UInt32
+    /// Optional host-only OFF receipts, physical A0...7 then B0...7.
+    public let phantomOffReceipts: [UInt64]
+    /// D5: which driver instance answered and whether the app has set each
+    /// card mixer on it. `nil` from a driver without the 52-word tail.
+    public let mixerInstance: DriverMixerInstance?
+    /// Optional host-originated MicPre edits (a DAW through Core Audio),
+    /// physical A0...7 then B0...7. Empty from drivers without the tail.
+    public let micPreEdits: [MicPreEditRecord]
 
     public init(state: State, clockPresent: Bool, ioRunning: Bool, irqCount: UInt64,
                 recoveryCount: UInt32, hwSuspended: Bool, linkConfigured: Bool,
                 lastClockReg: UInt32, watchTicks: UInt32, audioWraps: UInt32,
                 lastGcsr: UInt32 = 0, lastXlinkStatus: UInt32 = 0, cardReinitCount: UInt32 = 0,
-                unitProbe: UInt32 = 0) {
+                unitProbe: UInt32 = 0, phantomOffReceipts: [UInt64] = [],
+                mixerInstance: DriverMixerInstance? = nil,
+                micPreEdits: [MicPreEditRecord] = []) {
+        self.phantomOffReceipts = phantomOffReceipts
+        self.mixerInstance = mixerInstance
+        self.micPreEdits = micPreEdits
         self.unitProbe = unitProbe
         self.state = state; self.clockPresent = clockPresent; self.ioRunning = ioRunning
         self.irqCount = irqCount; self.recoveryCount = recoveryCount; self.hwSuspended = hwSuspended
@@ -434,12 +879,41 @@ public struct LinkState: Sendable, Equatable {
         self.lastGcsr = lastGcsr; self.lastXlinkStatus = lastXlinkStatus; self.cardReinitCount = cardReinitCount
     }
 
-    /// Decode the dext's output: 16 words (dext 117+) or 12 (dext 113–116). `nil`
-    /// when the status word is nonzero or the size is wrong, both of which mean
-    /// the selector did not answer.
+    /// Sizes asked for, largest first. Each optional tail is tried three times
+    /// so a transient first read does not pin the connection to a shorter ABI;
+    /// a driver without a tail refuses that exact size and the next is tried.
+    public static let negotiationOrder = [100, 100, 100, 52, 52, 52, 48, 48, 48, 16, 12]
+
+    /// One selector-5 negotiation. `read` returns the words for a size, or
+    /// `nil` when the driver refused it. Returns the decoded state and the size
+    /// to keep using on this connection.
+    public static func negotiate(known: Int?, read: (Int) -> [UInt32]?) -> (LinkState, Int)? {
+        for count in known.map({ [$0] }) ?? negotiationOrder {
+            if let words = read(count), words.count == count, let decoded = decode(words) {
+                return (decoded, count)
+            }
+        }
+        return nil
+    }
+
+    /// Decode 100 words (OFF receipts, D5 mixer instance at 48-51, MicPre host
+    /// edits at 52-99), 52 (receipts + mixer instance), 48 (optional OFF
+    /// receipts), 16 (dext 117+), or 12 (113–116). `nil` when the status word is
+    /// nonzero or the size is wrong, both of which mean the selector did not answer.
     public static func decode(_ words: [UInt32]) -> LinkState? {
-        guard words.count == 12 || words.count == 16, words[0] == 0 else { return nil }
-        let ext = words.count == 16
+        guard [12, 16, 48, 52, 100].contains(words.count), words[0] == 0 else { return nil }
+        let ext = words.count >= 16
+        var receipts: [UInt64] = []
+        if words.count >= 48 {
+            receipts = (0..<16).map { UInt64(words[16 + $0 * 2]) | (UInt64(words[17 + $0 * 2]) << 32) }
+        }
+        var edits: [MicPreEditRecord] = []
+        if words.count == 100 {
+            edits = (0..<16).map { (i: Int) -> MicPreEditRecord in
+                let stamp = UInt64(words[52 + i * 3]) | (UInt64(words[53 + i * 3]) << 32)
+                return MicPreEditRecord(stamp: stamp, fields: words[54 + i * 3])
+            }
+        }
         return LinkState(state: State(rawValue: words[1]) ?? .unknown,
                          clockPresent: words[2] != 0, ioRunning: words[3] != 0,
                          irqCount: UInt64(words[4]) | (UInt64(words[5]) << 32),
@@ -448,7 +922,33 @@ public struct LinkState: Sendable, Equatable {
                          watchTicks: words[10], audioWraps: words[11],
                          lastGcsr: ext ? words[12] : 0, lastXlinkStatus: ext ? words[13] : 0,
                          cardReinitCount: ext ? words[14] : 0,
-                         unitProbe: ext ? words[15] : 0)
+                         unitProbe: ext ? words[15] : 0,
+                         phantomOffReceipts: receipts,
+                         mixerInstance: words.count >= 52 ? DriverMixerInstance(words: Array(words[48..<52])) : nil,
+                         micPreEdits: edits)
+    }
+}
+
+/// SymphonyThunderbridgeShared.h kSymphonyMixerInstance*: words 48-51 of the
+/// 52- or 100-word link-state read. Host only; the driver sets a flag the first time
+/// the app sends that mixer a 0xB0-0xB3 command (`mixerStateValid`), and an
+/// in-place recovery keeps it (the driver recomputes from its cache).
+public struct DriverMixerInstance: Sendable, Equatable {
+    public static let magic: UInt32 = 0x4D49_5853   // 'MIXS'
+    public let nonce: UInt64
+    /// Mixer 1 and Mixer 2: the driver holds state the app sent.
+    public let holdsAppState: [Bool]
+
+    public init(nonce: UInt64, holdsAppState: [Bool]) {
+        self.nonce = nonce
+        self.holdsAppState = holdsAppState
+    }
+
+    public init?(words: [UInt32]) {
+        guard words.count == 4, words[0] == Self.magic else { return nil }
+        let nonce = UInt64(words[2]) | (UInt64(words[3]) << 32)
+        guard nonce != 0 else { return nil }
+        self.init(nonce: nonce, holdsAppState: [words[1] & 1 != 0, words[1] & 2 != 0])
     }
 }
 
@@ -470,6 +970,7 @@ public struct TimingHealth: Sendable, Equatable {
 
 public enum DextUserClientError: Error, LocalizedError {
     case notConnected
+    case unsupported
     case payloadTooLarge(Int)
     case ipcFailed(kern_return_t)
     case dextError(UInt32)
@@ -478,6 +979,8 @@ public enum DextUserClientError: Error, LocalizedError {
         switch self {
         case .notConnected:
             return "Not connected to dext IOUserClient"
+        case .unsupported:
+            return "The serving driver does not support this vendor read"
         case .payloadTooLarge(let size):
             return "Payload too large: \(size) bytes (max 64)"
         case .ipcFailed(let kr):

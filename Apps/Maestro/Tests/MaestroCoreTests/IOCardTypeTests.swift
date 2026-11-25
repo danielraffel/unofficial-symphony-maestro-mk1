@@ -5,7 +5,7 @@ import Testing
 /// routing labels, channel counts, and analog/digital splits throughout the app.
 ///
 /// Every card type is tested for every property to ensure routing matrices,
-/// channel strips, and System Setup all show correct information.
+/// channel strips, and Device Settings all show correct information.
 ///
 /// Evidence: og_source/symphonymk1/ext/SymphonyIO/generic/Products/SymphonyIO/SymphonyIOVendorSpecific.h
 /// Lines 800-810: SymphonyIOOptionBoardType enum (raw values 0-7).

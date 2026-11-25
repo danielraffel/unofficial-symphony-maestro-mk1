@@ -12,11 +12,30 @@ struct ConnectedUnitTests {
         #expect(ConnectedUnit(probeWord: 0x0000_00C3) == nil)
     }
 
+    @Test("volume keys follow the driver's converter flag, never the identity alone")
+    func volumeKeysFlag() {
+        let flag = ConnectedUnit.converterVolumeKeysBit
+        // Symphony I/O, or a driver that did not probe: never.
+        #expect(!ConnectedUnit.driverRoutesVolumeKeysToMixer(0))
+        #expect(!ConnectedUnit.driverRoutesVolumeKeysToMixer(flag))
+        // A DA-16X identified by an older driver (no flag): Symphony controls stay.
+        #expect(!ConnectedUnit.driverRoutesVolumeKeysToMixer(ran | answered | 0xC0))
+        // The driver set the flag: converter controls.
+        #expect(ConnectedUnit.driverRoutesVolumeKeysToMixer(ran | answered | flag | 0xC0))
+        // The flag bit does not disturb the identity or a chain's units.
+        #expect(ConnectedUnit(probeWord: ran | answered | flag | 0xC0) == .da16x)
+        #expect(ConnectedUnit(probeWord: ran | answered | flag | 0x30 | (0xC << 16))
+                == .chain([.ad16x, .da16x]))
+    }
+
     @Test("each converter is recognised by its channel banks")
     func converters() {
         #expect(ConnectedUnit(probeWord: ran | answered | 0x3A) == .ad16x)
         #expect(ConnectedUnit(probeWord: ran | answered | 0xC1) == .da16x)
         #expect(ConnectedUnit(probeWord: ran | answered | 0xF0) == .dd16x)
+        // The copied Device Info carries the raw word; nothing for a Symphony I/O.
+        #expect(ConnectedUnit.rawProbeLine(ran | answered | 0xF0) == "Unit Probe Raw: 0xc00000f0")
+        #expect(ConnectedUnit.rawProbeLine(0) == nil)
         #expect(ConnectedUnit(probeWord: ran | answered | 0x52) == .rosetta800)
         // The extended reply in bits 8-15 does not change the type.
         #expect(ConnectedUnit(probeWord: ran | answered | 0x2000_0000 | 0xAB00 | 0xC1) == .da16x)
@@ -70,7 +89,7 @@ struct ConnectedUnitTests {
         #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: "pci19c2,2200") == "Thunderbolt (ThunderBridge)")
         #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: nil) == "Thunderbolt (ThunderBridge)")
         #expect(ConnectionLabel.text(isThunderbolt: true, pciIdentifier: "pci19c2,2100")
-                == "Thunderbolt (Symphony 64 PCIe card, experimental)")
+                == "Thunderbolt (Symphony 64 PCIe card)")
     }
 
     /// The usual rig: an AD-16X and a DA-16X on one cable. Unit 1 in the low

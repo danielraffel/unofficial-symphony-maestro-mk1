@@ -1,0 +1,99 @@
+import Foundation
+import MaestroCore
+import MaestroDevice
+
+/// Local editor snapshot. Pending edits are blocked, and an old view/task cannot
+/// save into a newly resolved scope. Original UID-based restore:
+/// og_source/maestrolink/Software/SymphonyIOMixer.cpp:1000-1075,1372-1389.
+@MainActor
+struct MixerEditorState {
+    let scopes: [PreferenceViewScope]
+    let loadedChannelCount: Int
+    let loadedMaster: Bool
+    let loadedReturn: Bool
+    var channels: [MixerChannelState]
+    var masterLevel: Double
+    /// Master and Software Return are one stereo fader: the two handles are
+    /// one level, so left and right cannot differ whatever path moves them.
+    var masterLeftLevel: Double {
+        get { masterLevel }
+        set { masterLevel = newValue }
+    }
+    var masterRightLevel: Double {
+        get { masterLevel }
+        set { masterLevel = newValue }
+    }
+    var swReturnChannel: MixerChannelState
+    var swReturnLeftLevel: Double {
+        get { swReturnChannel.level }
+        set { swReturnChannel.level = newValue }
+    }
+    var swReturnRightLevel: Double {
+        get { swReturnChannel.level }
+        set { swReturnChannel.level = newValue }
+    }
+    var softwareReturnSource: UInt32
+
+    init(appState: AppState, selectedMixer: Int) {
+        scopes = appState.mixerViewScopes
+        let saved: [MixerChannelState]? = appState.channelStateStore.load(ChannelStateStore.mixerKey(selectedMixer))
+        loadedChannelCount = saved?.count ?? 0
+        loadedMaster = appState.mixerPreferences.object(forKey: "mixerMasterLevel_\(selectedMixer)") != nil
+        loadedReturn = MixerStateSnapshot.hasSavedSoftwareReturn(mixer: selectedMixer, preferences: appState.mixerPreferences)
+            || appState.mixerPreferences.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") != nil
+        let snapshot = MixerStateSnapshot(
+            channelCount: appState.cardLayout.mixerChannels.count,
+            mixer: selectedMixer,
+            store: appState.channelStateStore, preferences: appState.mixerPreferences)
+        channels = appState.mixerStripStates(unitA: snapshot.channels, mixer: selectedMixer)
+        softwareReturnSource = TwoUnitMixer.shownSoftwareReturnSource(
+            snapshot.softwareReturnSource, pairCount: appState.softwareReturnPairCount)
+        masterLevel = snapshot.masterLevel
+        let swLevel = appState.mixerPreferences.object(forKey: "mixerSWReturnLeftLevel_\(selectedMixer)") as? Double
+            ?? snapshot.swReturnChannel.level
+        var swReturn = snapshot.swReturnChannel
+        swReturn.level = swLevel
+        swReturnChannel = swReturn
+    }
+
+    /// Also false while hardware writes are suspended (sleep, wake validation):
+    /// an edit then would be shown and saved but never sent.
+    ///
+    /// Nor over USB under an older helper: it puts Line 1/2 on Mixer 1 every
+    /// time it configures the unit, so a strip written from here would be
+    /// heard there (`AppState.usbHelperOutdated`, said in the status bar).
+    func canEdit(_ appState: AppState) -> Bool {
+        scopes.allSatisfy(\.isWritable) && scopes == appState.mixerViewScopes
+            && !appState.hardwareWritesSuspended
+            && !appState.usbMixerEditsBlockedByOldHelper
+    }
+
+    mutating func save(appState: AppState, selectedMixer: Int) {
+        // An edit that slipped in as writes were suspended: the unit did not
+        // take it, so neither save nor show it (back to the saved state).
+        if appState.hardwareWritesSuspended, scopes == appState.mixerViewScopes {
+            self = MixerEditorState(appState: appState, selectedMixer: selectedMixer)
+            return
+        }
+        guard canEdit(appState) else { return }
+        appState.saveMixerStrips(channels, mixer: selectedMixer)
+        MixerStateSnapshot.saveSoftwareReturn(swReturnChannel, mixer: selectedMixer, preferences: appState.mixerPreferences)
+        appState.mixerPreferences.set(masterLevel, forKey: "mixerMasterLevel_\(selectedMixer)")
+        appState.mixerPreferences.set(masterLeftLevel, forKey: "mixerMasterLeftLevel_\(selectedMixer)")
+        appState.mixerPreferences.set(masterRightLevel, forKey: "mixerMasterRightLevel_\(selectedMixer)")
+        appState.mixerPreferences.set(swReturnLeftLevel, forKey: "mixerSWReturnLeftLevel_\(selectedMixer)")
+        appState.mixerPreferences.set(swReturnRightLevel, forKey: "mixerSWReturnRightLevel_\(selectedMixer)")
+        // The pairs can no longer be unlinked. Older versions read these flags.
+        appState.mixerPreferences.set(true, forKey: "mixerSWReturnFadersLinked")
+        appState.mixerPreferences.set(true, forKey: "mixerMasterFadersLinked")
+        let sourceKey = "mixerSoftwareReturnSource_\(selectedMixer)"
+        appState.mixerPreferences.set(
+            TwoUnitMixer.sourceToSave(shown: softwareReturnSource,
+                                      saved: UInt32(clamping: appState.mixerPreferences.integer(forKey: sourceKey)),
+                                      pairCount: appState.softwareReturnPairCount),
+            forKey: sourceKey)
+        // Keep the Software Return and USB Master meters in step with the faders and mute.
+        appState.refreshSoftwareReturnMeterGains()
+        appState.markSetupEdited(.mixer)
+    }
+}

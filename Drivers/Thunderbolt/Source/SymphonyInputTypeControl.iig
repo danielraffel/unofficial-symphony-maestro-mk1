@@ -1,0 +1,40 @@
+// SymphonyInputTypeControl.iig — push-model MicPre input type control.
+//
+// One instance per host input of an installed MicPre8 ('nlvl', a line-level
+// control, Input scope). coreaudiod delivers the DAW's choice to
+// HandleChangeSelectedValues on the control's own work queue; we hand (host
+// input, value) to the driver, which resolves the MicPre route, coalesces,
+// sends the phantom/insert OFFs and AnalogReferenceLevel (0x20) on the serial
+// XLink queue, and publishes the value only after the unit took it.
+
+#ifndef SymphonyInputTypeControl_h
+#define SymphonyInputTypeControl_h
+
+#include <AudioDriverKit/IOUserAudioSelectorControl.iig>
+
+class SymphonyThunderbridge;
+
+// LOCALONLY: the base IOUserAudioSelectorControl is LOCALONLY.
+class LOCALONLY SymphonyInputTypeControl : public IOUserAudioSelectorControl
+{
+public:
+    // Signature mirrors the base 5-arg init (IOUserAudioSelectorControl.h).
+    virtual bool init(IOUserAudioDriver* in_driver,
+                      bool in_is_settable,
+                      IOUserAudioObjectPropertyElement in_control_element,
+                      IOUserAudioObjectPropertyScope in_control_scope,
+                      IOUserAudioClassID in_control_class_id) override;
+
+    virtual void free() override;
+
+    // PUSH entry point. Does not publish: the driver does after the send.
+    virtual kern_return_t HandleChangeSelectedValues(const IOUserAudioSelectorValue* in_selected_values,
+                                                     size_t in_selected_values_count) override;
+
+    virtual void SetDriver(SymphonyThunderbridge* in_driver);
+
+    // 0-based host input this control belongs to.
+    virtual void SetChannel(uint32_t in_channel);
+};
+
+#endif /* SymphonyInputTypeControl_h */

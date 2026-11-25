@@ -189,6 +189,27 @@ cp "$APP_RESOURCES/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :MaestroSourceCommit string $SOURCE_COMMIT" "$APP_BUNDLE/Contents/Info.plist"
 
+# Diagnostics sending (optional). The endpoint and upload key of the private
+# report intake come from a local 0600 file, never from the repository; see
+# Apps/Maestro/MaestroApp/DiagnosticsSender.swift. Without them the app saves
+# diagnostics to the Desktop and asks the user to email the file.
+DIAGNOSTICS_ENV_FILE="${MAESTRO_DIAGNOSTICS_ENV_FILE:-$HOME/.config/pulp/secrets/diagnostics.env}"
+if [ -z "${DIAGNOSTICKIT_SEND_KEY:-}" ] && [ -f "$DIAGNOSTICS_ENV_FILE" ]; then
+    [ "$(stat -f '%Lp' "$DIAGNOSTICS_ENV_FILE")" = 600 ] || { echo "ERROR: $DIAGNOSTICS_ENV_FILE must be mode 600" >&2; exit 1; }
+    DIAGNOSTICKIT_SEND_ENDPOINT="$(sed -n 's/^DIAGNOSTICKIT_SEND_ENDPOINT=//p' "$DIAGNOSTICS_ENV_FILE" | tr -d '"' | head -1)"
+    DIAGNOSTICKIT_SEND_KEY="$(sed -n 's/^DIAGNOSTICKIT_SEND_KEY=//p' "$DIAGNOSTICS_ENV_FILE" | tr -d '"' | head -1)"
+fi
+if [ -n "${DIAGNOSTICKIT_SEND_KEY:-}" ] && [ -n "${DIAGNOSTICKIT_SEND_ENDPOINT:-}" ]; then
+    /usr/libexec/PlistBuddy -c "Add :MaestroDiagnosticsEndpoint string $DIAGNOSTICKIT_SEND_ENDPOINT" "$APP_BUNDLE/Contents/Info.plist"
+    # The key never reaches argv: PlistBuddy reads the command from stdin.
+    printf 'Add :MaestroDiagnosticsKey string %s\nSave\n' "$DIAGNOSTICKIT_SEND_KEY" \
+        | /usr/libexec/PlistBuddy "$APP_BUNDLE/Contents/Info.plist" >/dev/null
+    echo "  Diagnostics sending: on ($(echo "$DIAGNOSTICKIT_SEND_ENDPOINT" | sed -E 's#https://([^/]+).*#\1#'))"
+else
+    echo "  Diagnostics sending: off (no $DIAGNOSTICS_ENV_FILE); diagnostics save to the Desktop only"
+fi
+unset DIAGNOSTICKIT_SEND_KEY
+
 # Resources (icon, legal pages)
 for RES in AppIcon.icns AppIconRounded.icns Acknowledgements.html Privacy.html Terms.html; do
     if [ -f "$APP_RESOURCES/$RES" ]; then
@@ -240,6 +261,15 @@ fi
 "$REPO_ROOT/Tools/verify-profile.sh" \
     "$MAESTRO_DEXT_PROFILE" \
     com.danielraffel.maestro.thunderbridge developerid
+
+# The number of XLink ports the driver serves comes from Tools/versions.json
+# (dextPortCount), never from the environment, so a package can be rebuilt
+# from its tag. It goes into the BUILT dext's personality before signing, so the
+# signature (and the CDHash gate below) covers it. Absent: nothing injected.
+# shellcheck source=../Tools/lib/package-checks.sh
+. "$REPO_ROOT/Tools/lib/package-checks.sh"
+DEXT_PORT_COUNT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dextPortCount", ""))' "$REPO_ROOT/Tools/versions.json")"
+inject_dext_port_count "$DEXT_SRC/Info.plist" "$DEXT_PORT_COUNT"
 
 echo "Signing dext (Developer ID, DriverKit entitlements)..."
 codesign --sign "$SIGNING_IDENTITY" --force --options runtime --timestamp \

@@ -7,7 +7,7 @@ import SwiftUI
 enum UpdateChannelDialog: Identifiable, Equatable {
     case confirmBeta
     /// `offerSwitchOnly` is false when the copy is already on Stable (the
-    /// "Install X…" button), so "Switch Without Installing" means nothing.
+    /// "Install X" button), so "Switch Without Installing" means nothing.
     case goBack(FeedItem, offerSwitchOnly: Bool)
     case feedUnreachable
     case refused(String)
@@ -31,30 +31,43 @@ enum UpdateChannelCopy {
     static let betaBody = "Beta versions are for testing. They arrive before they are finished, have had less testing, and may have bugs. A beta can replace the ThunderBridge driver."
     static let betaBack = "You can switch back to Stable at any time; Maestro then offers to reinstall the latest stable version."
     static let goBackTitle = "Go back to the stable version?"
-    static let feedUnreachable = "Maestro couldn't read the update feed. The channel is now Stable. To reinstall the stable version, press Install stable in Preferences when you're online."
+    static let noBetaNow = "There's no beta available right now. You'll get the next one when it is released."
+    /// Names no button label: "Install X" carries a version and is only
+    /// shown once a feed has been read, which Check for Updates does.
+    static let feedUnreachable = "Maestro couldn't read the update feed. The channel is now Stable. To reinstall the stable version when you're online, choose Check for Updates, then press the Install button under Update channel in Preferences."
+    /// A package was downloaded and failed a check.
     static let verifyFailed = "Maestro couldn't verify the download, so nothing was installed."
+    /// The feed itself was unusable; nothing was downloaded.
+    static let feedRefused = "Maestro couldn't get the stable version from the update feed, so nothing was installed."
     static let checking = "Checking the download…"
 
     static func testFeed(_ url: String) -> String { "Updates are being read from a test feed: \(url)" }
-    static func runningBeta(_ installed: String, stable: String) -> String {
-        "You're running beta \(installed). The latest stable version is \(stable)."
+    /// The dates are the feed's ("25 Nov"), each left out when unknown.
+    static func runningBeta(_ installed: String, stable: String,
+                            installedDate: String? = nil, stableDate: String? = nil) -> String {
+        "You're running beta \(installed)\(dated(installedDate)). The latest stable version is \(stable)\(dated(stableDate))."
     }
+    private static func dated(_ date: String?) -> String { date.map { " (\($0))" } ?? "" }
+    static let seeWhatsNew = "See what's new"
+    static let releaseNotes = "Release notes"
     static func stillOnBeta(_ installed: String) -> String {
         "You're still running beta \(installed). You'll get the next stable version when it is newer than this one."
     }
-    static func goBackBody(_ installed: String, stable: String) -> [String] {
+    static func goBackBody(_ installed: String, stable: String,
+                           installedDate: String? = nil, stableDate: String? = nil) -> [String] {
         [
-            runningBeta(installed, stable: stable),
+            runningBeta(installed, stable: stable, installedDate: installedDate, stableDate: stableDate),
             "Maestro will download \(stable), check it, and open the installer. Follow the installer; Maestro reopens when it has finished. Quit your audio apps first: audio is interrupted for a few seconds.",
             "If Maestro then shows a driver banner, unplug the ThunderBridge cable and plug it back in, or restart your Mac.",
         ]
     }
     static func downloading(_ version: String) -> String { "Downloading Maestro \(version)…" }
-    static func installButton(_ version: String) -> String { "Install \(version)…" }
+    /// No ellipsis: after a version number it read as a cut-off number.
+    static func installButton(_ version: String) -> String { "Install \(version)" }
     static func switchAndInstall(_ version: String) -> String { "Switch and Install \(version)" }
 }
 
-/// The channel rows in Device Settings › Preferences.
+/// The channel rows in App Settings › Updates.
 struct UpdateChannelSettings: View {
     @EnvironmentObject private var updates: UpdateController
     @State private var dialog: UpdateChannelDialog?
@@ -66,13 +79,26 @@ struct UpdateChannelSettings: View {
     }
 
     var body: some View {
-        Picker("Update channel", selection: channelBinding) {
-            Text("Stable").tag(UpdateChannel.stable)
-            Text("Beta").tag(UpdateChannel.beta)
+        LabeledContent {
+            VStack(spacing: 4) {
+                // SwiftUI's segmented picker keeps its natural width on
+                // macOS; AppKit's control takes fixed segment widths, so each
+                // channel's newest version sits centred under its half.
+                ChannelSegmentedControl(selection: channelBinding)
+                    .frame(width: ChannelReleasesRow.width)
+                    .disabled(pickerDisabled)
+                    .maestroHelp(UpdateChannelCopy.pickerHelp)
+                // Nothing extra (no space, no spinner) until a feed was read
+                // with scheduled checks on; then it fades in.
+                if let releases = updates.channelReleases {
+                    ChannelReleasesRow(releases: releases)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeIn(duration: 0.25), value: updates.channelReleases)
+        } label: {
+            Text("Update channel")
         }
-        .pickerStyle(.segmented)
-        .disabled(pickerDisabled)
-        .help(UpdateChannelCopy.pickerHelp)
         .unredacted()
         .onAppear { updates.refreshForPreferencesIfAllowed() }
         .sheet(item: $dialog) { dialog in
@@ -90,7 +116,9 @@ struct UpdateChannelSettings: View {
         }
         if updates.isRunningBetaOnStable, let stable = updates.newestStableForDisplay {
             HStack {
-                Text(UpdateChannelCopy.runningBeta(updates.installedVersion, stable: stable))
+                Text(UpdateChannelCopy.runningBeta(updates.installedVersion, stable: stable,
+                                                   installedDate: updates.releaseDateText(of: updates.installedVersion),
+                                                   stableDate: updates.releaseDateText(of: stable)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -144,7 +172,7 @@ struct UpdateChannelSettings: View {
         }
     }
 
-    /// "Install X…": never trusts the stored number; reads and verifies the feed first.
+    /// "Install X": never trusts the stored number; reads and verifies the feed first.
     private func installStable() {
         guard !updates.isSessionInProgress else { return }
         busy = true
@@ -163,6 +191,80 @@ struct UpdateChannelSettings: View {
                 dialog = .feedUnreachable
             }
         }
+    }
+}
+
+/// The Stable | Beta segmented control, with two equal segments filling
+/// `ChannelReleasesRow.width`.
+struct ChannelSegmentedControl: NSViewRepresentable {
+    @Binding var selection: UpdateChannel
+    static let channels: [UpdateChannel] = [.stable, .beta]
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(labels: ["Stable", "Beta"], trackingMode: .selectOne,
+                                         target: context.coordinator, action: #selector(Coordinator.changed(_:)))
+        control.segmentDistribution = .fillEqually
+        control.setAccessibilityLabel("Update channel")
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.selection = $selection
+        control.selectedSegment = Self.channels.firstIndex(of: selection) ?? 0
+        control.isEnabled = context.environment.isEnabled
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var selection: Binding<UpdateChannel>
+        init(selection: Binding<UpdateChannel>) { self.selection = selection }
+
+        @objc func changed(_ sender: NSSegmentedControl) {
+            guard ChannelSegmentedControl.channels.indices.contains(sender.selectedSegment) else { return }
+            let chosen = ChannelSegmentedControl.channels[sender.selectedSegment]
+            selection.wrappedValue = chosen
+            // A choice that opens a dialog first keeps the old channel
+            // selected until it is confirmed.
+            sender.selectedSegment = ChannelSegmentedControl.channels.firstIndex(of: selection.wrappedValue) ?? 0
+        }
+    }
+}
+
+/// The newest Stable and Beta versions, each centred under its half of the
+/// channel picker: "0.9.28 · 25 Nov" and its release notes link.
+struct ChannelReleasesRow: View {
+    /// The picker's width; each half holds one channel's text.
+    static let width: CGFloat = 280
+    let releases: ChannelReleases
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            column(releases.stable)
+            column(releases.beta)
+        }
+        .frame(width: Self.width)
+    }
+
+    @ViewBuilder private func column(_ release: ChannelRelease?) -> some View {
+        VStack(spacing: 2) {
+            if let release {
+                // Version and date only: the dates show which is newer, and
+                // a "Newer" pill raised "newer than what?" (owner, 2026-11-24).
+                Text(release.summary())
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                if let notes = release.notesURL {
+                    Link(UpdateChannelCopy.releaseNotes, destination: notes)
+                        .font(.caption)
+                }
+            }
+        }
+        .lineLimit(1)
+        .frame(width: Self.width / 2)
     }
 }
 
@@ -193,11 +295,20 @@ struct UpdateChannelSheet: View {
             Text(UpdateChannelCopy.betaTitle).font(.headline)
             Text(UpdateChannelCopy.betaBody).fixedSize(horizontal: false, vertical: true)
             Text(UpdateChannelCopy.betaBack).fixedSize(horizontal: false, vertical: true)
+            // With no beta in the feed there are no notes to link to; the
+            // general releases page would only show stable versions.
+            if updates.feedHasNoCurrentBeta {
+                Text(UpdateChannelCopy.noBetaNow)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
-                Button(updates.hasCurrentBeta ? "What's in the current beta" : "Release notes") {
-                    NSWorkspace.shared.open(updates.currentBetaNotesURL)
+                if !updates.feedHasNoCurrentBeta {
+                    Button(updates.hasCurrentBeta ? "What's in the current beta" : "Release notes") {
+                        NSWorkspace.shared.open(updates.currentBetaNotesURL)
+                    }
+                    .buttonStyle(.link)
                 }
-                .buttonStyle(.link)
                 Spacer()
                 // Cancel is the default button: Return and Escape both cancel.
                 Button("Cancel", action: close)
@@ -209,10 +320,16 @@ struct UpdateChannelSheet: View {
             }
         case .goBack(let item, let offerSwitchOnly):
             Text(UpdateChannelCopy.goBackTitle).font(.headline)
-            ForEach(UpdateChannelCopy.goBackBody(updates.installedVersion, stable: item.displayVersion), id: \.self) {
+            ForEach(UpdateChannelCopy.goBackBody(updates.installedVersion, stable: item.displayVersion,
+                                                 installedDate: updates.releaseDateText(of: updates.installedVersion),
+                                                 stableDate: item.date.map { ChannelReleases.dateText($0) }), id: \.self) {
                 Text($0).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
+                if let notes = item.notesURL {
+                    Button(UpdateChannelCopy.seeWhatsNew) { NSWorkspace.shared.open(notes) }
+                        .buttonStyle(.link)
+                }
                 Spacer()
                 Button("Cancel", action: close)
                     .keyboardShortcut(.cancelAction)
@@ -238,17 +355,18 @@ struct UpdateChannelSheet: View {
                 Button("OK", action: close).keyboardShortcut(.defaultAction)
             }
         case .refused(let reason):
-            FailureView(reason: reason, close: close)
+            FailureView(headline: UpdateChannelCopy.feedRefused, reason: reason, close: close)
         }
     }
 }
 
 private struct FailureView: View {
+    var headline = UpdateChannelCopy.verifyFailed
     let reason: String
     let close: () -> Void
 
     var body: some View {
-        Text(UpdateChannelCopy.verifyFailed).fixedSize(horizontal: false, vertical: true)
+        Text(headline).fixedSize(horizontal: false, vertical: true)
         Text("(\(reason))")
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

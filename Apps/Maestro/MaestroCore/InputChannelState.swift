@@ -9,24 +9,49 @@
 /// - AEmg = micGain, AEph = phantom, AEre = phaseReverse
 /// - AEhf = highPassFilter, AEsl = softLimit, AErl = analogIOType
 public struct InputChannelState: Codable, Sendable, Equatable {
-    /// Mic/line gain in dB (range 0..85). Maps to 'AEmg' (micGain).
-    public var gain: Double = 0
+    /// Gain shown by the active input type: Mic 0..85, Instrument 0..65 dB.
+    /// Keep both stage values in sync even for direct SwiftUI bindings and groups.
+    public var gain: Double = 0 {
+        didSet {
+            if inputType == AnalogInputLevel.mic.rawValue { micGain = gain }
+            if inputType == AnalogInputLevel.instrument.rawValue { instrumentGain = gain }
+        }
+    }
+    /// Last stored Mic-stage gain. The original kept Mic and Instrument gains
+    /// independently (`og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:1867-1991`).
+    public var micGain: Double = 0
+    /// Last stored Instrument-stage gain.
+    public var instrumentGain: Double = 0
     /// +48V phantom power enable. Maps to 'AEph' (phantom).
-    public var phantom: Bool = false
+    public var phantom: Bool = false {
+        didSet { if !phantom { phantomProvenance = nil } }
+    }
+    public var phantomProvenance: PhantomProvenance?
     /// Phase inversion enable. Maps to 'AEre' (phaseReverse).
     public var phase: Bool = false
     /// High-pass filter enable. Maps to 'AEhf' (highPassFilter).
     public var hpf: Bool = false
-    /// Soft limiter mode: 0=off, 1=−2dBFS, 2=−4dBFS, 3=Saturate, 4=Crunch.
+    /// Soft limiter mode: 0=off, 1=−2 dBfs, 2=−4 dBfs, 3=Soft Saturate, 4=Soft Crush.
     /// Maps to 'AEsl' (softLimit).
     public var softLimit: UInt32 = 0
     /// Analog input type (mic/line/instrument). Maps to 'AErl' (analogIOType).
     /// Default +4 dBu (1) matches original Maestro 2 line-level default.
-    public var inputType: UInt32 = 1
+    public var inputType: UInt32 = 1 {
+        didSet {
+            if inputType != AnalogInputLevel.mic.rawValue { phantomProvenance = nil }
+            if inputType == AnalogInputLevel.mic.rawValue { gain = micGain }
+            if inputType == AnalogInputLevel.instrument.rawValue { gain = instrumentGain }
+        }
+    }
     /// Calibration trim in dB. Range ±2.0 for +4dBu/-10dBV modes.
     /// Sent as part of the analog ref level USB command (byte[1]).
     /// Evidence: `SymphonyIOVendorSpecific.h` — DO_NOT_SET_TRIM_VALUE = 127
     public var trim: Double = 0
+    /// Stored calibration for each analog reference. The existing live callers
+    /// still own `trim`; `switchingTrimReference` binds it to these values.
+    public var trimPlus4: Double = 0
+    public var trimMinus10: Double = 0
+    public var trimVariable: Double = 0
     /// Digital reference level ID. Maps to 'AEdr' (digitalRefLevel).
     /// 0=-20dBfs, 1=-18dBfs, 2=-16dBfs, 3=-14dBfs, 4=-12dBfs, 5=-10dBfs.
     /// Only shown in line-level modes (+4 dBu, -10 dBV).
@@ -54,6 +79,8 @@ public struct InputChannelState: Codable, Sendable, Equatable {
 
     public init(
         gain: Double = 0,
+        micGain: Double? = nil,
+        instrumentGain: Double? = nil,
         phantom: Bool = false,
         phase: Bool = false,
         hpf: Bool = false,
@@ -66,12 +93,19 @@ public struct InputChannelState: Codable, Sendable, Equatable {
         insertReturn: Bool = false
     ) {
         self.gain = gain
+        self.micGain = micGain ?? (inputType == AnalogInputLevel.instrument.rawValue ? 0 : gain)
+        self.instrumentGain = instrumentGain ?? (inputType == AnalogInputLevel.instrument.rawValue ? min(gain, 65) : 0)
+        if inputType == AnalogInputLevel.mic.rawValue { self.gain = self.micGain }
+        if inputType == AnalogInputLevel.instrument.rawValue { self.gain = self.instrumentGain }
         self.phantom = phantom
         self.phase = phase
         self.hpf = hpf
         self.softLimit = softLimit
         self.inputType = inputType
         self.trim = trim
+        self.trimPlus4 = inputType == AnalogInputLevel.plus4dBu.rawValue ? trim : 0
+        self.trimMinus10 = inputType == AnalogInputLevel.minus10dBV.rawValue ? trim : 0
+        self.trimVariable = inputType == AnalogInputLevel.variable.rawValue ? trim : 0
         self.digitalRefLevel = digitalRefLevel
         self.group = group
         self.insert = insert
@@ -88,12 +122,23 @@ public struct InputChannelState: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = InputChannelState()
         gain            = try c.decodeIfPresent(Double.self, forKey: .gain) ?? d.gain
+        phantomProvenance = try c.decodeIfPresent(PhantomProvenance.self, forKey: .phantomProvenance)
         phantom         = try c.decodeIfPresent(Bool.self,   forKey: .phantom) ?? d.phantom
         phase           = try c.decodeIfPresent(Bool.self,   forKey: .phase) ?? d.phase
         hpf             = try c.decodeIfPresent(Bool.self,   forKey: .hpf) ?? d.hpf
         softLimit       = try c.decodeIfPresent(UInt32.self, forKey: .softLimit) ?? d.softLimit
         inputType       = try c.decodeIfPresent(UInt32.self, forKey: .inputType) ?? d.inputType
+        micGain = try c.decodeIfPresent(Double.self, forKey: .micGain)
+            ?? (inputType == AnalogInputLevel.instrument.rawValue ? 0 : gain)
+        instrumentGain = try c.decodeIfPresent(Double.self, forKey: .instrumentGain)
+            ?? (inputType == AnalogInputLevel.instrument.rawValue ? min(gain, 65) : 0)
         trim            = try c.decodeIfPresent(Double.self, forKey: .trim) ?? d.trim
+        trimPlus4 = try c.decodeIfPresent(Double.self, forKey: .trimPlus4)
+            ?? (inputType == AnalogInputLevel.plus4dBu.rawValue ? trim : 0)
+        trimMinus10 = try c.decodeIfPresent(Double.self, forKey: .trimMinus10)
+            ?? (inputType == AnalogInputLevel.minus10dBV.rawValue ? trim : 0)
+        trimVariable = try c.decodeIfPresent(Double.self, forKey: .trimVariable)
+            ?? (inputType == AnalogInputLevel.variable.rawValue ? trim : 0)
         digitalRefLevel = try c.decodeIfPresent(UInt32.self, forKey: .digitalRefLevel) ?? d.digitalRefLevel
         group           = try c.decodeIfPresent(UInt32.self, forKey: .group) ?? d.group
         insert          = try c.decodeIfPresent(UInt32.self, forKey: .insert) ?? d.insert
@@ -410,6 +455,26 @@ public enum InputChannelLogic {
     /// (`APAnalogInputController.m:583-590`).
     public static func usesGainKnob(level: AnalogInputLevel) -> Bool { level.isPreampLevel }
 
+    /// Whether the strip has a trim value that can be typed into: the trim
+    /// fader is showing (Show Trims on a line-level strip — Mic/Instrument
+    /// strips carry the gain knob instead) and is not inert on converters.
+    /// Tab skips the strips where this is false.
+    public static func hasEditableTrimReadout(level: AnalogInputLevel,
+                                              showTrims: Bool,
+                                              convertersOnly: Bool) -> Bool {
+        showTrims && !convertersOnly && !usesGainKnob(level: level)
+    }
+
+    public static func hasEditableGainReadout(level: AnalogInputLevel, convertersOnly: Bool) -> Bool {
+        !convertersOnly && usesGainKnob(level: level)
+    }
+
+    /// The selected stage has its own wire command and stored gain.
+    /// Evidence: og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:186-330.
+    public static func gainSelector(for level: AnalogInputLevel) -> AudioPropertySelector {
+        level == .instrument ? .instrumentGain : .micGain
+    }
+
     /// Clamp a gain value into the legal range for the level (0 for line levels).
     public static func clampGain(_ gain: Double, level: AnalogInputLevel) -> Double {
         guard let range = gainRange(for: level) else { return 0 }
@@ -495,11 +560,6 @@ public enum InputChannelLogic {
     ///
     /// Evidence: `SymphonyIOBoard_MicPre8ch.cpp:186-330` (`UpdateMicPreGain`).
     ///
-    /// MODEL NOTE: the daemon keeps SEPARATE mic and instrument gain stores per
-    /// channel and switches between them with the level; `InputChannelState` has a
-    /// single `gain`, so a Mic → Instrument → Mic round trip does not restore the
-    /// old mic gain. Splitting the store belongs with the `0xC4` instrument-gain
-    /// work (see `SymphonyIOCommand.instrumentGain`, still unmapped).
     @discardableResult
     public static func applyGainChange(
         _ channels: inout [InputChannelState],
@@ -741,7 +801,9 @@ public enum InputChannelLogic {
         if card == .analogADDA16 {
             return [(0, "Off"), (2, "On")]
         }
-        return [(0, "Off"), (1, "-2 dBFS"), (2, "-4 dBFS"), (3, "Saturate"), (4, "Crunch")]
+        // The original's names, as its menu showed them
+        // (og_source/maestrolink/Software/AnalogIn_SymphonyIO_Stream.cpp:17).
+        return [(0, "Off"), (1, "-2 dBfs"), (2, "-4 dBfs"), (3, "Soft Saturate"), (4, "Soft Crush")]
     }
 
     /// Display name for a soft limit value on a given card.
@@ -980,6 +1042,8 @@ public enum InputChannelLogic {
             if isMicPre {
                 channels[i].inputType = InputResetDefaults.analogLevel.rawValue
                 channels[i].gain = InputResetDefaults.gain
+                channels[i].micGain = InputResetDefaults.gain
+                channels[i].instrumentGain = InputResetDefaults.gain
                 channels[i].group = InputResetDefaults.group
                 channels[i].insert = InputResetDefaults.insert
                 channels[i].insertReturn = InputResetDefaults.insertReturn

@@ -10,9 +10,9 @@ import MaestroCore
 @Suite("Channel state store")
 struct ChannelStateStoreTests {
 
-    private func freshDefaults(_ name: String) -> UserDefaults {
-        let d = UserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
+    private func freshDefaults(_ name: String) -> ScratchUserDefaults {
+        let d = ScratchUserDefaults(suiteName: name)!
+        d.cleanup()
         return d
     }
 
@@ -28,6 +28,15 @@ struct ChannelStateStoreTests {
     @Test func scopeNamesBothSlots() {
         #expect(devUnit.savedStateScope == "optical+analogAD16")
         #expect(reporterUnit.savedStateScope == "analogADDA16+micPre8")
+    }
+
+    @Test func micAndInstrumentGainPersistSeparately() throws {
+        let state = InputChannelState(gain: 12, micGain: 12, instrumentGain: 34,
+                                      inputType: AnalogInputLevel.instrument.rawValue)
+        let roundTrip = try JSONDecoder().decode(InputChannelState.self,
+            from: JSONEncoder().encode(state))
+        #expect(roundTrip.micGain == 12)
+        #expect(roundTrip.instrumentGain == 34)
     }
 
     @Test func unknownLayoutHasNoScopeAndUsesLegacyKey() {
@@ -152,7 +161,31 @@ struct ChannelStateStoreTests {
         #expect(presets?.count == 2)
         #expect(presets?[0]?.level == .mic)
         #expect(presets?[1]?.level == .instrument)
-        d.removePersistentDomain(forName: name)
+        d.cleanup()
         #expect(CardSimulation.analogLevelsKey == "MaestroSimulateAnalogLevels")
+    }
+
+    @Test func convertersKeepStatePerChainAndNeverClaimTheLegacyKey() throws {
+        let suite = "ChannelStateStoreTests.converters"
+        let defaults = try #require(ScratchUserDefaults(suiteName: suite))
+        defaults.cleanup()
+        defer { defaults.cleanup() }
+        defaults.set(Data("[1]".utf8), forKey: ChannelStateStore.inputKey)   // a Symphony I/O's
+        let system = try #require(ConverterSystem(simulationName: "ad16x+da16x"))
+        let layout = CardLayout(isKnown: false, converters: system)
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
+        #expect(store.scope == "conv:" + system.routingSignature)
+        #expect(store.loadData(ChannelStateStore.inputKey) == nil)
+        #expect(defaults.string(forKey: ChannelStateStore.claimKey(ChannelStateStore.inputKey)) == nil)
+        let simulated = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: true)
+        #expect(simulated.scope == "sim:conv:" + system.routingSignature)
+        // Another chain has its own.
+        let other = try #require(ConverterSystem(simulationName: "ad16x"))
+        #expect(ChannelStateStore(defaults: defaults, layout: CardLayout(isKnown: false, converters: other),
+                                  isSimulatingCards: false).scope != store.scope)
+        // A Symphony I/O with converters on port 2 keeps its cards' scope.
+        let symphony = CardLayout(slot1: .analogADDA16, slot2: .none, converters: system)
+        #expect(ChannelStateStore(defaults: defaults, layout: symphony, isSimulatingCards: false).scope
+                == symphony.savedStateScope)
     }
 }

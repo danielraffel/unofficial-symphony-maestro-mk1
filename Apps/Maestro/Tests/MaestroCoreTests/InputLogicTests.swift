@@ -210,8 +210,13 @@ struct InputLogicTests {
         #expect(InputChannelLogic.clampGain(50, level: .plus4dBu) == 0)
     }
 
-    @Test func gainClampedOnLevelChange() {
+    @Test func gainStagesSurviveLevelChanges() {
         var state = InputChannelState(gain: 85, inputType: AnalogInputLevel.mic.rawValue)
+        InputChannelLogic.applyLevelChange(&state, to: .instrument)
+        #expect(state.gain == 0)
+        state.gain = 65
+        InputChannelLogic.applyLevelChange(&state, to: .mic)
+        #expect(state.gain == 85)
         InputChannelLogic.applyLevelChange(&state, to: .instrument)
         #expect(state.gain == 65)
         InputChannelLogic.applyLevelChange(&state, to: .plus4dBu)
@@ -312,7 +317,8 @@ struct InputLogicTests {
             let options = InputChannelLogic.softLimitOptions(card: card)
             #expect(options.count == 5, "\(card) should expose five soft limit values")
             #expect(options.map(\.value) == [0, 1, 2, 3, 4])
-            #expect(options.map(\.name) == ["Off", "-2 dBFS", "-4 dBFS", "Saturate", "Crunch"])
+            // Apogee's names (AnalogIn_SymphonyIO_Stream.cpp:17), not "Saturate" / "Crunch".
+            #expect(options.map(\.name) == ["Off", "-2 dBfs", "-4 dBfs", "Soft Saturate", "Soft Crush"])
         }
     }
 
@@ -325,9 +331,10 @@ struct InputLogicTests {
     }
 
     @Test func softLimitNames() {
-        #expect(InputChannelLogic.softLimitName(2, card: .optical) == "-4 dBFS")
+        #expect(InputChannelLogic.softLimitName(2, card: .optical) == "-4 dBfs")
         #expect(InputChannelLogic.softLimitName(2, card: .analogADDA16) == "On")
-        #expect(InputChannelLogic.softLimitName(3, card: .optical) == "Saturate")
+        #expect(InputChannelLogic.softLimitName(3, card: .optical) == "Soft Saturate")
+        #expect(InputChannelLogic.softLimitName(4, card: .optical) == "Soft Crush")
         // A value the card rejects falls back to Off rather than showing "?".
         #expect(InputChannelLogic.softLimitName(3, card: .analogADDA16) == "Off")
     }
@@ -476,6 +483,7 @@ struct MicPreStripLogicTests {
     @Test func groupClampRespectsPerMemberRange() {
         var channels = micChannels([10, 60, 0, 0, 0, 0, 0, 0])
         channels[1].inputType = AnalogInputLevel.instrument.rawValue
+        channels[1].gain = 60 // Instrument has its own stored gain.
         channels[0].group = 2
         channels[1].group = 2
 
@@ -745,7 +753,7 @@ struct MicPreStripLogicTests {
         var channels = (0..<4).map { _ in InputChannelState(softLimit: 0) }
         let cards: [IOCardType] = [.optical, .optical, .analogADDA16, .analogADDA16]
 
-        // "Saturate" (3) exists on the Optical card only.
+        // "Soft Saturate" (3) exists on the Optical card only.
         let changed = InputChannelLogic.applySoftLimitToAll(
             &channels, to: 3, cards: cards, excluding: 0)
 

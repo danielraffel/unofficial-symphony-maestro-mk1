@@ -48,17 +48,42 @@ public enum TDMMeterPayload {
                                          requestLength: UInt16) -> Bool {
         let base = data.startIndex + setupPacketOffset
         guard data.count >= setupPacketOffset + 8 else { return false }
-        let expected: [UInt8] = [
-            vendorReadRequestType,
-            meterRequest,
-            group, 0x00,                                   // wValue, little-endian
-            0x00, 0x00,                                    // wIndex
-            UInt8(requestLength & 0xFF), UInt8(requestLength >> 8)  // wLength
+        // The group went in wValue when this was measured; it goes in wIndex
+        // now, as the original sent it (`SymphonyIORequestBuilder.getMeterData`).
+        // Either request's own setup packet in the reply is residue.
+        let length: [UInt8] = [UInt8(requestLength & 0xFF), UInt8(requestLength >> 8)]
+        let head: [UInt8] = [vendorReadRequestType, meterRequest]
+        let forms: [[UInt8]] = [
+            head + [group, 0x00, 0x00, 0x00] + length,   // wValue = group, wIndex = 0
+            head + [0x00, 0x00, group, 0x00] + length,   // wValue = 0, wIndex = group
         ]
-        for (i, byte) in expected.enumerated() where data[base + i] != byte {
-            return false
+        let found = Array(data[base..<(base + 8)])
+        return forms.contains(found)
+    }
+
+    /// The first `count` words of a reply as dBFS, word i for meter i (the
+    /// mixer group: Software Return L/R of Mixer 1, of Mixer 2, then Master
+    /// L/R of Mixer 1, of Mixer 2). No card layout is involved, unlike the
+    /// input and output groups. Level = word & 0x3FFF of 16383; at or below
+    /// 0x40 reads as silence (-60).
+    public static func mixerLevels(_ data: Data, count: Int = 8) -> [Double] {
+        mixerReadings(data, count: count).map(\.level)
+    }
+
+    public static func reading(_ data: Data, word: Int) -> MeterReading {
+        guard word >= 0, word < data.count / 2 else { return .silence }
+        let base = data.startIndex + word * 2
+        return .unit(word: UInt16(data[base]) | UInt16(data[base + 1]) << 8)
+    }
+
+    public static func mixerReadings(_ data: Data, count: Int = 8) -> [MeterReading] {
+        (0..<count).map { reading(data, word: $0) }
+    }
+
+    public static func digitalReadings(_ data: Data, layout: CardLayout, isInput: Bool) -> [MeterReading] {
+        MeterSlotMap.digitalWords(layout: layout, isInput: isInput).map { word in
+            word.map { reading(data, word: $0) } ?? .silence
         }
-        return true
     }
 
     /// True when every byte is zero. The firmware returns a zeroed buffer on
@@ -116,10 +141,8 @@ public enum SoftwareOutputMeterMap {
     /// routing (`destinationByte -> sourceByte`).
     ///
     /// With no cached route for a destination the proxy's boot routing applies
-    /// (`configure_fpga_routing`): `IOBoard0 ch n <- USB n` for n >= 2,
-    /// `IOBoard0 ch 0/1 <- Mixer0 out <- USB 0/1`, and `IOBoard1 ch n <- USB n`.
-    /// The proxy measures USB 0/1 after its software gain/pan/mute, i.e. at the
-    /// level the mixer actually delivers to the DAC, so both collapse to
+    /// (`configure_fpga_routing`): `IOBoard0 ch n <- USB n` and
+    /// `IOBoard1 ch n <- USB n`, every output direct, so it is
     /// `usbChannel(n % 16)`.
     public static func source(forWord word: Int, routes: [UInt8: UInt8]) -> Source {
         guard let dest = destinationByte(forWord: word) else { return .unknown }

@@ -15,7 +15,7 @@ const screenshots = [
   ['input-micpre', '8MicPre controls — simulated card'],
   ['update-available', 'Sparkle update available'],
   ['update-current', 'Sparkle up to date'],
-  ['diagnostics-toggle', 'Update channel and Diagnostics (Beta channel)'],
+  ['diagnostics-toggle', 'Update channel and Diagnostics'],
   ['diagnostics-confirm', 'Diagnostics asks first; nothing is sent unless you agree'],
   ['diagnostics-on', 'Diagnostics recording, with a Stop Diagnostics button'],
   ['diagnostics-form', 'Send diagnostics privately, with optional details'],

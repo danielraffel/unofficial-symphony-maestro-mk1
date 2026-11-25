@@ -47,6 +47,16 @@ struct SoftwareInfoReportTests {
 
     // MARK: - Version line
 
+    @Test func clipboardNamesTheUpdateChannelWhenKnown() {
+        let base = SoftwareInfoReport(appVersion: "0.9.3", appPath: "/Applications/Maestro.app",
+                                      osVersion: "27.2", audioPath: "USB")
+        #expect(!base.clipboardText.contains("Update channel"))
+        var beta = base; beta.updateChannel = .beta
+        var stable = base; stable.updateChannel = .stable
+        #expect(beta.clipboardText.split(separator: "\n").dropFirst().first == "Update channel: Beta")
+        #expect(stable.clipboardText.contains("Update channel: Stable"))
+    }
+
     @Test func versionLineCarriesBuildAndCommit() {
         #expect(report().versionLine == "0.8.4 (build 585 · 483d8e7)")
     }
@@ -235,11 +245,11 @@ struct SoftwareInfoReportTests {
         #expect(text == """
         Maestro: 0.8.4 (build 585 · 483d8e7)
         macOS: 26.0 (Build 25A123)
-        App path: /Applications/Maestro.app
         Audio path: Thunderbolt (ThunderBridge driver extension)
         PCI device: pci19c2,2200
         Driver extension: 0.10.0 (54)
         Bundled driver extension: build 54
+        App path: /Applications/Maestro.app
         """)
     }
 

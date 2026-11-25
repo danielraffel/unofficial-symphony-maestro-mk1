@@ -29,7 +29,7 @@ struct ThunderboltInputMeterMapTests {
         #expect(Array(w.channels[24..<32]) == (8..<16).map { Optional($0) })
         // Input-tab digital strips: board 0's eight, board 1 has none.
         #expect(Array(w.digital[0..<8]) == (8..<16).map { Optional($0) })
-        #expect(w.digital[8..<24].allSatisfy { $0 == nil })
+        #expect(w.digital[8...].allSatisfy { $0 == nil })
     }
 
     @Test("Before the fix A16 Line 1 read host input 9: the levels now come from 17")
@@ -53,8 +53,8 @@ struct ThunderboltInputMeterMapTests {
         #expect(Array(w.channels[2..<18]) == (12..<28).map { Optional($0) })
         // The 2x6's digital inputs are board channels 2-11 = host inputs 3-12.
         #expect(Array(w.channels[18..<28]) == (2..<12).map { Optional($0) })
-        // Metered digital: the first eight of the 2x6's ten.
-        #expect(Array(w.digital[0..<8]) == (2..<10).map { Optional($0) })
+        // All ten digital inputs are metered.
+        #expect(Array(w.digital[0..<10]) == (2..<12).map { Optional($0) })
     }
 
     @Test("Slot 1 not read this session: the driver's fixed 16 + 16")
@@ -79,6 +79,20 @@ struct ThunderboltInputMeterMapTests {
         #expect(Map.stripLevels(host: [Double](repeating: -3, count: 32), words: w, count: 32)[0] == -60)
     }
 
+    @Test("Unrouted card inputs are marked unavailable to mixer strips")
+    func unroutedMixerChannels() {
+        let layout = CardLayout(slot1: .analogAES, slot2: .analogAD16, isKnown: true)
+        let a16Line1 = layout.inputRoutingColumns.firstIndex {
+            $0.routingByte == SymphonyIORoutingAddress.ioBoard1Base
+        }!
+        let routes = Map.currentRoutes(
+            slot1: .analogAES,
+            replayed: InputRoutingReplay.writes(saved: [0: a16Line1], columns: layout.inputRoutingColumns, pairCount: 16))
+        let routed = Map.routedMixerChannels(layout: layout, routes: routes)
+        #expect(routed[0] == false && routed[1] == false)
+        #expect(routed[8] == true)
+    }
+
     @Test("Unknown layout keeps host input i on strip i")
     func unknownLayoutIsIdentity() {
         let w = Map.words(layout: CardLayout(slot1: .none, slot2: .none, isKnown: false),
@@ -93,5 +107,34 @@ struct ThunderboltInputMeterMapTests {
         let channels = CardLayout(slot1: .analogAES, slot2: .analogAD16, isKnown: true).mixerChannels
         #expect(channels[8].boardIndex == 1 && channels[8].channelOnBoard == 0)
         #expect(channels[24].boardIndex == 0 && channels[24].channelOnBoard == 8)
+    }
+
+    /// A driver build 150+ lays the inputs out analog first. The mixer's
+    /// analog strips are in that order too, so strip i reads host input i;
+    /// its digital strips group AES before optical across both cards, which
+    /// is not host order when the cards' digital kinds differ (e.g. a 2x6 +
+    /// 8x8 AES), so there each strip is found by its channel. Every host
+    /// input carrying a channel is metered by exactly one strip.
+    @Test("Analog-first driver: every channel metered once, analog strips at their position",
+          arguments: IOCardType.allCases)
+    func analogFirstMetersEveryChannel(slot1: IOCardType) {
+        for slot2 in IOCardType.allCases {
+            let layout = CardLayout(slot1: slot1, slot2: slot2, isKnown: true)
+            let routes = Map.currentRoutes(slot1: slot1, slot2: slot2, order: .analogFirst, replayed: [])
+            let w = Map.words(layout: layout, routes: routes)
+            let analog = slot1.analogInputChannels + slot2.analogInputChannels
+            let real = slot1.totalInputChannels + slot2.totalInputChannels
+            #expect(Array(w.channels.prefix(analog)) == (0..<analog).map { Optional($0) }, "\(slot1)/\(slot2)")
+            #expect(w.channels.compactMap { $0 }.sorted() == Array(0..<real), "\(slot1)/\(slot2)")
+        }
+    }
+
+    @Test("Analog-first driver, Daniel's rig: A16 Line 1 is host input 9")
+    func analogFirstDanielsRig() {
+        let layout = CardLayout(slot1: .analogAES, slot2: .analogAD16, isKnown: true)
+        let w = Map.words(layout: layout,
+                          routes: Map.currentRoutes(slot1: .analogAES, slot2: .analogAD16, order: .analogFirst, replayed: []))
+        #expect(w.channels[8] == 8)                                         // A16 Line 1 strip
+        #expect(Array(w.digital[0..<8]) == (24..<32).map { Optional($0) })  // AES 1-8 on host inputs 25-32
     }
 }

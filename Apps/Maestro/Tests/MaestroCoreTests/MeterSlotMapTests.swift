@@ -26,7 +26,7 @@ struct MeterSlotMapTests {
 
     @Test("Dev unit: the 8x8 OPT contributes ADAT meters at words 8-15")
     func devUnitDigital() {
-        #expect(MeterSlotMap.digitalWordIndices(analogOnBoard: 8, boardIndex: 0)
+        #expect(MeterSlotMap.digitalWordIndices(card: .optical, boardIndex: 0, isInput: true)
                 == [8, 9, 10, 11, 12, 13, 14, 15])
     }
 
@@ -49,17 +49,14 @@ struct MeterSlotMapTests {
 
     @Test("16x16 contributes NO digital region")
     func sixteenChannelNoDigital() {
-        #expect(MeterSlotMap.digitalWordIndices(analogOnBoard: 16, boardIndex: 0).isEmpty)
+        #expect(MeterSlotMap.digitalWordIndices(card: .analogADDA16, boardIndex: 0, isInput: true).isEmpty)
     }
 
     /// A MicPre8 has no converters of its own; it delegates onto the primary
     /// card's analog inputs. Its slot contributes zero meter slots.
     @Test("MicPre8 in slot 1 contributes no digital meters")
     func micPreNoMeters() {
-        #expect(MeterSlotMap.digitalWordIndices(analogOnBoard: 0, boardIndex: 1).isEmpty == false,
-                "unknown card falls back to 8, so words 24-31 are assumed")
-        // With a real MicPre8 reporting 0 analog we fall back to 8 rather than
-        // inventing a region; the card simply never produces signal there.
+        #expect(MeterSlotMap.digitalWordIndices(card: .micPre8, boardIndex: 1, isInput: true).isEmpty)
     }
 
     // MARK: Degradation

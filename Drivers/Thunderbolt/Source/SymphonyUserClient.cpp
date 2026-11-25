@@ -62,6 +62,30 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyLinkStateOutput),
     },
+    [kSelectorReadPort2State] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = 0,
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = sizeof(SymphonyPort2StateOutput),
+    },
+    [kSelectorReadConverters] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = 0,
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = sizeof(SymphonyConverterStateOutput),
+    },
+    [kSelectorSetConverterConfig] = {
+        .function                 = nullptr,
+        .checkCompletionExists    = false,
+        .checkScalarInputCount    = 0,
+        .checkStructureInputSize  = sizeof(SymphonyConverterConfigInput),
+        .checkScalarOutputCount   = 0,
+        .checkStructureOutputSize = 0,
+    },
     [kSelectorReadVendor] = {
         .function                 = nullptr,
         .checkCompletionExists    = false,
@@ -88,6 +112,62 @@ static const IOUserClientMethodDispatch sMethods[kSelectorCount] = {
         .checkStructureInputSize  = sizeof(SymphonyRetireInput),
         .checkScalarOutputCount   = 0,
         .checkStructureOutputSize = sizeof(SymphonyRetireOutput),
+    },
+    [kSelectorReadUnitB] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = 0,
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyUnitBStateOutput),
+    },
+    [kSelectorPublishMicGain] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyObservedGainInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = 0,
+    },
+    [kSelectorLoopSync] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyLoopSyncInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyLoopSyncOutput),
+    },
+    [kSelectorSetMonitorDevice] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyMonitorDeviceInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = 0,
+    },
+    [kSelectorSetMonitorOutput] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyMonitorOutputInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = 0,
+    },
+    [kSelectorVBus] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = sizeof(SymphonyVBusInput),
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyVBusStateOutput),
+    },
+    [kSelectorReadChannelOrder] = {
+        .function = nullptr,
+        .checkCompletionExists = false,
+        .checkScalarInputCount = 0,
+        .checkStructureInputSize = 0,
+        .checkScalarOutputCount = 0,
+        .checkStructureOutputSize = sizeof(SymphonyChannelOrderOutput),
     },
 };
 
@@ -145,8 +225,16 @@ kern_return_t SymphonyUserClient::ExternalMethod(
     // genuinely different error (a real size-check failure). H2/#7: the previous
     // `ret != kIOReturnSuccess` test returned kIOReturnNoCompletion for EVERY valid
     // call, so the vendor path was dead — no command ever reached the handler below.
+    auto method = sMethods[selector];
+    // Preserve exact-size validation for the legacy ABI and the optional
+    // host-only phantom tail. No arbitrary-sized outputs are accepted.
+    if (selector == kSelectorReadLinkState && arguments &&
+        (arguments->structureOutputMaximumSize == kSymphonyPhantomObservationWords * sizeof(uint32_t) ||
+         arguments->structureOutputMaximumSize == kSymphonyMixerInstanceWords * sizeof(uint32_t) ||
+         arguments->structureOutputMaximumSize == kSymphonyMicPreEditWords * sizeof(uint32_t)))
+        method.checkStructureOutputSize = static_cast<uint32_t>(arguments->structureOutputMaximumSize);
     kern_return_t ret = super::ExternalMethod(selector, arguments,
-                                               &sMethods[selector], this, nullptr);
+                                               &method, this, nullptr);
     if (ret != kIOReturnSuccess && ret != kIOReturnNoCompletion) {
         UCLOG("ExternalMethod: dispatch validation failed 0x%x", ret);
         return ret;
@@ -186,7 +274,7 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             input->command,
             input->value,
             input->payload,
-            input->payloadLen);
+            input->payloadLen, input->port);
 
         // Build output
         SymphonyVendorCommandOutput output;
@@ -197,7 +285,7 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             arguments->structureOutput = outputData;
         }
 
-        UCLOG("ExternalMethod: cmd=0x%02x value=0x%08x payload=%u → %s",
+        UCLOG("ExternalMethod: cmd=0x%02x value=0x%08x payload=%u → %{public}s",
               input->command, input->value, input->payloadLen,
               cmdRet == kIOReturnSuccess ? "OK" : "FAIL");
 
@@ -263,12 +351,62 @@ kern_return_t SymphonyUserClient::ExternalMethod(
             UCLOG("ExternalMethod: no driver (link state)");
             return kIOReturnNotReady;
         }
-        SymphonyLinkStateOutput output = {};
-        kern_return_t r = ivars->driver->ReadLinkState(reinterpret_cast<uint32_t *>(&output));
+        // 16 words (legacy), 48 (+ phantom OFF receipts), 52 (+ D5 mixer
+        // instance) or 100 (+ MicPre host edits at 52-99). Each tail is a pure
+        // ivar read.
+        uint32_t output[kSymphonyMicPreEditWords] = {};
+        kern_return_t r = ivars->driver->ReadLinkState(output);
+        const size_t words = method.checkStructureOutputSize / sizeof(uint32_t);
+        const bool edits = words == kSymphonyMicPreEditWords;
+        const bool instance = edits || words == kSymphonyMixerInstanceWords;
+        const bool receipts = instance || words == kSymphonyPhantomObservationWords;
+        if (r == kIOReturnSuccess && receipts)
+            r = ivars->driver->ReadPhantomObservations(output + 16);
+        if (r == kIOReturnSuccess && instance)
+            r = ivars->driver->ReadMixerInstance(output + kSymphonyPhantomObservationWords);
+        if (r == kIOReturnSuccess && edits)
+            r = ivars->driver->ReadMicPreEdits(output + kSymphonyMicPreEditOffset);
+        output[0] = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        const size_t bytes = edits ? kSymphonyMicPreEditWords * sizeof(uint32_t)
+                         : instance ? kSymphonyMixerInstanceWords * sizeof(uint32_t)
+                         : receipts ? kSymphonyPhantomObservationWords * sizeof(uint32_t)
+                                    : sizeof(SymphonyLinkStateOutput);
+        auto outputData = OSData::withBytes(output, bytes);
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadPort2State) {
+        if (!ivars->driver) {
+            UCLOG("ExternalMethod: no driver (port 2 state)");
+            return kIOReturnNotReady;
+        }
+        SymphonyPort2StateOutput output = {};
+        kern_return_t r = ivars->driver->ReadPort2State(reinterpret_cast<uint32_t *>(&output));
         output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
         return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadConverters) {
+        if (!ivars->driver) {
+            UCLOG("ExternalMethod: no driver (converter state)");
+            return kIOReturnNotReady;
+        }
+        SymphonyConverterStateOutput output = {};
+        kern_return_t r = ivars->driver->ReadConverterState(reinterpret_cast<uint32_t *>(&output));
+        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorSetConverterConfig) {
+        if (!ivars->driver || !arguments->structureInput) return kIOReturnBadArgument;
+        auto *input = (const SymphonyConverterConfigInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyUCMagic) return kIOReturnBadArgument;
+        return ivars->driver->SetConverterConfig(input->config);
     }
 
     if (selector == kSelectorReadVendor) {
@@ -279,7 +417,7 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         SymphonyVendorReadOutput output = {};
         output.responseLen = input->responseLen;
         kern_return_t r = ivars->driver->ReadVendorCommand(
-            input->command, input->value, output.payload, input->responseLen);
+            input->command, input->value, output.payload, input->responseLen, input->port);
         output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
@@ -294,6 +432,89 @@ kern_return_t SymphonyUserClient::ExternalMethod(
         output.build = (uint32_t)SYMPHONY_DEXT_BUILD;
         auto outputData = OSData::withBytes(&output, sizeof(output));
         if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorPublishMicGain) {
+        if (!ivars->driver || !arguments->structureInput) return kIOReturnNotReady;
+        auto *input = (const SymphonyObservedGainInput *)arguments->structureInput->getBytesNoCopy();
+        if (!SymphonyObservedGainInputValid(input)) return kIOReturnBadArgument;
+        return ivars->driver->PublishObservedMicGain(input->port, input->channel, input->lane, input->gain);
+    }
+
+    if (selector == kSelectorLoopSync) {
+        if (!ivars->driver || !arguments->structureInput) return kIOReturnNotReady;
+        auto *input = (const SymphonyLoopSyncInput *)arguments->structureInput->getBytesNoCopy();
+        if (!SymphonyLoopSyncInputValid(input)) return kIOReturnBadArgument;
+        SymphonyLoopSyncOutput output = {};
+        kern_return_t r = ivars->driver->LoopSyncConfig(input->operation, input->config,
+                                                      reinterpret_cast<uint32_t *>(&output));
+        if (r != kIOReturnSuccess) return r;
+        auto data = OSData::withBytes(&output, sizeof(output));
+        if (!data) return kIOReturnNoMemory;
+        arguments->structureOutput = data;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadUnitB) {
+        if (!ivars->driver) return kIOReturnNotReady;
+        SymphonyUnitBStateOutput output = {};
+        kern_return_t r = ivars->driver->ReadUnitBState(reinterpret_cast<uint32_t *>(&output));
+        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorReadChannelOrder) {
+        // dext 150: driver state only, as selector 11.
+        if (!ivars->driver) return kIOReturnNotReady;
+        SymphonyChannelOrderOutput output = {};
+        kern_return_t r = ivars->driver->ReadChannelOrder(reinterpret_cast<uint32_t *>(&output));
+        output.status = (r == kIOReturnSuccess) ? 0 : (uint32_t)r;
+        auto outputData = OSData::withBytes(&output, sizeof(output));
+        if (outputData) arguments->structureOutput = outputData;
+        return kIOReturnSuccess;
+    }
+
+    if (selector == kSelectorSetMonitorDevice) {
+        if (!ivars->driver || !arguments->structureInput ||
+            arguments->structureInput->getLength() != sizeof(SymphonyMonitorDeviceInput))
+            return kIOReturnBadArgument;
+        auto *input = (const SymphonyMonitorDeviceInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyUCMagic) return kIOReturnBadArgument;
+        return ivars->driver->SetMonitorDevice(input->unit);
+    }
+
+    if (selector == kSelectorSetMonitorOutput) {
+        if (!ivars->driver || !arguments->structureInput ||
+            arguments->structureInput->getLength() != sizeof(SymphonyMonitorOutputInput))
+            return kIOReturnBadArgument;
+        auto *input = (const SymphonyMonitorOutputInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyUCMagic) return kIOReturnBadArgument;
+        return ivars->driver->SetMonitorOutput(input->unit, input->output);
+    }
+
+    if (selector == kSelectorVBus) {
+        // The same checks as selector 15: the exact size, then the magic.
+        // The size and the operation are refused here, an invalid channel
+        // count by the driver.
+        if (!ivars->driver || !arguments->structureInput ||
+            arguments->structureInput->getLength() != sizeof(SymphonyVBusInput))
+            return kIOReturnBadArgument;
+        auto *input = (const SymphonyVBusInput *)arguments->structureInput->getBytesNoCopy();
+        if (!input || input->magic != kSymphonyUCMagic ||
+            input->operation > kSymphonyVBusOperationSet) return kIOReturnBadArgument;
+        if (input->operation == kSymphonyVBusOperationSet) {
+            const kern_return_t r = ivars->driver->SetVBusChannels(input->channels);
+            if (r != kIOReturnSuccess) return r;
+        }
+        SymphonyVBusStateOutput output = {};
+        const kern_return_t r = ivars->driver->ReadVBusState(reinterpret_cast<uint32_t *>(&output));
+        if (r != kIOReturnSuccess) return r;
+        auto data = OSData::withBytes(&output, sizeof(output));
+        if (!data) return kIOReturnNoMemory;
+        arguments->structureOutput = data;
         return kIOReturnSuccess;
     }
 

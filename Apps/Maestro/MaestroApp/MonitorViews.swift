@@ -18,18 +18,39 @@ struct StatusBarView: View {
     @State private var clockLocked: Bool = false
     @State private var clockSourceDisplayName: String = "Internal"
     @State private var sampleRate: Double?
+    @State private var showPortMessageInfo = false
 
     var body: some View {
         HStack(spacing: 16) {
             // Clock lock indicator
             HStack(spacing: 4) {
-                Image(systemName: clockLocked ? "lock.fill" : "lock.open")
-                    .foregroundStyle(clockLocked ? .green : .red)
+                // No hardware: show a dash, never the last connection's Ready.
+                Image(systemName: !hardwareAvailable ? "lock.open" : shownClockLocked ? "lock.fill" : "lock.open")
+                    .foregroundStyle(!hardwareAvailable ? Color.secondary : shownClockLocked ? .green : .red)
                     .font(.system(size: 11))
-                Text(clockLocked ? "Locked" : "Unlocked")
+                Text(!hardwareAvailable ? "—" : PortStatusMessage.clock(locked: shownClockLocked, link: appState.transportType == .thunderbolt ? appState.thunderboltPortLink : .other))   // Apogee's wording (SymphonyIO.cpp:2961-2968)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+            .contentShape(Rectangle())
+            .maestroHelp(!hardwareAvailable
+                ? "Clock Status: no hardware is connected."
+                : shownClockLocked
+                ? "Clock Status: the Symphony I/O is locked to its clock source."
+                : "Clock Status: the Symphony I/O is not locked to its clock source. Check Clock Source in Device Settings > Clock.")
+
+            Divider().frame(height: 14)
+
+            // Sample rate, then clock source: the order of Device Settings > Clock
+            HStack(spacing: 4) {
+                Image(systemName: "waveform.badge.microphone")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(formatSampleRate(sampleRate))
+                    .font(.system(size: 11, design: .monospaced))
+            }
+            .contentShape(Rectangle())
+            .maestroHelp("Sample Rate. Change it in Device Settings > Clock.")
 
             Divider().frame(height: 14)
 
@@ -38,20 +59,11 @@ struct StatusBarView: View {
                 Image(systemName: "clock")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Text(clockSourceDisplayName)
+                Text(shownClockSourceName)
                     .font(.system(size: 11))
             }
-
-            Divider().frame(height: 14)
-
-            // Sample rate
-            HStack(spacing: 4) {
-                Image(systemName: "waveform.badge.microphone")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(formatSampleRate(sampleRate))
-                    .font(.system(size: 11, design: .monospaced))
-            }
+            .contentShape(Rectangle())
+            .maestroHelp("Clock Source: where the Symphony I/O takes its clock from. Change it in Device Settings > Clock.")
 
             Spacer()
 
@@ -72,7 +84,31 @@ struct StatusBarView: View {
                     }
                     .buttonStyle(.plain)
                     .contentShape(Rectangle())
-                    .help("Click to reconnect to hardware")
+                    .maestroHelp(appState.portStatusMessage ?? appState.endpointStatusMessage)
+                    // "No hardware detected" / "Bus error" is the short form:
+                    // the whole message is one click away, in the same
+                    // pop-up as About Clock Status, About Ports and About VBus.
+                    if let fullMessage = appState.portStatusMessage {
+                        Button { showPortMessageInfo.toggle() } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(PortStatusMessage.infoLabel)
+                        .maestroHelp(fullMessage)
+                        .popover(isPresented: $showPortMessageInfo, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(fullMessage)
+                                SeeHelpLink(section: .troubleshooting, appState: appState, popover: $showPortMessageInfo)
+                            }
+                            .font(.callout)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: 340, alignment: .leading)
+                            .padding(14)
+                        }
+                    }
                 } else {
                     if appState.connectionMode == .hardware {
                         Image(systemName: "cable.connector")
@@ -87,30 +123,25 @@ struct StatusBarView: View {
 
             // Clear Meters — resets all peak hold and over indicators (fixed position, far right)
             Button {
-                appState.inputPeakHold = Array(repeating: -60.0, count: appState.inputPeakHold.count)
-                appState.outputPeakHold = Array(repeating: -60.0, count: appState.outputPeakHold.count)
-                appState.digitalInputPeakHold = Array(repeating: -60.0, count: 24)
-                appState.digitalOutputPeakHold = Array(repeating: -60.0, count: 24)
-                Task {
-                    do {
-                        try await appState.device?.setProperty(
-                            PropertyAddress(selector: .peaksClear), value: .uint32(1))
-                    } catch {
-                        print("[Maestro] ERROR: Clear Meters failed: \(error)")
-                    }
-                }
+                appState.clearMeters()
             } label: {
                 Text("Clear Meters")
                     .font(.system(size: 11))
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .help("Clear all peak hold and over indicators (Cmd+K)")
+            .maestroHelp("Clear all peak hold and over indicators (Cmd+K)")
 
         }
         .padding(.leading, 12)
         .padding(.trailing, 20)
         .padding(.vertical, 6)
+        // The info button goes away with the message. Left true, its pop-up
+        // would open by itself when a message next appears. On the bar, not
+        // the button: the button is gone by the time this changes.
+        .onChange(of: appState.portStatusMessage == nil) { _, gone in
+            if gone { showPortMessageInfo = false }
+        }
         .background(.bar)
         .task(id: statusSourceID) {
             await observeStatus()
@@ -125,7 +156,7 @@ struct StatusBarView: View {
         appState.statusMessage.contains("not responding")
             || appState.statusMessage.contains("No hardware")
             || appState.statusMessage.contains("error")
-            || appState.endpointStatusMessage == "Symphony Disconnected"
+            || appState.endpointDisconnected
     }
 
     private struct StatusSourceID: Hashable {
@@ -142,6 +173,24 @@ struct StatusBarView: View {
                        ready: appState.isHardwareInitialized,
                        disconnected: appState.connectionMode == .disconnected,
                        reload: appState.viewReloadToken)
+    }
+
+    /// The unit's own lock state where it reports one (ThunderBridge and PCIe),
+    /// held "locked" for the moments after a rate change as before; otherwise
+    /// the Core Audio rate comparison.
+    private var hardwareAvailable: Bool { appState.routingHardwareAvailable }
+
+    private var shownClockLocked: Bool {
+        if appState.clockLockSuppressed { return true }
+        return ClockStatusRule.shownLocked(isUSB: appState.transportType == .usb, reported: appState.reportedClockLocked ?? clockLocked)
+    }
+
+    /// The source the unit reports (`AppState.reportedClockSource`, from the
+    /// front panel sync); otherwise what the bar showed before ("Internal" once
+    /// connected, a dash while not).
+    private var shownClockSourceName: String {
+        guard clockSourceDisplayName != "—" else { return clockSourceDisplayName }
+        return appState.reportedClockSourceName(sampleRate: sampleRate) ?? clockSourceDisplayName
     }
 
     private var statusConnection: CoreAudioDeviceConnection? {
@@ -221,10 +270,7 @@ struct StatusBarView: View {
 
     private func formatSampleRate(_ rate: Double?) -> String {
         guard let rate, rate.isFinite, rate > 0 else { return "—" }
-        if rate >= 1000 {
-            return "\(String(format: "%.1f", rate / 1000)) kHz"
-        }
-        return "\(Int(rate)) Hz"
+        return SampleRateText.format(rate)
     }
 }
 
@@ -247,9 +293,14 @@ struct MonitorToolbarView: View {
         let prevSpeakerLevel = undoSpeakerLevel
         let prevHP1Level = undoHP1Level
         let prevHP2Level = undoHP2Level
-        let speakerControlsEnabled = SpeakerOutputLogic.speakerControlsEnabled(
+        let convertersOnly = appState.converterVolumeKeys
+        // Converters with Volume Keys › Audio Output on None: the mixer level
+        // stays at 0 dB and there is nothing to turn.
+        let converterKeysOff = convertersOnly && appState.keyboardVolumeOutputAvailable
+            && appState.keyboardVolumeOutput(for: .a) == .none
+        let speakerControlsEnabled = (convertersOnly && !converterKeysOff) || (!convertersOnly && SpeakerOutputLogic.speakerControlsEnabled(
             mode: appState.speakerOutputMode,
-            analogOutputChannels: appState.cardLayout.analogOutputStripCount)
+            analogOutputChannels: appState.cardLayout.analogOutputStripCount))
         HStack(spacing: 12) {
             // Speaker: mute icon + knob
             HStack(spacing: 4) {
@@ -258,11 +309,15 @@ struct MonitorToolbarView: View {
                     muted: appState.speakerMuted,
                     wide: true
                 ) {
+                    guard !appState.hardwareWritesSuspended else { return }
                     appState.speakerMuted.toggle()
                     let muted = appState.speakerMuted
+                    appState.markSetupEdited(.monitorControls)
+                    appState.showLevelOverlay(source: .speaker, level: appState.speakerLevel, muted: muted)
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
+                            guard !s.hardwareWritesSuspended else { return }
                             s.speakerMuted = prev
                             try? await s.device?.setProperty(
                                 PropertyAddress(selector: .outputMute), value: .bool(prev))
@@ -272,7 +327,8 @@ struct MonitorToolbarView: View {
                     Task { await writeProperty(.outputMute, value: .bool(muted)) }
                     appState.writeASPMute(muted)
                 }
-                .help(appState.speakerMuted ? "Speaker: Unmute" : "Speaker: Mute")
+                .maestroHelp(convertersOnly ? ConverterMonitorText.mute
+                      : appState.speakerMuted ? "Speaker: Unmute" : "Speaker: Mute")
                 .disabled(!speakerControlsEnabled)
                 .opacity(speakerControlsEnabled ? 1 : 0.4)
 
@@ -288,8 +344,11 @@ struct MonitorToolbarView: View {
                     externalReadout: true,
                     onUserChange: { level in
                         guard !isLoading else { return }
+                        // Writes are suspended: the unit keeps its level.
+                        guard !appState.hardwareWritesSuspended else { appState.speakerLevel = prevSpeakerLevel; return }
                         um?.registerUndo(withTarget: appState) { s in
                             Task { @MainActor in
+                                guard !s.hardwareWritesSuspended else { return }
                                 s.speakerLevel = prevSpeakerLevel
                                 try? await s.device?.setProperty(
                                     PropertyAddress(selector: .outputLevel),
@@ -298,11 +357,14 @@ struct MonitorToolbarView: View {
                         }
                         um?.setActionName("Speaker Level")
                         undoSpeakerLevel = level
+                        appState.markSetupEdited(.monitorControls)
+                        appState.showLevelOverlay(source: .speaker, level: level, muted: appState.speakerMuted)
                         Task { await writeProperty(.outputLevel, value: .uint32(UInt32(max(0, -level)))) }
                         appState.writeASPVolume(level)
                     }
                 )
-                .help("Speaker level — drag to adjust, double-tap to reset")
+                .maestroHelp(convertersOnly ? ConverterMonitorText.volume
+                      : "Speaker level — drag to adjust, double-tap to reset")
                 .disabled(!speakerControlsEnabled)
                 .opacity(speakerControlsEnabled ? 1 : 0.4)
             }
@@ -315,11 +377,15 @@ struct MonitorToolbarView: View {
                     icon: appState.hp1Muted ? "speaker.slash.fill" : "headphones",
                     muted: appState.hp1Muted
                 ) {
+                    guard !appState.hardwareWritesSuspended else { return }
                     appState.hp1Muted.toggle()
                     let muted = appState.hp1Muted
+                    appState.markSetupEdited(.monitorControls)
+                    appState.showLevelOverlay(source: .headphone1, level: appState.hp1Level, muted: muted)
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
+                            guard !s.hardwareWritesSuspended else { return }
                             s.hp1Muted = prev
                             try? await s.device?.setProperty(
                                 PropertyAddress(selector: .headphone1Mute), value: .bool(prev))
@@ -327,8 +393,9 @@ struct MonitorToolbarView: View {
                     }
                     um?.setActionName("Headphone 1 Mute")
                     Task { await writeProperty(.headphone1Mute, value: .bool(muted)) }
+                    appState.writeASPMute(muted, output: .headphone1)
                 }
-                .help(appState.hp1Muted ? "HP 1: Unmute" : "HP 1: Mute")
+                .maestroHelp(appState.hp1Muted ? "HP 1: Unmute" : "HP 1: Mute")
 
                 RotaryKnobView(
                     value: $state.hp1Level,
@@ -342,8 +409,11 @@ struct MonitorToolbarView: View {
                     externalReadout: true,
                     onUserChange: { level in
                         guard !isLoading else { return }
+                        // Writes are suspended: the unit keeps its level.
+                        guard !appState.hardwareWritesSuspended else { appState.hp1Level = prevHP1Level; return }
                         um?.registerUndo(withTarget: appState) { s in
                             Task { @MainActor in
+                                guard !s.hardwareWritesSuspended else { return }
                                 s.hp1Level = prevHP1Level
                                 try? await s.device?.setProperty(
                                     PropertyAddress(selector: .headphone1Level),
@@ -352,11 +422,15 @@ struct MonitorToolbarView: View {
                         }
                         um?.setActionName("Headphone 1 Level")
                         undoHP1Level = level
+                        appState.markSetupEdited(.monitorControls)
+                        appState.showLevelOverlay(source: .headphone1, level: level, muted: appState.hp1Muted)
                         Task { await writeProperty(.headphone1Level, value: .uint32(UInt32(max(0, -level)))) }
+                        appState.writeASPVolume(level, output: .headphone1)
                     }
                 )
-                .help("Headphone 1 level — drag to adjust, double-tap to reset")
+                .maestroHelp("Headphone 1 level — drag to adjust, double-tap to reset")
             }
+            .symphonyOnly(convertersOnly)
 
             Divider().frame(height: 20)
 
@@ -366,11 +440,15 @@ struct MonitorToolbarView: View {
                     icon: appState.hp2Muted ? "speaker.slash.fill" : "headphones",
                     muted: appState.hp2Muted
                 ) {
+                    guard !appState.hardwareWritesSuspended else { return }
                     appState.hp2Muted.toggle()
                     let muted = appState.hp2Muted
+                    appState.markSetupEdited(.monitorControls)
+                    appState.showLevelOverlay(source: .headphone2, level: appState.hp2Level, muted: muted)
                     let prev = !muted
                     um?.registerUndo(withTarget: appState) { s in
                         Task { @MainActor in
+                            guard !s.hardwareWritesSuspended else { return }
                             s.hp2Muted = prev
                             try? await s.device?.setProperty(
                                 PropertyAddress(selector: .headphone2Mute), value: .bool(prev))
@@ -378,8 +456,9 @@ struct MonitorToolbarView: View {
                     }
                     um?.setActionName("Headphone 2 Mute")
                     Task { await writeProperty(.headphone2Mute, value: .bool(muted)) }
+                    appState.writeASPMute(muted, output: .headphone2)
                 }
-                .help(appState.hp2Muted ? "HP 2: Unmute" : "HP 2: Mute")
+                .maestroHelp(appState.hp2Muted ? "HP 2: Unmute" : "HP 2: Mute")
 
                 RotaryKnobView(
                     value: $state.hp2Level,
@@ -393,8 +472,11 @@ struct MonitorToolbarView: View {
                     externalReadout: true,
                     onUserChange: { level in
                         guard !isLoading else { return }
+                        // Writes are suspended: the unit keeps its level.
+                        guard !appState.hardwareWritesSuspended else { appState.hp2Level = prevHP2Level; return }
                         um?.registerUndo(withTarget: appState) { s in
                             Task { @MainActor in
+                                guard !s.hardwareWritesSuspended else { return }
                                 s.hp2Level = prevHP2Level
                                 try? await s.device?.setProperty(
                                     PropertyAddress(selector: .headphone2Level),
@@ -403,14 +485,20 @@ struct MonitorToolbarView: View {
                         }
                         um?.setActionName("Headphone 2 Level")
                         undoHP2Level = level
+                        appState.markSetupEdited(.monitorControls)
+                        appState.showLevelOverlay(source: .headphone2, level: level, muted: appState.hp2Muted)
                         Task { await writeProperty(.headphone2Level, value: .uint32(UInt32(max(0, -level)))) }
+                        appState.writeASPVolume(level, output: .headphone2)
                     }
                 )
-                .help("Headphone 2 level — drag to adjust, double-tap to reset")
+                .maestroHelp("Headphone 2 level — drag to adjust, double-tap to reset")
             }
+            .symphonyOnly(convertersOnly)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
+        // Sleep or wake validation: a change would never reach the unit.
+        .disabled(appState.hardwareWritesSuspended)
         .task(id: appState.viewReloadToken) {
             await loadMonitorState()
         }
@@ -450,8 +538,11 @@ struct MonitorToolbarView: View {
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        // Not in Line mode: the unit's reading there is 0, not the speakers'
+        // level (see `AppState.speakersInLine`).
+        let inLine = await AppState.speakersInLine(appState.device, known: appState.speakerOutputMode)
         do {
-            if let attenuation = (try await appState.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+            if !inLine, let attenuation = (try await appState.device?.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
                 let level = -Double(attenuation)
                 appState.speakerLevel = level
                 undoSpeakerLevel = level
@@ -460,14 +551,19 @@ struct MonitorToolbarView: View {
             print("[Maestro] ERROR: loadMonitorState outputLevel failed: \(error)")
         }
         do {
-            if let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
-                appState.speakerMuted = mute
-                if mute {
-                    print("[Maestro] Hardware muted on startup — sending auto-unmute")
-                    appState.speakerMuted = false
-                    try await appState.device?.setProperty(
-                        PropertyAddress(selector: .outputMute), value: .bool(false))
+            if !inLine, let mute = (try await appState.device?.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
+                // A muted speaker stays muted, as with the original; only the
+                // Mac's own mute control is brought into line.
+                // On ThunderBridge/PCIe a speaker muted earlier in this session
+                // is muted again when the unit comes back unmuted (replug).
+                let kept = appState.transportType == .thunderbolt && appState.speakerMuted
+                let decision = SpeakerMuteAdoption.decide(unitMuted: mute, keptMuted: kept)
+                if decision.writeUnit {
+                    print("[Maestro] Speaker was muted before the unit was lost; muting it again")
+                    try? await appState.device?.setProperty(PropertyAddress(selector: .outputMute), value: .bool(true))
                 }
+                appState.speakerMuted = decision.showMuted
+                if decision.tellMac { appState.writeASPMute(true) }
             }
         } catch {
             print("[Maestro] ERROR: loadMonitorState outputMute failed: \(error)")
@@ -507,6 +603,40 @@ struct MonitorToolbarView: View {
         } catch DeviceConnectionError.unsupportedProperty(_) {
         } catch {
             print("[Maestro] ERROR: loadMonitorState headphone2Mute failed: \(error)")
+        }
+    }
+}
+
+// MARK: - Converters only (no Symphony I/O)
+
+/// Text for the monitor controls when the cable has converters only. The
+/// AD-16X, DA-16X, DD-16X and Rosetta 800 have no speaker or headphone outputs
+/// (their user guides; Apogee's software had no monitor controls for them).
+enum ConverterMonitorText {
+    static let unsupported = "Not supported on converters. Speaker and headphone "
+        + "controls need a Symphony I/O; these converters have no speaker or headphone outputs."
+    /// Input and output strip settings (reference levels, Soft Limit, trims).
+    static let channelSetting = "Not supported on converters. This is a Symphony I/O setting; "
+        + "set levels on the converter's front panel."
+    static let volume = "Volume — what the Mac's volume keys control on converters: "
+        + "the level of Mixer 1, which reaches the converters only where Output Routing sends it "
+        + "(by default every DAW output goes straight to its converter output). "
+        + "Outputs routed directly are not affected. Master in the Mixer is separate."
+    static let mute = "Mute — silences Mixer 1 (the Mac's mute key does the same)."
+}
+
+extension View {
+    /// Greys out a Symphony I/O-only control when the cable has converters
+    /// only. The tooltip sits on an overlay because macOS does not show the
+    /// tooltip of a disabled control. Unchanged on a Symphony I/O.
+    @ViewBuilder
+    func symphonyOnly(_ convertersOnly: Bool, help: String = ConverterMonitorText.unsupported) -> some View {
+        if convertersOnly {
+            self.disabled(true)
+                .opacity(0.4)
+                .overlay(Color.clear.contentShape(Rectangle()).maestroHelp(help))
+        } else {
+            self
         }
     }
 }

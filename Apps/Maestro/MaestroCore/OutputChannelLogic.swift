@@ -77,6 +77,12 @@ public enum OutputChannelLogic {
         return (trimMinimum...upper, trimStep)
     }
 
+    /// Whether an analog output strip has a trim value that can be typed into:
+    /// the trim fader is showing and is not inert on converters.
+    public static func hasEditableTrimReadout(showTrims: Bool, convertersOnly: Bool) -> Bool {
+        showTrims && !convertersOnly
+    }
+
     /// Clamp a trim into the legal range for a digital reference level.
     public static func clampTrim(_ trim: Double, digitalRefLevel: UInt32) -> Double {
         let spec = trimRange(digitalRefLevel: digitalRefLevel)
@@ -375,6 +381,13 @@ public enum SpeakerOutputLogic {
         case threeSpeakerSets: return 3
         default:               return 0
         }
+    }
+
+    /// Routing treats every non-speaker-set mode as one pair. This matches
+    /// `SymphonyIO.cpp:6125-6136`, whose default count is one even for Line,
+    /// Stereo, 5.1 and 7.1.
+    public static func routingSpeakerSetCount(mode: UInt32) -> Int {
+        max(1, speakerSetCount(mode: mode))
     }
 
     /// Default Speaker Select mask — set A only (`SymphonyIO.cpp:168`).

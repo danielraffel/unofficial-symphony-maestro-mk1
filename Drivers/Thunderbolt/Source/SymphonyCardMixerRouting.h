@@ -8,9 +8,16 @@ static constexpr uint8_t kThunderboltMixerSoftwareReturnCommand = 0xB4;
 static constexpr uint32_t kThunderboltCardMixerRoutingRegister = 0x2200;
 static constexpr uint32_t kThunderboltCardMixerHostPlaybackBase = 64;
 
+// One unit: every software pair of the port in use, 16 (PCI_OUT 0-31), as
+// the original offered (SymphonyCard.cpp:741-746).
 static constexpr bool IsThunderboltSoftwareReturnSource(uint8_t source)
 {
-    return source <= 7;
+    return source <= 15;
+}
+
+static constexpr bool IsThunderboltSoftwareReturnSource64(uint8_t source)
+{
+    return source <= 31;
 }
 
 // The original PCIe mixer selected a stereo host-playback pair by advancing
@@ -45,11 +52,31 @@ static constexpr uint32_t ThunderboltMixerPhysicalBase(uint16_t mixerID)
 // enable bit (SymphonyPCIeRoutingController.cpp:964-1216 routeSymphonyHW →
 // Symphony64Card CMD_ROUTE_OUTPUTS → Sym64Routing::SetOutputSource,
 // Sym64RoutingRegisters.h:94/159/226). This command exposes that register to
-// Maestro. Payload: [xlinkChannel 0..31, tdmSlot 0..255, enable 0/1].
+// Maestro. Payload: [xlinkChannel 0..63, tdmSlot 0..255, enable 0/1]; the
+// second half is accepted only for a Symphony I/O on port 2 while 64ch runs.
 static constexpr uint8_t  kThunderboltCardOutputRouteCommand   = 0xB5;
 static constexpr uint32_t kThunderboltCardOutputRoutingRegister = 0x2100;
-static constexpr uint32_t kThunderboltCardOutputChannels        = 32;
+static constexpr uint32_t kThunderboltCardOutputChannels        = 64;
 static constexpr uint32_t kThunderboltCardRouteEnable           = 0x100;
+
+// dext 131, converters only (AD-16X, DA-16X, DD-16X, Rosetta): the card's
+// routing is the only router they have, and the original let Maestro edit it
+// in both directions (SymphonyPCIeRoutingController.cpp:1280-1365 ->
+// routeSymphonyHW). With converters on the cable:
+//   0xB5 (above) also takes XLink TX channels 32..63 while port 2 carries
+//        converters (64 channels);
+//   0xB6 sets a host (DAW) input: payload [hostInput 0..63, xlinkRx 0..63,
+//        enable 0/1] -> SM_REG_INPUT_ROUTING entry hostInput <- XLINK_RX xlinkRx;
+//   0xB7 puts both tables back on the default placement (Reset Routing),
+//        no payload.
+// Symphony I/O also accepts 0xB6: host and RX are independently 0..31,
+// or 0..63 at 64 channels with unit B configured and its link in use.
+// 0xB7 restores its card input defaults (the unit's 0x31 table is separate).
+// Converter rules above are unchanged. Evidence: og_source/maestrolink/Software/
+// SymphonyPCIeRoutingController.cpp:976-1069,1860-1888.
+static constexpr uint8_t  kThunderboltCardInputRouteCommand       = 0xB6;
+static constexpr uint8_t  kThunderboltConverterRoutingResetCommand = 0xB7;
+static constexpr uint32_t kThunderboltCardInputRoutingRegister    = 0x2000;
 
 static constexpr uint32_t ThunderboltCardOutputRouteRegister(uint8_t channel)
 {

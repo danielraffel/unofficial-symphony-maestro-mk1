@@ -120,6 +120,19 @@ public enum DeviceConnectionError: Error, Sendable, Equatable {
     case cacheOnly(AudioPropertySelector)
 }
 
+extension DeviceConnectionError: LocalizedError {
+    /// Short plain wording: these reach the routing and settings footers, which
+    /// must never show "MaestroDevice.DeviceConnectionError error 3".
+    public var errorDescription: String? {
+        switch self {
+        case .notConnected: return "No Symphony is connected."
+        case .unsupportedProperty, .readOnly, .invalidElement, .cacheOnly: return "The Symphony does not support this setting."
+        case .typeMismatch: return "The Symphony did not accept this value."
+        case .transportError(let detail): return detail.isEmpty ? "The Symphony did not respond." : detail
+        }
+    }
+}
+
 // MARK: - Device Connection Protocol
 
 /// Protocol for reading and writing properties on a connected device.
@@ -130,6 +143,8 @@ public enum DeviceConnectionError: Error, Sendable, Equatable {
 /// Evidence: `og_source/generic/CoreAudio/ApogeeCustomProperties.h`
 /// - Property get/set with scope and element qualifiers.
 public protocol DeviceConnection: AnyObject, Sendable {
+    var hardwareWriteGate: HardwareWriteGate? { get }
+
     /// The identity of the connected device.
     var identifier: USBDeviceIdentifier { get }
 
@@ -156,4 +171,8 @@ public protocol DeviceConnection: AnyObject, Sendable {
 
     /// Disconnect from the device.
     func disconnect() async
+}
+
+public extension DeviceConnection {
+    var hardwareWriteGate: HardwareWriteGate? { nil }
 }

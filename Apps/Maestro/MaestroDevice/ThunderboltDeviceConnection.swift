@@ -1,7 +1,7 @@
 /// Thunderbolt device connection for Symphony IO via ThunderBridge.
 ///
 /// Uses two communication paths:
-/// 1. CoreAudio HAL properties (volume, mute, sample rate) — direct to dext
+/// 1. CoreAudio HAL properties (sample rate, converter trim) — direct to dext
 /// 2. IOUserClient (mic gain, phantom, routing, clock, mixer, etc.) — via DextUserClient
 ///
 /// The IOUserClient path sends vendor commands through the dext's XLink control
@@ -33,18 +33,27 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     /// IOUserClient connection for vendor commands (mic gain, phantom, etc.)
-    private let dextClient = DextUserClient()
+    /// The real `DextUserClient`, or an in-memory driver in tests.
+    private let dextClient: any ThunderboltDriverClient
+    public var hardwareWriteGate: HardwareWriteGate? { dextClient.hardwareWriteGate }
 
     /// Listener storage (NSLock-protected, same pattern as XPCDeviceConnection).
     private let listenerLock = NSLock()
+    private let presetLock = NSRecursiveLock()
+    private var presetOutputRoutes: [UInt8: UInt8] = [:]
+    private var presetCardInputRoutes: [Int: Int] = [:]
     /// Where the clock source answer comes from; see `ThunderboltClockState`.
     let clockState = ThunderboltClockState()
+    /// The unit's "external clock locked" flag from the front panel poller's
+    /// last reading; nil before the first one.
+    public var lastExternalClockLocked: Bool? { clockState.lastExternalClockLocked }
+    /// The driver's Clock Source selector as Core Audio holds it (1-5); nil
+    /// when it cannot be read. For the diagnostics report.
+    public var clockSelectorValue: UInt32? { try? readClockSource() }
     private var listeners: [AudioPropertySelector: [WeakListener]] = [:]
 
     /// Property selectors handled via CoreAudio HAL (more efficient path).
     private static let coreAudioSelectors: Set<AudioPropertySelector> = [
-        .outputLevel,       // → kAudioDevicePropertyVolumeDecibels
-        .outputMute,        // → kAudioDevicePropertyMute
         .sampleRate,        // → kAudioDevicePropertyNominalSampleRate
     ]
 
@@ -52,14 +61,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// This covers the full XMOS command surface — matches SymphonyIOPropertyMapper.buildWriteRequest.
     private static let dextSelectors: Set<AudioPropertySelector> = [
         // Mic preamp
-        .micGain, .phantom, .phaseReverse, .highPassFilter, .softLimit,
+        .micGain, .instrumentGain, .phantom, .phaseReverse, .highPassFilter, .softLimit,
         // MicPre8 group / insert (0xC7 / 0xC8 / 0xC9). Inert on a unit with no
         // MicPre module — the Input page never offers the controls, so nothing
         // is ever written for them.
         .groupID, .insertID, .insertReturnEnable,
+        // Front-panel identify lights (0x33), as unit B already allows.
+        .identify,
         // Analog / digital input
         .analogIOType, .digitalRefLevel,
-        // Output monitoring
+        // Physical unit A output monitoring
+        .outputLevel, .outputMute,
         .outputDim, .outputSumToMono,
         .headphone1Level, .headphone2Level,
         .headphone1Mute, .headphone2Mute,
@@ -93,7 +105,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// the Mac, not the unit, owns them.
     ///
     /// Without this every such read threw `unsupportedProperty`, so a view that
-    /// re-reads the device each time it appears (System Setup, Device Settings,
+    /// re-reads the device each time it appears (Device Settings,
     /// the Output tab's monitor section) fell back to its hard-coded defaults:
     /// the user set Peak Hold or Line output mode, switched tabs, and came back
     /// to the default on screen while the hardware kept what they had chosen.
@@ -126,9 +138,14 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// restarted is put back to what the app is showing.
     ///
     /// A setting the hardware refuses stays stored and is reported in `failed`.
-    public func reapplyStoredSettings() async -> DeviceSettingsReplay {
+    /// `excluding` leaves settings out (a saved Line mode the connect writes
+    /// after the routing restore); `only` writes just those.
+    public func reapplyStoredSettings(excluding: Set<AudioPropertySelector> = [],
+                                      only: Set<AudioPropertySelector>? = nil) async -> DeviceSettingsReplay {
         var replay = DeviceSettingsReplay()
-        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector) {
+        for entry in settingsStore.entries() where Self.storedSelectors.contains(entry.address.selector)
+            && !excluding.contains(entry.address.selector)
+            && only.map({ $0.contains(entry.address.selector) }) ?? true {
             do {
                 try await setProperty(entry.address, value: entry.value)
                 replay.applied += 1
@@ -137,6 +154,120 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             }
         }
         return replay
+    }
+
+    /// The saved monitor mode is Line: the speakers at full level, the
+    /// monitor level out of their path.
+    public var storedSpeakerModeIsLine: Bool {
+        settingsStore.value(for: PropertyAddress(selector: .speakerOutputMode))?.asUInt32
+            == SpeakerOutputLogic.line
+    }
+
+    // MARK: - Levels at connect (A4)
+
+    /// Where each output's saved level lives in `settingsStore`. These are
+    /// not in ``DeviceSettingsStore/ownedSettings``: they are never replayed
+    /// as they are, nor answered for reads; `applySavedMonitorLevels()` is
+    /// their only reader.
+    public static func savedLevelAddress(_ output: MonitorLevelsAtConnect.Output) -> PropertyAddress {
+        switch output {
+        case .speakers: PropertyAddress(selector: .outputLevel)
+        case .headphone1: PropertyAddress(selector: .headphone1Level)
+        case .headphone2: PropertyAddress(selector: .headphone2Level)
+        }
+    }
+
+    /// What the connect step found and did.
+    public struct MonitorLevelsResult: Sendable, Equatable {
+        /// The unit's speaker mode is Line, or could not be read: the
+        /// speakers were not read, written or saved.
+        public var speakersInLine: Bool
+        /// The unit's speaker mode as read, nil when it could not be.
+        public var speakerMode: UInt32?
+        /// Each output whose level is known now, as attenuation (0 loudest).
+        public var settled: [MonitorLevelsAtConnect.Output: UInt32]
+        /// The outputs turned down to the saved level.
+        public var written: [MonitorLevelsAtConnect.Output]
+
+        public init(speakersInLine: Bool, speakerMode: UInt32?,
+                    settled: [MonitorLevelsAtConnect.Output: UInt32],
+                    written: [MonitorLevelsAtConnect.Output]) {
+            self.speakersInLine = speakersInLine
+            self.speakerMode = speakerMode
+            self.settled = settled
+            self.written = written
+        }
+    }
+
+    /// The level this Mac last saw on an output, as attenuation.
+    public func savedMonitorLevel(_ output: MonitorLevelsAtConnect.Output) -> UInt32? {
+        settingsStore.value(for: Self.savedLevelAddress(output))?.asUInt32
+    }
+
+    /// Save the level an output is at now. Unchanged values are not written
+    /// again (a knob drag sets the level many times a second).
+    public func recordSavedMonitorLevel(_ output: MonitorLevelsAtConnect.Output, attenuation: UInt32) {
+        guard attenuation <= MonitorLevelsAtConnect.maximumAttenuation,
+              savedMonitorLevel(output) != attenuation else { return }
+        settingsStore.record(.uint32(attenuation), for: Self.savedLevelAddress(output))
+    }
+
+    /// A4: put unit A's speaker and headphone levels at the quieter of what
+    /// is saved on this Mac and what the unit reports
+    /// (``MonitorLevelsAtConnect``), and save the result. Mutes are not
+    /// touched. Nothing is sent to converters; nil then, and when the
+    /// connection is gone.
+    ///
+    /// The speaker mode and every level are read from the unit itself
+    /// (`.speakerOutputMode` reads answer from the store on this transport).
+    /// The writes go through the driver's vendor path, which keeps its
+    /// per-output levels and the Mac's volume control in step with them.
+    public func applySavedMonitorLevels() async -> MonitorLevelsResult? {
+        await Task.detached { self.applySavedMonitorLevelsNow() }.value
+    }
+
+    private func readUnitByte(_ address: PropertyAddress) -> UInt32? {
+        guard let request = try? SymphonyIOPropertyMapper.buildReadRequest(for: address),
+              let data = try? dextClient.readVendorCommand(command: request.request,
+                                                           value: DextUserClient.nValue(for: request),
+                                                           responseLength: 1),
+              data.count == 1 else { return nil }
+        return UInt32(data[0])
+    }
+
+    private func applySavedMonitorLevelsNow() -> MonitorLevelsResult? {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected,
+              let converters = converterState(), converters.flags & ConverterState.flagPort1Converters == 0
+        else { return nil }
+        let mode = readUnitByte(PropertyAddress(selector: .speakerOutputMode))
+            .flatMap { raw in SymphonyIOSpeakerMode(rawValue: UInt8(truncatingIfNeeded: raw)).map { _ in raw } }
+        let inLine = mode.map { $0 == SpeakerOutputLogic.line } ?? true
+        var result = MonitorLevelsResult(speakersInLine: inLine, speakerMode: mode, settled: [:], written: [])
+        for output in MonitorLevelsAtConnect.Output.allCases {
+            if output == .speakers && inLine { continue }
+            let address = Self.savedLevelAddress(output)
+            let saved = savedMonitorLevel(output)
+            let unit = readUnitByte(address)
+            var written = false
+            if let level = MonitorLevelsAtConnect.write(output: output, saved: saved, unit: unit,
+                                                        speakersInLine: inLine) {
+                do {
+                    try writeProperty(address, value: .uint32(level))
+                    written = true
+                    result.written.append(output)
+                } catch {
+                    print("[Maestro] Levels at connect: \(output) could not be set to -\(level) dB: \(error)")
+                }
+            }
+            if let settled = MonitorLevelsAtConnect.settled(output: output, saved: saved, unit: unit,
+                                                            speakersInLine: inLine, written: written) {
+                result.settled[output] = settled
+                recordSavedMonitorLevel(output, attenuation: settled)
+            }
+        }
+        return result
     }
 
     /// All supported selectors (union of CoreAudio + dext paths).
@@ -163,26 +294,535 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }()
 
     public init(identifier: USBDeviceIdentifier, audioDeviceID: AudioDeviceID,
-                settingsStore: DeviceSettingsStore = DeviceSettingsStore()) {
+                settingsStore: DeviceSettingsStore = DeviceSettingsStore(),
+                driver: any ThunderboltDriverClient = DextUserClient()) {
         self.identifier = identifier
         self.audioDeviceID = audioDeviceID
         self.settingsStore = settingsStore
+        self.dextClient = driver
 
         // Connect vendor command transport to the dext's custom property
         dextClient.connect(audioDeviceID: audioDeviceID)
     }
 
+    /// Capture the readable state under the same lock used by recall and UI
+    /// writes. Write-only fields in `seed` come from the app's existing stores.
+    public func capturePreset(_ seed: ThunderboltPreset, layout: CardLayout,
+                              onSkipped: @Sendable @escaping (String) -> Void = { _ in }) throws -> ThunderboltPreset {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        try checkPresetLayout(layout)
+        var preset = seed
+        for (channel, source) in presetOutputRoutes where Int(channel) < preset.outputRoutes.count {
+            preset.outputRoutes[Int(channel)] = source
+        }
+        if let count = preset.cardInputRoutes?.count {
+            for (host, source) in presetCardInputRoutes where host < count {
+                preset.cardInputRoutes?[host] = source
+            }
+        }
+        return try ThunderboltPreset.capture(preset, layout: layout, hostChannels: presetChannelCount(),
+            readProperty: { address in
+                if address.selector == .clockSource { return try self.readProperty(address) }
+                return try self.readPresetProperty(address)
+            }, readRaw: { try self.dextClient.readVendorCommand(command: $0, value: $1, responseLength: $2) },
+            onSkipped: onSkipped)
+    }
+
+    private func readPresetUnitID() throws -> Data {
+        // og_source/maestrolink/Software/SymphonyIO/SymphonyIOControl.cpp:1186-1204.
+        let data = try dextClient.readVendorCommand(command: 0xC0, value: 0, responseLength: 8)
+        guard data.count == 8, data.contains(where: { $0 != 0 }), data.contains(where: { $0 != 0xFF }) else {
+            throw ThunderboltPreset.RecallError.unsupported("the unit identity could not be read.")
+        }
+        return data
+    }
+
+    private func checkPresetLayout(_ layout: CardLayout, recoveryCount: UInt32? = nil) throws {
+        guard isConnected, let converters = dextClient.readConverterState(), converters.flags & 3 == 0,
+              [32, 64].contains(presetChannelCount()),
+              layout.isKnown, layout.converter == nil, layout.converterLayout == nil,
+              recoveryCount.map({ linkState()?.recoveryCount == $0 }) ?? true,
+              try readProperty(PropertyAddress(selector: .primaryBoardType)).asUInt32 == UInt32(layout.slot1.rawValue),
+              try readProperty(PropertyAddress(selector: .secondaryBoardType)).asUInt32 == UInt32(layout.slot2.rawValue) else {
+            throw ThunderboltPreset.RecallError.unsupported("the live card layout could not be verified.")
+        }
+    }
+
+    private func readPresetProperty(_ address: PropertyAddress) throws -> PropertyValue {
+        let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+        let data = try dextClient.readVendorCommand(command: request.request, value: DextUserClient.nValue(for: request),
+                                                  responseLength: max(1, request.data.count))
+        guard data.count == max(1, request.data.count) else {
+            throw DeviceConnectionError.transportError("Short preset read for \(address.selector)")
+        }
+        if ThunderboltPreset.monitorOrder.contains(address.selector) {
+            return .uint32(UInt32(data[0]))
+        }
+        return try SymphonyIOPropertyMapper.decodeResponse(USBControlResponse(data: data, bytesTransferred: data.count), for: address)
+    }
+
+    public func recallPreset(_ preset: ThunderboltPreset, layout: CardLayout, legacy: Bool = false) throws {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        try checkPresetLayout(layout)
+        let writes = try presetWrites(preset, layout: layout, legacy: legacy)
+        try applyPresetWrites(writes, layout: layout)
+    }
+
+    public func routingResetWrites(layout: CardLayout, input: Bool,
+                                   order: ThunderboltUnitChannelOrder? = nil) throws -> [ThunderboltPreset.Write] {
+        try checkPresetLayout(layout)
+        return try ThunderboltPreset.peripheralReset(layout: layout, input: input, order: order) { selector in
+            try self.readPresetProperty(PropertyAddress(selector: selector)).asUInt32
+        }
+    }
+
+    public func presetWrites(_ preset: ThunderboltPreset, layout: CardLayout, legacy: Bool = false,
+                             channels: Int? = nil, recallsMonitorLevels: Bool = true,
+                             restoresRouting: Bool = true, channelOrder: ThunderboltUnitChannelOrder? = nil,
+                             onSkipped: ((String) -> Void)? = nil) throws -> [ThunderboltPreset.Write] {
+        try checkPresetLayout(layout)
+        let servingBuild = servingDriverBuild()
+        let cardInputSupported = if case .build(let build) = servingBuild { build >= 132 } else { false }
+        let currentRoutes = (0..<32).compactMap { index -> ThunderboltInputMeterMap.Route? in
+            let address = PropertyAddress(selector: .routing, scope: .input,
+                                           element: UInt32(SymphonyIORoutingAddress.p2pBase) + UInt32(index))
+            guard let source = try? readProperty(address).asUInt32 else { return nil }
+            return (destination: address.element <= UInt32(UInt8.max) ? UInt8(address.element) : 0,
+                    source: UInt8(clamping: source))
+        }
+        return try preset.writes(layout: layout, legacy: legacy, currentUnitID: layout.slot2 == .micPre8 ? try? dextClient.readVendorCommand(command: 0xC0, value: 0, responseLength: 8) : nil,
+                                 hostChannels: channels ?? presetChannelCount(),
+                                 oneUnitSoftwareReturnPairs: TwoUnitMixer.oneUnitPairs(card: true, build: servingBuild),
+                                 currentInputRoutes: currentRoutes,
+                                 cardInputSupported: cardInputSupported,
+                                 recallsMonitorLevels: recallsMonitorLevels,
+                                 restoresRouting: restoresRouting, channelOrder: channelOrder,
+                                 onSkipped: onSkipped)
+    }
+
+    public func writePresetMixer(_ address: PropertyAddress, value: PropertyValue) throws {
+        guard [.mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo].contains(address.selector),
+              (32..<64).contains(address.element & 0xFFFF), presetChannelCount() == 64 else {
+            throw DeviceConnectionError.unsupportedProperty(address.selector)
+        }
+        // A deferred write is owed (the ledger has recorded it) and is not a
+        // failure of unit B's recall.
+        do { try writeProperty(address, value: value) } catch is CardMixerWriteDeferred {}
+    }
+
+    public func withPresetLock<T>(_ body: () throws -> T) rethrows -> T {
+        try presetLock.withLock(body)
+    }
+
+    private func presetChannelCount() -> Int {
+        portSelectionID().flatMap(PortSelection.init(rawValue:))?.channelCount ?? 0
+    }
+
+    public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout) throws {
+        try applyPresetWrites(writes, layout: layout, recoveryCount: nil)
+    }
+
+    /// Recall order (the same rule as the restore): every output route first,
+    /// with each mixer-fed one sent disabled; then everything that is neither
+    /// a route nor a mixer write; then the mixers; then the mixer-fed routes.
+    /// All of it through the chokepoint, so a mixer that is not marked
+    /// written is not routed here: its routes are deferred and the restore
+    /// sends them from the saved state once the recall has been saved.
+    ///
+    /// A recall that fails partway leaves no output on a mixer it touched
+    /// (`quarantineCardMixers`) and the restore owed.
+    public func applyPresetWrites(_ writes: [ThunderboltPreset.Write], layout: CardLayout,
+                                  recoveryCount: UInt32?) throws {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        try checkPresetLayout(layout, recoveryCount: recoveryCount)
+        var touched: Set<Int> = []
+        var routed = false
+        for write in writes {
+            switch write {
+            case .property(let address, _) where Self.mixerEditSelectors.contains(address.selector):
+                if let mixer = Self.cardMixer(of: address) { touched.insert(mixer) }
+            case .output: routed = true
+            default: break
+            }
+        }
+        do {
+            try ThunderboltPreset.recall(CardOutputTableOrder.ordered(writes), send: { write in
+                try self.checkPresetLayout(layout, recoveryCount: recoveryCount)
+                switch write {
+                case .property(let address, let value):
+                    // In Line mode the HAL volume belongs to HP1. A preset's speaker
+                    // attenuation must still address the speaker, as the original did.
+                    if address.selector == .outputLevel || address.selector == .outputMute {
+                        try self.sendViaDext(SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: value))
+                    } else {
+                        // Deferred: owed, sent by the restore from the saved state.
+                        do { try self.writeProperty(address, value: value) } catch is CardMixerWriteDeferred {}
+                    }
+                case .output(let route): _ = try self.setCardOutputRoute(route)
+                case .cardInput(let command): try self.sendConverterRouting(command)
+                case .frontPanel(let selection):
+                    try self.dextClient.sendVendorCommand(command: 0x2A, value: 0, payload: Data([selection]))
+                }
+            }, unlock: {
+                // Preserve the original unlock/read-back even when the recovery
+                // fence changed; topology and connection are still required.
+                try self.checkPresetLayout(layout)
+                try self.dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
+                let reply = try self.dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1)
+                return reply == Data([0])
+            })
+        } catch {
+            if !touched.isEmpty || routed { quarantineCardMixers(touched) }
+            throw error
+        }
+        // What was recalled is saved by the caller after this returns; the
+        // restore then writes both mixers in full from what was saved (a
+        // recall does not carry every control) and any route deferred above.
+        if !touched.isEmpty { cardMixers.noteOwed() }
+    }
+
+    /// A recall or replay failed partway: these mixers are no longer known to
+    /// hold the saved state. Every output known to play one of them is
+    /// disabled (best effort: the connection may be the thing that failed),
+    /// their marks are dropped, and the restore is owed.
+    public func quarantineCardMixers(_ mixers: Set<Int> = [0, 1]) {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        for channel in cardMixers.channelsFed(by: mixers) {
+            let off = ThunderboltCardRouting.Route(channel: channel,
+                                                   slot: ThunderboltCardRouting.pciOutBase &+ channel, enabled: false)
+            _ = try? setCardOutputRoute(off)
+        }
+        cardMixers.clear(mixers: mixers)
+    }
+
+    /// A card channel playing nothing (its slot left at the straight
+    /// `PCI_OUT` default, as a cleared route).
+    static func disabledRoute(_ channel: UInt8) -> ThunderboltCardRouting.Route {
+        ThunderboltCardRouting.Route(channel: channel, slot: ThunderboltCardRouting.pciOutBase &+ channel, enabled: false)
+    }
+
+    /// Every card channel 0..<`channels` on its direct default: channel n
+    /// plays software output n (`PCI_OUT n`), as the driver starts every
+    /// channel but the main pair. No mixer is on an output afterwards, and
+    /// the ledger knows it. Used while the saved table cannot be read
+    /// (`AppState.cardRestoreStillBlocked`). Returns the channels the driver
+    /// refused.
+    public func writeCardDirectDefaults(channels: UInt8) -> [UInt8] {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        var failed: [UInt8] = []
+        for channel in 0..<channels {
+            let route = ThunderboltCardRouting.Route(channel: channel,
+                                                     slot: ThunderboltCardRouting.pciOutBase &+ channel, enabled: true)
+            do { _ = try setCardOutputRoute(route) } catch { failed.append(channel) }
+        }
+        cardMixers.declareTable(channels: Set(0..<channels))
+        return failed
+    }
+
+    /// The card mixer (0 or 1) a mixer control address belongs to.
+    public static func cardMixer(of address: PropertyAddress) -> Int? {
+        let id = Int(address.element >> 16)
+        return (1...2).contains(id) ? id - 1 : nil
+    }
+
+    /// Let the ledger see the driver state now serving, so a recovery, a card
+    /// re-init or a restarted driver drops the marks before the next write is
+    /// admitted. Costs no bus traffic.
+    private func observeDriverState() {
+        cardMixers.observe(dextClient.readLinkState())
+        cardMixers.setConvertersOnPort1(
+            dextClient.readConverterState().map { $0.flags & ConverterState.flagPort1Converters != 0 } ?? false)
+    }
+
+    /// D5: restores saved card mixer state on a driver instance that reported
+    /// none. Each write takes the serial owner on its own and re-checks the
+    /// live fences inside it; the pacing sleep runs outside it, so UI writes,
+    /// reads and recalls are never queued behind the restore. Card registers
+    /// only (0xB0-0xB4); nothing is sent to the unit.
+    public func replayCardMixer(_ groups: [[ThunderboltPreset.Write]], layout: CardLayout,
+                                recoveryCount: UInt32,
+                                nonce: UInt64? = nil,
+                                shouldContinue: @escaping @Sendable () -> Bool,
+                                progress: CardMixerReplay.Progress = .init(),
+                                gap: Duration = CardMixerReplay.commandGap) async throws {
+        func validate() throws {
+            guard shouldContinue(), isConnected,
+                  converterState().map({ CardMixerReplay.supportsSingleUnit(channelCount: presetChannelCount(), converterFlags: $0.flags) }) == true,
+                  let boards = dextClient.readBoardTypes(),
+                  boards.primary == layout.slot1.rawValue, boards.secondary == layout.slot2.rawValue,
+                  let link = linkState(), CardMixerReplay.isUsable(link),
+                  link.recoveryCount == recoveryCount,
+                  nonce == nil || link.mixerInstance?.nonce == nonce else { throw DeviceConnectionError.notConnected }
+        }
+        try await CardMixerReplay.run(groups,
+            validateMixer: {
+                try withPresetLock {
+                    try validate()
+                    try checkPresetLayout(layout, recoveryCount: recoveryCount)
+                }
+            },
+            send: { write in
+                try withPresetLock {
+                    try validate()
+                    guard case .property(let address, let value) = write,
+                          Self.mixerEditSelectors.contains(address.selector) else {
+                        throw DeviceConnectionError.notConnected
+                    }
+                    try writeProperty(address, value: value)
+                    progress.sent(address)
+                }
+            },
+            pace: { try await Task.sleep(for: gap) })
+    }
+
+    /// Send a small card-mixer repair through the same serialized write path
+    /// as a full mixer replay. Used when Input Routing removes a receive slot.
+    public func writeCardMixerEdits(_ writes: [ThunderboltPreset.Write],
+                                    shouldContinue: @escaping @Sendable () -> Bool,
+                                    gap: Duration = CardMixerReplay.commandGap) async throws {
+        guard !writes.isEmpty else { return }
+        try await CardMixerReplay.run([writes],
+            validateMixer: {
+                try self.withPresetLock {
+                    guard shouldContinue(), self.isConnected else { throw DeviceConnectionError.notConnected }
+                }
+            },
+            send: { write in
+                try self.withPresetLock {
+                    guard shouldContinue(), self.isConnected,
+                          case .property(let address, let value) = write,
+                          Self.mixerEditSelectors.contains(address.selector) else {
+                        throw DeviceConnectionError.notConnected
+                    }
+                    try self.writeProperty(address, value: value)
+                }
+            },
+            pace: { try await Task.sleep(for: gap) })
+    }
+
+    /// One whole card mixer, paced like D5, each write under the serial owner
+    /// on its own and through the chokepoint. The order (`CardMixerReplay.writes`)
+    /// is Master, Software Return, then each strip's level and pan before its
+    /// mute and solo.
+    ///
+    /// This is the only thing that marks a mixer written, and it does so from
+    /// what it saw itself: every control of the live card layout (both units'
+    /// strips at 64 channels), Software Return and Master landed, in the
+    /// driver state the write started in, with no edit in between
+    /// (`shouldContinue`). `.deferred` when the mixer may be on an output and
+    /// is not marked: nothing was sent. Card registers only (0xB0-0xB4).
+    public func writeCompleteCardMixer(_ mixer: Int, writes: [ThunderboltPreset.Write], layout: CardLayout,
+                                       second: CardLayout? = nil,
+                                       routes: [CardMixerReplay.InputRoute]? = nil,
+                                       secondRoutes: [CardMixerReplay.InputRoute]? = nil,
+                                       shouldContinue: @escaping @Sendable () -> Bool,
+                                       gap: Duration = CardMixerReplay.commandGap) async throws -> CardWriteResult {
+        var required = CardMixerReplay.requiredAddresses(mixer: mixer, layout: layout, second: second,
+                                                         routes: routes, secondRoutes: secondRoutes)
+        // The Software Return source is left out of a plan only when the card
+        // cannot take the saved one (a 64-channel pair at 32 channels).
+        let source = PropertyAddress(selector: .mixerSoftwareReturnID, element: UInt32(mixer + 1) << 16)
+        if writes.contains(where: { if case .property(source, _) = $0 { true } else { false } }) {
+            required.insert(source)
+        }
+        func validate() throws {
+            guard shouldContinue(), isConnected, let boards = dextClient.readBoardTypes(),
+                  boards.primary == layout.slot1.rawValue, boards.secondary == layout.slot2.rawValue,
+                  (second != nil) == unitBStripsOnCard() else { throw DeviceConnectionError.notConnected }
+        }
+        let epoch: UInt64 = try withPresetLock {
+            try validate()
+            observeDriverState()
+            return cardMixers.epoch
+        }
+        guard cardMixers.admitMixerWrite(mixer) else { return .deferred }
+        let sent = CardMixerReplay.Progress()
+        try await CardMixerReplay.run([writes],
+            validateMixer: { try withPresetLock { try validate() } },
+            send: { write in
+                try withPresetLock {
+                    try validate()
+                    guard case .property(let address, let value) = write,
+                          Self.mixerEditSelectors.contains(address.selector),
+                          Self.cardMixer(of: address) == mixer else {
+                        throw DeviceConnectionError.notConnected
+                    }
+                    try writeProperty(address, value: value)
+                    sent.sent(address)
+                }
+            },
+            pace: { try await Task.sleep(for: gap) })
+        return try withPresetLock {
+            try validate()
+            guard cardMixers.markWritten(mixer, sent: sent.addresses, required: required, epoch: epoch) else {
+                guard cardMixers.epoch == epoch, required.isSubset(of: sent.addresses) else {
+                    throw DeviceConnectionError.transportError("card mixer \(mixer + 1) was not written in full")
+                }
+                cardMixers.noteOwed()
+                return .deferred
+            }
+            return .written
+        }
+    }
+
+    /// Whether unit B's input strips (32-63) are part of the card mixers:
+    /// 64 channels with a configured unit B.
+    private func unitBStripsOnCard() -> Bool {
+        presetChannelCount() == 64 && dextClient.readUnitBState()?.info?.setupComplete == true
+    }
+
+    /// Both connections share this recursive serial owner, also used by UI
+    /// writes and preset recall. Never hold it across an async suspension.
+    public func replayTwoUnits(_ plan: TwoUnitReplay, unitB: ThunderboltUnitBConnection,
+                               recoveryCount: UInt32,
+                               unitBGeneration: UInt32,
+                               shouldContinue: @Sendable @escaping () -> Bool = { true },
+                               progress: TwoUnitReplay.Progress? = nil) throws {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        progress?.begin(plan)
+        // The card's part in the restore order, for the mixers this driver
+        // state has not seen written; a written mixer keeps its routes.
+        observeDriverState()
+        let epoch = cardMixers.epoch
+        var plan = plan
+        var cardWrites: [ThunderboltPreset.Write] = plan.card.compactMap {
+            if case .card(let write) = $0 { write } else { nil }
+        }
+        // The table is every card channel of both units (0-63), not only the
+        // ones the plan routes: a channel past a card's outputs or in an
+        // empty slot is written disabled, so "this mixer feeds nothing" is
+        // true of the card and not only of the plan.
+        let planned = Set(cardWrites.compactMap {
+            if case .output(let route) = $0 { route.channel } else { nil }
+        })
+        let all = Set(UInt8(0)..<(2 * ThunderboltCardRouting.channelCount))
+        cardWrites += all.subtracting(planned).sorted().map { .output(Self.disabledRoute($0)) }
+        cardMixers.declareTable(channels: all)
+        plan.card = CardOutputTableOrder.ordered(cardWrites, written: cardMixers.writtenMixers).map { .card($0) }
+        var required: [Int: Set<PropertyAddress>] = [:]
+        if let layouts = plan.mixerLayouts {
+            for mixer in 0..<2 {
+                let routes = plan.mixerRoutes
+                var needed = CardMixerReplay.requiredAddresses(mixer: mixer, layout: layouts.a, second: layouts.b,
+                                                               routes: routes?.a, secondRoutes: routes?.b)
+                let source = PropertyAddress(selector: .mixerSoftwareReturnID, element: UInt32(mixer + 1) << 16)
+                if cardWrites.contains(where: { if case .property(source, _) = $0 { true } else { false } }) {
+                    needed.insert(source)
+                }
+                required[mixer] = needed
+            }
+        }
+        var sent: [Int: Set<PropertyAddress>] = [:]
+        func validate() throws {
+            guard shouldContinue() else { throw DeviceConnectionError.notConnected }
+            let link = linkState()
+            let stateB = readUnitBState()
+            let channels = portSelectionID().flatMap(PortSelection.init(rawValue:))?.channelCount ?? 0
+            let converters = converterState()
+            let model = SymphonyRoutingModel(
+                topology: converters.map { $0.flags & 3 == 0 } == true ? .symphonyOnly : .unknown,
+                hostChannels: channels, unitBConfigured: stateB?.info?.setupComplete == true)
+            guard DeviceUnit.allCases.allSatisfy({ unit in
+                let port: SymphonyRoutingModel.Port = unit == .a ? .one : .two
+                return model.allows(.unitRouting, at: .peripheral(.init(port: port)!))
+                    && model.allows(.monitor, at: .peripheral(.init(port: port)!))
+            }), isConnected, unitB.isConnected, link?.recoveryCount == recoveryCount,
+                  stateB?.boardType == plan.unitBBoards, stateB?.boardValid == [1, 1],
+                  stateB?.generation == unitBGeneration,
+                  TwoUnitReplay.ready(channels: channels, link: link, unitB: stateB,
+                                      port2Locked: (secondPortState()?.flags ?? 0) & SecondPortState.flagLocked != 0) else {
+                throw DeviceConnectionError.notConnected
+            }
+        }
+        func sendOne(_ write: TwoUnitReplay.Write) throws {
+            switch write {
+            case .unit(let unit, let address, let value):
+                if address.selector == .prefix {
+                    guard let byte = CardLayout.peripheralPrefixByte(value.asString) else {
+                        throw DeviceConnectionError.typeMismatch(expected: "letter A-Z", got: "\(value)")
+                    }
+                    try self.dextClient.sendVendorCommand(command: Self.prefixCommand, value: 0,
+                                                           payload: Data([byte]), port: unit.portByte)
+                } else if unit == .a { try self.writeProperty(address, value: value) }
+                else { try unitB.writeProperty(address, value: value) }
+            case .card(let write):
+                switch write {
+                case .property(let address, let value):
+                    try self.writeProperty(address, value: value)
+                    // A mixer is marked once every control of it has landed
+                    // in this run; its routes follow in the plan.
+                    if Self.mixerEditSelectors.contains(address.selector),
+                       let mixer = Self.cardMixer(of: address), let needed = required[mixer] {
+                        sent[mixer, default: []].insert(address)
+                        if needed.isSubset(of: sent[mixer] ?? []) {
+                            self.cardMixers.markWritten(mixer, sent: sent[mixer] ?? [], required: needed, epoch: epoch)
+                        }
+                    }
+                case .output(let route):
+                    guard try self.setCardOutputRoute(route) == .written else {
+                        throw CardMixerWriteDeferred(mixer: CardOutputTableOrder.mixer(of: route) ?? 0)
+                    }
+                case .cardInput(let command): try self.sendConverterRouting(command)
+                case .frontPanel: throw DeviceConnectionError.notConnected
+                }
+            case .headphones(.b): try unitB.replayRecoveryHeadphones()
+            case .headphones(.a):
+                for (hp, selector) in [AudioPropertySelector.headphone1RoutingID, .headphone2RoutingID].enumerated() {
+                    guard let id = self.settingsStore.value(for: PropertyAddress(selector: selector))?.asUInt32,
+                          let pair = SymphonyIOHeadphoneRouting.outputPairDestinations(sourceID: id),
+                          let headphone = SymphonyIOHeadphoneRouting.Headphone(rawValue: hp) else { continue }
+                    try self.sendViaDext(SymphonyIORequestBuilder.setHeadphoneCrosspoint(
+                        headphone: headphone, leftSource: pair.left - 32, rightSource: pair.right - 32))
+                }
+            }
+        }
+        try plan.run(validate: validate, send: { write in
+            guard shouldContinue() else { progress?.failed(); throw DeviceConnectionError.notConnected }
+            do { try sendOne(write) } catch { progress?.failed(); throw error }
+            progress?.landed(write)
+        }, unlock: { unit in
+            // The original unlock/read-back always runs, even after a recall
+            // epoch change stopped the remaining writes.
+            if unit == .b { return try unitB.finishRecovery() }
+            try self.dextClient.sendVendorCommand(command: 0xDD, value: 0, payload: Data([0]))
+            return try self.dextClient.readVendorCommand(command: 0xDD, value: 0, responseLength: 1) == Data([0])
+        })
+    }
+
     // MARK: - DeviceConnection Protocol
 
     public func getProperty(_ address: PropertyAddress) async throws -> PropertyValue {
+        try await Task.detached { try self.readProperty(address) }.value
+    }
+
+    public let mixerEdits = MixerEditGeneration()
+
+    private func readProperty(_ address: PropertyAddress) throws -> PropertyValue {
+        presetLock.lock()
+        defer { presetLock.unlock() }
         guard isConnected else { throw DeviceConnectionError.notConnected }
 
         // CoreAudio HAL path (volume, mute, sample rate)
         switch address.selector {
-        case .outputLevel:
-            return try .float64(Float64(readVolumeDecibels()))
-        case .outputMute:
-            return try .uint32(readMute() ? 1 : 0)
+        case .outputLevel, .outputMute:
+            // This connection owns physical A. The card HAL control may own B
+            // or HP1. Converter-only volume remains the card's mixer trim.
+            if converterState().map({ $0.flags & ConverterState.flagPort1Converters != 0 }) == true {
+                return address.selector == .outputLevel
+                    ? try .float64(Float64(readVolumeDecibels()))
+                    : try .uint32(readMute() ? 1 : 0)
+            }
+            let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
+            let data = try dextClient.readVendorCommand(command: request.request,
+                value: DextUserClient.nValue(for: request), responseLength: 1)
+            guard let byte = data.first else { throw DeviceConnectionError.notConnected }
+            return .uint32(UInt32(byte))
         case .sampleRate:
             return try .float64(readNominalSampleRate())
         case .outputLevelRange:
@@ -265,10 +905,60 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         throw DeviceConnectionError.unsupportedProperty(address.selector)
     }
 
+    /// Card mixer controls. A write of one of these from anywhere but D5 is a
+    /// mixer edit and makes D5 rebuild its plan from the store. Routing is not
+    /// mixer state and leaves a restore alone.
+    public static let mixerEditSelectors: Set<AudioPropertySelector> = [
+        .mixerChannelLevel, .mixerChannelPan, .mixerChannelMute, .mixerChannelSolo, .mixerSoftwareReturnID,
+    ]
+
+    /// Which card mixers are written for the serving driver state, and the
+    /// one rule every card route and card mixer write of this connection
+    /// passes (`CardMixerLedger`).
+    public let cardMixers = CardMixerLedger()
+
     public func setProperty(_ address: PropertyAddress, value: PropertyValue) async throws {
+        if Self.mixerEditSelectors.contains(address.selector) {
+            // An edit: a whole-mixer write in progress starts again from the
+            // saved state.
+            mixerEdits.invalidate()
+        }
+        try await Task.detached { try self.writeProperty(address, value: value) }.value
+    }
+
+    /// Every property write of this connection. A card mixer control (0xB0-
+    /// 0xB4) is admitted by the ledger first: sent when its mixer cannot be
+    /// heard or is marked written, otherwise deferred (`CardMixerWriteDeferred`,
+    /// recorded as owed). A write that fails on a marked mixer is owed too.
+    private func writeProperty(_ address: PropertyAddress, value: PropertyValue) throws {
+        guard Self.mixerEditSelectors.contains(address.selector) else {
+            return try writeAdmittedProperty(address, value: value)
+        }
+        guard let mixer = Self.cardMixer(of: address) else {
+            throw DeviceConnectionError.transportError("Invalid ThunderBridge mixer element \(address.element)")
+        }
+        try dextClient.hardwareWriteGate.check()
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected else { throw DeviceConnectionError.notConnected }
+        observeDriverState()
+        guard cardMixers.admitMixerWrite(mixer) else { throw CardMixerWriteDeferred(mixer: mixer) }
+        do {
+            try writeAdmittedProperty(address, value: value)
+        } catch {
+            cardMixers.noteOwed()
+            throw error
+        }
+    }
+
+    private func writeAdmittedProperty(_ address: PropertyAddress, value: PropertyValue) throws {
+        try dextClient.hardwareWriteGate.check()
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        try dextClient.hardwareWriteGate.check()
         guard isConnected else { throw DeviceConnectionError.notConnected }
 
-        // CoreAudio HAL path
+        // Physical monitor writes use A's port; HAL is only the converter trim.
         switch address.selector {
         case .outputLevel:
             // The UI sends .outputLevel as a UInt32 ATTENUATION (0..64, where 0 = loudest),
@@ -285,7 +975,13 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             } else {
                 throw DeviceConnectionError.typeMismatch(expected: "Float64 or UInt32", got: "\(value)")
             }
-            try writeVolumeDecibels(db)
+            if converterState().map({ $0.flags & ConverterState.flagPort1Converters != 0 }) == true {
+                try writeVolumeDecibels(db)
+            } else {
+                let attenuation = UInt32(max(0, min(64, -db)))
+                try sendViaDext(SymphonyIOPropertyMapper.buildWriteRequest(
+                    for: address, value: .uint32(attenuation)))
+            }
             notifyListeners(for: address.selector, value: value)
             return
 
@@ -294,7 +990,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
             if let u = value.asUInt32 { muted = u != 0 }
             else if let b = value.asBool { muted = b }
             else { throw DeviceConnectionError.typeMismatch(expected: "UInt32/Bool", got: "\(value)") }
-            try writeMute(muted)
+            if converterState().map({ $0.flags & ConverterState.flagPort1Converters != 0 }) == true {
+                try writeMute(muted)
+            } else {
+                try sendViaDext(SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .bool(muted)))
+            }
             notifyListeners(for: address.selector, value: value)
             return
 
@@ -369,9 +1069,12 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         // (0xE4/0xE5). ThunderBridge's original PCIe mixer instead selects a
         // host-playback pair by changing the card FPGA mixer return route.
         if address.selector == .mixerSoftwareReturnID {
-            guard let source = value.asUInt32, source <= 7 else {
+            // 0-7 with one unit; 0-31 (the 64 playback channels) while 64
+            // channels run with a Symphony I/O on port 2. The driver refuses
+            // 8-31 otherwise, and the Mixer offers them only then.
+            guard let source = value.asUInt32, source <= 31 else {
                 throw DeviceConnectionError.typeMismatch(
-                    expected: "UInt32 software return source 0...7", got: "\(value)")
+                    expected: "UInt32 software return source 0...31", got: "\(value)")
             }
             guard address.element & 0xFFFF == 0,
                   (1...2).contains(address.element >> 16) else {
@@ -460,25 +1163,89 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// where host playback routing lives on ThunderBridge — see
     /// ``ThunderboltCardRouting``. Handled by the dext (build 111+), never sent
     /// to the Symphony.
-    public func setCardOutputRoute(_ route: ThunderboltCardRouting.Route) throws {
+    ///
+    /// The one place a card output route is sent. A route that plays a card
+    /// mixer is sent only when that mixer is marked written for the serving
+    /// driver state; otherwise nothing is sent, the route is recorded as
+    /// owed and `.deferred` is returned (the destination keeps what it had,
+    /// which is never an unwritten mixer). The restore sends it from the
+    /// saved table once the mixer is written.
+    public func setCardOutputRoute(_ route: ThunderboltCardRouting.Route) throws -> CardWriteResult {
+        presetLock.lock()
+        defer { presetLock.unlock() }
         guard isConnected, dextClient.isConnected else { throw DeviceConnectionError.notConnected }
+        observeDriverState()
+        let mixer = CardOutputTableOrder.mixer(of: route)
+        guard cardMixers.admitRoute(mixer: mixer) else { return .deferred }
         try dextClient.sendVendorCommand(
             command: ThunderboltCardRouting.outputRouteCommand,
             value: 0,
             payload: route.payload)
+        cardMixers.recordRoute(channel: route.channel, mixer: mixer)
+        if route.channel < 64,
+           !route.enabled || (64..<128).contains(route.slot) || (128..<132).contains(route.slot) {
+            let source: UInt8
+            if !route.enabled { source = SymphonyIORoutingAddress.none }
+            else if route.slot >= ThunderboltCardRouting.mixerOutBase {
+                let offset = route.slot - ThunderboltCardRouting.mixerOutBase
+                source = (offset < 2 ? SymphonyIORoutingAddress.mixer0Base : SymphonyIORoutingAddress.mixer1Base) + offset % 2
+            } else { source = route.slot - ThunderboltCardRouting.pciOutBase }
+            presetOutputRoutes[route.channel] = source
+        }
+        return .written
+    }
+
+    /// Send one converter routing command (0xB5 / 0xB6 / 0xB7, see
+    /// ``ConverterRouting``). Handled by the dext (build 131+) when converters
+    /// are on the cable. B1b also accepts 0xB6/0xB7 for Symphony inputs.
+    public func sendConverterRouting(_ command: ConverterRouting.Command) throws {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected, dextClient.isConnected else { throw DeviceConnectionError.notConnected }
+        // A card output route (0xB5) in a converter command is the same
+        // register as `setCardOutputRoute` and takes the same rule.
+        if command.command == ThunderboltCardRouting.outputRouteCommand, command.payload.count == 3 {
+            let route = ThunderboltCardRouting.Route(channel: command.payload[0], slot: command.payload[1],
+                                                     enabled: command.payload[2] != 0)
+            let mixer = CardOutputTableOrder.mixer(of: route)
+            observeDriverState()
+            guard cardMixers.admitRoute(mixer: mixer) else {
+                throw CardMixerWriteDeferred(mixer: mixer ?? 0)
+            }
+            try dextClient.sendVendorCommand(command: command.command, value: 0, payload: Data(command.payload))
+            cardMixers.recordRoute(channel: route.channel, mixer: mixer)
+            return
+        }
+        try dextClient.sendVendorCommand(command: command.command, value: 0, payload: Data(command.payload))
+        if command == ConverterRouting.resetRoutingCommand {
+            presetCardInputRoutes = Dictionary(uniqueKeysWithValues: (0..<32).map { ($0, $0) })
+        } else {
+            presetCardInputRoutes = SymphonyCardInputRouting.applying([command], to: presetCardInputRoutes)
+        }
     }
 
     private func sendViaDext(_ request: USBControlRequest) throws {
         guard dextClient.isConnected else {
             throw DeviceConnectionError.notConnected
         }
-        try dextClient.sendFromUSBRequest(request)
+        try dextClient.sendUSBRequest(request)
     }
 
     /// Read the card FPGA hardware meter buffer (256 raw words), or nil if unavailable.
     /// Word layout: 0-31 = hardware inputs, 64-95 = host playback, 128-131 = mixer0/1 out.
     public func readMeters() -> [UInt32]? {
         dextClient.readMeters()
+    }
+
+    /// The unit's own output meters (`UnitOutputMeters`): one vendor read of
+    /// `0x30`, group Output, as Apogee's software polled it on the card
+    /// (`SymphonyIO.cpp:6921-6946`). Blocks for the transaction (a few ms; up
+    /// to 200 ms if the unit does not answer), so call it off the main thread.
+    public func readUnitOutputMeters() throws -> Data {
+        try dextClient.readVendorCommand(
+            command: SymphonyIOCommand.tdmMeterData.rawValue,
+            value: UInt32(SymphonyIOMeterGroup.output.rawValue),
+            responseLength: UnitOutputMeters.payloadLength)
     }
 
     /// Read the dext's timing/register snapshot through the same signed
@@ -497,6 +1264,7 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         // A dext older than 113 rejects selector 5, which reads as `.unavailable`,
         // so fall back to the 0x51 message probe in that one case.
         if let ls = dextClient.readLinkState() {
+            cardMixers.observe(ls)
             lastLinkState = ls
             return ThunderboltEndpointHealth.evaluate(linkState: ls)
         }
@@ -511,7 +1279,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     }
 
     /// Raw link-watch state for diagnostics panels.
-    public func linkState() -> LinkState? { dextClient.readLinkState() }
+    public func linkState() -> LinkState? {
+        let link = dextClient.readLinkState()
+        cardMixers.observe(link)
+        return link
+    }
 
     /// Which dext build serves the card. A dext that answers the link-state
     /// read but not the build read predates the build selector (123): an
@@ -519,6 +1291,131 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     public func servingDriverBuild() -> ServingDextBuild? {
         if let build = dextClient.readDriverBuild() { return .build(build) }
         return dextClient.readLinkState() != nil ? .olderThanBuildReporting : nil
+    }
+
+    /// What the serving driver last programmed into each unit's routing
+    /// layer (selector 17, dext 150+); nil from an older driver.
+    public func appliedChannelOrder() -> ThunderboltAppliedChannelOrder? { dextClient.readChannelOrder() }
+
+    /// EXPERIMENT (64 channels): what the driver found on its second XLink
+    /// port. Nil from a driver without that selector (every released one).
+    public func secondPortState() -> SecondPortState? { dextClient.readPort2State() }
+
+    /// The second Symphony I/O (unit B) as the driver configured it when 64
+    /// channels started (selector 11). Nil from a driver without the selector.
+    public func readUnitBState() -> UnitBState? { dextClient.readUnitBState() }
+
+    /// Read unit A's identity through the existing vendor-read path.
+    public func readHardwareUniqueID(port: UInt8 = DeviceUnit.a.portByte) async -> UInt64? {
+        await SymphonyIdentityReader.readThunderbolt(transport: dextClient, port: port)
+    }
+
+    /// Capture this connection, then do bounded driver work away from the main actor.
+    public func loopSync(_ settings: LoopSyncSettings? = nil) async throws -> LoopSyncState {
+        let client = dextClient
+        return try await Task.detached { try client.loopSync(settings) }.value
+    }
+
+    public func setUnitBMasterSource(_ key: UInt32) async throws {
+        guard let decoded = ClockSourceMenu.decode(key), decoded.source != 3 else {
+            throw DeviceConnectionError.transportError("Invalid master clock source")
+        }
+        let client = dextClient
+        try await Task.detached {
+            let state = try client.loopSync(nil)
+            guard state.valid, state.settings.effectiveMaster == .b else {
+                throw DeviceConnectionError.notConnected
+            }
+            let bytes = Data([decoded.source, 1, 1, decoded.boardInput ?? 0])
+            try client.sendVendorCommand(command: 0x50, value: 0, payload: bytes, port: 1)
+        }.value
+    }
+
+    /// Select which Symphony I/O owns the card's single Core Audio volume/mute
+    /// control. The dext refuses unit B unless it is configured at 64 channels.
+    @discardableResult
+    public func setMonitorDevice(_ unit: DeviceUnit) async -> Bool {
+        await Task.detached { self.setMonitorDeviceOffMain(unit) }.value
+    }
+
+    private func setMonitorDeviceOffMain(_ unit: DeviceUnit) -> Bool {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected else { return false }
+        return dextClient.setMonitorDevice(unit)
+    }
+
+    /// Tell the driver which output of a unit the Mac's volume and mute keys
+    /// move (Volume Keys › Audio Output). The driver refuses unit B unless it
+    /// is configured at 64 channels, and a driver before build 142 is not
+    /// asked at all.
+    @discardableResult
+    public func setMonitorOutput(_ output: KeyboardVolumeOutput, unit: DeviceUnit) async -> Bool {
+        await Task.detached { self.setMonitorOutputOffMain(output, unit: unit) }.value
+    }
+
+    private func setMonitorOutputOffMain(_ output: KeyboardVolumeOutput, unit: DeviceUnit) -> Bool {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        guard isConnected else { return false }
+        return dextClient.setMonitorOutput(output, unit: unit)
+    }
+
+    /// VBus (dext 143+): ask the driver for `channels` VBus channels, or only
+    /// read its state with nil. Nil from an older driver, which is not asked,
+    /// and when the request is refused. Off the main thread: a user-client
+    /// call waits behind whatever the driver is doing for another one.
+    public func vbus(_ channels: VBusChannels?) async -> VBusState? {
+        await Task.detached { self.vbusOffMain(channels) }.value
+    }
+
+    private func vbusOffMain(_ channels: VBusChannels?) -> VBusState? {
+        guard isConnected else { return nil }
+        return dextClient.vbus(channels)
+    }
+
+    /// A connection to unit B through this connection's driver client: the
+    /// same calls with port byte 1. Unit A's bytes are not affected.
+    public func makeUnitBConnection(settingsStore: DeviceSettingsStore = DeviceSettingsStore()) -> ThunderboltUnitBConnection {
+        let client = dextClient
+        return ThunderboltUnitBConnection(identifier: identifier, transport: client,
+                                          settingsStore: settingsStore,
+                                          sequenceLock: presetLock,
+                                          writeGate: dextClient.hardwareWriteGate,
+                                          infoRouting: { [weak self] in
+                                              guard let self, let converters = client.readConverterState() else {
+                                                  return SymphonyRoutingModel(topology: .unknown, hostChannels: 0)
+                                              }
+                                              return SymphonyRoutingModel(
+                                                  topology: converters.flags & 3 == 0 ? .symphonyOnly : .unknown,
+                                                  hostChannels: self.portSelectionID().flatMap(PortSelection.init(rawValue:))?.channelCount ?? 0,
+                                                  unitBConfigured: client.readUnitBState()?.info?.setupComplete == true)
+                                          },
+                                          state: { client.readUnitBState() })
+    }
+
+    /// The driver's converter report (dext 131+); nil from older drivers.
+    public func converterState() -> ConverterState? { dextClient.readConverterState() }
+
+    /// Send the converter config word (dext 131+); false from older drivers.
+    @discardableResult
+    public func setConverterConfig(_ config: UInt32) -> Bool { dextClient.setConverterConfig(config) }
+
+    /// EXPERIMENT (64 channels, stage 2): the port selector a two-port driver
+    /// publishes on the Core Audio device. Nil from every released driver.
+    public func portSelectionID() -> UInt32? {
+        dextClient.portSelectionOverride ?? PortSelectionProperty.read(deviceID: audioDeviceID)
+    }
+
+    /// Ask the device for a port selection, as Audio MIDI Setup does.
+    public func setPortSelection(_ selection: PortSelection) throws {
+        try dextClient.hardwareWriteGate.check()
+        try PortSelectionProperty.write(deviceID: audioDeviceID, selection: selection)
+    }
+
+    /// Follow the port selector, whoever changes it.
+    public func observePortSelection() throws -> PortSelectionObservation {
+        try PortSelectionObservation(deviceID: audioDeviceID)
     }
 
     /// Ask the driver serving the card to retire for `replacementBuild`
@@ -529,6 +1426,17 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         let reply = dextClient.retireForUpgrade(replacementBuild: replacementBuild)
         if case .accepted = reply { closeDextClient() }
         return reply
+    }
+
+    /// Awaited by the one front-panel owner, off the main actor. No bus writes.
+    public func publishObservedMicGains(_ gains: [FrontPanelSync.ObservedGain], port: UInt8) async {
+        let client = dextClient
+        await Task.detached(priority: .utility) {
+            for gain in gains {
+                _ = client.publishObservedMicGain(port: port, channel: gain.channel,
+                                                  lane: gain.lane, gain: gain.gain)
+            }
+        }.value
     }
 
     /// One read of the unit's front panel state (vendor read `0x28`), through
@@ -553,6 +1461,10 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                    let key = Self.clockSourceKey(reportedSource: data[data.startIndex + 5],
                                                  boardInput: data[data.startIndex + 6]) {
                     clockState.reported(key, now: Date())
+                    // Byte 4 is the unit's "external clock locked" flag, also
+                    // meaningful when the rate guard rejects the reading (an
+                    // external source with no signal reports a rate of 0).
+                    clockState.reportedLock(data[data.startIndex + 4] != 0)
                 }
                 if shouldLog {
                     let hex = data.map { String(format: "%02x", $0) }.joined(separator: " ")
@@ -577,6 +1489,35 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                   data.count >= 3 else { return nil }
             return data[0]
         }.value
+    }
+
+    /// Unit A's component versions (0xA0, `SymphonyVersionComponent` as nValue),
+    /// through the driver's general vendor read, for Device Settings › Info only.
+    /// Off the caller's thread, one read at a time; each is bounded by the
+    /// driver's vendor-read timeout. Before every read: still connected, the
+    /// cable carries Symphony I/Os only (converters get no Symphony vendor
+    /// reads), and the link is up with hardware access not suspended (sleep,
+    /// recovery). The first refusal or failure ends the attempt.
+    public func readSymphonyVersions(_ components: [SymphonyVersionComponent]) async -> SymphonyVersions {
+        guard isConnected, dextClient.isConnected, !components.isEmpty else { return SymphonyVersions() }
+        let client = dextClient
+        return await Task.detached(priority: .utility) { [self] in
+            SymphonyVersions.read(components, allowed: {
+                guard self.isConnected, client.isConnected,
+                      let converters = client.readConverterState(), converters.flags & 3 == 0,
+                      let link = client.readLinkState() else { return false }
+                return Self.versionReadAllowed(link: link)
+            }, read: { component in
+                try client.readVendorCommand(command: SymphonyIOCommand.symphonyIOVersion.rawValue,
+                                             value: component.rawValue,
+                                             responseLength: SymphonyVersionReply.byteCount)
+            })
+        }.value
+    }
+
+    /// A version read waits for a link that is up and not suspended.
+    static func versionReadAllowed(link: LinkState) -> Bool {
+        link.state == .up && !link.hwSuspended
     }
 
     /// SymphonyIOCommands_Prefix: the unit's peripheral prefix letter, one byte.
@@ -649,6 +1590,12 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// is deliberately limited to the control path; Core Audio retains the same
     /// device identity and the health loop decides when the hardware is usable.
     public func reconnectDextClient() {
+        presetLock.lock()
+        defer { presetLock.unlock() }
+        presetOutputRoutes.removeAll()
+        presetCardInputRoutes.removeAll()
+        // A reopened client may be talking to a restarted driver.
+        cardMixers.clear()
         dextClient.disconnect()
         dextClient.connect(audioDeviceID: audioDeviceID)
     }
@@ -656,6 +1603,8 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
     /// Close the private dext client synchronously (the core of `disconnect()`);
     /// also used by a throwaway connection created only to probe the endpoint.
     public func closeDextClient() {
+        presetLock.lock()
+        defer { presetLock.unlock() }
         isConnected = false
         dextClient.disconnect()
     }
@@ -753,6 +1702,11 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         }
         return UInt32(reportedSource)
     }
+
+    /// The driver's clock control as it reads now (Internal, Word Clock…);
+    /// nil when it cannot be read. A card input chosen as the source does not
+    /// show here: it is sent beside the control.
+    public func clockControlValue() -> UInt32? { try? readClockSource() }
 
     /// Read the clock source back from the same 'clck' control `writeClockSource` drives.
     /// Throws for anything outside the legacy enum range rather than hand the
@@ -929,12 +1883,25 @@ final class ThunderboltClockState: @unchecked Sendable {
     private var reportedKey: UInt32?
     private var reportedAt: Date?
     private var boardInputKey: UInt32?
+    private var externalClockLocked: Bool?
     private var controlAtBoardInputWrite: UInt32?
 
     func reported(_ key: UInt32, now: Date) {
         lock.lock(); defer { lock.unlock() }
         reportedKey = key
         reportedAt = now
+    }
+
+    func reportedLock(_ locked: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        externalClockLocked = locked
+    }
+
+    /// The unit's "external clock locked" flag from its last reading; nil
+    /// before the first one.
+    var lastExternalClockLocked: Bool? {
+        lock.lock(); defer { lock.unlock() }
+        return externalClockLocked
     }
 
     func wroteBoardInput(_ key: UInt32, control: UInt32?, now: Date) {

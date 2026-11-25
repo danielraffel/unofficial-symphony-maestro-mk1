@@ -709,9 +709,10 @@ struct ThunderboltProtocolTests {
         #expect(msg[11] == 0x01, "mute = 1 (muted)")
     }
 
-    @Test("MixerInputMute: all 32 channels muted (DAW mode)")
+    @Test("MixerInputMute: the driver mutes the unit's 32 mixer inputs at link configuration")
     func mixerInputMuteAll32Channels() {
-        // In DAW mode, all 32 HW inputs on Mixer 0 are muted
+        // The driver mutes all 32 HW inputs of the unit's own Mixer 0 (not the
+        // card mixer the Mixer page drives over ThunderBridge)
         for ch: UInt16 in 0..<32 {
             let nValue: UInt32 = (UInt32(0) << 16) | UInt32(ch)
             let msg = buildVendorRequestMessage(
@@ -873,9 +874,11 @@ struct ThunderboltProtocolTests {
 
     // MARK: - Init Sequence Ordering
 
-    @Test("Init sequence: USB proxy command order matches dext")
+    @Test("Init sequence: the dext's command order")
     func initSequenceOrdering() {
-        // The USB proxy (MaestroVolumeProxy.c) sends commands in this order:
+        // The ThunderBridge driver sends commands in this order (the USB helper
+        // sent the same until 0.9.21; it no longer sends SpeakerMode or
+        // MixerInputMute):
         // 1. PreferenceLoadLock(lock=1)
         // 2. SpeakerMode, SpeakerVolume, SpeakerMute
         // 3. ClockMode(Internal, Master)

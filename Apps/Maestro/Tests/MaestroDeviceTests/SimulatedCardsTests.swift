@@ -173,10 +173,10 @@ struct SimulatedCardsTests {
 
     // MARK: - Activation is opt-in and inert by default
 
-    private func scratchDefaults(_ name: String) -> UserDefaults {
-        let d = UserDefaults(suiteName: name)!
-        d.removePersistentDomain(forName: name)
-        return UserDefaults(suiteName: name)!
+    private func scratchDefaults(_ name: String) -> ScratchUserDefaults {
+        let d = ScratchUserDefaults(suiteName: name)!
+        d.cleanup()
+        return ScratchUserDefaults(suiteName: name)!
     }
 
     @Test func inertWhenNoKeysArePresent() throws {
@@ -192,7 +192,7 @@ struct SimulatedCardsTests {
         #expect(SimulatedDevice.isSimulatingCards(defaults: d))
         #expect(try SimulatedDevice.simulationRequest(defaults: d)
                 == CardConfiguration.sixteenBySixteenPlusMicPre)
-        d.removePersistentDomain(forName: "maestro.tests.cards.active")
+        d.cleanup()
     }
 
     @Test func activationRejectsAnImpossibleRequest() {
@@ -201,7 +201,7 @@ struct SimulatedCardsTests {
         #expect(throws: CardConfiguration.ValidationError.micPreInSlot1) {
             _ = try SimulatedDevice.simulationRequest(defaults: d)
         }
-        d.removePersistentDomain(forName: "maestro.tests.cards.bad")
+        d.cleanup()
     }
 
     /// The keys are namespaced and not written by anything in the normal app.

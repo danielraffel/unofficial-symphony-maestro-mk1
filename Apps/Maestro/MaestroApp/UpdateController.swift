@@ -43,17 +43,24 @@ final class UpdateController: ObservableObject {
     private let channelDelegate: UpdateChannelDelegate
     private let store: ChannelStore
     private var lastFeedRead: Date?
+    /// Set by Check for Updates: when Sparkle's cycle ends, the newest
+    /// versions under the channel picker are read again.
+    private var refreshReleasesAfterCheck = false
     private var subscriptions = Set<AnyCancellable>()
 
-    init(store: ChannelStore = ChannelStore(), bundle: Bundle = .main) {
+    /// `reinstaller` and `startsUpdater` are for tests: a test passes its own
+    /// reinstaller and leaves Sparkle unstarted.
+    init(store: ChannelStore = ChannelStore(), bundle: Bundle = .main,
+         reinstaller: StableReinstaller? = nil, startsUpdater: Bool = true) {
         self.store = store
         installedVersion = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0.0.0"
         publicKey = bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
-        reinstaller = StableReinstaller(publicKey: publicKey)
+        self.reinstaller = reinstaller ?? StableReinstaller(publicKey: publicKey)
         channelDelegate = UpdateChannelDelegate(store: store, installedVersion: installedVersion)
         controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: channelDelegate, userDriverDelegate: nil)
         automaticallyChecksForUpdates = false
         channelDelegate.onChange = { [weak self] in self?.refreshChannelState() }
+        channelDelegate.onCycleFinished = { [weak self] in self?.refreshReleasesAfterManualCheck() }
         controller.updater.publisher(for: \.canCheckForUpdates)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.canCheckForUpdates = $0 }
@@ -83,12 +90,30 @@ final class UpdateController: ObservableObject {
         }
         automaticallyChecksForUpdates = controller.updater.automaticallyChecksForUpdates
         feedOverride = UserDefaults.standard.string(forKey: "SUFeedURL")
+        // Preferences reads `reinstaller.isBusy` through this object, and
+        // SwiftUI only redraws for the object a view holds. Without this the
+        // channel picker and "Install X" stayed disabled after a refused
+        // go-back, until something else changed (rehearsal row B11(b)).
+        self.reinstaller.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &subscriptions)
         refreshChannelState()
-        controller.startUpdater()
+        if startsUpdater { controller.startUpdater() }
     }
 
     func checkForUpdates() {
+        refreshReleasesAfterCheck = true
         controller.checkForUpdates(nil)
+    }
+
+    /// After Check for Updates, re-read the feed (verified, short timeout) so
+    /// the newest versions under the channel picker are current. Only with
+    /// scheduled checks on, as for Preferences appearing. Failures are silent.
+    private func refreshReleasesAfterManualCheck() {
+        guard refreshReleasesAfterCheck else { return }
+        refreshReleasesAfterCheck = false
+        guard automaticallyChecksForUpdates else { return }
+        Task { try? await self.loadFeed(timeout: FeedRefreshPolicy.backgroundTimeout) }
     }
 
     /// True while Sparkle has a check, a dialog, a download or an install
@@ -119,9 +144,33 @@ final class UpdateController: ObservableObject {
         ChannelRule.isRunningBetaOnStable(effective: effectiveChannel, installed: installedVersion, stored: derivedChannel)
     }
 
+    /// The newest Stable and Beta versions under the channel picker: only
+    /// with scheduled checks on and a feed read in this run.
+    var channelReleases: ChannelReleases? {
+        ChannelReleases.make(snapshot: snapshot, automaticChecks: automaticallyChecksForUpdates)
+    }
+
+    /// The feed's date of `version`, when the last feed read has one.
+    func releaseDate(of version: String) -> Date? {
+        snapshot?.item(version: version)?.date
+    }
+
+    /// That date as shown ("25 Nov"), or nil.
+    func releaseDateText(of version: String) -> String? {
+        releaseDate(of: version).map { ChannelReleases.dateText($0) }
+    }
+
+    /// For tests: a feed as if it had been read.
+    func setSnapshotForTesting(_ snapshot: FeedSnapshot?) {
+        self.snapshot = snapshot
+    }
+
     /// The link of "What's in the current beta".
     var currentBetaNotesURL: URL { snapshot?.currentBetaNotesURL ?? UpdateLinks.releasesPage }
     var hasCurrentBeta: Bool { snapshot?.hasCurrentBeta ?? false }
+    /// True only when a feed was read and verified in this run and it has no
+    /// beta above the newest stable. An unread feed says nothing either way.
+    var feedHasNoCurrentBeta: Bool { snapshot.map { !$0.hasCurrentBeta } ?? false }
 
     // MARK: Maestro's own feed read
 
@@ -131,10 +180,10 @@ final class UpdateController: ObservableObject {
     /// verifies its signature with the app's `SUPublicEDKey`, and applies the
     /// channel rule. Does not touch Sparkle's schedule.
     @discardableResult
-    func loadFeed() async throws -> FeedSnapshot {
+    func loadFeed(timeout: TimeInterval = 20) async throws -> FeedSnapshot {
         guard let url = controller.updater.feedURL else { throw FeedError.noFeedURL }
         guard let publicKey else { throw FeedError.noPublicKey }
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.setValue("Maestro/\(installedVersion)", forHTTPHeaderField: "User-Agent")
         let data: Data
         do {
@@ -166,7 +215,7 @@ final class UpdateController: ObservableObject {
         refreshChannelState()
         guard FeedRefreshPolicy.shouldRefreshOnPreferences(
             automaticChecks: automaticallyChecksForUpdates, lastRead: lastFeedRead, now: Date()) else { return }
-        Task { try? await self.loadFeed() }
+        Task { try? await self.loadFeed(timeout: FeedRefreshPolicy.backgroundTimeout) }
     }
 
     // MARK: Channel actions
@@ -199,7 +248,7 @@ final class UpdateController: ObservableObject {
         return plan
     }
 
-    /// "Install X…" in Preferences: re-read and verify the feed, never trust
+    /// "Install X" in Preferences: re-read and verify the feed, never trust
     /// the stored number.
     func stableTargetForInstall() async throws -> StableTarget {
         let feed = try await loadFeed()
@@ -221,10 +270,40 @@ final class UpdateChannelDelegate: NSObject, SPUUpdaterDelegate {
     private let store: ChannelStore
     private let installedVersion: String
     var onChange: (() -> Void)?
+    /// Called when an update cycle ends, after `onChange`.
+    var onCycleFinished: (() -> Void)?
+    /// Whether one of Apogee's kernel drivers for the ThunderBridge or PCIe
+    /// card is loaded right now. Asked once per update Sparkle is about to
+    /// offer; a test passes its own.
+    private let apogeeKernelDriverLoaded: () -> Bool
 
-    init(store: ChannelStore, installedVersion: String) {
+    init(store: ChannelStore, installedVersion: String,
+         apogeeKernelDriverLoaded: @escaping () -> Bool = {
+             AppState.currentOriginalApogeeDrivers().hasLoadedPCIKernelDriver
+         }) {
         self.store = store
         self.installedVersion = installedVersion
+        self.apogeeKernelDriverLoaded = apogeeKernelDriverLoaded
+    }
+
+    /// Why an update must not go ahead now, or nil. While Apogee's kernel
+    /// driver is loaded, installing an update replaces Maestro's driver, and
+    /// stopping it next to Apogee's is what crashed a user's Mac
+    /// (ApogeeDriverConflict.swift). The installer's preinstall refuses too;
+    /// this says so before anything is downloaded.
+    func updateRefusal() -> NSError? {
+        guard apogeeKernelDriverLoaded() else { return nil }
+        return NSError(domain: "com.danielraffel.maestro.update", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: ApogeeDriverConflict.updateRefusal,
+        ])
+    }
+
+    /// Sparkle asks before it shows or downloads an update. Throwing stops it;
+    /// for a check the user started, Sparkle shows the error's description.
+    @objc(updater:shouldProceedWithUpdate:updateCheck:error:)
+    func updater(_ updater: SPUUpdater, shouldProceedWithUpdate updateItem: SUAppcastItem,
+                 updateCheck: SPUUpdateCheck) throws {
+        if let refusal = updateRefusal() { throw refusal }
     }
 
     /// The channel set for the current state; `[]` is stable items only.
@@ -251,5 +330,6 @@ final class UpdateChannelDelegate: NSObject, SPUUpdaterDelegate {
     @objc(updater:didFinishUpdateCycleForUpdateCheck:error:)
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: (any Error)?) {
         onChange?()
+        onCycleFinished?()
     }
 }

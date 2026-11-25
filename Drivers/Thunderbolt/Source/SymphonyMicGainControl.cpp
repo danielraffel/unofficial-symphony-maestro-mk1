@@ -1,11 +1,9 @@
 // SymphonyMicGainControl.cpp — push-model mic-preamp gain level control.
 //
 // coreaudiod delivers the user's fader move to HandleChangeDecibelValue (on the
-// control's own work queue). We persist it — so the fader sticks in the UI —
-// and hand the (channel, dB) to the driver, which coalesces and async-sends
-// MicGain (0xC3) on the serial XLink queue. Because we OVERRIDE (not extend)
-// HandleChangeDecibelValue, the base default (which would call SetDecibelValue)
-// never runs, so we must persist it ourselves.
+// control's own work queue). The driver coalesces and async-sends the selected
+// gain stage on the serial XLink queue, then publishes the accepted value with
+// SetDecibelValue (including the host property notification).
 
 #include <os/log.h>
 #include <DriverKit/IOLib.h>
@@ -69,19 +67,14 @@ void SymphonyMicGainControl::SetChannel(uint32_t in_channel)
 
 kern_return_t SymphonyMicGainControl::HandleChangeDecibelValue(float in_decibel_value)
 {
-    // 1. Persist so the fader sticks. (The base default would do this; our
-    //    override replaces it, so we must.)
-    kern_return_t r = SetDecibelValue(in_decibel_value);
-    if (r != kIOReturnSuccess) {
-        MGLOG("SetDecibelValue failed 0x%x", r);
-        return r;
-    }
-
-    // 2. Push to hardware (non-blocking; driver coalesces + async-sends 0xC3).
-    MGLOG("HandleChangeDecibelValue ch=%u → %d dB",
-          ivars->channel, (int)in_decibel_value);
-    if (ivars->driver)
-        ivars->driver->RequestMicGain(ivars->channel, in_decibel_value);
-
-    return kIOReturnSuccess;
+    // The driver clamps/quantizes for the active stage and publishes via
+    // SetDecibelValue after a successful send. Never persist the raw request:
+    // Instrument may clamp it, and unknown type/shutdown may refuse it.
+    if (!ivars->driver) return kIOReturnNotReady;
+    return ivars->driver->RequestMicGain(ivars->channel, in_decibel_value);
 }
+
+// No HandleChangeScalarValue override: a scalar change only updates the stored
+// value, as before. coreaudiod's own store/recall must not move the preamp
+// (the original refused coreaudiod's automatic recall of input gain,
+// og_source/maestrolink/Software/SymphonyIOBoard_MicPre8ch.cpp:797-806).

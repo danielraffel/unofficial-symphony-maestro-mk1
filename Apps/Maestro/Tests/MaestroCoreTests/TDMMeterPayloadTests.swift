@@ -24,6 +24,29 @@ struct TDMMeterPayloadTests {
         return Data(b)
     }
 
+    @Test("Mixer reply captured over USB on 2026-11-21: Software Return at -4 dB shows on Mixer 1's Master")
+    func capturedMixerReply() {
+        // Words 0-3 Software Return (both mixers, before the fader), 4-5
+        // Mixer 1's Master, 6-7 Mixer 2's; bytes 16-31 are residue.
+        let bytes: [UInt8] = [0xfd, 0x05, 0xaf, 0x05, 0xfd, 0x05, 0xaf, 0x05, 0xc2, 0x03, 0x91, 0x03, 0xfd, 0x05, 0xaf, 0x05,
+                              0xb0, 0x4d, 0x01, 0x00, 0x13, 0x00, 0x00, 0x00, 0xd8, 0xfd, 0x01, 0x00, 0x66, 0x14, 0x01, 0x00]
+        let levels = TDMMeterPayload.mixerLevels(Data(bytes))
+        #expect(levels.count == 8)
+        #expect(abs(levels[0] - 20 * log10(1533.0 / 16383.0)) < 1e-9)
+        #expect(abs((levels[0] - levels[4]) - 4.0) < 0.1)     // the -4 dB fader
+        #expect(abs(levels[6] - levels[0]) < 1e-9)            // Mixer 2 at unity
+        #expect(TDMMeterPayload.mixerLevels(Data([0x40, 0x00]), count: 2) == [-60.0, -60.0])
+    }
+
+    @Test("The echo is recognised with the group in wIndex, as the request is sent now")
+    func echoWithGroupInIndex() {
+        var b = [UInt8](repeating: 0, count: 64)
+        let setup: [UInt8] = [0xC0, 0x30, 0x00, 0x00, 0x01, 0x00, 0x40, 0x00]
+        for (i, v) in setup.enumerated() { b[32 + i] = v }
+        #expect(TDMMeterPayload.isSetupPacketEcho(Data(b), group: 1, requestLength: 64))
+        #expect(!TDMMeterPayload.isSetupPacketEcho(Data(b), group: 2, requestLength: 64))
+    }
+
     @Test("Captured dev-unit output reply is recognised as an echoed request")
     func capturedReplyIsEcho() {
         let d = Self.capturedGroup1Reply()

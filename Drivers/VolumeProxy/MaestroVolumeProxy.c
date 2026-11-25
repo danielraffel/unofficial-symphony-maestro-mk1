@@ -21,6 +21,7 @@
  *
  * XPC protocol (proxy → ASP reply):
  *   { "command": "audioShmem", "shmem": <xpc_shmem> }
+ *   { "command": "volumeState", "attenuation": <uint64>, "muted": <bool> }
  *
  * Audio shared memory (MaestroAudioShm — see Drivers/Shared/MaestroAudioShm.h):
  *   A clock anchor we publish from the render callback, plus a buffer INDEXED BY
@@ -58,6 +59,8 @@
 #include <IOKit/IOKitLib.h>
 #include <IOKit/usb/IOUSBLib.h>
 #include <IOKit/IOCFPlugIn.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/IOMessage.h>
 
 /* Logging macros: write to both os_log AND stderr (→ /tmp/MaestroVolumeProxy.log).
    os_log alone doesn't appear in the log file because LaunchDaemons redirect
@@ -102,10 +105,45 @@ static inline const char *log_stamp(void) {
 } while (0)
 
 /* Verbose gate for recurring/periodic diagnostics (e.g. the per-render heartbeat).
-   Off by default so a shipped release produces no steady-state log spam. Set the
-   MAESTRO_PROXY_DEBUG environment variable (any value) to re-enable. Read once at
-   startup in main() — never touched from the realtime audio render thread. */
+   On when the MAESTRO_PROXY_DEBUG environment variable is set (any value), off
+   otherwise. The launch plist (com.danielraffel.Maestro.volumeproxy.plist) sets
+   it to 1 for the beta, so beta helpers log these lines; drop it there for a
+   release. Read once at startup in main(); never touched from the real-time
+   audio render thread. */
 static int sVerbose = 0;
+
+/* Latency tuning: the IO buffer this process asks of the USB device, and the
+   slack and floor of the ring delay D (maestro_shm_compute_delay_tuned). Zero
+   means the built-in default. Set by "setLatencyTuning"; read when the audio
+   output starts. */
+static uint32_t gTuneBufferFrames = 0;
+static uint32_t gTuneJitterMargin = 0;
+static uint32_t gTuneMinDelay     = 0;
+/* The defaults since 0.9.23: a 32-frame IO buffer on the USB device, slack 50
+   and floor 64, so D = 2*32 + 14 - 64 + 50 = 64 frames (1.3 ms at 48 kHz).
+   Measured with a DAW-like player at a 32-frame buffer and every core busy
+   (Tools/latency-sweep.swift --player, 2026-11-22): no late write, worst
+   headroom 106 frames at D = 64; with afplay's large buffer, 293. Measured on a Symphony I/O over USB at 48 kHz
+   (2026-11-22, Tools/latency-sweep.swift): no late write and at least 417
+   frames of headroom with every core busy; 64/64/64 also held (350). The
+   reported latency of "Maestro USB" goes from 39.0 ms to 20.3 ms. Before:
+   the device's own 512-frame buffer, 256 slack, 512 floor. */
+#define DEFAULT_IO_BUFFER_FRAMES 32u
+#define DEFAULT_JITTER_MARGIN    50u
+#define DEFAULT_MIN_DELAY        64u
+/* The defaults were measured at 48 kHz. Above it they are scaled with the
+   rate, so the IO cycle, the slack and the floor keep the same time (64
+   frames at 48 kHz, 128 at 96, 256 at 192: 1.3 ms at each). Values set
+   with setLatencyTuning are used as given. */
+static uint32_t default_scaled_for_rate(uint32_t frames48k, double rate)
+{
+    if (!(rate > 48000.0)) return frames48k;
+    return (uint32_t)((double)frames48k * rate / 48000.0 + 0.5);
+}
+/* Worst headroom (frames the plugin had written beyond what we read) since the
+   output last started or the tuning changed; negative = audio was read before
+   it was written, i.e. a dropout. Written on the render thread only. */
+static _Atomic int64_t gWorstHeadroom = INT64_MAX;
 
 /* Second, louder tier: per-XPC-message tracing, off unless MAESTRO_PROXY_TRACE
  * is set. Read once at startup in main().
@@ -187,6 +225,8 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
 #define SYMPH_IO_PID    16u
 
 /* Vendor command codes (from SymphonyIOVendorSpecific.h) */
+#define VCMD_HEADPHONE_VOL   0x23u   /* nValue = headphone index (0 = HP1, 1 = HP2); 1 byte, attenuation in dB */
+#define VCMD_HEADPHONE_MUTE  0x24u   /* nValue = headphone index; 1 byte, 0 = unmuted, 1 = muted */
 #define VCMD_SPEAKER_MODE    0x25u
 #define VCMD_SPEAKER_VOL     0x26u
 #define VCMD_SPEAKER_MUTE    0x27u
@@ -198,17 +238,101 @@ static const char kBundleID[]  = "com.danielraffel.Maestro.volumeproxy";
 
 /* Routing enums (from SymphonyIORouting.h / SymphonyIOMainFPGA.h) */
 #define ROUTE_SRC_USB(n)     (0xC0u + (n))  /* eSymphonyIORoutingSource_FromP2Pch0..15 */
-#define ROUTE_SRC_USB_CH0    0xC0u
-#define ROUTE_SRC_USB_CH1    0xC1u
-#define ROUTE_DST_IO0(ch)    (0x20u + (ch)) /* IOBoard0 ch0..15 (Line 1-8, ADAT 1-8) */
+#define ROUTE_DST_IO0(ch)    (0x20u + (ch)) /* IOBoard0 ch0..15 (Line 1-8, ADAT 1-8); ch0/1 = DAC L/R */
 #define ROUTE_DST_IO1(ch)    (0x30u + (ch)) /* IOBoard1 ch0..15 (ADAT 9-24) */
-#define ROUTE_DST_DAC_L      0x20u   /* eSymphonyIORoutingDestination_IOBoard0Ch0 */
-#define ROUTE_DST_DAC_R      0x21u
-#define ROUTE_DST_MIX0_SWR_L 0xE4u   /* Mixer0 AppInput Ch0 (SW Return L) */
-#define ROUTE_DST_MIX0_SWR_R 0xE5u   /* Mixer0 AppInput Ch1 (SW Return R) */
-#define ROUTE_SRC_MIX0_OUT_L 0x40u   /* Mixer0 Output Ch0 (Master L) */
-#define ROUTE_SRC_MIX0_OUT_R 0x41u   /* Mixer0 Output Ch1 (Master R) */
 #define ROUTE_SRC_NONE       0xECu   /* Digital silence (null route) */
+#define ROUTE_DST_HP(n)      (0xE0u + (n))  /* Headphone 1 L/R (224/225), Headphone 2 L/R (226/227) */
+#define ROUTE_SRC_IS_MIXER(s) ((s) >= 0x40u && (s) < 0x80u) /* Mixer 1 out 64/65, Mixer 2 out 96/97 */
+
+/* What Maestro asks with the "helperVersion" XPC command. 2: every configure
+   leaves every audible destination (both I/O boards and both headphones) on a
+   direct source, and no mixer strip is muted or unmuted by the helper. 3: the
+   "setMonitorOutput" command (which output the volume and mute of
+   "Maestro USB" move). A helper from before this constant does not answer the
+   command at all, which is how Maestro recognises one. */
+#define MAESTRO_HELPER_VERSION 3u
+
+/* The "getProperty" status for "no unit is open" (XPCDeviceConnection
+   helperStatusUnitNotOpen). Any other failure is -1. */
+#define HELPER_STATUS_UNIT_NOT_OPEN (-2)
+
+/* ── Which output the volume and mute of "Maestro USB" move ─────────────── */
+/* The original's "Audio Output" choice for the keyboard volume
+   (eSymphonyIO_MonitorOutput, og_source/symphonymk1/ext/SymphonyIO/generic/
+   Products/SymphonyIO/SymphonyIOVendorSpecific.h:977-982): Speakers by default
+   (og_source/symphonymk1/ext/maestrolink/Software/SymphonyIO.cpp:131). A
+   volume set went to the chosen output's attenuation and a mute to its mute
+   (SymphonyIO.cpp:2239-2276, :2345-2395); with Speakers chosen and the speaker
+   mode Off (Line) the volume set was ignored (:2345-2351) and the mute still
+   set the speaker mute. */
+#define MONITOR_OUTPUT_SPEAKERS 1u
+#define MONITOR_OUTPUT_HP1      2u
+#define MONITOR_OUTPUT_HP2      3u
+
+typedef struct {
+    bool     send;      /* false: the key does nothing */
+    uint8_t  request;   /* vendor command */
+    uint32_t nValue;    /* headphone index for 0x23/0x24, else 0 */
+} MonitorKeyWrite;
+
+static bool monitor_output_valid(uint32_t output)
+{
+    return output >= MONITOR_OUTPUT_SPEAKERS && output <= MONITOR_OUTPUT_HP2;
+}
+
+/* What a volume key (mute = false) or the mute key (mute = true) writes. */
+static MonitorKeyWrite monitor_key_write(uint32_t output, bool lineMode, bool mute)
+{
+    MonitorKeyWrite w = { false, 0, 0 };
+    if (output == MONITOR_OUTPUT_HP1 || output == MONITOR_OUTPUT_HP2) {
+        w.send = true;
+        w.request = (uint8_t)(mute ? VCMD_HEADPHONE_MUTE : VCMD_HEADPHONE_VOL);
+        w.nValue = output - MONITOR_OUTPUT_HP1;
+    } else if (mute || !lineMode) {
+        /* In Line mode the volume set is ignored (SymphonyIO.cpp:2345-2351);
+           the mute is still the speaker's (:2239-2251 has no mode check). */
+        w.send = true;
+        w.request = (uint8_t)(mute ? VCMD_SPEAKER_MUTE : VCMD_SPEAKER_VOL);
+    }
+    return w;
+}
+
+/* What a configure or a recovery writes to put the kept level and mute back
+   on the chosen output. The speakers get theirs in Line mode too, as every
+   configure wrote it before there was a choice. */
+static MonitorKeyWrite monitor_restore_write(uint32_t output, bool mute)
+{
+    return monitor_key_write(output, false, mute);
+}
+
+
+/* The routes every configure writes: each audible destination from a USB
+   playback channel, none from a mixer.
+     IOBoard0 ch0-15 and IOBoard1 ch0-15 <- USB 1-16 (see step 4 / 4b below);
+     Headphone 1 and 2 <- USB 1-2, the firmware's own power-on default
+     (og_source/symphonymk1/ext/SymphonyIO/Software/XMOS/SymphonyIO/src/XMOS/
+     XCore/Core3/MainFPGAThread/SymphonyIOAudioRouteManager/
+     SymphonyIOAudioRouteManager.cpp:389-397: "Software output 1&2 to
+     headphone1 & headphone2").
+   The unit keeps its routing until it is power-cycled, so a headphone an
+   earlier Maestro pointed at a mixer would otherwise stay there while Maestro
+   writes that mixer's strips. Maestro writes the saved headphone source after
+   this, once the mixer it follows (if any) is set. */
+#define DIRECT_ROUTE_COUNT 36u
+static unsigned direct_route_table(uint8_t table[DIRECT_ROUTE_COUNT][2])
+{
+    unsigned n = 0;
+    for (unsigned ch = 0; ch <= 15; ch++, n++) {
+        table[n][0] = (uint8_t)ROUTE_DST_IO0(ch); table[n][1] = (uint8_t)ROUTE_SRC_USB(ch);
+    }
+    for (unsigned ch = 0; ch <= 15; ch++, n++) {
+        table[n][0] = (uint8_t)ROUTE_DST_IO1(ch); table[n][1] = (uint8_t)ROUTE_SRC_USB(ch);
+    }
+    for (unsigned ch = 0; ch <= 3; ch++, n++) {
+        table[n][0] = (uint8_t)ROUTE_DST_HP(ch); table[n][1] = (uint8_t)ROUTE_SRC_USB(ch & 1u);
+    }
+    return n;
+}
 static IOUSBDeviceInterface245 **gUSBDev = NULL;
 
 static os_log_t sLog;
@@ -220,6 +344,123 @@ static os_log_t sLog;
 static uint8_t  gCachedAttenuation = 20;  /* safe default: -20 dB */
 static bool     gCachedMuted       = false;
 static bool     gHasReceivedVolume = false; /* true after first ASP setAttenuation */
+/* The output the cached level and mute belong to (MONITOR_OUTPUT_*), set by
+   Maestro with "setMonitorOutput", and whether the speaker mode Maestro last
+   wrote is Off (Line). Both are kept with the volume. */
+static uint32_t gMonitorOutput     = MONITOR_OUTPUT_SPEAKERS;
+static bool     gSpeakerLineMode   = false;
+/* The speaker's own level and mute, kept apart while a headphone is the
+   chosen output: they stay the first two numbers of the state file, which is
+   all an older helper reads (and writes to the speakers), and they are what
+   a configure puts back on the speakers. gHasSpeakerLevel: they were set by a
+   key, by Maestro, or read from a file; not the built-in 20 dB. */
+static uint8_t  gSpeakerAttenuation = 20;
+static bool     gSpeakerMuted       = false;
+static bool     gHasSpeakerLevel    = false;
+/* After "setMonitorOutput" the Mac's volume control still holds the level of
+   the output chosen before, until Maestro has set it to the new output's.
+   Until then (or until the wait runs out) a volume set louder than the new
+   output's own level, or an unmute, is not kept and not sent: a key pressed
+   in that moment would otherwise carry the old output's level to the new one. */
+#define SLIDER_WAIT_NS (3ull * NSEC_PER_SEC)
+static uint64_t gVolumeWaitUntilNs = 0;
+static uint64_t gMuteWaitUntilNs   = 0;
+/* The start-up guard is separate from the three-second output handoff wait.
+   Apogee's first-set protection (SymphonyIO.cpp:1160-1163, :2310-2339)
+   expires on its timer and must not be closed by the plug-in's echo. */
+static uint64_t gStartupVolumeWaitUntilNs = 0;
+static uint64_t gStartupMuteWaitUntilNs   = 0;
+
+/* Whether a volume (or mute) set is taken. `value` and `expected` are an
+   attenuation (more is quieter) or a mute (1 is muted). `waitUntil` is 0 when
+   nothing is waited for; a set equal to the chosen output's own value, or the
+   wait running out, ends the wait. While waiting, a change towards quiet
+   (more attenuation, mute on) is still taken: it cannot make the output
+   louder than it was, and a mute the user sees as on is never dropped. Only
+   louder and unmute are refused. */
+static bool slider_set_admitted(uint64_t nowNs, uint64_t *waitUntil, unsigned value, unsigned expected)
+{
+    if (*waitUntil == 0) return true;
+    if (nowNs >= *waitUntil || value == expected) { *waitUntil = 0; return true; }
+    return value > expected;
+}
+
+/* A refused louder start-up restore must put the ASP's virtual control back
+   on the helper's kept level. */
+static bool startup_volume_refusal_should_report(uint64_t nowNs, unsigned value)
+{
+    /* The start-up guard ends only when its timer expires. In particular, the
+       plug-in's volumeState echo must not close it before a second restore. */
+    if (gStartupVolumeWaitUntilNs == 0) return false;
+    if (nowNs >= gStartupVolumeWaitUntilNs) {
+        gStartupVolumeWaitUntilNs = 0;
+        return false;
+    }
+    return value < gCachedAttenuation;
+}
+
+static bool startup_mute_refusal_should_report(uint64_t nowNs, bool muted)
+{
+    if (gStartupMuteWaitUntilNs == 0) return false;
+    if (nowNs >= gStartupMuteWaitUntilNs) {
+        gStartupMuteWaitUntilNs = 0;
+        return false;
+    }
+    return !muted && gCachedMuted;
+}
+
+static void report_kept_volume(xpc_connection_t peer)
+{
+    xpc_object_t state = xpc_dictionary_create(NULL, NULL, 0);
+    if (!state) return;
+    xpc_dictionary_set_string(state, "command", "volumeState");
+    xpc_dictionary_set_uint64(state, "attenuation", gCachedAttenuation);
+    xpc_dictionary_set_bool(state, "muted", gCachedMuted);
+    xpc_connection_send_message(peer, state);
+    xpc_release(state);
+}
+
+/* After the helper puts its kept level on the unit (start-up, a replug, a
+   recovery) and when the audio plug-in connects, coreaudiod may set the
+   Mac's volume control from a value it saved earlier, possibly louder. The
+   original dropped the first volume set after start-up in USB mode
+   (SymphonyIO.cpp:1160-1163, :2310-2339). For a few seconds only a change
+   towards quiet is taken, as the card driver does in its settle window. */
+#define STARTUP_WAIT_NS (5ull * NSEC_PER_SEC)
+static void arm_startup_volume_window(uint64_t nowNs)
+{
+    const uint64_t until = nowNs + STARTUP_WAIT_NS;
+    if (gStartupVolumeWaitUntilNs < until) gStartupVolumeWaitUntilNs = until;
+    if (gStartupMuteWaitUntilNs < until)   gStartupMuteWaitUntilNs = until;
+}
+
+/* The cached level belongs to the speakers while they are the chosen output. */
+static void note_target_level(void)
+{
+    if (gMonitorOutput != MONITOR_OUTPUT_SPEAKERS) return;
+    gSpeakerAttenuation = gCachedAttenuation;
+    gSpeakerMuted = gCachedMuted;
+    gHasSpeakerLevel = gHasReceivedVolume;
+}
+
+/* A speaker level or mute Maestro wrote through the helper (0x26 / 0x27, one
+   byte). Returns true when the kept speaker state changed. */
+static bool note_speaker_level(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
+{
+    if (nValue != 0 || !data || len < 1) return false;
+    if (bRequest == VCMD_SPEAKER_VOL && data[0] <= 64) {
+        if (gHasSpeakerLevel && gSpeakerAttenuation == data[0]) return false;
+        gSpeakerAttenuation = data[0];
+        gHasSpeakerLevel = true;
+        return true;
+    }
+    if (bRequest == VCMD_SPEAKER_MUTE) {
+        if (gSpeakerMuted == (data[0] != 0)) return false;
+        gSpeakerMuted = data[0] != 0;
+        return true;
+    }
+    return false;
+}
 
 /*
  * Where the volume survives a reboot.
@@ -240,6 +481,65 @@ static bool     gHasReceivedVolume = false; /* true after first ASP setAttenuati
 #define VOLUME_STATE_PATH VOLUME_STATE_DIR "/volume-state"
 #define VOLUME_STATE_LEGACY_PATH "/var/run/maestro-volume-state"
 
+/* What the state file holds. */
+typedef struct {
+    unsigned speakerAttenuation;  /* 0-64 */
+    bool     speakerMuted;
+    bool     speakerKnown;        /* false: the two above are the built-in default */
+    unsigned output;              /* MONITOR_OUTPUT_* */
+    bool     line;                /* the speaker mode is Line */
+    unsigned targetAttenuation;   /* the chosen output's level and mute */
+    bool     targetMuted;
+} VolumeState;
+
+/* One line. The first two numbers are ALWAYS the speaker's attenuation and
+   mute: a helper before version 3 reads only those and writes them to the
+   speakers, so a headphone's level must never be there (a downgrade would
+   put it on the speakers). Then, from version 3: the chosen output, whether
+   the speaker mode is Line, the chosen output's attenuation and mute, and
+   whether the speaker numbers are a level anyone set. */
+static int format_volume_state(char *buf, size_t size, const VolumeState *st)
+{
+    return snprintf(buf, size, "%u %d %u %d %u %d %d\n", st->speakerAttenuation, st->speakerMuted ? 1 : 0,
+                    st->output, st->line ? 1 : 0, st->targetAttenuation, st->targetMuted ? 1 : 0,
+                    st->speakerKnown ? 1 : 0);
+}
+
+/* A file from an older helper has only the first two numbers: the output is
+   then the speakers. A headphone without its own level is not taken either.
+   Returns false for a line without a usable speaker attenuation and mute. */
+static bool parse_volume_state(const char *text, VolumeState *st)
+{
+    unsigned a = 20, o = MONITOR_OUTPUT_SPEAKERS, t = 20;
+    int m = 0, l = 0, tm = 0, known = 1;
+    const int n = sscanf(text, "%u %d %u %d %u %d %d", &a, &m, &o, &l, &t, &tm, &known);
+    if (n < 2 || a > 64) return false;
+    st->speakerAttenuation = a;
+    st->speakerMuted = m != 0;
+    st->speakerKnown = n < 7 || known != 0;
+    /* A choice that cannot be read is the speakers, not in Line mode. */
+    bool chosen = n >= 3 && monitor_output_valid(o);
+    if (chosen && o != MONITOR_OUTPUT_SPEAKERS && (n < 6 || t > 64)) chosen = false;
+    st->output = chosen ? o : MONITOR_OUTPUT_SPEAKERS;
+    st->line = chosen && n >= 4 && l != 0;
+    const bool headphone = st->output != MONITOR_OUTPUT_SPEAKERS;
+    st->targetAttenuation = headphone ? t : a;
+    st->targetMuted = headphone ? tm != 0 : m != 0;
+    return true;
+}
+
+/* A speaker mode write Maestro sent through the helper (0x25, one byte, 0 =
+   Off, the mode the Output page calls Line). Returns true when the kept
+   state changed. */
+static bool note_speaker_mode(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
+{
+    if (bRequest != VCMD_SPEAKER_MODE || nValue != 0 || !data || len < 1) return false;
+    const bool line = data[0] == 0;
+    if (line == gSpeakerLineMode) return false;
+    gSpeakerLineMode = line;
+    return true;
+}
+
 /* Persist volume/mute to disk. Called on every setAttenuation/setMute. */
 static void save_volume_state(void)
 {
@@ -251,7 +551,12 @@ static void save_volume_state(void)
         LOG("Could not save volume state to %s: %s", VOLUME_STATE_PATH, strerror(errno));
         return;
     }
-    fprintf(f, "%u %d\n", gCachedAttenuation, gCachedMuted ? 1 : 0);
+    char text[64];
+    note_target_level();
+    const VolumeState st = { gSpeakerAttenuation, gSpeakerMuted, gHasSpeakerLevel, gMonitorOutput,
+                             gSpeakerLineMode, gCachedAttenuation, gCachedMuted };
+    format_volume_state(text, sizeof(text), &st);
+    fputs(text, f);
     fclose(f);
 }
 
@@ -260,15 +565,22 @@ static bool read_volume_state_file(const char *path)
 {
     FILE *f = fopen(path, "r");
     if (!f) return false;
-    unsigned att = 20;
-    int muted = 0;
-    bool ok = (fscanf(f, "%u %d", &att, &muted) == 2 && att <= 64);
+    VolumeState st;
+    char text[64] = "";
+    bool ok = fgets(text, sizeof(text), f) != NULL && parse_volume_state(text, &st);
     fclose(f);
     if (!ok) return false;
-    gCachedAttenuation = (uint8_t)att;
-    gCachedMuted = (muted != 0);
-    gHasReceivedVolume = true;
-    LOG("Loaded persisted volume state from %s: %udB atten, mute=%d", path, att, muted);
+    gSpeakerAttenuation = (uint8_t)st.speakerAttenuation;
+    gSpeakerMuted = st.speakerMuted;
+    gHasSpeakerLevel = st.speakerKnown;
+    gMonitorOutput = st.output;
+    gSpeakerLineMode = st.line;
+    gCachedAttenuation = (uint8_t)st.targetAttenuation;
+    gCachedMuted = st.targetMuted;
+    gHasReceivedVolume = st.output != MONITOR_OUTPUT_SPEAKERS || st.speakerKnown;
+    LOG("Loaded persisted volume state from %s: speaker %udB atten mute=%d, output=%u (%udB atten mute=%d), line=%d",
+        path, st.speakerAttenuation, (int)st.speakerMuted, st.output, st.targetAttenuation,
+        (int)st.targetMuted, (int)st.line);
     return true;
 }
 
@@ -404,18 +716,6 @@ static void load_digital_state(void)
     fclose(f);
 }
 
-/* ── Routing mode ──────────────────────────────────────────────────────── */
-/*
- * DAW mode (default): Null all IOBoard output destinations except DAC L/R,
- *   disabling XMOS default 1:1 input passthrough. DAW controls what goes to outputs.
- * Direct Monitor mode: Leave XMOS defaults, enabling zero-latency 1:1 passthrough
- *   from IOBoard inputs to IOBoard outputs for monitoring without a DAW.
- */
-#define ROUTING_MODE_DAW     0
-#define ROUTING_MODE_DIRECT  1
-
-static int gRoutingMode = ROUTING_MODE_DAW;
-
 /* ── Audio shared buffer ────────────────────────────────────────────────── */
 /*
  * Layout, semantics and the rationale for the v2 timeline-indexed design live
@@ -435,6 +735,18 @@ static double   gHwNominalRate = 48000.0;
    sample-time origin, and the plugin must re-anchor when it changes. Starts at
    0, which the plugin reads as "never published". */
 static uint32_t gClockGeneration = 0;
+/* Whether a resetAudioOutput asked for while the output was at generation
+   `asked` still has anything to do now, at `now`. Not when the output has
+   been created again since (a recovery or a device-id rebind that ran while
+   the request waited on gQueue): that output is already the fresh one, and
+   stopping it again is one more audible drop. 1142: a reset that arrived
+   during a USB recovery stopped and restarted the output 24 ms after the
+   recovery had started it. */
+static bool reset_output_still_needed(uint32_t asked, uint32_t now)
+{
+    return asked == now;
+}
+
 /* Device we have a nominal-rate listener registered on, or kAudioObjectUnknown. */
 static AudioObjectID gRateListenerDev = kAudioObjectUnknown;
 /* The device our AudioUnit is actually bound to. CoreAudio reassigns device IDs
@@ -451,9 +763,31 @@ extern dispatch_queue_t gQueue;
 static MaestroAudioShm* gAudioRing = NULL;
 static AudioUnit     gOutputUnit = NULL;
 /* Set only by the render thread, consumed by the serial queue. */
+/* 0: nothing asked; 1: the render callback saw a producer stall and asks
+   for an AudioUnit rebuild; 2: render_monitor_tick is doing it. */
 static _Atomic int gProducerRecoveryPending = 0;
 static uint64_t gLastProducerRecoveryHost = 0;
 static uint64_t gLastRecoveryProducerWriteHost = 0;
+
+/* The render callback runs on the device's real-time IO thread with a 32-frame
+   (0.67 ms) budget. Nothing there may log, allocate, lock, flush a file or
+   call into dispatch/XPC: LOG() is os_log plus fprintf and fflush on a log
+   file, and on 2026-11-23 Core Audio skipped about two IO cycles a minute on
+   this thread for running over its budget, each one an audible cut-out.
+   So the callback only stores numbers here; render_monitor_tick (a timer on
+   gQueue) writes the "render #" line and runs the stall recovery.
+   Tools: MaestroVolumeProxyTests.c checks the callback's source for calls
+   that must not be there. */
+static _Atomic uint64_t gRenderStatCount = 0;
+static _Atomic uint32_t gRenderStatFrames = 0;
+static _Atomic int64_t  gRenderStatDepth = 0;
+static _Atomic int64_t  gRenderStatMinHeadroom = 0;
+static _Atomic uint32_t gRenderStatDelay = 0;
+static _Atomic uint32_t gRenderStatLate = 0;
+static _Atomic uint64_t gRenderStatRateBits = 0;   /* double rateScalar, as bits */
+static _Atomic uint32_t gRenderStatGen = 0;
+static _Atomic uint64_t gRenderStatDataCallbacks = 0;
+static _Atomic uint64_t gRenderStatSeq = 0;        /* bumped after each snapshot */
 static void start_audio_output(MaestroAudioShm* shm);
 static void stop_audio_output(void);
 
@@ -480,51 +814,52 @@ static float gSwReturnPeakR = 0.0f;
    METERDUMP "ECHO" flag below). */
 static float gSwPeak[MAESTRO_SHM_CHANNELS];
 
-/* Software mute — USB audio routes directly to DAC, bypassing the FPGA mixer.
-   Mixer mute commands (0xB3) have no effect on playback. Instead, we zero the
-   audio buffer in the render callback when muted. Toggled via XPC command. */
+/* Software mute for USB channels 1-2 rendered by this helper ("Maestro USB").
+   It silences everything USB 1-2 feeds, a direct output included, so Maestro
+   turns it on only while a mixer that takes USB 1-2 as its Software Return is
+   routed to an output and every such mixer is muted (the rule lives in the
+   app, USBHelperSoftwareReturn). With the default routing, where no mixer
+   feeds an output, it stays off: Apogee's Software Return mute was the mixer's
+   strip 32 and never touched a direct output
+   (og_source/maestrolink/Software/SymphonyIOMixer.cpp:287-452). We zero
+   ch 1-2 in the render callback when muted. Toggled via XPC command. */
 static atomic_int gSwReturnMuted = 0;
 
-/* Software gain — same reason as mute: USB audio bypasses FPGA mixer, so
-   hardware fader commands (0xB0) have no effect. We scale samples in the
-   render callback instead. Linear gain factor (1.0 = unity / 0dB).
+/* Software gain for USB channels 1-2. The app now keeps this at unity: the
+   unit's mixer owns the SW Return fader (0xB0). We scale samples in the
+   render callback only if asked. Linear gain factor (1.0 = unity / 0dB).
    Range: 0.0 (-inf dB) to ~2.0 (+6dB). Set via XPC "setSwReturnLevel". */
 static _Atomic float gSwReturnGain = 1.0f;
 /* Independent L/R gains used when the stereo-link control is off. */
 static _Atomic float gSwReturnGainL = 1.0f;
 static _Atomic float gSwReturnGainR = 1.0f;
 
-/* Stereo SW Return balance, not a mono-to-stereo panner. Center must preserve
-   each existing channel at unity; the old cos/sin mono pan law attenuated only
-   outputs 1-2 by 3.01 dB even with every mixer control at its neutral value.
-   Store coefficients off the audio thread. Outputs 3-16 are independent. */
-static _Atomic float gSwReturnPanL = 1.0f;
-static _Atomic float gSwReturnPanR = 1.0f;
-/* Whether any mixer uses USB channels 1-2 as its Software Return. When false,
-   Software Return gain/pan/mute are handled by the FPGA mixer for selected
-   non-default pairs. */
-static atomic_int gSwReturnSoftwareProcessing = 1;
+/* There is no Software Return balance: the original's Software Return had a
+   stereo fader, solo and mute and no pan
+   (og_source/maestrolink/Software/SymphonyIOMixer.cpp:262-290 pans input
+   channels only), so channels 1-2 always pass centred.
 
-static void set_sw_return_pan(double pan)
+   Whether the software gain/mute stage above is in the path at all. Maestro
+   turns it on only while a mixer that takes USB 1-2 as its Software Return is
+   routed to an output; off, channels 1-2 pass untouched like 3-16. Off until
+   the app says otherwise, which is the default routing's state. */
+static atomic_int gSwReturnSoftwareProcessing = 0;
+
+/* The one-byte value of a mixer write, for the setProperty log line: the
+   fader (0xB0) or pan (0xB1) byte as sent, or 0/1 for solo (0xB2) and mute
+   (0xB3). -1 for every other request or an empty payload. EP0 "OK" alone does
+   not say what a fader move or a click asked for. */
+static int mixer_param_payload(uint8_t bReq, const uint8_t *data, uint32_t len)
 {
-    if (!isfinite(pan)) pan = 0.0;
-    if (pan < -1.0) pan = -1.0;
-    if (pan >  1.0) pan =  1.0;
-    /* Keep the selected side at unity and attenuate only the opposite side.
-       Exact endpoints avoid cosf(pi/2)'s tiny negative rounding residual. */
-    float lGain = pan <= 0.0 ? 1.0f : pan >= 1.0 ? 0.0f
-                        : cosf((float)pan * (float)M_PI_2);
-    float rGain = pan >= 0.0 ? 1.0f : pan <= -1.0 ? 0.0f
-                        : cosf((float)-pan * (float)M_PI_2);
-    atomic_store_explicit(&gSwReturnPanL, lGain, memory_order_relaxed);
-    atomic_store_explicit(&gSwReturnPanR, rGain, memory_order_relaxed);
-    LOG("SW Return software balance: %.2f → L=%.3f R=%.3f", pan, lGain, rGain);
+    if (bReq < 0xB0 || bReq > 0xB3 || !data || len < 1) return -1;
+    return (bReq == 0xB2 || bReq == 0xB3) ? (data[0] ? 1 : 0) : (int)data[0];
 }
 
 /* Render callback: called on the USB device's IO thread.
    Pulls interleaved 16-channel Float32 from the shared ring buffer.
-   Channels 1-2 get software gain/pan/mute (mixer path for Line 1/2).
-   Channels 3-16 pass through at unity (direct FPGA routes to IOBoard outputs). */
+   Channels 1-2 get the software gain/mute stage while Maestro has it on (a
+   mixer on USB 1-2 feeds an output); otherwise they pass at unity.
+   Channels 3-16 always pass through at unity. */
 static OSStatus render_callback(
     void*                       inRefCon,
     AudioUnitRenderActionFlags* ioActionFlags,
@@ -571,20 +906,15 @@ static OSStatus render_callback(
            callback after each recovery before arming the next one. */
         const int newProducerActivity = maestro_shm_producer_activity_changed(
             shm, gLastRecoveryProducerWriteHost);
+        int idle = 0;
         if (stalled && newProducerActivity && !cooldown &&
-            atomic_exchange_explicit(&gProducerRecoveryPending, 1, memory_order_acq_rel) == 0) {
-            LOG("producer stall detected while I/O active — scheduling AudioUnit recovery");
+            atomic_compare_exchange_strong_explicit(&gProducerRecoveryPending, &idle, 1,
+                                                    memory_order_acq_rel, memory_order_relaxed)) {
+            /* Asked here, done by render_monitor_tick on gQueue (no dispatch,
+               no log on this thread). */
             gLastProducerRecoveryHost = now;
             gLastRecoveryProducerWriteHost =
                 __atomic_load_n(&shm->producerLastHostTime, __ATOMIC_ACQUIRE);
-            dispatch_async(gQueue, ^{
-                if (gOutputUnit && gAudioRing) {
-                    LOG("producer stall recovery: rebuilding AudioUnit");
-                    stop_audio_output();
-                    start_audio_output(gAudioRing);
-                }
-                atomic_store_explicit(&gProducerRecoveryPending, 0, memory_order_release);
-            });
         }
     }
 
@@ -614,6 +944,11 @@ static OSStatus render_callback(
         const int64_t readEnd = (int64_t)llrint(inTimeStamp->mSampleTime) + (int64_t)inNumberFrames;
         const int64_t head    = __atomic_load_n(&shm->lastWriteFrame, __ATOMIC_RELAXED) - readEnd;
         if (head < sMinHeadroom) sMinHeadroom = head;
+        /* Only while the plugin is writing: with nothing playing the write
+           head stands still and the headroom means nothing. */
+        if (head > -(int64_t)MAESTRO_SHM_RING_FRAMES / 4
+            && head < atomic_load_explicit(&gWorstHeadroom, memory_order_relaxed))
+            atomic_store_explicit(&gWorstHeadroom, head, memory_order_relaxed);
     }
 
     /* 94 render cycles is one second at 48 kHz and proportionally less above it
@@ -622,14 +957,25 @@ static OSStatus render_callback(
     if (sVerbose && sRenderCount % interval == 0) {
         const int64_t readFrame = stampOK ? (int64_t)llrint(inTimeStamp->mSampleTime) : 0;
         const int64_t lastWrite = shm ? __atomic_load_n(&shm->lastWriteFrame, __ATOMIC_RELAXED) : 0;
-        const double  rs = (stampOK && (inTimeStamp->mFlags & kAudioTimeStampRateScalarValid))
-                         ? inTimeStamp->mRateScalar : 0.0;
-        LOG("render #%llu: frames=%u depth=%lld minHeadroom=%lld D=%u late=%u rateScalar=%.9f gen=%u data_cb=%llu",
-            sRenderCount, inNumberFrames, (long long)(lastWrite - readFrame),
-            (long long)(sMinHeadroom == INT64_MAX ? -1 : sMinHeadroom),
-            shm ? __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED) : 0u,
-            shm ? __atomic_load_n(&shm->lateWrites, __ATOMIC_RELAXED) : 0u,
-            rs, gClockGeneration, sNonZeroCount);
+        double rs = (stampOK && (inTimeStamp->mFlags & kAudioTimeStampRateScalarValid))
+                  ? inTimeStamp->mRateScalar : 0.0;
+        uint64_t rsBits; memcpy(&rsBits, &rs, sizeof rsBits);
+        /* Published for render_monitor_tick, which logs it. */
+        atomic_store_explicit(&gRenderStatCount, sRenderCount, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatFrames, inNumberFrames, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatDepth, lastWrite - readFrame, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatMinHeadroom,
+                              sMinHeadroom == INT64_MAX ? -1 : sMinHeadroom, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatDelay,
+                              shm ? __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED) : 0u,
+                              memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatLate,
+                              shm ? __atomic_load_n(&shm->lateWrites, __ATOMIC_RELAXED) : 0u,
+                              memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatRateBits, rsBits, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatGen, gClockGeneration, memory_order_relaxed);
+        atomic_store_explicit(&gRenderStatDataCallbacks, sNonZeroCount, memory_order_relaxed);
+        atomic_fetch_add_explicit(&gRenderStatSeq, 1, memory_order_release);
         sMinHeadroom = INT64_MAX;
     }
 
@@ -649,20 +995,17 @@ static OSStatus render_callback(
         maestro_shm_read_at(shm, readFrame, ioData->mBuffers[0].mData, inNumberFrames);
         ioData->mBuffers[0].mDataByteSize = totalBytes;
         float* samp = (float*)ioData->mBuffers[0].mData;
-        /* Software gain + pan on channels 1-2 only (mixer/DAC path).
-           Channels 3-16 pass through at unity — they're routed directly
-           to IOBoard outputs by the FPGA crosspoint switch. */
+        /* Software gain on channels 1-2 only, and only while processing is
+           on. Channels 3-16 pass through at unity. */
         float gainL = atomic_load_explicit(&gSwReturnGainL, memory_order_relaxed);
         float gainR = atomic_load_explicit(&gSwReturnGainR, memory_order_relaxed);
-        float panL = atomic_load_explicit(&gSwReturnPanL, memory_order_relaxed);
-        float panR = atomic_load_explicit(&gSwReturnPanR, memory_order_relaxed);
         if (atomic_load_explicit(&gSwReturnSoftwareProcessing, memory_order_relaxed)) {
             for (UInt32 f = 0; f < inNumberFrames; f++) {
-                samp[f * nChannels + 0] *= gainL * panL;  /* ch1 (Line 1) */
-                samp[f * nChannels + 1] *= gainR * panR;  /* ch2 (Line 2) */
+                samp[f * nChannels + 0] *= gainL;  /* USB ch1 */
+                samp[f * nChannels + 1] *= gainR;  /* USB ch2 */
             }
         }
-        /* Peak detection on ch1-2 post-gain/pan so meters reflect actual output */
+        /* Peak detection on ch1-2 post-gain so meters reflect actual output */
         float pkL = gSwReturnPeakL, pkR = gSwReturnPeakR;
         for (UInt32 f = 0; f < inNumberFrames; f++) {
             float aL = fabsf(samp[f * nChannels + 0]);
@@ -681,7 +1024,7 @@ static OSStatus render_callback(
             }
             gSwPeak[ch] = pk;
         }
-        /* Software mute zeros ch1-2 only (Line 1/2 through mixer). */
+        /* Software mute zeros ch1-2 only, while processing is on. */
         if (atomic_load_explicit(&gSwReturnMuted, memory_order_relaxed)
             && atomic_load_explicit(&gSwReturnSoftwareProcessing, memory_order_relaxed)) {
             for (UInt32 f = 0; f < inNumberFrames; f++) {
@@ -696,15 +1039,13 @@ static OSStatus render_callback(
         float tmp[16384]; /* 1024 frames × 16 ch max */
         uint32_t maxFrames = inNumberFrames < 1024u ? inNumberFrames : 1024u;
         maestro_shm_read_at(shm, readFrame, tmp, maxFrames);
-        /* Software gain + pan on ch1-2 only */
+        /* Software gain on ch1-2 only, while processing is on */
         float gainL = atomic_load_explicit(&gSwReturnGainL, memory_order_relaxed);
         float gainR = atomic_load_explicit(&gSwReturnGainR, memory_order_relaxed);
-        float panL = atomic_load_explicit(&gSwReturnPanL, memory_order_relaxed);
-        float panR = atomic_load_explicit(&gSwReturnPanR, memory_order_relaxed);
         if (atomic_load_explicit(&gSwReturnSoftwareProcessing, memory_order_relaxed)) {
             for (UInt32 f = 0; f < maxFrames; f++) {
-                tmp[f * nChannels + 0] *= gainL * panL;
-                tmp[f * nChannels + 1] *= gainR * panR;
+                tmp[f * nChannels + 0] *= gainL;
+                tmp[f * nChannels + 1] *= gainR;
             }
         }
         float pkL = gSwReturnPeakL, pkR = gSwReturnPeakR;
@@ -993,6 +1334,27 @@ static void start_audio_output(MaestroAudioShm* shm)
             kAudioDevicePropertyBufferFrameSize,
             kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain
         };
+        /* This process's IO buffer on the USB device: the IO buffer size is
+           kept per process, so other apps playing to the device keep theirs.
+           A smaller buffer is what lets D (the latency this bridge adds) be
+           smaller, since D must cover two of our buffers. */
+        {
+            AudioValueRange range = { 0, 0 };
+            AudioObjectPropertyAddress r = {
+                kAudioDevicePropertyBufferFrameSizeRange,
+                kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain
+            };
+            UInt32 rsz = (UInt32)sizeof(range);
+            UInt32 want = gTuneBufferFrames ? gTuneBufferFrames : default_scaled_for_rate(DEFAULT_IO_BUFFER_FRAMES, gHwNominalRate);
+            if (AudioObjectGetPropertyData(devID, &r, 0, NULL, &rsz, &range) == noErr && range.mMaximum > 0) {
+                if (want < (UInt32)range.mMinimum) want = (UInt32)range.mMinimum;
+                if (want > (UInt32)range.mMaximum) want = (UInt32)range.mMaximum;
+            }
+            AudioObjectPropertyAddress g = a;
+            g.mScope = kAudioObjectPropertyScopeGlobal;
+            OSStatus serr = AudioObjectSetPropertyData(devID, &g, 0, NULL, (UInt32)sizeof(want), &want);
+            if (serr) LOG_ERR("Set IO buffer %u frames failed %d", want, (int)serr);
+        }
         sz = (UInt32)sizeof(bufFrames);
         if (AudioObjectGetPropertyData(devID, &a, 0, NULL, &sz, &bufFrames) != noErr || !bufFrames)
             bufFrames = 512;
@@ -1001,7 +1363,9 @@ static void start_audio_output(MaestroAudioShm* shm)
         if (AudioObjectGetPropertyData(devID, &a, 0, NULL, &sz, &safety) != noErr)
             safety = 0;
 
-        uint32_t D = maestro_shm_compute_delay(bufFrames, safety);
+        uint32_t D = maestro_shm_compute_delay_tuned(bufFrames, safety,
+            gTuneJitterMargin ? gTuneJitterMargin : default_scaled_for_rate(DEFAULT_JITTER_MARGIN, gHwNominalRate),
+            gTuneMinDelay ? gTuneMinDelay : default_scaled_for_rate(DEFAULT_MIN_DELAY, gHwNominalRate));
         if (D >= MAESTRO_SHM_RING_FRAMES / 2)
             LOG_ERR("D clamped at %u — device buffer %u is too large for the ring", D, bufFrames);
         if (shm) {
@@ -1012,15 +1376,16 @@ static void start_audio_output(MaestroAudioShm* shm)
                at old-mapping slots into the ring we just wiped -- which the new
                sweep then plays. hwHostTime = 0 fails the staleness check, so the
                plugin flywheels until the first real publish. */
-            gClockGeneration++;
+            __atomic_add_fetch(&gClockGeneration, 1u, __ATOMIC_RELEASE);
             maestro_shm_publish_clock(shm, 0.0, 0, 1.0, gHwNominalRate, gClockGeneration);
 
             __atomic_store_n(&shm->delayFrames, D, __ATOMIC_RELEASE);
             memset(shm->buf, 0, MAESTRO_SHM_RING_BYTES);
             __atomic_store_n(&shm->lateWrites, 0u, __ATOMIC_RELAXED);
         }
-        LOG("Presentation delay D=%u frames (%.1f ms) from device buffer=%u safety=%u",
-            D, (double)D * 1000.0 / gHwNominalRate, bufFrames, safety);
+        atomic_store_explicit(&gWorstHeadroom, INT64_MAX, memory_order_relaxed);
+        LOG("Presentation delay D=%u frames (%.1f ms) from device buffer=%u safety=%u margin=%u floor=%u",
+            D, (double)D * 1000.0 / gHwNominalRate, bufFrames, safety, gTuneJitterMargin, gTuneMinDelay);
     }
 
     /* Watch for a nominal-rate change. gHwNominalRate is sampled once, here, and
@@ -1256,6 +1621,52 @@ static void reconcile_audio_binding(void)
     start_audio_output(gAudioRing);
 }
 
+/* gQueue, every 100 ms: what the render callback published (see
+   gRenderStatSeq) is logged here, and a producer stall it saw is put right
+   here, so the audio thread itself never logs or dispatches. */
+static void render_monitor_tick(void)
+{
+    static uint64_t sLoggedSeq = 0;
+    const uint64_t seq = atomic_load_explicit(&gRenderStatSeq, memory_order_acquire);
+    if (seq != sLoggedSeq) {
+        sLoggedSeq = seq;
+        uint64_t rsBits = atomic_load_explicit(&gRenderStatRateBits, memory_order_relaxed);
+        double rs; memcpy(&rs, &rsBits, sizeof rs);
+        LOG("render #%llu: frames=%u depth=%lld minHeadroom=%lld D=%u late=%u rateScalar=%.9f gen=%u data_cb=%llu",
+            (unsigned long long)atomic_load_explicit(&gRenderStatCount, memory_order_relaxed),
+            atomic_load_explicit(&gRenderStatFrames, memory_order_relaxed),
+            (long long)atomic_load_explicit(&gRenderStatDepth, memory_order_relaxed),
+            (long long)atomic_load_explicit(&gRenderStatMinHeadroom, memory_order_relaxed),
+            atomic_load_explicit(&gRenderStatDelay, memory_order_relaxed),
+            atomic_load_explicit(&gRenderStatLate, memory_order_relaxed),
+            rs, atomic_load_explicit(&gRenderStatGen, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&gRenderStatDataCallbacks, memory_order_relaxed));
+    }
+    int asked = 1;
+    if (atomic_compare_exchange_strong_explicit(&gProducerRecoveryPending, &asked, 2,
+                                                memory_order_acq_rel, memory_order_relaxed)) {
+        LOG("producer stall detected while I/O active — rebuilding AudioUnit");
+        if (gOutputUnit && gAudioRing) {
+            stop_audio_output();
+            start_audio_output(gAudioRing);
+        }
+        atomic_store_explicit(&gProducerRecoveryPending, 0, memory_order_release);
+    }
+}
+
+static dispatch_source_t gRenderMonitorTimer = NULL;
+
+static void start_render_monitor_timer(void)
+{
+    if (gRenderMonitorTimer) return;
+    gRenderMonitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gQueue);
+    if (!gRenderMonitorTimer) return;
+    dispatch_source_set_timer(gRenderMonitorTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                              100 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(gRenderMonitorTimer, ^{ render_monitor_tick(); });
+    dispatch_resume(gRenderMonitorTimer);
+}
+
 static void start_reconcile_timer(void)
 {
     if (gReconcileTimer) return;
@@ -1278,12 +1689,15 @@ static void start_reconcile_timer(void)
 /* Forward declarations for USB recovery */
 static int open_usb_device(void);
 static void close_usb_device(void);
+static void shadow_reset(void);
 static int configure_fpga_routing(void);
 static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
                            void *outBuf, uint16_t len);
 static void restore_cached_volume(void);
-static int set_hw_volume(uint8_t attenuation);
-static int set_hw_mute(bool muted);
+static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex, void *outBuf, uint16_t len);
+static void save_volume_state(void);
+static int set_hw_volume(uint32_t output, uint8_t attenuation);
+static int set_hw_mute(uint32_t output, bool muted);
 
 /* Check if an IOReturn code indicates a stale/dead USB handle */
 static int is_stale_handle_error(IOReturn kr)
@@ -1426,9 +1840,9 @@ static int gRecoveryDisarmed  = 0;   /* set after MAX_RECOVERY_FAILURES; stops t
    when healthy — 5 successful `getProperty cmd=0x26` reads in the reference log —
    while both wedges failed it. One probe read is strictly less EP0 traffic than
    the dozen blind writes it gates. */
-static int ep0_is_live(void)
+static IOReturn ep0_probe(void)
 {
-    if (!gUSBDev) return 0;
+    if (!gUSBDev) return kIOReturnNotOpen;
     uint8_t test = 0;
     IOUSBDevRequest req = {
         .bmRequestType = USBmakebmRequestType(kUSBIn, kUSBVendor, kUSBDevice),
@@ -1438,7 +1852,24 @@ static int ep0_is_live(void)
     IOReturn kr = (*gUSBDev)->DeviceRequest(gUSBDev, &req);
     if (kr != kIOReturnSuccess)
         LOG("EP0 liveness probe (0x%02X) failed: 0x%08X", VCMD_SPEAKER_VOL, kr);
-    return kr == kIOReturnSuccess;
+    return kr;
+}
+
+static int ep0_is_live(void) { return ep0_probe() == kIOReturnSuccess; }
+
+/* Whether the open handle is left over from before an unplug or power cycle.
+   open_usb_device() keeps an existing handle, so after a replug the handle can
+   still point at the device instance that was destroyed. Asking it anything
+   then answers "no device" (0xE00002C0) while the unit that came back is on
+   the bus and published. That is not a wedged unit and not a unit that is off
+   the bus: close the handle and open the device that is there.
+   Seen 2026-11-17 23:44 (diagnostics capture): the replugged unit was treated
+   as wedged, hardware init was skipped (no routing, XMOS left locked: meters
+   but no sound), and recovery then waited for an arrival that had already
+   happened. */
+static bool handle_is_from_before_replug(IOReturn kr, bool unitPublished)
+{
+    return kr == kIOReturnNoDevice && unitPublished;
 }
 
 /* Try to recover a stale USB handle by closing and reopening the device.
@@ -1540,10 +1971,26 @@ static int try_recover_usb(void)
     if (gUSBDev) {
         IOReturn kr = (*gUSBDev)->ResetDevice(gUSBDev);
         LOG("ResetDevice: 0x%08X (%s)", kr, kr == kIOReturnSuccess ? "OK" : "failed");
+        shadow_reset();   /* a port reset: what the unit holds is not known */
         /* CoreAudio can lag the bus by a moment; the port saying "no device" is
            the same fact from the other side. */
-        if (kr == kIOReturnNoDevice)
+        if (kr == kIOReturnNoDevice) {
+            /* Checked just above: Core Audio publishes the unit. Then the handle is
+               from before a replug and the listener will not fire again; one
+               reopen tells that apart from Core Audio lagging an unplug. */
+            if (handle_is_from_before_replug(kr, find_usb_device() != kAudioObjectUnknown)) {
+                close_usb_device();
+                if (open_usb_device() == 0 && ep0_is_live()) {
+                    LOG("USB recovery: the handle was from before a replug — reopened the unit that is here");
+                    configure_fpga_routing();
+                    restore_cached_volume();
+                    gRecoveryFailures  = 0;
+                    gRecoveryInProgress = 0;
+                    return 0;
+                }
+            }
             return defer_to_device_listener("the unit is off the bus");
+        }
         if (kr == kIOReturnSuccess) {
             usleep(500000);  /* 500ms for device to stabilize after reset */
             if (ep0_is_live()) {
@@ -1626,8 +2073,88 @@ static int try_recover_usb(void)
     return -1;
 }
 
+/* ── What the unit holds (the write shadow) ────────────────────────────── */
+/* What this helper has written to the unit it has open, and the unit took:
+   the routing table (0x31, destination -> source) and the digital format
+   settings (0x34 OpticalFormat, 0x35/0x36 S/PDIF Coax Replaces/Mirrors, per
+   board). Every write to the unit goes through usb_vendor_write, configure's
+   and Maestro's alike, and nothing else changes these on the unit while it
+   stays enumerated, so after configure_fpga_routing this is the direct table.
+   Forgotten whenever the handle closes (an unplug, a power cycle, a reset):
+   unknown then, until written again.
+
+   Maestro asks for it ("getWriteShadow") at the start of its connect
+   restore and skips a route or a digital setting the unit already holds.
+   0.9.25 rewrote every saved route, both headphones and the optical format
+   while USB audio was playing, about 3 s after a replug, and the owner heard
+   the audio stop briefly; with Maestro closed (configure alone, before the
+   stream starts) it did not. */
+#define SHADOW_DIGITAL_FIRST 0x34
+#define SHADOW_DIGITAL_COUNT 3
+static int16_t gRouteShadow[256];                       /* -1: unknown */
+static int16_t gDigitalShadow[SHADOW_DIGITAL_COUNT][2]; /* -1: unknown */
+
+/* How many times configure_fpga_routing has started on any unit since this
+   helper started. Every configure puts every output and both headphones back
+   on the direct table, also the ones Maestro never hears about (a stale
+   handle or a ResetDevice in try_recover_usb, where its reads never answer
+   "no unit"). Sent with getWriteShadow; Maestro restores the saved routing
+   when it changes. gQueue only. */
+static uint64_t gConfigureCount = 0;
+
+static void shadow_reset(void)
+{
+    for (unsigned i = 0; i < 256; i++) gRouteShadow[i] = -1;
+    for (unsigned c = 0; c < SHADOW_DIGITAL_COUNT; c++) gDigitalShadow[c][0] = gDigitalShadow[c][1] = -1;
+}
+
+/* A write reached the unit (ok) or did not: what it now holds. */
+static void shadow_note_write(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len, int ok)
+{
+    if (bRequest == 0x31 && data) {
+        for (uint16_t i = 0; i + 1 < len; i += 2)
+            gRouteShadow[data[i]] = ok ? (int16_t)data[i + 1] : -1;
+    } else if (bRequest >= SHADOW_DIGITAL_FIRST && bRequest < SHADOW_DIGITAL_FIRST + SHADOW_DIGITAL_COUNT
+               && nValue <= 1 && data && len >= 1) {
+        gDigitalShadow[bRequest - SHADOW_DIGITAL_FIRST][nValue] = ok ? (int16_t)data[0] : -1;
+    }
+}
+
+static int usb_vendor_write_raw(uint8_t bRequest, uint32_t nValue, void *data, uint16_t len);
+
 static int usb_vendor_write(uint8_t bRequest, uint32_t nValue,
                             void *data, uint16_t len)
+{
+    const int err = usb_vendor_write_raw(bRequest, nValue, data, len);
+    shadow_note_write(bRequest, nValue, (const uint8_t *)data, len, err == 0);
+    return err;
+}
+
+/* Whether the unit already holds a digital format write (0x34 OpticalFormat,
+   0x35/0x36 S/PDIF Coax, board 0 or 1): this helper wrote that value since
+   it opened the unit and the unit took it. Unknown is not held. */
+static bool shadow_holds_digital(uint8_t bRequest, uint32_t nValue, const uint8_t *data, uint16_t len)
+{
+    if (bRequest < SHADOW_DIGITAL_FIRST || bRequest >= SHADOW_DIGITAL_FIRST + SHADOW_DIGITAL_COUNT
+        || nValue > 1 || !data || len != 1)
+        return false;
+    const int16_t held = gDigitalShadow[bRequest - SHADOW_DIGITAL_FIRST][nValue];
+    return held >= 0 && held == data[0];
+}
+
+/* Maestro's setProperty write: a digital format setting the unit already
+   holds is not sent again (*held set) and counts as written. Maestro 1142
+   wrote both boards' optical format at every connect, just after this
+   helper's configure had set the same values, while USB audio played. */
+static int set_property_write(uint8_t bRequest, uint32_t nValue, void *data, uint16_t len, bool *held)
+{
+    *held = shadow_holds_digital(bRequest, nValue, (const uint8_t *)data, len);
+    if (*held) return 0;
+    return usb_vendor_write(bRequest, nValue, data, len);
+}
+
+static int usb_vendor_write_raw(uint8_t bRequest, uint32_t nValue,
+                                void *data, uint16_t len)
 {
     if (!gUSBDev) return -1;
 
@@ -1731,6 +2258,7 @@ static int open_usb_device(void)
 static void close_usb_device(void)
 {
     gConfiguredAtNs = 0;   /* whatever is opened next is a new enumeration */
+    shadow_reset();        /* and what it holds is not known */
     if (!gUSBDev) return;
     (*gUSBDev)->USBDeviceClose(gUSBDev);
     (*gUSBDev)->Release(gUSBDev);
@@ -1738,15 +2266,28 @@ static void close_usb_device(void)
     LOG("USB device closed");
 }
 
-/* Configure the FPGA routing matrix for stereo USB playback → DAC output.
-   This replicates the daemon's ApplySettingsToHardware() sequence:
+/* Bring the unit up for USB playback. The original's ApplySettingsToHardware
+   (og_source/maestrolink/Software/SymphonyIO.cpp:4660-4708) wrote the saved
+   settings under one PreferenceLoadLock; this helper holds none of the
+   user's settings, so it writes only what audio needs and leaves the rest to
+   Maestro, which restores the saved state after every connect and recovery:
      1. PreferenceLoadLock(true)  — mute XMOS while configuring
-     2. Speaker output mode/volume/mute
-     3. Clock source → Internal/Master
-     4. FPGA routing: USB ch0,1 → DAC L,R
+     2. Speaker volume/mute (the cached values; the speaker MODE is the
+        user's setting and is not touched here)
+     3. Clock source → Internal/Master (the USB mode's only clock)
+     4. Routing: every USB playback channel straight to the matching output,
+        no mixer routed to any output (the original's default)
      5. PreferenceLoadLock(false) — unlock XMOS, audio can flow
    The PreferenceLoadLock handshake is CRITICAL — without step 5 the XMOS
    stays muted and no audio reaches the DAC even though USB frames arrive. */
+/* Whether bring-up sends the default OpticalFormat (0x34) to a slot, given its
+   OptionBoardType (0xA1) or -1 when the read failed. Only a slot that reads as
+   AnalogAES (2) is skipped. Mirrors the dext's BootSendsOpticalFormat. */
+static bool proxy_boot_sends_optical_format(int boardType)
+{
+    return boardType != 2;
+}
+
 /* The option board fitted on a slot (OptionBoardType 0xA1, board in wIndex),
    -1 when the read fails. */
 static int current_board_type(uint32_t board)
@@ -1759,6 +2300,7 @@ static int current_board_type(uint32_t board)
 static int configure_fpga_routing(void)
 {
     if (!gUSBDev) return -1;
+    gConfigureCount++;
 
     int err;
 
@@ -1767,31 +2309,69 @@ static int configure_fpga_routing(void)
     err = usb_vendor_write(VCMD_PREF_LOAD_LOCK, 0, &lock, 1);
     LOG("PreferenceLoadLock(true): %s", err ? "FAILED" : "OK");
 
-    /* ── Step 2: Speaker output settings ───────────────────────────────── */
-    /* Set speaker output mode to stereo (2) */
-    uint8_t stereo = 2;
-    err = usb_vendor_write(VCMD_SPEAKER_MODE, 0, &stereo, 1);
-    LOG("SpeakerMode(stereo=2): %s", err ? "FAILED" : "OK");
+    /* ── Step 2: Speaker volume and mute ───────────────────────────────── */
+    /* The speaker output mode (0x25) is not written here. It used to be
+       forced to stereo on every configure, which undid the user's choice
+       (Output page, Speaker mode) on each connect and recovery. It is one of
+       the settings the Mac owns: Maestro writes the saved one back after
+       every connect and recovery, as the original did first thing in
+       ApplySettingsToHardware (og_source/maestrolink/Software/SymphonyIO.cpp:4669),
+       and a unit nobody set a mode for keeps its own. */
 
     /* Set volume and mute using cached state if available, otherwise safe defaults.
        This avoids a momentary jump to the hardcoded 20dB before restore_cached_volume()
        overwrites it — the hardware hears only one volume value. */
     uint8_t vol = gHasReceivedVolume ? gCachedAttenuation : 20;
-    err = usb_vendor_write(VCMD_SPEAKER_VOL, 0, &vol, 1);
-    LOG("SpeakerVolume(%ddB atten%s): %s", vol,
-        gHasReceivedVolume ? " [cached]" : " [default]",
-        err ? "FAILED" : "OK");
-
     uint8_t muteVal = gHasReceivedVolume ? (gCachedMuted ? 1 : 0) : 0;
-    err = usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &muteVal, 1);
-    LOG("SpeakerMute(%s%s): %s",
-        muteVal ? "muted" : "unmuted",
-        gHasReceivedVolume ? " [cached]" : " [default]",
-        err ? "FAILED" : "OK");
+    if (gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
+        err = usb_vendor_write(VCMD_SPEAKER_VOL, 0, &vol, 1);
+        LOG("SpeakerVolume(%ddB atten%s): %s", vol,
+            gHasReceivedVolume ? " [cached]" : " [default]",
+            err ? "FAILED" : "OK");
+
+        err = usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &muteVal, 1);
+        LOG("SpeakerMute(%s%s): %s",
+            muteVal ? "muted" : "unmuted",
+            gHasReceivedVolume ? " [cached]" : " [default]",
+            err ? "FAILED" : "OK");
+    } else {
+        /* A headphone is the chosen output. The speakers get their own kept
+           level, as every configure did (never the headphone's), and only
+           when one was ever set. */
+        if (gHasSpeakerLevel) {
+            uint8_t spk = gSpeakerAttenuation, spkMute = gSpeakerMuted ? 1 : 0;
+            err = usb_vendor_write(VCMD_SPEAKER_VOL, 0, &spk, 1);
+            LOG("SpeakerVolume(%ddB atten [kept]): %s", spk, err ? "FAILED" : "OK");
+            err = usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &spkMute, 1);
+            LOG("SpeakerMute(%s [kept]): %s", spkMute ? "muted" : "unmuted", err ? "FAILED" : "OK");
+        }
+        /* The headphone is not written: the unit keeps its level, which may
+           have been changed on the front panel since. It is read instead, so
+           that the level the Mac's control is given belongs to it. */
+        MonitorKeyWrite v = monitor_restore_write(gMonitorOutput, false);
+        MonitorKeyWrite m = monitor_restore_write(gMonitorOutput, true);
+        uint8_t level = 0, mute = 0;
+        if (usb_vendor_read(v.request, 0, (uint16_t)v.nValue, &level, 1) == 1 &&
+            usb_vendor_read(m.request, 0, (uint16_t)m.nValue, &mute, 1) == 1 && level <= 64) {
+            gCachedAttenuation = level;
+            gCachedMuted = mute != 0;
+            gHasReceivedVolume = true;
+            save_volume_state();
+            LOG("Headphone %u level read from the unit: %udB atten, mute=%d", v.nValue + 1, level, (int)gCachedMuted);
+        } else {
+            LOG_ERR("Headphone %u level could not be read; the kept one stays", v.nValue + 1);
+        }
+        vol = gCachedAttenuation;
+        muteVal = gCachedMuted ? 1 : 0;
+    }
 
     /* ── Step 3: Clock source → Internal, Master mode ──────────────────── */
-    /* ClockMode command 0x50: the daemon sends SetClockSource(internal, true)
-       Payload: 4 bytes — [source, master, loopSync, boardClockSrc]
+    /* Over USB the clock is always Internal: Apogee's user guide says of
+       Clock Source "Only available in Symphony & Standalone AIMs ... USB AIM
+       is always Internal", and Maestro offers only Internal over USB
+       (ClockSourceMenu.usb). So this is not a user setting being overridden,
+       and a source saved under ThunderBridge must never be applied here.
+       ClockMode command 0x50, payload 4 bytes — [source, master, loopSync, boardClockSrc]
        Source enum (1-based): 1=Internal, 2=WordClock, 3=LoopSync, 4=IOBoard1, 5=IOBoard2
        Master flag: 0=Slave, 1=Master
        LoopSync: 0=off, 1=on
@@ -1816,17 +2396,29 @@ static int configure_fpga_routing(void)
             /* Remembered values go back only on the type of card they were
                written to; see "Per-board digital settings". */
             bool replay = false;
+            /* Read once: the type decides both the replay and whether the
+               optical format goes out at all. */
+            int type = current_board_type(b);
             if (digital_has_replay(b)) {
-                int type = current_board_type(b);
                 replay = digital_replay_allowed(gSavedDigitalBoardType[b], type);
                 if (!replay)
                     LOG("Digital settings board%u not replayed: card type %d, remembered for %d",
                         b, type, gSavedDigitalBoardType[b]);
             }
             uint8_t format = (replay && gSavedDigital[0][b] == 1) ? 1 : 0;
-            int e = usb_vendor_write(VCMD_OPTICAL_FORMAT, b, &format, 1);
-            LOG("OpticalFormat board%u = %s: %s", b, format ? "SPDIF" : "ADAT/SMUX",
-                e ? "FAILED" : "OK");
+            /* An AES card (8x8 AES, type 2) has no optical format: Apogee's
+               software never sent one (SymphonyIO_IOBoard.cpp:940-981) and the
+               firmware ignores it (SymphonyIOAudioManager.cpp:257-290). Same
+               rule as the ThunderBridge driver's BootSendsOpticalFormat: skip
+               only a slot that positively reads as AES; a failed read keeps
+               the old behaviour. */
+            if (proxy_boot_sends_optical_format(type)) {
+                int e = usb_vendor_write(VCMD_OPTICAL_FORMAT, b, &format, 1);
+                LOG("OpticalFormat board%u = %s: %s", b, format ? "SPDIF" : "ADAT/SMUX",
+                    e ? "FAILED" : "OK");
+            } else {
+                LOG("OpticalFormat board%u: not sent (AES card has no optical port)", b);
+            }
             for (int idx = 1; replay && idx <= 2; idx++) {
                 if (gSavedDigital[idx][b] < 0) continue;
                 uint8_t value = (uint8_t)gSavedDigital[idx][b];
@@ -1837,81 +2429,45 @@ static int configure_fpga_routing(void)
         }
     }
 
-    /* ── Step 4: FPGA routing — USB → Mixer → DAC ────────────────────── */
-    /* Route USB playback through the FPGA mixer, enabling hardware
-       fader/pan/mute/solo and Master output control.
-       Path: USB ch0/1 → Mixer0 SW Return → Mixer processing → Mixer out → DAC
-       The XMOS firmware initializes mixer to 0dB/center/unmuted at boot,
-       so audio passes through at unity gain until the app adjusts levels. */
-    uint8_t mixer_routes[] = {
-        ROUTE_DST_MIX0_SWR_L, ROUTE_SRC_USB_CH0,    /* USB ch0 → Mixer0 SW Return L */
-        ROUTE_DST_MIX0_SWR_R, ROUTE_SRC_USB_CH1,    /* USB ch1 → Mixer0 SW Return R */
-        ROUTE_DST_DAC_L,      ROUTE_SRC_MIX0_OUT_L,  /* Mixer0 out L → DAC left     */
-        ROUTE_DST_DAC_R,      ROUTE_SRC_MIX0_OUT_R,  /* Mixer0 out R → DAC right    */
-    };
-    err = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, mixer_routes, sizeof(mixer_routes));
-    if (err) { LOG_ERR("FPGA mixer routing FAILED"); }
-    else     { LOG("FPGA mixer routing: USB→Mixer0→DAC (4 pairs, 8 bytes)"); }
-
-    /* ── Step 4a: IOBoard0 direct routes — Line 3-8, ADAT 1-8 ────────── */
-    /* Route USB ch2-15 directly to IOBoard0 ch2-15, bypassing mixer.
-       Line 1/2 stays on mixer path above for volume/mute control.
-       Each route sent individually (2 bytes) matching original daemon's
-       ResetOutputRouting() pattern in SymphonyIOUSBAudioRoutingController.cpp.
-       Evidence: og_source SymphonyIORouting.h IOBoard0Ch2=0x22 .. Ch15=0x2F */
+    /* ── Step 4: Output routing — every output direct ─────────────────── */
+    /* USB ch0-15 straight to IOBoard0 ch0-15, Line 1/2 included, and no
+       mixer routed to any output. This is the original's default: its reset
+       routes every hardware output from a USB playback channel and no mixer
+       output anywhere (og_source/maestrolink/Software/
+       SymphonyIOUSBAudioRoutingController.cpp:623-712), and the firmware powers
+       on the same way (SymphonyIOAudioRouteManager.cpp:226-439). Line 1/2 used
+       to be sent through Mixer 1 here (USB → Mixer0 → DAC), with the mixer's
+       hardware inputs then muted to hide them; that was ours, not Apogee's.
+       A mixer reaches an output only when the user routes it there in Output
+       Routing, and Maestro writes those saved routes (and each mixer's
+       Software Return source) after this runs, on connect and on recovery.
+       Each route sent individually (2 bytes) matching the original daemon's
+       ResetOutputRouting() pattern.
+       Evidence: og_source SymphonyIORouting.h IOBoard0Ch0=0x20 .. Ch15=0x2F */
     {
-        int io0_ok = 0, io0_fail = 0;
-        for (unsigned ch = 2; ch <= 15; ch++) {
-            uint8_t pair[2] = { ROUTE_DST_IO0(ch), ROUTE_SRC_USB(ch) };
-            int rerr = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, pair, 2);
-            if (rerr) io0_fail++; else io0_ok++;
+        uint8_t table[DIRECT_ROUTE_COUNT][2];
+        unsigned count = direct_route_table(table);
+        int ok[3] = {0, 0, 0}, fail[3] = {0, 0, 0};
+        for (unsigned i = 0; i < count; i++) {
+            int group = i < 16 ? 0 : i < 32 ? 1 : 2;
+            int rerr = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, table[i], 2);
+            if (rerr) fail[group]++; else ok[group]++;
         }
-        LOG("IOBoard0 direct routes (Line 3-8, ADAT 1-8): %d OK, %d failed",
-            io0_ok, io0_fail);
+        LOG("IOBoard0 direct routes (USB 1-16 → outputs 1-16): %d OK, %d failed", ok[0], fail[0]);
+        /* Step 4b: the same USB channels feed IOBoard1 ch0-15 (ADAT 9-24);
+           the FPGA crosspoint allows several destinations per source, as the
+           original's two-X-per-row pattern
+           (og_source SymphonyIOUSBAudioRoutingController.cpp:681-689).
+           Harmless if the slot is empty. */
+        LOG("IOBoard1 dual routes (ADAT 9-24): %d OK, %d failed", ok[1], fail[1]);
+        /* Step 4c: both headphones direct (USB 1-2), never left on a mixer. */
+        LOG("Headphone direct routes (USB 1-2 → headphones 1 and 2): %d OK, %d failed", ok[2], fail[2]);
     }
 
-    /* ── Step 4b: IOBoard1 dual routes — ADAT 9-24 ──────────────────── */
-    /* Route USB ch0-15 to IOBoard1 ch0-15 (dual routing). Same USB sources
-       feed both IOBoard0 and IOBoard1 — the FPGA crosspoint allows multiple
-       destinations per source. This matches the original daemon's two-X-per-row
-       routing pattern (each USB pair drives primary + secondary outputs).
-       Evidence: og_source SymphonyIOUSBAudioRoutingController.cpp:681-689
-       uses nSourceOffset % 16 wrapping to map same USB channels to IOBoard1.
-       Board-agnostic: harmless if IOBoard1 slot is empty. */
-    {
-        int io1_ok = 0, io1_fail = 0;
-        for (unsigned ch = 0; ch <= 15; ch++) {
-            uint8_t pair[2] = { ROUTE_DST_IO1(ch), ROUTE_SRC_USB(ch) };
-            int rerr = usb_vendor_write(VCMD_AUDIO_ROUTING, 0, pair, 2);
-            if (rerr) io1_fail++; else io1_ok++;
-        }
-        LOG("IOBoard1 dual routes (ADAT 9-24): %d OK, %d failed",
-            io1_ok, io1_fail);
-    }
-
-    /* ── Step 4c: Mute mixer hardware input channels ──────────────────── */
-    /* The XMOS firmware boots with all mixer inputs at 0dB/unmuted, and
-       IOBoard inputs feed into mixer inputs by default. Without muting,
-       every hardware input passes through: IOBoard→Mixer→DAC.
-
-       DAW mode:     Mute all 32 HW input channels on Mixer0. Only the
-                     SW Return (USB/DAW audio) is left unmuted. The app's
-                     syncMixerToHardware() restores the user's persisted
-                     mixer state after connecting.
-       Direct Monitor: Leave HW inputs unmuted for zero-latency monitoring. */
-    if (!err) {
-        uint8_t muteVal = (gRoutingMode == ROUTING_MODE_DAW) ? 1 : 0;
-        int muteOk = 0, muteFail = 0;
-        for (uint16_t ch = 0; ch < 32; ch++) {
-            uint32_t nValue = ((uint32_t)0 << 16) | (uint32_t)ch; /* mixer 0, channel ch */
-            uint8_t val = muteVal;
-            int merr = usb_vendor_write(0xB3, nValue, &val, 1);
-            if (merr) muteFail++; else muteOk++;
-        }
-        LOG("Mixer0 HW inputs %s: %d OK, %d failed (mode=%s)",
-            muteVal ? "muted" : "unmuted", muteOk, muteFail,
-            gRoutingMode == ROUTING_MODE_DAW ? "DAW" : "Direct Monitor");
-    }
+    /* No mixer strip is muted here. All 32 hardware inputs of Mixer 1 used to
+       be muted (or unmuted) on every configure for the removed Input
+       Monitoring setting; a strip now only ever holds what Maestro shows for
+       it, and Maestro restores both mixers after every connect and recovery. */
 
     /* NOTE: SW Return meter taps (destinations 0xB0-0xB3) cannot be set via
        command 0x31 — the firmware only accepts audio routing destinations
@@ -1928,7 +2484,7 @@ static int configure_fpga_routing(void)
         err ? "FAILED" : "OK",
         err ? "STILL MUTED" : "UNLOCKED, audio should flow");
 
-    LOG("Hardware init complete — stereo, %s, vol=%ddB, clock=Internal/Master",
+    LOG("Hardware init complete — %s, vol=%ddB, clock=Internal/Master, outputs direct",
         muteVal ? "muted" : "unmuted", vol);
     /* Only a unit that took the final unlock counts as configured. */
     gConfiguredAtNs = err ? 0 : clock_gettime_nsec_np(CLOCK_MONOTONIC);
@@ -1941,9 +2497,12 @@ static int configure_fpga_routing(void)
    so hardware matches what the ASP expects — prevents loud volume jumps. */
 static void restore_cached_volume(void)
 {
-    if (gHasReceivedVolume) {
-        set_hw_volume(gCachedAttenuation);
-        set_hw_mute(gCachedMuted);
+    arm_startup_volume_window(clock_gettime_nsec_np(CLOCK_MONOTONIC));
+    /* Only the speakers: a headphone's level is the unit's own, read at
+       configure and never written back from a kept copy. */
+    if (gHasReceivedVolume && gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
+        set_hw_volume(gMonitorOutput, gCachedAttenuation);
+        set_hw_mute(gMonitorOutput, gCachedMuted);
         LOG("Restored cached volume: %udB atten, mute=%d",
             gCachedAttenuation, (int)gCachedMuted);
     }
@@ -1984,19 +2543,22 @@ static int usb_vendor_read(uint8_t bRequest, uint16_t wValue, uint16_t wIndex,
     return -1;
 }
 
-/* Set hardware speaker output volume directly via USB.
+/* Set the chosen output's level directly via USB (the speakers, or a
+   headphone; see monitor_restore_write).
    attenuation: 0 = 0dB (full), 64 = -64dB (silent). */
-static int set_hw_volume(uint8_t attenuation)
+static int set_hw_volume(uint32_t output, uint8_t attenuation)
 {
     if (attenuation > 64) attenuation = 64;
-    return usb_vendor_write(VCMD_SPEAKER_VOL, 0, &attenuation, 1);
+    MonitorKeyWrite w = monitor_restore_write(output, false);
+    return usb_vendor_write(w.request, w.nValue, &attenuation, 1);
 }
 
-/* Set hardware speaker mute directly via USB. */
-static int set_hw_mute(bool muted)
+/* Set the chosen output's mute directly via USB. */
+static int set_hw_mute(uint32_t output, bool muted)
 {
     uint8_t val = muted ? 1 : 0;
-    return usb_vendor_write(VCMD_SPEAKER_MUTE, 0, &val, 1);
+    MonitorKeyWrite w = monitor_restore_write(output, true);
+    return usb_vendor_write(w.request, w.nValue, &val, 1);
 }
 
 /* Open USB device and configure FPGA routing.
@@ -2004,6 +2566,14 @@ static int set_hw_mute(bool muted)
 static void init_usb_hardware(void)
 {
     if (open_usb_device() != 0) return;
+
+    IOReturn probe = ep0_probe();
+    if (handle_is_from_before_replug(probe, find_usb_device() != kAudioObjectUnknown)) {
+        LOG("EP0 probe went to the device from before the replug — reopening the one that appeared");
+        close_usb_device();
+        if (open_usb_device() != 0) return;
+        probe = ep0_probe();
+    }
 
     /* open_usb_device() SUCCEEDS against a wedged unit -- it only does
        IOServiceGetMatchingService on VID/PID plus USBDeviceOpen, and a
@@ -2014,7 +2584,7 @@ static void init_usb_hardware(void)
        on open alone pinned gRecoveryFailures at 1/3 forever, because this
        function runs on every reconcile, so the disarm could never fire and the
        proxy retried a dead unit every ~15s indefinitely. */
-    if (!ep0_is_live()) {
+    if (probe != kIOReturnSuccess) {
         LOG_ERR("USB device opened but EP0 does not answer — skipping hardware init.");
         LOG_ERR("  Not re-arming recovery and not sending 30 doomed EP0 writes.");
         LOG_ERR("  The unit is wedged device-side. Unplug and replug its USB cable");
@@ -2136,6 +2706,7 @@ static void register_device_listener(void)
    Must be called on gQueue (serial) so gAudioRing is set atomically. */
 static void setup_audio_shmem(xpc_connection_t peer)
 {
+    dispatch_async(gQueue, ^{ arm_startup_volume_window(clock_gettime_nsec_np(CLOCK_MONOTONIC)); });
     LOG("setup_audio_shmem: called (gAudioRing=%p, gOutputUnit=%p)",
         (void*)gAudioRing, (void*)gOutputUnit);
 
@@ -2505,19 +3076,40 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
+                /* Speakers chosen in Line mode: the set is ignored, as the
+                   original did (SymphonyIO.cpp:2345-2351). Nothing is kept
+                   either, so the speaker level is what it was. */
+                uint64_t nowNs = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+                if (startup_volume_refusal_should_report(nowNs, att) ||
+                    (gVolumeWaitUntilNs != 0 &&
+                     !slider_set_admitted(nowNs, &gVolumeWaitUntilNs, att, gCachedAttenuation))) {
+                    LOG("setAttenuation %u ignored: the Mac's volume has not been given output %u's level yet",
+                        att, gMonitorOutput);
+                    report_kept_volume(peer);
+                    xpc_release(peer);
+                    return;
+                }
+                MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, false);
+                if (!w.send) {
+                    LOG("setAttenuation %u ignored: Speaker is the output and the speaker mode is Line", att);
+                    xpc_release(peer);
+                    return;
+                }
                 /* Cache before writing — used by restore_cached_volume() after recovery */
                 gCachedAttenuation = (uint8_t)att;
                 gHasReceivedVolume = true;
                 save_volume_state();
                 if (gUSBDev) {
-                    set_hw_volume((uint8_t)att);
-                    LOG("setAttenuation %u → USB direct", att);
-                } else {
+                    set_hw_volume(gMonitorOutput, (uint8_t)att);
+                    LOG("setAttenuation %u → USB direct (output %u)", att, gMonitorOutput);
+                } else if (gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
                     /* Fallback to daemon if USB not open */
                     daemon_set_uint32(&gDaemon, PROP_OUTPUT_LEVEL, 0, 0, att);
                     LOG("setAttenuation %u → daemon (fallback)", att);
                 }
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "setMute") == 0) {
@@ -2531,17 +3123,73 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
+                uint64_t nowNs = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+                if (startup_mute_refusal_should_report(nowNs, muted) ||
+                    (gMuteWaitUntilNs != 0 &&
+                     !slider_set_admitted(nowNs, &gMuteWaitUntilNs,
+                                          muted ? 1u : 0u, gCachedMuted ? 1u : 0u))) {
+                    LOG("setMute %d ignored: the Mac's mute has not been given output %u's yet",
+                        (int)muted, gMonitorOutput);
+                    report_kept_volume(peer);
+                    xpc_release(peer);
+                    return;
+                }
+                MonitorKeyWrite w = monitor_key_write(gMonitorOutput, gSpeakerLineMode, true);
+                if (!w.send) {
+                    LOG("setMute %d ignored: Speaker is the output and the speaker mode is Line", (int)muted);
+                    xpc_release(peer);
+                    return;
+                }
                 /* Cache before writing — used by restore_cached_volume() after recovery */
                 gCachedMuted = muted;
                 save_volume_state();
                 if (gUSBDev) {
-                    set_hw_mute(muted);
-                    LOG("setMute %d → USB direct", (int)muted);
-                } else {
+                    set_hw_mute(gMonitorOutput, muted);
+                    LOG("setMute %d → USB direct (output %u)", (int)muted, gMonitorOutput);
+                } else if (gMonitorOutput == MONITOR_OUTPUT_SPEAKERS) {
                     daemon_set_uint32(&gDaemon, PROP_OUTPUT_MUTE, 0, 0, muted ? 1 : 0);
                     LOG("setMute %d → daemon (fallback)", (int)muted);
                 }
+                xpc_release(peer);
+            });
+
+        } else if (strcmp(cmd, "setMonitorOutput") == 0) {
+            /* Maestro's "Audio Output" choice: which output the volume and
+               mute of "Maestro USB" move from now on, with that output's
+               current level and mute (read from the unit by Maestro), which
+               become the kept ones. Nothing is written to the unit.
+               XPC dict: { command, output (1 speakers, 2 HP1, 3 HP2),
+               attenuation (0-64), muted }. Refused without all three. */
+            uint64_t output = xpc_dictionary_get_uint64(msg, "output");
+            uint64_t att = xpc_dictionary_get_uint64(msg, "attenuation");
+            bool muted = xpc_dictionary_get_bool(msg, "muted");
+            bool complete = xpc_dictionary_get_value(msg, "attenuation") != NULL &&
+                            xpc_dictionary_get_value(msg, "muted") != NULL &&
+                            monitor_output_valid((uint32_t)output) && att <= 64;
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            xpc_retain(peer);
+            dispatch_async(gQueue, ^{
+                if (complete) {
+                    gMonitorOutput = (uint32_t)output;
+                    gCachedAttenuation = (uint8_t)att;
+                    gCachedMuted = muted;
+                    gHasReceivedVolume = true;
+                    /* Until the Mac's control holds this output's values. */
+                    gVolumeWaitUntilNs = gMuteWaitUntilNs = clock_gettime_nsec_np(CLOCK_MONOTONIC) + SLIDER_WAIT_NS;
+                    save_volume_state();
+                    LOG("setMonitorOutput %u (level %udB atten, mute=%d)", gMonitorOutput,
+                        gCachedAttenuation, (int)gCachedMuted);
+                } else {
+                    LOG_ERR("setMonitorOutput refused: output=%llu attenuation=%llu", output, att);
+                }
+                if (reply) {
+                    xpc_dictionary_set_int64(reply, "status", complete ? 0 : -1);
+                    xpc_connection_send_message(peer, reply);
+                    xpc_release(reply);
+                }
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "setProperty") == 0) {
@@ -2569,6 +3217,7 @@ static void handle_peer(xpc_connection_t peer) {
                (matching the request-reply model getProperty already uses). */
             xpc_object_t setReply = xpc_dictionary_create_reply(msg);
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
                 if (!gUSBDev) {
                     LOG_ERR("setProperty: USB device not open");
@@ -2578,6 +3227,7 @@ static void handle_peer(xpc_connection_t peer) {
                         xpc_release(setReply);
                     }
                     free(dataCopy);
+                    xpc_release(peer);
                     return;
                 }
                 /* NOTHING takes the preference load lock on a per-command basis.
@@ -2651,9 +3301,23 @@ static void handle_peer(xpc_connection_t peer) {
                    hardware stays on the old one. */
                 /* Reconstruct nValue from wValue/wIndex for usb_vendor_write */
                 uint32_t nValue = ((uint32_t)wVal << 16) | (uint32_t)wIdx;
-                int err = usb_vendor_write(bReq, nValue, dataCopy, copyLen);
-                LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
-                    bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
+                bool held = false;
+                int err = set_property_write(bReq, nValue, dataCopy, copyLen, &held);
+                int mixerVal = mixer_param_payload(bReq, dataCopy, copyLen);
+                if (held)
+                    LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: the unit already holds it, not sent",
+                        bReq, wVal, wIdx, copyLen);
+                else if (mixerVal >= 0)
+                    LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u val=%d: %s",
+                        bReq, wVal, wIdx, copyLen, mixerVal, err ? "FAILED" : "OK");
+                else
+                    LOG("setProperty cmd=0x%02X wVal=%u wIdx=%u len=%u: %s",
+                        bReq, wVal, wIdx, copyLen, err ? "FAILED" : "OK");
+                /* The speaker mode decides whether the speakers can be moved
+                   by the keys (Off, i.e. Line: they cannot). */
+                if (!err && (note_speaker_mode(bReq, nValue, dataCopy, copyLen) ||
+                             note_speaker_level(bReq, nValue, dataCopy, copyLen)))
+                    save_volume_state();
                 if (!err && digital_setting_index(bReq) >= 0 && nValue <= 1 &&
                     note_digital_write(bReq, nValue, dataCopy, copyLen,
                                        current_board_type(nValue)))
@@ -2664,6 +3328,7 @@ static void handle_peer(xpc_connection_t peer) {
                     xpc_release(setReply);
                 }
                 free(dataCopy);
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "getProperty") == 0) {
@@ -2683,12 +3348,18 @@ static void handle_peer(xpc_connection_t peer) {
                 return;
             }
 
+            xpc_retain(peer);
             dispatch_async(gQueue, ^{
                 if (!gUSBDev) {
-                    xpc_dictionary_set_int64(replyMsg, "status", -1);
+                    /* Not -1: the app tells "no unit open" (a real loss, the
+                       restore follows when it is back) from a read that failed
+                       once (no restore). An older app treats any non-zero
+                       status as a failed read, as before. */
+                    xpc_dictionary_set_int64(replyMsg, "status", HELPER_STATUS_UNIT_NOT_OPEN);
                     xpc_connection_send_message(peer, replyMsg);
                     xpc_release(replyMsg);
                     note_getproperty_denied();
+                    xpc_release(peer);
                     return;
                 }
                 note_getproperty_succeeded();
@@ -2701,6 +3372,7 @@ static void handle_peer(xpc_connection_t peer) {
                     xpc_dictionary_set_int64(replyMsg, "status", -1);
                     xpc_connection_send_message(peer, replyMsg);
                     xpc_release(replyMsg);
+                    xpc_release(peer);
                     return;
                 }
 
@@ -2768,6 +3440,7 @@ static void handle_peer(xpc_connection_t peer) {
 
                 xpc_connection_send_message(peer, replyMsg);
                 xpc_release(replyMsg);
+                xpc_release(peer);
             });
 
         } else if (strcmp(cmd, "getSoftwareMeterLevels") == 0) {
@@ -2790,6 +3463,50 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_dictionary_set_data(reply, "levels", peaks, sizeof(peaks));
                 xpc_dictionary_set_data(reply, "levels16", peaks16, sizeof(peaks16));
                 xpc_connection_send_message(peer, reply);
+            }
+        } else if (strcmp(cmd, "getWriteShadow") == 0) {
+            /* What the unit holds of what this helper wrote (see shadow_reset).
+               Reply: { status, routes (256 bytes, the source per destination),
+               routesKnown (256 bytes, 1 where known), digital (6 bytes,
+               0x34/0x35/0x36 x board 0/1), digitalKnown (6 bytes),
+               configures (uint64, gConfigureCount) }. status -2 while no
+               unit is open. */
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (!reply) return;
+            xpc_retain(peer);
+            dispatch_async(gQueue, ^{
+                uint8_t routes[256], routesKnown[256], digital[6], digitalKnown[6];
+                for (unsigned i = 0; i < 256; i++) {
+                    routesKnown[i] = gRouteShadow[i] >= 0;
+                    routes[i] = gRouteShadow[i] >= 0 ? (uint8_t)gRouteShadow[i] : 0;
+                }
+                for (unsigned c = 0; c < SHADOW_DIGITAL_COUNT; c++)
+                    for (unsigned b = 0; b < 2; b++) {
+                        digitalKnown[c * 2 + b] = gDigitalShadow[c][b] >= 0;
+                        digital[c * 2 + b] = gDigitalShadow[c][b] >= 0 ? (uint8_t)gDigitalShadow[c][b] : 0;
+                    }
+                xpc_dictionary_set_int64(reply, "status", gUSBDev ? 0 : HELPER_STATUS_UNIT_NOT_OPEN);
+                xpc_dictionary_set_data(reply, "routes", routes, sizeof routes);
+                xpc_dictionary_set_data(reply, "routesKnown", routesKnown, sizeof routesKnown);
+                xpc_dictionary_set_data(reply, "digital", digital, sizeof digital);
+                xpc_dictionary_set_data(reply, "digitalKnown", digitalKnown, sizeof digitalKnown);
+                xpc_dictionary_set_uint64(reply, "configures", gConfigureCount);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
+                xpc_release(peer);
+            });
+
+        } else if (strcmp(cmd, "helperVersion") == 0) {
+            /* Which helper this is (see MAESTRO_HELPER_VERSION). */
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (reply) {
+                xpc_dictionary_set_uint64(reply, "helperVersion", MAESTRO_HELPER_VERSION);
+                /* The output the volume and mute move now, so that Maestro
+                   only sends "setMonitorOutput" when it differs. Read without
+                   the queue: a stale answer costs one repeated command. */
+                xpc_dictionary_set_uint64(reply, "monitorOutput", gMonitorOutput);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
             }
         } else if (strcmp(cmd, "setMixerParam") == 0) {
             /* Dedicated mixer parameter command — bypasses generic setProperty.
@@ -2822,9 +3539,9 @@ static void handle_peer(xpc_connection_t peer) {
             });
 
         } else if (strcmp(cmd, "setSwReturnMute") == 0) {
-            /* Software mute — zeros the render callback output buffer.
-               USB audio routes directly to DAC, bypassing the FPGA mixer,
-               so hardware mixer mute (0xB3) has no effect on playback. */
+            /* Software mute — zeros ch1-2 of the "Maestro USB" render while
+               software processing is on. Maestro decides when: only while a
+               mixer on USB 1-2 feeds an output (see gSwReturnMuted). */
             int muted = (int)xpc_dictionary_get_int64(msg, "muted");
             atomic_store_explicit(&gSwReturnMuted, muted, memory_order_relaxed);
             LOG("SW Return software mute: %s", muted ? "MUTED" : "unmuted");
@@ -2837,8 +3554,9 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
         } else if (strcmp(cmd, "setSwReturnLevel") == 0) {
-            /* Software fader — USB audio bypasses FPGA mixer, so hardware fader
-               commands (0xB0) have no effect. We scale samples in the render callback.
+            /* Software level for USB channels 1-2, applied only while software
+               processing is on. Maestro keeps it at 0 dB: the unit's mixer owns
+               the Software Return fader (0xB0, strip 32).
                Input: dB value (double). -48 to +6 range, or <= -96 for silence. */
             double dB = xpc_dictionary_get_double(msg, "dB");
             float gain;
@@ -2876,20 +3594,9 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
-        } else if (strcmp(cmd, "setSwReturnPan") == 0) {
-            /* Stereo balance: -1.0 full left, 0.0 unity on both, +1.0 full right. */
-            set_sw_return_pan(xpc_dictionary_get_double(msg, "pan"));
-
-            xpc_object_t reply = xpc_dictionary_create_reply(msg);
-            if (reply) {
-                xpc_dictionary_set_int64(reply, "status", 0);
-                xpc_connection_send_message(peer, reply);
-                xpc_release(reply);
-            }
-
         } else if (strcmp(cmd, "setSwReturnProcessing") == 0) {
-            /* Select whether software gain/pan/mute should process USB 1-2.
-               Other source pairs use the FPGA mixer controls directly. */
+            /* Whether the software gain/mute stage processes USB 1-2: on only
+               while a mixer on USB 1-2 feeds an output (the app's rule). */
             int enabled = xpc_dictionary_get_int64(msg, "enabled") != 0;
             atomic_store_explicit(&gSwReturnSoftwareProcessing, enabled, memory_order_relaxed);
             LOG("SW Return software processing: %s", enabled ? "enabled" : "disabled");
@@ -2901,11 +3608,49 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+        } else if (strcmp(cmd, "setLatencyTuning") == 0) {
+            /* Measurement aid: the IO buffer, slack and floor the ring delay is
+               computed from (0 = default), then the output is rebuilt with them.
+               Clamped so no value can lap the ring. Not saved: a helper restart
+               goes back to the defaults. */
+            uint64_t buf = xpc_dictionary_get_uint64(msg, "bufferFrames");
+            uint64_t margin = xpc_dictionary_get_uint64(msg, "jitterMargin");
+            uint64_t floor = xpc_dictionary_get_uint64(msg, "minDelay");
+            gTuneBufferFrames = buf > 4096 ? 4096 : (uint32_t)buf;
+            gTuneJitterMargin = margin > 4096 ? 4096 : (uint32_t)margin;
+            gTuneMinDelay     = floor > 8192 ? 8192 : (uint32_t)floor;
+            LOG("setLatencyTuning: buffer=%u margin=%u floor=%u", gTuneBufferFrames, gTuneJitterMargin, gTuneMinDelay);
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (reply) {
+                xpc_dictionary_set_int64(reply, "status", 0);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
+            }
+            dispatch_async(gQueue, ^{
+                stop_audio_output();
+                if (gAudioRing) start_audio_output(gAudioRing);
+            });
+        } else if (strcmp(cmd, "getLatencyStats") == 0) {
+            /* Measurement aid: the ring delay now, dropouts (late writes) and
+               the worst headroom since the output started or was retuned. */
+            MaestroAudioShm* shm = gAudioRing;
+            xpc_object_t reply = xpc_dictionary_create_reply(msg);
+            if (reply) {
+                xpc_dictionary_set_uint64(reply, "delayFrames", shm ? __atomic_load_n(&shm->delayFrames, __ATOMIC_RELAXED) : 0);
+                xpc_dictionary_set_uint64(reply, "lateWrites", shm ? __atomic_load_n(&shm->lateWrites, __ATOMIC_RELAXED) : 0);
+                int64_t worst = atomic_load_explicit(&gWorstHeadroom, memory_order_relaxed);
+                xpc_dictionary_set_int64(reply, "worstHeadroom", worst == INT64_MAX ? 0 : worst);
+                xpc_dictionary_set_bool(reply, "headroomSeen", worst != INT64_MAX);
+                xpc_dictionary_set_double(reply, "rate", gHwNominalRate);
+                xpc_dictionary_set_uint64(reply, "bufferFrames", gTuneBufferFrames);
+                xpc_connection_send_message(peer, reply);
+                xpc_release(reply);
+            }
         } else if (strcmp(cmd, "resetAudioOutput") == 0) {
             /* Tear down and recreate the HAL AudioUnit targeting the USB device.
                Fixes stale AudioUnit sessions after FPGA reconfiguration commands
                that disrupt the audio chain without requiring a Mac reboot. */
-            LOG("resetAudioOutput: tearing down AudioUnit...");
+            LOG("resetAudioOutput: asked for");
 
             /* Reply immediately — fire-and-forget silently dropped on macOS 26. */
             xpc_object_t reply = xpc_dictionary_create_reply(msg);
@@ -2915,7 +3660,13 @@ static void handle_peer(xpc_connection_t peer) {
                 xpc_release(reply);
             }
 
+            const uint32_t askedGeneration = __atomic_load_n(&gClockGeneration, __ATOMIC_ACQUIRE);
             dispatch_async(gQueue, ^{
+                if (!reset_output_still_needed(askedGeneration, gClockGeneration)) {
+                    LOG("resetAudioOutput: the output was already rebuilt since it was asked for — not restarted");
+                    return;
+                }
+                LOG("resetAudioOutput: tearing down AudioUnit...");
                 stop_audio_output();
                 if (gAudioRing) {
                     LOG("resetAudioOutput: recreating AudioUnit...");
@@ -2924,31 +3675,6 @@ static void handle_peer(xpc_connection_t peer) {
                     LOG("resetAudioOutput: no ring buffer — skipping recreate");
                 }
             });
-        } else if (strcmp(cmd, "setRoutingMode") == 0) {
-            /* Switch between DAW mode (null passthrough) and Direct Monitor mode
-               (1:1 input passthrough for zero-latency monitoring without a DAW). */
-            int64_t mode = xpc_dictionary_get_int64(msg, "mode");
-
-            xpc_object_t reply = xpc_dictionary_create_reply(msg);
-            if (reply) {
-                xpc_dictionary_set_int64(reply, "status", 0);
-                xpc_connection_send_message(peer, reply);
-                xpc_release(reply);
-            }
-
-            dispatch_async(gQueue, ^{
-                int newMode = (mode == ROUTING_MODE_DIRECT) ? ROUTING_MODE_DIRECT : ROUTING_MODE_DAW;
-                if (newMode == gRoutingMode) {
-                    LOG("Routing mode already %s — skipping FPGA reconfig",
-                        gRoutingMode ? "Direct Monitor" : "DAW");
-                    return;
-                }
-                gRoutingMode = newMode;
-                LOG("Routing mode changed to %s — reconfiguring FPGA",
-                    gRoutingMode ? "Direct Monitor" : "DAW");
-                configure_fpga_routing();
-            });
-
         } else if (strcmp(cmd, "setHardwareRate") == 0) {
             /* Move the REAL USB device's sample rate.
              *
@@ -3083,8 +3809,106 @@ static void start_log_cap_timer(void) {
     dispatch_resume(sLogCapTimer);
 }
 
+/* ── Sleep, shutdown and restart (A3 / J7) ───────────────────────────────
+   As the original's root daemon did (og main.cpp:161-182;
+   SymphonyIOUSBAudioDeviceController.cpp:219-301): before the Mac sleeps,
+   shuts down or restarts, the unit is locked (PreferenceLoadLock = 1, which
+   mutes it) so it makes no noise as USB goes away; when the Mac has woken, it
+   is unlocked. A re-enumeration at wake also unlocks (init_usb_hardware). No
+   lock on SIGTERM: an update restarts this helper and must leave audio on. */
+typedef enum { POWER_NONE, POWER_LOCK, POWER_UNLOCK } PowerAction;
+
+static PowerAction power_action(natural_t message)
+{
+    switch (message) {
+    case kIOMessageSystemWillSleep:
+    case kIOMessageSystemWillPowerOff:
+    case kIOMessageSystemWillRestart:
+        return POWER_LOCK;
+    case kIOMessageSystemHasPoweredOn:
+        return POWER_UNLOCK;
+    default:
+        return POWER_NONE;
+    }
+}
+
+static io_connect_t gPowerRoot = MACH_PORT_NULL;
+/* True from the moment a lock is attempted until an unlock succeeds. A lock
+   that reached the unit but returned an error (USB going down) still counts,
+   so the unlock at wake is always tried. */
+static bool gLockedForPower = false;
+/* Bumped by every lock or unlock request, so a pending unlock retry from an
+   earlier wake never unlocks a later sleep's lock. */
+static unsigned gPowerLockGeneration = 0;
+
+/* Whether the unit may still be locked after a lock (lock true) or unlock
+   attempt that returned err. */
+static bool power_lock_held_after(bool lock, int err)
+{
+    return lock || err != 0;
+}
+
+static void power_unlock_retry(unsigned generation);
+
+static void set_power_lock(bool lock)
+{
+    gPowerLockGeneration++;
+    if (!gUSBDev) { gLockedForPower = false; return; }   /* re-enumeration unlocks in configure_fpga_routing */
+    uint8_t value = lock ? 1 : 0;
+    int err = -1;
+    for (int attempt = 0; attempt < 3 && err != 0; attempt++) {
+        err = usb_vendor_write(VCMD_PREF_LOAD_LOCK, 0, &value, 1);
+        if (err && !lock) usleep(200 * 1000);
+        if (lock) break;   /* going to sleep: one try, never delay the Mac */
+    }
+    gLockedForPower = power_lock_held_after(lock, err);
+    LOG("Power: PreferenceLoadLock(%s) %s", lock ? "true" : "false", err ? "FAILED" : "OK");
+    if (!lock && err) power_unlock_retry(gPowerLockGeneration);
+}
+
+/* An unlock that failed is tried again every five seconds until it succeeds,
+   the unit goes away, or the Mac locks it again for another sleep. */
+static void power_unlock_retry(unsigned generation)
+{
+    if (!gQueue) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), gQueue, ^{
+        if (generation != gPowerLockGeneration || !gLockedForPower) return;
+        LOG("Power: retrying the unlock after wake");
+        set_power_lock(false);
+    });
+}
+
+static void power_callback(void *refcon, io_service_t service, natural_t message, void *argument)
+{
+    (void)refcon; (void)service;
+    const PowerAction action = power_action(message);
+    if (action == POWER_LOCK) set_power_lock(true);
+    /* A shutdown or restart that does not happen (cancelled after this
+       message) must not leave the unit muted: unlock if the Mac is still up
+       a minute later. */
+    if (message == kIOMessageSystemWillPowerOff || message == kIOMessageSystemWillRestart) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), gQueue, ^{
+            if (gLockedForPower) { LOG("Power: still running a minute after shutdown/restart was announced; unlocking"); set_power_lock(false); }
+        });
+    }
+    else if (action == POWER_UNLOCK && gLockedForPower) set_power_lock(false);   /* always tried after an attempted lock */
+    if (message == kIOMessageCanSystemSleep || message == kIOMessageSystemWillSleep)
+        IOAllowPowerChange(gPowerRoot, (long)argument);
+}
+
+static void register_power_notifications(void)
+{
+    static IONotificationPortRef port = NULL;
+    io_object_t notifier = 0;
+    gPowerRoot = IORegisterForSystemPower(NULL, &port, power_callback, &notifier);
+    if (gPowerRoot == MACH_PORT_NULL) { LOG_ERR("Power: IORegisterForSystemPower failed"); return; }
+    IONotificationPortSetDispatchQueue(port, gQueue);
+    LOG("Power: watching sleep, shutdown and restart");
+}
+
 int main(void) {
     sLog  = os_log_create("com.danielraffel.Maestro.volumeproxy", "main");
+    shadow_reset();   /* nothing is known about the unit yet */
     sVerbose = (getenv("MAESTRO_PROXY_DEBUG") != NULL) ? 1 : 0;
     sTrace   = (getenv("MAESTRO_PROXY_TRACE") != NULL) ? 1 : 0;
     gQueue = dispatch_queue_create("com.danielraffel.Maestro.volumeproxy.daemon",
@@ -3108,6 +3932,7 @@ int main(void) {
         ensure_audio_ring();
         register_device_listener();
         start_reconcile_timer();
+        start_render_monitor_timer();
         start_log_cap_timer();
     });
 
@@ -3127,6 +3952,8 @@ int main(void) {
         }
     });
     xpc_connection_resume(listener);
+
+    register_power_notifications();
 
     LOG("Listening on com.danielraffel.Maestro.volumeproxy");
     dispatch_main();

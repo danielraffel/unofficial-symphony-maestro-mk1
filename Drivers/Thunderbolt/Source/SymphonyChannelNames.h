@@ -35,7 +35,8 @@
 //
 // This driver names host inputs after the board channel routed to them, as
 // the original did, and host outputs after the board output at the same
-// position, which the original did not (see SymphonyHostOutputName).
+// position in the unit's host channel order (analog first since dext 150),
+// which the original did not (see SymphonyHostOutputName).
 #pragma once
 
 #include <stdint.h>
@@ -187,33 +188,190 @@ static inline bool SymphonyHostInputName(const SymphonyNamingState &s, uint8_t s
     return false;
 }
 
+// ── The unit's host channel order (dext 150) ─────────────────────────────────
+// The driver programs the unit's routing layer (vendor AudioRouting 0x31) so
+// the Mac sees the unit's channels analog first, as Apogee's original did:
+// every analog channel of slot 1 (board 0), then every analog channel of
+// slot 2 (board 1), then slot 1's digital channels, then slot 2's, each
+// board's digital channels in board channel order (AES before optical).
+//
+// Evidence (og_source/symphonymk1/ext/maestrolink/Software):
+//   - SymphonyIO_Stream.cpp:138-185, SymphonyIO_Stream::operator<: a stream
+//     of another type sorts after any analog stream
+//     (ENABLE_DIGITAL_INPUT_OUPTUT_ORDERING is never defined); streams of the
+//     same type, and AES against optical, fall through to
+//     NonCAStreamObject::operator< (NonCAStreamObject.cpp:326-384): board
+//     index (SymphonyIO_IOBoard.cpp:180-197), then start channel;
+//   - SymphonyPCIeRoutingController.cpp:376-389 keeps the plugs sorted that
+//     way, and ResetRouting (:849-952) routes host channel n to sorted
+//     hardware plug n, inputs and outputs alike;
+//   - SymphonyIO_IOBoard.cpp:1473-1475 (NumberPrecedingChannelsInUnit): the
+//     unit's streams are ordered analog, AES, then optical, which is also each
+//     board's own channel layout (SymphonyBoardChannels).
+// It is the order of the USB default table (SymphonyIODefaultRouting in the
+// app, SymphonyIOUSBAudioRoutingController.cpp:623-812) and of the app's
+// routing grid columns (CardLayout.routingColumns).
+//
+// Builds up to 149 laid the inputs out card by card (slot 1's channels, then
+// slot 2's: SymphonyCardByCardCaptureSource) and the outputs by position
+// (XLink n to board n / 16, channel n % 16). Their comment said the original
+// did the same; it had missed SymphonyIO_Stream::operator<.
+//
+// An empty slot and an 8MicPre contribute no channels (SymphonyBoardChannels
+// returns none for them). When either slot's type was not read, or reads as a
+// value this code does not know (above kSIOOptionBoard_TwoBySix), nothing is
+// known about where the analog channels end, and the driver keeps the tables
+// builds up to 149 programmed: capture card by card from slot 1's type,
+// playback by position. The app's copies (SymphonyIODefaultRouting
+// .thunderboltInputRoutes/.thunderboltOutputRoutes with order .analogFirst)
+// fall back the same way when a slot is nil, and
+// Scripts/golden/host-channel-order.txt pins both for every pair.
+
+static constexpr uint8_t kSymphonyRoutingSourceXLink0 = 0x00;   // XLink RX 0 (host playback)
+static constexpr uint8_t kSymphonyRoutingDestIOBoard0 = 32;     // board 0 output 0
+static constexpr uint8_t kSymphonyRoutingDestIOBoard1 = 48;     // board 1 output 0
+
+// Whether `type` is a SymphonyIOOptionBoardType this code knows the channels of.
+static inline bool SymphonyBoardTypeRecognised(uint8_t type)
+{
+    return type <= kSIOOptionBoard_TwoBySix;
+}
+
+// Whether the analog-first order applies: both slots read, both of a known kind.
+static inline bool SymphonyAnalogFirstApplies(const uint8_t type[2], const bool known[2])
+{
+    return known[0] && known[1] &&
+           SymphonyBoardTypeRecognised(type[0]) && SymphonyBoardTypeRecognised(type[1]);
+}
+
+struct SymphonyBoardChannelRef {
+    uint8_t board;   // 0 = slot 1, 1 = slot 2
+    uint8_t ch;      // channel on the board, 0-15
+};
+
+// The board channels in host order (see above), for inputs or outputs.
+// Returns how many there are (at most 32); `out` gets one entry each.
+static inline unsigned SymphonyHostChannelOrder(const uint8_t type[2], bool isInput,
+                                                SymphonyBoardChannelRef out[32])
+{
+    unsigned n = 0;
+    const SymphonyBoardLayout b[2] = { SymphonyBoardChannels(type[0], isInput),
+                                       SymphonyBoardChannels(type[1], isInput) };
+    for (uint8_t board = 0; board < 2; board++)              // analog, slot 1 then slot 2
+        for (uint8_t ch = 0; ch < b[board].analog && n < 32; ch++)
+            out[n++] = { board, ch };
+    for (uint8_t board = 0; board < 2; board++) {            // digital, slot 1 then slot 2
+        const unsigned total = (unsigned)(b[board].analog + b[board].aes + b[board].optical);
+        for (unsigned ch = b[board].analog; ch < total && ch < 16 && n < 32; ch++)
+            out[n++] = { board, (uint8_t)ch };
+    }
+    return n;
+}
+
+// ── Builds up to 149 (and the fallback when a type is unknown) ──
+// The capture table card by card: host input n from slot 1 channel n, then
+// slot 2's channels from where slot 1's real inputs end (12 behind a 2x6, 16
+// otherwise), the fixed 16 + 16 when slot 1's type was not read or slot 1 has
+// no inputs of its own (empty, 8MicPre). Host inputs past slot 2's 16: None.
+static inline unsigned SymphonyCardByCardSlot2InputBase(uint8_t slot1Type, bool slot1Known)
+{
+    if (!slot1Known) return 16;
+    const SymphonyBoardLayout b = SymphonyBoardChannels(slot1Type, true);
+    const unsigned n = (unsigned)(b.analog + b.aes + b.optical);
+    return (n == 0 || n > 16) ? 16 : n;
+}
+
+static inline uint8_t SymphonyCardByCardCaptureSource(uint8_t slot1Type, bool slot1Known, unsigned hostInput)
+{
+    const unsigned base = SymphonyCardByCardSlot2InputBase(slot1Type, slot1Known);
+    if (hostInput < base) return (uint8_t)(kSymphonyRoutingSourceIOBoard0 + hostInput);
+    if (hostInput < base + 16 && hostInput < 32)
+        return (uint8_t)(kSymphonyRoutingSourceIOBoard1 + (hostInput - base));
+    return kSymphonyRoutingSourceNone;
+}
+
+// ── The tables the driver programs ──
+// The capture table (P2P 0xC0 + n, step 19b-2 and ConfigureUnitB): host input
+// n from the n-th board input in host order, None (236) past the unit's real
+// inputs, so no host input keeps an earlier table's route. Card by card when
+// a type is unknown (above).
+static inline uint8_t SymphonyCaptureSource(const uint8_t type[2], const bool known[2], unsigned hostInput)
+{
+    if (!SymphonyAnalogFirstApplies(type, known))
+        return SymphonyCardByCardCaptureSource(type[0], known[0] && SymphonyBoardTypeRecognised(type[0]),
+                                               hostInput);
+    SymphonyBoardChannelRef order[32];
+    const unsigned count = SymphonyHostChannelOrder(type, true, order);
+    if (hostInput >= count) return kSymphonyRoutingSourceNone;
+    return (uint8_t)(kSymphonyRoutingSourceIOBoard0 + order[hostInput].board * 16 + order[hostInput].ch);
+}
+
+// The playback table (steps 19b-1 / 19b-1b and ConfigureUnitB): the source
+// of board `board` output `ch`. The n-th board output in host order plays
+// XLink n (which the card's default route feeds from host playback n, step
+// 21b); a board output with no host channel behind it (an empty slot, past a
+// card's outputs) plays None. By position (XLink board * 16 + ch) when a type
+// is unknown, as builds up to 149 did for every unit.
+static inline uint8_t SymphonyPlaybackSource(const uint8_t type[2], const bool known[2],
+                                             unsigned board, unsigned ch)
+{
+    if (board > 1 || ch > 15) return kSymphonyRoutingSourceNone;
+    if (!SymphonyAnalogFirstApplies(type, known))
+        return (uint8_t)(kSymphonyRoutingSourceXLink0 + board * 16 + ch);
+    SymphonyBoardChannelRef order[32];
+    const unsigned count = SymphonyHostChannelOrder(type, false, order);
+    for (unsigned n = 0; n < count; n++)
+        if (order[n].board == board && order[n].ch == ch)
+            return (uint8_t)(kSymphonyRoutingSourceXLink0 + n);
+    return kSymphonyRoutingSourceNone;
+}
+
 // The board output Mac (host) OUTPUT `hostOutput` (0-based) plays through
-// when nothing has re-routed it: the driver's fixed Symphony-side table sends
-// XLink n to board output n (step 19b-1: XLink 0-15 to slot 1's outputs 0-15,
-// 16-31 to slot 2's), and the card's default route feeds XLink TX n from host
-// playback n. Returns false past the 32 (no board behind it).
-static inline bool SymphonyHostOutputBoardChannel(unsigned hostOutput, unsigned *board, unsigned *ch)
+// when nothing has re-routed it, by the table above: the n-th board output in
+// host order, or by position (board n / 16, channel n % 16) when a type is
+// unknown. Returns false past the 32, and past the unit's real outputs when
+// the order applies (no board output behind it).
+static inline bool SymphonyHostOutputBoardChannel(const uint8_t type[2], const bool known[2],
+                                                  unsigned hostOutput, unsigned *board, unsigned *ch)
 {
     if (hostOutput >= 32) return false;
-    *board = hostOutput / 16;
-    *ch = hostOutput % 16;
+    if (!SymphonyAnalogFirstApplies(type, known)) {
+        *board = hostOutput / 16;
+        *ch = hostOutput % 16;
+        return true;
+    }
+    SymphonyBoardChannelRef order[32];
+    if (hostOutput >= SymphonyHostChannelOrder(type, false, order)) return false;
+    *board = order[hostOutput].board;
+    *ch = order[hostOutput].ch;
     return true;
 }
 
 // Name of host OUTPUT channel `hostOutput` (0..31). A deliberate departure
 // from the original, which renamed each host output after the hardware
 // channel it was routed to (SymphonyCard.cpp:850-862), "N.A." when it reached
-// none: Mac outputs keep fixed names from their position, the name of the
-// board output at the same position (SymphonyHostOutputBoardChannel), with
-// the prefix letter, "A N.A." included, as the Output tab names that output.
-// They do not follow the card's output routes or mixer. A slot read as empty
-// (or past a card's outputs) is a bare "N.A."; a slot whose type was never
-// read, or a channel past the 32, gets no name (returns false).
+// none: Mac outputs keep fixed names from their position (owner decision,
+// 2026-11-23), the name of the board output the driver's own table plays
+// them through (SymphonyHostOutputBoardChannel), which since dext 150 is the
+// n-th board output in host order, so the names read analog first. With the
+// prefix letter, "A N.A." included, as the Output tab names that output. They
+// do not follow the card's output routes or mixer. A host output with no
+// board output behind it (an empty slot, past the unit's outputs) is a bare
+// "N.A."; one whose board was never read, or a channel past the 32, gets no
+// name (returns false).
 static inline bool SymphonyHostOutputName(const SymphonyNamingState &s, unsigned hostOutput,
                                           char *out, size_t len)
 {
     unsigned board = 0, ch = 0;
-    if (!SymphonyHostOutputBoardChannel(hostOutput, &board, &ch) || !s.boardKnown[board]) {
+    if (hostOutput >= 32) {
+        if (len) out[0] = 0;
+        return false;
+    }
+    if (!SymphonyHostOutputBoardChannel(s.boardType, s.boardKnown, hostOutput, &board, &ch)) {
+        snprintf(out, len, "%s", kSymphonyChannelNotApplicable);   // past the unit's outputs
+        return true;
+    }
+    if (!s.boardKnown[board]) {
         if (len) out[0] = 0;
         return false;
     }
@@ -225,37 +383,28 @@ static inline bool SymphonyHostOutputName(const SymphonyNamingState &s, unsigned
     return true;
 }
 
-// The capture table the driver programs at link configuration: which board
-// channel feeds each of the 32 host inputs (P2P 0xC0 + n). The original laid
-// the Mac's inputs out card by card at each card's real channel count (plugs
-// per stream, sorted by board then start channel:
-// SymphonyPCIeRoutingController.cpp:200-217, 849-866; NonCAStreamObject.cpp:
-// 326-384; SymphonyIO_IOBoard.cpp:180-197). Every card has 16 inputs except
-// the 2x6 (2 Line + 2 AES + 8 optical = 12), so slot 2 starts at host input 13
-// behind a 2x6 and at 17 behind anything else.
-//
-// Two cases keep the fixed 16 where the original would have packed:
-//   - slot 1's type was not read (no Symphony answering): nothing is known;
-//   - slot 1 read as empty or Mic Pre (no inputs of its own): the original
-//     would put slot 2 at host input 1, but that setup works here today with
-//     slot 2 at 17-32, and moving it would move a working setup's inputs.
-// Host inputs past slot 2's 16 are left on "None" (236), so none of them keeps
-// an earlier table's route.
-static inline unsigned SymphonySlot2InputBase(uint8_t slot1Type, bool slot1Known)
+// The 8MicPre channel (0-7) behind a capture source, for ResolveMicPreRoute.
+// The 8MicPre (slot 2 only, MicPreChannelsForSlots) puts its preamps in front
+// of slot 1's analog inputs 1-8 (SymphonyIO.cpp:955-961,
+// SymphonyIO_IOBoard.cpp:606-627, SymphonyIOBoard_MicPre8ch.cpp:337-361), so a
+// host input reaches MicPre channel c only when its capture source is board 0
+// channel c and that channel is one of slot 1's analog inputs, not an AES or
+// optical channel (a 2x6 has 2 analog inputs, an A16 OP none) and not a pair
+// S/PDIF Coax Replaces has taken. When slot 1's type is not known, any board 0
+// channel 1-8 is taken as analog, as before dext 150.
+static inline bool SymphonyMicPreChannelForSource(uint8_t source, uint8_t board0Type, bool board0Known,
+                                                  uint8_t coaxReplace, uint32_t *channel)
 {
-    if (!slot1Known) return 16;
-    const SymphonyBoardLayout b = SymphonyBoardChannels(slot1Type, true);
-    const unsigned n = (unsigned)(b.analog + b.aes + b.optical);
-    return (n == 0 || n > 16) ? 16 : n;
-}
-
-static inline uint8_t SymphonyCaptureSource(uint8_t slot1Type, bool slot1Known, unsigned hostInput)
-{
-    const unsigned base = SymphonySlot2InputBase(slot1Type, slot1Known);
-    if (hostInput < base) return (uint8_t)(kSymphonyRoutingSourceIOBoard0 + hostInput);
-    if (hostInput < base + 16 && hostInput < 32)
-        return (uint8_t)(kSymphonyRoutingSourceIOBoard1 + (hostInput - base));
-    return kSymphonyRoutingSourceNone;
+    if (source < kSymphonyRoutingSourceIOBoard0 || source >= kSymphonyRoutingSourceIOBoard0 + 8)
+        return false;
+    const uint32_t c = (uint32_t)(source - kSymphonyRoutingSourceIOBoard0);
+    const bool typed = board0Known && SymphonyBoardTypeRecognised(board0Type);
+    const SymphonyBoardLayout b = SymphonyBoardChannels(typed ? board0Type : kSIOOptionBoard_None, true);
+    if (typed && c >= b.analog) return false;
+    if (b.coax && coaxReplace >= 1 && coaxReplace <= 8 && c / 2 == (uint32_t)(coaxReplace - 1))
+        return false;
+    *channel = c;
+    return true;
 }
 
 // Record the P2P input routes found in an AudioRouting (0x31) payload of

@@ -23,6 +23,17 @@ extension AppState {
     @MainActor
     func installDriverHandoverObserver() {
         guard driverActivationObserver == nil else { return }
+        // A request that was not submitted because Apogee's kernel driver is
+        // loaded: look again, so the banner and the Device Settings warning
+        // show it now (a kext that appeared after launch).
+        Task { @MainActor [weak self] in
+            let held = NotificationCenter.default.notifications(
+                named: SystemExtensionInstaller.activationHeldNotification)
+            for await _ in held {
+                guard let self else { return }
+                self.refreshOriginalApogeeDrivers()
+            }
+        }
         driverActivationObserver = Task { @MainActor [weak self] in
             let completions = NotificationCenter.default.notifications(
                 named: SystemExtensionInstaller.activationCompletedNotification)

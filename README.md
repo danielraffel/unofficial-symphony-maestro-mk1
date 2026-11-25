@@ -8,7 +8,7 @@ Download the latest Installer (.pkg)</a></h1>
 > [!TIP]
 > **If you find this useful please consider making a donation to the [SF-Marin Food Bank](https://www.sfmfoodbank.org).**
 
-For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **Device Settings › Preferences**.
+For what changed in each version, see the [release notes](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases). Maestro also includes an optional in-app updater: **Check for Updates…** is always available, and scheduled checks can be turned off in **App Settings › Updates**.
 
 _This software has had limited real-world testing. Please closely read the setup notes and limitations in the installer before deciding whether you want to use it._
 
@@ -35,14 +35,14 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 </tr>
 <tr>
 <td width="50%"><a href="docs/screenshots/device-settings.png"><img src="docs/screenshots/device-settings.png" alt="Device Settings"></a><br><sub><b>Device Settings</b> — front-panel meter banks, peripheral prefix, and editable insert labels.</sub></td>
-<td width="50%"><a href="docs/screenshots/system-setup.png"><img src="docs/screenshots/system-setup.png" alt="System Setup"></a><br><sub><b>System Setup</b> — clock and sample rate, word clock divide, meter hold behaviour, and what is installed.</sub></td>
+<td width="50%"><a href="docs/screenshots/system-setup.png"><img src="docs/screenshots/system-setup.png" alt="Device Settings"></a><br><sub><b>Device Settings</b> — clock and sample rate, word clock divide, meter hold behaviour, and device info.</sub></td>
 </tr>
 <tr>
 <td width="50%"><a href="docs/screenshots/usb-connection.png"><img src="docs/screenshots/usb-connection.png" alt="USB connection"></a><br><sub><b>USB connection</b> — USB supports up to 96 kHz; ThunderBridge supports up to 192 kHz where the hardware supports it.</sub></td>
 <td width="50%"><a href="docs/screenshots/maestro-help.png"><img src="docs/screenshots/maestro-help.png" alt="Maestro Help"></a><br><sub><b>Built-in Help</b> — contextual explanations are available throughout Maestro.</sub></td>
 </tr>
 <tr>
-<td width="50%"><a href="docs/screenshots/diagnostics-toggle.png"><img src="docs/screenshots/diagnostics-toggle.png" alt="Update channel and Diagnostics settings"></a><br><sub><b>Update channel and Diagnostics</b> — choose Stable or Beta updates; on Beta, turn on Diagnostics to record what Maestro and the driver do while you reproduce a problem.</sub></td>
+<td width="50%"><a href="docs/screenshots/diagnostics-toggle.png"><img src="docs/screenshots/diagnostics-toggle.png" alt="Update channel and Diagnostics settings"></a><br><sub><b>Update channel and Diagnostics</b> — choose Stable or Beta updates; turn on Diagnostics to record what Maestro and the driver do while you reproduce a problem.</sub></td>
 <td width="50%"><a href="docs/screenshots/diagnostics-confirm.png"><img src="docs/screenshots/diagnostics-confirm.png" alt="Turn on diagnostics"></a><br><sub><b>You stay in control</b> — Maestro asks first, saves the report to your Desktop, and sends nothing unless you agree.</sub></td>
 </tr>
 <tr>
@@ -63,14 +63,14 @@ Due to the technical approach used, this software **requires an Apple Silicon Ma
 - A modern **USB** implementation using Apple's USB audio stack, with hardware volume-key support
 - Automatic recovery when the Symphony is powered off and on or a cable is replugged, on either connection
 - Appearance controls with **Auto**, **Light**, and **Dark** modes
-- Optional in-app updates through Sparkle, with **Stable** and **Beta** channels: stay on a stable build, or choose Beta to try experimental updates (see [Beta versions](#beta-versions))
+- Optional in-app updates through Sparkle, with **Stable** and **Beta** channels: stay on a stable build, or choose Beta to get updates before they reach Stable (see [Beta versions](#beta-versions))
 - **In beta, not yet confirmed on real hardware:** Apogee [AD-16X](https://www.apogeedigital.com/pdf/ad16x_usersguide.pdf), [DA-16X](https://apogeedigital.com/pdf/da16x_usersguide.pdf) and [Rosetta 800](https://apogeedigital.com/pdf/rosetta800_usersguide.pdf) converters, and two Symphony I/O units (64 channels), over [ThunderBridge or the Symphony 64 PCIe card](https://knowledge.apogeedigital.com/symphony64-pcie-thundebridge-users-guide-documentation-and-downloads). Reports are welcome.
 
 ### Connecting over USB and ThunderBridge
 
 Both connections can stay plugged in. The Symphony's front-panel mode decides which one Maestro uses: in **Symphony** mode audio and control go through ThunderBridge, and in a **USB** mode they go through USB. Switching modes on the front panel is followed automatically.
 
-Over USB the Mac sees two devices. **Symphony I/O : Maestro USB** is the one to use: it carries the hardware volume-key control that the class-compliant **Symphony I/O : USB Audio** device cannot. USB carries 16 channels each way; ThunderBridge carries 32.
+Over USB the Mac sees two devices. Use **Symphony I/O : Maestro USB** for the Mac’s sound output and volume keys. It has no inputs. For recording, or a DAW that wants one device for inputs and outputs, choose **Symphony I/O : USB Audio**. USB carries 16 channels each way; ThunderBridge carries 32.
 
 Some older AD16 option-board FPGA revisions report a valid 192 kHz clock but may deliver corrupt samples on the secondary 16-channel path. 192 kHz remains available so the behavior can be diagnosed and so systems that do not exhibit the issue are not unnecessarily restricted. If your unit shows full-scale or otherwise corrupt secondary inputs at 192 kHz, use a lower rate while reporting the exact module and FPGA revision in an issue.
 
@@ -91,7 +91,9 @@ With an 8MicPre installed, channels 1-8 gain a preamp: gain, 48 V phantom, polar
 ## Known Issues
 _Intel Macs and earlier versions of macOS are not supported._
 
-_The original Symphony 64 PCIe card (in a Thunderbolt chassis) is experimental: the driver attaches to it as of 0.8.36, but it has not been verified on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified; beta 0.9.3 adds the Mac's volume keys for them._
+_The original Symphony 64 PCIe card (in a Thunderbolt chassis): the driver attaches to it as of 0.8.36; it has had little testing on that hardware. AD-16X, DA-16X, DD-16X and Rosetta 800 converters are identified as of 0.8.36, also unverified; beta 0.9.3 adds the Mac's volume keys for them._
+
+_Converters work as in Apogee's software: up to four units on each port, in cable order with the nearest first. Port 1's units take the first channels and port 2's continue after them while 64 channels run. Channels are named per unit (A Line 1, C Line 1). Each unit needs X-Symphony firmware 2.7 or later. Device Settings › Info has a Device Type menu for a DD-16X (or an AD-16X or DA-16X in Advanced Routing) and for a Rosetta 200, and the clock can be internal or external word clock. Output Routing and Input Routing edit the card's routing for converters both ways (any DAW output or mixer to any converter output, any converter input to any DAW input), starting from the default placement; Reset Routing returns both to it, and your routes are remembered per chain of units._
 
 _Stable versions work with one Symphony I/O at a time. The 0.9 betas add two units (64 channels) over ThunderBridge, not yet verified on hardware._
 
@@ -126,11 +128,11 @@ The project source is available under the [MIT license](license.md), without war
 
 If you have a Symphony I/O MK I and an Apple Silicon Mac, I’d appreciate hearing how it goes.
 
-**The best way to report a problem is Diagnostics** (Beta channel). Turn it on in **Device Settings › Preferences**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
+**The best way to report a problem is Diagnostics.** Turn it on in **App Settings › Diagnostics & Feedback**, use your Symphony until the problem happens (for a connection problem, switch the unit off and on while it runs), then press **Stop Diagnostics**. Maestro saves the report to your Desktop, so you can see exactly what it collected, and offers to email it privately to the developer; it is never posted publicly. Fill in what you can on the form, and if you have opened a GitHub issue, paste its link so the two can be matched. This is what we use to find and fix problems.
 
-**Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and experiments (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **Device Settings › Preferences** at any time.
+**Fixes and new hardware support arrive on Beta first.** Stable is the default and is kept working smoothly. Bug fixes and new hardware support (such as the PCIe card, 64 channels and converters) go out on the Beta channel, and move to Stable once testers confirm they work. You can switch channels in **App Settings › Updates** at any time.
 
-If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new">file an issue</a> and include:
+If you encounter problems, please <a href="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/new?template=bug_report.yml">file an issue</a> and include:
 
 * The Maestro version (**Maestro › About**) and macOS version
 * Whether you’re using USB or ThunderBridge
@@ -161,17 +163,17 @@ During development I sent countless commands that could easily have bricked my d
 
 ## Appearance and updates
 
-Maestro follows your Mac by default with **Auto** appearance. You can choose **Light** or **Dark** in **Device Settings › Preferences**; the choice applies only to Maestro and is saved for the next launch.
+Maestro follows your Mac by default with **Auto** appearance. You can choose **Light** or **Dark** in **App Settings › General**; the choice applies only to Maestro and is saved for the next launch.
 
 Updates are downloaded from this repository; the updater collects no telemetry.
 
 ### Beta versions
 
-From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in Device Settings › Preferences; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page. Bug fixes and new hardware support land on Beta first and move to Stable once they have been tested; Beta also adds Diagnostics, for sending the developer a private report (see Feedback).
+From 0.8.40, Maestro can also offer beta versions: builds that are still being tested and may have bugs. They are for people helping to test, and are not recommended for anyone else. Stable is the default. To get betas, choose Beta under Update channel in App Settings › Updates; choosing Stable again offers to reinstall the latest stable version. Betas are listed as pre-releases on the Releases page. Bug fixes and new hardware support land on Beta first and move to Stable once they have been tested.
 
 <table>
 <tr>
-<td width="50%"><a href="docs/screenshots/appearance-light.png"><img src="docs/screenshots/appearance-light.png" alt="Maestro in Light appearance"></a><br><sub>Maestro also supports a clean Light appearance, selected in Device Settings.</sub></td>
+<td width="50%"><a href="docs/screenshots/appearance-light.png"><img src="docs/screenshots/appearance-light.png" alt="Maestro in Light appearance"></a><br><sub>Maestro also supports a clean Light appearance, selected in App Settings.</sub></td>
 <td width="50%"></td>
 </tr>
 <tr>
@@ -183,13 +185,21 @@ From 0.8.40, Maestro can also offer beta versions: builds that are still being t
 
 ## Uninstalling Unofficial Symphony Maestro
 
-To remove everything this project installs, run this one command in Terminal (in Applications › Utilities) and enter your Mac's password when asked:
+To uninstall Maestro, run this command in Terminal (in Applications › Utilities) and enter your Mac's password when asked.
 
 ```
 sudo /Applications/Maestro.app/Contents/Resources/uninstall.sh
 ```
 
-It removes the Unofficial Symphony Maestro app, its audio plug-in, its ThunderBridge driver and its background service, and restores Apogee's original audio plug-in if our installer had set it aside. Audio stops briefly while it runs. macOS may not let the script remove the driver itself; if so, the script says so, and you turn off **Symphony Thunderbridge** under **System Settings › General › Login Items & Extensions › Driver Extensions**.
+The script removes the app, audio plug-in and background service, and restores Apogee's original audio plug-in if our installer had set it aside. Audio stops briefly. Confirm the removal if macOS asks, and the script removes the ThunderBridge driver. If automatic removal fails, the script tells you how to remove the driver in System Settings.
+
+If Apogee's original ThunderBridge or PCIe driver is loaded and Maestro's driver is active, stopping Maestro's driver can crash your Mac. The script stops before making any changes. Shut down your Mac, disconnect the ThunderBridge or PCIe chassis, start up again, and rerun the script.
+
+The script keeps your Maestro settings in `~/Library/Preferences/com.danielraffel.maestro.plist` so reinstalling restores your setup. To delete those settings, run this command as your usual user.
+
+```
+defaults delete com.danielraffel.maestro
+```
 
 If you have already deleted the app from Applications, the same script is in this repository at [Installer/uninstall.sh](Installer/uninstall.sh).
 
@@ -206,7 +216,14 @@ Apogee's software is theirs, not ours: we don't provide, test or support it, and
 
 ## Coming from Apogee's official software
 
-Going the other way, remove Apogee's Symphony I/O software before installing Unofficial Symphony Maestro: open Apogee's [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg) installer, choose **Uninstall**, and restart. Our installer checks for Apogee's drivers and tells you if any are still present. The details are in the user guide under [Removing Apogee's original drivers](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers).
+Going the other way, remove Apogee's Symphony I/O software before installing Unofficial Symphony Maestro. If it is still there, our installer stops and says: "Apogee's original Symphony I/O drivers were detected. Symphony Maestro cannot be installed or updated while they are installed or loaded. Running both can crash your Mac and make it restart repeatedly." To fix this:
+
+1. Download Apogee's latest installer, [Symphony I/O Release 5.5](https://knowledge.apogeedigital.com/hubfs/Software%20Installers/Symphony%20IO/SymphonyIO_Release_5.5.dmg)
+2. Open the DMG and choose **Uninstall**
+3. Restart your Mac
+4. Run this installer again (Apogee's Uninstall also removes Maestro; this puts it back)
+
+A first install stops while any part of Apogee's original Symphony I/O software is found. An update stops while Apogee's driver for the ThunderBridge or PCIe card is loaded or is in an Extensions folder; a copy that only macOS has kept does not stop an update, and Maestro's Device Settings warns about it. The details, and what to do if you are still blocked, are in the user guide under [Removing Apogee's original drivers](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/blob/dev/docs/UserManual.md#removing-apogees-original-drivers). We can't troubleshoot removing Apogee's software ourselves. If you found something that worked, or are stuck, other users compare notes in this issue: https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32
 
 On some Macs, macOS keeps loading Apogee's old drivers even after their uninstaller has run. One user worked out why and how they cleared it, and wrote it up in detail: [their report](https://github.com/danielraffel/unofficial-symphony-maestro-mk1/issues/32#issuecomment-7050613371). It's one person's experience on their own Mac, shared in case it helps, and not a procedure we've tested.
 

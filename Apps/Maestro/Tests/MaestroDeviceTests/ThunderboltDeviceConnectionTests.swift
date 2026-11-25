@@ -117,6 +117,11 @@ struct ThunderboltDeviceConnectionTests {
         #expect(await conn.hasProperty(PropertyAddress(selector: .secondaryBoardType)) == true)
         #expect(await conn.isPropertySettable(PropertyAddress(selector: .primaryBoardType)) == false)
         #expect(await conn.isPropertySettable(PropertyAddress(selector: .secondaryBoardType)) == false)
+
+        // Identify (0x33) is writable on unit A as on unit B; before this the
+        // Output Routing button threw unsupportedProperty and did nothing.
+        let identifySettable = await conn.isPropertySettable(PropertyAddress(selector: .identify))
+        #expect(identifySettable)
     }
 
     /// Clock source is asked of CoreAudio, not refused outright. There is no
@@ -478,8 +483,8 @@ struct DextUserClientRequestSizeTests {
             .appendingPathComponent("Drivers/Thunderbolt/Source/SymphonyThunderbridgeShared.h")
         let text = try String(contentsOf: header, encoding: .utf8)
         #expect(text.contains("#pragma pack(push, 1)"))
-        let start = try #require(text.range(of: "typedef struct {\n    uint32_t magic;\n    uint8_t  command;\n    uint8_t  reserved[3];\n    uint32_t value;\n    uint16_t responseLen;\n} SymphonyVendorReadInput;"))
-        #expect(!start.isEmpty)   // 4 + 1 + 3 + 4 + 2 = 14 bytes when packed
+        let start = try #require(text.range(of: "typedef struct {\n    uint32_t magic;\n    uint8_t  command;\n    uint8_t  port;\n    uint8_t  reserved[2];\n    uint32_t value;\n    uint16_t responseLen;\n} SymphonyVendorReadInput;"))
+        #expect(!start.isEmpty)   // 4 + 1 (command) + 1 (port) + 2 + 4 + 2 = 14 bytes when packed
     }
 }
 

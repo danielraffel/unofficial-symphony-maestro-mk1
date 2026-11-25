@@ -39,10 +39,44 @@ extension AppState {
             let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
             guard let self else { return }
             self.servingDextBuildReadInFlight = false
-            if (self.device as? ThunderboltDeviceConnection) === tb, self.servingDextBuild != build {
-                self.servingDextBuild = build
-            }
+            if (self.device as? ThunderboltDeviceConnection) === tb { self.noteServingDextBuild(build, from: tb) }
         }
+    }
+
+    /// The GitHub bug form with this Mac's Maestro version, model and macOS
+    /// version, and the connection in use, filled in (`BugReportLink`).
+    var reportBugURL: URL {
+        let info = softwareInfoReport
+        var version = info.versionLine
+        if let channel = info.updateChannel { version += channel == .beta ? ", Beta" : ", Stable" }
+        if let dext = info.installedDextVersion { version += ", ThunderBridge driver \(dext)" }
+        let rate = connectionMode == .hardware ? channelNaming.sampleRate : nil
+        return BugReportLink.url(
+            version: version,
+            macAndOS: BugReportLink.macAndOS(model: BugReportLink.modelIdentifier, osVersion: info.osVersion),
+            connection: connectionMode == .hardware ? connectionShortName : nil,
+            hardware: bugReportHardware,
+            doing: rate.map { "Sample rate \(BugReportLink.rateText($0)). DAW: " })
+    }
+
+    /// The I/O modules of each Symphony I/O, a second unit and any converters,
+    /// as detected, for the bug form's Hardware field.
+    var bugReportHardware: String? {
+        guard connectionMode == .hardware else { return nil }
+        // Converter rows carry each unit's firmware; no serial numbers,
+        // hardware IDs or paths go into the form.
+        let ports = converterSystem?.ports.map { $0.map(\.rowValue) } ?? []
+        let symphonyOnPort1 = ports.first?.isEmpty ?? true
+        let unitA: (slot1: String, slot2: String)? =
+            symphonyOnPort1 && (primaryBoardType != .none || secondaryBoardType != .none)
+            ? (primaryBoardType.productName, secondaryBoardType.productName) : nil
+        let b: (slot1: String, slot2: String)? = unitB.map {
+            ($0.slotValid[0] ? $0.slot1.productName : "not read", $0.slotValid[1] ? $0.slot2.productName : "not read")
+        }
+        let device = deviceInfoReportForDiagnostics
+        return BugReportLink.hardwareText(unitA: unitA, unitB: b, converterPorts: ports,
+                                          firmware: unitA == nil ? nil : device?.firmwareVersion,
+                                          fpga: unitA == nil ? nil : device?.fpgaVersion)
     }
 
     /// Everything the Software Info panel shows, assembled from what the process can see
@@ -86,13 +120,14 @@ extension AppState {
             dextAwaitingReboot: primary?.isAwaitingReboot ?? false,
             thunderBridgePresent: SystemExtensionInstaller.shared.isThunderBridgePresent(),
             pciDeviceIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier(),
-            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil
+            servingDextBuild: transportType == .thunderbolt ? servingDextBuild : nil,
+            updateChannel: updateChannel
         )
     }
 
     /// The hardware half of the report.
     ///
-    /// System Setup publishes the real thing into ``deviceInfoSnapshot`` when it loads,
+    /// Device Settings publishes the real thing into ``deviceInfoSnapshot`` when it loads,
     /// because that page resolves board provenance against the firmware XML and knows
     /// the firmware, FPGA and XMOS versions. Before that page has been opened, fall back
     /// to what this object knows first-hand — identity, transport and the two board
@@ -104,33 +139,64 @@ extension AppState {
             report = deviceInfoSnapshot
         } else {
             guard let device else { return nil }
+            // Over ThunderBridge the USB channel mode says nothing; the Ports
+            // selection says how many channels run.
+            let thunderbolt = transportType == .thunderbolt
             report = DeviceInfoReport(
-                deviceName: device.identifier.displayName,
+                deviceName: thunderbolt ? "Symphony I/O" : device.identifier.displayName,
                 connection: connectionLabel,
                 board1: primaryBoardReading,
                 board2: secondaryBoardReading,
                 deviceModel: device.identifier.displayName,
-                mode: device.identifier.mode.displayName,
-                channelCount: device.identifier.mode.channelCount
+                mode: thunderbolt ? nil : device.identifier.mode.displayName,
+                channelCount: thunderbolt ? (portSelection.selection?.channelCount ?? 32)
+                    : device.identifier.mode.channelCount
             )
+            if thunderbolt {
+                report.showsXMOS = false
+                report.board1HardwareVersion = DeviceInfoReport.hardwareVersionText(primaryBoardReading)
+                report.board2HardwareVersion = DeviceInfoReport.hardwareVersionText(secondaryBoardReading)
+            }
         }
+        // The identity read at connect, whichever source the report came from:
+        // the snapshot can predate it.
+        if let id = unitAHardwareIDText, connectedUnit == nil { report.hardwareID = id }
         // Whichever source the report came from, say what is on the cable when
         // it is not a Symphony I/O. This is the block testers paste to us, and
-        // it must carry the unit list even if System Setup was never opened.
+        // it must carry the unit list even if Device Settings was never opened.
         if let unit = connectedUnit {
             report.deviceName = unit.modelName ?? report.deviceName
             report.connection = connectionLabel
             report.connectedUnit = unit.displayName
             report.connectedUnitLines = unit.unitRows.map { "\($0.label): \($0.value)" }
-            if let channels = unit.channels {
+            if let system = converterSystem {
+                // Both ports, raw words, firmware, authentication, the driver's
+                // flags, phase, health counters, latency and host counts.
+                report.connectedUnitLines = system.reportLines(twoPortDriver: currentSecondPortState() != nil)
+            } else if let channels = unit.channels {
                 report.connectedUnitLines.append("Inputs: \(channels.inputs)")
                 report.connectedUnitLines.append("Outputs: \(channels.outputs)")
             }
+            if let raw = ConnectedUnit.rawProbeLine(connectedUnitProbeWord) {
+                report.connectedUnitLines.append(raw)
+            }
         }
+        // EXPERIMENT (64 channels): read now, not from the snapshot, so the copy
+        // carries what the driver knows at this moment. Empty unless the driver
+        // reports the two-port experiment on.
+        report.port2Lines = currentSecondPortState()?.reportLines(
+            sixtyFourSelected: portSelection.sixtyFourSelected) ?? []
+        // VBus: the size chosen for this card and what the driver last reported.
+        report.vbusLine = vbusReportLine
+        // A second Symphony I/O (unit B) on port 2, as the driver reports it now.
+        report.unitBLines = unitBDeviceInfoReportLines
         return report
     }
 
-    /// Hardware then software, in the shape someone can paste into a bug report.
+    /// Hardware then software, in the shape someone can paste into a bug report:
+    /// Device (name, connection, hardware ID, firmware, FPGA, cards, unit B,
+    /// port 2), then Software (Maestro, macOS, audio path, driver extension,
+    /// app path), then whether Apogee's original Symphony I/O drivers are installed.
     var diagnosticsText: String {
         var blocks: [String] = []
         if let hardware = deviceInfoReportForDiagnostics {
@@ -140,7 +206,13 @@ extension AppState {
         } else {
             blocks.append("Device: not connected")
         }
+        if let phantom = micPrePhantomDiagnostics { blocks.append(phantom) }
         blocks.append(softwareInfoReport.clipboardText)
+        // Not supported alongside Maestro (issue 31), so every report says
+        // whether they are there. Omitted until the launch check has run.
+        if let originalApogeeDrivers {
+            blocks.append(originalApogeeDrivers.reportText)
+        }
         return blocks.joined(separator: "\n\n")
     }
 }

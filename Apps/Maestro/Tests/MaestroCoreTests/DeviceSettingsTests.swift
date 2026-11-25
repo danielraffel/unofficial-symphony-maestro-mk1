@@ -82,6 +82,11 @@ struct DeviceSettingsTests {
         #expect(mds.oversHoldMode == .infinite)
     }
 
+    @Test func overHoldUserFacingChoicesMigrateAutoClear() {
+        #expect(MeterDisplaySettings.OverHoldMode.userFacingCases == [.off, .twoSeconds, .infinite])
+        #expect(MeterDisplaySettings.OverHoldMode.autoClear.userFacingValue == .twoSeconds)
+    }
+
     /// The wire values ARE the menu order -- legacy binds the popup's
     /// selectedIndex straight to the property, so these cannot be reordered
     /// independently of the picker in SettingsViews. Evidence:

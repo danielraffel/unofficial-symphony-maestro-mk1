@@ -30,17 +30,24 @@ public enum MeterSlotMap {
         return 16 + (channel - n)
     }
 
-    /// Word indices carrying a board's digital channels, in order.
-    ///
-    /// Empty when the card uses its whole region for analog -- a 16x16 or
-    /// AD16/DA16 contributes no digital region at all, and reading words 8-15
-    /// unconditionally showed such a card's analog channels 9-16 as ADAT meters.
-    public static func digitalWordIndices(analogOnBoard: Int,
-                                          boardIndex: Int) -> [Int] {
-        let start = analogOnBoard > 0 ? analogOnBoard : 8
-        let count = max(0, 16 - start)
-        guard count > 0 else { return [] }
-        let base = boardIndex * 16
-        return (0..<min(8, count)).map { base + start + $0 }
+    /// Actual digital words for this card and direction, including cards
+    /// with no analog channels or with different input and output counts.
+    public static func digitalWordIndices(card: IOCardType, boardIndex: Int, isInput: Bool) -> [Int] {
+        let analog = isInput ? card.analogInputChannels : card.analogOutputChannels
+        let digital = isInput ? card.digitalInputChannels : card.digitalOutputChannels
+        let base = boardIndex * IOCardType.busChannelsPerBoard + analog
+        let count = min(digital, CardLayout.digitalMeterChannelsPerBoard,
+                        max(0, IOCardType.busChannelsPerBoard - analog))
+        return Array(base..<(base + count))
+    }
+
+    public static func digitalWords(layout: CardLayout, isInput: Bool) -> [Int?] {
+        var words = [Int?](repeating: nil, count: CardLayout.digitalMeterSlots)
+        for (board, card) in layout.slots.enumerated() {
+            for (index, word) in digitalWordIndices(card: card, boardIndex: board, isInput: isInput).enumerated() {
+                words[board * CardLayout.digitalMeterChannelsPerBoard + index] = word
+            }
+        }
+        return words
     }
 }

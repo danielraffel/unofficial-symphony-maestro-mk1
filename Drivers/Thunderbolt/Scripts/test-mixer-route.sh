@@ -16,7 +16,12 @@ int main() {
     assert(kThunderboltMixerSoftwareReturnCommand == 0xB4);
     assert(IsThunderboltSoftwareReturnSource(0));
     assert(IsThunderboltSoftwareReturnSource(7));
-    assert(!IsThunderboltSoftwareReturnSource(8));
+    // One unit: all 16 pairs of the port (C7, build 144), as the original.
+    assert(IsThunderboltSoftwareReturnSource(8));
+    assert(IsThunderboltSoftwareReturnSource(15));
+    assert(!IsThunderboltSoftwareReturnSource(16));
+    assert(ThunderboltSoftwareReturnSlot(15, 0) == 94);
+    assert(ThunderboltSoftwareReturnSlot(15, 1) == 95);
     assert(ThunderboltSoftwareReturnSlot(0, 0) == 64);
     assert(ThunderboltSoftwareReturnSlot(0, 1) == 65);
     assert(ThunderboltSoftwareReturnSlot(7, 0) == 78);

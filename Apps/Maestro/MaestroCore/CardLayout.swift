@@ -52,6 +52,11 @@ public struct CardLayout: Sendable, Equatable {
     /// taken from it; everything else stays on the unknown-layout behaviour.
     public let converter: ConnectedUnit?
 
+    /// Every converter unit on both ports, when the driver identified them
+    /// (or the older probe word did). Takes over from `converter` for the
+    /// strip counts and gives the channels their names and bus slots.
+    public let converters: ConverterSystem?
+
     /// What the channel names depend on besides the cards: the sample rate,
     /// each slot's optical format and each slot's S/PDIF Coax Replaces setting.
     /// See ``digitalChannelName(board:channelOnCard:isInput:)``.
@@ -63,6 +68,7 @@ public struct CardLayout: Sendable, Equatable {
         isKnown: Bool = true,
         fallbackChannelCount: Int = 16,
         converter: ConnectedUnit? = nil,
+        converters: ConverterSystem? = nil,
         naming: ChannelNaming = ChannelNaming()
     ) {
         self.slot1 = slot1
@@ -70,7 +76,23 @@ public struct CardLayout: Sendable, Equatable {
         self.isKnown = isKnown
         self.fallbackChannelCount = fallbackChannelCount
         self.converter = converter
+        self.converters = converters
         self.naming = naming
+    }
+
+    /// The converter system the layout follows: only when no Symphony I/O
+    /// cards are known and every unit that carries audio is one we know.
+    public var converterLayout: ConverterSystem? {
+        guard !isKnown, let converters, converters.layoutKnown else { return nil }
+        return converters
+    }
+
+    /// A converter host channel's name (0-based), "A Line 1" or "N.A.". Nil
+    /// unless the layout follows converters.
+    public func converterChannelName(host: Int, isInput: Bool) -> String? {
+        guard let system = converterLayout else { return nil }
+        let names = system.hostChannelNames(input: isInput)
+        return host >= 0 && host < names.count ? names[host] : nil
     }
 
     /// The live state Apogee's daemon named channels from. Unknown values name
@@ -86,12 +108,20 @@ public struct CardLayout: Sendable, Equatable {
         /// replaced; `SymphonyIOVendorSpecific.h:940-951`).
         public var spdifReplace: [UInt32]
 
+        /// App analog input settings, indexed by the unit's analog strip order.
+        public var analogInputLevels: [AnalogInputLevel]
+        public var analogInputLabels: [String]
+
         public init(sampleRate: Double? = nil,
                     opticalIsSPDIF: [Bool?] = [nil, nil],
-                    spdifReplace: [UInt32] = [0, 0]) {
+                    spdifReplace: [UInt32] = [0, 0],
+                    analogInputLevels: [AnalogInputLevel] = [],
+                    analogInputLabels: [String] = []) {
             self.sampleRate = sampleRate
             self.opticalIsSPDIF = opticalIsSPDIF
             self.spdifReplace = spdifReplace
+            self.analogInputLevels = analogInputLevels
+            self.analogInputLabels = analogInputLabels
         }
 
         func isSPDIF(slot: Int) -> Bool { slot < opticalIsSPDIF.count && opticalIsSPDIF[slot] == true }
@@ -167,15 +197,34 @@ public struct CardLayout: Sendable, Equatable {
         return "ADAT \(preceding + number)"
     }
 
-    /// The name of an analog channel: "Line n", or "SPDIF Cx n" when the coax
-    /// replaces it (`SymphonyIO_Stream.cpp:636-660`).
+    /// The name of an analog channel, including the MicPre's input type and
+    /// the user's label when supplied by the app.
     public func analogChannelName(board: Int, channelOnCard channel: Int, isInput: Bool) -> String {
+        let preceding = board == 1
+            ? (isInput ? slot1.analogInputChannels : slot1.analogOutputChannels) : 0
+        let index = preceding + channel
+        if isInput, naming.analogInputLabels.indices.contains(index),
+           !naming.analogInputLabels[index].isEmpty {
+            return naming.analogInputLabels[index]
+        }
         if let coax = coaxReplaceName(board: board, boardChannel: channel, isInput: isInput) {
             return coax
         }
-        let preceding = board == 1
-            ? (isInput ? slot1.analogInputChannels : slot1.analogOutputChannels) : 0
-        return "Line \(preceding + channel + 1)"
+        if isInput, InputChannelLogic.micPreIsUsable(primary: slot1, secondary: slot2),
+           InputChannelLogic.isMicPreBacked(number: index + 1, micPreInstalled: true),
+           naming.analogInputLevels.indices.contains(index) {
+            return InputChannelLogic.channelLabel(number: index + 1, level: naming.analogInputLevels[index])
+        }
+        return "Line \(index + 1)"
+    }
+
+    public func namingAnalogInputs(levels: [AnalogInputLevel], labels: [String]) -> Self {
+        var names = naming
+        names.analogInputLevels = levels
+        names.analogInputLabels = labels
+        return Self(slot1: slot1, slot2: slot2, isKnown: isKnown,
+                    fallbackChannelCount: fallbackChannelCount, converter: converter,
+                    converters: converters, naming: names)
     }
 
     /// "SPDIF Cx n" for an input channel the board's coax replaces. The
@@ -202,7 +251,7 @@ public struct CardLayout: Sendable, Equatable {
             return (String(name[..<space]), String(name[name.index(after: space)...]))
         }
         let l = split(left), r = split(right)
-        if l.function == r.function { return "\(l.function) \(l.number)/\(r.number)" }
+        if !l.function.isEmpty && l.function == r.function { return "\(l.function) \(l.number)/\(r.number)" }
         return "\(left)/\(right)"
     }
 
@@ -254,12 +303,24 @@ public struct CardLayout: Sendable, Equatable {
     }
 
     /// The board output a ThunderBridge Mac output plays through by default
-    /// (0-based `hostOutput`): slot 1 output n for Mac 1-16, slot 2 output
-    /// n-16 for 17-32, the driver's fixed table (`SymphonyHostOutputBoardChannel`
-    /// in `SymphonyChannelNames.h`). Nil past the 32.
+    /// (0-based `hostOutput`) under a card-by-card driver (build 149 and
+    /// earlier): slot 1 output n for Mac 1-16, slot 2 output n-16 for 17-32,
+    /// the driver's fixed table then. Nil past the 32. For either order use
+    /// ``thunderboltOutputBoardChannel(hostOutput:order:)``.
     public static func thunderboltOutputBoardChannel(hostOutput: Int) -> (board: Int, channel: Int)? {
         guard (0..<32).contains(hostOutput) else { return nil }
         return (hostOutput / 16, hostOutput % 16)
+    }
+
+    /// The board output a ThunderBridge Mac output plays through by default,
+    /// as the serving driver's table puts it (`SymphonyHostOutputBoardChannel`
+    /// in `SymphonyChannelNames.h`): by position card by card; analog first
+    /// (driver 150+), the n-th board output in host order, nil past the
+    /// unit's outputs. Nil past the 32.
+    public func thunderboltOutputBoardChannel(hostOutput: Int, order: ThunderboltChannelOrder)
+        -> (board: Int, channel: Int)? {
+        guard let at = order.outputBoardChannel(hostOutput: hostOutput, slot1: slot1, slot2: slot2) else { return nil }
+        return (at.board, at.channel)
     }
 
     /// The name of a board OUTPUT channel (0-15 across the card, analog
@@ -274,29 +335,38 @@ public struct CardLayout: Sendable, Equatable {
             : digitalChannelName(board: board, channelOnCard: channel - analog, isInput: false)
     }
 
+    /// The name of the board output behind Mac output `hostOutput`, without
+    /// the prefix, nil when there is none.
+    private func thunderboltOutputBareName(hostOutput: Int, order: ThunderboltChannelOrder) -> String? {
+        guard let at = thunderboltOutputBoardChannel(hostOutput: hostOutput, order: order) else { return nil }
+        return outputChannelName(board: at.board, channel: at.channel)
+    }
+
     /// A ThunderBridge Mac output's Core Audio name as the driver publishes it
     /// (`SymphonyHostOutputName`): the prefix and the name of the board output
-    /// at the same position, "A N.A." included; a bare "N.A." when the card
-    /// has no output there. Nil when the layout is not known or past the 32
-    /// (the driver publishes no name then). Fixed by position, a deliberate
-    /// departure from the original, which followed each output's route.
-    public func thunderboltOutputChannelName(hostOutput: Int, prefix: String) -> String? {
-        guard isKnown, let at = Self.thunderboltOutputBoardChannel(hostOutput: hostOutput) else { return nil }
-        guard let name = outputChannelName(board: at.board, channel: at.channel) else { return Self.notApplicable }
+    /// at the same position in the serving driver's `order`, "A N.A."
+    /// included; a bare "N.A." when the card has no output there. Nil when
+    /// the layout is not known or past the 32 (the driver publishes no name
+    /// then). Fixed by position, a deliberate departure from the original,
+    /// which followed each output's route. `order` defaults to card by card
+    /// (drivers up to 149).
+    public func thunderboltOutputChannelName(hostOutput: Int, prefix: String,
+                                             order: ThunderboltChannelOrder = .cardByCard) -> String? {
+        guard isKnown, (0..<32).contains(hostOutput) else { return nil }
+        guard let name = thunderboltOutputBareName(hostOutput: hostOutput, order: order) else { return Self.notApplicable }
         return "\(Self.peripheralPrefix(prefix)) \(name)"
     }
 
     /// A ThunderBridge Output Routing software row's label (0-based `pair`,
     /// Mac outputs `2 * pair + 1` and `+ 2`): the pair name of the two board
-    /// outputs at the same position, "A Line 1/2", a bare "N.A." when neither
-    /// carries anything. It is the pair of the driver's two channel names.
-    /// Nil when the layout is not known or past the 32 outputs.
-    public func thunderboltOutputPairName(pair: Int, prefix: String) -> String? {
-        guard isKnown,
-              let left = Self.thunderboltOutputBoardChannel(hostOutput: pair * 2),
-              Self.thunderboltOutputBoardChannel(hostOutput: pair * 2 + 1) != nil else { return nil }
-        let l = outputChannelName(board: left.board, channel: left.channel) ?? Self.notApplicable
-        let r = outputChannelName(board: left.board, channel: left.channel + 1) ?? Self.notApplicable
+    /// outputs at the same position in `order`, "A Line 1/2", a bare "N.A."
+    /// when neither carries anything. It is the pair of the driver's two
+    /// channel names. Nil when the layout is not known or past the 32 outputs.
+    public func thunderboltOutputPairName(pair: Int, prefix: String,
+                                          order: ThunderboltChannelOrder = .cardByCard) -> String? {
+        guard isKnown, (0..<16).contains(pair) else { return nil }
+        let l = thunderboltOutputBareName(hostOutput: pair * 2, order: order) ?? Self.notApplicable
+        let r = thunderboltOutputBareName(hostOutput: pair * 2 + 1, order: order) ?? Self.notApplicable
         return Self.softwarePairName(hardwarePair: Self.stereoName(left: l, right: r), prefix: prefix)
     }
 
@@ -341,6 +411,7 @@ public struct CardLayout: Sendable, Equatable {
     /// Analog INPUT strips to draw. An 8MicPre adds none — its preamps sit in
     /// front of the *host* board's analog inputs and are already counted there.
     public var analogInputStripCount: Int {
+        if let system = converterLayout { return system.hostInputCount }
         if !isKnown, let channels = converter?.channels { return channels.inputs }
         guard isKnown else { return fallbackChannelCount }
         return slot1.analogInputChannels + slot2.analogInputChannels
@@ -348,6 +419,7 @@ public struct CardLayout: Sendable, Equatable {
 
     /// Analog OUTPUT strips to draw.
     public var analogOutputStripCount: Int {
+        if let system = converterLayout { return system.hostOutputCount }
         if !isKnown, let channels = converter?.channels { return channels.outputs }
         guard isKnown else { return fallbackChannelCount }
         return slot1.analogOutputChannels + slot2.analogOutputChannels
@@ -368,8 +440,7 @@ public struct CardLayout: Sendable, Equatable {
         let board = index < slot1.analogInputChannels ? 0 : 1
         let channel = board == 0 ? index : index - slot1.analogInputChannels
         guard channel < card(atSlot: board).analogInputChannels else { return nil }
-        let name = analogChannelName(board: board, channelOnCard: channel, isInput: true)
-        return name.hasPrefix("SPDIF Cx") ? name : nil
+        return coaxReplaceName(board: board, boardChannel: channel, isInput: true)
     }
 
     /// The card that owns a 0-based analog output strip.
@@ -396,24 +467,17 @@ public struct CardLayout: Sendable, Equatable {
             self.pairOnBoard = pairOnBoard
         }
 
-        /// Index of this pair's LEFT channel in the app's digital meter arrays,
-        /// or `nil` when the meter payload carries no word for it.
-        ///
-        /// The arrays are `[board 0 digital 0-7][board 1 digital 0-7][spare]`,
-        /// i.e. only the first four digital pairs of each board are metered —
-        /// `MeterSlotMap.digitalWordIndices` returns at most 8 words per board.
-        /// A card with eight digital pairs (AD16/DA16) therefore has pairs 5-8
-        /// unmetered; returning `nil` is what keeps the view from reading the
-        /// other board's meters — or running off the end of a 24-entry array.
+        /// Left channel in the board-major digital meter arrays.
         public var meterIndex: Int? {
-            guard pairOnBoard < CardLayout.meteredDigitalPairsPerBoard else { return nil }
-            return boardIndex * (CardLayout.meteredDigitalPairsPerBoard * 2) + pairOnBoard * 2
+            guard (0..<CardLayout.meteredDigitalPairsPerBoard).contains(pairOnBoard),
+                  (0..<2).contains(boardIndex) else { return nil }
+            return boardIndex * CardLayout.digitalMeterChannelsPerBoard + pairOnBoard * 2
         }
     }
 
-    /// Digital pairs the meter payload can actually carry, per board.
-    /// Evidence: `MeterSlotMap.digitalWordIndices` caps at 8 words per board.
-    public static let meteredDigitalPairsPerBoard = 4
+    public static let meteredDigitalPairsPerBoard = IOCardType.busPairsPerBoard
+    public static let digitalMeterChannelsPerBoard = meteredDigitalPairsPerBoard * 2
+    public static let digitalMeterSlots = digitalMeterChannelsPerBoard * 2
 
     /// Digital INPUT stereo pairs across both boards, board 1 first.
     public var digitalInputPairs: [DigitalPair] { digitalPairs(isInput: true) }
@@ -612,6 +676,7 @@ public struct CardLayout: Sendable, Equatable {
     /// bus slice, a flat 16 per installed board, so a 16x16 + 8MicPre drew 32
     /// strips for 16 real channels.
     public var mixerChannels: [MixerChannel] {
+        if let system = converterLayout { return Self.converterMixerChannels(system) }
         guard isKnown else {
             return (0..<min(fallbackChannelCount, 16)).map {
                 MixerChannel(label: "Line \($0 + 1)", hardwareIndex: $0)
@@ -751,7 +816,11 @@ public struct CardLayout: Sendable, Equatable {
         // Column order is analog (both boards) then digital (both boards), which
         // is the order the grid has always drawn and the order the routing-byte
         // map assumes.
-        return analogColumns + digitalColumns
+        let columns = analogColumns + digitalColumns
+        if let system = converterLayout {
+            return Self.relabel(columns, converters: system, isInput: isInput, bases: bases)
+        }
+        return columns
     }
 
     /// Hardware columns for the input grid.
@@ -843,5 +912,57 @@ public struct CardLayout: Sendable, Equatable {
             }
         }
         return sources
+    }
+}
+
+// MARK: - Converters
+
+extension CardLayout {
+    /// The card mixer's input strips for converters: port 1's host inputs, in
+    /// host order, each sent to the card as its bus slot (the driver's mixer
+    /// takes the 32 port-1 input slots, `RecomputeCardMixer`). Port 2's
+    /// channels are not in the card mixer, as on a Symphony I/O at 64 channels.
+    static func converterMixerChannels(_ system: ConverterSystem) -> [MixerChannel] {
+        let names = system.hostChannelNames(input: true)
+        let map = system.inputMap
+        return (0..<system.hostInputCount).compactMap { host -> MixerChannel? in
+            guard let channel = map[host], channel.port == 0 else { return nil }
+            return MixerChannel(label: names[host], hardwareIndex: channel.slot,
+                                boardIndex: channel.slot / 16, channelOnBoard: channel.slot % 16)
+        }
+    }
+
+    /// Routing grid columns for converters: the generic grid's columns, with
+    /// the same order, routing bytes and saved-route indices, each named after
+    /// the port-1 unit channels on its slot pair ("A Line 1/2", "N.A." when
+    /// nothing is there). Port 2 has no columns in this grid.
+    static func relabel(_ columns: [RoutingColumn], converters system: ConverterSystem,
+                        isInput: Bool, bases: [UInt8]) -> [RoutingColumn] {
+        let names = system.hostChannelNames(input: isInput)
+        let map = isInput ? system.inputMap : system.outputMap
+        var slotName = [String](repeating: notApplicable, count: ConverterRules.channelsPerPort)
+        for host in 0..<names.count {
+            if let channel = map[host], channel.port == 0 { slotName[channel.slot] = names[host] }
+        }
+        return columns.map { column in
+            let board = column.routingByte >= bases[1] ? 1 : 0
+            let slot = board * 16 + Int(column.routingByte - bases[board])
+            guard slot >= 0, slot + 1 < slotName.count else { return column }
+            let header = headerLines(stereoName(left: slotName[slot], right: slotName[slot + 1]))
+            return RoutingColumn(type: header.type, channels: header.channels, boardIndex: column.boardIndex,
+                                 isDigital: column.isDigital, routingByte: column.routingByte)
+        }
+    }
+
+    /// Converter host channel pair names for a routing grid's software rows
+    /// ("A Line 1/2"), nil unless the layout follows converters.
+    public func converterPairNames(isInput: Bool, pairCount: Int) -> [String]? {
+        guard let system = converterLayout else { return nil }
+        let names = system.hostChannelNames(input: isInput)
+        return (0..<max(0, pairCount)).map { pair in
+            let l = pair * 2 < names.count ? names[pair * 2] : Self.notApplicable
+            let r = pair * 2 + 1 < names.count ? names[pair * 2 + 1] : Self.notApplicable
+            return Self.stereoName(left: l, right: r)
+        }
     }
 }

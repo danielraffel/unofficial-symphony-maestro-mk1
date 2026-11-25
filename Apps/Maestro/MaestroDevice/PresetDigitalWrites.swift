@@ -23,6 +23,25 @@ public struct SlotDigitalSettings: Codable, Equatable, Sendable {
 
     public init() {}
 
+    /// The settings saved under `key`, or none.
+    public static func load(key: String, defaults: UserDefaults = .standard) -> SlotDigitalSettings {
+        guard let data = defaults.data(forKey: key),
+              let settings = try? PropertyListDecoder().decode(SlotDigitalSettings.self, from: data)
+        else { return SlotDigitalSettings() }
+        return settings
+    }
+
+    /// Record one value under `key` (a unit's own key, taken before the write
+    /// that confirmed it).
+    public static func remember(_ selector: AudioPropertySelector, slot: Int, value: UInt32,
+                                key: String, defaults: UserDefaults = .standard) {
+        var settings = load(key: key, defaults: defaults)
+        settings.record(selector, slot: slot, value: value)
+        if let data = try? PropertyListEncoder().encode(settings) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
     /// Record a value the app wrote (or read back) for one slot.
     public mutating func record(_ selector: AudioPropertySelector, slot: Int, value: UInt32) {
         guard slot >= 0, slot < 2 else { return }

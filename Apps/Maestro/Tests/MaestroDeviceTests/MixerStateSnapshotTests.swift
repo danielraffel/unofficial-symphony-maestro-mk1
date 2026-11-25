@@ -7,14 +7,37 @@ import MaestroDevice
 struct MixerStateSnapshotTests {
     private let unity = MixerChannelState(level: 0, pan: 0, isMuted: false, isSoloed: false)
     private let edited = MixerChannelState(level: -17.5, pan: 0.35, isMuted: true, isSoloed: true)
+    /// `edited` as a Software Return shows it: the strip has no pan, so a saved one reads centre.
+    private let editedReturn = MixerChannelState(level: -17.5, pan: 0, isMuted: true, isSoloed: true)
     private let layout = CardLayout(slot1: .optical, slot2: .analogAD16)
 
     private func withDefaults(_ body: (UserDefaults, ChannelStateStore) throws -> Void) rethrows {
         let name = "maestro.tests.mixerSnapshot.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
-        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false)
+        let defaults = ScratchUserDefaults(suiteName: name)!
+        defer { defaults.cleanup() }
+        let store = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 1)
         try body(defaults, store)
+    }
+
+    @Test func physicalReplacementDoesNotInheritMixerWideState() throws {
+        try withDefaults { defaults, _ in
+            defaults.set(-19.0, forKey: "mixerMasterLevel_0")
+            defaults.set(3, forKey: "mixerSoftwareReturnSource_0")
+            defaults.set(try JSONEncoder().encode(edited), forKey: "mixerState_swReturn")
+            let a = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 101)
+            let first = MixerStateSnapshot(channelCount: 1, mixer: 0, store: a, defaults: defaults)
+            #expect(first.masterLevel == -19)
+            #expect(first.swReturnChannel == editedReturn)
+            #expect(first.softwareReturnSource == 3)
+            let replacement = ChannelStateStore(defaults: defaults, layout: layout, isSimulatingCards: false, identity: 202)
+            let second = MixerStateSnapshot(channelCount: 1, mixer: 0, store: replacement, defaults: defaults)
+            #expect(second.masterLevel == 0)
+            #expect(second.swReturnChannel == unity)
+            #expect(second.softwareReturnSource == 0)
+            defaults.set(-1.0, forKey: "mixerMasterLevel_0")
+            let unchanged = MixerStateSnapshot(channelCount: 1, mixer: 0, store: a, defaults: defaults)
+            #expect(unchanged.masterLevel == -19)
+        }
     }
 
     @Test func savedControlsAreAvailableTogetherOnInitialization() throws {
@@ -28,7 +51,8 @@ struct MixerStateSnapshotTests {
             let snapshot = MixerStateSnapshot(channelCount: layout.mixerChannels.count, mixer: 0,
                                               store: store, defaults: defaults)
             #expect(snapshot.channels == saved)
-            #expect(snapshot.swReturnChannel == softwareReturn)
+            // Software Return has no pan: the saved -0.25 is not applied.
+            #expect(snapshot.swReturnChannel == MixerChannelState(level: -6, pan: 0, isMuted: false, isSoloed: true))
             #expect(snapshot.masterLevel == -9.5)
         }
     }
@@ -99,8 +123,8 @@ struct MixerStateSnapshotTests {
             #expect(second.channels == [unity])
             #expect(first.masterLevel == -3)
             #expect(second.masterLevel == -12)
-            #expect(first.swReturnChannel == edited)
-            #expect(second.swReturnChannel == edited)
+            #expect(first.swReturnChannel == editedReturn)
+            #expect(second.swReturnChannel == editedReturn)
             #expect(first.softwareReturnSource == 2)
             #expect(second.softwareReturnSource == 7)
         }

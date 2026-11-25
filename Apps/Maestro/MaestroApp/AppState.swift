@@ -29,7 +29,7 @@ private func aspVolumeChanged(
     guard let clientData else { return noErr }
     nonisolated(unsafe) let appState = Unmanaged<AppState>.fromOpaque(clientData).takeUnretainedValue()
     DispatchQueue.main.async {
-        appState.readASPVolume()
+        appState.adoptMacMonitorChange(mute: false)
     }
     return noErr
 }
@@ -45,7 +45,23 @@ private func aspMuteChanged(
     guard let clientData else { return noErr }
     nonisolated(unsafe) let appState = Unmanaged<AppState>.fromOpaque(clientData).takeUnretainedValue()
     DispatchQueue.main.async {
-        appState.readASPMute()
+        appState.adoptMacMonitorChange(mute: true)
+    }
+    return noErr
+}
+
+private func micPreDAWPropertyChanged(
+    _ objectID: AudioObjectID,
+    _ numberAddresses: UInt32,
+    _ addresses: UnsafePointer<AudioObjectPropertyAddress>,
+    _ clientData: UnsafeMutableRawPointer?
+) -> OSStatus {
+    // A trigger only: the values come from the driver's per-unit, per-channel
+    // records (see scheduleMicPreDAWRefresh), not from this HAL element.
+    guard let clientData, numberAddresses > 0 else { return noErr }
+    nonisolated(unsafe) let appState = Unmanaged<AppState>.fromOpaque(clientData).takeUnretainedValue()
+    DispatchQueue.main.async {
+        appState.scheduleMicPreDAWRefresh(objectID: objectID)
     }
     return noErr
 }
@@ -89,9 +105,252 @@ enum ConnectionMode: Equatable {
 ///
 /// Evidence: `og_source/maestro2/App/Controllers/APApplicationDelegate.m`
 @Observable
-final class AppState {
+final class AppState: @unchecked Sendable {
+    struct FrontPanelMicPreUpdate: Equatable {
+        let unit: DeviceUnit
+        let channel: Int
+        let gain: Double
+        let revision: Int
+    }
+
+    /// Latest hardware encoder gain, consumed by the Input page. This is a
+    /// state update only: the front-panel path never writes the value back.
+    var frontPanelMicPreUpdate: FrontPanelMicPreUpdate?
+    private var frontPanelMicPreRevision = 0
+    var phantomObservationRevision = 0
+    /// dext 153, physical A0..7 then B0..7: a DAW switched phantom on and the
+    /// unit took it (`PhantomDisplay.observedOn`). Display only, never saved.
+    var phantomObservedOn: [Bool] = Array(repeating: false, count: 16)
+    /// Maestro's own accepted 48V ON made while the unit's identity was not
+    /// known, per unit, for the connection generation it was made in
+    /// (`PhantomDisplay.finishProvenance`). Session memory only.
+    @ObservationIgnored var pendingPhantomProvenance: [DeviceUnit: (generation: UUID, channels: Set<Int>)] = [:]
+    /// Session-only Identify latches, one per unit connection.
+    let identifyA = IdentifyState()
+    let identifyB = IdentifyState()
+    /// Identity belongs to the connection generation. Pending discovery blocks
+    /// edits; failed discovery follows the existing migration receipts.
+    var unitAIdentityState: UnitIdentityState = .pending
+    var unitBIdentityState: UnitIdentityState = .pending
+    var unitAIdentity: UInt64? {
+        get { unitAIdentityState.identity }
+        set { unitAIdentityState = newValue.map(UnitIdentityState.known) ?? .pending }
+    }
+    var unitBIdentity: UInt64? {
+        get { unitBIdentityState.identity }
+        set { unitBIdentityState = newValue.map(UnitIdentityState.known) ?? .pending }
+    }
+    var unitAGeneration = UUID()
+    var unitBGeneration = UUID()
+    var unitAIdentityTask: Task<UInt64?, Never>?
+    var unitBIdentityTask: Task<UInt64?, Never>?
+
+    var identityRecoveryRetried = false
+    private weak var identityRetryConnection: AnyObject?
+    var usbIdentityRestoreGeneration: UUID?
+    var cardDiscoveryTask: Task<Void, Never>?
+    private var cardDiscoveryTaskGeneration: UUID?
+    private weak var cardDiscoveryTaskConnection: AnyObject?
+    var usbMixerLifecycleRestoreGeneration: UUID?
+    /// The running USB restore (`restoreUSBUnit`): one at a time per connection.
+    @ObservationIgnored var usbRestoreTask: Task<Void, Never>?
+    /// Which mixers the USB restore has written in full on this connection,
+    /// since the unit last came back from a power cycle. Output Routing sends
+    /// a route fed by a mixer only when that mixer is listed here.
+    @ObservationIgnored var usbMixersWritten: (generation: UUID, mixers: [Bool])?
+    /// The connection generation whose ordered USB restore ran to the end.
+    @ObservationIgnored var usbRestoredGeneration: UUID?
+    /// The USB restore did not finish (a mixer or a route is still owed):
+    /// tried again by the meter loop, with a growing pause.
+    @ObservationIgnored var usbRestoreOwed = false
+    /// The installed USB helper is older than this app (a custom install
+    /// that left the USB support out): no mixer is written under it.
+    @ObservationIgnored var usbHelperOutdated = false
+    /// Mixer edits are not sent over USB while the installed helper is older
+    /// than this app (see `MixerEditorState.canEdit`).
+    var usbMixerEditsBlockedByOldHelper: Bool { usbHelperOutdated && device is XPCDeviceConnection }
+    @ObservationIgnored var usbRestoreServiceTask: Task<Void, Never>?
+    @ObservationIgnored var usbRestoreRetryAttempts = 0
+    @ObservationIgnored var usbRestoreRetryAfter = Date.distantPast
+    /// The helper connection the USB restore last ran on: a helper that
+    /// reconnects re-programs the direct routes, so the restore runs again.
+    @ObservationIgnored var usbRestoredHelperEpoch: UInt64?
+    /// The helper's configure count when the completed restore began
+    /// (`serviceHelperReconfigure`); nil from a helper that does not say.
+    @ObservationIgnored var usbRestoredHelperConfigures: UInt64?
+    /// The connection generation whose input routing and device settings the
+    /// restore has sent (a retry of owed mixers or routes leaves them alone).
+    @ObservationIgnored var usbSettingsRestored: (generation: UUID, helperEpoch: UInt64)?
+    /// When the last USB restore began, and for which connection generation.
+    /// A loss that ends after a restore for the same generation began is
+    /// that restore's to put right, not a second one's
+    /// (`usbRestoreCoversLoss`).
+    @ObservationIgnored var usbRestoreStarted: USBRestoreStart?
+    /// The connection generation whose front-panel reset has put Maestro's
+    /// saved state for the unit back to defaults (once per generation: a
+    /// retry before 0xDB is cleared must not wipe edits made since).
+    @ObservationIgnored var usbFrontPanelResetGeneration: UUID?
+    /// The connection generation whose front-panel reset has lowered the
+    /// speaker and headphone levels (once: a retry must not lower a level
+    /// raised since; across relaunches `FrontPanelResetMarker` says so).
+    @ObservationIgnored var usbFrontPanelResetLevelsGeneration: UUID?
+    /// Each slot's card as read from the unit, with the connection and unit
+    /// generation it was read on (`noteBoardRead`). Unlike `.detected`, this
+    /// also holds a slot seen to be empty over USB
+    /// (`XPCDeviceConnection.optionBoardReadsEmpty`), and it is only believed
+    /// for the connection and generation that read it
+    /// (`frontPanelResetCardRefusal`).
+    @ObservationIgnored var boardReadsOnConnection: [Int: BoardReadOnConnection] = [:]
+    /// The pause between the two checks of a front-panel reset request
+    /// (`XPCDeviceConnection.confirmFrontPanelReset`).
+    @ObservationIgnored var usbResetConfirmSeparation: Duration =
+        TestEnvironment.isRunningTests ? .milliseconds(1) : .milliseconds(100)
+    /// How many USB restores have begun (past their guards), for the log and
+    /// the tests.
+    @ObservationIgnored var usbRestoreRuns = 0
+    /// ThunderBridge: the app asked for the restore (the connection's ledger,
+    /// `ThunderboltDeviceConnection.cardMixers`, says by itself when one is
+    /// owed), whether one is running, and when to try next.
+    @ObservationIgnored var cardOutputTableReplayNeeded = false
+    @ObservationIgnored var cardOutputRestoreRunning = false
+    @ObservationIgnored var cardOutputRetryAttempts = 0
+    @ObservationIgnored var cardOutputRetryAfter = Date.distantPast
+    /// Checks in a row that found the cards or the unit's identity unread,
+    /// and the driver state in which the direct defaults were then written
+    /// (`cardRestoreStillBlocked`).
+    @ObservationIgnored var cardBlockedChecks = 0
+    @ObservationIgnored var cardBlockedConnection: ObjectIdentifier?
+    @ObservationIgnored var cardDirectFallback: (connection: ObjectIdentifier, epoch: UInt64)?
+    /// 64 channels: the pause after a replay that did not complete, and the
+    /// connections on which the reset's default input tables have landed.
+    @ObservationIgnored var twoUnitRetryAttempts = 0
+    @ObservationIgnored var twoUnitRetryAfter = Date.distantPast
+    @ObservationIgnored var twoUnitResetDefaultsSent: (a: ObjectIdentifier, b: ObjectIdentifier)?
+    /// Whose saved state the connection's card mixer marks were written from.
+    @ObservationIgnored var cardRestoreOwner: (connection: ObjectIdentifier, owner: CardRestoreOwner)?
+    /// The strips' card inputs when `cardRestoreOwner` was recorded.
+    @ObservationIgnored var cardRestoreStripInputs: [[Int?]]?
+    /// Counts Output Routing edits, so a restore can tell one happened under it.
+    @ObservationIgnored var outputRouteEdits: UInt64 = 0
+    @ObservationIgnored var outputRouteDeferredSinceSave = false
+    /// A bundle recall has sent its first write (a failure after that leaves
+    /// the unit differing from what is saved).
+    @ObservationIgnored var recallWritesStarted = false
+    /// Pause between a card mixer's writes, and before a whole-mixer write is
+    /// started again after an edit (tests set zero).
+    @ObservationIgnored var cardMixerCommandGap: Duration = CardMixerReplay.commandGap
+    @ObservationIgnored var cardMixerEditQuietWindow: Duration = CardMixerReplay.quietWindow
+    /// Status bar text while saved routing or mixer state is not on the unit
+    /// yet (`updateRestoreStatus`).
+    var restoreStatusNote: String?
+    /// One-time explanation shown after the driver-144 fader migration.
+    var mixerHeadroomNotice: String?
+    /// The ThunderBridge connection `thunderboltAppliedChannelOrder` was read
+    /// from: a new connection reads it afresh, a rediscovery of the same one
+    /// keeps it.
+    @ObservationIgnored weak var thunderboltAppliedChannelOrderConnection: ThunderboltDeviceConnection?
+    /// A headphone crosspoint was skipped while the ThunderBridge order was
+    /// not known: written once it is (`thunderboltChannelOrderDidChange`).
+    @ObservationIgnored var thunderboltHeadphoneCrosspointOwed = false
+    /// Observation token for per-unit preferences stored outside the model.
+    var unitPreferenceRevision = 0
+    /// Pause between the strip writes of a USB mixer restore (tests set zero).
+    @ObservationIgnored var usbMixerStripSpacing: Duration = .milliseconds(5)
+    /// The least time between two transfers of a USB restore that asks the
+    /// unit before it writes, while no mixer feeds an output (audio plays
+    /// throughout it); zero under the tests.
+    @ObservationIgnored var usbRestoreReadSpacing: Duration =
+        TestEnvironment.isRunningTests ? .zero : .milliseconds(25)
+    /// The least time before each read of a USB restore, also while a mixer
+    /// feeds an output and the restore otherwise goes at its own pace: the
+    /// mixer strip reads are not sent as one burst. Zero under the tests.
+    @ObservationIgnored var usbRestoreMinimumReadGap: Duration =
+        TestEnvironment.isRunningTests ? .zero : .milliseconds(3)
+    @ObservationIgnored var cachedMixerPreferences: (key: String, value: MixerPreferences)?
+    /// D5: which mixers are restored on which driver instance (keyed by the
+    /// driver's own nonce), the stored restore task, and whether launch or
+    /// reconnect asked for it while unit A's identity was still pending.
+    @ObservationIgnored var cardMixerLedger = CardMixerRestoreLedger()
+    @ObservationIgnored var cardMixerRestoreRun: CardMixerRestoreRun?
+    @ObservationIgnored var cardMixerRestoreAwaitingIdentity = false
+    @ObservationIgnored var cardMixerRestoreRequested = false
+
+    func retryFailedIdentityOnRecovery() {
+        guard unitAIdentityState == .failed, !identityRecoveryRetried,
+              identityRetryConnection === (device as AnyObject?) else { return }
+        identityRecoveryRetried = true
+        unitAIdentityState = .pending
+    }
+
+    func invalidateUnitAIdentity() {
+        unitAIdentityTask?.cancel()
+        unitAIdentityTask = nil
+        unitAGeneration = UUID()
+        usbIdentityRestoreGeneration = nil
+        // A loss seen on the connection that is going away is not this new
+        // connection's: its discovery restores the unit once.
+        usbLoss = USBLossDetector()
+        // Keep the discovery handle until its task has been cancelled and
+        // awaited by the next owner. This prevents a replacement discovery
+        // from running concurrently against a retired connection.
+        // Discovery's own unit/converter findings invalidate identity; that
+        // must not cancel the discovery that made them (it re-captures the
+        // generation and continues).
+        if !discoveryOwnsInvalidation { cardDiscoveryTask?.cancel() }
+        unitAIdentityState = .pending
+    }
+    @ObservationIgnored var discoveryOwnsInvalidation = false
+
+    func invalidateUnitBIdentity() {
+        unitBIdentityTask?.cancel()
+        unitBIdentityTask = nil
+        unitBGeneration = UUID()
+        unitBIdentityState = .pending
+        unitBIdentityAttempted = false
+    }
+    /// Latches the single unit-B identity attempt for the current connection.
+    var unitBIdentityAttempted = false
+
+    /// Whether a unit is there to write to. Routing pages disable Reset
+    /// Routing, Identify and preset loading while this is false, and the
+    /// status bar shows dashes. Simulation counts as connected.
+    var routingHardwareAvailable: Bool {
+        Self.routingHardwareAvailable(mode: connectionMode, hasDevice: device != nil)
+    }
+
+    nonisolated static func routingHardwareAvailable(mode: ConnectionMode, hasDevice: Bool) -> Bool {
+        mode != .disconnected && hasDevice
+    }
+
     /// Currently connected device (real or simulated).
-    var device: (any DeviceConnection)?
+    var device: (any DeviceConnection)? {
+        willSet {
+            if device !== newValue {
+                lastMacMonitorWrite = nil
+                suppressMacVolumeOverlay()
+                if hardwareWritesSuspended {
+                    newValue?.hardwareWriteGate?.holdForValidation()
+                    reconnectRequestedWhileSuspended = true
+                    wakeStableRecoveryCount = nil
+                    wakeStableProbeCount = 0
+                }
+                // D5: the restore belongs to the connection it started on.
+                cardMixerRestoreRun?.task.cancel()
+                cardMixerRestoreRun = nil
+                cardMixerRestoreAwaitingIdentity = false
+                cardMixerRestoreRequested = false
+                identifyA.reset()
+                identifyB.reset()
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                unitBIdentityAttempted = false
+                identityRecoveryRetried = false
+                identityRetryConnection = newValue as AnyObject?
+                thunderboltInputRoutingWritten = false
+                thunderboltCaptureRoutesCache.removeAll()
+            }
+        }
+    }
     /// Currently selected navigation area.
     var selectedArea: NavigationArea = .launchDefault
     /// Which mix the Mixer tab was last showing (0 = Mix 1, 1 = Mix 2), so
@@ -103,8 +362,24 @@ final class AppState {
     var showAbout: Bool = false
     /// Whether to show the Help panel.
     var showHelp: Bool = false
+    /// The section Help opens at, once (a pop-up's "See Help for more.").
+    var helpSection: HelpSectionID?
+
+    func openHelp(at section: HelpSectionID? = nil) {
+        helpSection = section
+        showHelp = true
+    }
     /// Connection mode.
-    var connectionMode: ConnectionMode = .disconnected
+    var connectionMode: ConnectionMode = .disconnected {
+        didSet {
+            if connectionMode == .disconnected {
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                identifyA.reset()
+                identifyB.reset()
+            }
+        }
+    }
     /// Active transport type (USB or Thunderbolt).
     var transportType: TransportType? = nil
     /// Whether the transport itself is present. ThunderBridge can remain
@@ -123,7 +398,12 @@ final class AppState {
     /// Per-channel saved state, scoped to the installed card pair.
     /// See `ChannelStateStore` for the migration rules.
     var channelStateStore: ChannelStateStore {
-        ChannelStateStore(layout: cardLayout, isSimulatingCards: cardSimulation != nil)
+        // The converter simulation keeps its own (`sim:`) state too.
+        ChannelStateStore(layout: cardLayout,
+                          isSimulatingCards: cardSimulation != nil || connectionMode == .simulated,
+                          identity: unitAIdentity,
+                          awaitingIdentity: connectionMode == .hardware && unitAIdentityState == .pending && device != nil && cardLayout.converterLayout == nil && cardLayout.converter == nil,
+                          allowLegacyMigration: allowsLegacyUnitState(unit: .a))
     }
     /// Whether hardware initialization is complete. Views must wait for this
     /// before reading from the device to avoid racing with initializeDevice().
@@ -132,13 +412,61 @@ final class AppState {
     /// (daemon broken on macOS 26) — software metering still works via CoreAudio IO proc
     /// because it reads from the USB audio class driver, not the daemon.
     var meterDevice: CoreAudioDeviceConnection?
-    /// Whether input trim faders are visible. Persisted via UserDefaults.
-    var showInputTrims: Bool = UserDefaults.standard.bool(forKey: "inputShowTrims") {
-        didSet { UserDefaults.standard.set(showInputTrims, forKey: "inputShowTrims") }
+    /// Trim visibility belongs to the physical unit, as it did in the original
+    /// app. Evidence: `Docs/2026-11-21-parity-differences.md:242` (I10).
+    /// The legacy global values are copied to unit A on first access.
+    private func unitPreferenceKey(_ base: String, unit: DeviceUnit) -> String {
+        let scope = preferenceViewScope(for: unit)
+        return "\(base).\(unit == .a ? "a" : "b").\(scope.key ?? scope.generation.uuidString)"
     }
-    /// Whether output trim faders are visible. Persisted via UserDefaults.
-    var showOutputTrims: Bool = UserDefaults.standard.bool(forKey: "outputShowTrims") {
-        didSet { UserDefaults.standard.set(showOutputTrims, forKey: "outputShowTrims") }
+
+    private func unitBoolPreference(_ base: String, unit: DeviceUnit) -> Bool {
+        _ = unitPreferenceRevision
+        let scope = preferenceViewScope(for: unit)
+        guard let scopeKey = scope.key else {
+            return unit == .a ? (UserDefaults.standard.object(forKey: base) as? Bool ?? false) : false
+        }
+        let key = "\(base).\(unit == .a ? "a" : "b").\(scopeKey)"
+        if UserDefaults.standard.object(forKey: key) == nil,
+           unit == .a,
+           let legacy = UserDefaults.standard.object(forKey: base) as? Bool {
+            UserDefaults.standard.set(legacy, forKey: key)
+        }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    private func setUnitBoolPreference(_ value: Bool, _ base: String, unit: DeviceUnit) {
+        guard let scopeKey = preferenceViewScope(for: unit).key else { return }
+        UserDefaults.standard.set(value, forKey: "\(base).\(unit == .a ? "a" : "b").\(scopeKey)")
+        unitPreferenceRevision &+= 1
+    }
+
+    var showInputTrims: Bool {
+        get { unitBoolPreference("inputShowTrims", unit: activeUnit) }
+        set { setUnitBoolPreference(newValue, "inputShowTrims", unit: activeUnit) }
+    }
+    var showOutputTrims: Bool {
+        get { unitBoolPreference("outputShowTrims", unit: activeUnit) }
+        set { setUnitBoolPreference(newValue, "outputShowTrims", unit: activeUnit) }
+    }
+
+    func insertLabelsJSON(for unit: DeviceUnit) -> String {
+        _ = unitPreferenceRevision
+        guard let scopeKey = preferenceViewScope(for: unit).key else {
+            return unit == .a ? (UserDefaults.standard.string(forKey: "micPreInsertLabels") ?? "{}") : "{}"
+        }
+        let key = "micPreInsertLabels.\(unit == .a ? "a" : "b").\(scopeKey)"
+        if UserDefaults.standard.object(forKey: key) == nil, unit == .a,
+           let legacy = UserDefaults.standard.string(forKey: "micPreInsertLabels") {
+            UserDefaults.standard.set(legacy, forKey: key)
+        }
+        return UserDefaults.standard.string(forKey: key) ?? "{}"
+    }
+
+    func setInsertLabelsJSON(_ value: String, for unit: DeviceUnit) {
+        guard let scopeKey = preferenceViewScope(for: unit).key else { return }
+        UserDefaults.standard.set(value, forKey: "micPreInsertLabels.\(unit == .a ? "a" : "b").\(scopeKey)")
+        unitPreferenceRevision &+= 1
     }
     /// Whether idle meter segments show muted zone coloring (green/yellow/red gradient).
     /// Disabled by default — when enabled, unlit segments show a dim version of their zone color.
@@ -146,20 +474,85 @@ final class AppState {
         didSet { UserDefaults.standard.set(showMeterZoneColoring, forKey: "meterZoneColoring") }
     }
     /// Current speaker level (shared between monitor panel and volume key handler).
-    var speakerLevel: Double = -20
+    var unitBMonitor = UnitBMonitorState()
+    var unitBDeviceInfo = SymphonyDeviceInfo()
+    var speakerLevel: Double = -20 {
+        didSet { if speakerLevel != oldValue { noteMonitorLevel(.speakers, dB: speakerLevel) } }
+    }
     /// Current speaker mute state (shared between monitor panel and volume key handler).
     var speakerMuted: Bool = false
-    /// Current Analog Out Format. Line mode disables the speaker monitor controls
-    /// while Core Audio volume/mute writes are redirected to Headphone 1.
+    /// Current Analog Out Format. Line mode disables the speaker monitor
+    /// controls, and the Mac's volume keys then do nothing unless a headphone
+    /// is chosen under Volume Keys › Audio Output (a ThunderBridge driver
+    /// before build 142 moves Headphone 1 by itself in Line mode).
     var speakerOutputMode: UInt32 = SpeakerOutputLogic.stereo
     /// HP1 level (shared between output tab and monitor panel).
-    var hp1Level: Double = -20
+    var hp1Level: Double = -20 {
+        didSet { if hp1Level != oldValue { noteMonitorLevel(.headphone1, dB: hp1Level) } }
+    }
     /// HP1 mute (shared between output tab and monitor panel).
     var hp1Muted: Bool = false
     /// HP2 level (shared between output tab and monitor panel).
-    var hp2Level: Double = -20
+    var hp2Level: Double = -20 {
+        didSet { if hp2Level != oldValue { noteMonitorLevel(.headphone2, dB: hp2Level) } }
+    }
+    /// A4: the connection, driver link state and outputs whose levels the
+    /// connect step has read from the unit. Only then is a level change saved
+    /// as the output's level (`noteMonitorLevel`); before it, and after a
+    /// link recovery until the step has run again, what the app shows may be
+    /// a default or the unit's start-up level, not one the user chose.
+    @ObservationIgnored var monitorLevelsSettled: MonitorLevelsSettled?
+    /// A4: the connection whose connect step is still owed (it could not run:
+    /// asleep, the link state unreadable). Retried by the health loop
+    /// (`serviceMonitorLevels`); only ever set by the connect and recovery
+    /// calls, so the service never makes the first run.
+    @ObservationIgnored weak var monitorLevelsOwed: ThunderboltDeviceConnection?
     /// HP2 mute (shared between output tab and monitor panel).
     var hp2Muted: Bool = false
+    /// The setup file currently associated with the document window.
+    var currentSetupURL: URL? = AppState.loadCurrentSetupURL() {
+        didSet { UserDefaults.standard.set(currentSetupURL?.path, forKey: "currentSetupURL") }
+    }
+    /// Whether a stored setup value changed since the last save or recall.
+    var setupDocumentEdited = false
+    var initialSetupRestoreFinished = false {
+        didSet { if initialSetupRestoreFinished && !oldValue { suppressMacVolumeOverlay() } }
+    }
+    @ObservationIgnored var recentSetupRecallHandled = false
+    @ObservationIgnored var recentSetupRecallTask: Task<Void, Never>?
+    @ObservationIgnored weak var recentSetupRecallConnection: (any DeviceConnection)?
+    @ObservationIgnored var setupRecallDepth = 0
+    @ObservationIgnored var setupRecallRevision = 0
+    @ObservationIgnored private var setupEditRevision = 0
+    var setupDocumentTitle: String { SetupDocumentTitle.title(for: currentSetupURL) }
+
+    static func loadCurrentSetupURL() -> URL? {
+        guard let path = UserDefaults.standard.string(forKey: "currentSetupURL"),
+              FileManager.default.fileExists(atPath: path) else {
+            UserDefaults.standard.removeObject(forKey: "currentSetupURL")
+            return nil
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    @MainActor
+    func markSetupEdited(_ kind: SetupEditKind) {
+        guard kind.marksDocumentEdited, setupRecallDepth == 0 else { return }
+        // Over USB a setup file holds only channel names: nothing in it to
+        // save, so no edited mark and no save prompt.
+        guard transportType != .usb else { return }
+        setupEditRevision &+= 1
+        guard currentSetupURL != nil else { return }
+        setupDocumentEdited = true
+        WindowDocumentBridge.updateEditedState()
+    }
+
+    @MainActor
+    func showLevelOverlay(source: LevelOverlaySource, level: Double, muted: Bool = false,
+                          change: LevelOverlayChangeSource = .maestroControl) {
+        guard change.showsOverlay, !hardwareWritesSuspended, setupRecallDepth == 0 else { return }
+        LevelOverlayController.shared.show(source: source, level: level, muted: muted)
+    }
     /// Changes whenever every reading a page holds has gone stale and the panels
     /// must re-read from scratch: a preset load, or a reconnect. Pages observe it
     /// with `.task(id: appState.viewReloadToken)`.
@@ -180,10 +573,63 @@ final class AppState {
     /// Symphony behind an enumerated ThunderBridge is distinct from a missing
     /// transport, while the existing scanning/error messages remain intact.
     var endpointStatusMessage: String {
-        if connectionMode == .disconnected && transportPresent && transportType != nil {
+        if let hardwareSuspendedNote { return hardwareSuspendedNote }
+        if connectionMode == .hardware, let restoreStatusNote { return restoreStatusNote }
+        if endpointDisconnected {
+            if portStatusMessage != nil,
+               let short = PortStatusMessage.shortStatus(thunderboltPortLink, port: .primary,
+                                                         bothPortsInUse: thunderboltBothPortsInUse) {
+                return short
+            }
             return connectionPresentation.endpointLabel
         }
         return statusMessage
+    }
+
+    /// The transport is there but the unit behind it is not answering.
+    var endpointDisconnected: Bool {
+        connectionMode == .disconnected && transportPresent && transportType != nil
+    }
+
+    /// The driver's link watch on port 1, as the status message needs it.
+    /// Updated by the ThunderBridge health loop only when it changes.
+    var thunderboltPortLink: PortStatusMessage.Link = .other
+
+    /// Apogee's wording for why nothing answers on port 1 of the ThunderBridge
+    /// or Symphony 64 PCIe card ("No hardware has been detected on the primary
+    /// port of the ThunderBridge. Verify…"), nil when the driver does not say.
+    var portStatusMessage: String? {
+        guard endpointDisconnected, transportType == .thunderbolt else { return nil }
+        return PortStatusMessage.primary(thunderboltPortLink, card: thunderboltCardPhrase)
+    }
+
+    /// "the ThunderBridge" or "the Symphony 64 PCIe card", looked up by the
+    /// health loop when the link state changes (an IOKit query).
+    var thunderboltCardPhrase: String = PortStatusMessage.defaultCard
+
+    /// 64 channels (both ports) are selected on the device. Read by the
+    /// health loop while the link is down, because `portSelection` is cleared
+    /// when the unit stops answering. The short status names the port only
+    /// then ("No hardware detected on port 1").
+    var thunderboltBothPortsInUse = false
+
+    /// The health loop's link reading: store it (and which card it is) only
+    /// when it changes, so the 2 s loop does not churn the views.
+    /// `bothPortsInUse` is asked for only while the link is down.
+    @MainActor
+    func updateThunderboltPortLink(_ link: PortStatusMessage.Link,
+                                   bothPortsInUse: @autoclosure () -> Bool = false) {
+        if link != .other {
+            let both = bothPortsInUse()
+            if both != thunderboltBothPortsInUse { thunderboltBothPortsInUse = both }
+        }
+        guard link != thunderboltPortLink else { return }
+        if link != .other {
+            let phrase = PortStatusMessage.cardPhrase(
+                pciIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier())
+            if phrase != thunderboltCardPhrase { thunderboltCardPhrase = phrase }
+        }
+        thunderboltPortLink = link
     }
 
     /// Session-only horizontal offsets for the wide Input, Output, and Mixer
@@ -208,19 +654,21 @@ final class AppState {
     /// Incremented when USB recovery is detected (meter polling failure→success transition).
     /// MixerView observes via .onChange to re-sync persisted state to hardware.
     var deviceRecoveryCount: Int = 0
-    /// Incremented when routing mode changes (DAW ↔ Direct Monitor).
-    /// MixerView observes via .onChange to apply force-mute/restore.
-    var routingModeChangeCount: Int = 0
-    /// Tracks whether meter polling was in a disconnected/failed state.
-    private var meterPollWasDisconnected: Bool = false
+    /// USB: whether failed reads are a unit that went away (`USBLossDetector`).
+    @ObservationIgnored var usbLoss = USBLossDetector()
+    /// USB: when a read last told the unit's health (a meter read or the
+    /// heartbeat); the heartbeat reads only when no meter read has lately.
+    @ObservationIgnored var usbLastReadOutcomeAt: Date = .distantPast
+    /// USB: whether Maestro's window can be seen (tests replace it).
+    @ObservationIgnored var usbMeterWindowVisible: @MainActor () -> Bool = { AppState.mainWindowIsVisible() }
+    /// USB: the 1 Hz tick that watches the unit while no meter is read, and
+    /// runs recovery, the owed restore and the volume keys' output.
+    @ObservationIgnored var usbHealthTask: Task<Void, Never>?
+    /// The heartbeat's pace, and how long since the last read before it reads.
+    @ObservationIgnored var usbHealthInterval: Duration = .seconds(1)
     /// Debounce guard — prevents rapid recovery events from triggering multiple re-syncs.
-    private var lastRecoveryTime: Date = .distantPast
+    var lastRecoveryTime: Date = .distantPast
 
-    // MARK: - USB Health Check
-
-    /// Periodic USB health check task. Sends a lightweight read every 30s to detect
-    /// stale connections. If the read fails, the proxy's recovery logic fires automatically.
-    private var healthCheckTask: Task<Void, Never>?
     /// ThunderBridge remains enumerated when the interface loses power, so its
     /// PCI/Core Audio presence cannot drive lifecycle state. This task polls the
     /// dext's FPGA-backed health probe and reconnects only after it recovers.
@@ -252,34 +700,49 @@ final class AppState {
     /// second registration must never be an unbounded exception.
     private var thunderboltExtensionSwapGrace = ExtensionSwapGrace()
     private var thunderboltExtensionSwapGraceActive = false
-    /// Linear trims (SW Return faders, pan, mute) applied to the host-playback
+    /// Linear trims (SW Return fader and mute) applied to the host-playback
     /// peaks that drive the ThunderBridge SW Return meters, so they read the
     /// same as USB, where the proxy meters after its own trims. Refreshed from
     /// the persisted mixer state whenever the mixer saves and when polling starts.
     var softwareReturnMeterGains: [(left: Double, right: Double)] = [(1.0, 1.0), (1.0, 1.0)]
+    /// The same strips' fader and mute whatever Pre-Mute Metering says: what
+    /// the Software Return passes on to its mixer's Master.
+    var softwareReturnPostFaderGains: [(left: Double, right: Double)] = [(1.0, 1.0), (1.0, 1.0)]
 
-    /// Recompute `softwareReturnMeterGains` from the persisted SW Return state.
+    /// Per mixer, the gain from host playback to the mixer's output over USB
+    /// (`USBMasterMeter.gain`): what its Software Return adds to the Master meter.
+    var usbMasterMeterGains: [Double] = [1.0, 1.0]
+
+    /// Recompute `softwareReturnMeterGains` and `usbMasterMeterGains` from the
+    /// persisted Software Return and Master state.
     @MainActor
     func refreshSoftwareReturnMeterGains() {
-        let defaults = UserDefaults.standard
-        var pan = 0.0
-        var muted = false
-        var level = 0.0
-        if let data = defaults.data(forKey: "mixerState_swReturn"),
-           let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-            pan = saved.pan
-            muted = saved.isMuted
-            level = saved.level
+        let defaults = mixerPreferences
+        // Each mixer has its own mute; the stereo fader's level is stored per
+        // mixer (both sides hold the same value). Software Return has no pan.
+        let returns = (0..<2).map { mixer -> (level: Double, muted: Bool, soloed: Bool) in
+            let saved = MixerStateSnapshot.savedSoftwareReturn(mixer: mixer, preferences: defaults)
+            return (defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? saved.level,
+                    saved.isMuted, saved.isSoloed)
         }
-        let linked = defaults.object(forKey: "mixerSWReturnFadersLinked") as? Bool ?? true
-        // Pan/mute are shared; the per-side fader levels are stored per mixer.
-        softwareReturnMeterGains = (0..<2).map { mixer in
-            let left = linked ? level
-                : (defaults.object(forKey: "mixerSWReturnLeftLevel_\(mixer)") as? Double ?? level)
-            let right = linked ? level
-                : (defaults.object(forKey: "mixerSWReturnRightLevel_\(mixer)") as? Double ?? level)
-            return SoftwareReturnMeterGain.gains(
-                leftLevelDB: left, rightLevelDB: right, pan: pan, isMuted: muted)
+        // With Pre-Mute Metering on (the default) the meter shows what arrives
+        // at the strip, as the input strips do; off, what the strip passes on.
+        let preMute = UserDefaults.standard.object(forKey: SoftwareReturnMeterGain.preMuteMeteringKey) as? Bool ?? true
+        softwareReturnMeterGains = returns.map {
+            SoftwareReturnMeterGain.meterGains(preMuteMetering: preMute, levelDB: $0.level, isMuted: $0.muted)
+        }
+        softwareReturnPostFaderGains = returns.map {
+            SoftwareReturnMeterGain.meterGains(preMuteMetering: false, levelDB: $0.level, isMuted: $0.muted)
+        }
+        usbMasterMeterGains = returns.enumerated().map { mixer, own in
+            // A soloed input strip silences the return in the unit's mixer,
+            // so it adds nothing to the Master meter either.
+            let inputs: [MixerChannelState] = channelStateStore.load(ChannelStateStore.mixerKey(mixer)) ?? []
+            return USBMasterMeter.gain(
+                softwareReturnLevelDB: own.level, softwareReturnMuted: own.muted,
+                silencedBySolo: USBMasterMeter.softwareReturnSilencedBySolo(
+                    returnSoloed: own.soloed, anyInputSoloed: inputs.contains(where: \.isSoloed)),
+                masterLevelDB: MixerStateSnapshot.savedMasterLevel(mixer: mixer, preferences: defaults))
         }
     }
 
@@ -306,30 +769,12 @@ final class AppState {
     /// leave that registration around for much longer than the actual handoff.
     private let thunderboltExtensionSwapGraceInterval: TimeInterval = 15
 
-    func startUSBHealthCheck() {
-        healthCheckTask?.cancel()
-        guard let xpcDev = device as? XPCDeviceConnection else { return }
-        healthCheckTask = Task.detached(priority: .low) {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled else { break }
-                do {
-                    // Lightweight probe — deviceMode is a small read, no side effects.
-                    // EP0 control transfers don't interfere with isochronous audio stream.
-                    _ = try await xpcDev.getProperty(PropertyAddress(selector: .deviceMode))
-                } catch {
-                    // Read failed → proxy's usb_vendor_read recovery will fire automatically.
-                    // No action needed here — recovery is proxy-side.
-                    print("[Maestro] USB health check: read failed (\(error)) — proxy recovery should fire")
-                }
-            }
-        }
-    }
-
-    func stopUSBHealthCheck() {
-        healthCheckTask?.cancel()
-        healthCheckTask = nil
-    }
+    // No separate USB health check. The optional 30-second probe that was here
+    // was redundant and broken: the front panel sync already reads the unit
+    // through the same helper every 300 ms for the life of the app (a failed
+    // read is what makes the helper reopen a stale connection), and the probe
+    // kept using the connection it started with after a reconnect, and never
+    // started unless Maestro launched on USB.
 
     @MainActor
     func startThunderboltHealthCheck() {
@@ -349,6 +794,10 @@ final class AppState {
             while !Task.isCancelled {
                 guard let self else { break }
                 guard let tb = self.device as? ThunderboltDeviceConnection else { break }
+                if self.deferHealthCheckForSleep() {
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
                 // One read per cycle of the dext's link-watch state (dext 113,
                 // kSelectorReadLinkState): no bus traffic. The driver samples the
                 // card's XLink clock-detect bit itself (2 s while down, 5 s idle,
@@ -366,8 +815,19 @@ final class AppState {
                 // "Symphony disconnected" (2026-10-22 12:59).
                 guard !Task.isCancelled,
                       (self.device as? ThunderboltDeviceConnection) === tb else { break }
+                if self.deferHealthCheckForSleep() {
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                self.applyPhantomObservations(tb.lastLinkState)
+                // D5: latch the driver instance from the read just made, before
+                // anything could edit a mixer on it.
+                self.observeCardMixerInstance(tb.lastLinkState)
                 let audioRunning = tb.isAudioRunning
                 let healthy = verdict.isLive
+                self.updateThunderboltPortLink(
+                    tb.lastLinkState?.state.portStatusLink ?? .other,
+                    bothPortsInUse: PortSelection(dataSourceID: tb.portSelectionID()) == .ports1And2)
                 // Registrations come from the list AppShell refreshes every two
                 // seconds; populate it once here if nothing has yet, rather
                 // than re-reading sysextd's database every second.
@@ -397,6 +857,10 @@ final class AppState {
                 if healthy {
                     self.thunderboltHasHealthyProbe = true
                     self.thunderboltControlReconnectAttempted = false
+                    // The order each unit's tables are in (it can change on a
+                    // link recovery or when unit B is set up), before anything
+                    // below writes routing in it.
+                    await self.refreshThunderboltChannelOrder(tb)
                     // A link recovery in place (no disconnect, so no connect
                     // replay) puts the driver's board-order capture table back
                     // on the unit: put the saved input routing back over it.
@@ -405,16 +869,40 @@ final class AppState {
                     if let count = tb.lastLinkState?.recoveryCount {
                         if let seen = self.thunderboltSeenRecoveryCount, count != seen,
                            self.connectionMode == .hardware {
-                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying input routing")
-                            // The driver lays its capture table out from the
-                            // cards it read during the recovery (a Symphony off
-                            // at Start, or a card swapped while off): read them
-                            // too, so the grid and the replay use the same table.
-                            await self.readCardTypes()
-                            await self.syncInputRoutingToHardware()
+                            print("[Maestro] ThunderBridge link recovery \(seen) → \(count): re-reading cards, replaying output table, mixers and input routing")
+                            await self.restoreAfterLinkRecovery(tb)
                         }
                         self.thunderboltSeenRecoveryCount = count
                     }
+                    // A card re-init or a restarted driver without a recovery
+                    // count change, a failed write, a deferred route or mixer
+                    // edit: the restore runs again until nothing is owed.
+                    await self.serviceCardOutputTable(tb)
+                    // The volume keys' output, where the driver now serving
+                    // has not been told it.
+                    await self.serviceKeyboardVolumeOutput()
+                    // The VBus size, where the driver now serving has not
+                    // been told it (a new driver starts without VBus).
+                    await self.serviceVBus()
+                    // A4: levels at connect, where the step could not run.
+                    await self.serviceMonitorLevels()
+                    if self.inputRoutingReplayNeeded, !self.recallInFlight,
+                       self.connectionMode == .hardware {
+                        self.inputRoutingReplayNeeded = false
+                        await self.syncInputRoutingToHardware()
+                    }
+                    // A new converter chain (32 <-> 64 channels, a Device
+                    // Type change): its saved routes go to the driver.
+                    if self.converterRoutingReplayNeeded, self.connectionMode == .hardware {
+                        self.converterRoutingReplayNeeded = false
+                        await self.replayConverterRouting(resetFirst: true)
+                    }
+                    // Unit B is configured by the driver a moment after 64
+                    // channels start, and forgotten when port 2 stops.
+                    await self.refreshUnitBOffMain(tb)
+                    await self.replayUnitBSettings()
+                    // D5: a restore still pending on this driver instance.
+                    self.rearmCardMixerRestoreIfPending()
                     if failures > 0 {
                         print("[Maestro] ThunderBridge health probe recovered")
                         Self.tbLog.notice("probe recovered after \(failures) failures")
@@ -426,7 +914,7 @@ final class AppState {
                         // connected": let the reconnect path auto-switch once
                         // the endpoint is live, like a cable plug-in.
                         self.pendingAutoSwitchAfterReconnect = true
-                        await self.reconnectHardware()
+                        Task { @MainActor [weak self] in await self?.reconnectHardware() }
                         break
                     }
                 } else {
@@ -441,19 +929,8 @@ final class AppState {
                     if failures >= threshold && self.connectionMode == .hardware && !swapGraceActive {
                         print("[Maestro] ThunderBridge health probe failed \(failures) times — marking hardware disconnected")
                         Self.tbLog.notice("marking Symphony disconnected after \(failures) failed probes (\(verdict.label, privacy: .public))")
-                        self.stopMeterPolling()
-                        self.statusMessage = "Symphony disconnected"
-                        self.connectionMode = .disconnected
-                        // Whatever answers next is a Symphony that has just started.
-                        self.awaitingSymphonyReturn = true
-                        // Keep the transport visible in the sidebar. The
-                        // ThunderBridge PCI service is still present; only
-                        // the downstream Symphony endpoint failed its probe.
-                        self.transportPresent = true
-                        self.isHardwareInitialized = false
-                        self.thunderboltHardwareResponsive = false
-                        self.clearMeterState()
-                        self.viewReloadToken = UUID()
+                        self.cancelCardMixerRestore()
+                        self.markHardwareDisconnected()
                         // A powered-off Symphony can leave the PCI/Core Audio
                         // service registered while its existing IOUserClient
                         // has gone stale. Reopen only this private control path;
@@ -462,7 +939,7 @@ final class AppState {
                         if !self.thunderboltControlReconnectAttempted {
                             self.thunderboltControlReconnectAttempted = true
                             if let tb = self.device as? ThunderboltDeviceConnection {
-                                tb.reconnectDextClient()
+                                Task.detached(priority: .utility) { tb.reconnectDextClient() }
                             }
                         }
                     }
@@ -470,6 +947,20 @@ final class AppState {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    /// Shared by health failure and wake exhaustion, including the startup settle.
+    @MainActor
+    func markHardwareDisconnected() {
+        stopMeterPolling()
+        statusMessage = "Symphony disconnected"
+        connectionMode = .disconnected
+        awaitingSymphonyReturn = true
+        transportPresent = true
+        isHardwareInitialized = false
+        thunderboltHardwareResponsive = false
+        clearMeterState()
+        viewReloadToken = UUID()
     }
 
     /// Persist each probe to the unified log so a power-cycle test leaves
@@ -500,10 +991,13 @@ final class AppState {
     func stopThunderboltHealthCheck() {
         thunderboltHealthTask?.cancel()
         thunderboltHealthTask = nil
+        // EXPERIMENT (64 channels): the port selector belongs to the device
+        // that is going away. A no-op unless a two-port driver published one.
+        stopPortSelectionObservation()
     }
 
     @MainActor
-    private func clearMeterState() {
+    func clearMeterState() {
         inputMeterLevels = Array(repeating: -60.0, count: inputMeterLevels.count)
         outputMeterLevels = Array(repeating: -60.0, count: outputMeterLevels.count)
         mixerMeterLevels = Array(repeating: -60.0, count: mixerMeterLevels.count)
@@ -534,21 +1028,92 @@ final class AppState {
     /// Where `secondaryBoardType` came from. See `primaryBoardSource`.
     var secondaryBoardSource: BoardDetectionSource = .unknown
 
-    /// The Device Info panel's last assembled content, published by System Setup when it
+    /// The Device Info panel's last assembled content, published by Device Settings when it
     /// loads. The About box copies it so a bug report is one Copy button, not two pages;
-    /// nil until System Setup has been opened once, and the About box falls back to what
+    /// nil until Device Settings has been opened once, and the About box falls back to what
     /// this object knows on its own.
     var deviceInfoSnapshot: DeviceInfoReport?
+    /// ThunderBridge component versions a Device Settings load read, kept for
+    /// the connection and identity generation they were read on. See
+    /// AppState+DeviceVersions.swift.
+    @ObservationIgnored var deviceInfoVersionsCache: DeviceInfoVersionsCache?
 
     /// What `sysextd` reports about the ThunderBridge driver extension, fetched once at
     /// launch. Empty means nothing is registered; nil means the query itself failed,
     /// which is a different claim and is reported as such.
     var installedDexts: [InstalledDextInfo]?
 
+    /// Apogee's original Symphony I/O MkI drivers found on this Mac, checked at
+    /// launch and when Device Settings opens. nil until the first check has run.
+    /// See OriginalApogeeDriverCheck.swift.
+    var originalApogeeDrivers: OriginalApogeeDriverFinding?
+    @ObservationIgnored
+    var originalApogeeDriverCheckInFlight = false
+    /// A second Symphony I/O on port 2 takes its clock from unit A through
+    /// Loop Sync, so unit A cannot take Loop Sync itself.
+    var unitBFollowsUnitA: Bool { unitB != nil }
+
+    /// The Clock Source menu's rows for what is connected. One list for the
+    /// menu in Device Settings and the name in the status bar, so the two
+    /// always read the same ("SPDIF Coax 1-2", not "I/O Board 1").
+    func clockSourceChoices(sampleRate: Double?) -> [ClockSourceChoice] {
+        // Older converters: their own clock or word clock, as the original
+        // offered, written as the converter config's clock bit.
+        if convertersIdentified { return ClockSourceMenu.converters }
+        guard transportType != .usb else { return ClockSourceMenu.usb }
+        return ClockSourceMenu.unitAChoices(
+            ClockSourceMenu.thunderbolt(slot1: primaryBoardType,
+                                        slot2: secondaryBoardType,
+                                        sampleRate: sampleRate,
+                                        opticalIsSPDIF: channelNaming.opticalIsSPDIF),
+            unitBFollows: unitBFollowsUnitA)
+    }
+
+    /// The name of the reported clock source as its menu row reads; the plain
+    /// source name when no row matches (a board the menu does not list).
+    func reportedClockSourceName(sampleRate: Double?) -> String? {
+        guard let key = reportedClockSource else { return nil }
+        let choices = clockSourceChoices(sampleRate: sampleRate)
+        if let row = ClockSourceMenu.row(for: key, in: choices),
+           let choice = choices.first(where: { $0.id == row }) {
+            return choice.name
+        }
+        return ClockSourceMenu.statusName(for: key)
+    }
+    /// The clock source the connection reports now, as a `ClockSourceMenu`
+    /// key, kept current by the front panel sync from the reading it already
+    /// takes of the unit (the unit's own answer, no extra traffic) and by
+    /// Device Settings when it writes one. A Core Audio change notification
+    /// was tried first and showed the old source: it arrives before the unit
+    /// reports the change, and nothing re-read it afterwards (2026-11-20).
+    /// It follows changes
+    /// made outside Maestro (Audio MIDI Setup, a DAW) and by the driver, which
+    /// the status bar and the Clock Source menu both showed stale before:
+    /// the bar always read "Internal", and the menu kept its last value.
+    /// Nil until read, and while converters own the clock.
+    var reportedClockSource: UInt32?
+    /// Whether the unit is locked to its clock source, by the original's rule
+    /// (`ClockSourceMenu.isLocked`): Internal always, otherwise the unit's own
+    /// "external clock locked" flag from the front panel sync's reading.
+    /// ThunderBridge and PCIe only; nil elsewhere and until the first reading,
+    /// where the views keep their Core Audio rate comparison. That comparison
+    /// can never report an unlocked external clock there: the card keeps
+    /// running at the nominal rate whatever the unit's clock input is doing.
+    var reportedClockLocked: Bool?
+
     /// The build the driver serving the ThunderBridge reports for itself (nil
     /// when no ThunderBridge connection is open). Differs from what sysextd
     /// lists when macOS keeps an old copy on the card until restart.
-    var servingDextBuild: ServingDextBuild?
+    var servingDextBuild: ServingDextBuild? {
+        didSet {
+            // Whose level the driver's volume control holds depends on the
+            // build; what was skipped while it was unknown is read now.
+            if servingDextBuild != oldValue, transportType == .thunderbolt {
+                readASPVolume()
+                readASPMute()
+            }
+        }
+    }
     /// A read of `servingDextBuild` is under way (`refreshServingDextBuild`).
     @ObservationIgnored
     var servingDextBuildReadInFlight = false
@@ -573,6 +1138,52 @@ final class AppState {
         SymphonyIODefaultRouting.thunderboltCaptureSlot1(
             card: primaryBoardType, source: primaryBoardSource, serving: servingDextBuild)
     }
+    /// Slot 2's counterpart of `thunderboltCaptureSlot1`, by the same trust
+    /// rule: nil until slot 2's type has been read from the unit this session
+    /// by a driver that reports its build.
+    var thunderboltCaptureSlot2: IOCardType? {
+        SymphonyIODefaultRouting.thunderboltCaptureSlot1(
+            card: secondaryBoardType, source: secondaryBoardSource, serving: servingDextBuild)
+    }
+    /// What the serving driver (build 150+) reports it programmed into each
+    /// unit's routing layer (selector 17): read at connect, after each link
+    /// recovery and on every healthy probe (`refreshThunderboltChannelOrder`).
+    /// Nil from an older driver and off ThunderBridge.
+    var thunderboltAppliedChannelOrder: ThunderboltAppliedChannelOrder?
+    /// How `unit`'s host channels are laid out on ThunderBridge, and the slot
+    /// types to build its tables and names from
+    /// (`ThunderboltUnitChannelOrder.resolve`): what the driver reports it
+    /// applied (selector 17, build 150 and later), card by card under a
+    /// driver that reported an older build (from the app's own trusted slot
+    /// types). Nil while neither is known: no routing is written then. Card
+    /// by card off ThunderBridge.
+    func thunderboltUnitOrder(unit: DeviceUnit = .a) -> ThunderboltUnitChannelOrder? {
+        thunderboltUnitOrder(unit: unit, serving: servingDextBuild, applied: thunderboltAppliedChannelOrder)
+    }
+    /// `thunderboltUnitOrder` as it would be with `serving` and `applied`.
+    func thunderboltUnitOrder(unit: DeviceUnit, serving servingDextBuild: ServingDextBuild?,
+                              applied thunderboltAppliedChannelOrder: ThunderboltAppliedChannelOrder?) -> ThunderboltUnitChannelOrder? {
+        guard transportType == .thunderbolt else {
+            return ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: nil)
+        }
+        let fallback: (slot1: IOCardType?, slot2: IOCardType?) = unit == .a
+            ? (thunderboltCaptureSlot1, thunderboltCaptureSlot2)
+            : (unitB?.channelOrderSlot1, unitB?.channelOrderSlot2)
+        // Simulated cards and units: no driver to ask, the order the build
+        // would serve from the simulated types.
+        if unit == .a ? primaryBoardSource == .simulated : simulatedUnitB != nil {
+            return ThunderboltUnitChannelOrder(order: .serving(servingDextBuild),
+                                               slot1: fallback.slot1, slot2: fallback.slot2)
+        }
+        return ThunderboltUnitChannelOrder.resolve(serving: servingDextBuild,
+                                                   applied: thunderboltAppliedChannelOrder?.unit(unit),
+                                                   fallback: fallback)
+    }
+    /// `thunderboltUnitOrder` for drawing: while the order is not known,
+    /// the tables the driver keeps for unknown types (card by card).
+    func thunderboltDisplayOrder(unit: DeviceUnit = .a) -> ThunderboltUnitChannelOrder {
+        thunderboltUnitOrder(unit: unit) ?? ThunderboltUnitChannelOrder(order: .cardByCard, slot1: nil, slot2: nil)
+    }
     /// Slot 1 board type WITH provenance.
     var secondaryBoardReading: BoardTypeReading {
         BoardTypeReading(card: secondaryBoardType, source: secondaryBoardSource,
@@ -593,10 +1204,14 @@ final class AppState {
         CardLayout(
             slot1: primaryBoardType,
             slot2: secondaryBoardType,
-            isKnown: CardLayout.readingsDescribeAUnit(
-                slot1: primaryBoardType, slot2: secondaryBoardType),
+            // Converters on port 1: no Symphony I/O cards, whatever board
+            // types an earlier session cached (they made the converter
+            // pages show 32/32 and no routing).
+            isKnown: converterSystem?.ports.first?.isEmpty == false ? false
+                : CardLayout.readingsDescribeAUnit(slot1: primaryBoardType, slot2: secondaryBoardType),
             fallbackChannelCount: device?.identifier.mode.channelCount ?? 16,
             converter: connectedUnit,
+            converters: converterSystem,
             naming: channelNaming)
     }
 
@@ -617,16 +1232,13 @@ final class AppState {
     /// UserDefaults key for this card pair's remembered optical format,
     /// Replaces and Mirrors (see `SlotDigitalSettings`). Per card pair, as the
     /// daemon kept them per board.
-    private var digitalSettingsKey: String? {
-        cardLayout.savedStateScope.map { "slotDigitalSettings.\($0)" }
+    var digitalSettingsKey: String? {
+        cardLayout.savedStateScope.map { unitPreferenceKey(legacy: "slotDigitalSettings.\($0)", category: "slotDigitalSettings") }
     }
 
-    private var rememberedDigitalSettings: SlotDigitalSettings {
-        guard let key = digitalSettingsKey,
-              let data = UserDefaults.standard.data(forKey: key),
-              let settings = try? PropertyListDecoder().decode(SlotDigitalSettings.self, from: data)
-        else { return SlotDigitalSettings() }
-        return settings
+    var rememberedDigitalSettings: SlotDigitalSettings {
+        guard let key = digitalSettingsKey else { return SlotDigitalSettings() }
+        return SlotDigitalSettings.load(key: key)
     }
 
     /// Remember a value written to (or confirmed by) the unit, so it is put back
@@ -634,11 +1246,7 @@ final class AppState {
     @MainActor
     func rememberDigitalSetting(_ selector: AudioPropertySelector, slot: Int, value: UInt32) {
         guard let key = digitalSettingsKey else { return }
-        var settings = rememberedDigitalSettings
-        settings.record(selector, slot: slot, value: value)
-        if let data = try? PropertyListEncoder().encode(settings) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        SlotDigitalSettings.remember(selector, slot: slot, value: value, key: key)
     }
 
     /// Put the remembered optical formats, Replaces and Mirrors back on the
@@ -646,6 +1254,8 @@ final class AppState {
     /// at ADAT/SMUX and the firmware starts Replaces Off, Mirrors Analog 1-2.
     @MainActor
     func reapplyDigitalSettings() async {
+        guard !hardwareWritesSuspended else { return }
+        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard let device else { return }
         for write in rememberedDigitalSettings.writes(layout: cardLayout) {
             do {
@@ -688,6 +1298,14 @@ final class AppState {
 
     /// "Connection" as shown in Device Info and the copied details: names the
     /// Symphony 64 PCIe card when that is what the driver is attached to.
+    /// The short connection name for the sidebar badge and the status bar.
+    var connectionShortName: String {
+        ConnectionLabel.shortName(
+            transport: transportType,
+            pciIdentifier: transportType == .thunderbolt
+                ? SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier() : nil)
+    }
+
     var connectionLabel: String {
         ConnectionLabel.text(
             isThunderbolt: transportType == .thunderbolt,
@@ -696,7 +1314,672 @@ final class AppState {
 
     /// Set when the ThunderBridge driver found something other than a Symphony
     /// I/O on the cable (an older Apogee converter). Nil for a Symphony I/O.
-    var connectedUnit: ConnectedUnit?
+    var connectedUnit: ConnectedUnit? {
+        didSet {
+            if connectedUnit != oldValue {
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                if connectedUnit != nil {
+                    unitAIdentityState = .failed
+                    unitBIdentityState = .failed
+                }
+            }
+        }
+    }
+    /// The driver's raw probe word behind `connectedUnit`, for the copied
+    /// Device Info. Zero when the driver did not probe.
+    var connectedUnitProbeWord: UInt32 = 0
+    /// Every converter unit on both ports (selector 9, dext 131+), or port 1
+    /// from the probe word with an older driver, or the converter simulation.
+    /// Nil for a Symphony I/O. Lays out, names and meters converter channels.
+    var converterSystem: ConverterSystem? {
+        didSet {
+            if converterSystem != oldValue {
+                // Converters on port 1 replace any Symphony I/O cards an
+                // earlier session cached: the card-type reads do not answer.
+                if converterSystem?.ports.first?.isEmpty == false {
+                    let defaults = UserDefaults.standard
+                    defaults.removeObject(forKey: "cachedPrimaryBoardType")
+                    defaults.removeObject(forKey: "cachedSecondaryBoardType")
+                    if primaryBoardSource == .cached { primaryBoardType = .none }
+                    if secondaryBoardSource == .cached { secondaryBoardType = .none }
+                }
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                if converterSystem != nil {
+                    unitAIdentityState = .failed
+                    unitBIdentityState = .failed
+                }
+                converterSystemChanged()
+            }
+        }
+    }
+
+    var symphonyCardInputNamingRevision = 0
+    var symphonyCardInputEdits: [Int: Int] = [:]
+    @ObservationIgnored var symphonyCardInputVersion: UInt64 = 0
+    @ObservationIgnored var symphonyCardInputTail: Task<Bool, Never>?
+
+    // MARK: Converter routing
+
+    /// The chain the converter routes on screen belong to
+    /// (`ConverterSystem.routingSignature`), nil without a converter layout.
+    private(set) var converterRoutingSignature: String?
+    /// The user's converter routes for that chain (both directions), shared
+    /// by the Output and Input Routing pages: Reset Routing (0xB7) clears both.
+    var converterRoutingEdits = ConverterRoutingEdits()
+    /// The chain whose saved routes were last sent to the driver.
+    @ObservationIgnored private var converterRoutingReplayedSignature: String?
+
+    /// Whether the routing pages are the converters' (port 1 carries
+    /// converters, identified or not): the Symphony I/O grids must not show,
+    /// since their writes would land on converter channels.
+    var converterRoutingSurface: Bool {
+        connectedUnit != nil || converterSystem?.ports[0].isEmpty == false
+    }
+
+    /// The converter channels the routing pages show, nil unless the layout
+    /// follows converters.
+    /// Nil too with an older driver (converters from the probe word), which
+    /// cannot route converters: nothing is shown, sent or replayed then.
+    var converterRoutingLayout: ConverterRoutingLayout? {
+        guard let system = cardLayout.converterLayout, system.driverSupportsConverterControls else { return nil }
+        return ConverterRoutingLayout(system: system)
+    }
+
+    /// Kept per chain; the converter simulation keeps its own (`sim:`).
+    var converterRoutingStore: ConverterRoutingStore? {
+        converterRoutingSignature.map {
+            ConverterRoutingStore(signature: Self.converterRoutingStoreSignature($0, simulated: connectionMode == .simulated))
+        }
+    }
+
+    static func converterRoutingStoreSignature(_ signature: String, simulated: Bool) -> String {
+        simulated ? "sim:" + signature : signature
+    }
+
+    private func converterSystemChanged() {
+        let signature = converterSystem.flatMap { $0.layoutKnown ? $0.routingSignature : nil }
+        guard signature != converterRoutingSignature else { return }
+        converterRoutingSignature = signature
+        converterRoutingEdits = converterRoutingStore?.load() ?? ConverterRoutingEdits()
+        // A new chain while connected (32 <-> 64 channels, a Device Type
+        // change): the driver has dropped the old chain's routes; put this
+        // chain's saved ones on it (the ThunderBridge health loop sends them
+        // on its next pass). The connect-time replay covers connects.
+        if let signature, let replayed = converterRoutingReplayedSignature, replayed != signature,
+           connectionMode == .hardware {
+            converterRoutingReplayNeeded = true
+        }
+    }
+
+    /// Set when the chain changed under a connected session; the health loop
+    /// replays this chain's saved routes and clears it.
+    @ObservationIgnored var converterRoutingReplayNeeded = false
+
+    /// The last converter routing send. Every send waits for the one before
+    /// it, so the card gets commands in the order they were made (two quick
+    /// clicks, or a click racing a replay); the card has no readback to
+    /// correct a reordered pair.
+    @ObservationIgnored private var converterRoutingTail: Task<Bool, Never>?
+
+    /// Send converter routing commands to the driver, in order, each batch
+    /// off the main thread. True when every command was accepted (always in
+    /// the simulation).
+    @MainActor
+    func sendConverterRouting(_ commands: [ConverterRouting.Command]) async -> Bool {
+        await sendConverterRoutingRefused(commands).isEmpty
+    }
+
+    /// The same, returning the commands the driver refused (all of them
+    /// without a ThunderBridge, none in the simulation).
+    @MainActor
+    func sendConverterRoutingRefused(_ commands: [ConverterRouting.Command]) async -> [ConverterRouting.Command] {
+        guard !commands.isEmpty else { return [] }
+        let previous = converterRoutingTail
+        let tb = device as? ThunderboltDeviceConnection
+        let simulated = connectionMode == .simulated
+        let send = Task<[ConverterRouting.Command], Never> {
+            _ = await previous?.value
+            guard let tb else { return simulated ? [] : commands }
+            let failures = await Task.detached(priority: .userInitiated) { () -> [(ConverterRouting.Command, String)] in
+                var failed: [(ConverterRouting.Command, String)] = []
+                for command in commands {
+                    do { try tb.sendConverterRouting(command) } catch { failed.append((command, "\(command): \(error)")) }
+                }
+                return failed
+            }.value
+            if !failures.isEmpty {
+                print("[Maestro] Converter routing: \(failures.count) of \(commands.count) command(s) refused: \(failures.map(\.1))")
+            }
+            return failures.map(\.0)
+        }
+        converterRoutingTail = Task { await send.value.isEmpty }
+        return await send.value
+    }
+
+    /// The user changed converter routes. The grid shows them at once (so a
+    /// second click on the same cell undoes the first); they are saved for
+    /// this chain only once the driver has accepted every command, and put
+    /// back as they were if it refused (an older driver, or a Symphony I/O).
+    @MainActor
+    func changeConverterRouting(_ edits: ConverterRoutingEdits, commands: [ConverterRouting.Command],
+                                completion: @escaping @MainActor (Bool) -> Void = { _ in }) {
+        let previous = converterRoutingEdits
+        let store = converterRoutingStore
+        converterRoutingEdits = edits
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let refused = await self.sendConverterRoutingRefused(commands)
+            if refused.isEmpty {
+                store?.save(edits)
+            } else {
+                // Only the refused routes go back; the accepted ones stay
+                // and are saved, and a newer change to the same route stays.
+                store?.save(edits.reverting(refused, attempted: edits, previous: previous))
+                if self.converterRoutingStore?.key == store?.key {
+                    self.converterRoutingEdits = self.converterRoutingEdits.reverting(
+                        refused, attempted: edits, previous: previous)
+                }
+            }
+            completion(refused.isEmpty)
+        }
+    }
+
+    /// Reset Routing for converters: both tables back on the default
+    /// placement (0xB7). Nothing stays saved for this chain, once the driver
+    /// has accepted it.
+    @MainActor
+    @discardableResult
+    func resetConverterRouting() async -> Bool {
+        let store = converterRoutingStore
+        guard await sendConverterRouting([ConverterRouting.resetRoutingCommand]) else { return false }
+        converterRoutingEdits = ConverterRoutingEdits()
+        store?.save(ConverterRoutingEdits())
+        return true
+    }
+
+    /// Put this chain's saved converter routes on the driver (connect, or a
+    /// new chain). The driver keeps them over card resets itself.
+    /// `resetFirst` (a chain change while connected) starts from the default
+    /// placement, so no route made for the previous chain stays on the card,
+    /// whatever the driver kept.
+    @MainActor
+    func replayConverterRouting(resetFirst: Bool = false) async {
+        guard !hardwareWritesSuspended else { return }
+        guard let layout = converterRoutingLayout, let signature = converterRoutingSignature else { return }
+        converterRoutingReplayedSignature = signature
+        converterRoutingReplayNeeded = false
+        let edits = converterRoutingStore?.load() ?? ConverterRoutingEdits()
+        converterRoutingEdits = edits
+        let commands = (resetFirst ? [ConverterRouting.resetRoutingCommand] : []) + layout.replayCommands(edits)
+        guard !commands.isEmpty else {
+            print("[Maestro] Converter routing: default placement (nothing saved for \(signature))")
+            return
+        }
+        let ok = await sendConverterRouting(commands)
+        print("[Maestro] Converter routing: replayed \(commands.count) command(s) for \(signature)"
+              + (ok ? "" : " (some refused)"))
+    }
+
+    /// The firmware notices already logged for this connection, so each is
+    /// said once.
+    private var loggedConverterNotices: Set<String> = []
+
+    /// Whether the clock picker offers only the converters' Internal and
+    /// External choices: port-1 converters are identified (or simulated).
+    var convertersIdentified: Bool { connectedUnit != nil && converterSystem != nil }
+
+    /// Read the driver's converter report again (no bus access) and rebuild
+    /// `converterSystem`. With an older driver it is rebuilt from the probe
+    /// word and the stored Device Types.
+    func refreshConverterSystem() {
+        guard connectionMode != .simulated else { return }
+        guard let tb = device as? ThunderboltDeviceConnection else {
+            if converterSystem != nil { converterSystem = nil }
+            return
+        }
+        let system = Self.converterSystem(state: tb.converterState(), probeWord: connectedUnitProbeWord)
+        if system != converterSystem { converterSystem = system }
+        if connectedUnit == nil, let unit = system?.connectedUnit { connectedUnit = unit }
+        for notice in system?.firmwareNotices ?? [] where !loggedConverterNotices.contains(notice) {
+            loggedConverterNotices.insert(notice)
+            print("[Maestro] \(notice)")
+        }
+    }
+
+    /// The driver's converter report when it identifies converters; otherwise
+    /// the older probe word (an older driver, or a report taken while the driver
+    /// re-identifies the cable). The probe word is 0 once a Symphony I/O
+    /// answers, so a Symphony never gets a converter layout from it.
+    static func converterSystem(state: ConverterState?, probeWord: UInt32) -> ConverterSystem? {
+        // A zero probe is the driver's authoritative indication that port 1
+        // answered a Symphony I/O read.  If a stale selector-9 snapshot still
+        // carries the old port-1 converter flag from the same transition,
+        // prefer the Symphony result so the UI leaves converter mode without
+        // requiring a relaunch.  Port-2 converters remain valid because this
+        // only rejects the contradictory port-1 flag.
+        if probeWord == 0, state?.port1Converters == true {
+            return nil
+        }
+        if let state, state.port1Converters || state.port2Converters,
+           let system = ConverterSystem(state: state) {
+            return system
+        }
+        return ConverterSystem.withStoredConfig(simulated: false) {
+            ConverterSystem(probeWord: probeWord, config: $0)
+        }
+    }
+
+    /// At connect: send the stored Device Types and clock choice before the
+    /// layout is read, so the first report already has them. With no stored
+    /// clock choice the driver's current clock is kept. Older drivers reject
+    /// the call and nothing changes.
+    nonisolated static func applyStoredConverterConfig(_ tb: ThunderboltDeviceConnection) {
+        // Either port: port-2 converters behind a Symphony I/O need their
+        // Device Types too.
+        guard let state = tb.converterState(), state.port1Converters || state.port2Converters,
+              let system = ConverterSystem(state: state) else { return }
+        var word = ConverterConfig.load(for: system, simulated: false).word(currentClockExternal: state.clockExternal)
+        if !state.port1Converters {
+            // A Symphony I/O on port 1 owns the clock: keep the driver's bit
+            // (it applies the converter clock only with port-1 converters).
+            word = (word & ~ConverterConfig.clockExternalBit)
+                | (state.clockExternal ? ConverterConfig.clockExternalBit : 0)
+        }
+        if word != state.config, !tb.setConverterConfig(word) {
+            print("[Maestro] Converter config 0x\(String(word, radix: 16)) was not accepted")
+        }
+    }
+
+    /// The user chose a converter clock source (bit 0 of the converter
+    /// config). Never sent as a Symphony I/O ClockMode.
+    @discardableResult
+    func setConverterClock(external: Bool) -> Bool {
+        if let system = converterSystem {
+            ConverterConfig.saveClockExternal(external, for: system, simulated: connectionMode == .simulated)
+        }
+        return sendConverterConfig()
+    }
+
+    /// The user chose a Device Type for a unit whose routing does not say
+    /// what it is (0x0F or 0x05).
+    func setConverterDeviceType(_ type: ConverterDeviceType, port: Int, address: Int) {
+        guard let system = converterSystem,
+              let unit = (system.ports[0] + system.ports[1]).first(where: { $0.port == port && $0.address == address })
+        else { return }
+        let simulated = connectionMode == .simulated
+        ConverterConfig.saveDeviceType(type, unit: unit, simulated: simulated)
+        if simulated {
+            // Rebuild the simulated units with the new choice.
+            let name = UserDefaults.standard.string(forKey: ConnectedUnit.simulationKey) ?? ""
+            converterSystem = ConverterSystem.withStoredConfig(simulated: true) {
+                ConverterSystem(simulationName: name, config: $0)
+            } ?? system
+            return
+        }
+        sendConverterConfig()
+    }
+
+    @discardableResult
+    private func sendConverterConfig() -> Bool {
+        guard let tb = device as? ThunderboltDeviceConnection else { return connectionMode == .simulated }
+        guard let system = converterSystem else { return false }
+        let current = system.clockExternal
+        let ok = tb.setConverterConfig(
+            ConverterConfig.load(for: system, simulated: false).word(currentClockExternal: current))
+        refreshConverterSystem()
+        return ok
+    }
+    /// The update channel in effect (mirrored from UpdateController), for the
+    /// copied software report.
+    var updateChannel: UpdateChannel?
+    /// Converters only on the cable (no Symphony I/O): the driver sends the
+    /// volume and mute keys to mixer 1, and the speaker and headphone controls
+    /// have nothing to control. Also true in the converter simulation.
+    var converterVolumeKeys: Bool {
+        ConnectedUnit.driverRoutesVolumeKeysToMixer(connectedUnitProbeWord)
+            || (connectionMode == .simulated && connectedUnit != nil)
+    }
+
+    /// EXPERIMENT (64 channels): the driver's port-2 findings, and only when the
+    /// driver reports the two-port experiment on. Nil with every released
+    /// driver, with the experiment off, over USB and in simulation, so nothing
+    /// is shown or copied in those cases.
+    var secondPortState: SecondPortState?
+
+    /// EXPERIMENT (64 channels, stage 2): the port selection (32 or 64
+    /// channels) as the Core Audio device reports it. Empty (nothing
+    /// shown) unless a two-port driver publishes the selector.
+    var portSelection = PortSelectionModel()
+    private var portSelectionTask: Task<Void, Never>?
+
+    // MARK: Unit B (a second Symphony I/O on port 2, while 64 channels run)
+    // See AppState+UnitB.swift. All nil / empty with one unit, so nothing
+    // about unit A changes then.
+
+    /// Selector 13: requested topology, application validity and measured locks.
+    var loopSyncState: LoopSyncState?
+    var loopSyncNeedsRestore = false
+    var loopSyncBusy = false
+    /// True only while a change the user made (Use Loop Sync, master, clock
+    /// source) is being applied. The controls are disabled for that, not for
+    /// the two-second background read, which greyed the toggle and its info
+    /// button out and back every two seconds (owner, 2026-11-23).
+    var loopSyncChanging = false
+    var loopSyncError: String?
+    /// What the driver reports about unit B (selector 11), nil unless it is
+    /// configured, which it is only while 64 channels run.
+    var unitB: SecondUnitInfo?
+    @ObservationIgnored var twoUnitReplayNeeded = false
+    @ObservationIgnored var twoUnitReplayRunning = false
+    enum HardwareSleepState { case awake, sleeping, validating }
+    var hardwareSleepState: HardwareSleepState = .awake {
+        // The wake generation advances before sleep, which can last well past the overlay delay.
+        didSet { if hardwareSleepState == .validating && oldValue != .validating { suppressMacVolumeOverlay() } }
+    }
+    var hardwareWritesSuspended: Bool { hardwareSleepState != .awake }
+    /// Why hardware edits are unavailable right now, or nil when they are. The
+    /// status bar and the note over the device pages show the same words.
+    var hardwareSuspendedNote: String? {
+        switch hardwareSleepState {
+        case .validating: "Validating hardware after wake…"
+        case .sleeping: "Hardware sleeping"
+        case .awake: nil
+        }
+    }
+    var twoUnitSleeping: Bool { hardwareWritesSuspended }
+    @ObservationIgnored var wakeReconnectTask: Task<Void, Never>?
+    @ObservationIgnored var wakeFallbackTask: Task<Void, Never>?
+    @ObservationIgnored var reconnectRequestedWhileSuspended = false
+    @ObservationIgnored var wakeRetryInterval: Duration = .seconds(2)
+    @ObservationIgnored var wakeRetryLimit = 30
+    @ObservationIgnored var wakeReadTimeout: Duration = .seconds(2)
+    @ObservationIgnored var wakeFallbackDelay: Duration = .seconds(10)
+    /// No sleep observed this long after willSleep: treat it as an aborted sleep.
+    @ObservationIgnored var wakeFallbackAbortLimit: Duration = .seconds(120)
+    @ObservationIgnored var wakeFallbackFired = false
+    @ObservationIgnored var cardDiscoverySkippedDuringSleep = false
+    @ObservationIgnored private var sleepWakeObservers: [NSObjectProtocol] = []
+    // Injectable boundaries let tests exercise the real orchestration without hardware.
+    @ObservationIgnored var launchDiscoveryOperation: (@MainActor () async -> [CoreAudioDeviceConnection.DiscoveredSymphonyIO])?
+    @ObservationIgnored var reconnectOperation: (@MainActor () async -> Void)?
+    @ObservationIgnored var wakeLinkProbe: (@Sendable (ThunderboltDeviceConnection) async -> LinkState?)?
+    @ObservationIgnored var wakeValidationGeneration = 0 {
+        didSet { if wakeValidationGeneration != oldValue { suppressMacVolumeOverlay() } }
+    }
+    @ObservationIgnored var wakeBaselineWatchTicks: UInt32?
+    @ObservationIgnored var wakeBaselineRecoveryCount: UInt32?
+    @ObservationIgnored var wakeStableRecoveryCount: UInt32?
+    @ObservationIgnored var wakeStableProbeCount = 0
+    @ObservationIgnored var wakeDownProbeCount = 0
+    @ObservationIgnored var inputRoutingReplayNeeded = false
+    @ObservationIgnored var replayDeferral = ReplayDeferral()
+
+    var recallInFlight: Bool { replayDeferral.isInFlight() }
+
+    @MainActor
+    func beginRecall() { replayDeferral.beginRecall() }
+
+    @MainActor
+    func finishRecall() {
+        // An epoch-invalidated two-unit replay re-arms itself when it throws;
+        // only a replay that was deferred during the recall is requested here.
+        guard replayDeferral.finishRecall() else { return }
+        if usesTwoUnitReplay {
+            twoUnitReplayNeeded = true
+        } else {
+            inputRoutingReplayNeeded = true
+        }
+    }
+    /// Unit B's connection: unit A's driver client with port byte 1.
+    var unitBDevice: (any DeviceConnection)? {
+        willSet {
+            if unitBDevice !== newValue {
+                identifyB.reset()
+                invalidateUnitBIdentity()
+            }
+        }
+    }
+    /// The unit the per-unit pages show. Only `.b` while the picker is shown.
+    var selectedUnit: DeviceUnit = .a
+    /// The unit whose monitor receives Mac volume keys. Unit A is the default;
+    /// the picker is only shown for two configured Symphony I/Os at 64 channels.
+    var monitorDevice: DeviceUnit = .a
+    @ObservationIgnored private var monitorSelectionTask: Task<Void, Never>?
+    /// Bumped when a unit's Volume Keys › Audio Output choice changes, so the
+    /// pop-up follows (the choice itself lives in the unit's settings store).
+    var keyboardVolumeRevision = 0
+    /// Unit B's speaker mode, for the name of its Speaker entry; nil until read.
+    var unitBSpeakerOutputMode: UInt32?
+    /// A choice made while the unit's identity, which its saved settings
+    /// hang on, was still being read. Saved once the identity is known
+    /// (`flushPendingKeyboardVolumeChoices`); until then the store is a
+    /// temporary one that the identity's own replaces.
+    @ObservationIgnored var keyboardVolumePending: [DeviceUnit: UInt32] = [:]
+    /// The Audio Output that setting Line replaced with Headphone 1, per
+    /// unit, until the user leaves Line or picks an Audio Output themselves.
+    @ObservationIgnored var keyboardVolumeDisplacedByLine: [DeviceUnit: KeyboardVolumeOutput] = [:]
+    /// The USB helper's version, with the connection and helper epoch it was
+    /// read for; nil until read.
+    var usbHelperVersion: UInt64?
+    @ObservationIgnored var usbHelperVersionKey: (connection: ObjectIdentifier, epoch: UInt64)?
+    /// The choices while no hardware is connected (simulation): not saved.
+    @ObservationIgnored var keyboardVolumeSimulated: [DeviceUnit: UInt32] = [:]
+    /// What has reached the driver or the helper (`serviceKeyboardVolumeOutput`).
+    @ObservationIgnored var keyboardVolumeSent: KeyboardVolumeSent?
+    @ObservationIgnored var keyboardVolumeRetryAfter = Date.distantPast
+    @ObservationIgnored var keyboardVolumeServiceRunning = false
+    /// Bumped when the VBus choice changes, so the pop-up follows (the choice
+    /// itself is saved per card, `VBusChannels.saved`).
+    var vbusRevision = 0
+    /// The VBus size was changed in the pop-up since Maestro opened (not
+    /// saved): the note about open applications is shown from then on.
+    var vbusChangedThisSession = false
+    /// The driver's last VBus report; nil until read, and over USB.
+    var vbusState: VBusState?
+    /// What has reached the driver (`serviceVBus`).
+    @ObservationIgnored var vbusSent: VBusSent?
+    @ObservationIgnored var vbusRetryAfter = Date.distantPast
+    /// When the size was last sent (`serviceVBus` sends it again a pause later
+    /// if the device still does not have it).
+    @ObservationIgnored var vbusSentAt = Date.distantPast
+    /// How often the size was sent again by itself (`vbusMaxRetries`); the
+    /// status line under the pop-up follows it.
+    var vbusRetries = 0
+    @ObservationIgnored var vbusServiceRunning = false
+    /// Where the VBus choice is saved (the app's preferences; tests give their own).
+    @ObservationIgnored var vbusDefaults: UserDefaults = .standard
+    @ObservationIgnored private var monitorSelectionGeneration = 0
+    /// Unit B's naming state (its optical formats and Replaces).
+    var unitBChannelNaming = CardLayout.ChannelNaming()
+    /// Unit B's prefix letter, as its channels are named.
+    var unitBPeripheralPrefix = "B"
+    /// Unit B's meters: its input strips (card words 32-63, in its layout's
+    /// mixer order), digital input strips, and outputs (words 96-127).
+    var unitBInputMeterLevels: [Double] = []
+    var unitBInputPeakHold: [Double] = []
+    var unitBDigitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    var unitBDigitalInputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    var unitBOutputMeterLevels: [Double] = []
+    var unitBOutputPeakHold: [Double] = []
+    var unitBDigitalOutputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    var unitBDigitalOutputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    /// Debug only: `-MaestroSimulateSecondUnit` (see `SecondUnitSimulation`).
+    @ObservationIgnored var simulatedUnitB: SecondUnitInfo?
+    /// The unit A connection unit B's connection was made from.
+    @ObservationIgnored var unitBOwner: ObjectIdentifier?
+
+    /// Ask the driver again. It costs no bus access, and a chain switched on
+    /// after the Mac is only found by the driver's later probe.
+    func refreshSecondPortState() {
+        let shown = currentSecondPortState()
+        if shown != secondPortState { secondPortState = shown }
+        refreshUnitB()
+        if let tb = device as? ThunderboltDeviceConnection,
+           let selection = portSelection.selection,
+           selection == .ports1And2,
+           unitB?.setupComplete == true {
+            let saved = MonitorDeviceSelectionStore.load(productID: tb.identifier.productID)
+            if monitorSelectionTask == nil { requestMonitorDevice(saved, persist: false) }
+        } else if monitorDevice != .a || monitorSelectionTask != nil {
+            monitorDevice = .a
+            requestMonitorDevice(.a, persist: false)
+        }
+        // The converter report follows 32/64 channels too (port 2 counts only
+        // while 64 run), and costs no bus access either.
+        refreshConverterSystem()
+    }
+
+    /// Follow the device's port selector for as long as this device is
+    /// connected: a change made in Audio MIDI Setup, in Sound settings, here, or
+    /// by the driver itself all arrive through the same Core Audio listener.
+    /// Does nothing unless the driver reports the two-port experiment on.
+    @MainActor
+    func startPortSelectionObservation() {
+        portSelectionTask?.cancel()
+        portSelectionTask = nil
+        guard let connection = device as? ThunderboltDeviceConnection,
+              currentSecondPortState() != nil,
+              connection.portSelectionID() != nil else {
+            if portSelection != PortSelectionModel() { portSelection = PortSelectionModel() }
+            return
+        }
+        portSelectionTask = Task { @MainActor [weak self] in
+            do {
+                let observation = try connection.observePortSelection()
+                defer { observation.stop() }
+                for await id in observation.selections {
+                    guard !Task.isCancelled, let self else { return }
+                    self.applyPortSelection(id: id)
+                    // The driver performs the switch a moment after the selector
+                    // changes; its verdict (running, or refused and why) is
+                    // ready shortly afterwards.
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled else { return }
+                    self.applyPortSelection(id: connection.portSelectionID())
+                }
+            } catch {
+                print("[Maestro] Port selection observation failed: \(error)")
+            }
+        }
+    }
+
+    @MainActor
+    func stopPortSelectionObservation() {
+        portSelectionTask?.cancel()
+        portSelectionTask = nil
+        if portSelection != PortSelectionModel() { portSelection = PortSelectionModel() }
+    }
+
+    @MainActor
+    private func applyPortSelection(id: UInt32?) {
+        let was64 = portSelection.selection?.channelCount == 64
+        let shown = currentSecondPortState()
+        if shown != secondPortState { secondPortState = shown }
+        var model = portSelection
+        model.deviceReported(dataSourceID: id, state: secondPortState,
+                             card: PortStatusMessage.cardPhrase(
+                                pciIdentifier: SystemExtensionInstaller.shared.presentThunderBridgePCIIdentifier()))
+        if model != portSelection {
+            if model.selection != portSelection.selection {
+                twoUnitReplayNeeded = model.selection == .ports1And2
+                (unitBDevice as? ThunderboltUnitBConnection)?.invalidate()
+                applyUnitB(nil, from: nil, confirmedAbsent: model.selection == .port1)
+            }
+            portSelection = model
+            print("[Maestro] Port selection: \(model.selection?.name ?? "none")"
+                  + (model.notice.map { " (\($0))" } ?? ""))
+        }
+        if was64, model.selection?.channelCount != 64 {
+            // No card mixer replay here (D5 runs only on a fresh driver). The
+            // driver keeps both mixers across 64 -> 32: DisablePort2Audio,
+            // Port2AudioFallBack and LeaveTwoUnit leave mixer[2] and
+            // mixerStateValid alone (LeaveTwoUnit resets only a Software Return
+            // source above 7, as this app's display does), and the coefficient
+            // table is cleared only at Start and card re-init
+            // (SymphonyThunderbridge.cpp, step 21d and ReprogramCardAfterReset).
+            // Known driver gap: a unit-B strip soloed at 64 keeps unit A's
+            // inputs muted until the next mixer command recomputes at 32.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, self.portSelection.selection?.channelCount == 32 else { return }
+                await self.replaySymphonyCardInputs()
+            }
+        }
+        refreshSecondPortState()
+    }
+
+    /// The user picked an entry in Maestro: write it to the device, the way
+    /// Audio MIDI Setup does. What is shown changes when the device reports it.
+    @MainActor
+    func choosePortSelection(_ choice: PortSelection) {
+        guard let connection = device as? ThunderboltDeviceConnection else { return }
+        var model = portSelection
+        guard model.userChose(choice) != nil else { return }
+        portSelection = model
+        do {
+            try connection.setPortSelection(choice)
+        } catch {
+            print("[Maestro] Port selection write failed: \(error)")
+            model.writeFailed()
+            portSelection = model
+            return
+        }
+        // If the device never answers, do not leave the picker disabled.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self else { return }
+            self.applyPortSelection(id: connection.portSelectionID())
+            if self.portSelection.pending != nil {
+                var expired = self.portSelection
+                expired.requestExpired()
+                self.portSelection = expired
+            }
+        }
+    }
+
+    @MainActor
+    func chooseMonitorDevice(_ unit: DeviceUnit) {
+        requestMonitorDevice(unit, persist: true)
+    }
+
+    private func requestMonitorDevice(_ unit: DeviceUnit, persist: Bool) {
+        guard SymphonyExtendedSelectors.supported(by: servingDextBuild) else { return }
+        guard unit == .a || (unitB?.setupComplete == true &&
+                             portSelection.selection == .ports1And2),
+              let tb = device as? ThunderboltDeviceConnection else { return }
+        monitorSelectionGeneration += 1
+        let generation = monitorSelectionGeneration
+        let previous = monitorSelectionTask
+        let bDevice = unitBDevice
+        // AppState lives on the main actor in practice (same pattern as the
+        // Loop Sync restore); the task below runs there.
+        nonisolated(unsafe) weak var weakSelf = self
+        monitorSelectionTask = Task { @MainActor in
+            // Preserve request order even if a previous off-main transaction is
+            // already in the driver. Stale completions never publish app state.
+            await previous?.value
+            guard let self = weakSelf, generation == self.monitorSelectionGeneration else { return }
+            defer { if generation == self.monitorSelectionGeneration { self.monitorSelectionTask = nil } }
+            guard self.device === tb, self.unitBDevice === bDevice,
+                  SymphonyExtendedSelectors.supported(by: self.servingDextBuild) else { return }
+            let accepted = await tb.setMonitorDevice(unit)
+            guard accepted, generation == self.monitorSelectionGeneration,
+                  self.device === tb, self.unitBDevice === bDevice,
+                  unit == .a || (self.unitB?.setupComplete == true &&
+                                  self.portSelection.selection == .ports1And2) else { return }
+            self.monitorDevice = unit
+            if persist { MonitorDeviceSelectionStore.save(unit, productID: tb.identifier.productID) }
+        }
+    }
+
+    /// The driver's answer right now, without storing it. Nil unless the
+    /// driver reports the experiment on.
+    func currentSecondPortState() -> SecondPortState? {
+        let state = (device as? ThunderboltDeviceConnection)?.secondPortState()
+        return state?.experimentOn == true ? state : nil
+    }
 
     /// Changes whenever the installed cards change, so a view can rebuild its
     /// strip arrays. `initializeChannels()` runs from `.task` before the async
@@ -705,6 +1988,8 @@ final class AppState {
     var cardLayoutToken: Int {
         Int(primaryBoardType.rawValue) << 8 | Int(secondaryBoardType.rawValue)
             | (connectedUnit?.channels.map { ($0.inputs + 1) << 24 | ($0.outputs + 1) << 16 } ?? 0)
+            ^ (converterSystem.map { $0.layoutToken << 32 } ?? 0)
+            ^ unitBLayoutToken
     }
 
     /// Load cached board types from UserDefaults (called at init, before USB reads).
@@ -751,27 +2036,29 @@ final class AppState {
     var inputMeterLevels: [Double] = []
     /// Real-time meter levels for output channels (dBFS, -60..0).
     var outputMeterLevels: [Double] = []
-    /// Peak hold values for input meters — rises instantly, decays at ~8 dB/sec.
+    /// Displayed input peak marks.
     var inputPeakHold: [Double] = []
-    /// Peak hold values for output meters — rises instantly, decays at ~8 dB/sec.
+    /// Displayed output peak marks.
     var outputPeakHold: [Double] = []
-    /// Digital input meter levels (ADAT/Optical) — 24 values for up to 12 stereo pairs.
-    /// TDM provides 8 per board (words 8-15, 24-31); remaining slots stay at -60 dB.
-    var digitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: 24)
+    /// Digital input levels in board order.
+    var digitalInputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     /// Peak hold for digital input meters.
-    var digitalInputPeakHold: [Double] = Array(repeating: -60.0, count: 24)
-    /// Digital output meter levels (ADAT/Optical) — 24 values for up to 12 stereo pairs.
-    /// TDM provides 8 per board (words 8-15, 24-31); remaining slots stay at -60 dB.
-    var digitalOutputMeterLevels: [Double] = Array(repeating: -60.0, count: 24)
+    var digitalInputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
+    /// Digital output levels in board order.
+    var digitalOutputMeterLevels: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     /// Peak hold for digital output meters.
-    var digitalOutputPeakHold: [Double] = Array(repeating: -60.0, count: 24)
+    var digitalOutputPeakHold: [Double] = Array(repeating: -60.0, count: CardLayout.digitalMeterSlots)
     /// Mixer TDM meter levels — 8 values from hardware (TDM group 2):
     ///   [0..1] = Mixer 0 SW Return L/R, [2..3] = Mixer 1 SW Return L/R,
     ///   [4..5] = Mixer 0 Master L/R,    [6..7] = Mixer 1 Master L/R.
     /// Evidence: SymphonyIO.cpp:7029-7052, SymphonyIOMixer.h:18-20.
     var mixerMeterLevels: [Double] = Array(repeating: -60.0, count: 8)
+    var mixerPeakHold: [Double] = Array(repeating: -60, count: 8)
+    var meterOvers: [DisplayMeterBank: Set<Int>] = [:]
+    @ObservationIgnored var meterHolds: [DisplayMeterBank: [MeterHold]] = [:]
+
     /// Meter polling task handle.
-    private var meterPollingTask: Task<Void, Never>?
+    var meterPollingTask: Task<Void, Never>?
     /// Whether TDM hardware metering via XPC is available (set false on first failure).
     private var tdmMeteringAvailable: Bool = true
     /// Latched per connection once the output-group TDM payload has been proven
@@ -782,6 +2069,16 @@ final class AppState {
     /// Measured on hardware 2026-09-10; see MaestroCore.TDMMeterPayload.
     private(set) var tdmOutputMeteringUnavailable: Bool = false
     private var tdmOutputEchoStreak: Int = 0
+    /// The first output-group reply of a USB connection is logged once, so a
+    /// diagnostics report shows whether the unit sends real output meters.
+    private var tdmOutputReplyLogged = false
+    /// Over USB the unit has answered the mixer meter group with real levels
+    /// on this connection (measured 2026-11-21 on a Symphony I/O: words 0-3
+    /// are each mixer's Software Return before its fader, words 4-7 each
+    /// mixer's Master). From then on the Mixer page's Software Return and
+    /// Master meters are the unit's, as in the original, and the helper's
+    /// playback peaks and the worked-out Master level are not laid over them.
+    private var usbUnitMixerMetersSeen = false
     /// Meter routing state requested on the previous poll (true = Output).
     /// A change means the firmware's next reply is its zeroed/phantom buffer
     /// (SymphonyIOMeterManager.cpp:159-163, :204-207) and must be discarded.
@@ -796,6 +2093,32 @@ final class AppState {
     private var thunderboltInputMeterWords = ThunderboltInputMeterMap.Words(channels: [], digital: [])
     private var thunderboltInputMeterWordsPollStamp: Int = -1
     private var thunderboltInputMeterLayout: CardLayout?
+    @ObservationIgnored var thunderboltCaptureRoutesCache: [DeviceUnit: (key: ThunderboltCaptureRoutesKey, routes: [ThunderboltInputMeterMap.Route])] = [:]
+    @ObservationIgnored var thunderboltInputRoutingWritten = false
+    /// ThunderBridge: the meter word each analog and digital output strip
+    /// reads, from the output table (`ThunderboltOutputMeterMap`); nil while
+    /// the cards or the table are not known, and for converters. Re-derived
+    /// every ~2 s, and at once when Output Routing is saved.
+    private var thunderboltOutputMeterWords: ThunderboltOutputMeterMap.Words?
+    @ObservationIgnored var unitBOutputMeterWords: ThunderboltOutputMeterMap.Words?
+    @ObservationIgnored var unitBOutputMeterLayout: CardLayout?
+    @ObservationIgnored var unitBOutputMeterWordsPollStamp: Int = -1
+    /// ThunderBridge: the Symphony's own output meters, read from the unit
+    /// while the Output page shows (`UnitOutputMeters`), and when they were
+    /// read. The card's snapshot through the routing map is the fallback.
+    private var symphonyOutputMeterLevels: UnitOutputMeters.Levels?
+    private var unitOutputMeterStamp = Date.distantPast
+    private var unitOutputMeterReadInFlight = false
+    private var unitOutputMeterFailures: [DeviceUnit: Int] = [.a: 0, .b: 0]
+    private var unitOutputMeterRetryAfter: [DeviceUnit: Date] = [.a: .distantPast, .b: .distantPast]
+    private var unitOutputMeterLastStart: [DeviceUnit: Date] = [:]
+    private var unitOutputMeterLastEnd: [DeviceUnit: Date] = [:]
+    private var unitOutputMeterContext: (DeviceUnit, CardLayout, ObjectIdentifier)?
+    private var unitOutputMeterLevelsByUnit: [DeviceUnit: UnitOutputMeters.Levels] = [:]
+    private var unitOutputMeterWindowStart = Date()
+    private var unitOutputMeterWindowDurations: [TimeInterval] = []
+    private var thunderboltOutputMeterWordsPollStamp: Int = -1
+    private var thunderboltOutputMeterLayout: CardLayout?
     /// Count of consecutive all-zero TDM reads. Used to detect when signal stops
     /// and begin decaying held meter values (firmware returns zeros when idle too).
     private var tdmZeroReadCount: Int = 0
@@ -808,7 +2131,19 @@ final class AppState {
 
     /// AudioDeviceID of the ASP "Symphony I/O : Maestro USB" virtual device.
     /// Used to listen for volume/mute changes from media keys.
-    private var aspDeviceID: AudioDeviceID = kAudioObjectUnknown
+    private var aspDeviceID: AudioDeviceID = kAudioObjectUnknown {
+        didSet { if aspDeviceID != oldValue { lastMacMonitorWrite = nil } }
+    }
+    private var lastMacMonitorWrite: ObservedMonitorLevel?
+    private var macVolumeOverlayAfter = ContinuousClock.now + .seconds(3)
+
+    func suppressMacVolumeOverlay() {
+        macVolumeOverlayAfter = ContinuousClock.now + .seconds(3)
+    }
+    private var micPreDAWListenerAddresses: [AudioObjectPropertyAddress] = []
+    private var micPreDAWRefreshTask: Task<Void, Never>?
+    private var micPreDAWRefreshGate = MicPreDAWRefreshGate()
+    var micPreObservationRevision = 0
     /// Timestamp of last ASP write from this app. Used to suppress feedback
     /// loops when our own writes trigger the listener callback.
     private var aspWriteTimestamp: Date = .distantPast
@@ -857,7 +2192,8 @@ final class AppState {
         deviceListenerInstalled = true
         // Seed the known set so the currently-present device isn't treated as "newly appeared"
         // at launch — we only hijack the default output on an actual plug-in event.
-        knownSymphonyDeviceIDs = Set(CoreAudioDeviceConnection.discoverAllSymphonyIO().map { $0.audioDeviceID })
+        knownSymphonyDeviceIDs = Set((lastLaunchDiscovered ?? CoreAudioDeviceConnection.discoverAllSymphonyIO())
+                                         .map { $0.audioDeviceID })
         knownDefaultOutputDeviceID = CoreAudioDeviceConnection.currentDefaultOutputDevice()
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -871,12 +2207,12 @@ final class AppState {
     }
 
     /// When a Symphony audio device last appeared in the system device list.
-    /// See `waitForUSBUnitToSettle()`.
-    private var symphonyAppearedAt: Date?
+    /// See `waitForUSBUnitToSettle()`. Internal for the tests.
+    var symphonyAppearedAt: Date?
     /// The active unit went away and has not been seen since. The reconnect loop
     /// can find the returning unit by polling before the device-list callback
     /// has stamped `symphonyAppearedAt`, so it stamps it itself.
-    private var awaitingSymphonyReturn = false
+    var awaitingSymphonyReturn = false
 
     /// How long after its audio device appears a USB unit is left alone.
     static let usbSettleInterval: TimeInterval = 3.0
@@ -884,8 +2220,19 @@ final class AppState {
     /// alone before Maestro writes to it.
     static let thunderboltSettleInterval: Duration = .seconds(2)
 
+    /// Whether a USB recovery should restore Software Return and Master now:
+    /// only the 5 s debounce.
+    nonisolated static func usbRecoveryRestoreDue(lastRecovery: Date, now: Date) -> Bool {
+        now.timeIntervalSince(lastRecovery) > 5.0
+    }
+
     /// Seconds still to wait before a unit that appeared at `appearedAt` may be
     /// written to. Zero for a unit that has been up for a while (launch, Rescan).
+    /// How much of the USB settle interval is left for the unit connected now.
+    var usbSettleRemainingNow: TimeInterval {
+        Self.usbSettleRemaining(appearedAt: symphonyAppearedAt, now: Date())
+    }
+
     nonisolated static func usbSettleRemaining(appearedAt: Date?, now: Date) -> TimeInterval {
         guard let appearedAt else { return 0 }
         let elapsed = now.timeIntervalSince(appearedAt)
@@ -959,6 +2306,9 @@ final class AppState {
             transportType = nil
             transportPresent = false
             isHardwareInitialized = false
+            invalidateUnitAIdentity()
+            invalidateUnitBIdentity()
+            unitBIdentityAttempted = false
             viewReloadToken = UUID()
             Task { await reconnectHardware() }
         }
@@ -991,7 +2341,7 @@ final class AppState {
         guard newlyAppeared else { return }
 
         // Reconnect the app's own control connection to the best (Thunderbolt-preferred) device.
-        Task { await reconnectHardware() }
+        Task { await reconnectHardware(appeared: newlyAppearedIDs) }
 
         // Then, if enabled, switch the macOS default OUTPUT device — only on a genuine plug-in.
         guard !looksLikeCoreAudioRestart else { return }
@@ -1117,12 +2467,18 @@ final class AppState {
                 guard !Task.isCancelled, self.transportType == .usb else { break }
                 if live {
                     Self.tbLog.notice("ThunderBridge endpoint live while on USB — reconnecting to prefer it")
-                    self.pendingAutoSwitchAfterReconnect = true
-                    await self.reconnectHardware()
+                    self.scheduleThunderboltSwitch()
                     break
                 }
             }
         }
+    }
+
+    @MainActor
+    @discardableResult
+    func scheduleThunderboltSwitch() -> Task<Void, Never> {
+        pendingAutoSwitchAfterReconnect = true
+        return Task { @MainActor [weak self] in await self?.reconnectHardware() }
     }
 
     // MARK: - Primary output level helpers
@@ -1146,6 +2502,7 @@ final class AppState {
     }
 
     init() {
+        // Pair migration runs only after selecting the physical mixer scope.
         // Load cached board types so routing labels are correct before USB reads complete.
         // Card simulation (debug only). Lets us run the app as hardware we do not
         // physically own -- chiefly a MicPre8, so the mic preamp UI can be seen
@@ -1165,9 +2522,19 @@ final class AppState {
         // runs and the harness talks to whatever real Symphony is plugged in,
         // exactly what the comment below says must not happen. The request was
         // impossible, so fail loudly instead of quietly doing something else.
+        // Debug only: `-MaestroSimulateSecondUnit analogADDA16+optical` adds a
+        // simulated unit B (port 2, 64 channels). It pins the session to
+        // simulation like the card simulation; unit A takes the
+        // `-MaestroSimulatePrimaryBoard`/`SecondaryBoard` cards, or unit B's.
+        let secondUnitRequest = SecondUnitSimulation.request()
+        if UserDefaults.standard.string(forKey: SecondUnitSimulation.key) != nil, secondUnitRequest == nil {
+            print("[Maestro] SECOND UNIT SIMULATION: invalid request; exiting.")
+            exit(1)
+        }
         let simulationRequest: CardConfiguration?
         do {
             simulationRequest = try SimulatedDevice.simulationRequest()
+                ?? secondUnitRequest.map { CardConfiguration(slot1: $0.slot1, slot2: $0.slot2) }
         } catch {
             print("[Maestro] CARD SIMULATION: invalid request — \(error)")
             print("[Maestro] CARD SIMULATION: refusing to fall through to real hardware; exiting.")
@@ -1187,7 +2554,11 @@ final class AppState {
         // Debug only: show the app as it would look with older converters
         // attached. No hardware is discovered or touched.
         if let name = UserDefaults.standard.string(forKey: ConnectedUnit.simulationKey) {
-            guard let unit = ConnectedUnit(simulationName: name) else {
+            // One port ("ad16x+da16x") or two ("...|..."), which means 64 channels.
+            guard let system = ConverterSystem.withStoredConfig(simulated: true, {
+                      ConverterSystem(simulationName: name, config: $0)
+                  }),
+                  let unit = system.connectedUnit else {
                 print("[Maestro] CONVERTER SIMULATION: invalid request '\(name)'; exiting.")
                 exit(1)
             }
@@ -1197,11 +2568,13 @@ final class AppState {
             primaryBoardSource = .unknown
             secondaryBoardSource = .unknown
             self.connectedUnit = unit
+            self.converterSystem = system
             self.device = SimulatedDevice.symphonyIO32ch()
             self.connectionMode = .simulated
             self.transportType = .thunderbolt
             self.statusMessage = "Simulating \(unit.modelName ?? "converters") — no hardware"
             self.isHardwareInitialized = true
+            installSleepWakeObservers()
             return
         }
 
@@ -1212,14 +2585,110 @@ final class AppState {
         // win, `readCardTypes()` would overwrite the forced board types with the
         // detected ones (and cache them), and the harness would push mixer and
         // routing writes at hardware it was never meant to touch.
-        let discovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]
+        // 0.9.8: Core Audio is not asked for its devices here. Asking it on the
+        // main thread before the window exists made Maestro bounce in the Dock
+        // whenever Core Audio was slow, as it is for a minute or two after every
+        // install (the installer restarts it). The window opens now, in the "no
+        // device" state below, and completeLaunchDiscovery() asks from a
+        // background thread and connects exactly as this did.
         if simulationRequest == nil {
-            print("[Maestro] AppState.init: Discovering Symphony IO via CoreAudio...")
-            discovered = CoreAudioDeviceConnection.discoverAllSymphonyIO()
+            launchDiscoveryPending = true
+            print("[Maestro] AppState.init: Symphony discovery deferred until the window is up")
         } else {
             print("[Maestro] CARD SIMULATION: hardware discovery skipped — session pinned to the simulated unit")
-            discovered = []
         }
+
+
+        // Fall back to simulated device. Under card simulation this must be the
+        // device that PRESENTS those cards -- its identifier.mode channel count
+        // and per-channel property scoping follow the simulated modules -- or the
+        // pages render a 16ch unit's counts over a simulated 32ch card pair and
+        // the screenshots prove nothing.
+        let simDevice = AppState.makeSimulatedDevice(configuration: simulationRequest)
+        self.device = simDevice
+        self.connectionMode = cardSimulation != nil ? .simulated : .disconnected
+        self.statusMessage = launchDiscoveryPending
+            ? "Looking for your Symphony…"
+            : AppState.simulatedStatusMessage(configuration: simulationRequest)
+        self.isHardwareInitialized = true
+        if let secondUnitRequest {
+            applySecondUnitSimulation(secondUnitRequest, identifier: simDevice.identifier)
+        }
+        installSleepWakeObservers()
+    }
+
+    private func installSleepWakeObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        sleepWakeObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.suspendTwoUnitReplay() }
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.wakeTwoUnitReplay() }
+            }
+        ]
+    }
+
+    deinit {
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in sleepWakeObservers { center.removeObserver(observer) }
+    }
+
+    /// Set by init when Core Audio still has to be asked for the Symphony.
+    var launchDiscoveryPending = false
+    /// What the launch discovery found, reused by the device-list listener and the
+    /// ThunderBridge watch so they do not ask Core Audio again straight away.
+    private(set) var lastLaunchDiscovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]?
+
+    /// Testing only: `-MaestroDebugDiscoveryDelay 20` makes the launch discovery
+    /// wait that many seconds first, as a slow Core Audio would.
+    private static var launchDiscoveryTestDelay: Double {
+        UserDefaults.standard.double(forKey: "MaestroDebugDiscoveryDelay")
+    }
+
+    /// Ask Core Audio for the Symphony from a background thread and connect to it,
+    /// as init used to. Called first by the main window's launch task.
+    @MainActor
+    func completeLaunchDiscovery() async {
+        guard launchDiscoveryPending else { return }
+        launchDiscoveryPending = false
+        let generation = wakeValidationGeneration
+        print("[Maestro] Launch: discovering Symphony IO via CoreAudio (background)...")
+        let slowNotice = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, !Task.isCancelled, self.connectionMode != .hardware else { return }
+            self.statusMessage = "Waiting for macOS audio to respond…"
+            print("[Maestro] Launch: Core Audio slow to answer — still waiting")
+        }
+        let delay = Self.launchDiscoveryTestDelay
+        let started = Date()
+        let discovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]
+        if let launchDiscoveryOperation { discovered = await launchDiscoveryOperation() }
+        else {
+            discovered = await Task.detached(priority: .userInitiated) {
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                return CoreAudioDeviceConnection.discoverAllSymphonyIO()
+            }.value
+        }
+        slowNotice.cancel()
+        lastLaunchDiscovered = discovered
+        print(String(format: "[Maestro] Launch: discovery took %.2f s", Date().timeIntervalSince(started)))
+        guard admitConnectionWork(generation: generation) else {
+            replaySuspendedReconnectIfNeeded()
+            return
+        }
+        if connectAtLaunch(discovered) {
+            viewReloadToken = UUID()
+        } else {
+            print("[Maestro] AppState.init: No Symphony IO device found via CoreAudio")
+            statusMessage = AppState.simulatedStatusMessage(configuration: nil)
+        }
+    }
+
+    /// Connect to the preferred device the launch discovery found: the code that
+    /// was the second half of init, unchanged. Returns whether a Symphony was found.
+    @MainActor
+    private func connectAtLaunch(_ discovered: [CoreAudioDeviceConnection.DiscoveredSymphonyIO]) -> Bool {
         if let pref = Self.preferredDevice(in: discovered) {
         let best = pref.device
             let audioDeviceID = best.audioDeviceID
@@ -1229,12 +2698,12 @@ final class AppState {
             if best.transportType == .thunderbolt {
                 // ── Thunderbolt path: standard CoreAudio properties → AudioDriverKit dext
                 let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                 self.device = tbDevice
                 self.connectionMode = .hardware
                 self.transportType = .thunderbolt
                 self.transportPresent = true
-                self.statusMessage = "Connected via ThunderBridge"
+                self.statusMessage = "Connected via \(self.connectionShortName)"
                 self.isHardwareInitialized = true
                 self.activeAudioDeviceID = audioDeviceID
                 // Store TB device ID for volume sync — media keys change this device directly
@@ -1256,12 +2725,12 @@ final class AppState {
                     self.isHardwareInitialized = false
                     self.thunderboltHardwareResponsive = false
                     self.viewReloadToken = UUID()
-                    return
+                    return true
                 }
             } else {
                 // ── USB path: XPC proxy → USB vendor EP0 commands
                 let xpcDevice = XPCDeviceConnection(identifier: identifier,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                 self.device = xpcDevice
                 self.connectionMode = .hardware
                 self.transportType = .usb
@@ -1271,32 +2740,7 @@ final class AppState {
                 self.activeAudioDeviceID = audioDeviceID
                 print("[Maestro] AppState.init: Connected to hardware via XPC proxy (USB)")
 
-                // Sync SW Return state with proxy — the proxy persists across app restarts
-                // so its mute/gain/pan may be stale from a previous session.
-                if let data = UserDefaults.standard.data(forKey: "mixerState_swReturn"),
-                   let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-                    xpcDevice.setSwReturnMute(saved.isMuted)
-                    xpcDevice.setSwReturnLevel(saved.level)
-                    xpcDevice.setSwReturnPan(saved.pan)
-                    print("[Maestro] AppState.init: Synced persisted SW Return to proxy")
-                } else {
-                    xpcDevice.setSwReturnMute(false)
-                    xpcDevice.setSwReturnLevel(0)
-                    xpcDevice.setSwReturnPan(0)
-                    print("[Maestro] AppState.init: Synced SW Return defaults to proxy")
-                }
-
-                // Sync routing mode with proxy
-                let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
-                xpcDevice.setRoutingMode(routingMode)
-                if routingMode == 0 {
-                    for mixerID: UInt16 in 1...2 {
-                        for ch: UInt16 in 0..<32 {
-                            xpcDevice.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                        }
-                    }
-                    print("[Maestro] AppState.init: DAW mode — force-muted HW inputs")
-                }
+                // Mixer restoration follows identity resolution.
             }
 
             // The Core Audio IOProc is an input tap, so starting it makes macOS treat
@@ -1312,24 +2756,9 @@ final class AppState {
 
             // Sync volume/mute UI with the ASP device (media keys → app knob).
             startASPVolumeSync()
-
-            return
+            return true
         }
-
-        if simulationRequest == nil {
-            print("[Maestro] AppState.init: No Symphony IO device found via CoreAudio")
-        }
-
-        // Fall back to simulated device. Under card simulation this must be the
-        // device that PRESENTS those cards -- its identifier.mode channel count
-        // and per-channel property scoping follow the simulated modules -- or the
-        // pages render a 16ch unit's counts over a simulated 32ch card pair and
-        // the screenshots prove nothing.
-        let simDevice = AppState.makeSimulatedDevice(configuration: simulationRequest)
-        self.device = simDevice
-        self.connectionMode = cardSimulation != nil ? .simulated : .disconnected
-        self.statusMessage = AppState.simulatedStatusMessage(configuration: simulationRequest)
-        self.isHardwareInitialized = true
+        return false
     }
 
     /// Status-bar text for a session on the in-memory device. Under card
@@ -1343,20 +2772,140 @@ final class AppState {
     /// Read I/O card types from hardware via USB 0xA1 (async, fire-and-forget).
     /// Retries the secondary board read with delays — some firmware revisions need
     /// time between sequential EP0 vendor reads to different board slots.
+    /// Read identity only after card/converter capabilities are known; this
+    /// keeps converter chains away from the Symphony-only 0xC0 command.
+    @MainActor
+    private func readUnitAIdentityAfterCapabilities() async {
+        guard let captured = device else { return }
+        guard cardLayout.converter == nil, cardLayout.converterLayout == nil,
+              (captured is XPCDeviceConnection || SymphonyIdentityReader.isSupported(layout: cardLayout, unit: .a)) else {
+            invalidateUnitAIdentity()
+            unitAIdentityState = .failed
+            viewReloadToken = UUID()
+            return
+        }
+        await resolveUnitIdentity(for: .a, connection: captured) {
+            if let tb = captured as? ThunderboltDeviceConnection { return await tb.readHardwareUniqueID() }
+            if let usb = captured as? XPCDeviceConnection { return await usb.readHardwareUniqueID() }
+            return nil
+        }
+    }
+
+    /// Converter (or non-Symphony) verdict: identity is invalidated and marked
+    /// failed once, not on every discovery pass. Re-invalidating made a new unit
+    /// generation each pass, rebuilding the pages keyed on it (blank window).
+    nonisolated static func converterVerdictNeedsInvalidation(isConverter: Bool,
+                                                              unitA: UnitIdentityState,
+                                                              unitB: UnitIdentityState) -> Bool {
+        isConverter && (unitA != .failed || unitB != .failed)
+    }
+
     @MainActor
     func readCardTypes() async {
+        guard hardwareSleepState != .sleeping else { cardDiscoverySkippedDuringSleep = true; return }
+        let generation = unitAGeneration
+        let connection = device as AnyObject?
+        // Loop: after each await another caller may have started a newer task.
+        while let old = cardDiscoveryTask {
+            if cardDiscoveryTaskGeneration == generation,
+               cardDiscoveryTaskConnection === connection {
+                await old.value
+                return
+            }
+            old.cancel()
+            await old.value
+            cardDiscoveryTask = nil
+            cardDiscoveryTaskGeneration = nil
+            cardDiscoveryTaskConnection = nil
+        }
+        let task = Task {
+            guard self.unitAGeneration == generation, !Task.isCancelled else { return }
+            await self.discoverCardsAndIdentity()
+        }
+        cardDiscoveryTask = task
+        cardDiscoveryTaskGeneration = generation
+        cardDiscoveryTaskConnection = connection
+        await task.value
+        startMicPreDAWSync()
+        if cardDiscoveryTaskGeneration == generation {
+            cardDiscoveryTask = nil
+            cardDiscoveryTaskGeneration = nil
+            cardDiscoveryTaskConnection = nil
+        }
+    }
+
+    @MainActor
+    private func discoverCardsAndIdentity() async {
         guard let device = self.device else { return }
+        var generation = unitAGeneration
+        /// Apply a finding of this discovery that may invalidate identity,
+        /// then continue under the new generation instead of cancelling.
+        func ownChange(_ change: () -> Void) {
+            discoveryOwnsInvalidation = true
+            change()
+            discoveryOwnsInvalidation = false
+            generation = unitAGeneration
+        }
         // What the driver found on the cable, if it is not a Symphony I/O.
-        connectedUnit = (device as? ThunderboltDeviceConnection)?.linkState()
-            .flatMap { ConnectedUnit(probeWord: $0.unitProbe) }
+        let probeWord: UInt32
+        if let tb = device as? ThunderboltDeviceConnection {
+            probeWord = await Task.detached(priority: .utility) { tb.linkState()?.unitProbe ?? 0 }.value
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+        } else { probeWord = 0 }
+        connectedUnitProbeWord = probeWord
+        ownChange { connectedUnit = ConnectedUnit(probeWord: probeWord) }
+        // The converter report (dext 131+): the stored Device Types and clock
+        // go to the driver first, then both ports are read. Port-1 converters
+        // reported there count as identified even without a probe word, so the
+        // guards that keep Symphony I/O commands away from them still hold.
+        loggedConverterNotices = []
+        if let tb = device as? ThunderboltDeviceConnection {
+            await Task.detached(priority: .utility) { Self.applyStoredConverterConfig(tb) }.value
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+            let state = await Task.detached(priority: .utility) { tb.converterState() }.value
+            guard self.device === device, !Task.isCancelled else { return }
+            let system = Self.converterSystem(state: state, probeWord: probeWord)
+            ownChange {
+                if system != converterSystem { converterSystem = system }
+                connectedUnit = connectedUnit ?? system?.connectedUnit
+            }
+        } else { ownChange { refreshConverterSystem() } }
+        // Only when the verdict changes. Re-running this on every pass made a new
+        // unit generation each time, which rebuilt the pages keyed on it on every
+        // health-loop recovery (blank window seen by Daniel, 2026-11-19).
+        if Self.converterVerdictNeedsInvalidation(isConverter: connectedUnit != nil || converterSystem != nil,
+                                                  unitA: unitAIdentityState, unitB: unitBIdentityState) {
+            ownChange {
+                invalidateUnitAIdentity()
+                invalidateUnitBIdentity()
+                unitAIdentityState = .failed
+                unitBIdentityState = .failed
+            }
+        }
         // Needed before the input routing is laid out (thunderboltCaptureSlot1),
         // so it is awaited here; read off the main thread like every other
         // user-client call that can wait on the driver.
         if let tb = device as? ThunderboltDeviceConnection {
             let build = await Task.detached(priority: .utility) { tb.servingDriverBuild() }.value
-            if (self.device as? ThunderboltDeviceConnection) === tb { servingDextBuild = build }
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+            // A new connection reads the order afresh, and that is cleared
+            // before the build is set (its change handling compares against
+            // the order). The same connection found again keeps what it read.
+            if thunderboltAppliedChannelOrderConnection !== tb {
+                thunderboltAppliedChannelOrder = nil
+                thunderboltAppliedChannelOrderConnection = tb
+                servingDextBuild = build
+            } else {
+                noteServingDextBuild(build, from: tb)
+            }
+            // Which order the driver programmed the tables in, before anything
+            // reads the saved routing (and the one-time reset that may follow).
+            await refreshThunderboltChannelOrder(tb)
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         } else {
             servingDextBuild = nil
+            thunderboltAppliedChannelOrder = nil
+            thunderboltAppliedChannelOrderConnection = nil
         }
         if let connectedUnit {
             print("[Maestro] Connected unit is not a Symphony I/O: \(connectedUnit.displayName)")
@@ -1372,16 +2921,25 @@ final class AppState {
             } else {
                 major = nil
             }
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             if slot == 0 { primaryBoardHardwareMajor = major } else { secondaryBoardHardwareMajor = major }
         }
+        refreshSecondPortState()
+        if let secondPortState {
+            print("[Maestro] Two-port driver: \(secondPortState.rawText)")
+        }
+        startPortSelectionObservation()
         // ThunderBridge's dext returns a validity bit alongside each raw
         // OptionBoardType value, so a valid raw zero means the slot was
         // measured empty. USB's proxy cannot make that distinction and keeps
         // the conservative unknown behavior below.
         let thunderboltReadDistinguishesEmptySlot = device is ThunderboltDeviceConnection
-        if let raw = (try? await device.getProperty(PropertyAddress(selector: .primaryBoardType)))?.asUInt32,
+        let primaryRaw = try? await device.getProperty(PropertyAddress(selector: .primaryBoardType))
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+        if let raw = primaryRaw?.asUInt32,
            raw <= UInt32(UInt8.max),
            let card = IOCardType(rawValue: UInt8(raw)) {
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             self.primaryBoardType = card
             // A live read of 0 means "nothing reported", not "measured empty".
             // The secondary path already refuses to record .none for exactly this
@@ -1392,28 +2950,90 @@ final class AppState {
             self.primaryBoardSource = (card == .none && !thunderboltReadDistinguishesEmptySlot)
                 ? .unknown : .detected
             print("[Maestro] Primary board: \(card.digitalLabel) (raw=\(raw))")
+            if self.primaryBoardSource == .detected {
+                noteBoardRead(slot: 0, card: card, connection: device, generation: generation)
+            } else {
+                await noteUSBEmptySlotIfAnswered(slot: 0, connection: device, generation: generation)
+            }
         }
 
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         // Secondary board: retry up to 3 times with increasing delays.
         // The XMOS USB controller may need time between sequential slot reads.
         for attempt in 1...3 {
             if attempt > 1 {
-                try? await Task.sleep(for: .milliseconds(100 * attempt))
+                do { try await Task.sleep(for: .milliseconds(100 * attempt)) } catch { return }
+                guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
             }
-            if let raw = (try? await device.getProperty(PropertyAddress(selector: .secondaryBoardType)))?.asUInt32,
+            let secondaryRaw = try? await device.getProperty(PropertyAddress(selector: .secondaryBoardType))
+            guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
+            if let raw = secondaryRaw?.asUInt32,
                raw <= UInt32(UInt8.max),
                let card = IOCardType(rawValue: UInt8(raw)),
                (card != .none || thunderboltReadDistinguishesEmptySlot) {
+                guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
                 self.secondaryBoardType = card
                 self.secondaryBoardSource = .detected
+                noteBoardRead(slot: 1, card: card, connection: device, generation: generation)
                 print("[Maestro] Secondary board: \(card.digitalLabel) (raw=\(raw)) [attempt \(attempt)]")
                 saveBoardTypeCache()
+                await readUnitAIdentityAfterCapabilities()
                 return
             }
         }
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         print("[Maestro] Secondary board: not detected after 3 attempts (hardware may have 1 board or slot 1 empty)")
+        await noteUSBEmptySlotIfAnswered(slot: 1, connection: device, generation: generation)
+        guard self.device === device, unitAGeneration == generation, !Task.isCancelled else { return }
         // Still save whatever we got (primary may have succeeded)
         saveBoardTypeCache()
+        await readUnitAIdentityAfterCapabilities()
+    }
+
+    /// A ThunderBridge link recovery in place (no disconnect, so no connect
+    /// replay): the driver has put its board-order capture table back on the
+    /// unit. Everything the Mac owns goes back in the connect order.
+    @MainActor
+    func restoreAfterLinkRecovery(_ tb: ThunderboltDeviceConnection) async {
+        // D5 never runs across an in-place recovery.
+        cancelCardMixerRestore()
+        // The recovery itself put the driver's table on
+        // the unit, whether or not the replay below can
+        // run (cards unread, identity unknown): until a
+        // replay lands, strips and meters are numbered
+        // from the driver's table, not the saved one.
+        thunderboltInputRoutingWritten = false
+        invalidateThunderboltInputMeterMap()
+        // The strips have just been renumbered: the
+        // mixers are owed a complete write whether or
+        // not the input replay below succeeds.
+        tb.cardMixers.noteOwed()
+        // The driver lays its capture table out from the
+        // cards it read during the recovery (a Symphony off
+        // at Start, or a card swapped while off): read them
+        // too, so the grid and the replay use the same table.
+        retryFailedIdentityOnRecovery()
+        await readCardTypes()
+        // The whole ordered sequence, not the input
+        // routing alone: the output table, the card
+        // mixers, the routes they feed, then the input
+        // routing.
+        invalidateCardOutputTable(tb)
+        // A4: the unit may have come back at its own
+        // start-up levels (a power cycle): the quieter of
+        // those and the saved ones, before the routing and
+        // mixer restore below, which takes seconds. The
+        // device settings are not replayed on a recovery,
+        // so this is the only place it runs then.
+        if device === tb { await applyMonitorLevelsAtConnect(tb) }
+        if recallInFlight {
+            replayDeferral.request()
+        } else if usesTwoUnitReplay {
+            twoUnitReplayNeeded = true
+        } else {
+            await syncInputRoutingToHardware(restoreFollows: true)
+            await syncOutputRoutingToHardware()
+        }
     }
 
     /// Sync persisted output routing to hardware on connect/reconnect.
@@ -1421,7 +3041,27 @@ final class AppState {
     /// Called after readCardTypes() so board types are available for byte mapping.
     @MainActor
     func syncOutputRoutingToHardware() async {
+        guard !hardwareWritesSuspended else { return }
+        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
         guard let device = self.device else { return }
+        // Converters: their own routes, kept per chain, never the Symphony
+        // I/O table below (same product ID) and never behind the card
+        // detection guard (a converter has no option cards).
+        if converterRoutingSurface {
+            // The Symphony I/O output table (and the rule that waits for a
+            // card mixer to be written) does not apply to converters.
+            (device as? ThunderboltDeviceConnection)?.cardMixers.isBypassed = true
+            // Nothing is replayed while a unit is not identified (no layout).
+            // From the default placement first, so no route the driver kept
+            // from before stays on the card.
+            await replayConverterRouting(resetFirst: true)
+            return
+        }
+        // ThunderBridge: the restore checks the unit's identity itself, so
+        // that an unidentified unit is retried and said in the status bar.
+        guard device is ThunderboltDeviceConnection || connectionMode != .hardware || unitAIdentity != nil else {
+            return
+        }
         // The cache is keyed by product ID, so ThunderBridge (0x12) and the USB
         // modes keep separate tables. On ThunderBridge the dext replays its
         // default routing on every Start and in-place recovery, so without this
@@ -1430,45 +3070,92 @@ final class AppState {
         // after a card change, so on ThunderBridge require this session's card
         // types to have been detected (the same provenance rule Reset Routing
         // applies) before writing anything.
-        if transportType == .thunderbolt,
-           let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
-            print("[Maestro] syncOutputRouting: skipped on ThunderBridge — \(reason)")
+        if let tb = device as? ThunderboltDeviceConnection, transportType == .thunderbolt {
+            // The ordered restore: the table, the card mixers it routes, then
+            // the routes they feed (`restoreThunderboltOutputTable`).
+            tb.cardMixers.isBypassed = false
+            // Nothing owed for the driver state now serving: the restore has
+            // already put every route and both mixers on the card. A second
+            // one would rewrite them all and show "Restoring" again.
+            guard cardOutputTableReplayNeeded || tb.cardMixers.needsRestore else { return }
+            await restoreThunderboltOutputTable(tb)
             return
         }
+        await syncUSBOutputRouting(device)
+    }
+
+    /// USB: the saved Output Routing rows over the helper's direct default
+    /// table (it programs that every time it configures the unit). Returns
+    /// whether every saved route is on the unit.
+    ///
+    /// A route fed by a mixer the restore has not written is not skipped: an
+    /// earlier session's route may still be on the unit, so its destination
+    /// is disabled (the "no source" byte the grid writes when a route is
+    /// removed) and the route stays owed until the mixer is written.
+    ///
+    /// `mixerFedOnly`: the last step of the USB restore. Its first step
+    /// (`usbPointRoutesAwayFromMixers`) has already written the direct routes.
+    @MainActor
+    @discardableResult
+    func syncUSBOutputRouting(_ device: any DeviceConnection, mixerFedOnly: Bool = false) async -> Bool {
         let id = device.identifier
-        let cache = RoutingStateCache(direction: "output", productID: id.productID)
-        if transportType == .thunderbolt {
-            Self.migrateMainPairToMixer(cache: cache, mixerRow: id.mode.channelCount / 2,
-                                        board1: primaryBoardType, board2: secondaryBoardType)
-        }
-        guard let routes = cache.loadMulti(), !routes.isEmpty else {
-            print("[Maestro] syncOutputRouting: no cached routes, proxy defaults apply")
-            return
+        let cache = peripheralRoutingCache(direction: "output")
+        let routes = cache.loadMulti() ?? [:]
+        guard !routes.isEmpty else {
+            print("[Maestro] syncOutputRouting: no saved routes, the direct default stands")
+            syncUSBHelperSoftwareReturn()
+            return true
         }
         let board1 = self.primaryBoardType
         let board2 = self.secondaryBoardType
         let swPairs = (id.mode.channelCount) / 2
-        var written = 0
+        var written = 0, failed = 0, withheld = 0
         for (row, cols) in routes.sorted(by: { $0.key < $1.key }) {
             for col in cols.sorted() {
+                guard self.device === device, !hardwareWritesSuspended else { return false }
                 guard let destByte = IOCardType.columnToRoutingByte(
                     col: col, isInput: false, board1: board1, board2: board2
                 ) else { continue }
                 let srcLeft: UInt8
-                if row < swPairs {
-                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(row * 2)
+                if let pair = TwoUnitOutputRouting.playbackPair(
+                    unitARow: row, unitAPairs: swPairs, unitBActive: unitBOnCard) {
+                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(pair * 2)
                 } else if row == swPairs {
                     srcLeft = SymphonyIORoutingAddress.mixer0Base
                 } else if row == swPairs + 1 {
                     srcLeft = SymphonyIORoutingAddress.mixer1Base
                 } else { continue }
+                if mixerFedOnly, CardOutputTableOrder.mixer(ofSource: srcLeft) == nil { continue }
                 do {
-                    try await writeOutputRoutePair(destLeft: destByte, srcLeft: srcLeft, device: device)
-                    written += 1
-                } catch {}
+                    // A mixer is routed only once its strips are on the unit
+                    // (`restoreUSBUnit`); `writeOutputRoute` disables the
+                    // destination until then and reports it deferred.
+                    if try await writeOutputRoutePair(destLeft: destByte, srcLeft: srcLeft, device: device,
+                                                      restoring: true) == .deferred {
+                        withheld += 1
+                    } else {
+                        written += 1
+                    }
+                } catch {
+                    failed += 1
+                    print("[Maestro] syncOutputRouting: output \(destByte) ← source \(srcLeft) failed: \(error)")
+                }
             }
         }
-        print("[Maestro] syncOutputRouting: wrote \(written) cached routes to hardware")
+        print("[Maestro] syncOutputRouting: wrote \(written) saved routes to hardware"
+            + (failed == 0 ? "" : ", \(failed) failed")
+            + (withheld == 0 ? "" : ", \(withheld) mixer route(s) owed and their outputs disabled: that mixer's strips are not on the unit yet"))
+        syncUSBHelperSoftwareReturn()
+        return failed == 0 && withheld == 0
+    }
+
+    /// Whether the USB restore has written this mixer in full on this
+    /// connection since the unit last came back (`usbMixersWritten`).
+    @MainActor
+    func usbMixerIsWritten(_ mixer: Int) -> Bool {
+        guard let record = usbMixersWritten, record.generation == unitAGeneration,
+              record.mixers.indices.contains(mixer) else { return false }
+        return record.mixers[mixer]
     }
 
     /// Put the input routing choices saved on this Mac back on a ThunderBridge
@@ -1480,9 +3167,15 @@ final class AppState {
     /// provenance rule), since a column means a different routing byte on
     /// other cards. Then the unit's 32 capture routes are read back and logged
     /// once, as evidence of what it really carries.
+    ///
+    /// `restoreFollows`: connect and link recovery, where the output sync
+    /// runs next; the mixers are only marked owed for it (see
+    /// `thunderboltCaptureTableDidChange`).
     @MainActor
-    func syncInputRoutingToHardware() async {
-        guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return }
+    func syncInputRoutingToHardware(restoreFollows: Bool = false) async {
+        guard !hardwareWritesSuspended, connectionMode != .hardware || unitAIdentity != nil else { return }
+        if usesTwoUnitReplay { twoUnitReplayNeeded = true; return }
+        guard transportType == .thunderbolt, let tb = device as? ThunderboltDeviceConnection else { return await syncUSBInputRoutingToHardware() }
         // Symphony I/O routing. Nothing is sent to a converter unprompted, the
         // read-back included (see syncDeviceSettingsToHardware).
         guard connectedUnit == nil else {
@@ -1500,15 +3193,31 @@ final class AppState {
         defer { if let recoveryCountAtStart { thunderboltSeenRecoveryCount = recoveryCountAtStart } }
         if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) {
             print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
+        } else if let reason = thunderboltChannelOrderUnknownReason {
+            // The rows mean other inputs in the other order: nothing is sent
+            // until the driver says which one it programmed.
+            print("[Maestro] syncInputRouting: skipped on ThunderBridge — \(reason)")
+            inputRoutingReplayNeeded = true
         } else {
-            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
+            let cache = peripheralRoutingCache(direction: "input")
             if ThunderboltInputRoutingMigration.run(routingKey: cache.key) {
                 print("[Maestro] syncInputRouting: cleared input routing saved before 0.8.40 (made on the old grid); the driver's default stands")
             }
-            let writes = InputRoutingReplay.writes(
+            // Once after the routing and mixer reset: the default table first,
+            // because a driver that kept running still has the unit on the
+            // routes the reset removed from this Mac.
+            let resetPending = RoutingMixerReset.isPending(.thunderboltInputRouting)
+            let wasWritten = thunderboltInputRoutingWritten
+            // The card input of every strip as the table on the unit numbers
+            // them now: the mixers were written, or are owed, with these.
+            let stripsBefore = thunderboltStripInputNumbers()
+            thunderboltInputRoutingWritten = false
+            var writes = resetPending ? thunderboltDefaultInputRoutes(unit: .a) : []
+            writes += InputRoutingReplay.writes(
                 saved: cache.load() ?? [:], columns: cardLayout.inputRoutingColumns,
                 pairCount: tb.identifier.mode.channelCount / 2)
             var written = 0
+            var allSucceeded = true
             for write in writes {
                 do {
                     try await tb.setProperty(
@@ -1516,69 +3225,241 @@ final class AppState {
                         value: .uint32(UInt32(write.source)))
                     written += 1
                 } catch {
+                    allSucceeded = false
                     print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
                 }
             }
-            print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) saved input routes")
+            print("[Maestro] syncInputRouting: wrote \(written) of \(writes.count) input routes\(resetPending ? " (default table, then saved)" : " (saved)")")
+            if resetPending, written == writes.count, self.device === tb {
+                var cardReset = true
+                if symphonyCardInputs.channelCount > 0 {
+                    cardReset = await applySymphonyCardInputs([:], reset: true)
+                }
+                if cardReset { RoutingMixerReset.clearPending(.thunderboltInputRouting) }
+            }
+            thunderboltInputRoutingWritten = allSucceeded && written == writes.count
+            inputRoutingReplayNeeded = !allSucceeded || written != writes.count
+            // The table on the unit is now the saved one, or (after a failed
+            // write) not known to be: the strips' card inputs may have moved,
+            // so the mixers are owed a complete write with the new numbers. At
+            // connect and after a recovery the restore that follows covers
+            // it; after a retry here it runs at once. Not when a replay that
+            // had failed fails again (nothing changed, and the health loop
+            // retries it every cycle), nor when the saved table was on the
+            // unit already, was written again and every strip keeps its card
+            // input. With the table not known to be the saved one before
+            // (connect, recovery, a reset), the mixers are always owed.
+            let moved = !wasWritten || !thunderboltInputRoutingWritten
+                || thunderboltStripInputNumbers() != stripsBefore
+            if thunderboltInputRoutingWritten || wasWritten, moved {
+                thunderboltCaptureTableDidChange(startRestore: !restoreFollows)
+            } else {
+                invalidateThunderboltInputMeterMap()
+            }
         }
+        await replaySymphonyCardInputs()
         await tb.logInputRoutes()
     }
 
-    static let mainPairMixerMigrationKey = "thunderboltMainPairMixerMigration_v1"
-
-    /// One-time, ThunderBridge only: a saved "Software 1-2 → main pair" becomes
-    /// "Mixer 1 → main pair".
-    ///
-    /// Until 0.8.36 that saved route was quietly sent through card mixer 1, so
-    /// it is what the user has been hearing: Software Return, Master and input
-    /// monitoring all in the path. From 0.8.36 the same route is truly direct.
-    /// Replaying it unchanged would silently remove the mixer from their main
-    /// outputs on update. Relabelling it keeps the sound and makes the grid say
-    /// what is happening; choosing Software 1-2 afterwards gives the direct
-    /// route.
-    static func migrateMainPairToMixer(cache: RoutingStateCache, mixerRow: Int,
-                                       board1: IOCardType, board2: IOCardType,
-                                       defaults: UserDefaults = .standard) {
-        guard !defaults.bool(forKey: mainPairMixerMigrationKey) else { return }
-        defaults.set(true, forKey: mainPairMixerMigrationKey)
-        guard var routes = cache.loadMulti(), let softwarePair = routes[0] else { return }
-        let mainColumn = (0..<64).first {
-            IOCardType.columnToRoutingByte(col: $0, isInput: false, board1: board1, board2: board2)
-                == SymphonyIORoutingAddress.ioBoard0Base
+    /// Over USB the unit holds its capture table until it is power-cycled, and
+    /// comes back at its own default after one. The saved choices are put back
+    /// on connect and after a recovery, as the original did
+    /// (og_source/maestrolink/Software/SymphonyIO.cpp:4692-4701: the routing
+    /// controller's ApplySettingsToHardware in the USB Audio mode). Only rows
+    /// the user picked are written, except once after the routing and mixer
+    /// reset, when the original's default table
+    /// (SymphonyIOUSBAudioRoutingController::ResetInputRouting) goes first so a
+    /// unit that was never power-cycled does not keep the removed routes.
+    /// Card types must have been read this session, as for Reset Routing.
+    /// The default table after a front-panel reset is also written when both
+    /// slots were read on this connection, one of them seen empty
+    /// (`frontPanelResetCardRefusal`): the reset was applied on that reading.
+    @MainActor
+    private func syncUSBInputRoutingToHardware() async {
+        guard let usb = device as? XPCDeviceConnection, connectedUnit == nil else { return }
+        let resetPending = RoutingMixerReset.isPending(.usbInputRouting)
+        if let reason = RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading),
+           !resetPending || frontPanelResetCardRefusal(connection: usb, generation: unitAGeneration) != nil {
+            print("[Maestro] syncInputRouting: skipped over USB — \(reason)")
+            return
         }
-        guard let mainColumn, softwarePair.contains(mainColumn) else { return }
-        let remaining = softwarePair.subtracting([mainColumn])
-        if remaining.isEmpty { routes.removeValue(forKey: 0) } else { routes[0] = remaining }
-        routes[mixerRow, default: []].insert(mainColumn)
-        cache.save(routes)
-        print("[Maestro] Output routing: saved Software 1-2 → main pair relabelled as Mixer 1 (it always went through the mixer)")
+        let channels = usb.identifier.mode.channelCount
+        var writes = resetPending
+            ? SymphonyIODefaultRouting.inputRoutes(
+                board0: .init(analog: primaryBoardType.analogInputChannels,
+                              digital: primaryBoardType.digitalInputChannels),
+                board1: .init(analog: secondaryBoardType.analogInputChannels,
+                              digital: secondaryBoardType.digitalInputChannels),
+                usbChannelCount: channels)
+            : []
+        writes += InputRoutingReplay.writes(
+            saved: peripheralRoutingCache(direction: "input").load() ?? [:],
+            columns: cardLayout.inputRoutingColumns, pairCount: channels / 2)
+        guard !writes.isEmpty else { return }
+        var written = 0
+        for write in writes {
+            guard self.device === usb, !hardwareWritesSuspended else { return }
+            if written > 0 { try? await Task.sleep(for: .milliseconds(25)) }
+            do {
+                try await usb.setProperty(
+                    PropertyAddress(selector: .routing, scope: .input, element: UInt32(write.destination)),
+                    value: .uint32(UInt32(write.source)))
+                written += 1
+            } catch {
+                print("[Maestro] syncInputRouting: dest \(write.destination) failed: \(error)")
+            }
+        }
+        print("[Maestro] syncInputRouting: \(written) of \(writes.count) input routes on the unit over USB (sent or already there)\(resetPending ? " (default table, then saved)" : " (saved)")")
+        if resetPending, written == writes.count { RoutingMixerReset.clearPending(.usbInputRouting) }
     }
 
     /// Write one mono output route to whichever routing stage the transport
     /// uses: the Symphony's `0x31` table over USB, the ThunderBridge card's
     /// output routing registers on ThunderBridge (`ThunderboltCardRouting`).
+    ///
+    /// A mixer is never routed to an output before that mixer is the user's:
+    /// over ThunderBridge the connection decides (`setCardOutputRoute`), over
+    /// USB the restore's record (`usbMixerIsWritten`). Such a route is
+    /// `.deferred`, not an error: the choice is saved and shown, the
+    /// destination is disabled meanwhile (never left on a stale route), the
+    /// status bar says so, and the restore sends it once the mixer is written.
     @MainActor
-    func writeOutputRoute(destination: UInt8, source: UInt8, device: any DeviceConnection) async throws {
+    @discardableResult
+    func writeOutputRoute(destination: UInt8, source: UInt8, device: any DeviceConnection,
+                          restoring: Bool = false) async throws -> CardWriteResult {
+        if !restoring { outputRouteEdits &+= 1 }
         if let thunderbolt = device as? ThunderboltDeviceConnection {
-            guard let route = ThunderboltCardRouting.route(destination: destination, source: source) else {
+            // Converters route through `applyConverterRouting` (their own
+            // grid and channels); this path is the Symphony I/O table.
+            // The XLink channel depends on the order the driver programmed;
+            // nothing is sent while it has not said which.
+            if let reason = thunderboltChannelOrderUnknownReason {
+                throw DeviceConnectionError.transportError("Output route not sent: \(reason)")
+            }
+            guard let route = thunderboltCardRoute(destination: destination, source: source, unitBActive: unitBOnCard) else {
                 throw DeviceConnectionError.transportError(
                     "No ThunderBridge card route for output \(destination) ← source \(source)")
             }
-            try thunderbolt.setCardOutputRoute(route)
-            return
+            let result = try await Task.detached(priority: .userInitiated) {
+                let result = try thunderbolt.setCardOutputRoute(route)
+                if result == .deferred { _ = try thunderbolt.setCardOutputRoute(CardOutputTableOrder.disabled(route)) }
+                return result
+            }.value
+            if result == .deferred, !restoring {
+                outputRouteDeferredSinceSave = true
+                cardOutputTableReplayNeeded = true
+                cardOutputRetryAfter = .distantPast
+                updateRestoreStatus()
+            }
+            return result
         }
-        try await device.setProperty(
-            PropertyAddress(selector: .routing, scope: .output, element: UInt32(destination)),
-            value: .uint32(UInt32(source)))
+        return try await writeUSBRoute(destination: destination, source: source, device: device, restoring: restoring)
     }
 
     /// Write a stereo output route (left + right channel) — see ``writeOutputRoute``.
     @MainActor
-    func writeOutputRoutePair(destLeft: UInt8, srcLeft: UInt8, device: any DeviceConnection) async throws {
-        try await writeOutputRoute(destination: destLeft, source: srcLeft, device: device)
-        try await writeOutputRoute(destination: destLeft &+ 1,
-                                   source: SymphonyIORoutingAddress.rightChannelSource(of: srcLeft),
-                                   device: device)
+    @discardableResult
+    func writeOutputRoutePair(destLeft: UInt8, srcLeft: UInt8, device: any DeviceConnection,
+                              restoring: Bool = false) async throws -> CardWriteResult {
+        let left = try await writeOutputRoute(destination: destLeft, source: srcLeft, device: device,
+                                              restoring: restoring)
+        let right = try await writeOutputRoute(destination: destLeft &+ 1,
+                                               source: SymphonyIORoutingAddress.rightChannelSource(of: srcLeft),
+                                               device: device, restoring: restoring)
+        return left == .deferred || right == .deferred ? .deferred : .written
+    }
+
+    /// The software output a speaker-set pair goes back to when sets are
+    /// removed (and the source of Line 1-2 when nothing is saved for it):
+    /// on ThunderBridge the one the driver's playback table plays on that
+    /// output in its channel order (analog first from driver 150, by
+    /// position before); over USB by position, as before.
+    func speakerSetDefaultSource(forDestination destination: UInt8) -> UInt8 {
+        if transportType == .thunderbolt,
+           let source = thunderboltDefaultOutputRoutes(unit: .a).first(where: { $0.destination == destination })?.source,
+           source != SymphonyIORoutingAddress.none {
+            return source
+        }
+        let hostBase = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb)
+        let boardBase = destination >= SymphonyIORoutingAddress.ioBoard1Base
+            ? SymphonyIORoutingAddress.ioBoard1Base : SymphonyIORoutingAddress.ioBoard0Base
+        let channel = (destination >= SymphonyIORoutingAddress.ioBoard1Base ? 16 : 0)
+            + Int(destination - boardBase)
+        return hostBase + UInt8(channel)
+    }
+
+    /// Match the legacy routing side effect of changing the Analog Out Format.
+    /// When speaker sets are added, every new pair repeats the source feeding
+    /// Line 1-2. When sets are removed, those pairs return to the defaults the
+    /// original routing controller uses (`SymphonyPCIeRoutingController.cpp:2056-2093`,
+    /// `SymphonyIORoutingController.cpp:612-664`).
+    @MainActor
+    func applySpeakerSetRouting(from oldMode: UInt32, to newMode: UInt32,
+                                device: (any DeviceConnection)?) async {
+        guard !converterRoutingSurface, let device, device === self.device else { return }
+        let oldCount = SpeakerOutputLogic.routingSpeakerSetCount(mode: oldMode)
+        let newCount = SpeakerOutputLogic.routingSpeakerSetCount(mode: newMode)
+        guard oldCount != newCount else { return }
+        let analogColumns = cardLayout.outputRoutingColumns.filter { !$0.isDigital }
+        guard analogColumns.count >= max(oldCount, newCount) else { return }
+
+        let hostBase = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb)
+        let firstDestination = analogColumns[0].routingByte
+        let cached = cachedOutputRouteMap()
+        func defaultPlaybackSource(for destination: UInt8) -> UInt8 {
+            speakerSetDefaultSource(forDestination: destination)
+        }
+        let source = cached[firstDestination] ?? defaultPlaybackSource(for: firstDestination)
+        let sourceRow: Int? = {
+            if source == SymphonyIORoutingAddress.mixer0Base { return device.identifier.mode.channelCount / 2 }
+            if source == SymphonyIORoutingAddress.mixer1Base { return device.identifier.mode.channelCount / 2 + 1 }
+            guard source >= hostBase else { return nil }
+            let offset = Int(source - hostBase)
+            guard offset.isMultiple(of: 2), offset < device.identifier.mode.channelCount else { return nil }
+            return offset / 2
+        }()
+
+        var saved = peripheralRoutingCache(direction: "output").loadMulti() ?? [:]
+        func removeColumn(_ column: Int) {
+            for row in saved.keys {
+                saved[row]?.remove(column)
+                if saved[row]?.isEmpty == true { saved.removeValue(forKey: row) }
+            }
+        }
+        func addColumn(_ column: Int, to row: Int) {
+            removeColumn(column)
+            saved[row, default: []].insert(column)
+        }
+
+        if newCount > oldCount, let sourceRow {
+            for pair in 1..<newCount {
+                let destination = analogColumns[pair].routingByte
+                guard let column = analogColumns.firstIndex(where: { $0.routingByte == destination }) else { continue }
+                do {
+                    _ = try await writeOutputRoutePair(destLeft: destination, srcLeft: source,
+                                                        device: device)
+                    addColumn(column, to: sourceRow)
+                } catch {
+                    print("[Maestro] speaker-set route (destination) failed: \(error)")
+                }
+            }
+        } else if newCount < oldCount {
+            for pair in newCount..<oldCount {
+                let destination = analogColumns[pair].routingByte
+                let defaultSource = defaultPlaybackSource(for: destination)
+                let row = Int(defaultSource - hostBase) / 2
+                guard let column = analogColumns.firstIndex(where: { $0.routingByte == destination }) else { continue }
+                do {
+                    _ = try await writeOutputRoutePair(destLeft: destination, srcLeft: defaultSource,
+                                                        device: device)
+                    addColumn(column, to: row)
+                } catch {
+                    print("[Maestro] speaker-set default route (destination) failed: \(error)")
+                }
+            }
+        }
+        peripheralRoutingCache(direction: "output").save(saved)
+        outputRoutingSaved()
     }
 
     /// Write the settings saved on this Mac back to the unit on connect/reconnect.
@@ -1590,18 +3471,71 @@ final class AppState {
     /// the user last chose. Only settings that were changed through Maestro are
     /// stored, so a unit nobody has configured here is left alone.
     @MainActor
-    func syncDeviceSettingsToHardware() async {
-        guard connectionMode == .hardware, isHardwareInitialized, let device else { return }
+    @discardableResult
+    func syncDeviceSettingsToHardware(deferLineSpeakerMode: Bool = false) async -> Bool {
+        guard !hardwareWritesSuspended else { return false }
+        // Over USB the monitor mode goes first and always, also for a unit
+        // whose identity could not be read: the saved mode, or Stereo when
+        // none is saved, as the original
+        // (og_source/maestrolink/Software/SymphonyIO.cpp:4669, default :128).
+        // The helper used to force Stereo each time it configured the unit and
+        // no longer writes the mode at all. Over ThunderBridge the driver
+        // reads the unit's mode at start and writes it back, so nothing is
+        // added there.
+        if let xpc = device as? XPCDeviceConnection, connectionMode == .hardware, connectedUnit == nil,
+           let mode = await xpc.applySpeakerOutputMode() {
+            guard self.device === xpc else { return false }
+            speakerOutputMode = mode
+        }
+        guard unitAIdentity != nil else { return false }
+        if usesTwoUnitReplay {
+            // A4: unit A's levels at connect also with two units (the step
+            // reads the unit's own speaker mode). Unit B keeps its own.
+            if let tb = device as? ThunderboltDeviceConnection { await applyMonitorLevelsAtConnect(tb) }
+            twoUnitReplayNeeded = true
+            return false
+        }
+        guard connectionMode == .hardware, isHardwareInitialized, let device else { return false }
         // These are Symphony I/O settings. A converter does not have them, and
         // what its firmware does with Symphony commands is unknown, so nothing
         // is sent to one unprompted.
         guard connectedUnit == nil else {
             print("[Maestro] syncDeviceSettings: skipped — connected unit is not a Symphony I/O")
-            return
+            return false
         }
         let replay: DeviceSettingsReplay
+        var deferredLine = false
         if let tb = device as? ThunderboltDeviceConnection {
-            replay = await tb.reapplyStoredSettings()
+            if cardLayout.slot2 == .micPre8 {
+                let link = await Task.detached(priority: .utility) { tb.linkState() }.value
+                // The read suspends the main actor. Recheck every admission
+                // guard before applying a single-unit replay; a converter or
+                // two-unit transition must never inherit this target.
+                guard unitAIdentity != nil, connectedUnit == nil,
+                      connectionMode == .hardware, isHardwareInitialized,
+                      !usesTwoUnitReplay, converterSystem == nil,
+                      self.device === tb else { return false }
+                applyPhantomObservations(link)
+            }
+            // A saved Line mode takes the monitor level out of the speaker
+            // path (full level). On a connect it waits for the routing
+            // restore that follows (`syncSavedStateToHardware`), so the
+            // speakers never play the unit's old routing at full level.
+            deferredLine = deferLineSpeakerMode && tb.storedSpeakerModeIsLine
+            replay = await tb.reapplyStoredSettings(
+                excluding: deferredLine ? [.speakerOutputMode] : [])
+            await replaySavedBoardClock(tb)
+            guard self.device === tb else { return false }
+            // A4: after the monitor mode, as the original wrote the levels
+            // after it (SymphonyIO.cpp:4669-4670).
+            await applyMonitorLevelsAtConnect(tb)
+            guard self.device === tb else { return false }
+            // B7: one unit's Loop Sync output, which the driver starts off
+            // each session.
+            if loopSyncOneUnit {
+                await refreshLoopSync()
+                guard self.device === tb else { return false }
+            }
             // The monitor mode is shown outside the Output tab too; start from
             // the saved one rather than the built-in default.
             if let mode = tb.settingsStore.value(
@@ -1609,26 +3543,50 @@ final class AppState {
                 speakerOutputMode = mode
             }
         } else if let xpc = device as? XPCDeviceConnection {
+            // The monitor mode was applied above (`applySpeakerOutputMode`).
             replay = await xpc.reapplyStoredSettings()
         } else {
-            return
+            return false
+        }
+        // `MAESTRO_USB_REPLAY_SETTINGS=0` turns this off over USB too.
+        var channelReplay = AnalogChannelSettingsReplay.Result()
+        if AnalogChannelSettingsReplay.runs(overUSB: device is XPCDeviceConnection,
+                                            usbReplayEnabled: XPCDeviceConnection.replaysOnConnect) {
+            let inputStates: [InputChannelState] = channelStateStore.load(ChannelStateStore.inputKey) ?? []
+            let outputStates: [OutputChannelState] = channelStateStore.load(ChannelStateStore.outputKey) ?? []
+            channelReplay = await AnalogChannelSettingsReplay.apply(
+                inputs: inputStates,
+                outputs: outputStates,
+                layout: cardLayout,
+                device: device,
+                identity: unitAIdentity,
+                spacing: device is XPCDeviceConnection ? .milliseconds(25) : nil)
+        }
+        if channelReplay.applied > 0 || channelReplay.failed > 0 {
+            print("[Maestro] syncDeviceSettings: " + String(channelReplay.applied)
+                + " analog channel setting(s) on the unit (sent or already there)"
+                + (channelReplay.skipped == 0 ? "" : ", " + String(channelReplay.skipped) + " already set")
+                + (channelReplay.failed == 0 ? "" : ", " + String(channelReplay.failed) + " refused"))
         }
         // The audible half of a saved headphone source: the crosspoint, taken
-        // from the output routing as it stands after the routing replay.
+        // from the saved output routing (never read back from the unit).
         let store = (device as? ThunderboltDeviceConnection)?.settingsStore
             ?? (device as? XPCDeviceConnection)?.settingsStore
         let replaysHeadphones = !(device is XPCDeviceConnection) || XPCDeviceConnection.replaysOnConnect
-        if let store, replaysHeadphones {
+        // Over USB the restore writes them itself: away from the mixers
+        // before any strip, the saved source last (`performUSBRestore`).
+        if let store, replaysHeadphones, !usesTwoUnitReplay, !(device is XPCDeviceConnection) {
             let saved: [(SymphonyIOHeadphoneRouting.Headphone, AudioPropertySelector)] =
                 [(.headphone1, .headphone1RoutingID), (.headphone2, .headphone2RoutingID)]
             for (headphone, selector) in saved {
                 guard let id = store.value(for: PropertyAddress(selector: selector))?.asUInt32 else { continue }
                 await HeadphoneCrosspoint.apply(headphone, sourceID: id, device: device,
                                                 cachedRoutes: cachedOutputRouteMap(),
-                                                transport: transportType ?? .usb)
+                                                transport: transportType ?? .usb, state: self)
             }
         }
-        guard replay.applied > 0 || !replay.failed.isEmpty else { return }
+        guard replay.applied > 0 || !replay.failed.isEmpty
+                || channelReplay.applied > 0 || channelReplay.failed > 0 else { return deferredLine }
         print("[Maestro] syncDeviceSettings: re-applied \(replay.applied) saved setting(s)"
             + (replay.failed.isEmpty ? "" : ", \(replay.failed.count) refused: \(replay.failed)"))
         // On USB the views read these settings from the hardware, and one that
@@ -1638,15 +3596,17 @@ final class AppState {
         if device is XPCDeviceConnection {
             viewReloadToken = UUID()
         }
+        return deferredLine
     }
 
     /// Mark hardware as ready for property access.
     /// XPC connection is ready immediately — proxy handles USB init on boot.
     @MainActor
     func initializeHardwareIfNeeded() async {
+        guard !hardwareWritesSuspended else { return }
         guard connectionMode == .hardware else { return }
         if transportType == .thunderbolt {
-            statusMessage = "Connected via ThunderBridge"
+            statusMessage = "Connected via \(connectionShortName)"
         } else {
             statusMessage = "Connected via XPC proxy"
         }
@@ -1657,9 +3617,38 @@ final class AppState {
     /// device-list listener can fire repeatedly during a Thunderbolt flap or a quick unplug/replug,
     /// and two interleaved reconnects would double-install the ASP volume listener and orphan the
     /// software-metering IOProc. The check+set below is atomic (no await between them) on the MainActor.
-    private var isReconnecting = false
+    var isReconnecting = false
+    /// A reconnect was asked for while one was running (a device appeared or
+    /// went away meanwhile). It is not dropped: one more runs when the current
+    /// one ends. Dropping it once left Maestro "Disconnected" on the old USB
+    /// connection after a switch from USB to ThunderBridge (2026-11-22).
+    @ObservationIgnored var reconnectRequestedWhileReconnecting = false
+    /// Of those requests, the Symphony devices whose appearance asked for
+    /// them, and whether any asked for another reason (a device went away, a
+    /// switch to ThunderBridge, a wake): only appearances can be already
+    /// covered (`reconnectStillNeeded`).
+    @ObservationIgnored var reconnectQueuedAppearedIDs: Set<AudioObjectID> = []
+    @ObservationIgnored var reconnectQueuedForOtherReason = false
+    /// The Symphony devices the running (or last) reconnect's discovery
+    /// found, when it found one to connect to.
+    @ObservationIgnored var lastReconnectDiscoveredIDs: Set<AudioObjectID>?
 
-    struct PreferredDevice {
+    /// Whether the reconnect asked for while the last one ran still has
+    /// anything to do. Not when every request came from a device appearing
+    /// that the reconnect just finished had already found, and it ended
+    /// connected: a USB unit appears in two steps (its "USB Audio" device,
+    /// then "Maestro USB" a moment later), the first reconnect's discovery
+    /// sees both, and a second one only disconnected the same unit, found it
+    /// again and ran a full restore of ~300 reads (1142, 2026-11-23).
+    @MainActor
+    func reconnectStillNeeded() -> Bool {
+        guard !reconnectQueuedForOtherReason, connectionMode == .hardware,
+              let seen = lastReconnectDiscoveredIDs,
+              reconnectQueuedAppearedIDs.isSubset(of: seen) else { return true }
+        return false
+    }
+
+    struct PreferredDevice: Sendable {
         let device: CoreAudioDeviceConnection.DiscoveredSymphonyIO
         /// The ThunderBridge connection and verdict already probed while
         /// choosing, so the caller does not open a second user client and read
@@ -1685,7 +3674,7 @@ final class AppState {
             return discovered.first.map { PreferredDevice(device: $0, tbConnection: nil, tbVerdict: nil) }
         }
         let probe = ThunderboltDeviceConnection(identifier: tb.identifier, audioDeviceID: tb.audioDeviceID,
-                        settingsStore: .persistent(for: tb.identifier))
+                        settingsStore: DeviceSettingsStore())
         let verdict = probe.probeEndpoint()
         if !verdict.isLive, let usb = discovered.first(where: { $0.transportType == .usb }) {
             probe.closeDextClient()
@@ -1696,18 +3685,52 @@ final class AppState {
     }
 
     /// Reconnect to hardware (called after toggle-driver.sh, plug-in, or USB reset).
+    ///
+    /// `appeared`: the Symphony devices whose appearance asked for this
+    /// (`handleHardwareDeviceListChanged`); nil for any other reason.
     @MainActor
-    func reconnectHardware() async {
+    func reconnectHardware(appeared: Set<AudioObjectID>? = nil) async {
+        if hardwareSleepState == .validating, connectionMode == .disconnected {
+            endWakeValidationForReconnect()
+        }
+        guard admitConnectionWork() else { return }
         if cardSimulation != nil {
             print("[Maestro] CARD SIMULATION: reconnect ignored — session pinned to the simulated unit")
             return
         }
-        if isReconnecting { return }
+        if isReconnecting {
+            reconnectRequestedWhileReconnecting = true
+            if let appeared { reconnectQueuedAppearedIDs.formUnion(appeared) } else { reconnectQueuedForOtherReason = true }
+            return
+        }
         isReconnecting = true
-        defer { isReconnecting = false }
+        lastReconnectDiscoveredIDs = nil
+        let reconnectGeneration = wakeValidationGeneration
+        defer {
+            isReconnecting = false
+            let stillNeeded = reconnectStillNeeded()
+            let queuedIDs = reconnectQueuedAppearedIDs
+            reconnectQueuedAppearedIDs = []
+            reconnectQueuedForOtherReason = false
+            if reconnectGeneration != wakeValidationGeneration {
+                reconnectRequestedWhileReconnecting = false
+                reconnectRequestedWhileSuspended = true
+                replaySuspendedReconnectIfNeeded()
+            } else if reconnectRequestedWhileReconnecting {
+                reconnectRequestedWhileReconnecting = false
+                if stillNeeded {
+                    Task { @MainActor [weak self] in await self?.reconnectHardware() }
+                } else {
+                    print("[Maestro] reconnect: device(s) \(queuedIDs.sorted()) appeared during the reconnect, which already found them; not reconnecting again")
+                }
+            }
+        }
         stopThunderboltHealthCheck()
         thunderboltWatchTask?.cancel()
         stopMeterPolling()
+        // Test seam. Mirrors the real path's cancellation early return below, so
+        // a reconnect that runs inside a cancelled task fails the tests too.
+        if let reconnectOperation { guard !Task.isCancelled else { return }; await reconnectOperation(); return }
         // Rebuild the AUDIO path too, not just the app's link to the proxy.
         //
         // Reconnecting the app re-establishes app<->proxy and clears stale
@@ -1721,11 +3744,18 @@ final class AppState {
             xpcDev.resetAudioOutput()
         }
 
+        let identifyAOff = identifyA.reset()
+        let identifyBOff = identifyB.reset()
+        await identifyAOff.value
+        await identifyBOff.value
+        guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+
         // Close existing connection if any
         if let existing = device {
             await existing.disconnect()
         }
         stopASPVolumeSync()
+        stopMicPreDAWSync()
         meterDevice = nil
 
         statusMessage = "Scanning for hardware..."
@@ -1751,12 +3781,22 @@ final class AppState {
         // output meter data over USB.
         tdmOutputMeteringUnavailable = false
         tdmOutputEchoStreak = 0
+        tdmOutputReplyLogged = false
+        usbUnitMixerMetersSeen = false
         lastMeterPollWantedOutput = nil
 
         // Retry discovery with delays — XMOS firmware needs time to re-enumerate
         for attempt in 1...5 {
-            let discovered = CoreAudioDeviceConnection.discoverAllSymphonyIO()
-            if let pref = Self.preferredDevice(in: discovered) {
+            guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+            // Off the main thread (0.9.8): a slow Core Audio must not freeze the window.
+            let discovered = await Task.detached(priority: .userInitiated) {
+                CoreAudioDeviceConnection.discoverAllSymphonyIO()
+            }.value
+            guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+            let preferred = await Task.detached(priority: .utility) { Self.preferredDevice(in: discovered) }.value
+            guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+            if let pref = preferred {
+                lastReconnectDiscoveredIDs = Set(discovered.map(\.audioDeviceID))
         let best = pref.device
                 let audioDeviceID = best.audioDeviceID
                 let identifier = best.identifier
@@ -1764,19 +3804,25 @@ final class AppState {
 
                 if best.transportType == .thunderbolt {
                     let tbDevice = pref.tbConnection ?? ThunderboltDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                     self.device = tbDevice
                     // Probe before declaring the endpoint ready. A powered-off
                     // Symphony can still be discoverable as a ThunderBridge
                     // Core Audio object, but its dext timing-health selector
                     // now performs the serialized live XLink check.
-                    let reconnectProbe = pref.tbVerdict ?? tbDevice.probeEndpoint()
+                    let reconnectProbe: ThunderboltEndpointVerdict
+                    if let verdict = pref.tbVerdict { reconnectProbe = verdict }
+                    else { reconnectProbe = await Task.detached(priority: .utility) { tbDevice.probeEndpoint() }.value }
+                    guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
                     guard case .live(let health) = reconnectProbe else {
                         Self.tbLog.notice("reconnect: endpoint \(reconnectProbe.label, privacy: .public) — staying disconnected, health loop continues")
                         // Remember the Core Audio object so a later cable pull is
                         // recognised as a removal even in this disconnected state.
                         self.activeAudioDeviceID = audioDeviceID
                         self.connectionMode = .disconnected
+                        self.invalidateUnitAIdentity()
+                        self.invalidateUnitBIdentity()
+                        self.unitBIdentityAttempted = false
                         self.transportType = .thunderbolt
                         self.transportPresent = true
                         self.statusMessage = "Symphony disconnected"
@@ -1795,16 +3841,17 @@ final class AppState {
                     // has already configured the link by the time it reports
                     // the endpoint live.
                     if self.awaitingSymphonyReturn {
-                        self.awaitingSymphonyReturn = false
                         self.statusMessage = "Waiting for the Symphony to finish starting…"
                         try? await Task.sleep(for: Self.thunderboltSettleInterval)
                     }
+                    guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
+                    self.awaitingSymphonyReturn = false
                     self.thunderboltHardwareResponsive = true
                     self.connectionMode = .hardware
                     self.transportType = .thunderbolt
                     self.transportPresent = true
-                    self.statusMessage = "Connected via ThunderBridge"
-                    self.isHardwareInitialized = true
+                    self.statusMessage = "Connected via \(self.connectionShortName)"
+                    self.isHardwareInitialized = !hardwareWritesSuspended
                     self.activeAudioDeviceID = audioDeviceID
                     self.aspDeviceID = audioDeviceID
                     print("[Maestro] reconnect TB timing health: rate=\(health.sampleRate) frame=\(health.frameReadback)/\(health.expectedFrame) latency=\(health.inputLatency)/\(health.outputLatency) safety=\(health.inputSafety)/\(health.outputSafety) int=0x\(String(health.intStatus, radix: 16)) xlink=0x\(String(health.xlinkStatus, radix: 16))")
@@ -1812,8 +3859,9 @@ final class AppState {
                 } else {
                     // Nothing is sent to a unit that is still starting up.
                     await waitForUSBUnitToSettle()
+                    guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
                     let xpcDevice = XPCDeviceConnection(identifier: identifier,
-                        settingsStore: .persistent(for: identifier))
+                        settingsStore: DeviceSettingsStore())
                     self.device = xpcDevice
                     self.connectionMode = .hardware
                     self.transportType = .usb
@@ -1824,43 +3872,25 @@ final class AppState {
                     self.applyPendingAutoSwitch()
                     self.startThunderboltWatchWhileOnUSB(discovered)
 
-                    // Sync persisted SW Return state on reconnect
-                    if let data = UserDefaults.standard.data(forKey: "mixerState_swReturn"),
-                       let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-                        xpcDevice.setSwReturnMute(saved.isMuted)
-                        xpcDevice.setSwReturnLevel(saved.level)
-                        xpcDevice.setSwReturnPan(saved.pan)
-                    } else {
-                        xpcDevice.setSwReturnMute(false)
-                        xpcDevice.setSwReturnLevel(0)
-                        xpcDevice.setSwReturnPan(0)
-                    }
-
-                    // Sync routing mode on reconnect
-                    let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
-                    xpcDevice.setRoutingMode(routingMode)
-                    if routingMode == 0 {
-                        for mixerID: UInt16 in 1...2 {
-                            for ch: UInt16 in 0..<32 {
-                                xpcDevice.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                            }
-                        }
-                        print("[Maestro] reconnect: DAW mode — force-muted HW inputs")
-                    }
+                    // Mixer restoration follows identity resolution.
                 }
 
                 // Read card types and sync routing (USB-specific but harmless for TB)
                 await self.readCardTypes()
                 await self.reapplyDigitalSettings()
                 await self.refreshChannelNaming()
-                await self.syncOutputRoutingToHardware()
-                await self.syncInputRoutingToHardware()
-                await self.syncDeviceSettingsToHardware()
+                // Over ThunderBridge the settings this Mac owns, then the
+                // routing and card restore (card mixer writes are held until
+                // the output table is on the card); over USB the ordered
+                // restore (mixers first, output routing last).
+                await self.syncSavedStateToHardware()
 
+                guard admitConnectionWork(generation: reconnectGeneration), !Task.isCancelled else { return }
                 let meterCA = CoreAudioDeviceConnection(identifier: identifier, audioDeviceID: audioDeviceID)
                 if Self.softwareMeteringOptedIn { meterCA.startSoftwareMetering() }
                 self.meterDevice = meterCA
 
+                suppressMacVolumeOverlay()
                 startASPVolumeSync()
 
                 // Own the polling lifecycle here rather than relying on the view's
@@ -1870,6 +3900,8 @@ final class AppState {
                 startMeterPolling()
                 if transportType == .thunderbolt {
                     startThunderboltHealthCheck()
+                    // D5: a stored task; this pipeline does not wait for it.
+                    syncCardMixerToHardware()
                 }
 
                 // Every value the panels are showing was read over the connection we
@@ -1879,6 +3911,7 @@ final class AppState {
                 // session)" even after `readCardTypes()` above had just read both
                 // slots back off the hardware.
                 viewReloadToken = UUID()
+                if initialSetupRestoreFinished { scheduleRecentSetupRecall() }
                 return
             }
 
@@ -1922,7 +3955,9 @@ final class AppState {
     /// Polls input and output meters at ~33ms intervals (~30 fps).
     @MainActor
     func startMeterPolling() {
+        guard !hardwareWritesSuspended else { return }
         meterPollingTask?.cancel()
+        startUSBHealthTick()
         refreshSoftwareReturnMeterGains()
         // Use actual stream-derived channel count when available (inputMeterStreamCount × 8).
         // Falls back to identifier.mode.channelCount which is the USB audio class channel count.
@@ -1961,6 +3996,15 @@ final class AppState {
             }
 
             var pollCount = 0
+            var displayedUnitOutputStamp = Date.distantPast
+            // The poll count starts again here, so the maps stamped with the
+            // last task's count are read again at once.
+            if let self {
+                self.softwareOutputRoutesPollStamp = -1
+                self.thunderboltInputMeterWordsPollStamp = -1
+                self.thunderboltOutputMeterWordsPollStamp = -1
+                self.unitBOutputMeterWordsPollStamp = -1
+            }
             while !Task.isCancelled {
                 guard let self, let device = self.device, self.isHardwareInitialized else {
                     try? await Task.sleep(for: .milliseconds(100))
@@ -1969,9 +4013,20 @@ final class AppState {
                 // Hardware TDM metering via XPC (command 0x30) — reads directly from
                 // FPGA meter taps. Provides both input AND output levels. More accurate
                 // than software metering and shows output from all audio clients.
+                var over: [DisplayMeterBank: Set<Int>] = [:]
                 var newInput: [Double]
                 var newOutput: [Double]
-                if self.tdmMeteringAvailable, let xpcDev = device as? XPCDeviceConnection {
+                // USB: only the meters on screen are read (`USBMeterPlan`).
+                let usbPlan: USBMeterPlan? = self.tdmMeteringAvailable && device is XPCDeviceConnection
+                    ? USBMeterPlan.plan(area: self.selectedArea, windowVisible: self.usbMeterWindowVisible(),
+                                        outputGroupUsable: !self.tdmOutputMeteringUnavailable)
+                    : nil
+                if let usbPlan, !usbPlan.active {
+                    // No meter on screen: nothing is read from the unit. The
+                    // unit's health is watched by `startUSBHealthTick`.
+                    newInput = self.inputMeterLevels
+                    newOutput = self.outputMeterLevels
+                } else if let usbPlan, let xpcDev = device as? XPCDeviceConnection {
                     do {
                         // Poll ONLY the routing group the visible page needs.
                         //
@@ -2029,6 +4084,11 @@ final class AppState {
                                 outVal = try await xpcDev.getProperty(
                                     PropertyAddress(selector: .meterData, scope: .output))
                                 // Residue check before anything else looks at the bytes.
+                                if case .data(let reply)? = outVal, !self.tdmOutputReplyLogged, !routingSwitched {
+                                    self.tdmOutputReplyLogged = true
+                                    print("[MeterPoll] USB output meter reply (first of this connection, \(reply.count) bytes): "
+                                        + reply.map { String(format: "%02x", $0) }.joined(separator: " "))
+                                }
                                 if case .data(let outBytes)? = outVal,
                                    TDMMeterPayload.isSetupPacketEcho(outBytes, group: 1, requestLength: 64) {
                                     outVal = nil
@@ -2048,11 +4108,13 @@ final class AppState {
                             // precisely what lets the second read see a refresh.
                             inVal = try await xpcDev.getProperty(
                                 PropertyAddress(selector: .meterData, scope: .input))
-                            if hwOutputUsable {
+                            // Mixer meters are shown on the Mixer page only.
+                            if hwOutputUsable, usbPlan.mixer {
                                 mixVal = try await xpcDev.getProperty(
                                     PropertyAddress(selector: .meterData, scope: .global))
                             }
                         }
+                        if usbPlan.reads > 0 { self.noteUSBReadSucceeded() }
                         if routingSwitched {
                             inVal = nil; outVal = nil; mixVal = nil
                         }
@@ -2062,44 +4124,6 @@ final class AppState {
                         // only software-meter call in the cycle; SW Return L/R are
                         // channels 0/1 of it.
                         let softwareOutputPeaks = await xpcDev.getSoftwareOutputPeaks()
-                        // USB recovery detection: if we were disconnected and reads now succeed,
-                        // the FPGA has been power-cycled and mixer state needs re-syncing.
-                        if self.meterPollWasDisconnected {
-                            self.meterPollWasDisconnected = false
-                            self.tdmMeteringAvailable = true
-                            // Re-evaluate the firmware's output-meter verdict after
-                            // a power-cycle rather than trusting the old latch.
-                            self.tdmOutputMeteringUnavailable = false
-                            self.tdmOutputEchoStreak = 0
-                            self.lastMeterPollWantedOutput = nil
-                            let autoRecover = UserDefaults.standard.object(forKey: "autoRecoverMixerState") as? Bool ?? true
-                            if autoRecover {
-                                let now = Date()
-                                if now.timeIntervalSince(self.lastRecoveryTime) > 5.0 {
-                                    self.lastRecoveryTime = now
-                                    self.deviceRecoveryCount += 1
-                                    // Re-sync SW Return state to proxy from persisted state
-                                    if let data = UserDefaults.standard.data(forKey: "mixerState_swReturn"),
-                                       let saved = try? JSONDecoder().decode(MixerChannelState.self, from: data) {
-                                        xpcDev.setSwReturnMute(saved.isMuted)
-                                        xpcDev.setSwReturnLevel(saved.level)
-                                        xpcDev.setSwReturnPan(saved.pan)
-                                    }
-                                    // Re-sync routing mode to proxy
-                                    let routingMode = UserDefaults.standard.integer(forKey: "routingMode")
-                                    xpcDev.setRoutingMode(routingMode)
-                                    if routingMode == 0 {
-                                        for mixerID: UInt16 in 1...2 {
-                                            for ch: UInt16 in 0..<32 {
-                                                xpcDev.sendMixerParam(usbCmd: 0xB3, mixer: mixerID, channel: ch, value: 1)
-                                            }
-                                        }
-                                        print("[Maestro] USB recovery: DAW mode — force-muted HW inputs")
-                                    }
-                                    print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(self.deviceRecoveryCount))")
-                                }
-                            }
-                        }
                         // FPGA meter registers return all-zero when no new data is ready.
                         // Real data arrives ~3Hz (every ~300ms). All-zero means "no update" —
                         // NOT silence. Skip zero reads to hold the last valid meter values.
@@ -2108,10 +4132,15 @@ final class AppState {
                         let inHasData: Bool
                         if let inVal, case .data(let inBytes) = inVal,
                            !inBytes.allSatisfy({ $0 == 0 }) {
-                            newInput = self.tdmMeterLevels(from: inBytes, count: self.inputMeterLevels.count)
-                            // Extract digital (ADAT/Optical) meter levels: words 8-15 (Board 1), 24-31 (Board 2)
-                            let rawDigital = self.tdmDigitalMeterLevels(from: inBytes)
-                            self.digitalInputMeterLevels = self.smoothMeterLevels(self.digitalInputMeterLevels, raw: rawDigital)
+                            let analog = self.tdmMeterReadings(from: inBytes, count: self.inputMeterLevels.count,
+                                                               isInput: true)
+                            newInput = analog.map(\.level)
+                            let digital = TDMMeterPayload.digitalReadings(inBytes, layout: self.cardLayout,
+                                                                         isInput: true)
+                            self.digitalInputMeterLevels = self.smoothMeterLevels(
+                                self.digitalInputMeterLevels, raw: digital.map(\.level))
+                            over[.input] = Self.overChannels(analog)
+                            over[.digitalInput] = Self.overChannels(digital)
                             inHasData = true
                         } else {
                             newInput = self.inputMeterLevels
@@ -2120,10 +4149,15 @@ final class AppState {
                         let outHasData: Bool
                         if let outVal, case .data(let outBytes) = outVal,
                            !outBytes.allSatisfy({ $0 == 0 }) {
-                            newOutput = self.tdmMeterLevels(from: outBytes, count: self.outputMeterLevels.count)
-                            // Extract digital output (ADAT/Optical) meter levels: words 8-15, 24-31
-                            let rawDigitalOut = self.tdmDigitalMeterLevels(from: outBytes)
-                            self.digitalOutputMeterLevels = self.smoothMeterLevels(self.digitalOutputMeterLevels, raw: rawDigitalOut)
+                            let analog = self.tdmMeterReadings(from: outBytes, count: self.outputMeterLevels.count,
+                                                               isInput: false)
+                            newOutput = analog.map(\.level)
+                            let digital = TDMMeterPayload.digitalReadings(outBytes, layout: self.cardLayout,
+                                                                         isInput: false)
+                            self.digitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.digitalOutputMeterLevels, raw: digital.map(\.level))
+                            over[.output] = Self.overChannels(analog)
+                            over[.digitalOutput] = Self.overChannels(digital)
                             outHasData = true
                         } else {
                             newOutput = self.outputMeterLevels
@@ -2168,7 +4202,26 @@ final class AppState {
                         // regardless of the length the firmware reports.
                         if let mixVal, case .data(let mixBytes) = mixVal,
                            !mixBytes.allSatisfy({ $0 == 0 }) {
-                            let rawMixer = self.tdmMeterLevels(from: mixBytes, count: 8)
+                            let readings = TDMMeterPayload.mixerReadings(mixBytes)
+                            var rawMixer = readings.map(\.level)
+                            over[.mixer] = Self.overChannels(readings)
+                            if !self.usbUnitMixerMetersSeen {
+                                self.usbUnitMixerMetersSeen = true
+                                print("[MeterPoll] USB: the unit reports mixer meters; Software Return and Master meters read from it. First reply: "
+                                    + mixBytes.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " "))
+                            }
+                            // The unit's Software Return words are taken
+                            // before the strip's fader and mute: with
+                            // Pre-Mute Metering off, show what the strip
+                            // passes on, as the input strips do.
+                            if rawMixer.count >= 4 {
+                                for mixer in 0..<2 {
+                                    let trim = self.softwareReturnMeterGains[mixer]
+                                    for (slot, gain) in [(mixer * 2, trim.left), (mixer * 2 + 1, trim.right)] {
+                                        rawMixer[slot] = gain <= 0 ? -60.0 : max(-60.0, rawMixer[slot] + 20.0 * log10(gain))
+                                    }
+                                }
+                            }
                             self.mixerMeterLevels = self.smoothMeterLevels(self.mixerMeterLevels, raw: rawMixer)
                         } else if self.tdmZeroReadCount > 20 {
                             let silenceMix = [Double](repeating: -60.0, count: 8)
@@ -2179,24 +4232,23 @@ final class AppState {
                         // TDM group 2 does NOT contain SW Return levels without
                         // FPGA meter tap configuration (which requires XLink register
                         // writes, not possible via USB EP0).
-                        if let peaks = softwareOutputPeaks, peaks.count >= 2 {
+                        // Only until the unit has shown it reports these itself.
+                        if !self.usbUnitMixerMetersSeen, let peaks = softwareOutputPeaks, peaks.count >= 2 {
                             // Each mixer can select a different USB playback pair through
                             // AEsR.  The proxy reports one peak pair per USB pair, so do
                             // not mirror channels 0/1 into both mixer strips.
-                            func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
-                                let source = UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)")
+                            func softwareReturnPeaks(mixer: Int) -> (Float, Float) {
+                                let source = self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")
                                 let left = source * 2
-                                guard left >= 0, left + 1 < peaks.count else {
-                                    return (-60.0, -60.0)
-                                }
-                                return (
-                                    SoftwareOutputMeterMap.dBFS(linearPeak: peaks[left]),
-                                    SoftwareOutputMeterMap.dBFS(linearPeak: peaks[left + 1])
-                                )
+                                guard left >= 0, left + 1 < peaks.count else { return (0, 0) }
+                                return (peaks[left], peaks[left + 1])
                             }
-                            let mixer0Peaks = softwareReturnDBFS(mixer: 0)
-                            let mixer1Peaks = softwareReturnDBFS(mixer: 1)
+                            let mixer0Linear = softwareReturnPeaks(mixer: 0)
+                            let mixer1Linear = softwareReturnPeaks(mixer: 1)
+                            let mixer0Peaks = (SoftwareOutputMeterMap.dBFS(linearPeak: mixer0Linear.0),
+                                               SoftwareOutputMeterMap.dBFS(linearPeak: mixer0Linear.1))
+                            let mixer1Peaks = (SoftwareOutputMeterMap.dBFS(linearPeak: mixer1Linear.0),
+                                               SoftwareOutputMeterMap.dBFS(linearPeak: mixer1Linear.1))
 
                             // Slots [0..1] = Mixer 0 SW Return L/R, [2..3] = Mixer 1 SW Return L/R.
                             if self.mixerMeterLevels.count >= 4 {
@@ -2215,26 +4267,28 @@ final class AppState {
                                 self.mixerMeterLevels[3] = swR1
                             }
                             // Blend SW Return into Master meter (slots [4..7]).
-                            // USB audio bypasses the FPGA mixer so TDM master output
-                            // doesn't include it. Convert linear peaks to dB and take max.
+                            // The helper's peaks are taken before the unit's
+                            // mixer, so each mixer's part goes through that
+                            // mixer's Software Return fader and mute and its
+                            // Master fader first (USBMasterMeter).
                             if self.mixerMeterLevels.count >= 8 {
-                                // swPeaks are already dBFS. (The previous code
-                                // re-applied 20*log10 to a dB value, which is never
-                                // > 0, so the master blend was always -60.)
-                                self.mixerMeterLevels[4] = max(self.mixerMeterLevels[4], mixer0Peaks.0)
-                                self.mixerMeterLevels[5] = max(self.mixerMeterLevels[5], mixer0Peaks.1)
-                                self.mixerMeterLevels[6] = max(self.mixerMeterLevels[6], mixer1Peaks.0)
-                                self.mixerMeterLevels[7] = max(self.mixerMeterLevels[7], mixer1Peaks.1)
+                                let gains = self.usbMasterMeterGains
+                                self.mixerMeterLevels[4] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[4], softwareReturnPeak: mixer0Linear.0, gain: gains[0])
+                                self.mixerMeterLevels[5] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[5], softwareReturnPeak: mixer0Linear.1, gain: gains[0])
+                                self.mixerMeterLevels[6] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[6], softwareReturnPeak: mixer1Linear.0, gain: gains[1])
+                                self.mixerMeterLevels[7] = USBMasterMeter.level(
+                                    unitMaster: self.mixerMeterLevels[7], softwareReturnPeak: mixer1Linear.1, gain: gains[1])
                             }
                         }
                     } catch {
-                        // TDM reads failed — mark disconnected for recovery detection.
-                        // Don't permanently disable TDM; retry each cycle so we detect
-                        // when USB recovers (XPC fails fast when USB is down).
-                        if !self.meterPollWasDisconnected {
-                            print("[MeterPoll] TDM metering failed, tracking for recovery: \(error)")
-                        }
-                        self.meterPollWasDisconnected = true
+                        // A failed read: `USBLossDetector` decides whether
+                        // it is a unit that went away. Don't permanently
+                        // disable TDM; retry each cycle so we see when it is
+                        // back (XPC fails fast when USB is down).
+                        self.noteUSBReadFailed(error)
                         newInput = self.inputMeterLevels
                         newOutput = self.outputMeterLevels
                     }
@@ -2258,6 +4312,7 @@ final class AppState {
                     let extensionSwapPending = self.thunderboltExtensionSwapGraceActive
                     let allowMeterRead = tbAudioRunning &&
                         (self.thunderboltHardwareResponsive || extensionSwapPending)
+                    self.pollUnitOutputMetersIfNeeded(pollCount: pollCount, device: tbDev)
                     let words: [UInt32]?
                     if !allowMeterRead {
                         words = nil
@@ -2268,22 +4323,64 @@ final class AppState {
                         // Thunderbolt: real hardware meters from the card FPGA meter DMA.
                         // Word peak = bits[31:24] → dB = 20*log10(peak/256). Layout (legacy):
                         // 0-31 = hardware inputs, 64-95 = host playback, 128-131 = mixer0/1 out.
-                        func dbW(_ i: Int) -> Double {
-                            guard i < words.count else { return -60 }
-                            let peak = Double((words[i] >> 24) & 0xFF)
-                            return peak <= 0 ? -60 : max(-60, 20 * log10(peak / 256.0))
+                        let cardReadings = words.map(MeterReading.card(word:))
+                        func reading(_ i: Int) -> MeterReading {
+                            cardReadings.indices.contains(i) ? cardReadings[i] : .silence
                         }
+                        func dbW(_ i: Int) -> Double { reading(i).level }
+                        func isOver(_ i: Int) -> Bool { reading(i).isOver }
                         // Words 0-31 meter host inputs 1-32: what the unit's
                         // capture table sends over XLink, not the device-wide
                         // input order the strips use. Each strip reads the word
                         // of the host input its hardware channel is routed to
                         // (ThunderboltInputMeterMap).
                         self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
-                        let meterWords = self.thunderboltInputMeterWords
-                        var hostInputs = (0..<ThunderboltInputMeterMap.hostInputCount).map { dbW($0) }
-                        var outp = self.outputMeterLevels
-                        for i in 0..<outp.count { outp[i] = dbW(64 + i) }     // host playback 64-95
-                        newOutput = outp
+                        var meterWords = self.thunderboltInputMeterWords
+                        // Converters are read by bus slot over both ports (64
+                        // words); a Symphony I/O keeps host inputs 0-31.
+                        let convertersMetered = self.thunderboltInputMeterLayout?.converterLayout != nil
+                        var hostInputs = (0..<(convertersMetered ? ThunderboltInputMeterMap.converterWordCount
+                                                : ThunderboltInputMeterMap.hostInputCount)).map { dbW($0) }
+                        // Each output strip, analog or digital, reads the word
+                        // of what Output Routing plays on it: a software output
+                        // (64 + n) or a card mixer (128-131).
+                        self.refreshThunderboltOutputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                        let outputWords = self.thunderboltOutputMeterWords
+                        let unitOutputs = self.freshUnitOutputMeterLevels()
+                        let overSources = MeterOverSources.available(
+                            card: true, build: self.servingDextBuild, unitOutputsFresh: unitOutputs != nil)
+                        if overSources.output, let unitOutputs, self.unitOutputMeterStamp != displayedUnitOutputStamp {
+                            displayedUnitOutputStamp = self.unitOutputMeterStamp
+                            let isB = self.activeUnit == .b
+                            over[isB ? .unitBOutput : .output] = Self.overChannels(unitOutputs.analogReadings)
+                            over[isB ? .unitBDigitalOutput : .digitalOutput] = Self.overChannels(unitOutputs.digitalReadings)
+                        }
+                        if self.activeUnit == .b, let unitOutputs {
+                            self.unitBOutputMeterLevels = self.smoothMeterLevels(
+                                self.unitBOutputMeterLevels, raw: unitOutputs.analog)
+                            self.unitBDigitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.unitBDigitalOutputMeterLevels, raw: unitOutputs.digital)
+                        }
+                        if self.activeUnit == .a, let unitOutputs {
+                            // The Symphony's own meters, taken at each output.
+                            newOutput = (0..<self.outputMeterLevels.count).map {
+                                $0 < unitOutputs.analog.count ? unitOutputs.analog[$0] : -60.0
+                            }
+                            self.digitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.digitalOutputMeterLevels, raw: unitOutputs.digital)
+                        } else if let outputWords {
+                            newOutput = ThunderboltOutputMeterMap.levels(
+                                outputWords.analog, count: self.outputMeterLevels.count, level: dbW)
+                            self.digitalOutputMeterLevels = self.smoothMeterLevels(
+                                self.digitalOutputMeterLevels,
+                                raw: ThunderboltOutputMeterMap.levels(outputWords.digital, level: dbW))
+                        } else {
+                            // Cards or table not known yet, or converters:
+                            // strip i is software output i.
+                            var outp = self.outputMeterLevels
+                            for i in 0..<outp.count { outp[i] = dbW(64 + i) }
+                            newOutput = outp
+                        }
 
                         // If the FPGA input snapshot is unavailable or silent,
                         // use the active Core Audio capture stream. This keeps
@@ -2291,16 +4388,41 @@ final class AppState {
                         // meter DMA is absent, while preserving real FPGA peaks.
                         // Its channel n is host input n too.
                         if (hostInputs.max() ?? -60.0) <= -60.0,
-                           let softwareInputs = self.meterDevice?.softwareInputPeaks(),
+                           let softwareInputs = self.hardwareSoftwarePeaks(self.meterDevice?.softwareInputPeaks()),
                            !softwareInputs.isEmpty {
+                            // Core Audio's channel n is host channel n, not a bus
+                            // slot: converter strips read it one to one.
+                            if convertersMetered {
+                                hostInputs = self.linearMeterLevels(
+                                    from: softwareInputs, count: ThunderboltInputMeterMap.converterWordCount)
+                                meterWords = ThunderboltInputMeterMap.Words(channels: [], digital: meterWords.digital)
+                            } else {
                             hostInputs = self.linearMeterLevels(
                                 from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount)
+                            }
+                        }
+                        // Converters: 32 to 64 channels can change without a
+                        // reconnect, so the arrays grow to the host channels in use.
+                        if let needed = self.thunderboltInputMeterLayout?.converterLayout?.hostInputCount,
+                           self.inputMeterLevels.count < needed {
+                            self.inputMeterLevels += [Double](repeating: -60.0, count: needed - self.inputMeterLevels.count)
+                            self.inputPeakHold += [Double](repeating: -60.0, count: max(0, needed - self.inputPeakHold.count))
                         }
                         newInput = ThunderboltInputMeterMap.stripLevels(
                             host: hostInputs, words: meterWords, count: self.inputMeterLevels.count)
                         self.digitalInputMeterLevels = self.smoothMeterLevels(
                             self.digitalInputMeterLevels,
                             raw: ThunderboltInputMeterMap.digitalLevels(host: hostInputs, words: meterWords))
+                        // Keep the clip flag on the same routed word as the Mixer strip.
+                        if overSources.mixer {
+                            over[.input] = Self.cardMixerInputOvers(
+                                meterWords, count: self.inputMeterLevels.count, isOver: isOver)
+                        }
+                        // Unit B (64 channels, a second Symphony I/O): its own
+                        // strips read words 32-63 and 96-127.
+                        over[.unitBInput] = self.updateUnitBMeters(
+                            dB: dbW, isOver: isOver, pollCount: pollCount,
+                            preferUnitRead: self.activeUnit == .b && unitOutputs != nil)
 
                         // The FPGA meter DMA is not available on every
                         // ThunderBridge FPGA revision and may be temporarily
@@ -2309,21 +4431,20 @@ final class AppState {
                         // host-playback peaks as a bounded fallback. This is
                         // also the correct source for SW Return because that
                         // strip represents host playback before the card mixer.
-                        if let softwarePeaks = self.meterDevice?.softwareOutputPeaks(),
+                        if let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2 {
-                            func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
-                                let source = UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)")
+                            func softwareReturnDBFS(mixer: Int, post: Bool = false) -> (Double, Double) {
+                                let source = self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")
                                 let left = source * 2
                                 guard left >= 0, left + 1 < softwarePeaks.count else {
                                     return (-60.0, -60.0)
                                 }
                                 // Mirror what the card mixer delivers: USB meters
-                                // SW Return after level/pan/mute in the proxy, so
+                                // SW Return after its level and mute, so
                                 // apply the same trims to the host-playback peaks
                                 // here (SoftwareReturnMeterGain) rather than
                                 // showing the pre-mixer signal.
-                                let trim = self.softwareReturnMeterGains[min(max(0, mixer), 1)]
+                                let trim = (post ? self.softwareReturnPostFaderGains : self.softwareReturnMeterGains)[min(max(0, mixer), 1)]
                                 return (
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left] * Float(trim.left)),
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left + 1] * Float(trim.right))
@@ -2333,7 +4454,21 @@ final class AppState {
                             let mixer1Peaks = softwareReturnDBFS(mixer: 1)
                             // Prefer the software source when the FPGA snapshot
                             // is all silence. Keep real FPGA values when present.
-                            if newOutput.max() ?? -60.0 <= -60.0 {
+                            if unitOutputs != nil {
+                                // The unit's reading stands.
+                            } else if let outputWords {
+                                // Only when the snapshot carries no playback at
+                                // all; otherwise a silent strip is a true reading.
+                                if (64..<128).allSatisfy({ dbW($0) <= -60.0 }) {
+                                    let software = self.softwarePlaybackWordLevel(softwarePeaks)
+                                    newOutput = ThunderboltOutputMeterMap.levels(
+                                        outputWords.analog, count: self.outputMeterLevels.count, level: software)
+                                    // Assigned, not smoothed again: this poll's
+                                    // smoothing above started from the same levels.
+                                    let digital = ThunderboltOutputMeterMap.levels(outputWords.digital, level: software)
+                                    self.digitalOutputMeterLevels = zip(self.digitalOutputMeterLevels, digital).map(max)
+                                }
+                            } else if newOutput.max() ?? -60.0 <= -60.0 {
                                 newOutput = self.linearMeterLevels(
                                     from: softwarePeaks, count: self.outputMeterLevels.count)
                             }
@@ -2344,10 +4479,12 @@ final class AppState {
                                 rawMixer[2] = max(rawMixer[2], mixer1Peaks.0)
                                 rawMixer[3] = max(rawMixer[3], mixer1Peaks.1)
                                 if self.mixerMeterLevels.count >= 8 {
-                                    rawMixer[4] = max(rawMixer[4], mixer0Peaks.0)
-                                    rawMixer[5] = max(rawMixer[5], mixer0Peaks.1)
-                                    rawMixer[6] = max(rawMixer[6], mixer1Peaks.0)
-                                    rawMixer[7] = max(rawMixer[7], mixer1Peaks.1)
+                                    let post0 = softwareReturnDBFS(mixer: 0, post: true)
+                                    let post1 = softwareReturnDBFS(mixer: 1, post: true)
+                                    rawMixer[4] = max(rawMixer[4], post0.0)
+                                    rawMixer[5] = max(rawMixer[5], post0.1)
+                                    rawMixer[6] = max(rawMixer[6], post1.0)
+                                    rawMixer[7] = max(rawMixer[7], post1.1)
                                 }
                                 self.mixerMeterLevels = self.smoothMeterLevels(
                                     self.mixerMeterLevels, raw: rawMixer)
@@ -2365,36 +4502,48 @@ final class AppState {
                             // Playback words 64/65 are the host signal before the
                             // card mixer's level/pan/mute; apply the strip's trims
                             // so the SW Return meters read as they do on USB.
-                            let trim = self.softwareReturnMeterGains[0]
+                            // Each mixer's Software Return meters the pair
+                            // chosen in its menu, not always playback 1-2.
                             func trimmed(_ dB: Double, _ gain: Double) -> Double {
                                 gain <= 0 ? -60.0 : max(-60.0, dB + 20.0 * log10(gain))
                             }
-                            rawMixer[0] = trimmed(dbW(64), trim.left)
-                            rawMixer[1] = trimmed(dbW(65), trim.right)
+                            var mixerOvers: Set<Int> = []
+                            for mixer in 0..<2 {
+                                let trim = self.softwareReturnMeterGains[mixer]
+                                let word = SoftwareReturnMeterGain.playbackWord(
+                                    source: self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))
+                                rawMixer[mixer * 2] = trimmed(dbW(word), trim.left)
+                                rawMixer[mixer * 2 + 1] = trimmed(dbW(word + 1), trim.right)
+                                if isOver(word) { mixerOvers.insert(mixer * 2) }
+                                if isOver(word + 1) { mixerOvers.insert(mixer * 2 + 1) }
+                            }
                             rawMixer[4] = dbW(128); rawMixer[5] = dbW(129)
                             if self.mixerMeterLevels.count >= 8 {
                                 rawMixer[6] = dbW(130); rawMixer[7] = dbW(131)
                             }
+                            for index in 4..<rawMixer.count where isOver(128 + index - 4) {
+                                mixerOvers.insert(index)
+                            }
+                            if overSources.mixer { over[.mixer] = mixerOvers }
                             self.mixerMeterLevels = self.smoothMeterLevels(
                                 self.mixerMeterLevels, raw: rawMixer)
                         }
                         // Keep the SW Return source visible even when the FPGA
                         // snapshot has no mixer tap data. The Core Audio IOProc
                         // measures the same host playback that feeds PCI_OUT.
-                        if let softwarePeaks = self.meterDevice?.softwareOutputPeaks(),
+                        if let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2,
                            self.mixerMeterLevels.count >= 4 {
-                            func softwareReturnDBFS(mixer: Int) -> (Double, Double) {
-                                let source = max(0, min(7, UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)")))
+                            func softwareReturnDBFS(mixer: Int, post: Bool = false) -> (Double, Double) {
+                                let source = max(0, min(self.softwareReturnPairCount - 1, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")))
                                 let left = source * 2
                                 guard left + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
                                 // Mirror what the card mixer delivers: USB meters
-                                // SW Return after level/pan/mute in the proxy, so
+                                // SW Return after its level and mute, so
                                 // apply the same trims to the host-playback peaks
                                 // here (SoftwareReturnMeterGain) rather than
                                 // showing the pre-mixer signal.
-                                let trim = self.softwareReturnMeterGains[min(max(0, mixer), 1)]
+                                let trim = (post ? self.softwareReturnPostFaderGains : self.softwareReturnMeterGains)[min(max(0, mixer), 1)]
                                 return (
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left] * Float(trim.left)),
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[left + 1] * Float(trim.right))
@@ -2408,10 +4557,12 @@ final class AppState {
                             rawMixer[2] = max(rawMixer[2], mix1.0)
                             rawMixer[3] = max(rawMixer[3], mix1.1)
                             if rawMixer.count >= 8 {
-                                rawMixer[4] = max(rawMixer[4], mix0.0)
-                                rawMixer[5] = max(rawMixer[5], mix0.1)
-                                rawMixer[6] = max(rawMixer[6], mix1.0)
-                                rawMixer[7] = max(rawMixer[7], mix1.1)
+                                let post0 = softwareReturnDBFS(mixer: 0, post: true)
+                                let post1 = softwareReturnDBFS(mixer: 1, post: true)
+                                rawMixer[4] = max(rawMixer[4], post0.0)
+                                rawMixer[5] = max(rawMixer[5], post0.1)
+                                rawMixer[6] = max(rawMixer[6], post1.0)
+                                rawMixer[7] = max(rawMixer[7], post1.1)
                             }
                             self.mixerMeterLevels = self.smoothMeterLevels(
                                 self.mixerMeterLevels, raw: rawMixer)
@@ -2426,30 +4577,47 @@ final class AppState {
                             print("[MeterPoll] TB raw nonzero peaks: \(nz.isEmpty ? "(silence)" : nz)")
                         }
                     } else {
+                        var softwareDigitalOut: [Double]?
                         // FPGA meter DMA may be unavailable on this card revision.
                         // Preserve useful host-playback meters through the Core
                         // Audio IOProc while the device is actively streaming.
                         if allowMeterRead,
-                           let softwarePeaks = self.meterDevice?.softwareOutputPeaks(),
+                           let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2 {
-                            if let softwareInputs = self.meterDevice?.softwareInputPeaks(),
+                            if let softwareInputs = self.hardwareSoftwarePeaks(self.meterDevice?.softwareInputPeaks()),
                                !softwareInputs.isEmpty {
                                 // Core Audio channel n is host input n: map it
                                 // to the strips as the FPGA words are.
                                 self.refreshThunderboltInputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                                if self.thunderboltInputMeterLayout?.converterLayout != nil {
+                                    // Converters: host channel n is strip n.
+                                    newInput = ThunderboltInputMeterMap.stripLevels(
+                                        host: self.linearMeterLevels(
+                                            from: softwareInputs, count: ThunderboltInputMeterMap.converterWordCount),
+                                        words: ThunderboltInputMeterMap.Words(channels: [], digital: []),
+                                        count: self.inputMeterLevels.count)
+                                } else {
                                 newInput = ThunderboltInputMeterMap.stripLevels(
                                     host: self.linearMeterLevels(
                                         from: softwareInputs, count: ThunderboltInputMeterMap.hostInputCount),
                                     words: self.thunderboltInputMeterWords,
                                     count: self.inputMeterLevels.count)
+                                }
                             } else {
                                 newInput = [Double](repeating: -60.0, count: self.inputMeterLevels.count)
                             }
-                            newOutput = self.linearMeterLevels(
-                                from: softwarePeaks, count: self.outputMeterLevels.count)
+                            self.refreshThunderboltOutputMeterWordsIfNeeded(pollCount: pollCount, device: tbDev)
+                            if let outputWords = self.thunderboltOutputMeterWords {
+                                let software = self.softwarePlaybackWordLevel(softwarePeaks)
+                                newOutput = ThunderboltOutputMeterMap.levels(
+                                    outputWords.analog, count: self.outputMeterLevels.count, level: software)
+                                softwareDigitalOut = ThunderboltOutputMeterMap.levels(outputWords.digital, level: software)
+                            } else {
+                                newOutput = self.linearMeterLevels(
+                                    from: softwarePeaks, count: self.outputMeterLevels.count)
+                            }
                             let sources = [0, 1].map { mixer in
-                                let pair = max(0, min(7, UserDefaults.standard.integer(
-                                    forKey: "mixerSoftwareReturnSource_\(mixer)"))) * 2
+                                let pair = max(0, min(self.softwareReturnPairCount - 1, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)"))) * 2
                                 guard pair + 1 < softwarePeaks.count else { return (-60.0, -60.0) }
                                 return (
                                     SoftwareOutputMeterMap.dBFS(linearPeak: softwarePeaks[pair]),
@@ -2476,7 +4644,9 @@ final class AppState {
                         self.inputPeakHold = [Double](repeating: -60.0, count: self.inputPeakHold.count)
                         self.outputPeakHold = [Double](repeating: -60.0, count: self.outputPeakHold.count)
                         self.digitalInputMeterLevels = [Double](repeating: -60.0, count: self.digitalInputMeterLevels.count)
-                        self.digitalOutputMeterLevels = [Double](repeating: -60.0, count: self.digitalOutputMeterLevels.count)
+                        self.digitalOutputMeterLevels = softwareDigitalOut.map {
+                            self.smoothMeterLevels(self.digitalOutputMeterLevels, raw: $0)
+                        } ?? [Double](repeating: -60.0, count: self.digitalOutputMeterLevels.count)
                         self.digitalInputPeakHold = [Double](repeating: -60.0, count: self.digitalInputPeakHold.count)
                         self.digitalOutputPeakHold = [Double](repeating: -60.0, count: self.digitalOutputPeakHold.count)
                     }
@@ -2508,10 +4678,7 @@ final class AppState {
                 // firmware refresh cycles.
                 self.inputMeterLevels = self.smoothMeterLevels(self.inputMeterLevels, raw: newInput)
                 self.outputMeterLevels = self.smoothMeterLevels(self.outputMeterLevels, raw: newOutput)
-                self.inputPeakHold = self.advancePeakHold(self.inputPeakHold, levels: self.inputMeterLevels)
-                self.outputPeakHold = self.advancePeakHold(self.outputPeakHold, levels: self.outputMeterLevels)
-                self.digitalInputPeakHold = self.advancePeakHold(self.digitalInputPeakHold, levels: self.digitalInputMeterLevels)
-                self.digitalOutputPeakHold = self.advancePeakHold(self.digitalOutputPeakHold, levels: self.digitalOutputMeterLevels)
+                self.updateMeterHolds(over: over)
                 // 20 fps while the hardware answers; 1 Hz once it stops.
                 //
                 // Every cycle in the failed state is a round trip that can only
@@ -2525,8 +4692,13 @@ final class AppState {
                 // nothing downstream can tell the difference. Meters are already
                 // frozen at their last values in this state — there is nothing on
                 // screen for the faster cadence to update.
-                let idle = self.meterPollWasDisconnected
-                try? await Task.sleep(for: .milliseconds(idle ? 1000 : 50))
+                // USB: the plan's pace (`USBMeterPlan`), 1 Hz while reads fail.
+                let idle = self.usbLoss.isFailing && usbPlan?.active == true
+                if let usbPlan, !idle {
+                    try? await Task.sleep(for: usbPlan.interval)
+                } else {
+                    try? await Task.sleep(for: .milliseconds(idle ? 1000 : 50))
+                }
             }
         }
     }
@@ -2534,7 +4706,7 @@ final class AppState {
     /// Smooth meter levels: snap up to new readings, decay at 3 dB/frame on drops.
     /// At 20fps, 3 dB/frame = 60 dB/s → silence in ~1s after signal stops.
     /// Prevents "flashing" from stale FPGA reads between firmware meter update cycles.
-    private func smoothMeterLevels(_ previous: [Double], raw: [Double]) -> [Double] {
+    func smoothMeterLevels(_ previous: [Double], raw: [Double]) -> [Double] {
         var result = previous
         for i in 0..<min(previous.count, raw.count) {
             if raw[i] >= previous[i] {
@@ -2546,13 +4718,17 @@ final class AppState {
         return result
     }
 
-    /// Advance peak hold values: snap up to new peaks, decay at 0.4 dB/frame when level drops.
-    private func advancePeakHold(_ hold: [Double], levels: [Double]) -> [Double] {
-        var result = hold
-        for i in 0..<min(hold.count, levels.count) {
-            result[i] = levels[i] > hold[i] ? levels[i] : max(hold[i] - 0.4, levels[i])
-        }
-        return result
+    static func overChannels(_ readings: [MeterReading]) -> Set<Int> {
+        Set(readings.indices.filter { readings[$0].isOver })
+    }
+
+    static func cardMixerInputOvers(_ words: ThunderboltInputMeterMap.Words, count: Int,
+                                   isOver: (Int) -> Bool) -> Set<Int> {
+        Set((0..<count).filter { index in
+            if words.channels.isEmpty { return isOver(index) }
+            guard words.channels.indices.contains(index), let word = words.channels[index] else { return false }
+            return isOver(word)
+        })
     }
 
     /// Stop meter polling.
@@ -2560,12 +4736,181 @@ final class AppState {
     func stopMeterPolling() {
         meterPollingTask?.cancel()
         meterPollingTask = nil
+        usbHealthTask?.cancel()
+        usbHealthTask = nil
+        clearDisplayedMeterHolds()
+    }
+
+    // MARK: - USB health (0.9.26)
+
+    /// Maestro's window is on screen: not hidden, not minimized, not covered.
+    @MainActor
+    static func mainWindowIsVisible() -> Bool {
+        guard let app = NSApp as NSApplication?, !app.isHidden,
+              let window = WindowDocumentBridge.currentWindow ?? app.mainWindow else { return false }
+        return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+
+    /// A USB read succeeded. After a real loss (`USBLossDetector`) the unit
+    /// is back at its defaults and everything the Mac owns is put back.
+    @MainActor
+    func noteUSBReadSucceeded() {
+        usbLastReadOutcomeAt = Date()
+        let lossBegan = usbLoss.failingSince
+        guard usbLoss.succeeded() else { return }
+        guard let xpcDev = device as? XPCDeviceConnection else { return }
+        recoverUSBUnit(xpcDev, lossBegan: lossBegan)
+    }
+
+    /// Whether a USB restore for the current connection generation began
+    /// after a loss that began at `lossBegan`: that restore (the connect
+    /// restore of the replugged unit, normally) is the one for this return,
+    /// and a recovery must not run a second. On 1140 a replug with Maestro
+    /// open ran two full restores four seconds apart: the removal started a
+    /// new generation whose discovery restored the unit, and the meter loop's
+    /// loss (the helper had answered "no unit" while it was unplugged) ended
+    /// with the first good read after it and restored it again.
+    ///
+    /// Only a restore that can still put the unit right counts: one that
+    /// completed for this generation, is owed (it will run again), or is
+    /// running now; and one that reached the unit (a read answered or a
+    /// write landed, `XPCDeviceConnection.restoreReachedUnit`), since a
+    /// restore that ran while the helper still had no unit open, and gave
+    /// up, did nothing. The meter loop's own reads cannot show that: any
+    /// good read ends the loss.
+    @MainActor
+    func usbRestoreCoversLoss(since lossBegan: Date?) -> Bool {
+        guard let started = usbRestoreStarted, started.generation == unitAGeneration else { return false }
+        let running = usbRestoreTask != nil
+        guard usbRestoredGeneration == unitAGeneration || usbRestoreOwed || running else { return false }
+        guard running || started.reachedUnit else { return false }
+        guard let lossBegan else { return true }
+        return started.at >= lossBegan
+    }
+
+    /// A USB read failed.
+    @MainActor
+    func noteUSBReadFailed(_ error: Error) {
+        let now = Date()
+        usbLastReadOutcomeAt = now
+        let wasFailing = usbLoss.isFailing, wasLost = usbLoss.lost
+        usbLoss.failed(USBLossDetector.failure(for: error), at: now)
+        if !wasFailing { print("[MeterPoll] USB read failed, watching whether the unit went away: \(error)") }
+        if usbLoss.lost, !wasLost { print("[MeterPoll] USB unit lost (\(error)); everything is put back when it answers again") }
+    }
+
+    /// The 1 Hz USB tick, for the life of the meter polling. It reads the unit
+    /// once (the heartbeat) only when no meter read has in the last interval,
+    /// and runs the owed restore and the volume keys' output, which used to
+    /// run in every meter cycle and stopped with the meters. With no meter on
+    /// screen the unit is asked this one question a second plus the front
+    /// panel read (`startFrontPanelSync`: every 300 ms while Maestro's window
+    /// is visible, once a second otherwise).
+    @MainActor
+    func startUSBHealthTick() {
+        usbHealthTask?.cancel()
+        usbHealthTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.usbHealthInterval else { return }
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
+                await self.usbHealthTick()
+            }
+        }
+    }
+
+    @MainActor
+    func usbHealthTick() async {
+        guard isHardwareInitialized, tdmMeteringAvailable, !hardwareWritesSuspended,
+              let xpcDev = device as? XPCDeviceConnection else { return }
+        let quiet = Date().timeIntervalSince(usbLastReadOutcomeAt)
+        let interval = Double(usbHealthInterval.components.seconds)
+            + Double(usbHealthInterval.components.attoseconds) / 1e18
+        if quiet >= interval * 0.9 {
+            do {
+                _ = try await xpcDev.getProperty(PropertyAddress(selector: .meterData, scope: .input))
+                // The unit's meter routing is InputAndMixer now.
+                lastMeterPollWantedOutput = false
+                noteUSBReadSucceeded()
+            } catch {
+                noteUSBReadFailed(error)
+            }
+        }
+        guard device === xpcDev else { return }
+        // A USB restore that did not finish, or a helper that restarted
+        // under the app, is put right here; not while reads fail, when a
+        // try would only fail and lengthen the retry pause.
+        if !usbLoss.isFailing {
+            await serviceHelperReconfigure(xpcDev)
+            guard device === xpcDev else { return }
+            serviceUSBRestore(xpcDev)
+        }
+        // The volume keys' output, where the helper now answering has not
+        // been told it.
+        await serviceKeyboardVolumeOutput()
+    }
+
+    /// The unit came back from a real loss: its mixers are at 0 dB, unmuted,
+    /// its routing, speaker mode and mixer at defaults, so all of it is put
+    /// back, always, as the original restored a returning unit's settings
+    /// without asking (SymphonyIO::ApplySettingsToHardware).
+    @MainActor
+    func recoverUSBUnit(_ xpcDev: XPCDeviceConnection, lossBegan: Date? = nil) {
+        // The restore of this connection that began after the loss began is
+        // the one for it (`usbRestoreCoversLoss`).
+        if usbRestoreCoversLoss(since: lossBegan ?? .distantFuture) {
+            print("[Maestro] USB unit answers again; its restore for this connection already ran, not run twice")
+            return
+        }
+        // No mixer is routed until the restore has written them again.
+        usbMixersWritten = nil
+        usbSettingsRestored = nil
+        tdmMeteringAvailable = true
+        // Re-evaluate the firmware's output-meter verdict after a power
+        // cycle rather than trusting the old latch.
+        tdmOutputMeteringUnavailable = false
+        tdmOutputEchoStreak = 0
+        usbUnitMixerMetersSeen = false
+        tdmOutputReplyLogged = false
+        lastMeterPollWantedOutput = nil
+        if unitAIdentityState == .pending {
+            Task { await self.readCardTypes() }
+        }
+        let now = Date()
+        guard usbRecoveryRestoreDueOrOwed(now: now) else { return }
+        lastRecoveryTime = now
+        // Like the reconnect path, leave a unit that has just appeared alone
+        // until it has settled.
+        let recoveryMixer = lastSelectedMixer
+        Task { @MainActor [weak self] in
+            guard let self, self.device === xpcDev else { return }
+            let generation = self.unitAGeneration
+            let restoreGenerationAtStart = self.usbIdentityRestoreGeneration
+            // A failed connect already consumed its initial restore.
+            // Retry identity before this ordinary recovery restore.
+            self.retryFailedIdentityOnRecovery()
+            if self.unitAIdentityState == .pending { await self.readCardTypes() }
+            guard self.device === xpcDev, self.unitAGeneration == generation else { return }
+            // Identity discovery owns the first restore. If this recovery
+            // joined that pending discovery, do not replay the mixer again.
+            if restoreGenerationAtStart != self.usbIdentityRestoreGeneration { return }
+            let wait = Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date())
+            if wait > 0 { try? await Task.sleep(for: .milliseconds(Int(wait * 1000))) }
+            guard self.device === xpcDev, self.unitAGeneration == generation, !Task.isCancelled,
+                  self.mixerPreferences.isWritable else { return }
+            // A restore that began while this one waited (discovery's) is the
+            // one for this return.
+            if self.usbRestoreCoversLoss(since: now) { return }
+            await self.restoreUSBMixerAfterRecovery(xpcDev, helperMixer: recoveryMixer)
+        }
+        deviceRecoveryCount += 1
+        print("[Maestro] USB recovery detected — re-syncing mixer state (count: \(deviceRecoveryCount))")
     }
 
     // MARK: - Front Panel Sync
 
     private var frontPanelSyncTask: Task<Void, Never>?
-    private var lastFrontPanelSpeakerPush: Double?
+    private var lastFrontPanelSpeakerPush: (output: KeyboardVolumeOutput, dB: Double)?
 
     /// Off only with `MAESTRO_FRONT_PANEL_SYNC=0`.
     static let frontPanelSyncEnabled: Bool =
@@ -2575,6 +4920,15 @@ final class AppState {
     /// daemon polled continuously; this is deliberately gentle, and still fast
     /// enough that a turning encoder looks live.
     static let frontPanelSyncInterval: Duration = .milliseconds(300)
+    /// The USB front panel read while no Maestro window is visible: nobody
+    /// is watching the levels move, so once a second is enough to keep them
+    /// current, and the unit is asked a third as often.
+    static let frontPanelSyncHiddenInterval: Duration = .seconds(1)
+
+    /// How long the USB front panel sync waits between reads.
+    nonisolated static func usbFrontPanelSyncInterval(windowVisible: Bool) -> Duration {
+        windowVisible ? frontPanelSyncInterval : frontPanelSyncHiddenInterval
+    }
 
     /// Keep the on-screen speaker and headphone levels and mutes in step with
     /// the unit's front panel encoder (USB).
@@ -2588,20 +4942,36 @@ final class AppState {
         guard Self.frontPanelSyncEnabled, frontPanelSyncTask == nil else { return }
         frontPanelSyncTask = Task { @MainActor [weak self] in
             var sync = FrontPanelSync()
+            var syncB = FrontPanelSync()
+            var ownerA: ObjectIdentifier?
+            var ownerB: ObjectIdentifier?
+            var baselinePending = true
+            var baselineBPending = true
+            var observationEpoch: (wake: Int, recall: Int)?
             while !Task.isCancelled {
                 guard let self else { return }
-                guard self.connectionMode == .hardware, self.isHardwareInitialized,
+                guard !self.hardwareWritesSuspended, self.setupRecallDepth == 0,
+                      self.connectionMode == .hardware, self.isHardwareInitialized,
                       let device = self.device else {
-                    sync.reset()
+                    sync.reset(); syncB.reset()
+                    baselinePending = true; baselineBPending = true
                     try? await Task.sleep(for: .seconds(1))
                     continue
+                }
+                let epoch = (wake: self.wakeValidationGeneration, recall: self.setupRecallRevision)
+                if ownerA != ObjectIdentifier(device) || observationEpoch?.wake != epoch.wake
+                    || observationEpoch?.recall != epoch.recall {
+                    observationEpoch = epoch
+                    baselinePending = true; baselineBPending = true
+                    sync.reset(); syncB.reset()
+                    ownerA = ObjectIdentifier(device); ownerB = nil
                 }
                 let update: SymphonyIOParameterUpdates?
                 let interval: Duration
                 if let usb = device as? XPCDeviceConnection,
                    Self.usbSettleRemaining(appearedAt: self.symphonyAppearedAt, now: Date()) == 0 {
                     update = await usb.readParameterUpdates()
-                    interval = Self.frontPanelSyncInterval
+                    interval = Self.usbFrontPanelSyncInterval(windowVisible: Self.mainWindowIsVisible())
                 } else if let thunderbolt = device as? ThunderboltDeviceConnection,
                           self.thunderboltHardwareResponsive, self.connectedUnit == nil {
                     // Same question, asked through the driver. A converter has
@@ -2610,19 +4980,79 @@ final class AppState {
                     update = await thunderbolt.readParameterUpdates()
                     interval = Self.thunderboltFrontPanelSyncInterval
                 } else {
-                    sync.reset()
+                    sync.reset(); syncB.reset()
+                    await MainActor.run {
+                        if self.reportedClockSource != nil { self.reportedClockSource = nil }
+                        if self.reportedClockLocked != nil { self.reportedClockLocked = nil }
+                    }
                     try? await Task.sleep(for: .seconds(1))
                     continue
                 }
+                // The clock source came with this read, whatever the reading's
+                // rate says: on an external source with no signal the unit
+                // reports a rate of 0, the reading is rejected below, and that
+                // is exactly when the source must still be shown (found on
+                // Daniel's unit 2026-11-20: Word Clock with nothing connected
+                // left the status bar on "Internal"). Asked of the connection,
+                // so a board input keeps its row and USB's cached value is used.
+                if device === self.device {
+                    let reported = (try? await device.getProperty(PropertyAddress(selector: .clockSource)))?.asUInt32
+                    let key = reported.flatMap { ClockSourceMenu.decode($0) != nil ? $0 : nil }
+                    let flag = (device as? ThunderboltDeviceConnection)?.lastExternalClockLocked
+                    let locked = key.flatMap { k in flag.map { ClockSourceMenu.isLocked(sourceKey: k, externalClockLocked: $0) } }
+                    await MainActor.run {
+                        guard device === self.device else { return }
+                        if self.reportedClockSource != key || self.reportedClockLocked != locked {
+                            // In the diagnostics report as it happens, not only
+                            // at the next five-second snapshot.
+                            print("[Maestro] clock: source key=\(key.map { String(format: "0x%04x", $0) } ?? "none")"
+                                + " unit lock flag=\(flag.map { $0 ? "locked" : "not locked" } ?? "none")"
+                                + " status=\(locked.map { PortStatusMessage.clock(locked: $0) } ?? "not reported")")
+                        }
+                        if self.reportedClockSource != key { self.reportedClockSource = key }
+                        if self.reportedClockLocked != locked { self.reportedClockLocked = locked }
+                    }
+                }
                 guard let update else {
-                    sync.reset()
+                    sync.reset(); syncB.reset()
                     try? await Task.sleep(for: .seconds(5))
                     continue
                 }
                 // The connection may have been replaced while the read was out.
+                guard self.wakeValidationGeneration == epoch.wake,
+                      self.setupRecallRevision == epoch.recall else { continue }
                 if device === self.device {
                     (device as? XPCDeviceConnection)?.seedClockSource(reported: update.clockSource)
-                    for change in sync.changes(for: update) { self.applyFrontPanelChange(change) }
+                    for change in sync.changes(for: update) {
+                        guard device === self.device, !Task.isCancelled else { break }
+                        await self.applyFrontPanelChange(change, isUserChange: !baselinePending, selection: update.selection)
+                    }
+                    baselinePending = false
+                }
+                // B shares this bounded owner/cadence; never spawn another timer.
+                if !Task.isCancelled, self.connectionMode == .hardware, self.isHardwareInitialized,
+                   self.thunderboltHardwareResponsive,
+                   device === self.device, device is ThunderboltDeviceConnection,
+                   self.portSelection.selection == .ports1And2, self.unitB?.setupComplete == true,
+                   let b = self.unitBDevice as? ThunderboltUnitBConnection {
+                    if ownerB != ObjectIdentifier(b) {
+                        syncB.reset(); ownerB = ObjectIdentifier(b); baselineBPending = true
+                    }
+                    let bUpdate = await b.readParameterUpdates()
+                    if device === self.device, b === self.unitBDevice,
+                       self.portSelection.selection == .ports1And2, self.unitB?.setupComplete == true,
+                       self.wakeValidationGeneration == epoch.wake,
+                       self.setupRecallRevision == epoch.recall,
+                       let bUpdate {
+                        for change in syncB.changes(for: bUpdate) {
+                            if case .micPreGain = change {
+                                await self.applyFrontPanelChange(change, unit: .b, isUserChange: !baselineBPending)
+                            }
+                        }
+                        baselineBPending = false
+                    } else { syncB.reset() }
+                } else {
+                    syncB.reset(); ownerB = nil
                 }
                 try? await Task.sleep(for: interval)
             }
@@ -2631,41 +5061,125 @@ final class AppState {
 
     static let thunderboltFrontPanelSyncInterval: Duration = .milliseconds(500)
 
+    /// True when the serving ThunderBridge/PCIe driver predates build 132.
+    /// Those builds do not consume the front panel's 0x28 report themselves, so
+    /// the app must tell the Mac's volume and mute controls about a front-panel
+    /// change, as 0.9.9 did. Unknown (not read yet) counts as new: pushing to a
+    /// 132+ driver could reach the wrong unit's monitor (4ca8d90).
+    var frontPanelNeedsHALEcho: Bool {
+        transportType == .thunderbolt && servingDextBuild != nil
+            && !SymphonyExtendedSelectors.supported(by: servingDextBuild)
+    }
+
     @MainActor
-    private func applyFrontPanelChange(_ change: FrontPanelSync.Change) {
+    func applyFrontPanelChange(_ change: FrontPanelSync.Change, unit: DeviceUnit = .a,
+                               isUserChange: Bool = true,
+                               selection: SymphonyIOParameterUpdates.Selection? = nil) async {
+        guard !hardwareWritesSuspended, setupRecallDepth == 0 else { return }
         switch change {
+        case .micPreGain(let channel, let gain, _):
+            guard channel >= 0, channel < InputChannelLogic.micPreChannelCount else { return }
+            // Each physical unit owns its saved group offsets, regardless of the
+            // visible page. Firmware already applied the hardware change.
+            let store = unit == .b ? unitBChannelStateStore : channelStateStore
+            var saved = store.load(ChannelStateStore.inputKey, as: [InputChannelState].self) ?? []
+            let previous = saved.indices.contains(channel) ? saved[channel].gain : nil
+            let gains = FrontPanelSync.applyGain(gain, channel: channel, to: &saved)
+            if !gains.isEmpty { store.save(saved, for: ChannelStateStore.inputKey) }
+            frontPanelMicPreRevision += 1
+            frontPanelMicPreUpdate = FrontPanelMicPreUpdate(
+                unit: unit, channel: channel, gain: gain, revision: frontPanelMicPreRevision)
+            let channelState = saved.indices.contains(channel) ? saved[channel] : nil
+            if isUserChange, previous != (channelState?.gain ?? gain) {
+                showLevelOverlay(source: .micPre(channel: channel, state: channelState),
+                                 level: channelState?.gain ?? gain, change: .frontPanel)
+                markSetupEdited(.inputChannelSettings)
+            }
+            if let tb = device as? ThunderboltDeviceConnection {
+                if SymphonyExtendedSelectors.supported(by: servingDextBuild) {
+                    await tb.publishObservedMicGains(gains, port: unit.portByte)
+                }
+            }
+        // Physical monitor changes edit the level and mute stored in the setup file.
         case .level(.speaker, let dB, _):
-            if speakerLevel != dB { speakerLevel = dB }
-            scheduleSpeakerLevelPush(dB)
-        case .level(.headphone1, let dB, _): if hp1Level != dB { hp1Level = dB }
-        case .level(.headphone2, let dB, _): if hp2Level != dB { hp2Level = dB }
+            if speakerLevel != dB {
+                speakerLevel = dB
+                if isUserChange {
+                    showLevelOverlay(source: .speaker, level: dB, muted: speakerMuted, change: .frontPanel)
+                    markSetupEdited(.monitorControls)
+                }
+            }
+            if transportType != .thunderbolt || frontPanelNeedsHALEcho { scheduleSpeakerLevelPush(dB) }
+        // Over USB a headphone that is the volume keys' output is passed on
+        // to the Mac's control too, with the same wait as the speaker.
+        case .level(.headphone1, let dB, _):
+            if hp1Level != dB {
+                hp1Level = dB
+                if isUserChange {
+                    showLevelOverlay(source: .headphone1, level: dB, muted: hp1Muted, change: .frontPanel)
+                    markSetupEdited(.monitorControls)
+                }
+            }
+            if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB, output: .headphone1) }
+        case .level(.headphone2, let dB, _):
+            if hp2Level != dB {
+                hp2Level = dB
+                if isUserChange {
+                    showLevelOverlay(source: .headphone2, level: dB, muted: hp2Muted, change: .frontPanel)
+                    markSetupEdited(.monitorControls)
+                }
+            }
+            if transportType != .thunderbolt { scheduleSpeakerLevelPush(dB, output: .headphone2) }
+        case .level: break   // MicPre selections arrive as .micPreGain
         case .muteAll(let muted):
-            speakerMuted = muted
-            hp1Muted = muted
-            hp2Muted = muted
-            // Over ThunderBridge the Mac's mute control is the driver's own, and
-            // it knows nothing of a mute made on the front panel. Maestro reads
-            // that control whenever the Mac's volume changes, so without this
+            // The front-panel firmware updates all three output mute states
+            // together, including outputs at minimum and the speaker in Line
+            // mode (`SymphonyIOFrontPanel.cpp:773-783`). Keep the app's own
+            // MonitorOutputToggle rule for direct clicks, but mirror this
+            // hardware event in every output's copy.
+            let targets = SymphonyIORequestBuilder.MonitorOutput.allCases
+            let changed = targets.contains { output in
+                switch output {
+                case .speaker: return speakerMuted != muted
+                case .headphone1: return hp1Muted != muted
+                case .headphone2: return hp2Muted != muted
+                }
+            }
+            for output in targets {
+                switch output {
+                case .speaker: speakerMuted = muted
+                case .headphone1: hp1Muted = muted
+                case .headphone2: hp2Muted = muted
+                }
+            }
+            if isUserChange, changed {
+                switch selection {
+                case .headphone1: showLevelOverlay(source: .headphone1, level: hp1Level, muted: muted, change: .frontPanel)
+                case .headphone2: showLevelOverlay(source: .headphone2, level: hp2Level, muted: muted, change: .frontPanel)
+                default: showLevelOverlay(source: .speaker, level: speakerLevel, muted: muted, change: .frontPanel)
+                }
+                markSetupEdited(.monitorControls)
+            }
+            // Driver build 132+ consumes the physical observation itself; no
+            // echo through the card's selected-monitor HAL control. An older
+            // driver knows nothing of a front-panel mute: Maestro reads that
+            // control whenever the Mac's volume changes, so without the echo
             // the speaker flipped back to "unmuted" on screen while the unit
-            // stayed muted, and it took a mute and an unmute in Maestro to
-            // recover (2026-11-13). Setting it sends the unit the state it is
-            // already in.
-            if transportType == .thunderbolt, let device {
+            // stayed muted (2026-11-13). Setting it sends the unit the state
+            // it is already in.
+            if frontPanelNeedsHALEcho, let device {
                 Task { try? await device.setProperty(
                     PropertyAddress(selector: .outputMute), value: .bool(muted)) }
             }
         case .metersCleared:
-            // The unit's held peaks are gone; drop Maestro's copies too.
-            inputPeakHold = Array(repeating: -60.0, count: inputPeakHold.count)
-            outputPeakHold = Array(repeating: -60.0, count: outputPeakHold.count)
-            digitalInputPeakHold = Array(repeating: -60.0, count: digitalInputPeakHold.count)
-            digitalOutputPeakHold = Array(repeating: -60.0, count: digitalOutputPeakHold.count)
+            clearDisplayedMeterHolds()
         }
     }
 
     /// How long the speaker encoder must be still before its level is passed on
     /// to the Mac's volume control.
     static let frontPanelPushQuietInterval: Duration = .milliseconds(1500)
+    @ObservationIgnored var frontPanelPushQuietInterval: Duration = AppState.frontPanelPushQuietInterval
 
     private var speakerPushGeneration = 0
 
@@ -2681,22 +5195,29 @@ final class AppState {
     /// levels were written back mid-turn and the volume jumped around
     /// (2026-11-13). Each new front panel reading restarts the wait.
     @MainActor
-    private func scheduleSpeakerLevelPush(_ dB: Double) {
+    private func scheduleSpeakerLevelPush(_ dB: Double, output: KeyboardVolumeOutput = .speakers) {
+        guard !hardwareWritesSuspended else { return }
         speakerPushGeneration += 1
         let generation = speakerPushGeneration
+        let sourceDevice = device
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.frontPanelPushQuietInterval)
-            guard let self, generation == self.speakerPushGeneration,
-                  self.speakerLevel == dB, self.lastFrontPanelSpeakerPush != dB else { return }
-            self.lastFrontPanelSpeakerPush = dB
-            if self.transportType == .thunderbolt {
-                // The Mac's volume control for ThunderBridge is the driver's own;
-                // setting the level through the connection updates it.
+            try? await Task.sleep(for: self?.frontPanelPushQuietInterval ?? Self.frontPanelPushQuietInterval)
+            guard let self, !self.hardwareWritesSuspended, generation == self.speakerPushGeneration, self.device === sourceDevice,
+                  self.keyboardVolumeLevel(of: output)?.dB == dB,
+                  self.lastFrontPanelSpeakerPush.map({ $0.output != output || $0.dB != dB }) ?? true else { return }
+            if self.transportType != .thunderbolt {
+                self.lastFrontPanelSpeakerPush = (output, dB)
+                // Only the output the keys move is shown on the Mac's control.
+                self.writeASPVolume(dB, output: output)
+            } else if output == .speakers, self.frontPanelNeedsHALEcho {
+                // Driver before build 132 (re-checked: a handover may have
+                // happened during the wait). Its volume control is the
+                // driver's own; setting the level through the connection
+                // updates it, as 0.9.9 did.
+                self.lastFrontPanelSpeakerPush = (output, dB)
                 let attenuation = UInt32(max(0, min(64, -dB)))
                 try? await self.device?.setProperty(
                     PropertyAddress(selector: .outputLevel), value: .uint32(attenuation))
-            } else {
-                self.writeASPVolume(dB)
             }
         }
     }
@@ -2708,6 +5229,8 @@ final class AppState {
     /// keys, the ASP handles them. This listener syncs those changes back to the
     /// Maestro app UI so the volume knob reflects the current hardware state.
     func startASPVolumeSync() {
+        // Tests never listen to or set a real device's volume.
+        guard !TestEnvironment.isRunningTests else { return }
         if transportType == .thunderbolt {
             // Thunderbolt: aspDeviceID was set to the ThunderBridge device in init().
             // Media keys change this device's volume directly — listen to VolumeDecibels.
@@ -2784,8 +5307,76 @@ final class AppState {
             aspDeviceID, &muteAddr, aspMuteChanged, Unmanaged.passUnretained(self).toOpaque())
     }
 
+    /// Observe the standard HAL controls that a DAW edits on an installed 8MicPre
+    /// (polarity, high-pass, input type, the input-scope gain and phantom). Installed only
+    /// when a unit has the board, so rigs without it add no listeners or reads.
+    /// A notification is only a prompt to read the driver's host-edit records
+    /// sooner than the next health poll: the HAL element is a host input whose
+    /// MicPre (unit A or B, any channel) depends on routing, so its value is
+    /// never written to a strip here. The records are already resolved to a
+    /// physical unit and channel by the driver (`MicPreDAWObservation`).
+    @MainActor
+    func startMicPreDAWSync() {
+        stopMicPreDAWSync()
+        guard transportType == .thunderbolt,
+              cardLayout.slot2 == .micPre8 || unitBLayout?.slot2 == .micPre8,
+              aspDeviceID != kAudioObjectUnknown else { return }
+        let selectors: [AudioObjectPropertySelector] = [
+            kAudioDevicePropertyPhaseInvert,
+            kAudioDevicePropertyHighPassFilterSetting,
+            kAudioDevicePropertyChannelNominalLineLevel,
+            kAudioDevicePropertyVolumeDecibels,
+            // dext 153: a DAW's 48V, shown on the button (display only).
+            kAudioDevicePropertyPhantomPower,
+        ]
+        for element in 1...8 {
+            for selector in selectors {
+                var address = AudioObjectPropertyAddress(mSelector: selector,
+                    mScope: kAudioObjectPropertyScopeInput,
+                    mElement: AudioObjectPropertyElement(element))
+                if AudioObjectAddPropertyListener(aspDeviceID, &address, micPreDAWPropertyChanged,
+                    Unmanaged.passUnretained(self).toOpaque()) == noErr {
+                    micPreDAWListenerAddresses.append(address)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func stopMicPreDAWSync() {
+        micPreDAWRefreshTask?.cancel()
+        micPreDAWRefreshTask = nil
+        micPreDAWRefreshGate.cancel()
+        guard aspDeviceID != kAudioObjectUnknown else { micPreDAWListenerAddresses.removeAll(); return }
+        for var address in micPreDAWListenerAddresses {
+            AudioObjectRemovePropertyListener(aspDeviceID, &address, micPreDAWPropertyChanged,
+                Unmanaged.passUnretained(self).toOpaque())
+        }
+        micPreDAWListenerAddresses.removeAll()
+    }
+
+    /// Coalesce a burst of HAL notifications (a fader drag, a DAW recall) into
+    /// one selector-5 read, made off the main actor, then apply the records.
+    @MainActor
+    func scheduleMicPreDAWRefresh(objectID: AudioObjectID) {
+        guard objectID == aspDeviceID, let tb = device as? ThunderboltDeviceConnection,
+              let token = micPreDAWRefreshGate.begin() else { return }
+        micPreDAWRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            let link = await Task.detached(priority: .utility) { tb.linkState() }.value
+            guard let self else { return }
+            // A cancelled task leaves a newer task's slot alone.
+            guard self.micPreDAWRefreshGate.isCurrent(token) else { return }
+            self.micPreDAWRefreshGate.finish(token)
+            self.micPreDAWRefreshTask = nil
+            guard !Task.isCancelled, (self.device as? ThunderboltDeviceConnection) === tb else { return }
+            self.applyPhantomObservations(link)
+        }
+    }
+
     /// Read current volume from the synced audio device and update speakerLevel.
     func readASPVolume() {
+        if transportType == .thunderbolt && (monitorDevice != .a || monitorSelectionTask != nil) { return }
         guard aspDeviceID != kAudioObjectUnknown else { return }
         // Skip if we just wrote — avoids feedback loop where our own write
         // triggers the listener which re-reads the same value.
@@ -2801,7 +5392,13 @@ final class AppState {
             var dB: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
             if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &dB) == noErr {
-                speakerLevel = Double(dB)
+                // Whose level the control holds (`macVolumeAdoption`).
+                switch currentMacVolumeAdoption() {
+                case .level(let output): setKeyboardVolumeLevel(Double(dB), of: output)
+                case .legacyHeadphone1: hp1Level = Double(dB)
+                case .legacySpeaker: speakerLevel = Double(dB)
+                case .ignore, .putBack: break
+                }
             }
         } else {
             // USB/ASP: read VolumeScalar and convert to dB
@@ -2815,13 +5412,24 @@ final class AppState {
             if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &scalar) == noErr {
                 // ASP maps: scalar 0.0 → raw 0 → -64 dB, scalar 1.0 → raw 64 → 0 dB
                 let dB = Double(scalar) * 64.0 - 64.0
-                speakerLevel = dB
+                // Whose level the control holds (`macVolumeAdoption`). With
+                // Speaker chosen in Line mode the helper ignored the change:
+                // the Mac's control is put back to the speaker level, so the
+                // next key press after leaving Line does not step from a
+                // level that was never applied.
+                switch currentMacVolumeAdoption() {
+                case .level(let output): setKeyboardVolumeLevel(dB, of: output)
+                case .legacySpeaker, .legacyHeadphone1: speakerLevel = dB
+                case .putBack: if abs(dB - speakerLevel) > 0.5 { showSpeakerLevelOnMacVolume() }
+                case .ignore: break
+                }
             }
         }
     }
 
     /// Read current mute state from the ASP device and update speakerMuted.
     func readASPMute() {
+        if transportType == .thunderbolt && (monitorDevice != .a || monitorSelectionTask != nil) { return }
         guard aspDeviceID != kAudioObjectUnknown else { return }
         if Date().timeIntervalSince(aspWriteTimestamp) < 0.2 { return }
         var addr = AudioObjectPropertyAddress(
@@ -2832,48 +5440,175 @@ final class AppState {
         var muted: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         if AudioObjectGetPropertyData(aspDeviceID, &addr, 0, nil, &size, &muted) == noErr {
-            speakerMuted = muted != 0
+            // Whose mute the control holds (`macVolumeAdoption`).
+            switch currentMacVolumeAdoption(mute: true) {
+            case .level(let output): setKeyboardVolumeMute(muted != 0, of: output)
+            case .legacyHeadphone1: hp1Muted = muted != 0
+            case .legacySpeaker: speakerMuted = muted != 0
+            case .putBack: if (muted != 0) != speakerMuted { writeMacMute(speakerMuted) }
+            case .ignore: break
+            }
         }
+    }
+
+    private struct ObservedMonitorLevel: Equatable {
+        let output: LevelOverlaySource
+        let level: Double
+        let muted: Bool
+
+        func matches(_ other: Self) -> Bool {
+            output == other.output && abs(level - other.level) <= 0.5 && muted == other.muted
+        }
+
+        static func source(for output: KeyboardVolumeOutput) -> LevelOverlaySource? {
+            switch output {
+            case .speakers, .mixer1Level: .speaker
+            case .headphone1: .headphone1
+            case .headphone2: .headphone2
+            case .none: nil
+            }
+        }
+    }
+
+    private func rememberMacMonitorWrite(for output: KeyboardVolumeOutput, level: Double? = nil, muted: Bool? = nil) {
+        guard let source = ObservedMonitorLevel.source(for: output),
+              let current = keyboardVolumeLevel(of: output) else { return }
+        lastMacMonitorWrite = .init(output: source, level: level ?? current.dB,
+                                   muted: muted ?? current.muted)
+    }
+
+    private func observedMonitorLevels() -> [ObservedMonitorLevel] {
+        [
+            .init(output: .speaker, level: speakerLevel, muted: speakerMuted),
+            .init(output: .headphone1, level: hp1Level, muted: hp1Muted),
+            .init(output: .headphone2, level: hp2Level, muted: hp2Muted)
+        ]
+    }
+
+    @MainActor
+    func adoptMacMonitorChange(mute: Bool) {
+        let previous = observedMonitorLevels()
+        if mute { readASPMute() } else { readASPVolume() }
+        guard initialSetupRestoreFinished, connectionMode == .hardware, isHardwareInitialized,
+              !hardwareWritesSuspended, setupRecallDepth == 0, usbRestoreTask == nil else { return }
+        for (before, after) in zip(previous, observedMonitorLevels()) where before != after {
+            if let lastMacMonitorWrite, after.matches(lastMacMonitorWrite) { continue }
+            // Like front-panel changes, Mac volume changes edit levels stored in the setup file.
+            markSetupEdited(.monitorControls)
+            if ContinuousClock.now >= macVolumeOverlayAfter {
+                showLevelOverlay(source: after.output, level: after.level, muted: after.muted,
+                                 change: transportType == .usb ? .maestroUSBVolume : .macVolume)
+            }
+        }
+    }
+
+    /// What a change of the Mac's volume or mute control means right now.
+    private func currentMacVolumeAdoption(mute: Bool = false) -> MacVolumeAdoption {
+        let output = keyboardVolumeOutput(for: .a)
+        return Self.macVolumeAdoption(
+            thunderbolt: transportType == .thunderbolt, servingBuild: servingDextBuild,
+            helperOutdated: usbKeysMoveSpeakerOnly, output: output,
+            settled: keyboardVolumeSettled(output), speakerMode: speakerOutputMode, mute: mute)
+    }
+
+    /// USB, Speaker chosen in Line mode: put the Mac's "Maestro USB" volume
+    /// and mute back to the speaker's (the helper ignores both there).
+    func showSpeakerLevelOnMacVolume() {
+        guard transportType != .thunderbolt else { return }
+        writeMacVolume(speakerLevel)
     }
 
     /// Write the current speakerLevel to the synced audio device.
     /// For USB: writes VolumeScalar to ASP so macOS Sound slider reflects the change.
     /// For Thunderbolt: no-op — ThunderboltDeviceConnection already writes VolumeDecibels
     /// directly, and the listener callback keeps the UI in sync.
-    func writeASPVolume(_ dB: Double) {
-        guard aspDeviceID != kAudioObjectUnknown else { return }
+    ///
+    /// `output` is the output whose level changed: only the one chosen under
+    /// Volume Keys › Audio Output is shown on the Mac's control (a helper
+    /// before version 3 always moves the speakers).
+    func writeASPVolume(_ dB: Double, output: KeyboardVolumeOutput = .speakers) {
         if transportType == .thunderbolt {
             // ThunderboltDeviceConnection.setProperty already wrote VolumeDecibels
-            // to this same device. No need to double-write.
+            // to this same device. Remember the value for its HAL notification.
+            if ObservedMonitorLevel.source(for: keyboardVolumeOutput(for: .a)) == ObservedMonitorLevel.source(for: output) {
+                rememberMacMonitorWrite(for: output, level: dB)
+            }
             return
         }
+        guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
+        writeMacVolume(dB)
+    }
+
+    private func writeMacVolume(_ dB: Double) {
+        guard !hardwareWritesSuspended else { return }
+        guard aspDeviceID != kAudioObjectUnknown, transportType != .thunderbolt else { return }
         aspWriteTimestamp = Date()
         // Convert dB (-64..0) to scalar (0..1): scalar = (dB + 64) / 64
         let scalar = Float32(max(0, min(1, (dB + 64.0) / 64.0)))
+        let targetID = aspDeviceID
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioObjectPropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
         var value = scalar
-        AudioObjectSetPropertyData(aspDeviceID, &addr, 0, nil,
-                                   UInt32(MemoryLayout<Float32>.size), &value)
+        if AudioObjectSetPropertyData(targetID, &addr, 0, nil,
+                                      UInt32(MemoryLayout<Float32>.size), &value) == noErr {
+            let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
+            rememberMacMonitorWrite(for: output, level: Double(scalar) * 64 - 64)
+        }
     }
 
     /// Write mute state to the synced audio device.
     /// For Thunderbolt: no-op (same reason as writeASPVolume).
-    func writeASPMute(_ muted: Bool) {
-        guard aspDeviceID != kAudioObjectUnknown else { return }
-        if transportType == .thunderbolt { return }
+    func writeASPMute(_ muted: Bool, output: KeyboardVolumeOutput = .speakers) {
+        if transportType == .thunderbolt {
+            if ObservedMonitorLevel.source(for: keyboardVolumeOutput(for: .a)) == ObservedMonitorLevel.source(for: output) {
+                rememberMacMonitorWrite(for: output, muted: muted)
+                // Also set the driver's Core Audio mute control, so macOS saves
+                // the mute with the device and restores it within the driver's
+                // start-up hold after a replug (it saved "unmuted" before, and
+                // the speakers played for a few seconds; 2026-11-22 21:53).
+                writeThunderboltMacMute(muted)
+            }
+            return
+        }
+        guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
+        writeMacMute(muted)
+    }
+
+    private func writeThunderboltMacMute(_ muted: Bool) {
+        guard !hardwareWritesSuspended, let targetID = activeAudioDeviceID,
+              targetID != kAudioObjectUnknown else { return }
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        // Always set, even when the control already shows this value: the
+        // driver mirrors the unit's mute onto its control itself, and macOS
+        // saves only what a client sets (diagnostics 2026-11-23 09-59: the
+        // control showed muted, Maestro skipped, macOS restored "unmuted").
+        var value: UInt32 = muted ? 1 : 0
+        _ = AudioObjectSetPropertyData(targetID, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value)
+    }
+
+    private func writeMacMute(_ muted: Bool) {
+        guard !hardwareWritesSuspended else { return }
+        guard aspDeviceID != kAudioObjectUnknown, transportType != .thunderbolt else { return }
         aspWriteTimestamp = Date()
+        let targetID = aspDeviceID
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioObjectPropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
         var value: UInt32 = muted ? 1 : 0
-        AudioObjectSetPropertyData(aspDeviceID, &addr, 0, nil,
-                                   UInt32(MemoryLayout<UInt32>.size), &value)
+        if AudioObjectSetPropertyData(targetID, &addr, 0, nil,
+                                      UInt32(MemoryLayout<UInt32>.size), &value) == noErr {
+            let output = usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)
+            rememberMacMonitorWrite(for: output, muted: muted)
+        }
     }
 
     /// Remove volume/mute listeners from the synced audio device.
@@ -2929,50 +5664,23 @@ final class AppState {
     ///
     /// Evidence: `SymphonyIO.cpp` line 7010 — `SetBoardMeterData(true, rawTDMMeterData+16*nBrdIdx, 16)`
     /// Evidence: `SymphonyIOBoard_AnalogOptical.cpp` — 8 analog + 8 optical streams per board
-    private func tdmMeterLevels(from data: Data, count: Int) -> [Double] {
-        var result = [Double](repeating: -60.0, count: count)
-        let wordsAvailable = data.count / 2
-
-        // Slot layout, from SymphonyIO.cpp:6931-6944 and :7041-7100:
-        //
-        //   words  0-15 -> card slot 0      words 16-31 -> card slot 1
-        //
-        // That outer split is rigid and card-INDEPENDENT: each physical slot
-        // always gets exactly 16 words whether the card fills 0, 8 or 16 of
-        // them. Within a board the order is N analog first, then digital.
-        //
-        // N is per-card and we previously hardcoded it to 8, which is right only
-        // for the 8x8 cards. A 16x16 or AD16/DA16 contributes 16 analog and no
-        // digital, and a MicPre8 contributes NOTHING -- it has no converters of
-        // its own and delegates onto the primary card's analog inputs. Hardcoding
-        // 8 sends channels 9-16 of a 16-channel card into slot 1's region, which
-        // on a 16x16 + MicPre8 unit is empty.
-        let hasTwoBoards = data.count >= 64 && count > 8
-        let board0Analog = self.primaryBoardType.analogInputChannels
-        // Fall back to the old assumption only when detection has told us
-        // nothing; a wrong guess is better placed at 8 than at 0.
-        let analogOnBoard0 = board0Analog > 0 ? board0Analog : 8
-
-        for i in 0..<count {
-            // Mapping lives in MaestroCore.MeterSlotMap so it can be proven
-            // against card configurations we do not physically own.
-            let wordIndex = MeterSlotMap.analogWordIndex(
-                channel: i, analogOnBoard0: analogOnBoard0, twoBoards: hasTwoBoards)
-
-            guard wordIndex < wordsAvailable else { continue }
-
-            let lo = UInt16(data[wordIndex * 2])
-            let hi = UInt16(data[wordIndex * 2 + 1])
-            let rawWord = lo | (hi << 8)
-            let meterVal = rawWord & 0x3FFF  // mask off over bit
-            if meterVal <= 0x40 {
-                result[i] = -60.0  // silence threshold
-            } else {
-                let dBFS = 20.0 * log10(Double(meterVal) / 16383.0)
-                result[i] = max(dBFS, -60.0)
+    private func tdmMeterReadings(from data: Data, count: Int, isInput: Bool) -> [MeterReading] {
+        let layout = cardLayout
+        if layout.isKnown {
+            let words = layout.slots.enumerated().flatMap { board, card in
+                let channels = isInput ? card.analogInputChannels : card.analogOutputChannels
+                return (0..<channels).map { board * IOCardType.busChannelsPerBoard + $0 }
+            }
+            return (0..<count).map { index in
+                guard words.indices.contains(index) else { return .silence }
+                return TDMMeterPayload.reading(data, word: words[index])
             }
         }
-        return result
+        return (0..<count).map { index in
+            let word = MeterSlotMap.analogWordIndex(channel: index, analogOnBoard0: 8,
+                                                    twoBoards: data.count >= 64 && count > 8)
+            return TDMMeterPayload.reading(data, word: word)
+        }
     }
 
     // MARK: Software output meters (hardware output group proven absent)
@@ -2980,7 +5688,8 @@ final class AppState {
     /// Re-read the app's persisted output routing for the software output meter
     /// model. Cheap (UserDefaults) but not free at 20 fps, so throttled to ~2 s.
     private func refreshSoftwareOutputRoutesIfNeeded(pollCount: Int) {
-        guard softwareOutputRoutesPollStamp < 0 || pollCount - softwareOutputRoutesPollStamp >= 40 else { return }
+        guard softwareOutputRoutesPollStamp < 0 || pollCount < softwareOutputRoutesPollStamp
+                || pollCount - softwareOutputRoutesPollStamp >= 40 else { return }
         softwareOutputRoutesPollStamp = pollCount
         softwareOutputRoutes = cachedOutputRouteMap()
     }
@@ -2989,21 +5698,158 @@ final class AppState {
     /// card layout changes. The table is the driver's board-order table with
     /// the saved Input Routing choices that `syncInputRoutingToHardware`
     /// writes over it (only when the cards were read this session, as there).
+    func invalidateThunderboltInputMeterMap() {
+        thunderboltInputMeterWordsPollStamp = -1
+        thunderboltCaptureRoutesCache.removeAll()
+    }
+
+    /// Output Routing changed: read the output meter map again at the next poll.
+    func invalidateThunderboltOutputMeterMap() {
+        thunderboltOutputMeterWordsPollStamp = -1
+        unitBOutputMeterWordsPollStamp = -1
+    }
+
+    @MainActor
+    private func refreshThunderboltOutputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
+        let layout = cardLayout
+        guard thunderboltOutputMeterWordsPollStamp < 0
+                || pollCount < thunderboltOutputMeterWordsPollStamp
+                || pollCount - thunderboltOutputMeterWordsPollStamp >= 40
+                || thunderboltOutputMeterLayout != layout else { return }
+        thunderboltOutputMeterWordsPollStamp = pollCount
+        thunderboltOutputMeterLayout = layout
+        // Converters keep host channel n on strip n; unit A's table needs its
+        // cards and identity read (as the restore does).
+        guard layout.converterLayout == nil, cardTableUnreadableReason() == nil else {
+            thunderboltOutputMeterWords = nil
+            return
+        }
+        thunderboltOutputMeterWords = ThunderboltOutputMeterMap.words(
+            layout: layout, table: thunderboltOutputTable(for: tb, quiet: true), unitBActive: unitBOnCard,
+            order: thunderboltDisplayOrder(unit: .a))
+    }
+
+    /// A level per meter word from Core Audio's playback peaks, for when the
+    /// card's snapshot has none: word 64 + n is software output n. The card
+    /// mixers' outputs cannot be measured this way and read as silence.
+    private func softwarePlaybackWordLevel(_ peaks: [Float]) -> (Int) -> Double {
+        let mixerBase = Int(ThunderboltCardRouting.mixerOutBase)
+        // A card mixer's output cannot be measured this way: show its
+        // Software Return source, as the Mixer page's fallback does.
+        let pairs = softwareReturnPairCount
+        let returns = [0, 1].map { max(0, min(pairs - 1, mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\($0)"))) * 2 }
+        return { word in
+            var channel = word - Int(ThunderboltCardRouting.pciOutBase)
+            if word >= mixerBase, word < mixerBase + 4 {
+                channel = returns[(word - mixerBase) / 2] + (word - mixerBase) % 2
+            }
+            guard channel >= 0, channel < peaks.count else { return -60.0 }
+            return SoftwareOutputMeterMap.dBFS(linearPeak: peaks[channel])
+        }
+    }
+
+    /// Read only the unit shown on the Output page. The context captured before
+    /// the worker starts is required again before its reply can be displayed.
+    @MainActor
+    private func pollUnitOutputMetersIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
+        guard selectedArea == .output, !hardwareWritesSuspended,
+              thunderboltHardwareResponsive, UnitOutputMeters.driverSupports(servingDextBuild),
+              !unitOutputMeterReadInFlight else { return }
+        let unit = activeUnit
+        let layout = unit == .b ? unitBLayout : cardLayout
+        guard let layout, layout.isKnown, layout.converterLayout == nil,
+              Date() >= (unitOutputMeterRetryAfter[unit] ?? .distantPast) else { return }
+        let bConnection = unit == .b ? unitBDevice as? ThunderboltUnitBConnection : nil
+        guard unit == .a || bConnection != nil else { return }
+        let contextID: ObjectIdentifier = unit == .a ? ObjectIdentifier(tb) : ObjectIdentifier(bConnection!)
+        let now = Date()
+        let next = MeterPollPacing.nextStart(
+            now: now.timeIntervalSinceReferenceDate,
+            previousStart: unitOutputMeterLastStart[unit]?.timeIntervalSinceReferenceDate,
+            previousEnd: unitOutputMeterLastEnd[unit]?.timeIntervalSinceReferenceDate,
+            backoffUntil: (unitOutputMeterRetryAfter[unit] ?? .distantPast).timeIntervalSinceReferenceDate)
+        guard now.timeIntervalSinceReferenceDate >= next else { return }
+        unitOutputMeterReadInFlight = true
+        unitOutputMeterLastStart[unit] = now
+        let context = (unit, layout, contextID)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let payload: Data?
+            if unit == .a {
+                payload = try? tb.readUnitOutputMeters()
+            } else {
+                payload = try? bConnection!.readUnitOutputMeters()
+            }
+            let end = Date()
+            await MainActor.run {
+                guard let self else { return }
+                self.unitOutputMeterReadInFlight = false
+                self.unitOutputMeterLastEnd[unit] = end
+                if self.unitOutputMeterWindowDurations.isEmpty { self.unitOutputMeterWindowStart = now }
+                self.unitOutputMeterWindowDurations.append(end.timeIntervalSince(now))
+                if end.timeIntervalSince(self.unitOutputMeterWindowStart) >= 30 {
+                    let sorted = self.unitOutputMeterWindowDurations.sorted()
+                    let median = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+                    let worst = sorted.max() ?? 0
+                    let medianText = String(format: "%.3f", median)
+                    let worstText = String(format: "%.3f", worst)
+                    print("[MeterPoll] reads=\(self.unitOutputMeterWindowDurations.count) median=\(medianText)s worst=\(worstText)s")
+                    self.unitOutputMeterWindowStart = end
+                    self.unitOutputMeterWindowDurations.removeAll(keepingCapacity: true)
+                }
+                guard let payload else {
+                    let failures = (self.unitOutputMeterFailures[unit] ?? 0) + 1
+                    self.unitOutputMeterFailures[unit] = failures
+                    self.unitOutputMeterRetryAfter[unit] = end.addingTimeInterval(MeterPollPacing.backoff(consecutiveFailures: failures))
+                    return
+                }
+                self.unitOutputMeterFailures[unit] = 0
+                let activeLayout = context.0 == .b ? self.unitBLayout : self.cardLayout
+                let activeConnection = (context.0 == .b ? self.unitBDevice : self.device).map { ObjectIdentifier($0) }
+                guard self.selectedArea == .output, !self.hardwareWritesSuspended,
+                      UnitOutputMeters.replyBelongs(unit: context.0, layout: context.1,
+                                                    connection: context.2, activeUnit: self.activeUnit,
+                                                    activeLayout: activeLayout, activeConnection: activeConnection) else { return }
+                if let levels = UnitOutputMeters.levels(payload: payload, layout: layout) {
+                    self.unitOutputMeterLevelsByUnit[unit] = levels
+                    self.symphonyOutputMeterLevels = levels
+                    self.unitOutputMeterStamp = Date()
+                    self.unitOutputMeterContext = context
+                }
+            }
+        }
+    }
+
+    /// Keep our last reading for 500 ms when a read fails. The 500 ms fallback
+    /// is Maestro's rule. Apogee cleared a stream's meters after that interval.
+    @MainActor
+    private func freshUnitOutputMeterLevels() -> UnitOutputMeters.Levels? {
+        guard selectedArea == .output, Date().timeIntervalSince(unitOutputMeterStamp) < 0.5,
+              let context = unitOutputMeterContext else { return nil }
+        let currentID = activeUnit == .b
+            ? unitBDevice.map { ObjectIdentifier($0) }
+            : device.map { ObjectIdentifier($0) }
+        guard UnitOutputMeters.replyBelongs(unit: context.0, layout: context.1,
+                                            connection: context.2, activeUnit: activeUnit,
+                                            activeLayout: activeUnit == .b ? unitBLayout : cardLayout,
+                                            activeConnection: currentID) else { return nil }
+        return unitOutputMeterLevelsByUnit[activeUnit]
+    }
+
     private func refreshThunderboltInputMeterWordsIfNeeded(pollCount: Int, device tb: ThunderboltDeviceConnection) {
         let layout = cardLayout
         guard thunderboltInputMeterWordsPollStamp < 0
+                || pollCount < thunderboltInputMeterWordsPollStamp
                 || pollCount - thunderboltInputMeterWordsPollStamp >= 40
                 || thunderboltInputMeterLayout != layout else { return }
         thunderboltInputMeterWordsPollStamp = pollCount
         thunderboltInputMeterLayout = layout
-        var replayed: [SymphonyIODefaultRouting.Route] = []
-        if RoutingResetGuard.refusalReason(board1: primaryBoardReading, board2: secondaryBoardReading) == nil {
-            let cache = RoutingStateCache(direction: "input", productID: tb.identifier.productID)
-            replayed = InputRoutingReplay.writes(
-                saved: cache.load() ?? [:], columns: layout.inputRoutingColumns,
-                pairCount: tb.identifier.mode.channelCount / 2)
+        // Converters: each host input reads its bus slot's word (port * 32 +
+        // slot), over both ports while 64 channels run.
+        if let system = layout.converterLayout {
+            thunderboltInputMeterWords = ThunderboltInputMeterMap.converterWords(system)
+            return
         }
-        let routes = ThunderboltInputMeterMap.currentRoutes(slot1: thunderboltCaptureSlot1, replayed: replayed)
+        let routes = thunderboltCaptureRoutes(unit: .a)
         thunderboltInputMeterWords = ThunderboltInputMeterMap.words(layout: layout, routes: routes)
     }
 
@@ -3013,7 +5859,7 @@ final class AppState {
     func cachedOutputRouteMap() -> [UInt8: UInt8] {
         guard let device = self.device else { return [:] }
         let id = device.identifier
-        let cache = RoutingStateCache(direction: "output", productID: id.productID)
+        let cache = peripheralRoutingCache(direction: "output")
         guard let routes = cache.loadMulti(), !routes.isEmpty else { return [:] }
         let board1 = self.primaryBoardType
         let board2 = self.secondaryBoardType
@@ -3025,8 +5871,9 @@ final class AppState {
                     col: col, isInput: false, board1: board1, board2: board2
                 ) else { continue }
                 let srcLeft: UInt8
-                if row < swPairs {
-                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(row * 2)
+                if let pair = TwoUnitOutputRouting.playbackPair(
+                    unitARow: row, unitAPairs: swPairs, unitBActive: unitBOnCard) {
+                    srcLeft = SymphonyIORoutingAddress.hostPlaybackBase(for: transportType ?? .usb) + UInt8(pair * 2)
                 } else if row == swPairs {
                     srcLeft = SymphonyIORoutingAddress.mixer0Base
                 } else if row == swPairs + 1 {
@@ -3043,8 +5890,7 @@ final class AppState {
     /// Source IDs are pair indices: 0 = USB 1–2, ..., 7 = USB 15–16.
     private func cachedMixerSoftwareReturnSources() -> [Int] {
         [0, 1].map { mixer in
-            max(0, min(7, UserDefaults.standard.integer(
-                forKey: "mixerSoftwareReturnSource_\(mixer)")))
+            max(0, min(7, self.mixerPreferences.integer(forKey: "mixerSoftwareReturnSource_\(mixer)")))
         }
     }
 
@@ -3067,73 +5913,15 @@ final class AppState {
         return result
     }
 
-    /// Digital output levels (same 24-slot layout as `tdmDigitalMeterLevels`).
+    /// Digital output levels follow the routed sources, in board order.
     private func softwareDigitalOutputLevels(peaks: [Float]) -> [Double] {
-        var result = [Double](repeating: -60.0, count: 24)
         let mixerSources = cachedMixerSoftwareReturnSources()
-        let board0Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.primaryBoardType.analogOutputChannels, boardIndex: 0)
-        let board1Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.secondaryBoardType.analogOutputChannels, boardIndex: 1)
-        for (i, word) in board0Words.enumerated() where i < 8 {
+        return MeterSlotMap.digitalWords(layout: cardLayout, isInput: false).map { word in
+            guard let word else { return -60 }
             let source = SoftwareOutputMeterMap.source(forWord: word, routes: softwareOutputRoutes)
-            result[i] = SoftwareOutputMeterMap.level(
-                for: source, usbPeaks: peaks,
-                mixerSoftwareReturnSources: mixerSources)
+            return SoftwareOutputMeterMap.level(for: source, usbPeaks: peaks,
+                                                mixerSoftwareReturnSources: mixerSources)
         }
-        for (i, word) in board1Words.enumerated() where i < 8 {
-            let source = SoftwareOutputMeterMap.source(forWord: word, routes: softwareOutputRoutes)
-            result[8 + i] = SoftwareOutputMeterMap.level(
-                for: source, usbPeaks: peaks,
-                mixerSoftwareReturnSources: mixerSources)
-        }
-        return result
-    }
-
-    /// Extract digital (ADAT/Optical) meter levels from TDM input data.
-    /// Board 1 digital = words 8-15, Board 2 digital = words 24-31.
-    /// Returns 24 values: [Board1_dig0..dig7, Board2_dig0..dig7, 8×-60].
-    /// The last 8 are placeholders for ADAT ports 3 (channels 17-24).
-    ///
-    /// Evidence: `SymphonyIOBoard_AnalogOptical.cpp` — 8 analog + 8 digital per board
-    private func tdmDigitalMeterLevels(from data: Data) -> [Double] {
-        var result = [Double](repeating: -60.0, count: 24)
-        let wordsAvailable = data.count / 2
-
-        // Digital channels sit AFTER that board's analog channels within its own
-        // 16-word region (SymphonyIO.cpp:7041-7100). The offset is therefore
-        // per-card, not a fixed 8: a 16x16 or AD16/DA16 uses all 16 words for
-        // analog and contributes NO digital region at all. Reading words 8-15
-        // unconditionally showed such a card's analog channels 9-16 as though
-        // they were ADAT meters.
-        let board0Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.primaryBoardType.analogInputChannels, boardIndex: 0)
-        let board1Words = MeterSlotMap.digitalWordIndices(
-            analogOnBoard: self.secondaryBoardType.analogInputChannels, boardIndex: 1)
-
-        // Board 0 digital
-        for (i, wordIndex) in board0Words.enumerated() {
-            guard wordIndex < wordsAvailable else { continue }
-            let lo = UInt16(data[wordIndex * 2])
-            let hi = UInt16(data[wordIndex * 2 + 1])
-            let rawWord = lo | (hi << 8)
-            let meterVal = rawWord & 0x3FFF
-            if meterVal > 0x40 {
-                result[i] = max(20.0 * log10(Double(meterVal) / 16383.0), -60.0)
-            }
-        }
-        // Board 1 digital
-        for (i, wordIndex) in board1Words.enumerated() {
-            guard wordIndex < wordsAvailable else { continue }
-            let lo = UInt16(data[wordIndex * 2])
-            let hi = UInt16(data[wordIndex * 2 + 1])
-            let rawWord = lo | (hi << 8)
-            let meterVal = rawWord & 0x3FFF
-            if meterVal > 0x40 {
-                result[8 + i] = max(20.0 * log10(Double(meterVal) / 16383.0), -60.0)
-            }
-        }
-        return result
     }
 
     /// Build a fresh [Double] dBFS array from Float32 mAEstroStreamMeter peaks.
@@ -3159,14 +5947,14 @@ final class AppState {
     ///
     /// Evidence: `og_source/maestro2/App/APDocument.m` — storeMaestroPreferenceFile:
     @MainActor
-    func makePreset() async -> MaestroPreset {
+    private func makePreset(reading captureDevice: (any DeviceConnection)?) async -> MaestroPreset {
         var preset = MaestroPreset()
 
         // Output level + mute: kept in sync by volume key handler + loadMonitorState
         preset.outputLevel = speakerLevel
         preset.outputMuted = speakerMuted
 
-        if let dev = device {
+        if let dev = captureDevice {
             // Output dim + sum-to-mono
             if let dim = (try? await dev.getProperty(PropertyAddress(selector: .outputDim)))?.asBool {
                 preset.outputDimmed = dim
@@ -3241,7 +6029,7 @@ final class AppState {
         }
 
         // Mixer channel names (app-side labels, not hardware state — P3F-39)
-        if let str = UserDefaults.standard.string(forKey: "mixerChannelNames"),
+        if let str = UserDefaults.standard.string(forKey: mixerNamesKey()),
            let names = try? JSONDecoder().decode([String].self, from: Data(str.utf8)) {
             preset.channelNames = names
         }
@@ -3263,14 +6051,24 @@ final class AppState {
     /// Evidence: storeMaestroPreferenceFile (APMaestroFullViewWindow.m:445)
     ///           kmAEstroPropertyStorePreferenceFile = 'AESP' (mAEstro.h:1197)
     @MainActor
-    func savePresetBundle(to url: URL) async throws {
-        let fm = FileManager.default
-        // Remove existing item at this URL (NSSavePanel may reuse the name)
-        if fm.fileExists(atPath: url.path) {
-            try fm.removeItem(at: url)
+    func savePresetBundle(to url: URL, associateWithDocument: Bool = true) async throws {
+        let editRevision = setupEditRevision
+        // Core Audio can keep the ThunderBridge device around while the Symphony is off.
+        let captureDevice = connectionMode == .disconnected ? nil : device
+        if let connection = captureDevice as? ThunderboltDeviceConnection {
+            try await saveThunderboltPresetBundle(to: url, connection: connection)
+            if associateWithDocument {
+                currentSetupURL = url
+                setupDocumentEdited = setupEditRevision != editRevision
+                WindowDocumentBridge.updateEditedState()
+            }
+            return
         }
-        // Create the bundle directory
-        try fm.createDirectory(at: url, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent(".maestro-\(UUID().uuidString).mst2", isDirectory: true)
+        try fm.createDirectory(at: temporary, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: temporary) }
 
         // 1. Ask daemon to write the full hardware state plist inside the bundle.
         //    The daemon uses 'AESP' (AudioObjectSetPropertyData) to write a file like
@@ -3278,15 +6076,18 @@ final class AppState {
         //    which converts the CFString path to a C string and forwards to the daemon.
         //    Non-fatal: if the daemon can't write (HAL plugin missing, permission issue),
         //    we still save our own MaestroApp.plist so presets aren't empty.
-        if let conn = device as? CoreAudioDeviceConnection {
+        var wroteHardware = false
+        if let conn = captureDevice as? CoreAudioDeviceConnection {
             let fileName = conn.getPreferenceFileName()
                 ?? "USBAudio_Symphony_IO.plist"  // fallback if HAL plugin absent
-            let plistPath = url.appendingPathComponent(fileName).path
+            let plistURL = temporary.appendingPathComponent(fileName)
             do {
-                try conn.storePreferenceFile(at: plistPath)
-                print("[Maestro] savePresetBundle: daemon plist written to \(fileName)")
+                try conn.storePreferenceFile(at: plistURL.path)
+                wroteHardware = fm.fileExists(atPath: plistURL.path)
+                if wroteHardware { print("[Maestro] savePresetBundle: daemon plist written to \(fileName)") }
             } catch {
-                print("[Maestro] savePresetBundle: daemon AESP failed (\(error)) — saving app-only preset")
+                if fm.fileExists(atPath: plistURL.path) { try fm.removeItem(at: plistURL) }
+                print("[Maestro] savePresetBundle: daemon AESP failed (\(error)) — saving app metadata")
             }
         } else {
             print("[Maestro] savePresetBundle: no CoreAudioDeviceConnection — daemon plist skipped")
@@ -3295,12 +6096,18 @@ final class AppState {
         // 2. Save app-level metadata alongside the daemon plist.
         //    This always runs regardless of daemon AESP success, ensuring the preset
         //    bundle is never empty. Contains all device state our app can read/write.
-        let appMeta = await makePreset()
+        let appMeta = await makePreset(reading: captureDevice)
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .xml
         let metaData = try encoder.encode(appMeta)
-        try metaData.write(to: url.appendingPathComponent("MaestroApp.plist"))
+        try metaData.write(to: temporary.appendingPathComponent("MaestroApp.plist"))
+        try SetupPackage.replace(at: url, with: temporary, preserveUnwrittenItems: !wroteHardware)
         print("[Maestro] savePresetBundle: bundle saved to \(url.lastPathComponent)")
+        if associateWithDocument {
+            currentSetupURL = url
+            setupDocumentEdited = setupEditRevision != editRevision
+            WindowDocumentBridge.updateEditedState()
+        }
     }
 
     /// Load and apply an `.mst2` preset from disk, supporting both bundle and flat formats.
@@ -3316,7 +6123,40 @@ final class AppState {
     ///           kmAEstroPropertyRecallPreferenceFile = 'AERP' (mAEstro.h:1199)
     ///           ONEv2DeviceController.cpp:3239–3331 — daemon recall implementation
     @MainActor
-    func loadPresetBundle(from url: URL) async throws {
+    @discardableResult
+    func loadPresetBundle(from url: URL, associateWithDocument: Bool = true,
+                          recallsMonitorLevels: Bool = true) async throws -> String? {
+        guard !hardwareWritesSuspended else { throw DeviceConnectionError.notConnected }
+        // A setup file from Apogee's Maestro 2 holds nothing this app can
+        // apply, on any connection: say so instead of failing oddly or silently.
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: url.path),
+           PresetPackageKind.classify(fileNames: names) == .maestro2 {
+            throw PresetOpenError.maestro2
+        }
+        guard setupRecallDepth == 0 else {
+            throw DeviceConnectionError.transportError("A setup recall is already in progress.")
+        }
+        setupRecallDepth += 1
+        setupRecallRevision &+= 1
+        defer {
+            setupRecallDepth -= 1
+            setupRecallRevision &+= 1
+            suppressMacVolumeOverlay()
+        }
+        var notice: String?
+        if let connection = device as? ThunderboltDeviceConnection {
+            try await loadThunderboltPresetBundle(from: url, connection: connection,
+                                                  recallsMonitorLevels: recallsMonitorLevels)
+            if associateWithDocument {
+                currentSetupURL = url
+                setupDocumentEdited = false
+                WindowDocumentBridge.updateEditedState()
+            }
+            return nil
+        }
+        if FileManager.default.fileExists(atPath: url.appendingPathComponent(ThunderboltPreset.fileName).path) {
+            throw ThunderboltPreset.RecallError.unsupported("this hardware preset requires a ThunderBridge connection.")
+        }
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
 
@@ -3342,14 +6182,20 @@ final class AppState {
 
             // Read app-level metadata (channel names)
             let metaURL = url.appendingPathComponent("MaestroApp.plist")
+            var namesRestored = false
             if FileManager.default.fileExists(atPath: metaURL.path),
                let data = try? Data(contentsOf: metaURL),
                let meta = try? PropertyListDecoder().decode(MaestroPreset.self, from: data) {
                 if !meta.channelNames.isEmpty,
                    let encoded = try? JSONEncoder().encode(meta.channelNames),
                    let str = String(data: encoded, encoding: .utf8) {
-                    UserDefaults.standard.set(str, forKey: "mixerChannelNames")
+                    UserDefaults.standard.set(str, forKey: mixerNamesKey())
+                    namesRestored = true
                 }
+            }
+            // Over USB a package holds nothing else that is applied.
+            if device is XPCDeviceConnection {
+                notice = namesRestored ? PresetOpenError.usbNamesOnlyNotice : PresetOpenError.usbNothingNotice
             }
             print("[Maestro] loadPresetBundle: bundle loaded from \(url.lastPathComponent)")
         } else {
@@ -3359,6 +6205,12 @@ final class AppState {
             print("[Maestro] loadPresetBundle: flat preset loaded from \(url.lastPathComponent)")
         }
         viewReloadToken = UUID()
+        if associateWithDocument {
+            currentSetupURL = url
+            setupDocumentEdited = false
+            WindowDocumentBridge.updateEditedState()
+        }
+        return notice
     }
 
     /// Re-read hardware-tracked state into AppState after a daemon preset recall.
@@ -3367,14 +6219,26 @@ final class AppState {
     /// and other properties that AppState caches. Re-reading ensures the volume HUD,
     /// menu bar level indicator, and volume keys stay in sync with hardware.
     @MainActor
-    private func refreshAfterRecall() async {
+    func refreshAfterRecall() async {
         guard let dev = device else { return }
-        if let att = (try? await dev.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
+        let inLine = await Self.speakersInLine(dev, known: speakerOutputMode)
+        if !inLine, let att = (try? await dev.getProperty(PropertyAddress(selector: .outputLevel)))?.asUInt32 {
             speakerLevel = -Double(att)
         }
-        if let muted = (try? await dev.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
+        if !inLine, let muted = (try? await dev.getProperty(PropertyAddress(selector: .outputMute)))?.asBool {
             speakerMuted = muted
         }
+        if let level = (try? await dev.getProperty(PropertyAddress(selector: .headphone1Level)))?.asUInt32 { hp1Level = -Double(level) }
+        if let muted = (try? await dev.getProperty(PropertyAddress(selector: .headphone1Mute)))?.asBool { hp1Muted = muted }
+        if let level = (try? await dev.getProperty(PropertyAddress(selector: .headphone2Level)))?.asUInt32 { hp2Level = -Double(level) }
+        if let muted = (try? await dev.getProperty(PropertyAddress(selector: .headphone2Mute)))?.asBool { hp2Muted = muted }
+    }
+
+    /// Whether a preset's speaker, headphone and device settings are sent:
+    /// only to a Symphony I/O on port 1 (converters on port 2 behind it do
+    /// not change that).
+    static func presetWritesSymphonySettings(connectedUnit: ConnectedUnit?) -> Bool {
+        connectedUnit == nil
     }
 
     /// Apply a `MaestroPreset` to the current device and update AppState.
@@ -3398,9 +6262,19 @@ final class AppState {
                     print("[Maestro] applyPreset: \(addr.selector) write failed: \(error)")
                 }
             }
-            // Output
+            // Output (the Mac's volume and mute: on converters the driver
+            // gives these to Mixer 1).
             await write(PropertyAddress(selector: .outputLevel), .uint32(UInt32(max(0, -preset.outputLevel))))
             await write(PropertyAddress(selector: .outputMute), .bool(preset.outputMuted))
+        }
+
+        // The rest are Symphony I/O commands: never to converters on port 1.
+        if let dev = device, Self.presetWritesSymphonySettings(connectedUnit: connectedUnit) {
+            let write: (PropertyAddress, PropertyValue) async -> Void = { addr, value in
+                do { try await dev.setProperty(addr, value: value) } catch {
+                    print("[Maestro] applyPreset: \(addr.selector) write failed: \(error)")
+                }
+            }
             await write(PropertyAddress(selector: .outputDim), .bool(preset.outputDimmed))
             await write(PropertyAddress(selector: .outputSumToMono), .bool(preset.outputSumToMono))
             // HP1
@@ -3419,7 +6293,10 @@ final class AppState {
             }
             await refreshChannelNaming()
             await write(PropertyAddress(selector: .peakHoldMode), .uint32(preset.peakHoldMode))
-            await write(PropertyAddress(selector: .oversHoldMode), .uint32(preset.overHoldMode))
+            let overHold = MeterDisplaySettings.OverHoldMode.allCases
+                .first { $0.wireValue == preset.overHoldMode }?.userFacingValue.wireValue
+                ?? MeterDisplaySettings.OverHoldMode.twoSeconds.wireValue
+            await write(PropertyAddress(selector: .oversHoldMode), .uint32(overHold))
             await write(PropertyAddress(selector: .metersShowInput, element: 1), .uint32(preset.meterBank1Source))
             await write(PropertyAddress(selector: .metersShowInput, element: 2), .uint32(preset.meterBank2Source))
         }
@@ -3427,7 +6304,7 @@ final class AppState {
         // Restore input channel states to UserDefaults (applied by InputControlsView on reload)
         let store = channelStateStore
         if !preset.inputChannelStates.isEmpty {
-            store.save(preset.inputChannelStates, for: ChannelStateStore.inputKey)
+            store.save(preset.inputChannelStates.enumerated().map { $0.element.recalled(identity: nil, boardSlot: 1, channel: $0.offset) }, for: ChannelStateStore.inputKey)
         }
 
         // Restore output channel states to UserDefaults (applied by OutputControlsView on reload)
@@ -3440,7 +6317,7 @@ final class AppState {
         if !preset.channelNames.isEmpty,
            let data = try? JSONEncoder().encode(preset.channelNames),
            let str = String(data: data, encoding: .utf8) {
-            UserDefaults.standard.set(str, forKey: "mixerChannelNames")
+            UserDefaults.standard.set(str, forKey: mixerNamesKey())
         }
 
         // Trigger view reloads (.task(id: appState.viewReloadToken) re-runs on UUID change)

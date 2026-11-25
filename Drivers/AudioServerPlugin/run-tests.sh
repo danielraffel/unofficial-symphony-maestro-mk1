@@ -3,6 +3,13 @@
 set -euo pipefail
 ASP_DIR="$(cd "$(dirname "$0")" && pwd)"
 ASP_BUILD_DIR="$ASP_DIR/build"
+grep -Eq 'if \(!sApplyingProxyState(\.load\(std::memory_order_acquire\))?\) sendAttenuationXPC\(atten\);' "$ASP_DIR/ApogeeDriver.cpp" \
+    || { echo "FAIL: proxy reconciliation would echo volumeState back to the helper" >&2; exit 1; }
+grep -Eq 'if \(!sApplyingProxyState(\.load\(std::memory_order_acquire\))?\) sendMuteXPC\(isMuted\);' "$ASP_DIR/ApogeeDriver.cpp" \
+    || { echo "FAIL: proxy reconciliation would echo mute state back to the helper" >&2; exit 1; }
+grep -q 'static std::atomic<bool> sApplyingProxyState' "$ASP_DIR/ApogeeDriver.cpp" \
+    || { echo "FAIL: proxy reconciliation guard is not atomic" >&2; exit 1; }
+echo "PASS: proxy state reconciliation does not echo controls back"
 if [[ ! -f "$ASP_BUILD_DIR/_deps/libaspl-build/libASPL.a" ]]; then
     echo "Build the AudioServerPlugin first with $ASP_DIR/Scripts/build.sh" >&2
     exit 1

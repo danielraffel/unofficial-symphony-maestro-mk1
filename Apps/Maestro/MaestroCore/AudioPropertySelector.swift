@@ -34,6 +34,11 @@ extension AudioPropertySelector {
     /// FourCC: `AEmg` — `kmAEstroPropertyMicGain` / `kApogeeCustomProperty_InputGain`
     public static let micGain = AudioPropertySelector("AEmg")
 
+    /// Instrument input gain in dB. Internal selector used to keep the two
+    /// MicPre gain stages distinct; the Core Audio surface still uses `micGain`.
+    /// Evidence: `og_source/symphonymk1/ext/Symphony64/generic/Products/SymphonyIO/SymphonyIOVendorSpecific.h:409-445`.
+    public static let instrumentGain = AudioPropertySelector("AEig")
+
     /// Analog I/O type (line +4dBu, -10dBV, mic, instrument). `mAEstroData{in UInt32}`.
     /// FourCC: `AErl` — `kmAEstroPropertyAnalogIOType` / `kApogeeCustomProperty_AnalogIOTypeID`
     public static let analogIOType = AudioPropertySelector("AErl")
@@ -218,12 +223,12 @@ extension AudioPropertySelector {
     /// Custom selector (opcode 0xA6).
     public static let deviceMode = AudioPropertySelector("AEdm")
 
-    /// Keyboard volume control — peripheral ID. `UInt32`.
-    /// FourCC: `AEkp` — custom for Symphony IO USB control.
-    public static let keyboardVolumePeripheralID = AudioPropertySelector("AEkp")
-
-    /// Keyboard volume control — audio output ID. `UInt32`.
-    /// FourCC: `AEko` — custom for Symphony IO USB control.
+    /// Volume Keys › Audio Output: which output of the unit the Mac's volume
+    /// and mute keys move. `UInt32`, a `KeyboardVolumeOutput` raw value.
+    /// The key the choice is saved under in the unit's `DeviceSettingsStore`;
+    /// it is not a property a connection reads or writes. The choice reaches
+    /// the driver through its selector 15 and the USB helper through
+    /// "setMonitorOutput" (`AppState.serviceKeyboardVolumeOutput`).
     public static let keyboardVolumeOutputID = AudioPropertySelector("AEko")
 
     /// Primary I/O option board type. `UInt32` (IOCardType raw value).

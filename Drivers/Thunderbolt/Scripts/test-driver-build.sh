@@ -13,8 +13,19 @@ grep -q 'Print :CFBundleVersion' "$DIR/Scripts/build.sh"
 grep -q -- '-DSYMPHONY_DEXT_BUILD="$DEXT_BUILD"' "$DIR/Scripts/build.sh"
 grep -q '\[kSelectorReadDriverBuild\]' "$DIR/Source/SymphonyUserClient.cpp"
 grep -q 'output.build = (uint32_t)SYMPHONY_DEXT_BUILD' "$DIR/Source/SymphonyUserClient.cpp"
-grep -q 'IOConnectCallStructMethod(conn, 6, nil, 0, p.baseAddress, &outSize)' \
-    "$ROOT/Apps/Maestro/MaestroDevice/DextUserClient.swift"
+APP_CLIENT="$ROOT/Apps/Maestro/MaestroDevice/DextUserClient.swift"
+grep -q 'private static let selectorReadDriverBuild: UInt32 = 6' "$APP_CLIENT"
+grep -q 'IOConnectCallStructMethod(conn, Self.selectorReadDriverBuild, nil, 0, p.baseAddress, &outSize)' "$APP_CLIENT"
+# The two-port experiment's port-2 state read moved from 6 (exp64 9001-9003)
+# to 7 (9004) and then to 8 (from 9005), so the released driver-build (6) and retire
+# (7) selectors keep their numbers. App and dext must agree.
+grep -q 'private static let selectorReadPort2State: UInt32 = 8' "$APP_CLIENT"
+grep -q '\[kSelectorReadPort2State\]' "$DIR/Source/SymphonyUserClient.cpp"
+# The temporary port-source naming switch (selector 9) was removed before the
+# first beta; neither side may bring it back.
+if grep -n -e 'SetPort''SourceNames' "$APP_CLIENT" "$DIR/Source/"*; then
+    echo "FAIL: the temporary port-source naming switch is back" >&2; exit 1
+fi
 
 # The build read is a user-client call, and those wait behind whatever the
 # driver is doing for another call (seconds during a link recovery). The app
@@ -31,8 +42,18 @@ cat > "$TMP/t.cpp" <<'CPP'
 #include "SymphonyThunderbridgeShared.h"
 #include <stdio.h>
 static_assert(kSelectorReadDriverBuild == 6, "app asks selector 6");
-static_assert(kSelectorCount > kSelectorReadDriverBuild, "dispatch table covers it");
+static_assert(kSelectorRetireForUpgrade == 7, "7 is the released retire selector");
+static_assert(kSelectorReadPort2State == 8, "app asks selector 8 for port 2");
+static_assert(kSelectorReadUnitB == 11 && kSelectorSetMonitorDevice == 12 && kSelectorLoopSync == 13 && kSelectorPublishMicGain == 14 && kSelectorSetMonitorOutput == 15 && kSelectorVBus == 16 && kSelectorReadChannelOrder == 17 && kSelectorCount == 18, "old selectors unchanged; 12 monitor device, 13 Loop Sync, 15 monitor output, 16 VBus, 17 channel order");
+static_assert(sizeof(SymphonyChannelOrderOutput) == 24 && sizeof(SymphonyChannelOrderUnit) == 8 && kSymphonyChannelOrderNone == 0 && kSymphonyChannelOrderCardByCard == 1 && kSymphonyChannelOrderAnalogFirst == 2, "channel order reply is six words");
+static_assert(sizeof(SymphonyVBusInput) == 12 && sizeof(SymphonyVBusStateOutput) == 16, "VBus is three words in, four out");
+static_assert(sizeof(SymphonyMonitorDeviceInput) == 8 && sizeof(SymphonyMonitorOutputInput) == 12, "monitor device is two words, monitor output three");
+static_assert(sizeof(SymphonyObservedGainInput) == 24, "observed gain ABI v1 is six words");
 static_assert(sizeof(SymphonyDriverBuildOutput) == 8, "app reads two words");
+// Different output sizes are what make an old/new mismatch fail safe: an exp64
+// 9001-9003 dext answers selector 6 only with 64 bytes, so the app's 8-byte
+// build read is rejected, and this dext rejects an old app's 64-byte read of 6.
+static_assert(sizeof(SymphonyPort2StateOutput) == 64, "app reads sixteen words");
 int main() { printf("%u\n", (unsigned)SYMPHONY_DEXT_BUILD); return 0; }
 CPP
 clang++ -std=c++17 -I "$DIR/Source" -DSYMPHONY_DEXT_BUILD="$BUILD" -o "$TMP/t" "$TMP/t.cpp"

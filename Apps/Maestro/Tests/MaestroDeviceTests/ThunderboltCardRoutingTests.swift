@@ -62,15 +62,20 @@ struct ThunderboltCardRoutingTests {
                 == .init(channel: 1, slot: 65, enabled: true))
     }
 
-    @Test("Mixer 1 onto the main pair uses the card mixer, and is that pair's default")
-    func mainPairDefaultsToMixer() {
-        #expect(ThunderboltCardRouting.mainPairDefaultSource(forDestination: 32) == SymphonyIORoutingAddress.mixer0Base)
-        #expect(ThunderboltCardRouting.mainPairDefaultSource(forDestination: 33) == SymphonyIORoutingAddress.mixer0Base + 1)
-        #expect(ThunderboltCardRouting.mainPairDefaultSource(forDestination: 34) == nil)
+    @Test("Mixer 1 onto the main pair uses the card mixer, only when chosen: no output defaults to a mixer")
+    func mainPairReachesMixerOnlyWhenChosen() {
         #expect(ThunderboltCardRouting.route(destination: 32, source: SymphonyIORoutingAddress.mixer0Base)
                 == .init(channel: 0, slot: 128, enabled: true))
         #expect(ThunderboltCardRouting.route(destination: 33, source: SymphonyIORoutingAddress.mixer0Base + 1)
                 == .init(channel: 1, slot: 129, enabled: true))
+        // The default table: every output direct, the main pair included.
+        let defaults = SymphonyIODefaultRouting.thunderboltOutputRoutes(board0Outputs: 16, board1Outputs: 16)
+        #expect(defaults.count == 32)
+        for route in defaults {
+            #expect(route.source == route.destination - 32, "output \(route.destination) is not direct")
+            #expect(ThunderboltCardRouting.route(destination: route.destination, source: route.source)?.slot
+                    == 64 + (route.destination - 32))
+        }
     }
 
     @Test("Clearing a route disables the channel and keeps its straight slot")
@@ -102,18 +107,34 @@ struct ThunderboltCardRoutingTests {
             let card = ThunderboltCardRouting.route(destination: route.destination, source: route.source)
             #expect(card != nil, "no card route for \(route)")
             guard let card else { continue }
-            // The raw table is all software outputs, so every entry is direct.
-            // The grid substitutes Mixer 1 for the main pair on ThunderBridge
-            // (`mainPairDefaultSource`), and that source maps to the mixer slot.
+            // The table is all software outputs, so every entry is direct.
             if route.source == SymphonyIORoutingAddress.none {
                 #expect(!card.enabled)
             } else {
                 #expect(card.slot == 64 + route.source)
             }
-            if let mixer = ThunderboltCardRouting.mainPairDefaultSource(forDestination: route.destination) {
-                let viaMixer = ThunderboltCardRouting.route(destination: route.destination, source: mixer)
-                #expect(viaMixer?.slot == 128 + card.channel)
-                #expect(viaMixer?.enabled == true)
+        }
+    }
+
+    @Test("A ThunderBridge headphone never takes a mixer source, whatever Output Routing feeds the pair it follows")
+    func headphoneNeverOnAMixer() throws {
+        // Every output saved as fed by Mixer 1 or Mixer 2.
+        var cached: [UInt8: UInt8] = [:]
+        for destination in UInt8(32)..<64 {
+            cached[destination] = (destination < 48 ? SymphonyIORoutingAddress.mixer0Base
+                                                    : SymphonyIORoutingAddress.mixer1Base) + destination % 2
+        }
+        for id in UInt32(0)...SymphonyIOHeadphoneRouting.maximumSourceID {
+            let pair = try #require(SymphonyIOHeadphoneRouting.outputPairDestinations(sourceID: id))
+            for destination in [pair.left, pair.right] {
+                let source = try #require(SymphonyIOHeadphoneRouting.inheritedSource(
+                    forDestination: destination, cachedRoutes: cached, transport: .thunderbolt))
+                #expect(CardOutputTableOrder.mixer(ofSource: source) == nil)
+                // The XLink channel of the output it follows.
+                #expect(source == destination - 32)
+                // Over USB the same pair does inherit the mixer (and passes the app's gate).
+                #expect(CardOutputTableOrder.mixer(ofSource: SymphonyIOHeadphoneRouting.inheritedSource(
+                    forDestination: destination, cachedRoutes: cached, transport: .usb) ?? 0) != nil)
             }
         }
     }

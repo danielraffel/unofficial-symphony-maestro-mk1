@@ -45,6 +45,27 @@ public enum ConnectedUnit: Sendable, Equatable {
         self = units.count == 1 ? first : .chain(units)
     }
 
+    /// Bit 28 of the probe word (dext 126+): the driver found converters only
+    /// on the cable and sends the Mac's volume and mute keys to card mixer 1,
+    /// because these units have no speaker or headphone outputs. Older drivers
+    /// never set it, so the app keeps its Symphony I/O controls for them.
+    public static let converterVolumeKeysBit: UInt32 = 0x1000_0000
+
+    /// Whether the driver says the volume keys drive mixer 1 (see
+    /// `converterVolumeKeysBit`). The driver decides; the app only follows.
+    public static func driverRoutesVolumeKeysToMixer(_ probeWord: UInt32) -> Bool {
+        probeWord & 0x8000_0000 != 0 && probeWord & converterVolumeKeysBit != 0
+    }
+
+    /// The driver's probe word as one line for the copied Device Info, so a
+    /// pasted report shows exactly what the unit answered. Nil when the driver
+    /// did not probe (a Symphony I/O).
+    public static func rawProbeLine(_ probeWord: UInt32) -> String? {
+        guard probeWord & 0x8000_0000 != 0 else { return nil }
+        let hex = String(probeWord, radix: 16)
+        return "Unit Probe Raw: 0x" + String(repeating: "0", count: max(0, 8 - hex.count)) + hex
+    }
+
     /// The channel-bank nibble of an identification reply.
     private init?(bankNibble: UInt8) {
         switch bankNibble {
@@ -130,8 +151,8 @@ public enum ConnectedUnit: Sendable, Equatable {
 
     /// One-line explanation for Device Info.
     public static let deviceInfoNotice =
-        "This is not a Symphony I/O. Support for older Apogee converters is experimental and "
-        + "written without the hardware. Up to four chained units are identified, nearest first."
+        "This is not a Symphony I/O. Support for older Apogee converters "
+        + "has not been tried on the hardware yet. Up to four chained units on each port are identified, nearest first."
 
     public var displayName: String {
         switch self {
@@ -158,8 +179,20 @@ public enum ConnectionLabel {
     public static func text(isThunderbolt: Bool, pciIdentifier: String?) -> String {
         guard isThunderbolt else { return "USB Hardware" }
         if let pciIdentifier, pciIdentifier.lowercased().hasSuffix(",2100") {
-            return "Thunderbolt (Symphony 64 PCIe card, experimental)"
+            return "Thunderbolt (Symphony 64 PCIe card)"
         }
         return "Thunderbolt (ThunderBridge)"
+    }
+
+    /// The short name for the sidebar badge ("… Connected") and the status
+    /// bar ("Connected via …"): "Symphony 64 PCIe" when the driver is on that
+    /// card (`pci19c2,2100`), otherwise the transport's own name
+    /// ("ThunderBridge", "USB"). Same test as `text`.
+    public static func shortName(transport: TransportType?, pciIdentifier: String?) -> String {
+        guard let transport else { return "USB" }
+        if transport == .thunderbolt, let pciIdentifier, pciIdentifier.lowercased().hasSuffix(",2100") {
+            return "Symphony 64 PCIe"
+        }
+        return transport.displayName
     }
 }

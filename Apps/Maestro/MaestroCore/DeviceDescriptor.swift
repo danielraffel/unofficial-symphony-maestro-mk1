@@ -927,6 +927,20 @@ public struct DeviceInfoReport: Sendable, Equatable {
     public var connectedUnit: String?
     /// One entry per unit in cable order, e.g. `"Unit 1: AD-16X (16 inputs)"`.
     public var connectedUnitLines: [String] = []
+    /// EXPERIMENT (64 channels): `SecondPortState.reportLines`. Empty for every
+    /// driver that is not running the two-port experiment.
+    public var port2Lines: [String] = []
+    /// A second Symphony I/O on port 2 while 64 channels run
+    /// (`SecondUnitInfo.reportLines`). Empty with one unit.
+    public var unitBLines: [String] = []
+    /// The VBus size (`VBusState.reportLine`); nil over USB.
+    public var vbusLine: String?
+    /// False over ThunderBridge: the XMOS version is the unit's Overall
+    /// firmware reading, which the Firmware line already shows there.
+    public var showsXMOS = true
+    /// Each slot's board hardware version (0xA0 types 5 and 6), when read.
+    public var board1HardwareVersion: String?
+    public var board2HardwareVersion: String?
 
     public init(
         deviceName: String = "Symphony I/O",
@@ -960,37 +974,66 @@ public struct DeviceInfoReport: Sendable, Equatable {
         self.channelCount = channelCount
     }
 
-    /// Slot line text, e.g. `"8x8 OPT (detected), Version: v33"`.
-    public static func boardLine(_ reading: BoardTypeReading, version: String?) -> String {
-        guard let version, !version.isEmpty, reading.source != .unknown else {
-            return reading.displayText
-        }
-        return "\(reading.displayText), Version: \(version)"
+    /// Preserve the reported component value; missing reads are not hidden.
+    public static func versionText(_ value: String?) -> String {
+        guard let value, !value.isEmpty, value != "—" else { return "Unknown" }
+        return value
     }
 
-    /// The exact text the Device Info Copy button places on the clipboard.
-    public var clipboardText: String {
-        var lines: [String] = []
-        lines.append("Device Name: \(deviceName)")
-        lines.append("Connection: \(connection)")
-        if let firmwareVersion { lines.append("Firmware: \(firmwareVersion)") }
-        if let fpgaVersion { lines.append("FPGA version: \(fpgaVersion)") }
-        if let hardwareID { lines.append("Hardware ID: \(hardwareID)") }
-        if connectedUnit == nil {
-            lines.append("IOBoard1: \(DeviceInfoReport.boardLine(board1, version: board1Version))")
-            lines.append("IOBoard2: \(DeviceInfoReport.boardLine(board2, version: board2Version))")
+    public static func boardLine(_ reading: BoardTypeReading, version: String?,
+                                 hardwareVersion: String? = nil) -> String {
+        let hardware = hardwareVersion.map { ", Hardware Version: \($0)" } ?? ""
+        return "\(reading.displayText), Version: \(versionText(version))\(hardware)"
+    }
+
+    /// A slot's hardware version (0xA0 type 5 or 6, read at connect) as shown,
+    /// only for a board that is there: the firmware answers zeros for an
+    /// empty slot (SymphonyIOMainController.cpp:459-481).
+    public static func hardwareVersionText(_ reading: BoardTypeReading) -> String? {
+        guard reading.source == .detected || reading.source == .cached, reading.card != .none,
+              let major = reading.hardwareMajor else { return nil }
+        return SymphonyVersionComponent.primaryBoardHardware.displayText(
+            SymphonyVersionReply(major: major, minor: 0, build: 0))
+    }
+
+    /// Device Name, Connection, then Mode and Channel Count only when the
+    /// line above does not already say them. Device Model is the product name,
+    /// which Device Name always starts with, so it is never repeated.
+    public var identityRows: [(label: String, value: String)] {
+        var rows: [(label: String, value: String)] = [("Device Name", deviceName), ("Connection", connection)]
+        if let mode, !deviceName.contains(mode) { rows.append(("Mode", mode)) }
+        if let channelCount {
+            let said = "\(channelCount)-Channel"
+            if !deviceName.contains(said), !(mode?.contains(said) ?? false) {
+                rows.append(("Channel Count", "\(channelCount)"))
+            }
         }
-        // A converter has no option cards, so those lines are left out; "not
-        // detected" would read as a fault.
-        if let xmosVersion { lines.append("XMOS Version: \(xmosVersion)") }
-        if let deviceModel { lines.append("Device Model: \(deviceModel)") }
-        if let mode { lines.append("Mode: \(mode)") }
-        if let channelCount { lines.append("Channel Count: \(channelCount)") }
+        return rows
+    }
+
+    /// The exact text the Device Info Copy button places on the clipboard:
+    /// identity, hardware ID, firmware, FPGA, cards with their versions, any
+    /// converters, unit B, then port 2.
+    public var clipboardText: String {
+        var lines = identityRows.map { "\($0.label): \($0.value)" }
+        if let hardwareID { lines.append("Hardware ID: \(hardwareID)") }
+        // A converter has no option cards, firmware or FPGA lines of this kind;
+        // "not detected" would read as a fault.
+        if connectedUnit == nil {
+            lines.append("Firmware: \(Self.versionText(firmwareVersion))")
+            lines.append("FPGA version: \(Self.versionText(fpgaVersion))")
+            lines.append("IOBoard1: \(Self.boardLine(board1, version: board1Version, hardwareVersion: board1HardwareVersion))")
+            lines.append("IOBoard2: \(Self.boardLine(board2, version: board2Version, hardwareVersion: board2HardwareVersion))")
+            if showsXMOS { lines.append("XMOS Version: \(Self.versionText(xmosVersion))") }
+        }
         if !connectedUnitLines.isEmpty {
             lines.append(contentsOf: connectedUnitLines)
         } else if let connectedUnit {
             lines.append("Connected Unit: \(connectedUnit)")
         }
+        lines.append(contentsOf: unitBLines)
+        lines.append(contentsOf: port2Lines)
+        if let vbusLine { lines.append(vbusLine) }
         return lines.joined(separator: "\n")
     }
 
@@ -1173,6 +1216,11 @@ public enum ServingDextBuild: Sendable, Equatable {
 
     /// The first dext build that answers the build request.
     public static let firstReportingBuild = 123
+
+    /// The first dext build that lays the unit's host channels out analog
+    /// first (``ThunderboltChannelOrder/analogFirst``); earlier builds lay
+    /// them out card by card.
+    public static let firstAnalogFirstBuild = 150
 }
 
 /// The header banner's content, decided in one place so the banner and Device
@@ -1269,6 +1317,10 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     /// What the driver serving the ThunderBridge says its build is. Nil when
     /// the app has no ThunderBridge connection open and so did not ask.
     public var servingDextBuild: ServingDextBuild?
+    /// The update channel the app follows (App Settings › Updates), so a
+    /// pasted report says whether the person is on Stable or Beta. Nil when not
+    /// known yet; the line is then left out.
+    public var updateChannel: UpdateChannel?
     public init(
         appVersion: String,
         buildNumber: Int = 0,
@@ -1286,7 +1338,8 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         dextAwaitingReboot: Bool = false,
         thunderBridgePresent: Bool = false,
         pciDeviceIdentifier: String? = nil,
-        servingDextBuild: ServingDextBuild? = nil
+        servingDextBuild: ServingDextBuild? = nil,
+        updateChannel: UpdateChannel? = nil
     ) {
         self.appVersion = appVersion
         self.buildNumber = buildNumber
@@ -1304,6 +1357,7 @@ public struct SoftwareInfoReport: Sendable, Equatable {
         self.dextAwaitingReboot = dextAwaitingReboot
         self.thunderBridgePresent = thunderBridgePresent
         self.pciDeviceIdentifier = pciDeviceIdentifier
+        self.updateChannel = updateChannel
         self.servingDextBuild = servingDextBuild
     }
 
@@ -1550,13 +1604,15 @@ public struct SoftwareInfoReport: Sendable, Equatable {
     public var clipboardText: String {
         var lines: [String] = []
         lines.append("Maestro: \(versionLine)")
+        if let updateChannel { lines.append("Update channel: \(updateChannel == .beta ? "Beta" : "Stable")") }
         lines.append("macOS: \(osVersion)")
-        lines.append("App path: \(appPath)")
         lines.append("Audio path: \(audioPath)")
         if let pciDeviceIdentifier { lines.append("PCI device: \(pciDeviceIdentifier)") }
         lines.append("Driver extension: \(dextLine)")
         if let serving = servingDextBuildDescription { lines.append("Serving driver extension: \(serving)") }
         if let bundledDextBuild { lines.append("Bundled driver extension: build \(bundledDextBuild)") }
+        // Last: the one line a reader skips unless the install location matters.
+        lines.append("App path: \(appPath)")
         return lines.joined(separator: "\n")
     }
 }

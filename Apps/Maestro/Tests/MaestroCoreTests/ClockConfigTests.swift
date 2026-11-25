@@ -128,4 +128,46 @@ struct ClockConfigTests {
         #expect(rates.count == 6)
         #expect(rates.contains(.rate192000))
     }
+
+    @Test("Unit A offers no Loop Sync while unit B follows it")
+    func noLoopSyncWithUnitB() {
+        let loop = ClockSourceChoice(id: ClockSourceMenu.loopSync, name: "Loop Sync", source: 3, boardInput: nil)
+        let menu = ClockSourceMenu.thunderbolt(slot1: .analogAES, slot2: .none) + [loop]
+        let withB = ClockSourceMenu.unitAChoices(menu, unitBFollows: true)
+        #expect(!withB.contains { $0.source == 3 })
+        #expect(withB.count == menu.count - 1)
+        #expect(ClockSourceMenu.unitAChoices(menu, unitBFollows: false) == menu)
+        #expect(!ClockSourceMenu.unitAMaySend(ClockSourceMenu.loopSync, unitBFollows: true))
+        #expect(ClockSourceMenu.unitAMaySend(ClockSourceMenu.loopSync, unitBFollows: false))
+        #expect(ClockSourceMenu.unitAMaySend(ClockSourceMenu.wordClock, unitBFollows: true))
+    }
+
+    @Test("The status bar names the reported clock source, and says nothing for a key that is not one")
+    func statusNames() {
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.internalClock) == "Internal")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.wordClock) == "Word Clock")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.loopSync) == "Loop Sync")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.key(source: 4, boardInput: 0)) == "I/O Board 1")
+        #expect(ClockSourceMenu.statusName(for: ClockSourceMenu.ioBoard2) == "I/O Board 2")
+        #expect(ClockSourceMenu.statusName(for: 0) == nil)
+        #expect(ClockSourceMenu.statusName(for: 9) == nil)
+    }
+
+    @Test("Locked as the original decided: Internal always, otherwise the unit's external-lock flag")
+    func lockRule() {
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.internalClock, externalClockLocked: false))
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.internalClock, externalClockLocked: true))
+        #expect(!ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.wordClock, externalClockLocked: false))
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.wordClock, externalClockLocked: true))
+        #expect(!ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.key(source: 5, boardInput: 6), externalClockLocked: false))
+        #expect(ClockSourceMenu.isLocked(sourceKey: ClockSourceMenu.loopSync, externalClockLocked: true))
+    }
+
+    @Test("The Clock Status pop-up explains both states in the original's words")
+    func clockStatusInfo() {
+        let text = PortStatusMessage.clockInfoParagraphs.joined(separator: " ")
+        #expect(text.contains("**" + PortStatusMessage.clock(locked: true) + "**"))
+        #expect(text.contains("**" + PortStatusMessage.clock(locked: false) + "**"))
+        #expect(text.contains("Internal"))
+    }
 }

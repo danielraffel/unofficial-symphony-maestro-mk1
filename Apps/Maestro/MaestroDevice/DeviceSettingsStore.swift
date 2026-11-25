@@ -23,8 +23,8 @@ import MaestroCore
 public final class DeviceSettingsStore: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [PropertyAddress: PropertyValue] = [:]
-    private let defaults: UserDefaults?
-    private let key: String?
+    private var defaults: UserDefaults?
+    private var key: String?
 
     /// A store that lives only as long as the connection. Used by tests and
     /// tools, which must not read or leave settings in the user's preferences.
@@ -38,19 +38,76 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     /// Keyed by product ID for the same reason as the routing cache:
     /// ThunderBridge and each USB mode are different devices to the app and
     /// must not replay one another's settings.
-    public init(defaults: UserDefaults, productID: UInt16) {
+    public init(defaults: UserDefaults, productID: UInt16, unit: DeviceUnit = .a, identity: UInt64? = nil, allowLegacyMigration: Bool = true) {
         self.defaults = defaults
-        self.key = Self.defaultsKey(productID: productID)
-        self.values = Self.decode(defaults.data(forKey: Self.defaultsKey(productID: productID)))
+        let legacyKey = Self.defaultsKey(productID: productID, unit: unit)
+        if let identity {
+            let identityKey = Self.defaultsKey(productID: productID, unit: unit, identity: identity)
+            self.key = identityKey
+            let migrationKey = "\(legacyKey).migratedTo"
+            if let data = defaults.data(forKey: identityKey) {
+                self.values = Self.decode(data)
+            } else if let data = ["unitA", "unitB"].compactMap({ role in
+                defaults.data(forKey: "deviceSettings_\(productID)_\(role)_identity_v2_\(String(identity, radix: 16))")
+            }).first {
+                self.values = Self.decode(data)
+                defaults.set(data, forKey: identityKey)
+            } else if !allowLegacyMigration {
+                self.values = [:]
+            } else if let owner = defaults.string(forKey: migrationKey), owner != String(identity, radix: 16) {
+                self.values = [:]
+            } else {
+                let data = UnitStateMigration.copyData(defaults: defaults, source: legacyKey,
+                                                       destination: identityKey, owner: String(identity, radix: 16),
+                                                       data: defaults.data(forKey: legacyKey))
+                self.values = Self.decode(data)
+            }
+        } else {
+            if let marker = defaults.string(forKey: "\(legacyKey).migratedTo"),
+               let migratedIdentity = UInt64(marker, radix: 16) {
+                let resolved = DeviceSettingsStore(defaults: defaults, productID: productID,
+                                                   unit: unit, identity: migratedIdentity)
+                self.key = resolved.key
+                self.values = resolved.values
+            } else {
+                self.key = legacyKey
+                self.values = Self.decode(defaults.data(forKey: legacyKey))
+            }
+        }
     }
 
     /// The store the app uses for a real device.
-    public static func persistent(for identifier: USBDeviceIdentifier) -> DeviceSettingsStore {
-        DeviceSettingsStore(defaults: .standard, productID: identifier.productID)
+    public static func persistent(for identifier: USBDeviceIdentifier, unit: DeviceUnit = .a, identity: UInt64? = nil) -> DeviceSettingsStore {
+        DeviceSettingsStore(defaults: .standard, productID: identifier.productID, unit: unit, identity: identity)
     }
 
     public static func defaultsKey(productID: UInt16) -> String {
         "deviceSettings_\(productID)_v1"
+    }
+
+    /// Historical role-scoped key, used only as a migration source.
+    public static func defaultsKey(productID: UInt16, unit: DeviceUnit) -> String {
+        unit == .a ? defaultsKey(productID: productID) : "deviceSettings_\(productID)_unitB_v1"
+    }
+
+    public static func defaultsKey(productID: UInt16, unit: DeviceUnit, identity: UInt64) -> String {
+        "deviceSettings_\(productID)_identity_v3_\(String(identity, radix: 16))"
+    }
+
+    /// Resolve a connection's initially empty store before replay. Preference
+    /// decoding and the short state lock execute off the main actor.
+    @discardableResult
+    public func resolveIdentity(productID: UInt16, unit: DeviceUnit, identity: UInt64, allowLegacyMigration: Bool = true) async -> String? {
+        await Task.detached(priority: .utility) { [self] in
+            let resolved = DeviceSettingsStore(defaults: .standard, productID: productID,
+                                               unit: unit, identity: identity, allowLegacyMigration: allowLegacyMigration)
+            lock.withLock {
+                defaults = resolved.defaults
+                key = resolved.key
+                values = resolved.values
+            }
+            return resolved.values[PropertyAddress(selector: .prefix)]?.asString
+        }.value
     }
 
     public func value(for address: PropertyAddress) -> PropertyValue? {
@@ -73,6 +130,14 @@ public final class DeviceSettingsStore: @unchecked Sendable {
         defaults.set(Self.encode(values), forKey: key)
     }
 
+    /// Forget a setting (it is then never replayed, as on a new install).
+    public func remove(_ address: PropertyAddress) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard values.removeValue(forKey: address) != nil, let defaults, let key else { return }
+        defaults.set(Self.encode(values), forKey: key)
+    }
+
     /// The settings the Mac owns, in the order they are written to the unit on
     /// connect. Both transports use this one list.
     ///
@@ -91,9 +156,14 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     ///
     /// Left out on purpose, although the original pushed them:
     /// - Volume, mute and headphone levels. The original kept its copy in step
-    ///   with the front panel encoder by polling. This app does not poll yet, so
-    ///   a saved level could be louder than the one dialled in on the unit.
-    ///   They are read from the hardware instead.
+    ///   with the front panel encoder by polling and wrote it back as it was.
+    ///   Over ThunderBridge/PCIe the levels are saved here too, outside this
+    ///   list, and at connect each output is put at the QUIETER of the saved
+    ///   level and the unit's (A4, `MonitorLevelsAtConnect`,
+    ///   `ThunderboltDeviceConnection.applySavedMonitorLevels`), so a connect
+    ///   never makes anything louder than either. Mutes are read from the
+    ///   unit (`SpeakerMuteAdoption`). Over USB the helper keeps the speaker
+    ///   level itself.
     /// - Clock source, which can also change on the unit, and where a saved
     ///   external clock could unlock a unit whose word clock is gone.
     /// - Built-in defaults for settings nobody has set. Pushing those would

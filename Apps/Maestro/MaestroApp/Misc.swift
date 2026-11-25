@@ -71,7 +71,10 @@ struct AboutView: View {
             // which renders the build line almost unreadable for no good reason.
             HStack(spacing: 6) {
                 VStack(spacing: 2) {
-                    Text("Version \(MaestroCore.version)")
+                    // The channel this copy follows, so a screenshot of About
+                    // says Stable or Beta as well as the version.
+                    Text("Version \(MaestroCore.version)"
+                         + (appState.updateChannel.map { $0 == .beta ? " (Beta)" : " (Stable)" } ?? ""))
                         .font(.caption)
                     if MaestroCore.buildNumber > 0 {
                         Text("Build \(MaestroCore.buildNumber) (\(MaestroCore.gitHash))")
@@ -96,7 +99,7 @@ struct AboutView: View {
                     CopyGlyph(copied: showCopied)
                 }
                 .buttonStyle(.borderless)
-                .help("Copy full device and software info for a bug report")
+                .maestroHelp("Copy full device and software info for a bug report")
                 .accessibilityLabel("Copy device and software info")
             }
             // A forgotten test-feed override would silently stop production updates.

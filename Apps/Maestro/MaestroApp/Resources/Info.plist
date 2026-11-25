@@ -8,6 +8,8 @@
 	<string>Maestro</string>
 	<key>CFBundleExecutable</key>
 	<string>MaestroApp</string>
+	<key>MaestroSupportsDriverDeactivation</key>
+	<true/>
 	<key>CFBundleIconFile</key>
 	<string>AppIconRounded.icns</string>
 	<key>CFBundleIconName</key>
@@ -25,6 +27,32 @@
 	<string>Maestro</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array><string>mst2</string></array>
+			<key>CFBundleTypeName</key><string>Maestro Setup</string>
+			<key>CFBundleTypeRole</key><string>Editor</string>
+			<key>LSTypeIsPackage</key><true/>
+			<key>LSItemContentTypes</key>
+			<array><string>com.danielraffel.maestro.setup</string></array>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key><string>com.danielraffel.maestro.setup</string>
+			<key>UTTypeDescription</key><string>Maestro Setup</string>
+			<key>UTTypeConformsTo</key>
+			<array><string>com.apple.package</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array><string>mst2</string></array>
+			</dict>
+		</dict>
+	</array>
 	<key>CFBundleShortVersionString</key>
 	<string>0.0.0</string>
 	<key>CFBundleVersion</key>

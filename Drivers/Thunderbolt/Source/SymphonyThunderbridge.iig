@@ -54,7 +54,8 @@ public:
         uint8_t         command,
         uint32_t        value,
         const uint8_t  *payload,
-        uint16_t        payloadLen) LOCALONLY;
+        uint16_t        payloadLen,
+        uint8_t         port) LOCALONLY;
 
     // Snapshot the card FPGA meter DMA buffer (256 words) into outWords.
     // Called by SymphonyUserClient::ExternalMethod (kSelectorReadMeters).
@@ -72,6 +73,49 @@ public:
         OSAction * action,
         uint64_t   time) TYPE(IOTimerDispatchSource::TimerOccurred);
     virtual kern_return_t ReadLinkState(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t ReadPhantomObservations(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t ReadMixerInstance(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t ReadMicPreEdits(uint32_t *outWords) LOCALONLY;
+    // EXPERIMENT (64ch, stage 1): what the last XLink port-2 probe found, as
+    // the 16 words of SymphonyPort2StateOutput. No bus access.
+    virtual kern_return_t ReadPort2State(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t LoopSyncConfig(uint32_t operation, uint32_t config, uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t ReadUnitBState(uint32_t *outWords) LOCALONLY;
+    // dext 150: the host channel order each unit's routing tables were last
+    // programmed with and the board types they were built from
+    // (SymphonyChannelOrderOutput, 6 words; no bus access).
+    virtual kern_return_t ReadChannelOrder(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t PublishObservedMicGain(uint32_t port, uint32_t channel, uint32_t lane, uint32_t gain) LOCALONLY;
+    virtual kern_return_t SetMonitorDevice(uint32_t unit) LOCALONLY;
+    virtual kern_return_t SetMonitorOutput(uint32_t unit, uint32_t output) LOCALONLY;
+    // dext 131: the older XLink converters (SymphonyConverterStateOutput, 28
+    // words; no bus access) and the user's choices for them
+    // (SymphonyConverterConfigInput.config: word clock, Device Type).
+    virtual kern_return_t ReadConverterState(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t SetConverterConfig(uint32_t config) LOCALONLY;
+    // EXPERIMENT (64ch, stage 2), two-port builds only.
+    // RequestPortMode: the port selector's new value (kSymphonyPortSource*).
+    // Records it and asks Core Audio for a device configuration change; touches
+    // no hardware. Called by SymphonyPortSourceControl.
+    virtual kern_return_t RequestPortMode(uint32_t selectorValue) LOCALONLY;
+    // PerformPortModeChange: called by SymphonyAudioDevice from every
+    // PerformDeviceConfigurationChange (IO is stopped). Switches the card
+    // between one and two ports if a change was requested, then makes the
+    // streams and the selectors match what the card is doing. Does nothing in a
+    // one-port build.
+    virtual kern_return_t PerformPortModeChange() LOCALONLY;
+
+    // VBus (dext 143): Apogee's loopback channels, host memory only.
+    // SetVBusChannels records the size the app asked for (0 = off) and asks
+    // Core Audio for a device configuration change; refuses a size the
+    // original did not offer. ReadVBusState fills the 4 words of
+    // SymphonyVBusStateOutput. PerformVBusChange is called by
+    // SymphonyAudioDevice from every PerformDeviceConfigurationChange, after
+    // PerformPortModeChange (IO is stopped): it adds, removes or moves the
+    // VBus stream pair. None of them touches the card.
+    virtual kern_return_t SetVBusChannels(uint32_t channels) LOCALONLY;
+    virtual kern_return_t ReadVBusState(uint32_t *outWords) LOCALONLY;
+    virtual kern_return_t PerformVBusChange() LOCALONLY;
 
     // Stop serving the device so the copy macOS registered to replace this one
     // can attach (kSelectorRetireForUpgrade). Calls Terminate(0) on this
@@ -83,7 +127,8 @@ public:
         uint8_t command,
         uint32_t value,
         uint8_t *outPayload,
-        uint16_t responseLen) LOCALONLY;
+        uint16_t responseLen,
+        uint8_t port) LOCALONLY;
 
     // Push a clock-source selection (1..5) to the Symphony IO via ClockMode.
     // Called by SymphonyClockSelectorControl::HandleChangeSelectedValues on the
@@ -94,12 +139,19 @@ public:
     // via PhantomPower (0xC6). Called by SymphonyPhantomControl on the control's
     // work queue. Coalesces + async-sends per-channel on the serial XLink queue.
     virtual kern_return_t RequestPhantom(uint32_t channel, bool on) LOCALONLY;
+    // dext 153: the same, with what the control showed before the request, so
+    // a dropped or refused request can put it back while the state is unknown.
+    // The driver alone writes the control's value after this returns.
+    virtual kern_return_t RequestPhantomShown(uint32_t channel, bool on, bool shownBefore) LOCALONLY;
 
     // Push a mic-preamp gain level (dB, clamped 0..85) for a 0-based mic channel
     // to the Symphony IO via MicGain (0xC3). Called by SymphonyMicGainControl on
     // the control's work queue. Coalesces + async-sends per-channel on the serial
     // XLink queue.
     virtual kern_return_t RequestMicGain(uint32_t channel, float decibels) LOCALONLY;
+    virtual kern_return_t RequestPhaseInvert(uint32_t channel, bool on) LOCALONLY;
+    virtual kern_return_t RequestHighPass(uint32_t channel, bool on) LOCALONLY;
+    virtual kern_return_t RequestInputType(uint32_t channel, uint32_t type) LOCALONLY;
 
     // Push an optical output format (0=ADAT/SMUX, 1=S/PDIF) for a 0-based option
     // board to the Symphony IO via OpticalFormat (0x34). Called by

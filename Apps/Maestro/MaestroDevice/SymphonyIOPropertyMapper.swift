@@ -94,7 +94,6 @@ public enum SymphonyIOPropertyMapper {
 
     /// Properties that are write-only and must be cached by the caller.
     /// The XMOS firmware accepts writes for these but doesn't support reads.
-    /// keyboardVolumePeripheralID/OutputID are daemon-only prefs with no USB opcode.
     ///
     /// `peakHoldMode` and `oversHoldMode` ARE readable — bytes 3 and 2 of the
     /// same `0xDE` block that answers the meter sources — and
@@ -108,7 +107,6 @@ public enum SymphonyIOPropertyMapper {
     public static let writeOnlySelectors: Set<AudioPropertySelector> = [
         .sampleRate, .clockSource,
         .peakHoldMode, .oversHoldMode, .prefix,
-        .keyboardVolumePeripheralID, .keyboardVolumeOutputID
     ]
 
     // MARK: - Read Request
@@ -133,6 +131,8 @@ public enum SymphonyIOPropertyMapper {
         // Mic preamp
         case .micGain:
             return SymphonyIORequestBuilder.getMicGain(channel: channel)
+        case .instrumentGain:
+            return SymphonyIORequestBuilder.getInstrumentGain(channel: channel)
         case .phantom:
             return SymphonyIORequestBuilder.getPhantomPower(channel: channel)
         case .phaseReverse:
@@ -331,10 +331,14 @@ public enum SymphonyIOPropertyMapper {
                 data: Data(count: 1)
             )
         case .analogIOType:
+            let isOutput = address.scope == .output
+            let nValue = USBValueEncoding.channelValue(channel: channel, isOutput: isOutput)
+            let (wValue, wIndex) = USBValueEncoding.split(nValue)
             return USBControlRequest(
                 direction: .read,
                 request: SymphonyIOCommand.currentAnalogInputType.rawValue,
-                index: channel,
+                value: wValue,
+                index: wIndex,
                 data: Data(count: 1)
             )
         case .digitalRefLevel:
@@ -421,12 +425,28 @@ public enum SymphonyIOPropertyMapper {
             }
             return SymphonyIORequestBuilder.setClockMode(source: source)
 
+        // Identify is a stateful LED toggle: 1 stays on until a later 0.
+        // Evidence: `og_source/maestrolink/Software/SymphonyIO/SymphonyIO.cpp:2511-2521`.
+        case .identify:
+            guard let enabled = value.asBool ?? value.asUInt32.map({ $0 != 0 }) else {
+                throw DeviceConnectionError.typeMismatch(expected: "Bool or UInt32", got: "\(value)")
+            }
+            return SymphonyIORequestBuilder.setIdentify(enabled: enabled)
+
         // Mic preamp
         case .micGain:
             guard let gain = value.asUInt32 else {
                 throw DeviceConnectionError.typeMismatch(expected: "UInt32", got: "\(value)")
             }
             return SymphonyIORequestBuilder.setMicGain(channel: channel, gain: UInt8(min(gain, 85)))
+
+        case .instrumentGain:
+            guard let gain = value.asUInt32 else {
+                throw DeviceConnectionError.typeMismatch(expected: "UInt32", got: "\(value)")
+            }
+            return SymphonyIORequestBuilder.setInstrumentGain(
+                channel: channel,
+                gain: UInt8(min(gain, UInt32(SymphonyIOConstants.instrumentGainMaximum))))
 
         case .phantom:
             guard let enabled = value.asBool else {
@@ -920,7 +940,7 @@ public enum SymphonyIOPropertyMapper {
             return .uint32(UInt32(byte & 0x07))
 
         // Single-byte UInt32 values
-        case .micGain, .softLimit, .analogIOType, .digitalRefLevel,
+        case .micGain, .instrumentGain, .softLimit, .analogIOType, .digitalRefLevel,
              .opticalInFormat, .opticalOutFormat, .spdifReplaceID, .spdifMirrorID,
              .deviceMode, .speakerOutputMode, .groupID,
              .primaryBoardType, .secondaryBoardType:

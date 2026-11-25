@@ -32,6 +32,14 @@ struct SymphonyIOPropertyMapperTests {
         #expect(request.index == 3, "Channel 3 in wIndex")
     }
 
+    @Test func analogInputTypeReadIncludesInputBit() throws {
+        let request = try SymphonyIOPropertyMapper.buildReadRequest(
+            for: PropertyAddress(selector: .analogIOType, scope: .input, element: 3))
+        #expect(request.request == SymphonyIOCommand.currentAnalogInputType.rawValue)
+        #expect(USBValueEncoding.combine(wValue: request.value, wIndex: request.index)
+                 == USBValueEncoding.channelValue(channel: 3, isOutput: false))
+    }
+
     @Test func phantomReadRequest() throws {
         let address = PropertyAddress(selector: .phantom, element: 0)
         let request = try SymphonyIOPropertyMapper.buildReadRequest(for: address)
@@ -144,6 +152,20 @@ struct SymphonyIOPropertyMapperTests {
 
     // MARK: - Write Request Tests
 
+    @Test func identifyWriteUsesStateful33CommandAndOneBytePayload() throws {
+        let address = PropertyAddress(selector: .identify)
+        let on = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .bool(true))
+        #expect(on.direction == .write)
+        #expect(on.request == 0x33)
+        #expect(on.value == 0)
+        #expect(on.index == 0)
+        #expect(on.data == Data([1]))
+
+        let off = try SymphonyIOPropertyMapper.buildWriteRequest(for: address, value: .uint32(0))
+        #expect(off.request == SymphonyIOCommand.identifyUnit.rawValue)
+        #expect(off.data == Data([0]))
+    }
+
     @Test func outputLevelWriteFromFloat64() throws {
         let address = PropertyAddress(selector: .outputLevel)
         let request = try SymphonyIOPropertyMapper.buildWriteRequest(
@@ -192,6 +214,15 @@ struct SymphonyIOPropertyMapperTests {
         #expect(request.direction == .write)
     }
 
+    @Test func instrumentGainWriteUsesC4AndInstrumentRange() throws {
+        let request = try SymphonyIOPropertyMapper.buildWriteRequest(
+            for: PropertyAddress(selector: .instrumentGain, element: 2),
+            value: .uint32(99))
+        #expect(request.request == SymphonyIOCommand.instrumentGain.rawValue)
+        #expect(request.index == 2)
+        #expect(request.data == Data([65]))
+    }
+
     @Test func phantomWrite() throws {
         let address = PropertyAddress(selector: .phantom, element: 0)
         let request = try SymphonyIOPropertyMapper.buildWriteRequest(
@@ -212,6 +243,10 @@ struct SymphonyIOPropertyMapperTests {
         #expect(request.data == Data([1]))
     }
 
+    // The mapper is shared with ThunderBridge, whose driver wants the CoreAudio
+    // IDs 1000/2000 as given. USB's own numbers (32/33) are applied by the USB
+    // connections (see USBMixerWireTests), so these pin the mapper's
+    // pass-through, not the USB wire.
     @Test func mixerChannelLevelWriteMixer1() throws {
         // mixer 1, SW Return (channel 1000) — verify compound element split
         let element: UInt32 = (1 << 16) | 1000
@@ -248,7 +283,7 @@ struct SymphonyIOPropertyMapperTests {
     }
 
     @Test func mixerChannelLevelWriteMaster() throws {
-        // mixer 0, Master (channel 2000)
+        // mixer 0, Master (channel 2000): passed through for ThunderBridge
         let element: UInt32 = (0 << 16) | 2000
         let address = PropertyAddress(selector: .mixerChannelLevel, element: element)
         let request = try SymphonyIOPropertyMapper.buildWriteRequest(
@@ -480,8 +515,9 @@ struct SymphonyIOPropertyMapperTests {
         #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.peakHoldMode))
         #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.oversHoldMode))
         #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.prefix))
-        #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.keyboardVolumePeripheralID))
-        #expect(SymphonyIOPropertyMapper.writeOnlySelectors.contains(.keyboardVolumeOutputID))
+        // The Volume Keys output is not a property of the connection: it is
+        // sent to the driver or the helper by its own command.
+        #expect(!SymphonyIOPropertyMapper.writeOnlySelectors.contains(.keyboardVolumeOutputID))
     }
 
     @Test func meterSourcesAreReadableNotWriteOnly() {
@@ -1057,6 +1093,7 @@ struct MicPreGroupInsertWireTests {
     func channelIndexingIsZeroBasedAcrossTheFamily() throws {
         let cases: [(AudioPropertySelector, PropertyValue, UInt8)] = [
             (.micGain,           .uint32(20), SymphonyIOCommand.micGain.rawValue),
+            (.instrumentGain,    .uint32(20), SymphonyIOCommand.instrumentGain.rawValue),
             (.phantom,           .bool(true), SymphonyIOCommand.phantomPower.rawValue),
             (.phaseReverse,      .bool(true), SymphonyIOCommand.phaseInverse.rawValue),
             (.highPassFilter,    .bool(true), SymphonyIOCommand.highPassFilter.rawValue),
