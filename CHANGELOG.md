@@ -2,7 +2,7 @@
 
 ## 0.9.28 (beta)
 
-This beta makes the 8MicPre's input type and 48V show correctly in your DAW and in Maestro.
+This beta makes ThunderBridge connect faster after a replug or after the Symphony is switched off and on, and makes the 8MicPre's input type and 48V show correctly in your DAW and in Maestro. It includes 0.9.27, which was not released separately.
 
 ### Changes that may affect your setup
 
@@ -14,17 +14,6 @@ This beta makes the 8MicPre's input type and 48V show correctly in your DAW and 
 - **When you change an 8MicPre input type in Logic or another DAW, it shows the new type straight away.** Before, it often kept showing the previous type, although the Symphony had changed.
 - **48V is shown correctly in both Maestro and your DAW, whichever one switches it.** 48V switched on in your DAW now lights the 48V button in Maestro, and 48V switched in Maestro now shows in your DAW. 48V switched on in a DAW is only shown in Maestro: Maestro does not save it or switch it on again later.
 - **After you change an input type in Maestro, your DAW no longer shows 48V on when it is off.**
-
-## 0.9.27 (beta)
-
-This beta makes ThunderBridge connect faster after a replug or after the Symphony is switched off and on.
-
-### Changes that may affect your setup
-
-- **The update replaces the ThunderBridge driver (0.11.21, build 152).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
-
-### Fixed
-
 - **On the Output page with Show Trims on, the digital output meters line up with the analog ones again.**
 - **After a ThunderBridge replug, sound comes back about two seconds sooner.**
 - **After the Symphony is switched off and on, your speaker and headphone levels come back within a few seconds instead of about ten.** A muted speaker stays muted, as before.
