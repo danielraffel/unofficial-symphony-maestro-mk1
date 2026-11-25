@@ -74,7 +74,15 @@ kern_return_t SymphonyPhantomControl::HandleChangeControlValue(bool in_control_v
     PHLOG("HandleChangeControlValue ch=%u → %{public}s",
           ivars->channel, in_control_value ? "on" : "off");
     if (!ivars->driver) return kIOReturnNotReady;
+    // dext 153: show the request before it is queued, so the driver's own
+    // publish after the send (or its republish of the real state when the
+    // request is dropped) always lands after it, never before.
+    const bool previous = GetControlValue();
+    SetControlValue(in_control_value);
     kern_return_t r = ivars->driver->RequestPhantom(ivars->channel, in_control_value);
-    if (r != kIOReturnSuccess) return r;
-    return SetControlValue(in_control_value);
+    if (r != kIOReturnSuccess) {
+        SetControlValue(previous);   // refused: nothing is sent
+        return r;
+    }
+    return kIOReturnSuccess;
 }
