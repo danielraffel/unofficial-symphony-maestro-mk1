@@ -130,6 +130,7 @@ struct SymphonyVBusIO {
 };
 
 struct SymphonyThunderbridge_IVars {
+    SymphonyThunderbridge *driver;
     IOPCIDevice *pciDevice;
     uint8_t      barMemoryIndex;
     // Card-mixer state (Thunderbolt). SW-Return + Master both drive the mixer's
@@ -1112,6 +1113,9 @@ static bool MicPreSettling(SymphonyThunderbridge_IVars *iv);
 static bool MicPreTypeKnownOn(SymphonyThunderbridge_IVars *iv, uint32_t port, uint32_t ch);
 static void ResetMicPreUnitCaches(SymphonyThunderbridge_IVars *iv, uint32_t port, bool clearEdits);
 static void RereadMicPreTypesA(SymphonyThunderbridge_IVars *iv);
+static void ScheduleChannelNames(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
+                                 bool forceMicPreInputs = false, int forcePort = -1,
+                                 int forceChannel = -1);
 static constexpr uint8_t kSIOCmd_PhantomPower          = 0xC6;  // 1 byte: 0=off, 1=on. nValue=0-based mic channel.
 static constexpr uint8_t kSIOCmd_ResetDefaultRouting   = 0xC2;  // no payload
 static constexpr uint8_t kSIOCmd_PreferenceLoadLock    = 0xDD;  // 1 byte: 1=lock/mute, 0=unlock
@@ -4913,6 +4917,10 @@ static void ConfigureUnitB(SymphonyThunderbridge_IVars *ivars)
     }
     if (!ivars->unitBConfigured) SendUnitAClock(ivars, false);   // no unit B after all: unit A's Loop Sync output off again
     PublishAllMicPreControls(ivars);   // host inputs routed to unit B resolve again (or no longer)
+    // Unit B's MicPre types are known now: its Mic and Instrument inputs
+    // take their names. Only names that differ are set.
+    if (ivars->unitBConfigured && ivars->driver)
+        ScheduleChannelNames(ivars, ivars->driver);
     STLOG("Unit B: %{public}s (boards %u/%u, prefix 0x%02x, %u message error(s), set-up 0x%05x)",
           unlocked ? "configured" : "set-up incomplete", ivars->unitBBoardType[0], ivars->unitBBoardType[1],
           ivars->unitBPrefix, ivars->unitBTxErrors, ivars->unitBSetupFlags);
@@ -5164,7 +5172,8 @@ static void RecomputeCardMixer(SymphonyThunderbridge_IVars *iv, IOPCIDevice *dev
 //
 // Runs on the default queue (Start, or a block queued by
 // ScheduleChannelNames), never on xlinkQueue.
-static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
+static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars, bool forceMicPreInputs = false,
+                               int forcePort = -1, int forceChannel = -1)
 {
     if (!ivars || !ivars->audioDevice || __atomic_load_n(&ivars->stopping, __ATOMIC_ACQUIRE))
         return;
@@ -5192,6 +5201,12 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     }
     s.sampleRate = __atomic_load_n(&ivars->namingSampleRate, __ATOMIC_ACQUIRE);
     s.prefix = __atomic_load_n(&ivars->namingPrefix, __ATOMIC_ACQUIRE);
+    if (s.boardKnown[1] && s.boardType[1] == kSIOOptionBoard_MicPre8) {
+        for (uint32_t ch = 0; ch < 8; ++ch) {
+            s.micPreTypeKnown[ch] = __atomic_load_n(&ivars->micPreTypeKnown[ch], __ATOMIC_ACQUIRE);
+            s.micPreType[ch] = __atomic_load_n(&ivars->micPreType[0][ch], __ATOMIC_ACQUIRE);
+        }
+    }
     SymphonyNamingState sB = {};
     for (uint32_t b = 0; b < 2; b++) {
         // Unit B's latch is None unless unit B is configured, and is built
@@ -5206,6 +5221,12 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     sB.prefix = SymphonyIsPrefixLetter(ivars->unitBPrefix)
         ? ivars->unitBPrefix
         : (uint8_t)(SymphonyPrefixLetter(s.prefix) == 'Z' ? 'A' : SymphonyPrefixLetter(s.prefix) + 1);
+    if (sB.boardKnown[1] && sB.boardType[1] == kSIOOptionBoard_MicPre8) {
+        for (uint32_t ch = 0; ch < 8; ++ch) {
+            sB.micPreTypeKnown[ch] = __atomic_load_n(&ivars->unitBMicPreTypeKnown[ch], __ATOMIC_ACQUIRE);
+            sB.micPreType[ch] = __atomic_load_n(&ivars->micPreType[1][ch], __ATOMIC_ACQUIRE);
+        }
+    }
 
     // Only a channel whose name differs from what Core Audio has is set: each
     // SetElementName notifies every client, and a rate change on a unit with
@@ -5233,23 +5254,50 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
     uint32_t changed = 0;
     for (uint32_t n = 0; n < nameCount; n++) {
         char name[sizeof(ivars->publishedInputName[0])] = {};
+        bool routedBoardInput = false;
         const uint32_t route = __atomic_load_n(&ivars->cardInputRoute[n], __ATOMIC_ACQUIRE);
         const uint32_t rx = route & 0xFFu;
         if (vbusName(n, true, name, sizeof(name))) { }
         else if (convNames(n)) ConverterHostChannelName(conv, true, n - convBase, name, sizeof(name), convPrefix);
         else if ((route & kRoutingEnable) && rx < 64) {
+            routedBoardInput = true;
             const uint8_t source = rx < 32
                 ? __atomic_load_n(&ivars->inputRouteSource[rx], __ATOMIC_ACQUIRE)
                 : __atomic_load_n(&ivars->unitBInputRouteSource[rx - 32], __ATOMIC_ACQUIRE);
             if (!SymphonyHostInputName(rx < 32 ? s : sB, source, name, sizeof(name))) name[0] = 0;
         }
-        if (strncmp(name, ivars->publishedInputName[n], sizeof(name)) == 0) continue;
+        const bool sameName = strncmp(name, ivars->publishedInputName[n], sizeof(name)) == 0;
+        const SymphonyNamingState &naming = rx < 32 ? s : sB;
+        const uint8_t source = (route & kRoutingEnable) && rx < 64
+            ? (rx < 32 ? __atomic_load_n(&ivars->inputRouteSource[rx], __ATOMIC_ACQUIRE)
+                       : __atomic_load_n(&ivars->unitBInputRouteSource[rx - 32], __ATOMIC_ACQUIRE))
+            : kSymphonyRoutingSourceNone;
+        uint32_t routedMicPreChannel = 0;
+        const bool routedMicPre = routedBoardInput &&
+                                  SymphonyHostInputMicPreChannel(naming, source, &routedMicPreChannel);
+        const bool force = forceMicPreInputs && routedMicPre &&
+                           (forcePort < 0 || forcePort == (rx < 32 ? 0 : 1)) &&
+                           (forceChannel < 0 || forceChannel == (int)routedMicPreChannel);
+        if (sameName && !force) continue;
+        // A type change the unit took is announced on the name even when the
+        // text is the same (+4 to -10 are both "Line n"): the original notified
+        // the element name on every type change (SymphonyIOBoard_MicPre8ch.cpp
+        // :527-544, AnalogIn_SymphonyIO_Stream.cpp:400-409), and a DAW may show
+        // the type only on that notification. The AudioDriverKit header
+        // promises a notification after a successful SetElementName but says
+        // nothing about a call with the name already set, so the name is
+        // removed and set again: two real changes, as the original sent two.
         // A null name removes it, leaving Core Audio's default for that channel.
         OSString *str = name[0] ? OSString::withCString(name) : nullptr;
+        if (force && sameName && str) {
+            ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, nullptr);
+        }
         ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, str);
         OSSafeReleaseNULL(str);
-        strlcpy(ivars->publishedInputName[n], name, sizeof(ivars->publishedInputName[n]));
-        changed++;
+        if (!sameName) {
+            strlcpy(ivars->publishedInputName[n], name, sizeof(ivars->publishedInputName[n]));
+            changed++;
+        }
     }
     uint32_t outChanged = 0;
     for (uint32_t n = 0; n < nameCount; n++) {
@@ -5296,12 +5344,13 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars)
               s.coaxReplace[0], s.coaxReplace[1]);
 }
 
-static void ScheduleChannelNames(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self)
+static void ScheduleChannelNames(SymphonyThunderbridge_IVars *ivars, SymphonyThunderbridge *self,
+                                 bool forceMicPreInputs, int forcePort, int forceChannel)
 {
     if (!ivars || !ivars->defaultQueue || !self) return;
     self->retain();
     ivars->defaultQueue->DispatchAsync(^{
-        PublishChannelNames(ivars);
+        PublishChannelNames(ivars, forceMicPreInputs, forcePort, forceChannel);
         self->release();
     });
 }
@@ -7271,6 +7320,7 @@ bool SymphonyThunderbridge::init()
     if (!ivars) {
         return false;
     }
+    ivars->driver = this;
     ivars->convLock = IOLockAlloc();
     ivars->startNonce = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) | 1u;
     STLOG("init()");
@@ -11473,6 +11523,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             ivars->micPreType[1][value & 7u] = payload[0];
             PublishMicGain(ivars, value & 7u, 1);
             PublishMicPreControls(ivars, 1, value & 7u);
+            ScheduleChannelNames(ivars, this, true, 1, value & 7u);
         }
         if (port == 1 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
             value < 8 && payload && payloadLen == 1) {
@@ -11492,6 +11543,7 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             ivars->micPreType[0][value & 7u] = payload[0];
             PublishMicGain(ivars, value & 7u);
             PublishMicPreControls(ivars, 0, value & 7u);
+            ScheduleChannelNames(ivars, this, true, 0, value & 7u);
         }
         // Maestro's own MicPre writes: keep what the unit took, and clear any
         // older unread HAL edit of the same field so it cannot overwrite this
@@ -12432,6 +12484,10 @@ static void RereadMicPreTypesA(SymphonyThunderbridge_IVars *iv)
         PublishMicGain(iv, ch);
     }
     PublishAllMicPreControls(iv);
+    // The types just read decide the names of Mic and Instrument inputs.
+    // Only names that differ are set (no forced announcement: nothing was
+    // chosen by a user here).
+    if (iv->driver) ScheduleChannelNames(iv, iv->driver);
 }
 
 static void FillMicPreTypeDescriptions(IOUserAudioSelectorValueDescription (&out)[5])
@@ -12779,6 +12835,7 @@ static void ApplyMicPreInputType(SymphonyThunderbridge_IVars *iv, uint32_t port,
     }
     PublishMicGain(iv, ch, port);
     PublishMicPreControls(iv, port, ch);
+    if (iv->driver) ScheduleChannelNames(iv, iv->driver, true, port, ch);
 }
 
 static void ApplyMicPreLane(SymphonyThunderbridge_IVars *iv, uint32_t kind, uint32_t port,

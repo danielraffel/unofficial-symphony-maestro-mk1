@@ -654,6 +654,39 @@ int main(int argc, char **argv) {
                 if (ok) assert((int)ch == r.micPreOfHost[host]);
             }
         }
+
+        // A known MicPre type names the routed host input after the physical
+        // preamp channel. Line and unknown wire values keep the analog-board
+        // name, and coax replacement wins before MicPre naming.
+        char buf[32];
+        auto micPre = state(kSIOOptionBoard_AnalogADDA16, kSIOOptionBoard_MicPre8, 48000);
+        micPre.prefix = 'C';
+        micPre.micPreTypeKnown[0] = true;
+        micPre.micPreType[0] = 3;
+        assert(SymphonyHostInputName(micPre, 32, buf, sizeof(buf)) && !strcmp(buf, "C Mic 1"));
+        micPre.micPreType[0] = 4;
+        assert(SymphonyHostInputName(micPre, 32, buf, sizeof(buf)) && !strcmp(buf, "C Inst 1"));
+        micPre.micPreType[0] = 1;
+        assert(SymphonyHostInputName(micPre, 32, buf, sizeof(buf)) && !strcmp(buf, "C Line 1"));
+        micPre.micPreType[0] = 9;
+        assert(SymphonyHostInputName(micPre, 32, buf, sizeof(buf)) && !strcmp(buf, "C Line 1"));
+        micPre.micPreTypeKnown[0] = false;
+        assert(SymphonyHostInputName(micPre, 32, buf, sizeof(buf)) && !strcmp(buf, "C Line 1"));
+        micPre.micPreTypeKnown[7] = true;
+        micPre.micPreType[7] = 3;
+        assert(SymphonyHostInputName(micPre, 39, buf, sizeof(buf)) && !strcmp(buf, "C Mic 8"));
+        micPre.coaxReplace[0] = 1;
+        assert(!SymphonyHostInputMicPreChannel(micPre, 32, nullptr));
+        assert(SymphonyHostInputName(micPre, 32, buf, sizeof(buf)) && !strcmp(buf, "C SPDIF Cx 1"));
+        micPre.coaxReplace[0] = 0;
+
+        // The same pure rule is used for unit B's independently prefixed
+        // naming state.
+        auto unitB = state(kSIOOptionBoard_AnalogADDA16, kSIOOptionBoard_MicPre8, 48000);
+        unitB.prefix = 'B';
+        unitB.micPreTypeKnown[3] = true;
+        unitB.micPreType[3] = 4;
+        assert(SymphonyHostInputName(unitB, 35, buf, sizeof(buf)) && !strcmp(buf, "B Inst 4"));
     }
 
     checkOrderTables();
@@ -728,7 +761,8 @@ assert gate < boot.index("kSIOCmd_SPDIFCoaxReplaceInput, b, &replace")
 assert gate < boot.index("kSIOCmd_SPDIFCoaxMirrorOutput, b, &mirror")
 assert src.count("NoteCoaxBoardType(ivars, value);") == 3   # 0x35 write, 0x36 write, 0x35 read
 # A channel is renamed only when its name changes, and an unread slot is not named.
-publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
+publish_start = src.index("static void PublishChannelNames")
+publish = src[publish_start:src.index("static void ScheduleChannelNames", publish_start)]
 # dext 150: both units are named from the types their tables were built from
 # (channelOrderLatch, selector 17), never from a separate 0xA1 read, so names
 # and tables cannot disagree (review M1).
@@ -815,7 +849,8 @@ from pathlib import Path
 d = Path(sys.argv[1])
 src = (d / "SymphonyThunderbridge.cpp").read_text()
 dev = (d / "SymphonyAudioDevice.cpp").read_text()
-publish = src[src.index("static void PublishChannelNames"):src.index("static void ScheduleChannelNames")]
+publish_start = src.index("static void PublishChannelNames")
+publish = src[publish_start:src.index("static void ScheduleChannelNames", publish_start)]
 assert "lastSampleRate" not in publish, "names must not follow the last StartDevice rate"
 assert "s.sampleRate = __atomic_load_n(&ivars->namingSampleRate, __ATOMIC_ACQUIRE);" in publish
 # Every nominal change the HAL makes reaches the driver, after the framework accepted it.

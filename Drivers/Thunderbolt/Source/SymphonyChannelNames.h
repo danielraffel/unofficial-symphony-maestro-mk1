@@ -50,6 +50,8 @@ struct SymphonyNamingState {
     bool     opticalIsSPDIF[2]; // optical format per slot (true = S/PDIF)
     uint8_t  coaxReplace[2];    // S/PDIF Coax Replaces wire value per slot, 0 = Off
     bool     boardKnown[2];     // the slot's type was read from the unit
+    bool     micPreTypeKnown[8];
+    uint8_t  micPreType[8];     // 0x20/0x60 wire value, 3 = Mic, 4 = Instrument
     uint32_t sampleRate;        // Hz; 0 = unknown, named as 44.1/48 kHz
     uint8_t  prefix;            // peripheral prefix byte read from / written to the unit (0x37)
 };
@@ -161,6 +163,20 @@ static constexpr uint8_t kSymphonyRoutingSourceIOBoard1 = 48;
 static constexpr uint8_t kSymphonyRoutingSourceNone     = 236;
 static constexpr uint8_t kSymphonyRoutingDestP2P0       = 0xC0;
 
+// The 8MicPre companion is in slot 2 and preempts the first eight analog
+// inputs of slot 1. Coax replacement wins before the MicPre check, as it does
+// in the original driver's board-name lookup.
+static inline bool SymphonyMicPreChannelForSource(uint8_t source, uint8_t board0Type, bool board0Known,
+                                                  uint8_t coaxReplace, uint32_t *channel);
+
+static inline bool SymphonyHostInputMicPreChannel(const SymphonyNamingState &s, uint8_t source,
+                                                  uint32_t *channel)
+{
+    if (!s.boardKnown[1] || s.boardType[1] != kSIOOptionBoard_MicPre8) return false;
+    return SymphonyMicPreChannelForSource(source, s.boardType[0], s.boardKnown[0],
+                                          s.coaxReplace[0], channel);
+}
+
 static inline bool SymphonyHostInputName(const SymphonyNamingState &s, uint8_t source,
                                          char *out, size_t len)
 {
@@ -174,6 +190,16 @@ static inline bool SymphonyHostInputName(const SymphonyNamingState &s, uint8_t s
         if (!s.boardKnown[board]) {
             if (len) out[0] = 0;
             return false;
+        }
+        uint32_t micPreChannel = 0;
+        if (board == 0 && SymphonyHostInputMicPreChannel(s, source, &micPreChannel) &&
+            micPreChannel < 8 && s.micPreTypeKnown[micPreChannel]) {
+            const char *kind = s.micPreType[micPreChannel] == 3 ? "Mic" :
+                               s.micPreType[micPreChannel] == 4 ? "Inst" : nullptr;
+            if (kind) {
+                snprintf(out, len, "%c %s %u", SymphonyPrefixLetter(s.prefix), kind, micPreChannel + 1);
+                return true;
+            }
         }
         // A channel the board has gets the prefix, "A N.A." included; one it
         // does not have (an empty slot, past the card's inputs) is bare "N.A.".
@@ -403,7 +429,7 @@ static inline bool SymphonyMicPreChannelForSource(uint8_t source, uint8_t board0
     if (typed && c >= b.analog) return false;
     if (b.coax && coaxReplace >= 1 && coaxReplace <= 8 && c / 2 == (uint32_t)(coaxReplace - 1))
         return false;
-    *channel = c;
+    if (channel) *channel = c;
     return true;
 }
 

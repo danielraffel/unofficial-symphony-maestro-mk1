@@ -220,6 +220,21 @@ compare_dir() {
         if [[ ! -e "$got/$name" ]]; then
             echo "[trace] FAIL $name: not produced ($what)"; failed=1; continue
         fi
+        # MicPre type names are host notifications, not register/XLink
+        # traffic. Their exact routing and notification counts are asserted
+        # in RegisterTrace's B12 scenario, while this existing lifecycle
+        # golden remains the byte-identical hardware baseline.
+        if [[ "$name" == "p1-symphony-micpre.trace" ]]; then
+            if ! diff -u <(grep -v '^H element-name ' "$f") \
+                    <(grep -v '^H element-name ' "$got/$name") > "$TMP/diff.txt"; then
+                echo "[trace] FAIL $name differs from $what:"
+                head -60 "$TMP/diff.txt"
+                failed=1
+            else
+                echo "[trace] ok   $name == $what ($(wc -l < "$f" | tr -d ' ') lines; hardware accesses exact)"
+            fi
+            continue
+        fi
         if ! diff -u "$f" "$got/$name" > "$TMP/diff.txt"; then
             echo "[trace] FAIL $name differs from $what:"
             head -60 "$TMP/diff.txt"

@@ -10,12 +10,18 @@ grep -q 'rawMixer\[4\] = dbW(128); rawMixer\[5\] = dbW(129)' "$APP_STATE"
 grep -q 'rawMixer\[6\] = dbW(130); rawMixer\[7\] = dbW(131)' "$APP_STATE"
 grep -q 'mixerMeterLevels.count >= 8' "$APP_STATE"
 
-# A powered-down Symphony can remain enumerated on PCIe while Core Audio has
-# stopped its I/O cycle. In that state the FPGA DMA snapshot is stale and must
-# not be decoded as live input or mixer activity.
+# A powered-down Symphony can remain enumerated on PCIe with its last meter
+# frame still on the card. The health probe stops the read then; the read does
+# not wait for Core Audio to run the device (0.9.33, CardMeterReadRule: the
+# card meters with no audio client, as under the original driver), and the
+# driver swap window alone still needs running audio.
+RULE="$(dirname "$APP_STATE")/../MaestroCore/CardMeterReadRule.swift"
+test -f "$RULE"
+grep -q 'hardwareResponsive || (extensionSwapGrace && audioRunning)' "$RULE"
 grep -q 'let tbAudioRunning = tbDev.isAudioRunning == true' "$APP_STATE"
-grep -q 'let allowMeterRead = tbAudioRunning &&' "$APP_STATE"
-grep -q 'self.thunderboltHardwareResponsive || extensionSwapPending' "$APP_STATE"
+grep -q 'let allowMeterRead = CardMeterReadRule.readsCard(' "$APP_STATE"
+grep -q 'hardwareResponsive: self.thunderboltHardwareResponsive,' "$APP_STATE"
+grep -q 'if allowMeterRead, tbAudioRunning,' "$APP_STATE"
 grep -q 'thunderboltHardwareResponsive = false' "$APP_STATE"
 grep -q 'self.mixerMeterLevels = \[Double\](repeating: -60.0' "$APP_STATE"
 grep -q 'self.digitalInputPeakHold = \[Double\](repeating: -60.0' "$APP_STATE"

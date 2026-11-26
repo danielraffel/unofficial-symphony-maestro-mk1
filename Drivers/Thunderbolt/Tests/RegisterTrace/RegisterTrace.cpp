@@ -3827,6 +3827,16 @@ static std::string LastElementName(const FakeCard &c, size_t from, const char *d
     return found;
 }
 
+static size_t ElementNameEventsSince(const FakeCard &c, size_t from, const char *dir, unsigned ch)
+{
+    char key[64];
+    snprintf(key, sizeof(key), "element-name dir=%s ch=%u name=", dir, ch);
+    size_t count = 0;
+    for (size_t i = from; i < c.lines.size(); i++)
+        if (c.lines[i].find(key) != std::string::npos) count++;
+    return count;
+}
+
 // Channel names follow Core Audio's nominal rate, not only a stream start's
 // rate change. Seen on hardware after a replug: coreaudiod restored the saved
 // 176.4 kHz, a stream start ran there (every optical channel "N.A."), then the
@@ -5456,10 +5466,16 @@ static void RunMicPreDAWControls()
     drv->ReadPhantomObservations(observed);
     const uint32_t aReceipt = observed[0];
     wa = pa.vendorWrites.size(); wb = pb.vendorWrites.size();
+    const size_t bNameMark = r.card.lines.size();
     types[0]->HandleChangeSelectedValues(&plus4, 1);
     HostPump();
     CHECK(WritesSince(pb, wb) == std::vector<uint8_t>({0xC6, 0xC9, 0x20}) && WritesSince(pa, wa).empty(),
           "B12: B Mic -> +4 OFFs then type on port 2 only");
+    CHECK(LastElementName(r.card, bNameMark, "in", 1) == "B Line 1" &&
+          LastElementName(r.card, bNameMark, "in", 2).empty(),
+          "B12: B type change renames only the host routed to B MicPre 1 (got %s/%s)",
+          LastElementName(r.card, bNameMark, "in", 1).c_str(),
+          LastElementName(r.card, bNameMark, "in", 2).c_str());
     drv->ReadPhantomObservations(observed);
     CHECK((observed[16] || observed[17]) && observed[0] == aReceipt, "B12: B OFF stamps the B1 receipt");
     // Stale B route: the request is dropped when host 1 moves back to A.
@@ -5554,6 +5570,68 @@ static void RunMicPreDAWControls()
     drv->ReadMicPreEdits(edits);
     CHECK(!(edits[3 + 2] & kMicPreEditGainValid),
           "B12: a front-panel gain clears the DAW gain bit even with the type unknown");
+
+    // Channel names follow every successful type acquisition. The name pass
+    // runs on the default queue, so it adds host notifications only and no
+    // register or XLink traffic. The null-then-final pair also announces a
+    // line-to-line change whose visible text stays "A Line 3".
+    CHECK(route(2, 2) == kIOReturnSuccess, "B12: host 3 reaches A MicPre 3 for names");
+    uint8_t nameMic[] = {3, 127};
+    uint8_t nameInstrument[] = {4, 127};
+    uint8_t nameLine[] = {1, 127};
+    uint8_t nameMinus10[] = {0, 127};
+    size_t nameMark = r.card.lines.size(), nameWrites = pa.vendorWrites.size();
+    CHECK(drv->SendVendorCommand(0x20, 0x80000002u, nameMic, 2) == kIOReturnSuccess,
+          "B12: Maestro Mic type for the name test");
+    HostPump();
+    CHECK(LastElementName(r.card, nameMark, "in", 3) == "A Mic 3" &&
+          LastElementName(r.card, nameMark, "in", 1).empty() &&
+          LastElementName(r.card, nameMark, "in", 2).empty() &&
+          LastElementName(r.card, nameMark, "in", 4).empty() &&
+          WritesSince(pa, nameWrites) == std::vector<uint8_t>({0x20}),
+          "B12: Maestro Mic renames only routed host 3 without extra bus traffic (got %s, other %s/%s)",
+          LastElementName(r.card, nameMark, "in", 3).c_str(),
+          LastElementName(r.card, nameMark, "in", 1).c_str(), LastElementName(r.card, nameMark, "in", 2).c_str());
+    nameMark = r.card.lines.size(); nameWrites = pa.vendorWrites.size();
+    CHECK(drv->SendVendorCommand(0x20, 0x80000002u, nameInstrument, 2) == kIOReturnSuccess,
+          "B12: Maestro Instrument type for the name test");
+    HostPump();
+    CHECK(LastElementName(r.card, nameMark, "in", 3) == "A Inst 3" &&
+          LastElementName(r.card, nameMark, "in", 1).empty() &&
+          WritesSince(pa, nameWrites) == std::vector<uint8_t>({0x20}),
+          "B12: Maestro Instrument renames only routed host 3 (got %s)",
+          LastElementName(r.card, nameMark, "in", 3).c_str());
+    nameMark = r.card.lines.size(); nameWrites = pa.vendorWrites.size();
+    CHECK(drv->SendVendorCommand(0x20, 0x80000002u, nameLine, 2) == kIOReturnSuccess,
+          "B12: Maestro line type restores the board name");
+    HostPump();
+    CHECK(LastElementName(r.card, nameMark, "in", 3) == "A Line 3" &&
+          WritesSince(pa, nameWrites) == std::vector<uint8_t>({0x20}),
+          "B12: line type restores Line 3");
+    nameMark = r.card.lines.size(); nameWrites = pa.vendorWrites.size();
+    CHECK(drv->SendVendorCommand(0x20, 0x80000002u, nameMinus10, 2) == kIOReturnSuccess,
+          "B12: Maestro line-to-line type change");
+    HostPump();
+    CHECK(LastElementName(r.card, nameMark, "in", 3) == "A Line 3" &&
+          ElementNameEventsSince(r.card, nameMark, "in", 3) == 2 &&
+          WritesSince(pa, nameWrites) == std::vector<uint8_t>({0x20}),
+          "B12: line-to-line still announces the unchanged name");
+    nameMark = r.card.lines.size(); nameWrites = pa.vendorWrites.size();
+    pa.txBusy = true;
+    CHECK(drv->SendVendorCommand(0x20, 0x80000002u, nameMic, 2) != kIOReturnSuccess,
+          "B12: failed Maestro type for the name test");
+    HostPump();
+    pa.txBusy = false;
+    CHECK(LastElementName(r.card, nameMark, "in", 3).empty() && WritesSince(pa, nameWrites).empty(),
+          "B12: failed Maestro type renames nothing");
+    nameMark = r.card.lines.size(); nameWrites = pa.vendorWrites.size();
+    CHECK(types[2]->HandleChangeSelectedValues(&mic, 1) == kIOReturnSuccess,
+          "B12: HAL Mic type for the name test");
+    HostPump();
+    CHECK(LastElementName(r.card, nameMark, "in", 3) == "A Mic 3" &&
+          WritesSince(pa, nameWrites) == std::vector<uint8_t>({0x20, 0xC3, 0xC7}),
+          "B12: HAL type change renames after its hardware send (got %s)",
+          LastElementName(r.card, nameMark, "in", 3).c_str());
     Finish(o, r);
 }
 #endif
