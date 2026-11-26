@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.33
+
+This release makes Maestro's meters work when no audio application is open, on ThunderBridge and the Symphony 64 PCIe card.
+
+### Changes that may affect your setup
+
+- **On ThunderBridge and PCIe, the Input and Mixer meters now move whenever the Symphony is on, not only while a DAW or another application is playing or recording.** This is how Apogee's software behaved. Nothing about the audio changes.
+
+### What's fixed
+
+- On ThunderBridge and PCIe, Maestro's Input and Mixer meters were dark until an audio application was open, although the Symphony's own front-panel meters showed signal.
+- Over USB, the connection status now reads "Connected via USB". It read "Connected via XPC proxy" when Maestro was opened with the Symphony already connected.
+
+### Known issue
+
+- **With an 8MicPre, an input type changed in Maestro may not show in Logic or another DAW,** which keeps showing the old type. Changing the type in the DAW works. If you see this, start Diagnostics, change the type in Maestro and send the report: this version records what Maestro tells the DAW.
+
+## 0.9.33 (beta)
+
+This beta makes Maestro's meters work when no audio application is open, on ThunderBridge and the Symphony 64 PCIe card.
+
+### Changes that may affect your setup
+
+- **On ThunderBridge and PCIe, the Input and Mixer meters now move whenever the Symphony is on, not only while a DAW or another application is playing or recording.** This is how Apogee's software behaved. Nothing about the audio changes.
+
+### Fixed
+
+- On ThunderBridge and PCIe, Maestro's Input and Mixer meters were dark until an audio application was open, although the Symphony's own front-panel meters showed signal.
+- Over USB, the connection status now reads "Connected via USB". It read "Connected via XPC proxy" when Maestro was opened with the Symphony already connected.
+
+### Please test
+
+- **An 8MicPre with Logic or another DAW:** when you change an input's type in Maestro, the DAW may keep showing the old type. If you see this, start Diagnostics, change the type in Maestro, then switch polarity on and off in Maestro, then move the gain a little in Maestro, and send the report. Say after which step, if any, the DAW showed the new type. This beta records what Maestro tells the DAW, so the report will show where the change is lost.
+
 ## 0.9.32
 
 This release makes the warning about Apogee's original drivers clearer.

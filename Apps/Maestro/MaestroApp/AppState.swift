@@ -2151,6 +2151,9 @@ final class AppState: @unchecked Sendable {
         macVolumeOverlayAfter = ContinuousClock.now + .seconds(3)
     }
     private var micPreDAWListenerAddresses: [AudioObjectPropertyAddress] = []
+    /// Diagnostics only (`MicPreHALLog`), with the device they were added for.
+    private var micPreHALLogListeners: [MicPreHALLog.Listener] = []
+    private var micPreHALLogDevice: AudioObjectID = kAudioObjectUnknown
     private var micPreDAWRefreshTask: Task<Void, Never>?
     private var micPreDAWRefreshGate = MicPreDAWRefreshGate()
     var micPreObservationRevision = 0
@@ -3619,7 +3622,7 @@ final class AppState: @unchecked Sendable {
         if transportType == .thunderbolt {
             statusMessage = "Connected via \(connectionShortName)"
         } else {
-            statusMessage = "Connected via XPC proxy"
+            statusMessage = "Connected via USB"
         }
         isHardwareInitialized = true
     }
@@ -4007,6 +4010,7 @@ final class AppState: @unchecked Sendable {
             }
 
             var pollCount = 0
+            var cardMeterMissedPolls = 0
             var displayedUnitOutputStamp = Date.distantPast
             // The poll count starts again here, so the maps stamped with the
             // last task's count are read again at once.
@@ -4304,12 +4308,13 @@ final class AppState: @unchecked Sendable {
                         newOutput = self.outputMeterLevels
                     }
                 } else if let tbDev = device as? ThunderboltDeviceConnection {
+                    // The card meters with or without an audio client, as it
+                    // did under the original driver, so the read does not wait
+                    // for Core Audio to start the device (`CardMeterReadRule`).
                     // ThunderBridge can remain present on the PCIe link after the
-                    // Symphony is powered down. In that state the FPGA meter DMA
-                    // buffer stops advancing but still contains the last coherent
-                    // frame, which otherwise looks like live input forever. Core
-                    // Audio's running-state property is the authoritative cheap
-                    // guard: no active I/O cycle means no fresh meter frame.
+                    // Symphony is powered down, and the meter DMA buffer then
+                    // keeps its last coherent frame: the health probe is what
+                    // stops the read in that state.
                     let tbAudioRunning = tbDev.isAudioRunning == true
                     // A DriverKit handoff can leave the outgoing dext carrying
                     // audio while the new registration is not yet probeable.
@@ -4321,8 +4326,10 @@ final class AppState: @unchecked Sendable {
                     // exception, which kept stale meters moving with the
                     // Symphony powered off.
                     let extensionSwapPending = self.thunderboltExtensionSwapGraceActive
-                    let allowMeterRead = tbAudioRunning &&
-                        (self.thunderboltHardwareResponsive || extensionSwapPending)
+                    let allowMeterRead = CardMeterReadRule.readsCard(
+                        hardwareResponsive: self.thunderboltHardwareResponsive,
+                        extensionSwapGrace: extensionSwapPending,
+                        audioRunning: tbAudioRunning)
                     self.pollUnitOutputMetersIfNeeded(pollCount: pollCount, device: tbDev)
                     let words: [UInt32]?
                     if !allowMeterRead {
@@ -4330,6 +4337,11 @@ final class AppState: @unchecked Sendable {
                     } else {
                         words = tbDev.readMeters()
                     }
+                    if words != nil || !allowMeterRead { cardMeterMissedPolls = 0 }
+                    else { cardMeterMissedPolls += 1 }
+                    let holdLastLevels = words == nil && CardMeterReadRule.holdsLastLevels(
+                        readDue: allowMeterRead, audioRunning: tbAudioRunning,
+                        missedPolls: cardMeterMissedPolls)
                     if let words {
                         // Thunderbolt: real hardware meters from the card FPGA meter DMA.
                         // Word peak = bits[31:24] → dB = 20*log10(peak/256). Layout (legacy):
@@ -4587,12 +4599,17 @@ final class AppState: @unchecked Sendable {
                                 .joined(separator: " ")
                             print("[MeterPoll] TB raw nonzero peaks: \(nz.isEmpty ? "(silence)" : nz)")
                         }
+                    } else if holdLastLevels {
+                        // A frame the driver would not hand over, with no audio
+                        // client to fall back on: keep what is shown.
+                        newInput = self.inputMeterLevels
+                        newOutput = self.outputMeterLevels
                     } else {
                         var softwareDigitalOut: [Double]?
                         // FPGA meter DMA may be unavailable on this card revision.
                         // Preserve useful host-playback meters through the Core
                         // Audio IOProc while the device is actively streaming.
-                        if allowMeterRead,
+                        if allowMeterRead, tbAudioRunning,
                            let softwarePeaks = self.hardwareSoftwarePeaks(self.meterDevice?.softwareOutputPeaks()),
                            softwarePeaks.count >= 2 {
                             if let softwareInputs = self.hardwareSoftwarePeaks(self.meterDevice?.softwareInputPeaks()),
@@ -5372,6 +5389,8 @@ final class AppState: @unchecked Sendable {
                 }
             }
         }
+        micPreHALLogDevice = aspDeviceID
+        micPreHALLogListeners = MicPreHALLog.install(device: aspDeviceID)
     }
 
     @MainActor
@@ -5379,6 +5398,9 @@ final class AppState: @unchecked Sendable {
         micPreDAWRefreshTask?.cancel()
         micPreDAWRefreshTask = nil
         micPreDAWRefreshGate.cancel()
+        MicPreHALLog.remove(micPreHALLogListeners, device: micPreHALLogDevice)
+        micPreHALLogListeners.removeAll()
+        micPreHALLogDevice = kAudioObjectUnknown
         guard aspDeviceID != kAudioObjectUnknown else { micPreDAWListenerAddresses.removeAll(); return }
         for var address in micPreDAWListenerAddresses {
             AudioObjectRemovePropertyListener(aspDeviceID, &address, micPreDAWPropertyChanged,
