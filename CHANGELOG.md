@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.34 (beta)
+
+This beta makes Logic and other DAWs follow an 8MicPre input type chosen in Maestro, on ThunderBridge and the Symphony 64 PCIe card.
+
+### Changes that may affect your setup
+
+- **The update replaces the ThunderBridge and PCIe driver (0.11.23, build 154).** After installing, unplug the ThunderBridge and plug it in again, or restart the Mac, so the new driver is the one running.
+- **With an 8MicPre, an input set to Mic or Instrument is now named "A Mic 1" or "A Inst 1" in your DAW and in Audio MIDI Setup, instead of "A Line 1".** This is how Apogee's driver named them. An input set to +4 dBu, -10 dBV or Variable keeps its "Line" name. Nothing changes without an 8MicPre.
+
+### Fixed
+
+- With an 8MicPre, an input type chosen in Maestro now shows in Logic. Before, Logic kept showing the old type, although the Symphony had changed.
+
+### Please test
+
+- **An 8MicPre with Logic or another DAW:** change an input's type in Maestro (Mic, Instrument, +4 dBu, -10 dBV, Variable). Does the DAW show the new type each time, including between +4 dBu and -10 dBV? Does the input's name follow (Mic, Inst, Line)? If not, start Diagnostics, repeat the change and send the report.
+
 ## 0.9.33
 
 This release makes Maestro's meters work when no audio application is open, on ThunderBridge and the Symphony 64 PCIe card.
