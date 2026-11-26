@@ -3622,7 +3622,7 @@ final class AppState: @unchecked Sendable {
         if transportType == .thunderbolt {
             statusMessage = "Connected via \(connectionShortName)"
         } else {
-            statusMessage = "Connected via XPC proxy"
+            statusMessage = "Connected via USB"
         }
         isHardwareInitialized = true
     }

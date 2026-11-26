@@ -11,6 +11,7 @@ This beta makes Maestro's meters work when no audio application is open, on Thun
 ### Fixed
 
 - On ThunderBridge and PCIe, Maestro's Input and Mixer meters were dark until an audio application was open, although the Symphony's own front-panel meters showed signal.
+- Over USB, the connection status now reads "Connected via USB". It used to change to "Connected via XPC proxy" a moment after connecting.
 
 ### Please test
 
