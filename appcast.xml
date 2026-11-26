@@ -11,25 +11,24 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
       <pubDate>Thu, 26 Nov 2026 05:08:32 GMT</pubDate>
       <sparkle:version>0.9.33</sparkle:version>
       <sparkle:shortVersionString>0.9.33</sparkle:shortVersionString>
-      <sparkle:channel>beta</sparkle:channel>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
       <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.33</sparkle:fullReleaseNotesLink>
       <description sparkle:format="markdown"><![CDATA[
-This beta makes Maestro's meters work when no audio application is open, on ThunderBridge and the Symphony 64 PCIe card.
+This release makes Maestro's meters work when no audio application is open, on ThunderBridge and the Symphony 64 PCIe card.
 
 ### Changes that may affect your setup
 
 - **On ThunderBridge and PCIe, the Input and Mixer meters now move whenever the Symphony is on, not only while a DAW or another application is playing or recording.** This is how Apogee's software behaved. Nothing about the audio changes.
 
-### Fixed
+### What's fixed
 
 - On ThunderBridge and PCIe, Maestro's Input and Mixer meters were dark until an audio application was open, although the Symphony's own front-panel meters showed signal.
 - Over USB, the connection status now reads "Connected via USB". It read "Connected via XPC proxy" when Maestro was opened with the Symphony already connected.
 
-### Please test
+### Known issue
 
-- **An 8MicPre with Logic or another DAW:** when you change an input's type in Maestro, the DAW may keep showing the old type. If you see this, start Diagnostics, change the type in Maestro, then switch polarity on and off in Maestro, then move the gain a little in Maestro, and send the report. Say after which step, if any, the DAW showed the new type. This beta records what Maestro tells the DAW, so the report will show where the change is lost.
+- **With an 8MicPre, an input type changed in Maestro may not show in Logic or another DAW,** which keeps showing the old type. Changing the type in the DAW works. If you see this, start Diagnostics, change the type in Maestro and send the report: this version records what Maestro tells the DAW.
       ]]></description>
       <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.33/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="H4nkgc+gz4nwoJjqNa/lhmvMQ3UQZAkY9a7lsGsxw7Wy3KKytdEvmWK1oVtijraikm8kar9LNZZ3pLmfDxufDA==" length="6417863" type="application/octet-stream" sparkle:installationType="package"></enclosure>
     </item>
@@ -1795,6 +1794,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: z1nAZzPSxsR3OHRZApmPwHmRQR5jxIC/B5FV/QpXFvjnDDF+Mvc6iGjaDNE/k5Dpwj59dhnbcU0IeHjTvlxhDg==
-length: 193790
+edSignature: h5N/w36QZEAZN92OqPno2TGd+HOLe3e5kAplabTRaAi1xyqPpW4c0Pcwlwev/T1iCy5e8ldae479Tkyfvu1GBA==
+length: 193600
 -->
