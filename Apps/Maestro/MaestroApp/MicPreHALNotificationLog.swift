@@ -36,7 +36,7 @@ enum MicPreHALLog {
     /// Four bytes are shown as a number: a float for the two volume
     /// properties, an integer otherwise.
     static func valueText(selector: AudioObjectPropertySelector, bytes: [UInt8]?) -> String {
-        guard let bytes else { return "unreadable" }
+        guard let bytes else { return "not a number" }
         guard bytes.count == 4 else { return "\(bytes.count) bytes" }
         let raw = bytes.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         if selector == kAudioDevicePropertyVolumeDecibels || selector == kAudioDevicePropertyVolumeScalar
@@ -53,11 +53,14 @@ enum MicPreHALLog {
             + "scope '\(fourCC(address.mScope))' element \(address.mElement) = \(value)"
     }
 
+    /// Four-byte values only. Every value wanted here is one, and a larger
+    /// one may be an object (a channel name is a CFString) that a raw copy
+    /// would take ownership of and never release.
     static func read(_ objectID: AudioObjectID, _ address: AudioObjectPropertyAddress) -> [UInt8]? {
         var address = address
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size) == noErr,
-              size > 0, size <= 64 else { return nil }
+              size == 4 else { return nil }
         var bytes = [UInt8](repeating: 0, count: Int(size))
         guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &bytes) == noErr else { return nil }
         return Array(bytes.prefix(Int(size)))
@@ -122,10 +125,12 @@ private func micPreHALLogChanged(
     _ clientData: UnsafeMutableRawPointer?
 ) -> OSStatus {
     let isDevice = UInt(bitPattern: clientData) == UInt(objectID)
+    // Most of what the device announces is not kept: no work for those.
+    let kept = (0..<Int(numberAddresses)).map { addresses[$0] }
+        .filter { MicPreHALLog.keeps(objectIsDevice: isDevice, scope: $0.mScope) }
+    guard !kept.isEmpty else { return noErr }
     let stamp = DiagnosticsRecorder.stamp(Date())
-    for index in 0..<Int(numberAddresses) {
-        let address = addresses[index]
-        guard MicPreHALLog.keeps(objectIsDevice: isDevice, scope: address.mScope) else { continue }
+    for address in kept {
         let value = MicPreHALLog.valueText(selector: address.mSelector, bytes: MicPreHALLog.read(objectID, address))
         print(MicPreHALLog.line(stamp: stamp, objectIsDevice: isDevice, objectID: objectID,
                                 address: address, value: value))

@@ -4337,8 +4337,8 @@ final class AppState: @unchecked Sendable {
                     } else {
                         words = tbDev.readMeters()
                     }
-                    if words != nil { cardMeterMissedPolls = 0 }
-                    else if allowMeterRead { cardMeterMissedPolls += 1 }
+                    if words != nil || !allowMeterRead { cardMeterMissedPolls = 0 }
+                    else { cardMeterMissedPolls += 1 }
                     let holdLastLevels = words == nil && CardMeterReadRule.holdsLastLevels(
                         readDue: allowMeterRead, audioRunning: tbAudioRunning,
                         missedPolls: cardMeterMissedPolls)

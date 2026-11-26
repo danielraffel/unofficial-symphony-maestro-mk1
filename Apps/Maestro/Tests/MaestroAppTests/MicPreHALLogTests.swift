@@ -21,7 +21,7 @@ import Testing
         #expect(MicPreHALLog.valueText(selector: kAudioDevicePropertyChannelNominalLineLevel, bytes: bytes(3)) == "3")
         #expect(MicPreHALLog.valueText(selector: kAudioDevicePropertyVolumeDecibels,
                                        bytes: bytes(Float32(42.5).bitPattern)) == "42.50")
-        #expect(MicPreHALLog.valueText(selector: kAudioDevicePropertyPhantomPower, bytes: nil) == "unreadable")
+        #expect(MicPreHALLog.valueText(selector: kAudioDevicePropertyPhantomPower, bytes: nil) == "not a number")
         #expect(MicPreHALLog.valueText(selector: kAudioDevicePropertyPhantomPower, bytes: [1, 2]) == "2 bytes")
     }
 
