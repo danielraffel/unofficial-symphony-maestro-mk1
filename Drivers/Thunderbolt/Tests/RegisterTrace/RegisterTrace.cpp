@@ -5616,6 +5616,17 @@ static void RunMicPreDAWControls()
           ElementNameEventsSince(r.card, nameMark, "in", 3) == 2 &&
           WritesSince(pa, nameWrites) == std::vector<uint8_t>({0x20}),
           "B12: line-to-line still announces the unchanged name");
+    // The same type again (0x20 also carries the trim, and Maestro replays
+    // saved types at connect): nothing is announced.
+    uint8_t nameMinus10Trim[] = {0, 100};
+    nameMark = r.card.lines.size(); nameWrites = pa.vendorWrites.size();
+    CHECK(drv->SendVendorCommand(0x20, 0x80000002u, nameMinus10Trim, 2) == kIOReturnSuccess,
+          "B12: Maestro trim-only 0x20 for the name test");
+    HostPump();
+    CHECK(ElementNameEventsSince(r.card, nameMark, "in", 3) == 0 &&
+          WritesSince(pa, nameWrites) == std::vector<uint8_t>({0x20}),
+          "B12: a 0x20 that keeps the type announces no name (got %zu event(s))",
+          ElementNameEventsSince(r.card, nameMark, "in", 3));
     nameMark = r.card.lines.size(); nameWrites = pa.vendorWrites.size();
     pa.txBusy = true;
     CHECK(drv->SendVendorCommand(0x20, 0x80000002u, nameMic, 2) != kIOReturnSuccess,

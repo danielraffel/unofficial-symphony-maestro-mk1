@@ -5292,9 +5292,16 @@ static void PublishChannelNames(SymphonyThunderbridge_IVars *ivars, bool forceMi
         if (force && sameName && str) {
             ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, nullptr);
         }
-        ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, str);
+        const kern_return_t set =
+            ivars->audioDevice->SetElementName(n + 1, IOUserAudioObjectPropertyScope::Input, str);
         OSSafeReleaseNULL(str);
-        if (!sameName) {
+        if (set != kIOReturnSuccess) {
+            // Core Audio may hold no name now (a forced announcement removed
+            // it first): record a name no channel has, so the next pass sets
+            // this one again instead of skipping it as unchanged.
+            strlcpy(ivars->publishedInputName[n], "\x01", sizeof(ivars->publishedInputName[n]));
+            STERR("Channel names: input %u not set (0x%x); it is set again on the next pass", n + 1, set);
+        } else if (!sameName) {
             strlcpy(ivars->publishedInputName[n], name, sizeof(ivars->publishedInputName[n]));
             changed++;
         }
@@ -11476,6 +11483,14 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             payloadLen == 2 && (value & 0xFFFFFFF8u) == 0x80000000u;
         const bool micPreWasMic = micPreTypeWrite &&
             MicPreTypeKnownOn(ivars, port, value & 7u) && ivars->micPreType[port][value & 7u] == 3;
+        // dext 154: whether this 0x20 changes the type (it also carries the
+        // trim, and Maestro replays saved types at connect). Only a change is
+        // announced on the input's name, and only where an 8MicPre is fitted.
+        const bool micPreTypeChanges = micPreTypeWrite && port <= 1 && payload[0] <= 4 &&
+            !(MicPreTypeKnownOn(ivars, port, value & 7u) &&
+              ivars->micPreType[port][value & 7u] == payload[0]) &&
+            (port ? ivars->unitBBoardType[1] == kSIOOptionBoard_MicPre8
+                  : (ivars->optionBoardTypeValid[1] && ivars->optionBoardType[1] == kSIOOptionBoard_MicPre8));
         const uint64_t tx = port ? kRegXLink2TX : kRegXLink1TX;
         uint8_t &seq = port ? ivars->runtimeTxSeq2 : ivars->runtimeTxSeq;
         bool ok = SendVendorRequestOn(ivars->pciDevice, ivars->barMemoryIndex, tx,
@@ -11519,11 +11534,11 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->unitBMicPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->unitBMicPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
-            __atomic_store_n(&ivars->unitBMicPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             ivars->micPreType[1][value & 7u] = payload[0];
+            __atomic_store_n(&ivars->unitBMicPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             PublishMicGain(ivars, value & 7u, 1);
             PublishMicPreControls(ivars, 1, value & 7u);
-            ScheduleChannelNames(ivars, this, true, 1, value & 7u);
+            if (micPreTypeChanges) ScheduleChannelNames(ivars, this, true, 1, value & 7u);
         }
         if (port == 1 && (command == kSIOCmd_MicGain || command == kSIOCmd_InstrumentGain) &&
             value < 8 && payload && payloadLen == 1) {
@@ -11539,11 +11554,11 @@ kern_return_t SymphonyThunderbridge::SendVendorCommand(
             payloadLen == 2 && payload[0] <= 4 && (value & 0xFFFFFFF8u) == 0x80000000u) {
             __atomic_store_n(&ivars->micPreInstrument[value & 7u], payload[0] == 4, __ATOMIC_RELEASE);
             __atomic_store_n(&ivars->micPreMic[value & 7u], payload[0] == 3, __ATOMIC_RELEASE);
-            __atomic_store_n(&ivars->micPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             ivars->micPreType[0][value & 7u] = payload[0];
+            __atomic_store_n(&ivars->micPreTypeKnown[value & 7u], true, __ATOMIC_RELEASE);
             PublishMicGain(ivars, value & 7u);
             PublishMicPreControls(ivars, 0, value & 7u);
-            ScheduleChannelNames(ivars, this, true, 0, value & 7u);
+            if (micPreTypeChanges) ScheduleChannelNames(ivars, this, true, 0, value & 7u);
         }
         // Maestro's own MicPre writes: keep what the unit took, and clear any
         // older unread HAL edit of the same field so it cannot overwrite this
@@ -12803,6 +12818,7 @@ static void ApplyMicPreInputType(SymphonyThunderbridge_IVars *iv, uint32_t port,
         RepublishMicPreHost(iv, host);
         return;
     }
+    iv->micPreType[port][ch] = type;   // before "known": a name pass reads the pair
     if (port) {
         __atomic_store_n(&iv->unitBMicPreInstrument[ch], type == 4, __ATOMIC_RELEASE);
         __atomic_store_n(&iv->unitBMicPreMic[ch], type == 3, __ATOMIC_RELEASE);
@@ -12812,7 +12828,6 @@ static void ApplyMicPreInputType(SymphonyThunderbridge_IVars *iv, uint32_t port,
         __atomic_store_n(&iv->micPreMic[ch], type == 3, __ATOMIC_RELEASE);
         __atomic_store_n(&iv->micPreTypeKnown[ch], true, __ATOMIC_RELEASE);
     }
-    iv->micPreType[port][ch] = type;
     uint64_t now = SYMPHONY_MICPRE_NOW_NS();
     if (now == 0) now = 1;
     __atomic_store_n(&iv->halMicTypeStamp[port][ch], type == 3 ? now : 0, __ATOMIC_RELEASE);

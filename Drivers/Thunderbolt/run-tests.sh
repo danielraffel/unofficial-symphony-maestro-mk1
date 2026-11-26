@@ -220,11 +220,11 @@ compare_dir() {
         if [[ ! -e "$got/$name" ]]; then
             echo "[trace] FAIL $name: not produced ($what)"; failed=1; continue
         fi
-        # MicPre type names are host notifications, not register/XLink
-        # traffic. Their exact routing and notification counts are asserted
-        # in RegisterTrace's B12 scenario, while this existing lifecycle
-        # golden remains the byte-identical hardware baseline.
-        if [[ "$name" == "p1-symphony-micpre.trace" ]]; then
+        # dext 154: 8MicPre inputs in Mic or Instrument are named by type, so
+        # this trace differs from a base driver older than 154 in its host
+        # element-name events only (no register or XLink traffic; B12 asserts
+        # the names and counts). The golden is compared exactly.
+        if [[ "$name" == "p1-symphony-micpre.trace" && "$what" == "driver source at "* ]]; then
             if ! diff -u <(grep -v '^H element-name ' "$f") \
                     <(grep -v '^H element-name ' "$got/$name") > "$TMP/diff.txt"; then
                 echo "[trace] FAIL $name differs from $what:"

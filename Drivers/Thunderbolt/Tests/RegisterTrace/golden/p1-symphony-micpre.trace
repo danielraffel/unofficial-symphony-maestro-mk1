@@ -1855,8 +1855,8 @@ R 0x00003c 0x09022092
 W 0x00003c 0x00000000
 R 0x00003c 0x09022092
 H driver-add-device
-H element-name dir=in ch=1 name=A Line 1
-H element-name dir=in ch=2 name=A Line 2
+H element-name dir=in ch=1 name=A Mic 1
+H element-name dir=in ch=2 name=A Inst 2
 H element-name dir=in ch=3 name=A Line 3
 H element-name dir=in ch=4 name=A Line 4
 H element-name dir=in ch=5 name=A Line 5
