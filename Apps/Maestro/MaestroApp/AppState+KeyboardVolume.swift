@@ -393,9 +393,10 @@ extension AppState {
                     adopt = adopt || unit == .a
                     // None on converters: the driver has put the mixer level
                     // back to 0 dB, unmuted, and holds its controls there.
-                    if output == .none, device === tb {
+                    if output == .none, unit == .a, device === tb {
                         speakerLevel = 0
                         speakerMuted = false
+                        recordMonitorMuteWritten(.speakers, muted: false)
                     }
                 } else {
                     complete = false
@@ -438,6 +439,18 @@ extension AppState {
     @MainActor
     private func applyUSBKeyboardVolumeOutput(_ output: KeyboardVolumeOutput, to xpc: XPCDeviceConnection) async -> Bool {
         if await xpc.keyboardVolumeOutputInHelper() == output {
+            // A headphone the connect step found or left muted: the Mac's
+            // control says so before it is read (`serviceKeyboardVolumeOutput`
+            // reads it next), or that read would show it unmuted and erase
+            // the saved mute. The helper is known to move this headphone.
+            if device === xpc {
+                let settledMuted: Bool = switch output {
+                case .headphone1: hp1Muted && monitorMutesSettled?.outputs.contains(.headphone1) == true
+                case .headphone2: hp2Muted && monitorMutesSettled?.outputs.contains(.headphone2) == true
+                default: false
+                }
+                if settledMuted { writeASPMute(true, output: output) }
+            }
             // Speaker in Line mode: the keys move nothing, and the Mac's
             // control may have drifted while Maestro was closed. It is put
             // back to the speaker's own level and mute.

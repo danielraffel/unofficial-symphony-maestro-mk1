@@ -125,6 +125,35 @@ struct MonitorLevelsAtConnectDeviceTests {
         #expect(result.settled[.speakers] == 20)
     }
 
+    @Test("mutes restore only towards muted and save the settled unit state")
+    func mutesAtConnect() async throws {
+        let (driver, tb, _) = Self.unit()
+        driver.seedRead(command: Self.speakerMute, reply: [0])
+        driver.seedRead(command: 0x24, value: 0, reply: [0])
+        driver.seedRead(command: 0x24, value: 1, reply: [1])
+        tb.recordSavedMonitorMute(.speakers, muted: true)
+        tb.recordSavedMonitorMute(.headphone1, muted: true)
+        tb.recordSavedMonitorMute(.headphone2, muted: false)
+        let result = try #require(await tb.applySavedMonitorLevels())
+        #expect(result.mutesWritten == [.speakers, .headphone1])
+        #expect(result.mutesSettled == [.speakers: true, .headphone1: true, .headphone2: true])
+        #expect(driver.sent.contains { $0.command == Self.speakerMute && $0.payload == [1] })
+        #expect(driver.sent.contains { $0.command == 0x24 && $0.value == 0 && $0.payload == [1] })
+        #expect(!driver.sent.contains { $0.command == 0x24 && $0.value == 1 })
+        #expect(tb.savedMonitorMute(.headphone2) == true)
+    }
+
+    @Test("Line leaves the speaker mute alone")
+    func muteLineLeavesSpeaker() async throws {
+        let (driver, tb, _) = Self.unit(mode: 0)
+        driver.seedRead(command: Self.speakerMute, reply: [0])
+        tb.recordSavedMonitorMute(.speakers, muted: true)
+        let result = try #require(await tb.applySavedMonitorLevels())
+        #expect(result.mutesSettled[.speakers] == nil)
+        #expect(!driver.sent.contains { $0.command == Self.speakerMute })
+        #expect(tb.savedMonitorMute(.speakers) == true)
+    }
+
     @Test("converters: nothing is read or sent")
     func convertersLeftAlone() async {
         let (driver, tb, _) = Self.unit()

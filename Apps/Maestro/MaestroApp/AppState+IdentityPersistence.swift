@@ -208,6 +208,7 @@ extension AppState {
     private func performUSBRestore(_ connection: XPCDeviceConnection, helperMixer: Int, owedOnly: Bool) async {
         let generation = unitAGeneration
         let preferences = mixerPreferences
+        monitorMutesSettled = nil
         guard device === connection, unitAIdentityState != .pending, !hardwareWritesSuspended else { return }
         func isCurrent() -> Bool {
             device === connection && unitAGeneration == generation && !hardwareWritesSuspended
@@ -352,6 +353,10 @@ extension AppState {
         usbRestoreOwed = false
         let helperEpoch = connection.helperEpoch
         updateRestoreStatus()
+        // Mute the saved headphones before any mixer or route write can make
+        // live audio audible. The helper's believed-read avoids residue bytes.
+        let mutesOwed = await applyMonitorMutesAtConnect(connection)
+        guard isCurrent() else { return }
         // After a front-panel reset the speaker and headphone levels come
         // down first, before any other write: the reference levels, the
         // routing and the mixers written below are then heard at the lowered
@@ -458,7 +463,7 @@ extension AppState {
         // restored, and the meter loop tries again with a growing pause.
         // Without readable mixer state only a waiting route is owed.
         let mixersDone = (mixers == [true, true] || !preferences.isWritable) && !usbHelperOutdated
-        guard routed, mixersDone, connection.helperEpoch == helperEpoch else {
+        guard routed, mixersDone, !mutesOwed, connection.helperEpoch == helperEpoch else {
             usbRestoreOwed = true
             usbRestoreRetryAttempts += 1
             let wait = Self.restoreRetryPause(usbRestoreRetryAttempts)

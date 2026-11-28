@@ -822,7 +822,10 @@ struct OutputControlsView: View {
                                 // The Mac's mute control follows where the speaker is its output.
                                 if monitorTarget.unit == .a { appState.writeASPMute(false) }
                                 Task {
-                                    await writeMonitorProperty(.outputMute, value: .bool(false))
+                                    let muteWriteSucceeded = await writeMonitorProperty(.outputMute, value: .bool(false))
+                                    if muteWriteSucceeded, changedUnit == .a {
+                                        appState.recordMonitorMuteWritten(.speakers, muted: false)
+                                    }
                                     await writeMonitorProperty(.outputDim, value: .bool(false))
                                     await writeMonitorProperty(.outputSumToMono, value: .bool(false))
                                     if await writeMonitorProperty(.speakerOutputMode, value: .uint32(val)) {
@@ -1632,7 +1635,15 @@ struct OutputControlsView: View {
             (.headphone1SumToMono, SymphonyIOMonitorDefaults.summedToMono),
             (.headphone2SumToMono, SymphonyIOMonitorDefaults.summedToMono)
         ] {
-            await writeMonitorProperty(selector, value: .bool(flag))
+            let wrote = await writeMonitorProperty(selector, value: .bool(flag))
+            if wrote, monitorTarget.unit == .a {
+                switch selector {
+                case .outputMute: appState.recordMonitorMuteWritten(.speakers, muted: flag)
+                case .headphone1Mute: appState.recordMonitorMuteWritten(.headphone1, muted: flag)
+                case .headphone2Mute: appState.recordMonitorMuteWritten(.headphone2, muted: flag)
+                default: break
+                }
+            }
         }
         if monitorTarget.unit == .a {
             for output in [KeyboardVolumeOutput.speakers, .headphone1, .headphone2] {

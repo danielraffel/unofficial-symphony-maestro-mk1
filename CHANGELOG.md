@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.35 (beta)
+
+This beta keeps a muted headphone or speaker muted when the Symphony is switched off and on, or reconnected.
+
+### Changes that may affect your setup
+
+- **Maestro now remembers which outputs you muted and mutes them again when the Symphony comes back**: the two headphones over USB, and the speakers and both headphones on ThunderBridge and the Symphony 64 PCIe card. This also holds after you quit Maestro or restart the Mac. Apogee's software also put its saved mutes back when it connected.
+- **Maestro only ever mutes, it never unmutes.** If you muted an output in Maestro and later unmuted it on the Symphony's front panel or with the Mac's mute key while Maestro was closed, it is muted again the next time Maestro connects. Unmute it in Maestro and it stays unmuted.
+- The driver is unchanged (0.11.23, build 154).
+
+### Fixed
+
+- Over USB, both headphones came back unmuted after the Symphony was switched off and on, although they were muted before. The speakers stayed muted.
+- On ThunderBridge and PCIe, a muted output could come back unmuted after the Symphony was switched off and on or the Mac was restarted.
+
+### Please test
+
+- **USB:** turn the headphone levels up a little, mute Headphone 1 and 2 in Maestro, then switch the Symphony off and on. Are both still muted, in Maestro and by ear? Then quit Maestro, switch the Symphony off and on, and open Maestro: still muted? Then unmute both and switch it off and on again: they should stay unmuted.
+- **ThunderBridge or PCIe:** the same with the speakers and both headphones, and once more after restarting the Mac.
+- If a step fails, start Diagnostics, repeat that step and send the report, saying which step it was.
+
 ## 0.9.34 (beta)
 
 This beta makes Logic and other DAWs follow an 8MicPre input type chosen in Maestro, on ThunderBridge and the Symphony 64 PCIe card.

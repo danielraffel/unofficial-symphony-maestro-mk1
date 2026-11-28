@@ -1936,6 +1936,66 @@ public final class XPCDeviceConnection: DeviceConnection, @unchecked Sendable {
         return replay
     }
 
+    /// Restore unit A headphone mutes after the USB settings replay. The
+    /// helper remains the speaker mute owner, so USB deliberately omits it.
+    public struct MonitorMutesResult: Sendable {
+        public var settled: [MonitorMutesAtConnect.Output: Bool] = [:]
+        public var written: Set<MonitorMutesAtConnect.Output> = []
+        public var owed = false
+    }
+
+    public func applySavedMonitorMutes() async -> MonitorMutesResult {
+        var result = MonitorMutesResult()
+        for output in [MonitorMutesAtConnect.Output.headphone1, .headphone2] {
+            let address: PropertyAddress = switch output {
+            case .headphone1: PropertyAddress(selector: .headphone1Mute)
+            case .headphone2: PropertyAddress(selector: .headphone2Mute)
+            case .speakers: PropertyAddress(selector: .outputMute)
+            }
+            let unit = await restoreReadBelievedByte(address).flatMap { raw in
+                switch raw { case 0: false; case 1: true; default: nil }
+            }
+            var written = false
+            let wanted = MonitorMutesAtConnect.write(output: output,
+                                          saved: settingsStore.value(for: address)?.asBool,
+                                          unit: unit, speakersInLine: false) != nil
+            if wanted {
+                do { try await setProperty(address, value: .bool(true)); written = true; result.written.insert(output) }
+                catch { print("[Maestro] USB mutes at connect: \(output) could not be set muted: \(error)"); result.owed = true }
+            }
+            if wanted && !written { continue }
+            if settingsStore.value(for: address)?.asBool == true && unit == nil {
+                result.owed = true
+                continue
+            }
+            if let value = MonitorMutesAtConnect.settled(output: output, unit: unit,
+                                                         speakersInLine: false, written: written) {
+                result.settled[output] = value
+                if settingsStore.value(for: address)?.asBool != nil || value {
+                    recordSavedMonitorMute(output, muted: value)
+                }
+            }
+        }
+        return result
+    }
+
+    public func savedMonitorMute(_ output: MonitorMutesAtConnect.Output) -> Bool? {
+        settingsStore.value(for: Self.savedMuteAddress(output))?.asBool
+    }
+
+    public func recordSavedMonitorMute(_ output: MonitorMutesAtConnect.Output, muted: Bool) {
+        guard savedMonitorMute(output) != muted else { return }
+        settingsStore.record(.bool(muted), for: Self.savedMuteAddress(output))
+    }
+
+    private static func savedMuteAddress(_ output: MonitorMutesAtConnect.Output) -> PropertyAddress {
+        switch output {
+        case .speakers: PropertyAddress(selector: .outputMute)
+        case .headphone1: PropertyAddress(selector: .headphone1Mute)
+        case .headphone2: PropertyAddress(selector: .headphone2Mute)
+        }
+    }
+
     public func hasProperty(_ address: PropertyAddress) async -> Bool {
         if SymphonyIOPropertyMapper.writeOnlySelectors.contains(address.selector) { return true }
         return (try? SymphonyIOPropertyMapper.buildReadRequest(for: address)) != nil

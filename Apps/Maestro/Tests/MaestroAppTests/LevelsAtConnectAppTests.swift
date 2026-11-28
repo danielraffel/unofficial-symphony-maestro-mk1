@@ -71,6 +71,7 @@ struct LevelsAtConnectAppTests {
 
     @Test("a muted speaker stays muted; no mute is sent")
     func muteKept() async {
+        // The unit answers unmuted (an unseeded read) and nothing is saved.
         let (state, tb, driver) = thunderbolt(saved: [.speakers: 40])
         state.speakerMuted = true
         await state.applyMonitorLevelsAtConnect(tb)
@@ -82,6 +83,7 @@ struct LevelsAtConnectAppTests {
     @Test("Line: the speakers are neither written nor saved, now or afterwards")
     func lineLeavesSpeakers() async {
         let (state, tb, driver) = thunderbolt(mode: 0, speaker: 0, hp1: 20, saved: [.speakers: 40, .headphone1: 30])
+        tb.recordSavedMonitorMute(.speakers, muted: true)
         state.speakerLevel = -12
         await state.applyMonitorLevelsAtConnect(tb)
         #expect(state.speakerOutputMode == SpeakerOutputLogic.line)
@@ -89,6 +91,9 @@ struct LevelsAtConnectAppTests {
         #expect(state.speakerLevel == -12)   // not the unit's Line reading
         state.speakerLevel = 0
         #expect(tb.savedMonitorLevel(.speakers) == 40)
+        state.speakerMuted = true    // a real change, in Line: not saved
+        state.speakerMuted = false
+        #expect(tb.savedMonitorMute(.speakers) == true)
         #expect(state.hp1Level == -30)
     }
 
@@ -109,9 +114,32 @@ struct LevelsAtConnectAppTests {
         #expect(tb.savedMonitorLevel(.headphone1) == 44)
     }
 
+    @Test("mute connect settles before recording later app and front-panel changes")
+    func muteRecording() async {
+        let (state, tb, driver) = thunderbolt()
+        driver.seedRead(command: 0x27, reply: [0])
+        driver.seedRead(command: 0x24, value: 0, reply: [0])
+        driver.seedRead(command: 0x24, value: 1, reply: [1])
+        tb.recordSavedMonitorMute(.speakers, muted: true)
+        tb.recordSavedMonitorMute(.headphone1, muted: true)
+        // Before the step a view reads the unit: real changes, none saved.
+        state.hp1Muted = true
+        state.hp1Muted = false
+        #expect(tb.savedMonitorMute(.headphone1) == true)
+        await state.applyMonitorLevelsAtConnect(tb)
+        #expect(state.speakerMuted && state.hp1Muted && state.hp2Muted)
+        #expect(tb.savedMonitorMute(.headphone1) == true)
+        state.hp1Muted = false
+        #expect(tb.savedMonitorMute(.headphone1) == false)
+        await state.applyFrontPanelChange(.muteAll(true), isUserChange: false)
+        #expect(tb.savedMonitorMute(.headphone1) == true)
+    }
+
     @Test("after a link recovery nothing is saved until the step has run again")
     func recoveryStopsRecording() async {
         let (state, tb, driver) = thunderbolt(saved: [.speakers: 30])
+        tb.recordSavedMonitorMute(.headphone1, muted: true)
+        driver.seedRead(command: 0x24, value: 0, reply: [0])
         await state.applyMonitorLevelsAtConnect(tb)
         #expect(state.speakerLevel == -30)
         // The unit is power-cycled: back at its -20 default.
@@ -119,6 +147,8 @@ struct LevelsAtConnectAppTests {
         driver.seedRead(command: Self.speakerVolume, reply: [20])
         _ = tb.probeEndpoint()
         state.speakerLevel = -20   // e.g. the front panel poller sees the default
+        state.hp1Muted = false
+        #expect(tb.savedMonitorMute(.headphone1) == true)
         #expect(tb.savedMonitorLevel(.speakers) == 30)
         await state.applyMonitorLevelsAtConnect(tb)
         #expect(state.speakerLevel == -30)

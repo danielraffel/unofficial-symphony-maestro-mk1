@@ -188,14 +188,26 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         public var settled: [MonitorLevelsAtConnect.Output: UInt32]
         /// The outputs turned down to the saved level.
         public var written: [MonitorLevelsAtConnect.Output]
+        /// Mute values known after the same connect step.
+        public var mutesSettled: [MonitorMutesAtConnect.Output: Bool]
+        /// Mutes restored towards the saved, quieter state.
+        public var mutesWritten: [MonitorMutesAtConnect.Output]
+        /// A mute write or its read could not complete and must be retried.
+        public var mutesOwed: Bool
 
         public init(speakersInLine: Bool, speakerMode: UInt32?,
                     settled: [MonitorLevelsAtConnect.Output: UInt32],
-                    written: [MonitorLevelsAtConnect.Output]) {
+                    written: [MonitorLevelsAtConnect.Output],
+                    mutesSettled: [MonitorMutesAtConnect.Output: Bool] = [:],
+                    mutesWritten: [MonitorMutesAtConnect.Output] = [],
+                    mutesOwed: Bool = false) {
             self.speakersInLine = speakersInLine
             self.speakerMode = speakerMode
             self.settled = settled
             self.written = written
+            self.mutesSettled = mutesSettled
+            self.mutesWritten = mutesWritten
+            self.mutesOwed = mutesOwed
         }
     }
 
@@ -212,10 +224,27 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
         settingsStore.record(.uint32(attenuation), for: Self.savedLevelAddress(output))
     }
 
+    public static func savedMuteAddress(_ output: MonitorMutesAtConnect.Output) -> PropertyAddress {
+        switch output {
+        case .speakers: PropertyAddress(selector: .outputMute)
+        case .headphone1: PropertyAddress(selector: .headphone1Mute)
+        case .headphone2: PropertyAddress(selector: .headphone2Mute)
+        }
+    }
+
+    public func savedMonitorMute(_ output: MonitorMutesAtConnect.Output) -> Bool? {
+        settingsStore.value(for: Self.savedMuteAddress(output))?.asBool
+    }
+
+    public func recordSavedMonitorMute(_ output: MonitorMutesAtConnect.Output, muted: Bool) {
+        guard savedMonitorMute(output) != muted else { return }
+        settingsStore.record(.bool(muted), for: Self.savedMuteAddress(output))
+    }
+
     /// A4: put unit A's speaker and headphone levels at the quieter of what
     /// is saved on this Mac and what the unit reports
-    /// (``MonitorLevelsAtConnect``), and save the result. Mutes are not
-    /// touched. Nothing is sent to converters; nil then, and when the
+    /// (``MonitorLevelsAtConnect`` and ``MonitorMutesAtConnect``), and save
+    /// the result. Nothing is sent to converters; nil then, and when the
     /// connection is gone.
     ///
     /// The speaker mode and every level are read from the unit itself
@@ -265,6 +294,38 @@ public final class ThunderboltDeviceConnection: DeviceConnection, @unchecked Sen
                                                             speakersInLine: inLine, written: written) {
                 result.settled[output] = settled
                 recordSavedMonitorLevel(output, attenuation: settled)
+            }
+        }
+        for output in MonitorMutesAtConnect.Output.allCases {
+            if output == .speakers && inLine { continue }
+            let address = Self.savedMuteAddress(output)
+            let saved = savedMonitorMute(output)
+            let unit = readUnitByte(address).flatMap { raw in
+                switch raw { case 0: false; case 1: true; default: nil }
+            }
+            var written = false
+            let wanted = MonitorMutesAtConnect.write(output: output, saved: saved, unit: unit,
+                                                     speakersInLine: inLine) != nil
+            if wanted {
+                do {
+                    try writeProperty(address, value: .bool(true))
+                    result.mutesWritten.append(output)
+                    written = true
+                } catch {
+                    print("[Maestro] Mutes at connect: \(output) could not be set muted: \(error)")
+                    result.mutesOwed = true
+                }
+            }
+            if wanted && !written { continue }
+            if saved == true && unit == nil { result.mutesOwed = true; continue }
+            if let settled = MonitorMutesAtConnect.settled(output: output, unit: unit,
+                                                            speakersInLine: inLine, written: written) {
+                result.mutesSettled[output] = settled
+                // A mute found on the unit is saved also when nothing was
+                // saved before; an unmuted one is not, so a speaker muted
+                // earlier in this session is still muted again
+                // (`SpeakerMuteAdoption`).
+                if saved != nil || settled { recordSavedMonitorMute(output, muted: settled) }
             }
         }
         return result

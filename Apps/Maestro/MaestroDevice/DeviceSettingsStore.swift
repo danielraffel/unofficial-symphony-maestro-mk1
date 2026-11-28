@@ -161,9 +161,11 @@ public final class DeviceSettingsStore: @unchecked Sendable {
     ///   list, and at connect each output is put at the QUIETER of the saved
     ///   level and the unit's (A4, `MonitorLevelsAtConnect`,
     ///   `ThunderboltDeviceConnection.applySavedMonitorLevels`), so a connect
-    ///   never makes anything louder than either. Mutes are read from the
-    ///   unit (`SpeakerMuteAdoption`). Over USB the helper keeps the speaker
-    ///   level itself.
+    ///   never makes anything louder than either. Mutes are saved separately
+    ///   and restored only towards muted by `MonitorMutesAtConnect` on unit A.
+    ///   They are deliberately outside this replay list so a pre-step read
+    ///   cannot erase a saved mute. Over USB the helper keeps the speaker
+    ///   level and mute itself.
     /// - Clock source, which can also change on the unit, and where a saved
     ///   external clock could unlock a unit whose word clock is gone.
     /// - Built-in defaults for settings nobody has set. Pushing those would

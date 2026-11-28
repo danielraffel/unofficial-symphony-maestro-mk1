@@ -118,6 +118,30 @@ public enum MonitorLevelsAtConnect {
     }
 }
 
+/// Mutes put on unit A when Maestro connects. A saved mute is restored only
+/// when the unit came back unmuted. The deliberate difference from the
+/// original (`SymphonyIO::ApplySettingsToHardware`,
+/// og_source/maestrolink/Software/SymphonyIO.cpp:4671, :4678) is that we
+/// never make a unit louder by writing an unmute. An unreadable unit value or
+/// an output with nothing saved is left alone. Speaker reads are skipped in
+/// Line mode, or when the mode itself cannot be read.
+public enum MonitorMutesAtConnect {
+    public enum Output: CaseIterable, Sendable, Equatable {
+        case speakers, headphone1, headphone2
+    }
+
+    public static func write(output: Output, saved: Bool?, unit: Bool?, speakersInLine: Bool) -> Bool? {
+        guard !(output == .speakers && speakersInLine), saved == true, unit == false else { return nil }
+        return true
+    }
+
+    public static func settled(output: Output, unit: Bool?, speakersInLine: Bool, written: Bool = false) -> Bool? {
+        guard !(output == .speakers && speakersInLine) else { return nil }
+        if written { return true }
+        return unit
+    }
+}
+
 public enum SampleRateText {
     /// "48 kHz", "44.1 kHz", "176.4 kHz"; other rates with up to three
     /// decimals and no trailing zeros ("47.952 kHz").

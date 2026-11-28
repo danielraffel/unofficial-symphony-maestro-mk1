@@ -480,7 +480,9 @@ final class AppState: @unchecked Sendable {
         didSet { if speakerLevel != oldValue { noteMonitorLevel(.speakers, dB: speakerLevel) } }
     }
     /// Current speaker mute state (shared between monitor panel and volume key handler).
-    var speakerMuted: Bool = false
+    var speakerMuted: Bool = false {
+        didSet { if speakerMuted != oldValue { noteMonitorMute(.speakers, muted: speakerMuted) } }
+    }
     /// Current Analog Out Format. Line mode disables the speaker monitor
     /// controls, and the Mac's volume keys then do nothing unless a headphone
     /// is chosen under Volume Keys › Audio Output (a ThunderBridge driver
@@ -491,7 +493,9 @@ final class AppState: @unchecked Sendable {
         didSet { if hp1Level != oldValue { noteMonitorLevel(.headphone1, dB: hp1Level) } }
     }
     /// HP1 mute (shared between output tab and monitor panel).
-    var hp1Muted: Bool = false
+    var hp1Muted: Bool = false {
+        didSet { if hp1Muted != oldValue { noteMonitorMute(.headphone1, muted: hp1Muted) } }
+    }
     /// HP2 level (shared between output tab and monitor panel).
     var hp2Level: Double = -20 {
         didSet { if hp2Level != oldValue { noteMonitorLevel(.headphone2, dB: hp2Level) } }
@@ -502,13 +506,19 @@ final class AppState: @unchecked Sendable {
     /// link recovery until the step has run again, what the app shows may be
     /// a default or the unit's start-up level, not one the user chose.
     @ObservationIgnored var monitorLevelsSettled: MonitorLevelsSettled?
+    @ObservationIgnored var monitorMutesSettled: MonitorMutesSettled?
+    /// Earliest time the health loop runs the connect step again for a mute
+    /// that could not be read or written.
+    @ObservationIgnored var monitorMutesRetryAfter = Date.distantPast
     /// A4: the connection whose connect step is still owed (it could not run:
     /// asleep, the link state unreadable). Retried by the health loop
     /// (`serviceMonitorLevels`); only ever set by the connect and recovery
     /// calls, so the service never makes the first run.
     @ObservationIgnored weak var monitorLevelsOwed: ThunderboltDeviceConnection?
     /// HP2 mute (shared between output tab and monitor panel).
-    var hp2Muted: Bool = false
+    var hp2Muted: Bool = false {
+        didSet { if hp2Muted != oldValue { noteMonitorMute(.headphone2, muted: hp2Muted) } }
+    }
     /// The setup file currently associated with the document window.
     var currentSetupURL: URL? = AppState.loadCurrentSetupURL() {
         didSet { UserDefaults.standard.set(currentSetupURL?.path, forKey: "currentSetupURL") }
@@ -4824,7 +4834,10 @@ final class AppState: @unchecked Sendable {
         let wasFailing = usbLoss.isFailing, wasLost = usbLoss.lost
         usbLoss.failed(USBLossDetector.failure(for: error), at: now)
         if !wasFailing { print("[MeterPoll] USB read failed, watching whether the unit went away: \(error)") }
-        if usbLoss.lost, !wasLost { print("[MeterPoll] USB unit lost (\(error)); everything is put back when it answers again") }
+        if usbLoss.lost, !wasLost {
+            monitorMutesSettled = nil
+            print("[MeterPoll] USB unit lost (\(error)); everything is put back when it answers again")
+        }
     }
 
     /// The 1 Hz USB tick, for the life of the meter polling. It reads the unit
@@ -4885,11 +4898,14 @@ final class AppState: @unchecked Sendable {
     @MainActor
     func recoverUSBUnit(_ xpcDev: XPCDeviceConnection, lossBegan: Date? = nil) {
         // The restore of this connection that began after the loss began is
-        // the one for it (`usbRestoreCoversLoss`).
+        // the one for it (`usbRestoreCoversLoss`). Its mute step has run on
+        // the returned unit, so mute changes keep being saved.
         if usbRestoreCoversLoss(since: lossBegan ?? .distantFuture) {
             print("[Maestro] USB unit answers again; its restore for this connection already ran, not run twice")
             return
         }
+        // A restore follows: nothing is saved until its mute step has run.
+        monitorMutesSettled = nil
         // No mixer is routed until the restore has written them again.
         usbMixersWritten = nil
         usbSettingsRestored = nil
@@ -5619,6 +5635,7 @@ final class AppState: @unchecked Sendable {
     /// For Thunderbolt: no-op (same reason as writeASPVolume).
     func writeASPMute(_ muted: Bool, output: KeyboardVolumeOutput = .speakers) {
         if transportType == .thunderbolt {
+            guard monitorDevice == .a, monitorSelectionTask == nil else { return }
             if ObservedMonitorLevel.source(for: keyboardVolumeOutput(for: .a)) == ObservedMonitorLevel.source(for: output) {
                 rememberMacMonitorWrite(for: output, muted: muted)
                 // Also set the driver's Core Audio mute control, so macOS saves
@@ -5631,6 +5648,21 @@ final class AppState: @unchecked Sendable {
         }
         guard (usbKeysMoveSpeakerOnly ? .speakers : keyboardVolumeOutput(for: .a)) == output else { return }
         writeMacMute(muted)
+    }
+
+    @MainActor
+    func recordMonitorMuteWritten(_ output: MonitorMutesAtConnect.Output, muted: Bool) {
+        // Callers have checked that unit A was the one written (the unit the
+        // Mac's keys go to does not matter). Never a converter's store, and
+        // over USB never the speaker, which the helper owns.
+        guard connectedUnit == nil, converterSystem == nil, unitAIdentity != nil,
+              connectionMode == .hardware, isHardwareInitialized, !hardwareWritesSuspended else { return }
+        switch device {
+        case let tb as ThunderboltDeviceConnection: tb.recordSavedMonitorMute(output, muted: muted)
+        case let xpc as XPCDeviceConnection:
+            if output != .speakers { xpc.recordSavedMonitorMute(output, muted: muted) }
+        default: break
+        }
     }
 
     private func writeThunderboltMacMute(_ muted: Bool) {
@@ -6389,17 +6421,21 @@ final class AppState: @unchecked Sendable {
         speakerMuted = preset.outputMuted
 
         if let dev = device {
-            let write: (PropertyAddress, PropertyValue) async -> Void = { addr, value in
+            let writeAndReport: (PropertyAddress, PropertyValue) async -> Bool = { addr, value in
                 do {
                     try await dev.setProperty(addr, value: value)
+                    return true
                 } catch {
                     print("[Maestro] applyPreset: \(addr.selector) write failed: \(error)")
+                    return false
                 }
             }
             // Output (the Mac's volume and mute: on converters the driver
             // gives these to Mixer 1).
-            await write(PropertyAddress(selector: .outputLevel), .uint32(UInt32(max(0, -preset.outputLevel))))
-            await write(PropertyAddress(selector: .outputMute), .bool(preset.outputMuted))
+            _ = await writeAndReport(PropertyAddress(selector: .outputLevel), .uint32(UInt32(max(0, -preset.outputLevel))))
+            if await writeAndReport(PropertyAddress(selector: .outputMute), .bool(preset.outputMuted)) {
+                recordMonitorMuteWritten(.speakers, muted: preset.outputMuted)
+            }
         }
 
         // The rest are Symphony I/O commands: never to converters on port 1.
@@ -6413,11 +6449,17 @@ final class AppState: @unchecked Sendable {
             await write(PropertyAddress(selector: .outputSumToMono), .bool(preset.outputSumToMono))
             // HP1
             await write(PropertyAddress(selector: .headphone1Level), .uint32(UInt32(max(0, -preset.hp1Level))))
-            await write(PropertyAddress(selector: .headphone1Mute), .bool(preset.hp1Muted))
+            do {
+                try await dev.setProperty(PropertyAddress(selector: .headphone1Mute), value: .bool(preset.hp1Muted))
+                recordMonitorMuteWritten(.headphone1, muted: preset.hp1Muted)
+            } catch { print("[Maestro] applyPreset: headphone1Mute write failed: \(error)") }
             await write(PropertyAddress(selector: .headphone1RoutingID), .uint32(preset.hp1RoutingID))
             // HP2
             await write(PropertyAddress(selector: .headphone2Level), .uint32(UInt32(max(0, -preset.hp2Level))))
-            await write(PropertyAddress(selector: .headphone2Mute), .bool(preset.hp2Muted))
+            do {
+                try await dev.setProperty(PropertyAddress(selector: .headphone2Mute), value: .bool(preset.hp2Muted))
+                recordMonitorMuteWritten(.headphone2, muted: preset.hp2Muted)
+            } catch { print("[Maestro] applyPreset: headphone2Mute write failed: \(error)") }
             await write(PropertyAddress(selector: .headphone2RoutingID), .uint32(preset.hp2RoutingID))
             // Device settings
             for digital in PresetDigitalWrites.writes(for: preset, layout: cardLayout) {

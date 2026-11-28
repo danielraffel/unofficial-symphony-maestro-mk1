@@ -207,6 +207,16 @@ struct USBMeterPollingTests {
         #expect(state.deviceRecoveryCount == 1)
     }
 
+    @Test("USB recovery invalidates the mute settle boundary")
+    func recoveryInvalidatesMuteSettled() async throws {
+        let (state, usb, _) = try makeState(visible: false, area: .input)
+        state.monitorMutesSettled = MonitorMutesSettled(
+            connection: usb, generation: state.unitAGeneration, recoveryCount: nil,
+            outputs: [.headphone1])
+        state.recoverUSBUnit(usb)
+        #expect(state.monitorMutesSettled == nil)
+    }
+
     @Test("an older helper (-1 for everything): reads failing past the backoff are a loss")
     func sustainedFailureRestores() async throws {
         let (state, _, _) = try makeState(visible: false, area: .input)
@@ -227,6 +237,10 @@ struct USBMeterPollingTests {
         unit.status = 0
         await state.restoreUSBUnit(usb, helperMixer: 0)
         #expect(state.usbRestoreRuns == 1)
+        // Its mute step settled; the covered recovery below must not undo it.
+        state.monitorMutesSettled = MonitorMutesSettled(
+            connection: usb, generation: state.unitAGeneration, recoveryCount: nil,
+            outputs: [.headphone1, .headphone2])
         // ...and the meter loop's first good read after it ends the loss.
         state.usbLastReadOutcomeAt = .distantPast
         await state.usbHealthTick()
@@ -235,6 +249,9 @@ struct USBMeterPollingTests {
         #expect(!state.usbLoss.lost)
         #expect(state.deviceRecoveryCount == 0)
         #expect(state.usbRestoreRuns == 1, "not a second restore for the same connection")
+        #expect(state.monitorMutesSettled != nil, "mute changes are still saved after the covered recovery")
+        state.hp1Muted = true
+        #expect(usb.savedMonitorMute(.headphone1) == true)
     }
 
     @Test("the removal of the unit forgets the loss the old connection saw")

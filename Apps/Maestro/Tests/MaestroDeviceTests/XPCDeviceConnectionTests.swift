@@ -121,6 +121,56 @@ private func makeTestIdentifier() -> USBDeviceIdentifier {
 @Suite("XPCDeviceConnection")
 struct XPCDeviceConnectionTests {
 
+    @Test("USB connect restores saved headphone mutes without replaying them")
+    func savedHeadphoneMutes() async {
+        let transport = MockXPCTransport()
+        transport.replies[0x24] = Data([0])
+        // The decoy read whose first byte differs: the 0x24 reply is then believed.
+        transport.replies[0xA0] = Data([2, 0, 0])
+        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        conn.recordSavedMonitorMute(.headphone1, muted: true)
+        conn.recordSavedMonitorMute(.headphone2, muted: true)
+        _ = await conn.beginRestoreElision()
+        let result = await conn.applySavedMonitorMutes()
+        conn.endRestoreElision()
+        #expect(result.settled == [.headphone1: true, .headphone2: true])
+        #expect(transport.setPropertyCalls.filter { $0.bRequest == 0x24 }.count == 2)
+        #expect(conn.savedMonitorMute(.headphone1) == true)
+        #expect(conn.savedMonitorMute(.headphone2) == true)
+        #expect(!XPCDeviceConnection.storedSelectors.contains(.headphone1Mute))
+    }
+
+    @Test("a failed USB mute write stays owed and does not settle or erase the saved mute")
+    func failedSavedHeadphoneMute() async {
+        let transport = MockXPCTransport()
+        transport.replies[0x24] = Data([0])
+        // The decoy read whose first byte differs: the 0x24 reply is then believed.
+        transport.replies[0xA0] = Data([2, 0, 0])
+        transport.failFirstSets = 1
+        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        conn.recordSavedMonitorMute(.headphone1, muted: true)
+        _ = await conn.beginRestoreElision()
+        let result = await conn.applySavedMonitorMutes()
+        conn.endRestoreElision()
+        #expect(result.owed)
+        #expect(result.settled[.headphone1] == nil)
+        #expect(conn.savedMonitorMute(.headphone1) == true)
+    }
+
+    @Test("an unreadable USB mute read is left owed")
+    func unreadableSavedHeadphoneMute() async {
+        let transport = MockXPCTransport()
+        transport.replies[0x24] = Data([0xFF])
+        let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)
+        conn.recordSavedMonitorMute(.headphone1, muted: true)
+        _ = await conn.beginRestoreElision()
+        let result = await conn.applySavedMonitorMutes()
+        conn.endRestoreElision()
+        #expect(result.owed)
+        #expect(result.settled.isEmpty)
+        #expect(transport.setPropertyCalls.isEmpty)
+    }
+
     @Test func isConnectedDelegatestoTransport() {
         let transport = MockXPCTransport()
         let conn = XPCDeviceConnection(identifier: makeTestIdentifier(), transport: transport)

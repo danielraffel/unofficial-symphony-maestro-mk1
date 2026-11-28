@@ -79,6 +79,22 @@ struct ParityRulesTests {
         #expect(Rule.write(output: .headphone2, saved: 40, unit: 20, speakersInLine: true) == 40)
     }
 
+    @Test("A4: mutes only restore a saved mute and never unmute")
+    func mutesAtConnect() {
+        typealias Rule = MonitorMutesAtConnect
+        for output in Rule.Output.allCases {
+            #expect(Rule.write(output: output, saved: true, unit: false, speakersInLine: false) == true)
+            #expect(Rule.settled(output: output, unit: false, speakersInLine: false) == false)
+            #expect(Rule.write(output: output, saved: false, unit: true, speakersInLine: false) == nil)
+            #expect(Rule.settled(output: output, unit: true, speakersInLine: false) == true)
+            #expect(Rule.write(output: output, saved: nil, unit: false, speakersInLine: false) == nil)
+            #expect(Rule.settled(output: output, unit: nil, speakersInLine: false) == nil)
+        }
+        #expect(Rule.write(output: .speakers, saved: true, unit: false, speakersInLine: true) == nil)
+        #expect(Rule.settled(output: .speakers, unit: true, speakersInLine: true) == nil)
+        #expect(Rule.write(output: .headphone1, saved: true, unit: nil, speakersInLine: false) == nil)
+    }
+
     @Test("A4: a shown level is saved as its whole-dB attenuation")
     func levelsAtConnectAttenuation() {
         #expect(MonitorLevelsAtConnect.attenuation(dB: -20) == 20)
