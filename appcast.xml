@@ -7,6 +7,37 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <description>Updates for Unofficial Symphony Maestro</description>
     <language>en</language>
     <item>
+      <title>Maestro 0.9.35</title>
+      <pubDate>Sat, 28 Nov 2026 02:53:04 GMT</pubDate>
+      <sparkle:version>0.9.35</sparkle:version>
+      <sparkle:shortVersionString>0.9.35</sparkle:shortVersionString>
+      <sparkle:channel>beta</sparkle:channel>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/tag/v0.9.35</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[
+This beta keeps a muted headphone or speaker muted when the Symphony is switched off and on, or reconnected.
+
+### Changes that may affect your setup
+
+- **Maestro now remembers which outputs you muted and mutes them again when the Symphony comes back**: the two headphones over USB, and the speakers and both headphones on ThunderBridge and the Symphony 64 PCIe card. This also holds after you quit Maestro or restart the Mac. Apogee's software also put its saved mutes back when it connected.
+- **Maestro only ever mutes, it never unmutes.** If you muted an output in Maestro and later unmuted it on the Symphony's front panel or with the Mac's mute key while Maestro was closed, it is muted again the next time Maestro connects. Unmute it in Maestro and it stays unmuted.
+- The driver is unchanged (0.11.23, build 154).
+
+### Fixed
+
+- Over USB, both headphones came back unmuted after the Symphony was switched off and on, although they were muted before. The speakers stayed muted.
+- On ThunderBridge and PCIe, a muted output could come back unmuted after the Symphony was switched off and on or the Mac was restarted.
+
+### Please test
+
+- **USB:** turn the headphone levels up a little, mute Headphone 1 and 2 in Maestro, then switch the Symphony off and on. Are both still muted, in Maestro and by ear? Then quit Maestro, switch the Symphony off and on, and open Maestro: still muted? Then unmute both and switch it off and on again: they should stay unmuted.
+- **ThunderBridge or PCIe:** the same with the speakers and both headphones, and once more after restarting the Mac.
+- If a step fails, start Diagnostics, repeat that step and send the report, saying which step it was.
+      ]]></description>
+      <enclosure url="https://github.com/danielraffel/unofficial-symphony-maestro-mk1/releases/download/v0.9.35/UnofficialSymphonyMaestro.pkg" sparkle:edSignature="YkdMTLGL+uEyQMW7f0k9WqxXd+L8gkJ3PbIN1VXM5W6UgqqBnLYnxT1/6bSuF+/uy9EDKvqzn+JK7GnpL7kfAA==" length="6439242" type="application/octet-stream" sparkle:installationType="package"></enclosure>
+    </item>
+    <item>
       <title>Maestro 0.9.34</title>
       <pubDate>Thu, 26 Nov 2026 18:27:20 GMT</pubDate>
       <sparkle:version>0.9.34</sparkle:version>
@@ -1821,6 +1852,6 @@ If you appreciate this work, please consider donating to the [San Francisco Mari
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: jG20PVW29a7YnMUUzrWM6XxSRkVv/AG3kfO243uvXYiN4TyIhDLnWY69ghR7zAN0WsC8V5rZsUHxIEgi0RmXAQ==
-length: 195776
+edSignature: cjsmk383CsnmrUrp2BuB+v5nDopbYNRVYX0xbia2Cww/jxAmS5TC45zYM2jNVcJCCiKG+vDmL8cJNsVNitisCw==
+length: 198462
 -->
